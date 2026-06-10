@@ -51,8 +51,10 @@ from serving.utils.tokens import estimate_prompt_tokens
 
 from .candidates import (
     CandidatePricing,
+    ConcurrencyPolicy,
     ProviderCandidate as RouteProviderCandidate,
     ProviderType,
+    QuotaPolicy,
     QuotaSource,
     build_provider_candidates,
     endpoint_id_for_adapter,
@@ -69,7 +71,7 @@ from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
 from .prefix_cache import PrefixCacheCoordinator, price_delta_per_token
-from .quota import QuotaManager
+from .quota import LocalQuotaPool, QuotaPool, SnapshotQuotaPool
 from .quota_snapshot import ProviderQuotaSnapshotStore
 
 logger = get_logger(__name__)
@@ -102,7 +104,8 @@ class FeasibleProviderCandidate:
     prefix_cache_discount_usd: float = 0.0
     prefix_cache_expected_tokens: float = 0.0
     prefix_cache_adjustment_applied: bool = False
-    quota_source: QuotaSource | None = None
+    quota_pool: str | None = None
+    concurrency_pool: str | None = None
     quota_used_fraction: float | None = None
     quota_remaining: int | None = None
 
@@ -216,11 +219,11 @@ class RouteWiseRouter(BaseRouter):
             upper_percentile=self.config.envelope_upper_percentile,
             window_sec=self.config.shadow_price_window_hours * 3600.0,
         )
-        self.quota_mgr = QuotaManager(config)
         self.quota_snapshots = ProviderQuotaSnapshotStore()
-        self.conc_mgr: ConcurrencyManager | None = (
-            ConcurrencyManager(config) if self.config.concurrency_enabled else None
-        )
+        # One resource manager per pool id, built from route-level policies.
+        self.quota_pools: dict[str, QuotaPool] = {}
+        self.concurrency_pools: dict[str, ConcurrencyManager] = {}
+        self._endpoint_concurrency_pool: dict[str, str] = {}
         self.prefix_cache = PrefixCacheCoordinator(
             enabled=self.config.prefix_cache_cost_adjustment_enabled,
         )
@@ -255,20 +258,14 @@ class RouteWiseRouter(BaseRouter):
     def apply_runtime_overrides(
         self,
         *,
-        daily_quota: int | None = None,
         latency_slo_sec: float | None = None,
         latency_min_samples: int | None = None,
     ) -> None:
         """Apply live RouteWise runtime settings from the admin API.
 
-        The current body router exposes only live knobs that affect LP inputs
-        or resource accounting.
+        Only algorithm knobs are runtime-overridable; resource limits are
+        route-level configuration (``quota:`` / ``concurrency:`` blocks).
         """
-        if daily_quota is not None:
-            self.config.daily_quota = daily_quota
-            used_today = self.quota_mgr.used_today
-            self.quota_mgr = QuotaManager(self.config)
-            self.quota_mgr._used_today = min(used_today, self.config.daily_quota)
         if latency_slo_sec is not None:
             self.config.latency_slo_sec = latency_slo_sec
         if latency_min_samples is not None:
@@ -283,6 +280,7 @@ class RouteWiseRouter(BaseRouter):
         self._endpoint_adapter = {}
         self._latency_profiles = {}
         self._classify_all()
+        self._build_resource_pools()
         for candidates in self.route_candidates.values():
             for candidate in candidates:
                 adapter = candidate.adapter
@@ -427,6 +425,85 @@ class RouteWiseRouter(BaseRouter):
                         model_id,
                         sorted(pools),
                     )
+
+    def _build_resource_pools(self) -> None:
+        """(Re)build per-pool resource managers from route-level policies.
+
+        Routes sharing a pool id share one manager and must declare identical
+        policies; conflicting declarations fail at boot. Existing instances
+        are kept when their policy is unchanged so a registry re-attach does
+        not reset live counters. Pool ids are router-scoped: the same id on
+        two models still gets two local counters (snapshot-backed pools are
+        unaffected because the provider reports global usage).
+        """
+        quota_specs: dict[str, tuple[QuotaPolicy, QuotaSource | None, str]] = {}
+        concurrency_specs: dict[str, tuple[ConcurrencyPolicy, str]] = {}
+        self._endpoint_concurrency_pool = {}
+        for candidates in self.route_candidates.values():
+            for candidate in candidates:
+                if (
+                    candidate.provider_type is ProviderType.QUOTA
+                    and candidate.quota_pool is not None
+                    and candidate.quota_policy is not None
+                ):
+                    prior = quota_specs.get(candidate.quota_pool)
+                    spec = (candidate.quota_policy, candidate.quota_source)
+                    if prior is not None and (prior[0], prior[1]) != spec:
+                        raise ValueError(
+                            f"RouteWise quota_pool {candidate.quota_pool!r} is declared "
+                            f"with conflicting quota policies by {prior[2]!r} and "
+                            f"{candidate.endpoint_id!r}; routes sharing a pool must "
+                            "declare identical quota blocks."
+                        )
+                    quota_specs[candidate.quota_pool] = (*spec, candidate.endpoint_id)
+                elif (
+                    candidate.provider_type is ProviderType.CONCURRENCY
+                    and candidate.concurrency_pool is not None
+                    and candidate.concurrency_policy is not None
+                ):
+                    prior_c = concurrency_specs.get(candidate.concurrency_pool)
+                    if prior_c is not None and prior_c[0] != candidate.concurrency_policy:
+                        raise ValueError(
+                            f"RouteWise concurrency_pool {candidate.concurrency_pool!r} is "
+                            f"declared with conflicting limits by {prior_c[1]!r} and "
+                            f"{candidate.endpoint_id!r}; routes sharing a pool must "
+                            "declare identical concurrency blocks."
+                        )
+                    concurrency_specs[candidate.concurrency_pool] = (
+                        candidate.concurrency_policy,
+                        candidate.endpoint_id,
+                    )
+                    self._endpoint_concurrency_pool[candidate.endpoint_id] = (
+                        candidate.concurrency_pool
+                    )
+
+        quota_pools: dict[str, QuotaPool] = {}
+        for pool_id, (policy, source, _endpoint) in quota_specs.items():
+            if source is not None:
+                # Snapshot pools are stateless wrappers (truth lives in the
+                # store), so they are always rebuilt against the current store.
+                quota_pools[pool_id] = SnapshotQuotaPool(
+                    self.quota_snapshots,
+                    source,
+                    policy=policy,
+                )
+                continue
+            existing = self.quota_pools.get(pool_id)
+            if isinstance(existing, LocalQuotaPool) and existing.policy == policy:
+                # Keep live counters across a registry re-attach.
+                quota_pools[pool_id] = existing
+            else:
+                quota_pools[pool_id] = LocalQuotaPool(policy)
+        self.quota_pools = quota_pools
+
+        concurrency_pools: dict[str, ConcurrencyManager] = {}
+        for pool_id, (policy, _endpoint) in concurrency_specs.items():
+            existing_c = self.concurrency_pools.get(pool_id)
+            if existing_c is not None and existing_c.limit == policy.limit:
+                concurrency_pools[pool_id] = existing_c
+            else:
+                concurrency_pools[pool_id] = ConcurrencyManager(policy.limit)
+        self.concurrency_pools = concurrency_pools
 
     def _canonical_model_id(self, model_id: str) -> str:
         route_cfg = getattr(self.fixed_router, "routes", {}).get(model_id)
@@ -713,18 +790,16 @@ class RouteWiseRouter(BaseRouter):
                         model_id,
                     )
                     continue
-                quota_source = route_candidate.quota_source
-                if quota_source is not None:
-                    snapshot = self.quota_snapshots.get(quota_source)
-                    if snapshot is None or snapshot.remaining <= 0:
-                        continue
-                    used_fraction = snapshot.used_fraction
-                    quota_remaining = snapshot.remaining
-                else:
-                    if self.quota_mgr.remaining <= 0:
-                        continue
-                    used_fraction = self.quota_mgr.used_fraction
-                    quota_remaining = self.quota_mgr.remaining
+                quota_pool_id = route_candidate.quota_pool
+                quota_pool = self.quota_pools.get(quota_pool_id) if quota_pool_id else None
+                if quota_pool is None or not quota_pool.ready:
+                    # Snapshot-backed pools are skipped until the first provider
+                    # snapshot lands rather than priced off invented state.
+                    continue
+                if quota_pool.remaining <= 0:
+                    continue
+                used_fraction = quota_pool.used_fraction
+                quota_remaining = quota_pool.remaining
                 provider_type = "quota"
                 cost = quota_shadow_price_usd(
                     used_fraction=used_fraction,
@@ -736,14 +811,15 @@ class RouteWiseRouter(BaseRouter):
                 prefix_expected = 0.0
                 prefix_applied = False
             elif route_candidate.provider_type is ProviderType.CONCURRENCY:
-                if self.conc_mgr is None or self.conc_mgr.available <= 0:
+                concurrency_pool_id = route_candidate.concurrency_pool
+                concurrency_pool = (
+                    self.concurrency_pools.get(concurrency_pool_id) if concurrency_pool_id else None
+                )
+                if concurrency_pool is None or concurrency_pool.available <= 0:
                     continue
                 provider_type = "concurrency"
                 cost = 0.0
                 reason = "available_concurrency_slot"
-                quota_source = None
-                used_fraction = None
-                quota_remaining = None
                 prefix_discount = 0.0
                 prefix_expected = 0.0
                 prefix_applied = False
@@ -751,9 +827,11 @@ class RouteWiseRouter(BaseRouter):
                 continue
 
             if route_candidate.provider_type is not ProviderType.QUOTA:
-                quota_source = None
+                quota_pool_id = None
                 used_fraction = None
                 quota_remaining = None
+            if route_candidate.provider_type is not ProviderType.CONCURRENCY:
+                concurrency_pool_id = None
 
             candidates.append(
                 FeasibleProviderCandidate(
@@ -768,7 +846,8 @@ class RouteWiseRouter(BaseRouter):
                     prefix_cache_discount_usd=prefix_discount,
                     prefix_cache_expected_tokens=prefix_expected,
                     prefix_cache_adjustment_applied=prefix_applied,
-                    quota_source=quota_source,
+                    quota_pool=quota_pool_id,
+                    concurrency_pool=concurrency_pool_id,
                     quota_used_fraction=used_fraction,
                     quota_remaining=quota_remaining,
                 )
@@ -891,22 +970,30 @@ class RouteWiseRouter(BaseRouter):
 
     def _commit_candidate(self, candidate: FeasibleProviderCandidate) -> bool:
         if candidate.provider_type == "concurrency":
-            return self.conc_mgr is not None and self.conc_mgr.try_acquire()
+            pool = (
+                self.concurrency_pools.get(candidate.concurrency_pool)
+                if candidate.concurrency_pool
+                else None
+            )
+            return pool is not None and pool.try_acquire()
         if candidate.provider_type == "quota":
-            if candidate.quota_source is not None:
-                return self.quota_snapshots.consume(candidate.quota_source)
-            if self.quota_mgr.remaining <= 0:
+            quota_pool = (
+                self.quota_pools.get(candidate.quota_pool) if candidate.quota_pool else None
+            )
+            if quota_pool is None:
                 return False
             # Commit at selection time and do not refund on provider failure:
             # fallback is API-only, so refunding would let failed quota attempts
             # become free retries against the same scarce subscription.
-            self.quota_mgr.consume()
-            return True
+            return quota_pool.consume()
         return True
 
     def _release_candidate(self, candidate: FeasibleProviderCandidate) -> None:
-        if candidate.provider_type == "concurrency" and self.conc_mgr is not None:
-            self.conc_mgr.release()
+        if candidate.provider_type != "concurrency" or not candidate.concurrency_pool:
+            return
+        pool = self.concurrency_pools.get(candidate.concurrency_pool)
+        if pool is not None:
+            pool.release()
 
     def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
         return ProviderReservation(router=self, candidate=candidate)
@@ -942,18 +1029,24 @@ class RouteWiseRouter(BaseRouter):
     ) -> None:
         if self._release_pending_primary_reservation(request_id):
             return
-        if (
-            self._adapter_provider_type.get(id(primary_adapter)) is ProviderType.CONCURRENCY
-            and self.conc_mgr is not None
-        ):
-            self.conc_mgr.release()
+        if self._adapter_provider_type.get(id(primary_adapter)) is not ProviderType.CONCURRENCY:
+            return
+        endpoint_id = self._adapter_endpoint_ids.get(id(primary_adapter))
+        pool_id = self._endpoint_concurrency_pool.get(endpoint_id) if endpoint_id else None
+        pool = self.concurrency_pools.get(pool_id) if pool_id else None
+        if pool is not None:
+            pool.release()
 
-    def _quota_metadata_state(self, selected: FeasibleProviderCandidate) -> tuple[float, int]:
-        if selected.provider_type == "quota" and selected.quota_source is not None:
-            snapshot = self.quota_snapshots.get(selected.quota_source)
-            if snapshot is not None:
-                return snapshot.used_fraction, snapshot.remaining
-        return self.quota_mgr.used_fraction, self.quota_mgr.remaining
+    def _quota_metadata_state(
+        self,
+        selected: FeasibleProviderCandidate,
+    ) -> tuple[float | None, int | None]:
+        """Post-commit quota state of the selected candidate's pool, if any."""
+        if selected.provider_type == "quota" and selected.quota_pool:
+            pool = self.quota_pools.get(selected.quota_pool)
+            if pool is not None:
+                return pool.used_fraction, pool.remaining
+        return None, None
 
     def _decision_metadata(
         self,
@@ -975,6 +1068,16 @@ class RouteWiseRouter(BaseRouter):
             output_tokens=prediction.tokens,
         )
         quota_used_fraction, quota_remaining = self._quota_metadata_state(selected)
+        selected_quota_source = (
+            getattr(self.quota_pools.get(selected.quota_pool), "source", None)
+            if selected.quota_pool
+            else None
+        )
+        selected_concurrency_pool = (
+            self.concurrency_pools.get(selected.concurrency_pool)
+            if selected.concurrency_pool
+            else None
+        )
         return {
             "request_id": request_id,
             "timestamp": time.time(),
@@ -1026,20 +1129,22 @@ class RouteWiseRouter(BaseRouter):
             "L": envelope.lower if envelope is not None else None,
             "U": envelope.upper if envelope is not None else None,
             "envelope_sample_count": (envelope.sample_count if envelope is not None else 0),
+            "quota_pool": selected.quota_pool,
             "quota_source": (
                 {
-                    "provider": selected.quota_source.provider,
-                    "usage_label": selected.quota_source.usage_label,
-                    "unit": selected.quota_source.unit,
+                    "provider": selected_quota_source.provider,
+                    "usage_label": selected_quota_source.usage_label,
+                    "unit": selected_quota_source.unit,
                 }
-                if selected.quota_source is not None
+                if selected_quota_source is not None
                 else None
             ),
             "quota_used_fraction": quota_used_fraction,
             "quota_remaining": quota_remaining,
             "quota_committed": 0.0,
-            "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
-            "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
+            "concurrency_pool": selected.concurrency_pool,
+            "sc_active": selected_concurrency_pool.active if selected_concurrency_pool else 0,
+            "sc_limit": selected_concurrency_pool.limit if selected_concurrency_pool else 0,
             "sc_committed": selected.provider_type == "concurrency",
             "hedged": False,
             "backup_won": False,

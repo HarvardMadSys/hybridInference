@@ -281,18 +281,18 @@ models:
     aliases: ["MiniMax-Fast"]
     router: routewise
     router_params:
-      # RouteWise options reference:
-      concurrency_enabled: true
-      concurrency_limit: 1
+      # RouteWise algorithm options reference. Resource limits (quota windows,
+      # concurrency slots) are configured per route entry below via
+      # `quota: {limit, window: {type: daily|rolling, ...}}` and
+      # `concurrency: {limit}`.
       budget_alpha: 0.5
       latency_hedge_mode: probability_target
-      # daily_quota: 5000
-      # quota_monthly_fee: 20.0
-      # reset_timezone: UTC
+      # random_seed: null
+      # reference_api_price: {prompt: "1.2", completion: "4.0"}
+      # db_bootstrap_enabled: true
+      # db_bootstrap_max_rows: 50000
+      # stateful_providers_single_worker_only: true
       # quota_snapshot_refresh_interval_sec: 60.0
-      # concurrency_enabled: false
-      # concurrency_limit: 8
-      # concurrency_monthly_fee: 25.0
       # shadow_price_window_hours: 24
       # envelope_lower_percentile: 10.0
       # envelope_upper_percentile: 90.0
@@ -333,7 +333,9 @@ models:
           unit: requests
         quota:
           limit: 5000
-          window: daily
+          window:
+            type: daily
+            timezone: UTC
       # S_C: Featherless Premium; paper real-eval used C=1 for MiniMax-M2.5.
       - kind: featherless
         weight: 1.0

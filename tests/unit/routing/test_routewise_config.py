@@ -18,13 +18,7 @@ class TestRouteWiseConfigDefaults:
         assert cfg.db_bootstrap_enabled is True
         assert cfg.db_bootstrap_max_rows == 50_000
         assert cfg.stateful_providers_single_worker_only is True
-        assert cfg.daily_quota == 5000
-        assert cfg.quota_monthly_fee == 20.0
-        assert cfg.reset_timezone == "UTC"
         assert cfg.quota_snapshot_refresh_interval_sec == 60.0
-        assert cfg.concurrency_enabled is False
-        assert cfg.concurrency_limit == 8
-        assert cfg.concurrency_monthly_fee == 25.0
         assert cfg.shadow_price_window_hours == 24
         assert cfg.envelope_lower_percentile == 10.0
         assert cfg.envelope_upper_percentile == 90.0
@@ -45,3 +39,16 @@ class TestRouteWiseConfigDefaults:
         assert cfg.canary_enabled is False
         assert cfg.canary_enabled_models is None
         assert cfg.canary_traffic_fraction == 1.0
+
+    def test_resource_fields_are_gone(self):
+        """Resource limits are route-level config, not RouteWiseConfig fields."""
+        cfg = RouteWiseConfig()
+        for moved in (
+            "daily_quota",
+            "quota_monthly_fee",
+            "reset_timezone",
+            "concurrency_enabled",
+            "concurrency_limit",
+            "concurrency_monthly_fee",
+        ):
+            assert not hasattr(cfg, moved)

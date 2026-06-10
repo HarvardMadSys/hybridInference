@@ -85,14 +85,19 @@ def test_routewise_params_extra_forbidden():
     # Defaults work
     RouteWiseParams()
     # Known field accepted
-    p = RouteWiseParams.model_validate({"daily_quota": 100})
-    assert p.daily_quota == 100
+    p = RouteWiseParams.model_validate({"latency_min_samples": 100})
+    assert p.latency_min_samples == 100
     # Unknown field rejected
     with pytest.raises(ValidationError):
         RouteWiseParams.model_validate({"not_a_field": 1})
     # Removed legacy hedge knobs are rejected.
     with pytest.raises(ValidationError):
         RouteWiseParams.model_validate({"latency_hedge_cost_ratio": 0.1})
+    # Moved resource fields are rejected with a pointer to the new location.
+    with pytest.raises(ValidationError, match=r"route-level quota\.limit"):
+        RouteWiseParams.model_validate({"daily_quota": 100})
+    with pytest.raises(ValidationError, match=r"route-level concurrency\.limit"):
+        RouteWiseParams.model_validate({"concurrency_limit": 4})
 
 
 @pytest.mark.unit
@@ -163,8 +168,8 @@ def test_build_routewise_returns_routewise_router():
     from routing.strategies import build_router
 
     # Without a fixed_router, RouteWiseRouter defers post-init classification.
-    router = build_router("routewise", {"daily_quota": 100})
+    router = build_router("routewise", {"latency_min_samples": 100})
     assert isinstance(router, RouteWiseRouter)
-    assert router.config.daily_quota == 100
+    assert router.config.latency_min_samples == 100
     # fixed_router is None until attach_fixed_router is called.
     assert router.fixed_router is None

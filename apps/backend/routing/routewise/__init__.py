@@ -5,8 +5,10 @@ Exports:
     RouteWiseConfig  -- Dataclass holding per-model policy parameters, populated
                         from each model's ``router_params`` in ``config/models.yaml``.
     ProviderType -- Enum for on-demand / quota / concurrency provider categories.
-    QuotaManager       -- Daily quota manager with shadow price computation.
-    ConcurrencyManager -- Production concurrency slot manager (K=0 binary gate).
+    QuotaPool          -- Interface for one quota resource pool.
+    LocalQuotaPool     -- Locally-accounted quota pool (daily / rolling window).
+    SnapshotQuotaPool  -- Provider-snapshot-backed quota pool.
+    ConcurrencyManager -- Per-pool concurrency slot manager (K=0 binary gate).
     ProviderProfile    -- Real-time latency profile for an API endpoint.
     HedgedAdapter      -- Composite adapter that races primary vs backup.
     CheckpointBackupDispatch -- Shared checkpoint backup dispatch dataclass.
@@ -16,7 +18,15 @@ Exports:
 
 from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
-from .candidates import CandidatePricing, ProviderCandidate, ProviderType, QuotaSource
+from .candidates import (
+    CandidatePricing,
+    ConcurrencyPolicy,
+    ProviderCandidate,
+    ProviderType,
+    QuotaPolicy,
+    QuotaSource,
+    QuotaWindow,
+)
 from .concurrency import ConcurrencyManager
 from .config import RouteWiseConfig
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
@@ -28,7 +38,7 @@ from .predictor import (
     BucketMeanOutputPredictor,
     BucketMeanPrediction,
 )
-from .quota import QuotaManager
+from .quota import LocalQuotaPool, QuotaPool, SnapshotQuotaPool
 from .quota_snapshot import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore
 from .router import RouteWiseRouter
 
@@ -39,21 +49,26 @@ __all__ = [
     "CheckpointBackupDispatch",
     "CheckpointBackupSelector",
     "ConcurrencyManager",
+    "ConcurrencyPolicy",
     "CostEnvelopeEstimator",
     "CostEnvelopeSnapshot",
     "HedgedAdapter",
     "LPCandidate",
     "LPSolution",
+    "LocalQuotaPool",
     "ProviderCandidate",
     "ProviderEventSink",
     "ProviderProfile",
     "ProviderQuotaSnapshot",
     "ProviderQuotaSnapshotStore",
     "ProviderType",
-    "QuotaManager",
+    "QuotaPolicy",
+    "QuotaPool",
     "QuotaSource",
+    "QuotaWindow",
     "RouteWiseConfig",
     "RouteWiseRouter",
+    "SnapshotQuotaPool",
     "api_request_cost_usd",
     "quota_shadow_price_usd",
     "solve_cost_budgeted_mean_ttft",

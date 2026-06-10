@@ -1,7 +1,7 @@
 """RouteWise boot smoke.
 
 Construct the production ``RouteWiseRouter`` from the real ``config/models.yaml``
-(no mocks) and dump routing decisions for the ``minimax-m2.5`` route, which
+(no mocks) and dump routing decisions for the ``minimax-fast`` route, which
 carries all three RouteWise provider categories (S_Q Chutes quota,
 S_C Featherless C=1, P_O OpenRouter on-demand).
 
@@ -23,7 +23,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parent
 MODELS_YAML = REPO / "config" / "models.yaml"
-MODEL_ID = "minimax-m2.5"
+MODEL_ID = "minimax-fast"
 
 # Offline placeholder creds so the env-gated route registration succeeds without
 # real keys. No network request is ever issued; selection logic only reads
@@ -138,9 +138,10 @@ def dump(
     """Print per-candidate cost/TTFT and the resulting routing decision."""
     if inject_quota:
         inject_quota_snapshot(router)
-    if saturate_concurrency and router.conc_mgr is not None:
-        for _ in range(router.conc_mgr.limit):
-            router.conc_mgr.try_acquire()
+    if saturate_concurrency:
+        for conc_pool in router.concurrency_pools.values():
+            for _ in range(conc_pool.limit):
+                conc_pool.try_acquire()
 
     pool = router._routewise_pool(MODEL_ID)
     envelope = router.envelope.snapshot(pool)
@@ -189,7 +190,8 @@ def main() -> None:
     cold = make_router(fr)
     print(
         f"  RouteWiseRouter built; budget_alpha = {cold.config.budget_alpha}, "
-        f"concurrency_enabled = {cold.config.concurrency_enabled}"
+        f"quota_pools = {sorted(cold.quota_pools)}, "
+        f"concurrency_pools = {sorted(cold.concurrency_pools)}"
     )
     dump(cold, "COLD (no traffic; quota dark: envelope uncalibrated)")
 

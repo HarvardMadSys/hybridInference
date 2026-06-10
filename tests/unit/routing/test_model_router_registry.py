@@ -70,15 +70,13 @@ class TestModelRouterRegistry:
                 "minimax-m2.5": {
                     "router": "routewise",
                     "router_params": {
-                        "concurrency_enabled": True,
-                        "concurrency_limit": 1,
+                        "budget_alpha": 0.5,
                     },
                 },
                 "MiniMax-M2.5": {
                     "router": "routewise",
                     "router_params": {
-                        "concurrency_enabled": True,
-                        "concurrency_limit": 1,
+                        "budget_alpha": 0.5,
                     },
                 },
             },
@@ -92,7 +90,7 @@ class TestModelRouterRegistry:
 
         assert isinstance(canonical, RouteWiseRouter)
         assert alias is canonical
-        assert alias.conc_mgr is canonical.conc_mgr
+        assert alias.concurrency_pools is canonical.concurrency_pools
 
     def test_get_router_emits_router_initialized_log(self, caplog):
         """Cache miss logs a router_initialized event."""

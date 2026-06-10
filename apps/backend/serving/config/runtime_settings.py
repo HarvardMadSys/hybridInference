@@ -115,12 +115,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "Default daily USD spend quota seeded onto an admin user's active API key at signup."
         ),
     },
-    "routewise_daily_quota": {
-        "type": "int",
-        "default": 5000,
-        "min": 1,
-        "description": "Daily request quota for Routewise S_Q routing",
-    },
     "routewise_latency_slo_sec": {
         "type": "float",
         "default": 3.0,

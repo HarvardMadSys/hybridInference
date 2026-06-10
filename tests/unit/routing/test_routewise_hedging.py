@@ -35,6 +35,16 @@ class _FakeEventSink:
         self.failures.append((provider, reason))
 
 
+def _quota_pool(router):
+    """Return the router's only quota pool (single-pool test fixtures)."""
+    return next(iter(router.quota_pools.values()))
+
+
+def _conc_pool(router):
+    """Return the router's only concurrency pool (single-pool test fixtures)."""
+    return next(iter(router.concurrency_pools.values()))
+
+
 def _make_model_config(
     model_id: str = "test-model",
     provider: str = "provider-a",
@@ -531,6 +541,7 @@ def _make_router_with_api_and_concurrency(
     )
     concurrency.config.pricing = {"prompt": "0.0", "completion": "0.0"}
     concurrency.config.provider_type = "concurrency"
+    concurrency.config.concurrency = {"limit": 1}
 
     @dataclass
     class _FakeRouteConfig:
@@ -567,6 +578,7 @@ def _make_router_with_api_and_quota(
     )
     quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
     quota.config.provider_type = "quota"
+    quota.config.quota = {"limit": 10}
 
     @dataclass
     class _FakeRouteConfig:
@@ -587,6 +599,7 @@ def _make_router_with_api_and_quota(
 
 def _make_router_with_api_quota_and_api(
     config: RouteWiseConfig,
+    quota_limit: int = 10,
 ) -> tuple[Any, MagicMock, MagicMock, MagicMock]:
     """Build a RouteWiseRouter with API primary plus S_Q and S_A backups."""
     from routing.routewise.router import RouteWiseRouter
@@ -606,6 +619,7 @@ def _make_router_with_api_quota_and_api(
     )
     quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
     quota.config.provider_type = "quota"
+    quota.config.quota = {"limit": quota_limit}
 
     api_backup = MagicMock()
     api_backup.config = _make_model_config(
@@ -841,8 +855,6 @@ class TestRouterHedgeMode:
         """Backup selection is not restricted to on-demand providers."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            concurrency_enabled=True,
-            concurrency_limit=1,
             latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
@@ -874,9 +886,9 @@ class TestRouterHedgeMode:
         )
 
         assert resp["source"] == "backup"
-        assert router.conc_mgr is not None
-        assert router.conc_mgr.active == 0
-        assert router.conc_mgr.get_stats()["total_acquired"] == 1
+        assert len(router.concurrency_pools) == 1
+        assert _conc_pool(router).active == 0
+        assert _conc_pool(router).get_stats()["total_acquired"] == 1
         routewise = resp["_routing"]["routewise"]
         assert routewise["backup_provider"] == "test-model:concurrency-b"
         assert routewise["backup_provider_type"] == "concurrency"
@@ -887,7 +899,6 @@ class TestRouterHedgeMode:
         """Quota backups consume quota when the hedge actually dispatches."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            daily_quota=2,
             latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
@@ -914,14 +925,14 @@ class TestRouterHedgeMode:
         api.chat_completion = _slow_primary
         quota.chat_completion = _fast_backup
 
-        before = router.quota_mgr.remaining
+        before = _quota_pool(router).remaining
         resp = await router.chat_completion(
             "test-model",
             [{"role": "user", "content": "hi"}],
         )
 
         assert resp["source"] == "backup"
-        assert before - router.quota_mgr.remaining == 1
+        assert before - _quota_pool(router).remaining == 1
         routewise = resp["_routing"]["routewise"]
         assert routewise["backup_provider"] == "test-model:quota-q"
         assert routewise["backup_provider_type"] == "quota"
@@ -932,7 +943,6 @@ class TestRouterHedgeMode:
         """Checkpoint backup selection matches SIM/REAL raw marginal-cost tiebreak."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            daily_quota=10,
             latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
@@ -945,7 +955,7 @@ class TestRouterHedgeMode:
 
         router._sample_solution = _force_api_primary
         for _ in range(9):
-            router.quota_mgr.consume()
+            _quota_pool(router).consume()
 
         now = time.time()
         router._latency_profiles["test-model:api-a"].record(now, 100.0)
@@ -966,14 +976,14 @@ class TestRouterHedgeMode:
         quota.chat_completion = _fast_quota_backup
         api_backup.chat_completion = _api_backup_should_not_run
 
-        before = router.quota_mgr.remaining
+        before = _quota_pool(router).remaining
         resp = await router.chat_completion(
             "test-model",
             [{"role": "user", "content": "hi"}],
         )
 
         assert resp["source"] == "quota-q"
-        assert before - router.quota_mgr.remaining == 1
+        assert before - _quota_pool(router).remaining == 1
         routewise = resp["_routing"]["routewise"]
         assert routewise["backup_provider"] == "test-model:quota-q"
         assert routewise["backup_provider_type"] == "quota"
@@ -984,12 +994,13 @@ class TestRouterHedgeMode:
         """Checkpoint hedging re-evaluates current state instead of using a stale backup."""
         config = RouteWiseConfig(
             budget_alpha=1.0,
-            daily_quota=1,
             latency_min_samples=1,
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
-        router, api_primary, quota, api_backup = _make_router_with_api_quota_and_api(config)
+        router, api_primary, quota, api_backup = _make_router_with_api_quota_and_api(
+            config, quota_limit=1
+        )
         _warm_envelope(router)
 
         def _force_api_primary(candidates, solution):
@@ -1003,7 +1014,7 @@ class TestRouterHedgeMode:
         router._latency_profiles["test-model:api-c"].record(now, 1.0)
 
         async def _slow_primary(messages, **params):
-            router.quota_mgr.consume()
+            _quota_pool(router).consume()
             await asyncio.sleep(0.2)
             return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
 

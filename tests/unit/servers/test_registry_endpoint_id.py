@@ -112,6 +112,8 @@ models:
         weight: 1.0
         base_url: https://api.example.test/v1
         provider_type: quota
+        quota:
+          limit: 100
         route_metadata:
           provider_type: on_demand
           lane: quota-provider

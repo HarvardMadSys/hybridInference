@@ -47,47 +47,35 @@ def test_minimax_fast_uses_routewise() -> None:
         "stream",
     ]
     assert minimax_fast["router"] == "routewise"
-    assert minimax_fast["router_params"]["concurrency_enabled"] is True
-    assert minimax_fast["router_params"]["concurrency_limit"] == 1
     assert minimax_fast["router_params"]["budget_alpha"] == 0.5
     assert minimax_fast["router_params"]["latency_hedge_mode"] == "probability_target"
     assert minimax_fast["aliases"] == ["MiniMax-Fast"]
-    assert {route["provider_type"] for route in minimax_fast["route"]} == {
-        "concurrency",
-        "on_demand",
-        "quota",
-    }
+    routes_by_type = {route["provider_type"]: route for route in minimax_fast["route"]}
+    assert set(routes_by_type) == {"concurrency", "on_demand", "quota"}
+    # Resource limits live on the route entries, not in router_params.
+    assert "concurrency_enabled" not in minimax_fast["router_params"]
+    assert "concurrency_limit" not in minimax_fast["router_params"]
+    assert routes_by_type["quota"]["quota"]["limit"] == 5000
+    assert routes_by_type["quota"]["quota"]["window"]["type"] == "daily"
+    assert routes_by_type["concurrency"]["concurrency"]["limit"] == 1
 
 
 def test_minimax_fast_lists_routewise_options_in_comments() -> None:
-    """RouteWise example config should keep all tunable options visible."""
+    """RouteWise example config should keep all tunable options visible.
+
+    Derived from the ``RouteWiseConfig`` dataclass so the reference block in
+    ``models.yaml`` cannot silently go stale when fields change.
+    """
+    from dataclasses import fields as dataclass_fields
+
+    from routing.routewise.config import RouteWiseConfig
+
     text = (ROOT / "config" / "models.yaml").read_text()
 
-    for option in [
-        "budget_alpha",
-        "daily_quota",
-        "quota_monthly_fee",
-        "reset_timezone",
-        "quota_snapshot_refresh_interval_sec",
-        "concurrency_enabled",
-        "concurrency_limit",
-        "concurrency_monthly_fee",
-        "shadow_price_window_hours",
-        "envelope_lower_percentile",
-        "envelope_upper_percentile",
-        "output_default_tokens",
-        "output_min_bucket_samples",
-        "output_min_model_samples",
-        "output_min_global_samples",
-        "latency_slo_sec",
-        "latency_window_sec",
-        "latency_max_samples_per_profile",
-        "latency_min_samples",
-        "latency_unprofiled_ttft_ms",
-        "latency_hedge_mode",
-        "prefix_cache_cost_adjustment_enabled",
-        "canary_enabled",
-        "canary_enabled_models",
-        "canary_traffic_fraction",
-    ]:
-        assert option in text
+    for field in dataclass_fields(RouteWiseConfig):
+        assert field.name in text, (
+            f"models.yaml RouteWise reference block is missing option {field.name!r}"
+        )
+    # Route-level resource blocks are documented alongside the algorithm knobs.
+    for route_option in ("quota:", "concurrency:", "quota_pool:", "concurrency_pool:"):
+        assert route_option in text

@@ -103,12 +103,15 @@ def test_build_provider_candidates_preserves_routewise_metadata():
         usage_label="Daily requests",
         unit="requests",
     )
-    assert quota_candidate.quota_config == {"limit": 5000, "window": "daily"}
+    assert quota_candidate.quota_policy is not None
+    assert quota_candidate.quota_policy.limit == 5000
+    assert quota_candidate.quota_policy.window.type == "daily"
 
     concurrency_candidate = by_id["glm-test:featherless-api"]
     assert concurrency_candidate.provider_type is ProviderType.CONCURRENCY
     assert concurrency_candidate.concurrency_pool == "featherless-glm"
-    assert concurrency_candidate.concurrency_config == {"limit": 4}
+    assert concurrency_candidate.concurrency_policy is not None
+    assert concurrency_candidate.concurrency_policy.limit == 4
 
     api_candidate = by_id["glm-test:zai-api"]
     assert api_candidate.provider_type is ProviderType.ON_DEMAND
@@ -118,7 +121,12 @@ def test_build_provider_candidates_preserves_routewise_metadata():
 
 @pytest.mark.unit
 def test_build_provider_candidates_uses_stable_defaults_and_skips_zero_weight():
-    quota = _adapter(provider="chutes", endpoint_id="quota-shared", provider_type="quota")
+    quota = _adapter(
+        provider="chutes",
+        endpoint_id="quota-shared",
+        provider_type="quota",
+        quota={"limit": 100},
+    )
     api = _adapter(provider="zai", endpoint_id="api-shared", provider_type="on_demand")
     zero = _adapter(provider="ignored", endpoint_id="ignored", provider_type="on_demand")
 
@@ -133,11 +141,32 @@ def test_build_provider_candidates_uses_stable_defaults_and_skips_zero_weight():
 
 @pytest.mark.unit
 def test_build_provider_candidates_rejects_duplicate_endpoint_id():
-    quota = _adapter(provider="chutes", endpoint_id="shared", provider_type="quota")
+    quota = _adapter(
+        provider="chutes",
+        endpoint_id="shared",
+        provider_type="quota",
+        quota={"limit": 100},
+    )
     api = _adapter(provider="zai", endpoint_id="shared", provider_type="on_demand")
 
     with pytest.raises(ValueError, match=r"endpoint_id 'shared'.*more than once"):
         build_provider_candidates("glm-test", [(quota, 1.0), (api, 1.0)])
+
+
+@pytest.mark.unit
+def test_quota_route_requires_quota_block():
+    quota = _adapter(provider="chutes", provider_type="quota")
+
+    with pytest.raises(ValueError, match=r"requires a route-level 'quota:' block"):
+        build_provider_candidates("glm-test", [(quota, 1.0)])
+
+
+@pytest.mark.unit
+def test_concurrency_route_requires_concurrency_block():
+    concurrency = _adapter(provider="featherless", provider_type="concurrency")
+
+    with pytest.raises(ValueError, match=r"requires a route-level 'concurrency:' block"):
+        build_provider_candidates("glm-test", [(concurrency, 1.0)])
 
 
 @pytest.mark.unit

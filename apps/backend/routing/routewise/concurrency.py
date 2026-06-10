@@ -28,14 +28,20 @@ logger = get_logger(__name__)
 
 
 class ConcurrencyManager:
-    """Production concurrency slot manager for S_C (K=0 binary gate).
+    """Concurrency slot manager for one S_C pool (K=0 binary gate).
+
+    One instance per ``concurrency_pool``; routes sharing a subscription
+    declare the same pool id and therefore share these slots.
 
     Args:
-        config: ``RouteWiseConfig`` providing ``concurrency_limit``.
+        limit: Maximum concurrent requests for the pool (route-level
+            ``concurrency.limit``).
     """
 
-    def __init__(self, config) -> None:
-        self._limit: int = config.concurrency_limit
+    def __init__(self, limit: int) -> None:
+        if limit < 1:
+            raise ValueError(f"concurrency limit must be >= 1, got {limit}")
+        self._limit: int = int(limit)
         self._active: int = 0
         self._lock = threading.Lock()
         # Observability counters.

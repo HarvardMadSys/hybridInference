@@ -24,7 +24,6 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/admin/routewise")
 
 ROUTEWISE_KEYS = (
-    "routewise_daily_quota",
     "routewise_latency_slo_sec",
     "routewise_latency_min_samples",
 )
@@ -62,7 +61,6 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
     for key in ROUTEWISE_KEYS:
         rt.invalidate_key(key)
 
-    daily_quota = await rt.get_int("routewise_daily_quota")
     latency_slo_sec = await rt.get_float("routewise_latency_slo_sec")
     latency_min_samples = await rt.get_int("routewise_latency_min_samples")
 
@@ -74,7 +72,6 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
     for router in registry.cached_routers():
         if isinstance(router, RouteWiseRouter):
             router.apply_runtime_overrides(
-                daily_quota=daily_quota,
                 latency_slo_sec=latency_slo_sec,
                 latency_min_samples=latency_min_samples,
             )

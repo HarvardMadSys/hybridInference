@@ -9,9 +9,10 @@ effective-cost or LP logic runs.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
@@ -76,6 +77,128 @@ class QuotaSource:
         return cls(provider=provider, usage_label=usage_label, unit=unit)
 
 
+_DURATION_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+
+
+def _parse_duration_sec(value: Any, context: str) -> float:
+    """Parse a duration like ``"5h"``, ``"30m"``, or plain seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{context} must be a duration like '5h' or seconds; got {value!r}")
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+    elif isinstance(value, str):
+        text = value.strip().lower()
+        unit = _DURATION_UNITS.get(text[-1:]) if text else None
+        try:
+            seconds = float(text[:-1]) * unit if unit is not None else float(text)
+        except ValueError as exc:
+            raise ValueError(
+                f"{context} must be a duration like '5h', '30m', or seconds; got {value!r}"
+            ) from exc
+    else:
+        raise ValueError(f"{context} must be a duration like '5h' or seconds; got {value!r}")
+    if seconds <= 0:
+        raise ValueError(f"{context} must be positive; got {value!r}")
+    return seconds
+
+
+def _parse_positive_int(value: Any, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{context} must be a positive integer; got {value!r}")
+    if value < 1:
+        raise ValueError(f"{context} must be >= 1; got {value!r}")
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class QuotaWindow:
+    """Reset window for one provider quota pool.
+
+    ``daily`` resets at midnight in ``timezone``; ``rolling`` is a sliding
+    window of ``duration_sec`` seconds (e.g. a Claude-style 5-hour quota).
+    """
+
+    type: str
+    timezone: str = "UTC"
+    duration_sec: float = 0.0
+
+    @classmethod
+    def from_raw(cls, raw: Any, *, context: str) -> QuotaWindow:
+        """Parse a window descriptor; a bare string is sugar for ``{type: ...}``."""
+        if raw is None:
+            return cls(type="daily")
+        if isinstance(raw, str):
+            raw = {"type": raw}
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{context} must be a string or mapping; got {type(raw).__name__}")
+        window_type = str(raw.get("type", "")).strip().lower()
+        if window_type == "daily":
+            unknown = set(raw) - {"type", "timezone"}
+            if unknown:
+                raise ValueError(f"{context}: unknown keys {sorted(unknown)} for type 'daily'")
+            timezone = str(raw.get("timezone", "UTC")).strip() or "UTC"
+            try:
+                ZoneInfo(timezone)
+            except Exception as exc:
+                raise ValueError(
+                    f"{context}.timezone {timezone!r} is not a known IANA timezone"
+                ) from exc
+            return cls(type="daily", timezone=timezone)
+        if window_type == "rolling":
+            unknown = set(raw) - {"type", "duration"}
+            if unknown:
+                raise ValueError(f"{context}: unknown keys {sorted(unknown)} for type 'rolling'")
+            if "duration" not in raw:
+                raise ValueError(f"{context}: type 'rolling' requires a duration (e.g. '5h')")
+            return cls(
+                type="rolling",
+                duration_sec=_parse_duration_sec(raw["duration"], f"{context}.duration"),
+            )
+        raise ValueError(f"{context}.type must be 'daily' or 'rolling'; got {raw.get('type')!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class QuotaPolicy:
+    """Route-level quota resource rule for one provider.
+
+    ``limit`` is always required: it bounds the local optimistic counter and
+    cross-checks the provider-reported limit for snapshot-backed pools.
+    """
+
+    limit: int
+    window: QuotaWindow
+
+    @classmethod
+    def from_raw(cls, raw: Mapping[str, Any], *, context: str) -> QuotaPolicy:
+        """Parse a route-level ``quota:`` block."""
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{context} must be a mapping with at least 'limit'")
+        unknown = set(raw) - {"limit", "window"}
+        if unknown:
+            raise ValueError(f"{context}: unknown keys {sorted(unknown)}")
+        return cls(
+            limit=_parse_positive_int(raw.get("limit"), f"{context}.limit"),
+            window=QuotaWindow.from_raw(raw.get("window"), context=f"{context}.window"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConcurrencyPolicy:
+    """Route-level concurrency slot rule for one provider."""
+
+    limit: int
+
+    @classmethod
+    def from_raw(cls, raw: Mapping[str, Any], *, context: str) -> ConcurrencyPolicy:
+        """Parse a route-level ``concurrency:`` block."""
+        if not isinstance(raw, Mapping):
+            raise ValueError(f"{context} must be a mapping with at least 'limit'")
+        unknown = set(raw) - {"limit"}
+        if unknown:
+            raise ValueError(f"{context}: unknown keys {sorted(unknown)}")
+        return cls(limit=_parse_positive_int(raw.get("limit"), f"{context}.limit"))
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderCandidate:
     """RouteWise provider metadata before route-time feasibility/cost checks.
@@ -85,6 +208,11 @@ class ProviderCandidate:
     endpoint: ``endpoint_id``, latency/error profile, and quota_source must all
     describe the pool-level resource. Key-level scarcity requires separate
     route entries instead of hidden adapter-level key rotation.
+
+    ``routewise_pool`` groups a model's candidates into one routing/envelope
+    domain (default: the model id). ``quota_pool`` / ``concurrency_pool``
+    identify the scarce resource a candidate draws from; routes that share a
+    subscription declare the same pool id and must declare identical policies.
     """
 
     endpoint_id: str
@@ -97,8 +225,8 @@ class ProviderCandidate:
     quota_pool: str | None = None
     concurrency_pool: str | None = None
     quota_source: QuotaSource | None = None
-    quota_config: dict[str, Any] = field(default_factory=dict)
-    concurrency_config: dict[str, Any] = field(default_factory=dict)
+    quota_policy: QuotaPolicy | None = None
+    concurrency_policy: ConcurrencyPolicy | None = None
 
 
 def build_provider_candidates(
@@ -135,8 +263,8 @@ def build_provider_candidates(
         quota_pool: str | None = None
         concurrency_pool: str | None = None
         quota_source: QuotaSource | None = None
-        quota_config: dict[str, Any] = {}
-        concurrency_config: dict[str, Any] = {}
+        quota_policy: QuotaPolicy | None = None
+        concurrency_policy: ConcurrencyPolicy | None = None
 
         if provider_type is ProviderType.QUOTA:
             quota_pool = _optional_str_attr(config, "quota_pool") or f"{model_id}:{endpoint_id}"
@@ -146,13 +274,28 @@ def build_provider_candidates(
                 if quota_source_raw is not None
                 else None
             )
-            quota_config = dict(_mapping_attr(config, "quota") or {})
+            quota_raw = _mapping_attr(config, "quota")
+            if quota_raw is None:
+                raise ValueError(
+                    f"{endpoint_id}: provider_type 'quota' requires a route-level "
+                    f"'quota:' block with at least 'limit' (model {model_id!r})"
+                )
+            quota_policy = QuotaPolicy.from_raw(quota_raw, context=f"{endpoint_id}.quota")
 
         if provider_type is ProviderType.CONCURRENCY:
             concurrency_pool = (
                 _optional_str_attr(config, "concurrency_pool") or f"{model_id}:{endpoint_id}"
             )
-            concurrency_config = dict(_mapping_attr(config, "concurrency") or {})
+            concurrency_raw = _mapping_attr(config, "concurrency")
+            if concurrency_raw is None:
+                raise ValueError(
+                    f"{endpoint_id}: provider_type 'concurrency' requires a route-level "
+                    f"'concurrency:' block with at least 'limit' (model {model_id!r})"
+                )
+            concurrency_policy = ConcurrencyPolicy.from_raw(
+                concurrency_raw,
+                context=f"{endpoint_id}.concurrency",
+            )
 
         candidates.append(
             ProviderCandidate(
@@ -166,8 +309,8 @@ def build_provider_candidates(
                 quota_pool=quota_pool,
                 concurrency_pool=concurrency_pool,
                 quota_source=quota_source,
-                quota_config=quota_config,
-                concurrency_config=concurrency_config,
+                quota_policy=quota_policy,
+                concurrency_policy=concurrency_policy,
             )
         )
 

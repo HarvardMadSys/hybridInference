@@ -62,7 +62,7 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
-            "routewise_daily_quota": {"value": "7000", "value_type": "int"},
+            "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
         }.get(key)
     )
 
@@ -75,11 +75,11 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
     items = response.json()["settings"]
     keys = [item["key"] for item in items]
     assert keys == [
-        "routewise_daily_quota",
         "routewise_latency_slo_sec",
         "routewise_latency_min_samples",
     ]
-    assert next(item for item in items if item["key"] == "routewise_daily_quota")["value"] == 7000
+    slo = next(item for item in items if item["key"] == "routewise_latency_slo_sec")
+    assert slo["value"] == 1.5
 
 
 @pytest.mark.asyncio
@@ -109,7 +109,6 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
-            "routewise_daily_quota": {"value": "4321", "value_type": "int"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
             "routewise_latency_min_samples": {"value": "8", "value_type": "int"},
         }.get(key)
@@ -120,32 +119,25 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     cached_at = time.monotonic()
     runtime_settings._cache.update(
         {
-            "routewise_daily_quota": (cached_at, 4321),
             "routewise_latency_slo_sec": (cached_at, 1.5),
             "routewise_latency_min_samples": (cached_at, 8),
         }
     )
 
     router = RouteWiseRouter(config=RouteWiseConfig())
-    router.quota_mgr.consume()
-    router.quota_mgr.consume()
-    original_quota_mgr = router.quota_mgr
     registry = ModelRouterRegistry(models_config={})
     registry._cache["test-model"] = router
     client._transport.app.state.services.model_router_registry = registry
 
     response = await client.patch(
-        "/admin/routewise/settings/routewise_daily_quota",
-        json={"value": 4321},
+        "/admin/routewise/settings/routewise_latency_slo_sec",
+        json={"value": 1.5},
         headers={"Authorization": "Bearer test-admin"},
     )
 
     assert response.status_code == 200
-    assert router.config.daily_quota == 4321
     assert router.config.latency_slo_sec == 1.5
     assert router.config.latency_min_samples == 8
-    assert router.quota_mgr is not original_quota_mgr
-    assert router.quota_mgr.remaining == 4319
 
 
 @pytest.mark.asyncio
@@ -153,7 +145,6 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
-            "routewise_daily_quota": {"value": "4321", "value_type": "int"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
             "routewise_latency_min_samples": {"value": "8", "value_type": "int"},
         }.get(key)
@@ -163,7 +154,6 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
     runtime_settings = client._transport.app.state.services.runtime_settings
     runtime_settings._cache.update(
         {
-            "routewise_daily_quota": (time.monotonic(), 9999),
             "routewise_latency_slo_sec": (time.monotonic(), 9.9),
             "routewise_latency_min_samples": (time.monotonic(), 99),
         }
@@ -173,65 +163,23 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
         models_config={
             "uncached-model": {
                 "router": "routewise",
-                "router_params": {"daily_quota": 5000},
+                "router_params": {"budget_alpha": 0.5},
             }
         }
     )
     client._transport.app.state.services.model_router_registry = registry
 
     response = await client.patch(
-        "/admin/routewise/settings/routewise_daily_quota",
-        json={"value": 4321},
+        "/admin/routewise/settings/routewise_latency_min_samples",
+        json={"value": 8},
         headers={"Authorization": "Bearer test-admin"},
     )
 
     assert response.status_code == 200
     uncached_router = registry.get_router("uncached-model")
     assert isinstance(uncached_router, RouteWiseRouter)
-    assert uncached_router.config.daily_quota == 4321
     assert uncached_router.config.latency_slo_sec == 1.5
     assert uncached_router.config.latency_min_samples == 8
-
-
-@pytest.mark.asyncio
-async def test_patch_routewise_daily_quota_preserves_consumed_usage(admin_client):
-    client, op_store, _ = admin_client
-    op_store.get_setting = AsyncMock(
-        side_effect=lambda key: {
-            "routewise_daily_quota": {"value": "2000", "value_type": "int"},
-            "routewise_latency_slo_sec": {"value": "2.0", "value_type": "float"},
-            "routewise_latency_min_samples": {"value": "10", "value_type": "int"},
-        }.get(key)
-    )
-    op_store.set_setting = AsyncMock()
-
-    runtime_settings = client._transport.app.state.services.runtime_settings
-    cached_at = time.monotonic()
-    runtime_settings._cache.update(
-        {
-            "routewise_daily_quota": (cached_at, 2000),
-            "routewise_latency_slo_sec": (cached_at, 2.0),
-            "routewise_latency_min_samples": (cached_at, 10),
-        }
-    )
-
-    router = RouteWiseRouter(config=RouteWiseConfig(daily_quota=5000))
-    router.quota_mgr.consume()
-    router.quota_mgr.consume()
-    router.quota_mgr.consume()
-    registry = ModelRouterRegistry(models_config={})
-    registry._cache["test-model"] = router
-    client._transport.app.state.services.model_router_registry = registry
-
-    response = await client.patch(
-        "/admin/routewise/settings/routewise_daily_quota",
-        json={"value": 2000},
-        headers={"Authorization": "Bearer test-admin"},
-    )
-
-    assert response.status_code == 200
-    assert router.config.daily_quota == 2000
-    assert router.quota_mgr.remaining == 1997
 
 
 @pytest.mark.asyncio
@@ -239,7 +187,6 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
-            "routewise_daily_quota": {"value": "4321", "value_type": "int"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
             "routewise_latency_min_samples": {"value": "8", "value_type": "int"},
         }.get(key)
@@ -249,7 +196,6 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     runtime_settings = client._transport.app.state.services.runtime_settings
     runtime_settings._cache.update(
         {
-            "routewise_daily_quota": (time.monotonic(), 9999),
             "routewise_latency_slo_sec": (time.monotonic(), 9.9),
             "routewise_latency_min_samples": (time.monotonic(), 99),
         }
@@ -267,9 +213,24 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     )
 
     assert response.status_code == 200
-    assert router.config.daily_quota == 4321
     assert router.config.latency_slo_sec == 1.5
     assert router.config.latency_min_samples == 8
+
+
+@pytest.mark.asyncio
+async def test_patch_routewise_daily_quota_no_longer_exposed(admin_client):
+    """Quota limits are route-level config now, not an admin runtime setting."""
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(return_value=None)
+
+    response = await client.patch(
+        "/admin/routewise/settings/routewise_daily_quota",
+        json={"value": 5000},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 404
+    assert "Unknown setting" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -285,21 +246,6 @@ async def test_patch_routewise_setting_rejects_unknown_routewise_key(admin_clien
 
     assert response.status_code == 404
     assert "Unknown setting" in response.json()["detail"]
-
-
-@pytest.mark.asyncio
-async def test_patch_routewise_setting_rejects_zero_daily_quota(admin_client):
-    client, op_store, _ = admin_client
-    op_store.get_setting = AsyncMock(return_value=None)
-
-    response = await client.patch(
-        "/admin/routewise/settings/routewise_daily_quota",
-        json={"value": 0},
-        headers={"Authorization": "Bearer test-admin"},
-    )
-
-    assert response.status_code == 400
-    assert "below min" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -350,8 +296,8 @@ async def test_generic_admin_settings_rejects_routewise_keys(admin_client):
     client, _, _ = admin_client
 
     response = await client.patch(
-        "/admin/settings/routewise_daily_quota",
-        json={"value": 1234},
+        "/admin/settings/routewise_latency_slo_sec",
+        json={"value": 2.5},
         headers={"Authorization": "Bearer test-admin"},
     )
 

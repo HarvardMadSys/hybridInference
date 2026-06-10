@@ -15,19 +15,13 @@ VALID_LATENCY_HEDGE_MODES = frozenset(("disabled", "probability_target"))
 
 @dataclass
 class RouteWiseConfig:
-    """Policy parameters for RouteWise cost-aware routing.
+    """Per-model algorithm parameters for RouteWise cost-aware routing.
+
+    Resource limits (quota windows, concurrency slots) are route-level
+    configuration: each provider route declares its own ``quota:`` /
+    ``concurrency:`` block in ``models.yaml``.
 
     Attributes:
-        daily_quota: Maximum requests per day for S_Q (quota) subscriptions.
-        quota_monthly_fee: Monthly cost of the quota subscription (USD).
-        reset_timezone: Timezone for daily quota reset.
-
-        concurrency_enabled: Whether S_C (concurrency) routing is active.
-            Disabled in Stage 1.
-        concurrency_limit: Max concurrent requests for S_C subscriptions.
-        concurrency_monthly_fee: Monthly cost of the concurrency subscription
-            (USD).
-
         shadow_price_window_hours: Lookback window (hours) for the rolling
             envelope used by the quota shadow price.
 
@@ -61,16 +55,9 @@ class RouteWiseConfig:
     output_min_model_samples: int = 3
     output_min_global_samples: int = 3
 
-    # S_Q quota parameters
-    daily_quota: int = 5000
-    quota_monthly_fee: float = 20.0
-    reset_timezone: str = "UTC"
+    # Provider quota snapshot refresh cadence (router-level default; the
+    # quota/concurrency limits themselves are route-level configuration).
     quota_snapshot_refresh_interval_sec: float = 60.0
-
-    # S_C concurrency parameters (Stage 2, disabled in Stage 1)
-    concurrency_enabled: bool = False
-    concurrency_limit: int = 8
-    concurrency_monthly_fee: float = 25.0
 
     # Envelope (workload cost percentile) parameters
     shadow_price_window_hours: int = 24
