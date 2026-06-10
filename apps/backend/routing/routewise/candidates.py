@@ -88,10 +88,9 @@ def _parse_positive_int(value: Any, context: str) -> int:
 class QuotaPolicy:
     """Route-level quota resource rule for one provider.
 
-    ``limit`` cross-checks the provider-reported limit and is the conversion
-    denominator for percent-only usage APIs. Window/reset semantics are not
-    modeled here: the provider's usage API (``quota_source``) is the truth
-    source for them.
+    ``limit`` cross-checks the provider-reported limit. Window/reset
+    semantics are not modeled here: the provider's usage API
+    (``quota_source``) is the truth source for them.
     """
 
     limit: int
@@ -205,6 +204,14 @@ def build_provider_candidates(
                 quota_source_raw,
                 context=f"{endpoint_id}.quota_source",
             )
+            if quota_source.unit.strip() == "%":
+                raise ValueError(
+                    f"{endpoint_id}: percent-unit quota sources are not supported "
+                    f"for routing -- a percent has no per-request consume scale, so "
+                    f"RouteWise cannot account usage against it. Keep the provider "
+                    f"on admin observability only, or configure a count-based usage "
+                    f"once a request denominator is known (model {model_id!r})."
+                )
             quota_raw = _mapping_attr(config, "quota")
             if quota_raw is None:
                 raise ValueError(

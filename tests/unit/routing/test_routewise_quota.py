@@ -105,20 +105,6 @@ class TestQuotaPool:
             assert pool.limit == 4000
         assert sum("provider reports limit" in r.message for r in caplog.records) == 1
 
-    def test_percent_based_pool(self):
-        """Percent-only usage APIs (e.g. MiniMax token-plan remains) map to a
-
-        limit-100 pool: used/limit are percentage points and used_fraction is
-        exact.
-        """
-        store = _StubSnapshotStore()
-        source = QuotaSource(provider="minimax", usage_label="general (interval)", unit="%")
-        store.snapshots[source] = _StubSnapshot(limit=100, remaining=98, used_fraction=0.02)
-        pool = QuotaPool(store, source, policy=_policy(100))
-        assert pool.ready is True
-        assert pool.remaining == 98
-        assert pool.used_fraction == pytest.approx(0.02)
-
 
 # ---------------------------------------------------------------------------
 # ProviderQuotaSnapshotStore (refresh / optimistic increments)

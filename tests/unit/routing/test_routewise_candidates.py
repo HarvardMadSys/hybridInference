@@ -176,6 +176,24 @@ def test_quota_route_requires_quota_source():
 
 
 @pytest.mark.unit
+def test_percent_unit_quota_source_rejected():
+    """A percent has no per-request consume scale; routing refuses it at boot.
+
+    (MiniMax token-plan remains reports percent only -- keep such providers on
+    admin observability until a request denominator exists.)
+    """
+    quota = _adapter(
+        provider="minimax",
+        provider_type="quota",
+        quota_source={"provider": "minimax", "usage_label": "general (interval)", "unit": "%"},
+        quota={"limit": 100},
+    )
+
+    with pytest.raises(ValueError, match="percent-unit quota sources are not supported"):
+        build_provider_candidates("glm-test", [(quota, 1.0)])
+
+
+@pytest.mark.unit
 def test_concurrency_route_requires_concurrency_block():
     concurrency = _adapter(provider="featherless", provider_type="concurrency")
 
