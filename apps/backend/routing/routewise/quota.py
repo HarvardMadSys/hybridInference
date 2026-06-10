@@ -8,7 +8,7 @@ semantics (fixed window? rolling? session-anchored?), and a wrong guess
 either strands quota or overruns it. Providers without a usage API should be
 modeled as on-demand instead.
 
-:class:`SnapshotQuotaPool` reads the latest snapshot from
+:class:`QuotaPool` reads the latest snapshot from
 :class:`~routing.routewise.quota_snapshot.ProviderQuotaSnapshotStore` and
 applies optimistic local increments between refreshes. Window semantics
 (daily, 5-hour, weekly, ...) live entirely on the provider side; the pool
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class SnapshotQuotaPool:
+class QuotaPool:
     """Provider-snapshot-backed quota pool.
 
     The provider's reported usage is the truth source; ``consume`` is an

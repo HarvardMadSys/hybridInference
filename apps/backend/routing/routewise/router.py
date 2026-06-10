@@ -71,7 +71,7 @@ from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
 from .prefix_cache import PrefixCacheCoordinator, price_delta_per_token
-from .quota import SnapshotQuotaPool
+from .quota import QuotaPool
 from .quota_snapshot import ProviderQuotaSnapshotStore
 
 logger = get_logger(__name__)
@@ -222,7 +222,7 @@ class RouteWiseRouter(BaseRouter):
         )
         self.quota_snapshots = ProviderQuotaSnapshotStore()
         # One resource manager per pool id, built from route-level policies.
-        self.quota_pools: dict[str, SnapshotQuotaPool] = {}
+        self.quota_pools: dict[str, QuotaPool] = {}
         self.concurrency_pools: dict[str, ConcurrencyManager] = {}
         self._endpoint_concurrency_pool: dict[str, str] = {}
         self.prefix_cache = PrefixCacheCoordinator(
@@ -477,7 +477,7 @@ class RouteWiseRouter(BaseRouter):
                         candidate.concurrency_pool
                     )
 
-        quota_pools: dict[str, SnapshotQuotaPool] = {}
+        quota_pools: dict[str, QuotaPool] = {}
         for pool_id, (policy, source, endpoint) in quota_specs.items():
             if source is None:  # pragma: no cover - enforced in candidates.py
                 raise ValueError(
@@ -485,7 +485,7 @@ class RouteWiseRouter(BaseRouter):
                 )
             # Snapshot pools are stateless wrappers (truth lives in the
             # store), so they are always rebuilt against the current store.
-            quota_pools[pool_id] = SnapshotQuotaPool(
+            quota_pools[pool_id] = QuotaPool(
                 self.quota_snapshots,
                 source,
                 policy=policy,

@@ -5,8 +5,8 @@ Exports:
     RouteWiseConfig  -- Dataclass holding per-model policy parameters, populated
                         from each model's ``router_params`` in ``config/models.yaml``.
     ProviderType -- Enum for on-demand / quota / concurrency provider categories.
-    SnapshotQuotaPool  -- Provider-snapshot-backed quota pool (the only kind:
-                          a queryable usage API is the quota truth source).
+    QuotaPool -- Provider-snapshot-backed quota pool (a queryable usage API
+                 is the quota truth source; there is no local-counting kind).
     ConcurrencyManager -- Per-pool concurrency slot manager (K=0 binary gate).
     ProviderProfile    -- Real-time latency profile for an API endpoint.
     HedgedAdapter      -- Composite adapter that races primary vs backup.
@@ -36,7 +36,7 @@ from .predictor import (
     BucketMeanOutputPredictor,
     BucketMeanPrediction,
 )
-from .quota import SnapshotQuotaPool
+from .quota import QuotaPool
 from .quota_snapshot import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore
 from .router import RouteWiseRouter
 
@@ -60,10 +60,10 @@ __all__ = [
     "ProviderQuotaSnapshotStore",
     "ProviderType",
     "QuotaPolicy",
+    "QuotaPool",
     "QuotaSource",
     "RouteWiseConfig",
     "RouteWiseRouter",
-    "SnapshotQuotaPool",
     "api_request_cost_usd",
     "quota_shadow_price_usd",
     "solve_cost_budgeted_mean_ttft",

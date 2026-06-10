@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from routing.routewise.candidates import QuotaPolicy, QuotaSource
-from routing.routewise.quota import SnapshotQuotaPool
+from routing.routewise.quota import QuotaPool
 
 
 def _policy(limit: int) -> QuotaPolicy:
@@ -62,13 +62,13 @@ class _StubSnapshotStore:
 
 
 @pytest.mark.unit
-class TestSnapshotQuotaPool:
+class TestQuotaPool:
     def _source(self) -> QuotaSource:
         return QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
 
     def test_not_ready_before_first_snapshot(self):
         store = _StubSnapshotStore()
-        pool = SnapshotQuotaPool(store, self._source(), policy=_policy(5000))
+        pool = QuotaPool(store, self._source(), policy=_policy(5000))
         assert pool.ready is False
         assert pool.remaining == 0
         assert pool.used_fraction == 1.0
@@ -77,7 +77,7 @@ class TestSnapshotQuotaPool:
         store = _StubSnapshotStore()
         source = self._source()
         store.snapshots[source] = _StubSnapshot(limit=5000, remaining=1200, used_fraction=0.76)
-        pool = SnapshotQuotaPool(store, source, policy=_policy(5000))
+        pool = QuotaPool(store, source, policy=_policy(5000))
         assert pool.ready is True
         assert pool.remaining == 1200
         assert pool.used_fraction == pytest.approx(0.76)
@@ -87,7 +87,7 @@ class TestSnapshotQuotaPool:
         store = _StubSnapshotStore()
         source = self._source()
         store.snapshots[source] = _StubSnapshot(limit=5000, remaining=10, used_fraction=0.99)
-        pool = SnapshotQuotaPool(store, source, policy=_policy(5000))
+        pool = QuotaPool(store, source, policy=_policy(5000))
         assert pool.consume() is True
         assert store.consumed == [source]
         store.consume_result = False
@@ -97,7 +97,7 @@ class TestSnapshotQuotaPool:
         store = _StubSnapshotStore()
         source = self._source()
         store.snapshots[source] = _StubSnapshot(limit=4000, remaining=100, used_fraction=0.97)
-        pool = SnapshotQuotaPool(store, source, policy=_policy(5000))
+        pool = QuotaPool(store, source, policy=_policy(5000))
         with caplog.at_level("WARNING"):
             assert pool.limit == 4000
             assert pool.limit == 4000
@@ -112,7 +112,7 @@ class TestSnapshotQuotaPool:
         store = _StubSnapshotStore()
         source = QuotaSource(provider="minimax", usage_label="general (interval)", unit="%")
         store.snapshots[source] = _StubSnapshot(limit=100, remaining=98, used_fraction=0.02)
-        pool = SnapshotQuotaPool(store, source, policy=_policy(100))
+        pool = QuotaPool(store, source, policy=_policy(100))
         assert pool.ready is True
         assert pool.remaining == 98
         assert pool.used_fraction == pytest.approx(0.02)
