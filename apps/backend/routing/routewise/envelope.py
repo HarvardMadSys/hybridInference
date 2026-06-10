@@ -46,15 +46,17 @@ class CostEnvelopeEstimator:
     """Sliding-window percentile estimator for workload request costs.
 
     ``min_samples`` gates calibration: below it ``snapshot`` returns ``None``
-    (callers already treat that as "skip quota candidates"). A one-sample
-    window would otherwise collapse to ``L == U`` and flatten the quota
-    shadow-price curve into a constant.
+    (callers already treat that as "skip quota candidates"). The default of 1
+    means any observed sample calibrates -- the floor fallback below keeps the
+    curve well-formed even for degenerate windows. Raise it per model
+    (``envelope_min_samples``) to trade startup friction for percentile
+    stability on low-traffic pools.
     """
 
     lower_percentile: float = 10.0
     upper_percentile: float = 90.0
     window_sec: float = 24 * 3600.0
-    min_samples: int = 30
+    min_samples: int = 1
     _samples: dict[str, deque[tuple[float, float]]] = field(
         default_factory=lambda: defaultdict(deque)
     )
