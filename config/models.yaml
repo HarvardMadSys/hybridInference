@@ -463,6 +463,9 @@ models:
         provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
         api_keys:
           - ${LOCAL_API_KEY}
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
 
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────

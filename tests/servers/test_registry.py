@@ -43,6 +43,37 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
 
 
 @pytest.mark.unit
+def test_register_from_models_yaml_merges_route_extra_body(tmp_path):
+    yaml_text = (
+        "models:\n"
+        "  - id: qwen-test\n"
+        "    name: Qwen Test\n"
+        "    provider: sglang\n"
+        "    extra_body:\n"
+        "      shared: model-default\n"
+        "    route:\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        base_url: http://sglang.local/v1\n"
+        "        extra_body:\n"
+        "          shared: route-override\n"
+        "          chat_template_kwargs:\n"
+        "            enable_thinking: false\n"
+    )
+    path = tmp_path / "models.yaml"
+    path.write_text(yaml_text)
+
+    executor = RouteExecutor()
+    registry.register_from_models_yaml(executor, path)
+
+    adapter = executor.routes["qwen-test"].adapters[0][0]
+    assert adapter.config.extra_body == {
+        "shared": "route-override",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+@pytest.mark.unit
 def test_register_defaults_to_single_route_when_no_route_list(tmp_path, monkeypatch):
     yaml_text = (
         "models:\n"

@@ -17,6 +17,7 @@ def test_sglang_local_route_uses_local_deployment_url() -> None:
     assert sglang_route is not None, "SGLang route not found for model 'qwen3.6-35b'"
 
     assert sglang_route["base_url"] == "${LOCAL_DEPLOYMENT_URL}"
+    assert sglang_route["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_routing_local_deployment_uses_local_deployment_url() -> None:

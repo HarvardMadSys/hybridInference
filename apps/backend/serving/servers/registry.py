@@ -281,6 +281,7 @@ def register_from_models_yaml(
                     "supported_params",
                     "pricing",
                     "route_metadata",
+                    "extra_body",
                 )
             }
             if top_cfg.get("base_url"):
@@ -394,6 +395,13 @@ def register_from_models_yaml(
                 route_provider_model_id = r.get("provider_model_id")
                 if route_provider_model_id is not None:
                     adapter_cfg["provider_model_id"] = expand_env(route_provider_model_id)
+
+                # Route-level request body defaults extend or override model defaults.
+                extra_body = dict(adapter_cfg.get("extra_body") or {})
+                if isinstance(r.get("extra_body"), dict):
+                    extra_body.update(r["extra_body"])
+                if extra_body:
+                    adapter_cfg["extra_body"] = extra_body
 
                 # Route-level pricing override (key for cost-aware routing in Phase 2)
                 if "pricing" in r:
