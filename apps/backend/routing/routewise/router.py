@@ -1633,8 +1633,15 @@ class RouteWiseRouter(BaseRouter):
         *,
         include_latency: bool = True,
         include_envelope: bool = True,
+        envelope_model_overrides: Mapping[str, str] | None = None,
     ) -> dict[str, int]:
-        """Warm latency profiles and the cost envelope from historical api_logs rows."""
+        """Warm latency profiles and the cost envelope from historical api_logs rows.
+
+        ``envelope_model_overrides`` maps donor model ids to the model whose
+        envelope their rows should seed: the donor row contributes only its
+        token counts, priced with the target model's routes and observed into
+        the target model's pool (``envelope_bootstrap_donor_models``).
+        """
         counts = {"rows": 0, "latency_events": 0, "failed_attempts": 0, "envelope_samples": 0}
         for row in rows:
             counts["rows"] += 1
@@ -1671,13 +1678,18 @@ class RouteWiseRouter(BaseRouter):
                 prompt_tokens = self._int_or_zero(row.get("prompt_tokens"))
                 completion_tokens = self._int_or_zero(row.get("completion_tokens"))
                 if prompt_tokens > 0 and completion_tokens > 0:
+                    target_model = (envelope_model_overrides or {}).get(model_id, model_id)
                     sample_cost = self._reference_api_cost(
-                        model_id,
+                        target_model,
                         prompt_tokens=prompt_tokens,
                         output_tokens=completion_tokens,
                     )
                     if sample_cost is not None:
-                        self.envelope.observe(self._routewise_pool(model_id), sample_cost, now=ts)
+                        self.envelope.observe(
+                            self._routewise_pool(target_model),
+                            sample_cost,
+                            now=ts,
+                        )
                         counts["envelope_samples"] += 1
         return counts
 

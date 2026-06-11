@@ -64,6 +64,13 @@ class RouteWiseConfig:
     envelope_lower_percentile: float = 10.0
     envelope_upper_percentile: float = 90.0
     envelope_min_samples: int = 1
+    # DB-bootstrap-only donor models: replay these models' historical rows
+    # into THIS model's envelope (priced with this model's routes) so a model
+    # with no traffic of its own can cold-start from a sibling serving the
+    # same workload (e.g. minimax-fast borrowing minimax-m2.5). Runtime
+    # envelope updates still come only from this model's own requests, so the
+    # borrowed seed washes out of the rolling window as real traffic arrives.
+    envelope_bootstrap_donor_models: list[str] | None = None
 
     # Latency layer: latency-aware provider selection
     latency_slo_sec: float = 3.0

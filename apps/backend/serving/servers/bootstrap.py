@@ -63,8 +63,15 @@ async def _bootstrap_routewise_from_logs(
     log_store: Any,
     routewise_routers: list[Any],
     model_ids_by_router: dict[int, set[str]],
+    donor_overrides_by_router: dict[int, dict[str, str]] | None = None,
 ) -> None:
-    """Best-effort warmup of RouteWise in-memory state from recent api_logs."""
+    """Best-effort warmup of RouteWise in-memory state from recent api_logs.
+
+    ``donor_overrides_by_router`` maps donor model ids (and their aliases) to
+    the router's own model so the envelope can cold-start from a sibling
+    model's traffic (``envelope_bootstrap_donor_models``). Donor rows feed the
+    envelope only; latency profiles stay keyed to the router's own endpoints.
+    """
     if log_store is None:
         return
     now = dt.datetime.now(dt.timezone.utc)
@@ -91,8 +98,9 @@ async def _bootstrap_routewise_from_logs(
                 include_latency=True,
                 include_envelope=False,
             )
+            donor_overrides = (donor_overrides_by_router or {}).get(id(rw), {})
             envelope_rows = await log_store.get_routewise_bootstrap_rows(
-                model_ids=model_ids,
+                model_ids=sorted({*model_ids, *donor_overrides}),
                 since=now - dt.timedelta(seconds=envelope_window_sec),
                 limit=None,
             )
@@ -100,6 +108,7 @@ async def _bootstrap_routewise_from_logs(
                 envelope_rows,
                 include_latency=False,
                 include_envelope=True,
+                envelope_model_overrides=donor_overrides,
             )
             logger.info(
                 "RouteWise DB bootstrap replayed latency_rows=%d envelope_rows=%d: "
@@ -417,12 +426,21 @@ async def initialize() -> AppServices:
 
     routewise_routers: list[_RWR] = []
     routewise_model_ids_by_router: dict[int, set[str]] = {}
+    routewise_donor_overrides_by_router: dict[int, dict[str, str]] = {}
+    aliases_by_model = {info.model_id: list(info.aliases) for info in model_infos}
     for info in model_infos:
         r = model_router_registry.get_router(info.model_id)
         if isinstance(r, _RWR):
             routewise_model_ids_by_router.setdefault(id(r), set()).update(
                 [info.model_id, *info.aliases]
             )
+            donors = getattr(r.config, "envelope_bootstrap_donor_models", None) or []
+            for donor in donors:
+                if donor == info.model_id:
+                    continue
+                overrides = routewise_donor_overrides_by_router.setdefault(id(r), {})
+                for donor_id in (donor, *aliases_by_model.get(donor, [])):
+                    overrides[donor_id] = info.model_id
             if all(id(existing) != id(r) for existing in routewise_routers):
                 routewise_routers.append(r)
             if all(id(existing) != id(r) for existing in managed_routers):
@@ -447,6 +465,7 @@ async def initialize() -> AppServices:
         log_store,
         routewise_routers,
         routewise_model_ids_by_router,
+        routewise_donor_overrides_by_router,
     )
 
     # Ensure a shared HTTP client is created lazily; no-op here.

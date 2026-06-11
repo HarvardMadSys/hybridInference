@@ -287,6 +287,10 @@ models:
       # semantics) and `concurrency: {limit}`.
       budget_alpha: 0.5
       latency_hedge_mode: probability_target
+      # Cold-start the cost envelope from minimax-m2.5's logged traffic (same
+      # underlying model/workload; donor rows are priced with THIS model's
+      # routes and only seed the DB bootstrap -- runtime updates stay own-traffic).
+      envelope_bootstrap_donor_models: ["minimax-m2.5"]
       # random_seed: null
       # reference_api_price: {prompt: "1.2", completion: "4.0"}
       # db_bootstrap_enabled: true

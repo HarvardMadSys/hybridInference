@@ -1159,6 +1159,73 @@ class TestRouteWiseLayer2:
             assert eid.startswith("model-b:")
 
 
+@pytest.mark.unit
+class TestEnvelopeDonorBootstrap:
+    """envelope_bootstrap_donor_models: donor rows seed the target's envelope."""
+
+    def _router_with_donor_sibling(self):
+        target_api = _make_adapter(
+            provider_type="on_demand",
+            prompt_price="1.0",
+            completion_price="1.0",
+            endpoint_id="target-model:api",
+            model_id="target-model",
+        )
+        donor_api = _make_adapter(
+            provider_type="on_demand",
+            prompt_price="100.0",
+            completion_price="100.0",
+            endpoint_id="donor-model:api",
+            model_id="donor-model",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("target-model", [(target_api, 1.0)])
+        fr.add("donor-model", [(donor_api, 1.0)])
+        return RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+    def test_donor_rows_priced_with_target_routes_into_target_pool(self):
+        router = self._router_with_donor_sibling()
+        rows = [
+            {
+                "timestamp": time.time(),
+                "model_id": "donor-model",
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000,
+            }
+        ]
+
+        counts = router.bootstrap_from_log_rows(
+            rows,
+            include_latency=False,
+            include_envelope=True,
+            envelope_model_overrides={"donor-model": "target-model"},
+        )
+
+        assert counts["envelope_samples"] == 1
+        assert router.envelope.sample_count("target-model") == 1
+        assert router.envelope.sample_count("donor-model") == 0
+        snap = router.envelope.snapshot("target-model")
+        assert snap is not None
+        # Priced with target-model's $1/$1 per-M routes, not the donor's $100.
+        assert snap.upper == pytest.approx(2.0)
+
+    def test_without_overrides_donor_rows_stay_in_their_own_pool(self):
+        router = self._router_with_donor_sibling()
+        rows = [
+            {
+                "timestamp": time.time(),
+                "model_id": "donor-model",
+                "prompt_tokens": 1_000_000,
+                "completion_tokens": 1_000_000,
+            }
+        ]
+
+        router.bootstrap_from_log_rows(rows, include_latency=False, include_envelope=True)
+
+        assert router.envelope.sample_count("target-model") == 0
+        assert router.envelope.sample_count("donor-model") == 1
+
+
 # ---------------------------------------------------------------------------
 # S_C Concurrency provider tests (PR-6)
 # ---------------------------------------------------------------------------
