@@ -764,19 +764,10 @@ class OpenAICompatAdapter(BaseAdapter):
             payload["dimensions"] = params["dimensions"]
 
         url = self._build_embeddings_url()
-        headers = self._build_headers()
 
         logger.debug(f"[OpenAICompat] POST {url} model={payload['model']}")
 
-        response = await self.http.json_post_with_retry(
-            url=url,
-            json=payload,
-            headers=headers,
-            timeout=30,
-            retries=2,
-        )
-
-        return response
+        return await self._post_with_pool(url, payload)
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""
