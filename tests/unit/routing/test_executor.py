@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -282,8 +283,15 @@ def test_alias_shares_route_config():
 
 @pytest.mark.unit
 @pytest.mark.perf
+@pytest.mark.skipif(
+    os.getenv("RUN_PERF") != "1",
+    reason="Performance tests are disabled by default (set RUN_PERF=1 to enable)",
+)
 def test_route_selection_performance():
-    """Ensure adapter selection is fast enough for basic regression budgets."""
+    """Ensure adapter selection is fast enough for basic regression budgets.
+
+    Wall-clock budget; flaky on shared CI runners, so gated behind RUN_PERF=1.
+    """
     exe = RouteExecutor()
     a = _EchoAdapter(_cfg("m", provider="A"))
     b = _EchoAdapter(_cfg("m", provider="B"))
