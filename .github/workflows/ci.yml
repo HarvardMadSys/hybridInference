@@ -58,6 +58,12 @@ jobs:
             command: uv run pydocstyle --match-dir='^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$'
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full fetch: GitHub intermittently serves shallow-clone packs with
+          # missing delta bases ("pack has N unresolved deltas" / "missing
+          # blob object"), which has been failing random jobs at checkout.
+          # A full fetch is self-contained and immune to that.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -106,6 +112,12 @@ jobs:
             command: npm run test
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full fetch: GitHub intermittently serves shallow-clone packs with
+          # missing delta bases ("pack has N unresolved deltas" / "missing
+          # blob object"), which has been failing random jobs at checkout.
+          # A full fetch is self-contained and immune to that.
+          fetch-depth: 0
 
       - name: Check for package-lock.json
         id: check-lock
@@ -158,6 +170,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full fetch: GitHub intermittently serves shallow-clone packs with
+          # missing delta bases ("pack has N unresolved deltas" / "missing
+          # blob object"), which has been failing random jobs at checkout.
+          # A full fetch is self-contained and immune to that.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -279,6 +297,12 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full fetch: GitHub intermittently serves shallow-clone packs with
+          # missing delta bases ("pack has N unresolved deltas" / "missing
+          # blob object"), which has been failing random jobs at checkout.
+          # A full fetch is self-contained and immune to that.
+          fetch-depth: 0
 
       - name: Install gitleaks
         run: |
