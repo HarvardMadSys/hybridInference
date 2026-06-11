@@ -17,6 +17,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "fastapi>=0.110.0",
     "google-genai>=1.33.0",
+    "huggingface-hub>=0.34.0",
     "markdown-it-py>=3.0.0",
     "openai>=1.0.0",
     "passlib[argon2]>=1.7.4",

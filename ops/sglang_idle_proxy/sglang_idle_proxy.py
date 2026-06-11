@@ -268,6 +268,7 @@ class BackendManager:
 
     def _start_container(self) -> None:
         gpu = self._resolve_gpu()
+        self._ensure_model_dir()
         subprocess.run(
             ["sudo", "docker", "rm", "-f", self.container],
             check=False,
@@ -314,12 +315,50 @@ class BackendManager:
             attn = self.config.get("attention_backend")
             if attn:
                 cmd += ["--attention-backend", attn]
+            if self.config.get("disable_radix_cache"):
+                cmd += ["--disable-radix-cache"]
         else:
             tcp = self.config.get("tool_call_parser")
             if tcp:
                 cmd += ["--tool-call-parser", tcp]
         log.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, capture_output=True)
+
+    def _ensure_model_dir(self) -> None:
+        model_dir = Path(self.config["model_dir"])
+        config_path = model_dir / "config.json"
+        if config_path.is_file():
+            return
+
+        repo_id = self.config.get("hf_repo")
+        if not repo_id:
+            raise RuntimeError(f"[{self.model_name}] model_dir missing config.json: {model_dir}")
+
+        model_dir.mkdir(parents=True, exist_ok=True)
+        revision = self.config.get("hf_revision")
+        ignore_patterns = self.config.get("hf_ignore_patterns")
+        log.info(
+            "[%s] Downloading %s from Hugging Face to %s …", self.model_name, repo_id, model_dir
+        )
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot_download(
+                repo_id=str(repo_id),
+                revision=str(revision) if revision else None,
+                local_dir=str(model_dir),
+                ignore_patterns=list(ignore_patterns) if ignore_patterns else None,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"[{self.model_name}] failed to download Hugging Face model {repo_id}: {exc}"
+            ) from exc
+
+        if not config_path.is_file():
+            raise RuntimeError(
+                f"[{self.model_name}] Hugging Face download completed without config.json: {model_dir}"
+            )
+        log.info("[%s] Downloaded %s.", self.model_name, repo_id)
 
     def _stop_container(self) -> None:
         log.info("[%s] Stopping container %s …", self.model_name, self.container)
@@ -332,6 +371,34 @@ class BackendManager:
             self._state = "stopped"
         log.info("[%s] Container %s stopped.", self.model_name, self.container)
 
+    def _container_running(self) -> bool:
+        """Return True while the backend container is still up.
+
+        A crashed container (e.g. sglang OOM on startup) exits within seconds;
+        without this check the health loop would keep polling a dead backend
+        until ``HEALTH_TIMEOUT`` elapses, making the client request appear to
+        hang forever.
+        """
+        result = subprocess.run(
+            ["sudo", "docker", "inspect", "-f", "{{.State.Running}}", self.container],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        # Missing container (non-zero exit) or any non-"true" status means it is
+        # no longer running.
+        return result.returncode == 0 and result.stdout.strip() == "true"
+
+    def _container_logs_tail(self, lines: int = 20) -> str:
+        """Return the last ``lines`` of the container log for error reporting."""
+        result = subprocess.run(
+            ["sudo", "docker", "logs", "--tail", str(lines), self.container],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return (result.stdout + result.stderr).strip()
+
     def _wait_healthy(self) -> None:
         url = f"http://localhost:{self.backend_port}/v1/models"
         deadline = time.monotonic() + HEALTH_TIMEOUT
@@ -343,6 +410,14 @@ class BackendManager:
                         return
             except Exception:
                 pass
+            # Fail fast if the container has died instead of polling a dead
+            # backend until the full timeout expires.
+            if not self._container_running():
+                logs = self._container_logs_tail()
+                raise RuntimeError(
+                    f"[{self.model_name}] Backend container {self.container} exited "
+                    f"before becoming healthy. Recent logs:\n{logs}"
+                )
             time.sleep(HEALTH_INTERVAL)
         raise RuntimeError(
             f"[{self.model_name}] Backend did not become healthy within {HEALTH_TIMEOUT}s"
