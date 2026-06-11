@@ -8,7 +8,7 @@
 #
 # Options:
 #   --backup-dir PATH     Custom backup directory (default: ./backups)
-#   --compress            Compress backups with gzip
+#   --compress            Compress backups with zstd
 #   --s3-bucket URI       Upload backup to S3 (e.g. s3://freeinference/backup)
 #   --s3-only             Upload to S3 and remove local backup after success
 #   --keep-daily N        Keep N most recent daily backups (default: 3)
@@ -202,8 +202,8 @@ backup_postgres() {
         # Compress if requested
         if [[ "$COMPRESS" == true ]]; then
             log_info "Compressing PostgreSQL backup..."
-            gzip "${backup_file}"
-            backup_file="${backup_file}.gz"
+            zstd --rm -q "${backup_file}"
+            backup_file="${backup_file}.zst"
             size=$(du -h "${backup_file}" | cut -f1)
             log_success "Compressed to: ${backup_file} (${size})"
         fi
@@ -249,7 +249,7 @@ upload_to_s3() {
             log_error "Failed to upload: ${basename}"
             upload_failed=true
         fi
-    done < <(find "${BACKUP_DIR}" -type f \( -name "*.sql" -o -name "*.sql.gz" \) -print0)
+    done < <(find "${BACKUP_DIR}" -type f \( -name "*.sql" -o -name "*.sql.zst" \) -print0)
 
     if [[ "$upload_failed" == true ]]; then
         log_error "Some uploads failed"
