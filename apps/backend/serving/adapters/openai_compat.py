@@ -472,7 +472,12 @@ class OpenAICompatAdapter(BaseAdapter):
         cleaned_messages = self._prepare_messages(messages)
 
         # Build request payload
-        payload = {"messages": cleaned_messages, "model": self._get_model_identifier(), **validated}
+        payload = {
+            **self.config.extra_body,
+            "messages": cleaned_messages,
+            "model": self._get_model_identifier(),
+            **validated,
+        }
         self._apply_supported_passthrough_params(payload, params)
 
         # Add optional features
@@ -528,6 +533,7 @@ class OpenAICompatAdapter(BaseAdapter):
         cleaned_messages = self._prepare_messages(messages)
 
         payload = {
+            **self.config.extra_body,
             "messages": cleaned_messages,
             "model": self._get_model_identifier(),
             "stream": True,

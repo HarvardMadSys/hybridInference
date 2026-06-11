@@ -42,6 +42,7 @@ def _make_adapter(
     provider_profile: str | None = None,
     chat_path: str | None = None,
     supported_params: list[str] | None = None,
+    extra_body: dict | None = None,
     include_usage_in_stream: bool = False,
 ) -> OpenAICompatAdapter:
     config = ModelConfig(
@@ -54,6 +55,7 @@ def _make_adapter(
         provider_profile=provider_profile,
         chat_path=chat_path,
         supported_params=supported_params or ["temperature", "top_p", "max_tokens"],
+        extra_body=extra_body or {},
         include_usage_in_stream=include_usage_in_stream,
     )
     adapter = OpenAICompatAdapter(config)
@@ -465,6 +467,64 @@ async def test_reasoning_effort_forwarded_when_supported():
     call_kwargs = mock_post.call_args.kwargs
     assert call_kwargs["url"] == "http://cliproxy.local/v1/chat/completions"
     assert call_kwargs["json"]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_extra_body_defaults_are_forwarded_to_non_streaming_requests():
+    response = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": "42"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+    }
+    adapter = _make_adapter(
+        processor="default",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    mock_post = AsyncMock(return_value=response)
+    adapter._post_with_pool = mock_post
+
+    await adapter.chat_completion(
+        [{"role": "user", "content": "What is 17 + 25?"}],
+        temperature=0,
+    )
+
+    payload = mock_post.call_args.args[1]
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert payload["temperature"] == 0
+
+
+@pytest.mark.asyncio
+async def test_extra_body_defaults_are_forwarded_to_streaming_requests():
+    captured_payload: dict = {}
+
+    async def fake_stream_post(*, url, json, headers, timeout):
+        captured_payload.update(json)
+        yield _make_chunk(delta={"role": "assistant", "content": "42"})
+        yield _make_chunk(delta={}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(
+        processor="default",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        chunk
+        async for chunk in adapter.stream_chat_completion(
+            [{"role": "user", "content": "What is 17 + 25?"}],
+            temperature=0,
+        )
+    ]
+
+    assert chunks[-1] == "data: [DONE]\n\n"
+    assert captured_payload["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured_payload["stream"] is True
+    assert captured_payload["temperature"] == 0
 
 
 # --- get_processor factory tests ---
