@@ -12,15 +12,18 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 # --no-install-project: only install dependencies, not the project itself.
 # The project source is copied in the runtime stage and used via PYTHONPATH.
+# -s: only configure auth when the secret exists AND is non-empty -- compose
+# passes an empty secret when GITHUB_TOKEN is unset (local dev), and an empty
+# x-access-token would break even anonymous fetches.
 RUN --mount=type=secret,id=github_token \
-    if [ -f /run/secrets/github_token ]; then \
+    if [ -s /run/secrets/github_token ]; then \
         token="$(cat /run/secrets/github_token)" && \
         git config --global \
             url."https://x-access-token:${token}@github.com/".insteadOf \
             "https://github.com/"; \
     fi && \
     uv sync --frozen --no-dev --no-install-project && \
-    if [ -f /run/secrets/github_token ]; then \
+    if [ -s /run/secrets/github_token ]; then \
         git config --global --unset-all \
             url."https://x-access-token:${token}@github.com/".insteadOf || true; \
     fi
