@@ -99,7 +99,7 @@ jobs:
           PROD_USER: ${{ secrets.PROD_USER }}
           # Token for the private routewise git dependency in the backend
           # image build (compose forwards it as the github_token build secret).
-          ROUTEWISE_GITHUB_TOKEN: ${{ secrets.ROUTEWISE_GITHUB_TOKEN }}
+          ROUTEWISE_GITHUB_TOKEN: ${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
         run: |
           set -euo pipefail
 
