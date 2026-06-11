@@ -188,6 +188,10 @@ class BackendManager:
         self._watcher_thread: threading.Thread | None = None
         self._ready_event = threading.Event()
         self._start_error: Exception | None = None
+        # GPU this backend actually resolved to at launch. Recorded so other
+        # auto-selecting backends can exclude it (config gpu_index is empty for
+        # auto-selected models). Cleared when the container stops.
+        self._current_gpu: str | None = None
 
     @property
     def state(self) -> str:
@@ -233,6 +237,7 @@ class BackendManager:
             except Exception as exc:
                 with self._lock:
                     self._state = "stopped"
+                    self._current_gpu = None
                     self._start_error = exc
                 self._ready_event.set()
                 raise
@@ -254,17 +259,25 @@ class BackendManager:
         pinned = self.config.get("gpu_index")
         if pinned not in (None, ""):
             log.info("[%s] Using pinned GPU %s", self.model_name, pinned)
-            return str(pinned)
+            self._current_gpu = str(pinned)
+            return self._current_gpu
+        # Exclude GPUs already claimed by other backends that are starting or
+        # running. Auto-selected backends carry no gpu_index in their config, so
+        # rely on the runtime GPU each one actually resolved to.
         used_gpus = set()
         for mgr in _backends.values():
-            if mgr is not self and mgr.state == "ready":
-                used_gpus.add(str(mgr.config.get("gpu_index", "")))
+            if mgr is self:
+                continue
+            if mgr.state in ("starting", "ready") and mgr._current_gpu is not None:
+                used_gpus.add(mgr._current_gpu)
         log.info(
             "[%s] Auto-selecting GPU (excluding %s)",
             self.model_name,
             sorted(used_gpus) if used_gpus else "none",
         )
-        return _pick_free_gpu(exclude=used_gpus)
+        gpu = _pick_free_gpu(exclude=used_gpus)
+        self._current_gpu = gpu
+        return gpu
 
     def _start_container(self) -> None:
         gpu = self._resolve_gpu()
@@ -327,16 +340,31 @@ class BackendManager:
     def _ensure_model_dir(self) -> None:
         model_dir = Path(self.config["model_dir"])
         config_path = model_dir / "config.json"
-        if config_path.is_file():
+        sentinel_path = model_dir / ".download_complete"
+        repo_id = self.config.get("hf_repo")
+
+        # Skip when weights are present *and* either there is no managed download
+        # (a manual install) or our completion sentinel proves the prior download
+        # finished. An interrupted download can leave config.json behind without
+        # the sentinel; in that case we re-run snapshot_download, which only
+        # fetches missing/changed files, rather than trusting a partial directory.
+        if config_path.is_file() and (not repo_id or sentinel_path.is_file()):
             return
 
-        repo_id = self.config.get("hf_repo")
         if not repo_id:
             raise RuntimeError(f"[{self.model_name}] model_dir missing config.json: {model_dir}")
 
         model_dir.mkdir(parents=True, exist_ok=True)
         revision = self.config.get("hf_revision")
         ignore_patterns = self.config.get("hf_ignore_patterns")
+        if isinstance(ignore_patterns, str):
+            # A single glob may be given as a bare string; wrap it so it is not
+            # iterated character-by-character.
+            ignore_patterns = [ignore_patterns]
+        elif ignore_patterns:
+            ignore_patterns = list(ignore_patterns)
+        else:
+            ignore_patterns = None
         log.info(
             "[%s] Downloading %s from Hugging Face to %s …", self.model_name, repo_id, model_dir
         )
@@ -347,7 +375,7 @@ class BackendManager:
                 repo_id=str(repo_id),
                 revision=str(revision) if revision else None,
                 local_dir=str(model_dir),
-                ignore_patterns=list(ignore_patterns) if ignore_patterns else None,
+                ignore_patterns=ignore_patterns,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -358,6 +386,9 @@ class BackendManager:
             raise RuntimeError(
                 f"[{self.model_name}] Hugging Face download completed without config.json: {model_dir}"
             )
+        # Mark the download complete so an interrupted retry is not mistaken for
+        # a finished install on the next start.
+        sentinel_path.touch()
         log.info("[%s] Downloaded %s.", self.model_name, repo_id)
 
     def _stop_container(self) -> None:
@@ -369,6 +400,7 @@ class BackendManager:
         )
         with self._lock:
             self._state = "stopped"
+            self._current_gpu = None
         log.info("[%s] Container %s stopped.", self.model_name, self.container)
 
     def _container_running(self) -> bool:

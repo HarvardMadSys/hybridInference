@@ -187,6 +187,7 @@ def test_installed_huggingface_model_skips_download(monkeypatch: Any, tmp_path: 
     model_dir = tmp_path / "installed-model"
     model_dir.mkdir()
     (model_dir / "config.json").write_text('{"model_type": "xlm-roberta"}')
+    (model_dir / ".download_complete").touch()
     snapshot_download = Mock()
     monkeypatch.setitem(
         sys.modules,
@@ -205,6 +206,93 @@ def test_installed_huggingface_model_skips_download(monkeypatch: Any, tmp_path: 
     backend._ensure_model_dir()
 
     snapshot_download.assert_not_called()
+
+
+def test_partial_huggingface_download_is_redownloaded(monkeypatch: Any, tmp_path: Path) -> None:
+    # config.json present but no .download_complete sentinel means a prior
+    # download was interrupted, so snapshot_download must run again.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    model_dir = tmp_path / "partial-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "xlm-roberta"}')
+    snapshot_download = Mock()
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=snapshot_download),
+    )
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "manual-test-sglang",
+            "model_dir": str(model_dir),
+            "hf_repo": "BAAI/bge-m3",
+        },
+    )
+
+    backend._ensure_model_dir()
+
+    snapshot_download.assert_called_once()
+    assert (model_dir / ".download_complete").is_file()
+
+
+def test_string_ignore_patterns_is_wrapped_in_a_list(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    model_dir = tmp_path / "string-ignore-model"
+
+    def download(**kwargs: Any) -> None:
+        assert kwargs["ignore_patterns"] == ["onnx/*"]
+        (model_dir / "config.json").write_text('{"model_type": "xlm-roberta"}')
+
+    snapshot_download = Mock(side_effect=download)
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=snapshot_download),
+    )
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "manual-test-sglang",
+            "model_dir": str(model_dir),
+            "hf_repo": "BAAI/bge-m3",
+            "hf_ignore_patterns": "onnx/*",
+        },
+    )
+
+    backend._ensure_model_dir()
+
+    snapshot_download.assert_called_once()
+
+
+def test_auto_gpu_selection_excludes_gpu_held_by_running_backend(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # A backend already running on its auto-selected GPU must be excluded so a
+    # second auto-selecting backend does not collide on the same device.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    running = proxy.BackendManager(
+        "running-model", {"container": "running", "model_dir": "/tmp/running"}
+    )
+    with running._lock:
+        running._state = "ready"
+    running._current_gpu = "2"
+    starting = proxy.BackendManager(
+        "starting-model", {"container": "starting", "model_dir": "/tmp/starting"}
+    )
+    proxy._backends = {"running-model": running, "starting-model": starting}
+
+    captured: dict[str, Any] = {}
+
+    def fake_pick(exclude: set[str] | None = None) -> str:
+        captured["exclude"] = exclude
+        return "0"
+
+    monkeypatch.setattr(proxy, "_pick_free_gpu", fake_pick)
+
+    assert starting._resolve_gpu() == "0"
+    assert captured["exclude"] == {"2"}
+    assert starting._current_gpu == "0"
 
 
 def test_huggingface_download_failure_prevents_container_start(

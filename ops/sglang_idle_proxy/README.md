@@ -120,7 +120,7 @@ Models are defined in `sglang_idle_proxy/models.json`:
 | `model_dir` | Host path to model weights |
 | `hf_repo` | optional Hugging Face repository downloaded into `model_dir` when absent |
 | `hf_revision` | optional Hugging Face branch, tag, or commit |
-| `hf_ignore_patterns` | optional file globs excluded from the Hugging Face download |
+| `hf_ignore_patterns` | optional file glob(s) excluded from the Hugging Face download (string or list) |
 | `served_name` | `--served-model-name` for sglang |
 | `max_model_len` | `--context-length` |
 | `mem_fraction` | `--mem-fraction-static` |
@@ -144,7 +144,11 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 
 ## GPU auto-selection
 
-When `gpu_index` is not set for a model, the proxy queries `nvidia-smi` at container start time and picks the GPU with the lowest memory utilization. It also excludes GPUs already assigned to running backends. Set `gpu_index` explicitly to pin a model to a specific device.
+When `gpu_index` is not set for a model, the proxy queries `nvidia-smi` at container start time and picks the GPU with the lowest memory utilization. It also excludes the GPU that each other starting/running backend actually resolved to (tracked at runtime, since auto-selected models have no `gpu_index` in config), so concurrent backends do not collide on the same device. Set `gpu_index` explicitly to pin a model to a specific device.
+
+## On-demand Hugging Face download
+
+Models with an `hf_repo` are downloaded into `model_dir` on first use. A `.download_complete` sentinel file is written once the download finishes; if `config.json` is present without the sentinel (e.g. a download interrupted by OOM or a crash), the proxy re-runs `snapshot_download`, which only fetches missing or changed files. Manually installed models (no `hf_repo`) are used as-is.
 
 ## Requirements
 
