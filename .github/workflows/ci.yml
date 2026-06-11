@@ -18,7 +18,7 @@ on:
       - '.gitignore'
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-v2-${{ github.ref }}
   cancel-in-progress: true
 
 env:
