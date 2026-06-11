@@ -111,6 +111,9 @@ class ModelConfig:
     auth_format: str | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
     extra_query: dict[str, str] = field(default_factory=dict)
+    # Default fields merged into OpenAI-compatible upstream request bodies.
+    # Core fields and validated client parameters take precedence.
+    extra_body: dict[str, Any] = field(default_factory=dict)
     # Optional upstream chat endpoint path override for OpenAI-like providers
     # that do not expose the default /v1/chat/completions route.
     chat_path: str | None = None
