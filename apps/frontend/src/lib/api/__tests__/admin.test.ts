@@ -272,11 +272,11 @@ describe('routewise settings client', () => {
         JSON.stringify({
           settings: [
             {
-              key: 'routewise_daily_quota',
-              value: 7000,
+              key: 'routewise_latency_min_samples',
+              value: 20,
               value_type: 'int',
-              default_value: 5000,
-              description: 'Daily quota for Routewise',
+              default_value: 10,
+              description: 'Minimum samples before Routewise latency LP warmup ends',
               min: 1,
               max: 10000,
             },
@@ -289,8 +289,8 @@ describe('routewise settings client', () => {
     const out = await listRoutewiseSettings();
 
     expect(out.settings[0]).toMatchObject({
-      key: 'routewise_daily_quota',
-      value: 7000,
+      key: 'routewise_latency_min_samples',
+      value: 20,
       value_type: 'int',
     });
     const [url, init] = fetchMock.mock.calls[0];

@@ -1,67 +1,69 @@
 """RouteWise cost-aware routing package.
 
 Exports:
-    RouteWiseRouter  -- BaseRouter subclass with PD / LA-PD adapter selection.
-    RouteWiseConfig  -- Dataclass holding policy parameters loaded from
-                        ``config/routewise.yaml``.
-    SubscriptionType -- Enum for quota / concurrency / API classification.
-    load_routewise_config -- Loader helper for RouteWiseConfig.
-    EMAOutputPredictor -- Production EMA output-token predictor.
-    EMAState           -- Per-stream EMA tracking state.
-    QuantilePrediction -- Quantile prediction dataclass.
-    QuotaManager       -- Daily quota manager with shadow price computation.
-    ConcurrencyManager -- Production concurrency slot manager (K=0 binary gate).
+    RouteWiseRouter  -- BaseRouter subclass with cost-budgeted provider selection.
+    RouteWiseConfig  -- Dataclass holding per-model policy parameters, populated
+                        from each model's ``router_params`` in ``config/models.yaml``.
+    ProviderType -- Enum for on-demand / quota / concurrency provider categories.
+    QuotaPool -- Provider-snapshot-backed quota pool (a queryable usage API
+                 is the quota truth source; there is no local-counting kind).
+    ConcurrencyManager -- Per-pool concurrency slot manager (K=0 binary gate).
     ProviderProfile    -- Real-time latency profile for an API endpoint.
-    SWRRSampler        -- Smooth weighted round-robin sampler.
-    ShadowHedgeDecision -- Shadow hedge decision record.
     HedgedAdapter      -- Composite adapter that races primary vs backup.
+    CheckpointBackupDispatch -- Shared checkpoint backup dispatch dataclass.
+    CheckpointBackupSelector -- Protocol for checkpoint-time backup selection.
     ProviderEventSink  -- Protocol for per-provider outcome reporting.
-    compute_hedge_threshold -- SMART_ECONOMIC grid search for h*.
-    survival_at        -- Empirical survival S(t) in SEPARATE mode.
-    cdf_separate_at    -- Empirical CDF F(t) in SEPARATE mode.
-    solve_provider_lp  -- LP solver for cost-minimization with tail constraints.
-    solve_provider_lp_with_relaxation -- LP solver with progressive relaxation.
-    pre_filter_providers -- Hard-filter providers by basic requirements.
 """
 
+from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
+
+from .candidates import (
+    CandidatePricing,
+    ConcurrencyPolicy,
+    ProviderCandidate,
+    ProviderType,
+    QuotaPolicy,
+    QuotaSource,
+)
 from .concurrency import ConcurrencyManager
-from .config import RouteWiseConfig, load_routewise_config
-from .hedging import (
-    HedgedAdapter,
-    ProviderEventSink,
-    cdf_separate_at,
-    compute_hedge_threshold,
-    survival_at,
+from .config import RouteWiseConfig
+from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
+from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
+from .hedging import HedgedAdapter, ProviderEventSink
+from .latency import ProviderProfile
+from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
+from .predictor import (
+    BucketMeanOutputPredictor,
+    BucketMeanPrediction,
 )
-from .latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
-from .lp_solver import (
-    pre_filter_providers,
-    solve_provider_lp,
-    solve_provider_lp_with_relaxation,
-)
-from .predictor import EMAOutputPredictor, EMAState, QuantilePrediction
-from .quota import QuotaManager
-from .router import RouteWiseRouter, SubscriptionType
+from .quota import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore, QuotaPool
+from .router import RouteWiseRouter
 
 __all__ = [
+    "BucketMeanOutputPredictor",
+    "BucketMeanPrediction",
+    "CandidatePricing",
+    "CheckpointBackupDispatch",
+    "CheckpointBackupSelector",
     "ConcurrencyManager",
-    "EMAOutputPredictor",
-    "EMAState",
+    "ConcurrencyPolicy",
+    "CostEnvelopeEstimator",
+    "CostEnvelopeSnapshot",
     "HedgedAdapter",
+    "LPCandidate",
+    "LPSolution",
+    "ProviderCandidate",
     "ProviderEventSink",
     "ProviderProfile",
-    "QuantilePrediction",
-    "QuotaManager",
+    "ProviderQuotaSnapshot",
+    "ProviderQuotaSnapshotStore",
+    "ProviderType",
+    "QuotaPolicy",
+    "QuotaPool",
+    "QuotaSource",
     "RouteWiseConfig",
     "RouteWiseRouter",
-    "SWRRSampler",
-    "ShadowHedgeDecision",
-    "SubscriptionType",
-    "cdf_separate_at",
-    "compute_hedge_threshold",
-    "load_routewise_config",
-    "pre_filter_providers",
-    "solve_provider_lp",
-    "solve_provider_lp_with_relaxation",
-    "survival_at",
+    "api_request_cost_usd",
+    "quota_shadow_price_usd",
+    "solve_cost_budgeted_mean_ttft",
 ]

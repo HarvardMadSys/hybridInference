@@ -4,7 +4,7 @@ The routing system implements a two-layer architecture for intelligent traffic d
 
 ## Architecture
 
-### Decision Layer (`routing/manager.py` + `routing/strategies.py`)
+### Decision Layer (`routing/manager.py` + `routing/strategies/weight.py`)
 Reads `config/routing.yaml` and computes weight distributions between local and remote deployments. Currently supports a fixed-ratio strategy with plans for expansion.
 
 ### Execution Layer (`routing/routers.py`)
@@ -67,7 +67,7 @@ When the application starts, `serving.servers.bootstrap` loads `config/models.ya
 
 ### Adding New Strategies
 
-1. Create a new strategy class in `routing/strategies.py`:
+1. Create a new strategy class in `routing/strategies/weight.py`:
 ```python
 class RoundRobinStrategy:
     def assign(self, local: List, remote: List) -> Dict[object, float]:
@@ -79,15 +79,31 @@ class RoundRobinStrategy:
 ### RouteWise Strategy
 
 In addition to the deployment-wide fixed-ratio strategy in `routing.yaml`, a
-cost-aware `routewise` strategy is available as a per-model opt-in. It is
-enabled by adding `routing_strategy: routewise` to a model entry in
-`config/models.yaml`; tuning parameters (decision rule, predictor, quota,
-shadow-price bounds, canary rollout, etc.) live in `config/routewise.yaml`.
-On startup, `serving/servers/bootstrap.py` instantiates a single
-`RouteWiseRouter` if any model opts in (or `enable_routewise=true` in
-settings) and registers it for those models via `model_router_registry`. See
-`config/routewise.yaml` for the full set of tuning parameters and the design
-specs under `docs/agents/specs/`.
+cost-aware `routewise` strategy is available as a per-model opt-in, enabled by
+adding `router: routewise` to a model entry in `config/models.yaml`. Each
+opted-in model gets its own `RouteWiseRouter` instance, constructed by
+`routing/model_router_registry.py` from that model's `router_params:` block
+(validated by the `RouteWiseParams` schema in
+`routing/strategies/routewise.py`).
+
+Configuration splits by ownership:
+
+- **`router_params:` (per model)** — algorithm knobs only: `budget_alpha`
+  (LP cost budget), `latency_hedge_mode`, latency SLO/window, envelope
+  percentiles/window/min-samples, output predictor, prefix-cache flag.
+- **Route entries (per provider)** — resource semantics: `provider_type:
+  on_demand | quota | concurrency`, `pricing:`, `quota: {limit}` plus a
+  required `quota_source:` block (the provider usage API is the quota truth
+  source, including window/reset semantics), `concurrency: {limit}`, and
+  optional `quota_pool:` / `concurrency_pool:` ids for routes that share a
+  subscription.
+
+Quota-bearing models refuse to start until the cost envelope is calibrated
+from recent `api_logs` traffic (see `envelope_min_samples`); a cold deploy
+with no history fails fast by design. The reference block in
+`config/models.yaml` (under `minimax-fast`) lists every option and is
+completeness-tested against the `RouteWiseConfig` dataclass. Design specs
+live under `docs/agents/specs/`.
 
 ### Health Monitoring
 

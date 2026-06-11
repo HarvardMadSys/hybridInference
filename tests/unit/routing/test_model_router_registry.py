@@ -59,6 +59,39 @@ class TestModelRouterRegistry:
         b = reg.get_router("glm-4.7")
         assert a is b
 
+    def test_get_router_alias_returns_canonical_routewise_instance(self):
+        """Aliases must not split RouteWise stateful router instances."""
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+        from routing.routewise.router import RouteWiseRouter
+
+        reg = ModelRouterRegistry(
+            models_config={
+                "minimax-m2.5": {
+                    "router": "routewise",
+                    "router_params": {
+                        "budget_alpha": 0.5,
+                    },
+                },
+                "MiniMax-M2.5": {
+                    "router": "routewise",
+                    "router_params": {
+                        "budget_alpha": 0.5,
+                    },
+                },
+            },
+            default_router_name="fixed",
+            alias_to_model={"MiniMax-M2.5": "minimax-m2.5"},
+        )
+        reg.bind_fixed_router(FixedRouter())
+
+        canonical = reg.get_router("minimax-m2.5")
+        alias = reg.get_router("MiniMax-M2.5")
+
+        assert isinstance(canonical, RouteWiseRouter)
+        assert alias is canonical
+        assert alias.concurrency_pools is canonical.concurrency_pools
+
     def test_get_router_emits_router_initialized_log(self, caplog):
         """Cache miss logs a router_initialized event."""
         from routing.model_router_registry import ModelRouterRegistry

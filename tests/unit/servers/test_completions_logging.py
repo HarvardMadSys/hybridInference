@@ -128,6 +128,49 @@ def test_record_routing_observation_with_routing_info(cl_logger, routing_info):
     assert obs.success is True
 
 
+def test_record_routing_observation_records_failed_attempts_before_final_success(
+    cl_logger,
+):
+    routing = RoutingInfo(
+        request_id="rid",
+        model="gpt-4",
+        provider="openai",
+        endpoint_id="openai-prod",
+        extra={
+            "failed_attempts": [
+                {
+                    "provider": "anthropic",
+                    "endpoint_id": "anthropic-prod",
+                    "error_type": "RateLimitError",
+                    "error": "429",
+                }
+            ]
+        },
+    )
+    active_router = MagicMock()
+
+    cl_logger.record_routing_observation(
+        active_router,
+        "gpt-4",
+        routing,
+        ttft_ms=42.0,
+        total_latency_ms=120.0,
+        prompt_tokens=10,
+        completion_tokens=5,
+        success=True,
+    )
+
+    assert active_router.record_observation.call_count == 2
+    failed_obs = active_router.record_observation.call_args_list[0][0][0]
+    final_obs = active_router.record_observation.call_args_list[1][0][0]
+    assert failed_obs.endpoint_id == "anthropic-prod"
+    assert failed_obs.success is False
+    assert failed_obs.prompt_tokens == 10
+    assert failed_obs.completion_tokens == 0
+    assert final_obs.endpoint_id == "openai-prod"
+    assert final_obs.success is True
+
+
 def test_record_routing_observation_falls_back_to_base_url(cl_logger):
     """When endpoint_id is missing, observation key falls back to base_url."""
     routing = RoutingInfo(
@@ -197,7 +240,7 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
         "endpoint_id": "anthropic-prod",
         "base_url": "https://api.anthropic.com/v1",
         "routewise": {
-            "selected_tier": "B",
+            "selected_provider_type": "B",
             "quota_committed": 1.5,
             "sc_committed": True,
             "hedged": True,
@@ -220,7 +263,7 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
     assert obs.endpoint_id == "anthropic-prod"
     assert obs.strategy_metadata == {
         "routewise": {
-            "selected_tier": "B",
+            "selected_provider_type": "B",
             "quota_committed": 1.5,
             "sc_committed": True,
             "hedged": True,
@@ -228,6 +271,49 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
             "lp_status": "ok",
         }
     }
+
+
+def test_record_routing_observation_records_legacy_failed_attempts(cl_logger):
+    legacy = {
+        "provider": "openai",
+        "endpoint_id": "openai-prod",
+        "failed_attempts": [
+            {
+                "provider": "anthropic",
+                "endpoint_id": "anthropic-prod",
+                "error_type": "TimeoutError",
+                "error": "timeout",
+            },
+            {
+                "provider": "anthropic",
+                "endpoint_id": "anthropic-prod",
+                "error_type": "TimeoutError",
+                "error": "timeout",
+            },
+        ],
+    }
+    active_router = MagicMock()
+
+    cl_logger.record_routing_observation(
+        active_router,
+        "gpt-4",
+        legacy,
+        ttft_ms=None,
+        total_latency_ms=200.0,
+        prompt_tokens=20,
+        completion_tokens=10,
+        success=True,
+    )
+
+    # Duplicate failed attempts can surface when streaming routing chunks are
+    # merged; they should only feed RouteWise once.
+    assert active_router.record_observation.call_count == 2
+    failed_obs = active_router.record_observation.call_args_list[0][0][0]
+    assert failed_obs.endpoint_id == "anthropic-prod"
+    assert failed_obs.success is False
+    final_obs = active_router.record_observation.call_args_list[1][0][0]
+    assert final_obs.endpoint_id == "openai-prod"
+    assert final_obs.success is True
 
 
 def test_record_routing_observation_no_strategy_metadata(cl_logger):
@@ -259,7 +345,7 @@ def test_record_routing_observation_accepts_typed_strategy_metadata(cl_logger):
         model="gpt-4",
         provider="openai",
         endpoint_id="openai-prod",
-        strategy_metadata={"routewise": {"selected_tier": "api"}, "other": {"x": 1}},
+        strategy_metadata={"routewise": {"selected_provider_type": "on_demand"}, "other": {"x": 1}},
     )
     active_router = MagicMock()
     cl_logger.record_routing_observation(
@@ -273,7 +359,10 @@ def test_record_routing_observation_accepts_typed_strategy_metadata(cl_logger):
         success=True,
     )
     obs = active_router.record_observation.call_args[0][0]
-    assert obs.strategy_metadata == {"routewise": {"selected_tier": "api"}, "other": {"x": 1}}
+    assert obs.strategy_metadata == {
+        "routewise": {"selected_provider_type": "on_demand"},
+        "other": {"x": 1},
+    }
     assert obs.token_count == 7
 
 
@@ -289,7 +378,7 @@ def test_routing_observation_accepts_legacy_routewise_kwargs():
         success=True,
         prompt_tokens=1,
         completion_tokens=2,
-        selected_tier="api",
+        selected_provider_type="on_demand",
         quota_committed=1.5,
         sc_committed=True,
         hedged=True,
@@ -299,7 +388,7 @@ def test_routing_observation_accepts_legacy_routewise_kwargs():
 
     assert obs.strategy_metadata == {
         "routewise": {
-            "selected_tier": "api",
+            "selected_provider_type": "on_demand",
             "quota_committed": 1.5,
             "sc_committed": True,
             "hedged": True,
@@ -342,7 +431,7 @@ def test_routing_observation_accepts_full_legacy_positional_tail():
         1.5,
         1,
         2,
-        "api",
+        "on_demand",
         True,
         True,
         False,
@@ -354,7 +443,7 @@ def test_routing_observation_accepts_full_legacy_positional_tail():
     assert obs.strategy_metadata == {
         "routewise": {
             "quota_committed": 1.5,
-            "selected_tier": "api",
+            "selected_provider_type": "on_demand",
             "sc_committed": True,
             "hedged": True,
             "backup_won": False,

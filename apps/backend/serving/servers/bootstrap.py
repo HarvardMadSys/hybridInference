@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import os
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
@@ -55,6 +57,75 @@ async def _refresh_weight_override_snapshots(
             await resolver.load_all()
         except Exception:
             logger.warning("Route weight override snapshot refresh failed", exc_info=True)
+
+
+async def _bootstrap_routewise_from_logs(
+    log_store: Any,
+    routewise_routers: list[Any],
+    model_ids_by_router: dict[int, set[str]],
+    donor_overrides_by_router: dict[int, dict[str, str]] | None = None,
+) -> None:
+    """Best-effort warmup of RouteWise in-memory state from recent api_logs.
+
+    ``donor_overrides_by_router`` maps donor model ids (and their aliases) to
+    the router's own model so the envelope can cold-start from a sibling
+    model's traffic (``envelope_bootstrap_donor_models``). Donor rows feed the
+    envelope only; latency profiles stay keyed to the router's own endpoints.
+    """
+    if log_store is None:
+        return
+    now = dt.datetime.now(dt.timezone.utc)
+    for rw in routewise_routers:
+        if not getattr(rw.config, "db_bootstrap_enabled", True):
+            continue
+        model_ids = sorted(model_ids_by_router.get(id(rw), set()))
+        max_rows = max(int(getattr(rw.config, "db_bootstrap_max_rows", 0) or 0), 0)
+        if not model_ids or max_rows <= 0:
+            continue
+        latency_window_sec = max(float(getattr(rw.config, "latency_window_sec", 0.0) or 0.0), 1.0)
+        envelope_window_sec = max(
+            float(getattr(rw.config, "envelope_window_hours", 0.0) or 0.0) * 3600.0,
+            1.0,
+        )
+        try:
+            latency_rows = await log_store.get_routewise_bootstrap_rows(
+                model_ids=model_ids,
+                since=now - dt.timedelta(seconds=latency_window_sec),
+                limit=max_rows,
+            )
+            latency_counts = rw.bootstrap_from_log_rows(
+                latency_rows,
+                include_latency=True,
+                include_envelope=False,
+            )
+            donor_overrides = (donor_overrides_by_router or {}).get(id(rw), {})
+            envelope_rows = await log_store.get_routewise_bootstrap_rows(
+                model_ids=sorted({*model_ids, *donor_overrides}),
+                since=now - dt.timedelta(seconds=envelope_window_sec),
+                limit=None,
+            )
+            envelope_counts = rw.bootstrap_from_log_rows(
+                envelope_rows,
+                include_latency=False,
+                include_envelope=True,
+                envelope_model_overrides=donor_overrides,
+            )
+            logger.info(
+                "RouteWise DB bootstrap replayed latency_rows=%d envelope_rows=%d: "
+                "latency_events=%d failed_attempts=%d envelope_samples=%d model_ids=%s",
+                latency_counts["rows"],
+                envelope_counts["rows"],
+                latency_counts["latency_events"],
+                latency_counts["failed_attempts"],
+                envelope_counts["envelope_samples"],
+                model_ids,
+            )
+        except Exception:
+            logger.warning(
+                "RouteWise DB bootstrap failed for models %s",
+                model_ids,
+                exc_info=True,
+            )
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -350,7 +421,30 @@ async def initialize() -> AppServices:
     if rw_models:
         logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
 
-    managed_routers = model_router_registry.managed_routers()
+    managed_routers = list(model_router_registry.managed_routers())
+    from routing.routewise.router import RouteWiseRouter as _RWR
+
+    routewise_routers: list[_RWR] = []
+    routewise_model_ids_by_router: dict[int, set[str]] = {}
+    routewise_donor_overrides_by_router: dict[int, dict[str, str]] = {}
+    aliases_by_model = {info.model_id: list(info.aliases) for info in model_infos}
+    for info in model_infos:
+        r = model_router_registry.get_router(info.model_id)
+        if isinstance(r, _RWR):
+            routewise_model_ids_by_router.setdefault(id(r), set()).update(
+                [info.model_id, *info.aliases]
+            )
+            donors = getattr(r.config, "envelope_bootstrap_donor_models", None) or []
+            for donor in donors:
+                if donor == info.model_id:
+                    continue
+                overrides = routewise_donor_overrides_by_router.setdefault(id(r), {})
+                for donor_id in (donor, *aliases_by_model.get(donor, [])):
+                    overrides[donor_id] = info.model_id
+            if all(id(existing) != id(r) for existing in routewise_routers):
+                routewise_routers.append(r)
+            if all(id(existing) != id(r) for existing in managed_routers):
+                managed_routers.append(r)
 
     # Build store abstractions
     operational_store = None
@@ -366,6 +460,13 @@ async def initialize() -> AppServices:
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
+
+    await _bootstrap_routewise_from_logs(
+        log_store,
+        routewise_routers,
+        routewise_model_ids_by_router,
+        routewise_donor_overrides_by_router,
+    )
 
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
@@ -524,6 +625,10 @@ async def initialize() -> AppServices:
     for managed_router in managed_routers:
         try:
             await managed_router.start()
+        except EnvelopeNotCalibratedError:
+            # RouteWise quota shadow pricing requires workload-derived [L, U].
+            # Do not silently fall back to a fabricated envelope.
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Managed router start() failed: {exc}")
 

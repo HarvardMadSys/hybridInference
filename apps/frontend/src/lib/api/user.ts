@@ -172,7 +172,7 @@ export interface RecentRequestItem {
 }
 
 export interface RouteWiseDecision {
-  selected_tier?: string | null;
+  selected_provider_type?: string | null;
   selected_provider?: string | null;
   selected_endpoint_id?: string | null;
   hedging_triggered?: boolean | null;

@@ -719,6 +719,14 @@ async def test_stream_emits_routing_chunk_for_fallback_adapter():
     assert routing_payloads[0].get("fallback") is not True
     assert routing_payloads[1]["provider"] == "backup"
     assert routing_payloads[1].get("fallback") is True
+    assert routing_payloads[1]["failed_attempts"] == [
+        {
+            "provider": "primary",
+            "endpoint_id": "primary",
+            "error_type": "RuntimeError",
+            "error": "fail",
+        }
+    ]
 
 
 @pytest.mark.unit

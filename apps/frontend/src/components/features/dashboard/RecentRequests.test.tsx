@@ -80,7 +80,7 @@ describe('RecentRequests', () => {
         requests: [
           makeRequest({
             routewise: {
-              selected_tier: 'api',
+              selected_provider_type: 'on_demand',
               selected_provider: 'openai',
               selected_endpoint_id: 'openai:key-1',
               hedging_triggered: true,
@@ -102,7 +102,7 @@ describe('RecentRequests', () => {
     fireEvent.click(screen.getAllByText('claude-sonnet')[0]);
 
     expect(screen.getByText('RouteWise')).toBeInTheDocument();
-    expect(screen.getByText('api: openai; hedge -> anthropic')).toBeInTheDocument();
+    expect(screen.getByText('on_demand: openai; hedge -> anthropic')).toBeInTheDocument();
   });
 
   it('shows cached tokens in the collapsed token summary', async () => {

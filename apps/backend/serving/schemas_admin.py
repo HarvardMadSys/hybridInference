@@ -695,8 +695,6 @@ class RoutewiseSettingItem(BaseModel):
     """A curated Routewise runtime setting with current value and metadata."""
 
     key: Literal[
-        "routewise_decision_rule",
-        "routewise_daily_quota",
         "routewise_latency_slo_sec",
         "routewise_latency_min_samples",
     ]

@@ -1,10 +1,10 @@
-"""Tests for Layer 2 latency profiling and SWRR sampling."""
+"""Tests for RouteWise latency profiling."""
 
 from __future__ import annotations
 
 import pytest
 
-from routing.routewise.latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
+from routing.routewise.latency import ProviderProfile
 
 # ---------------------------------------------------------------------------
 # ProviderProfile tests
@@ -63,24 +63,6 @@ class TestProviderProfile:
         assert profile.sample_count(200.0) == 1
         assert profile.cdf_at(0.5, 200.0) == pytest.approx(1.0)
 
-    def test_percentile(self):
-        """Percentile computation matches manual calculation."""
-        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
-        now = 100.0
-
-        # Add 5 samples: 100, 200, 300, 400, 500 ms.
-        for v in [100.0, 200.0, 300.0, 400.0, 500.0]:
-            profile.record(now, v)
-
-        # p50 (median): index = 0.5 * 4 = 2.0 -> samples[2] = 0.3s
-        assert profile.percentile(50, now) == pytest.approx(0.3)
-
-        # p0: index = 0 -> samples[0] = 0.1s
-        assert profile.percentile(0, now) == pytest.approx(0.1)
-
-        # p100: index = 4 -> samples[4] = 0.5s
-        assert profile.percentile(100, now) == pytest.approx(0.5)
-
     def test_sample_count_respects_window(self):
         """sample_count only counts samples within the time window."""
         profile = ProviderProfile(endpoint_id="ep1", window_sec=100.0)
@@ -91,6 +73,34 @@ class TestProviderProfile:
 
         # At t=200, window is [100, 200].
         assert profile.sample_count(200.0) == 1
+
+    def test_max_samples_evicts_oldest_outcomes(self):
+        """Profile storage is bounded by the configured outcome cap."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0, max_samples=3)
+
+        for i in range(5):
+            profile.record(100.0 + i, (i + 1) * 100.0)
+
+        assert profile.max_samples == 3
+        assert len(profile._events) == 3
+        assert profile.sample_count(200.0) == 3
+        assert [ttft for _t, ttft, _e in profile._events] == [300.0, 400.0, 500.0]
+
+    def test_max_samples_bounds_successes_and_errors_together(self):
+        """Success and error accounting use the same bounded outcome window."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0, max_samples=4)
+        now = 100.0
+
+        profile.record(now + 0, 100.0)
+        profile.record(now + 1, -1.0, error_type="timeout")
+        profile.record(now + 2, 200.0)
+        profile.record(now + 3, -1.0, error_type="rate_limit")
+        profile.record(now + 4, 300.0)
+
+        assert len(profile._events) == 4
+        assert profile.sample_count(now + 4) == 2
+        assert profile.total_count(now + 4) == 4
+        assert profile.error_rate(now + 4) == pytest.approx(0.5)
 
     def test_error_rate(self):
         """Error rate is correctly computed."""
@@ -105,99 +115,37 @@ class TestProviderProfile:
 
         assert profile.error_rate(now) == pytest.approx(0.3)
 
+    def test_mean_with_errors_uses_synthetic_penalty(self):
+        """Failed attempts enter the latency profile as synthetic penalty samples."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
+        now = 100.0
+
+        profile.record(now, 100.0)
+        profile.record(now, -1.0, error_type="timeout")
+
+        assert profile.total_count(now) == 2
+        assert profile.mean_with_errors_sec(
+            now,
+            error_penalty_ms=60_000.0,
+        ) == pytest.approx(30.05)
+
     def test_empty_profile(self):
         """Empty profile returns safe defaults."""
         profile = ProviderProfile(endpoint_id="ep1")
         now = 100.0
 
         assert profile.cdf_at(1.0, now) == 0.0
-        assert profile.percentile(50, now) == float("inf")
+        assert profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0) is None
         assert profile.error_rate(now) == 0.0
         assert profile.sample_count(now) == 0
+        assert profile.total_count(now) == 0
 
+    def test_invalid_max_samples_is_coerced_to_one(self):
+        profile = ProviderProfile(endpoint_id="ep1", max_samples=0)
 
-# ---------------------------------------------------------------------------
-# SWRRSampler tests
-# ---------------------------------------------------------------------------
+        profile.record(100.0, 100.0)
+        profile.record(101.0, 200.0)
 
-
-@pytest.mark.unit
-class TestSWRRSampler:
-    def test_single_provider(self):
-        """Single provider always selected."""
-        sampler = SWRRSampler(alpha=0.3)
-        sampler.update_weights({"A": 1.0})
-
-        for _ in range(10):
-            assert sampler.sample() == "A"
-
-    def test_proportional_distribution(self):
-        """Over many samples, distribution approximates target weights."""
-        sampler = SWRRSampler(alpha=1.0)  # alpha=1 for immediate convergence.
-        sampler.update_weights({"A": 0.7, "B": 0.3})
-
-        counts = {"A": 0, "B": 0}
-        n = 1000
-        for _ in range(n):
-            selected = sampler.sample()
-            counts[selected] += 1
-
-        # SWRR should exactly match weights.
-        assert counts["A"] / n == pytest.approx(0.7, abs=0.02)
-        assert counts["B"] / n == pytest.approx(0.3, abs=0.02)
-
-    def test_exponential_smoothing(self):
-        """Weight update blends old and new via alpha."""
-        sampler = SWRRSampler(alpha=0.5)
-        sampler.update_weights({"A": 1.0})
-
-        # Old weights: A=1.0. New: A=0.4, B=0.6.
-        # Smoothed: A = 0.5*0.4 + 0.5*1.0 = 0.7; B = 0.5*0.6 = 0.3.
-        # After normalization: A=0.7, B=0.3.
-        sampler.update_weights({"A": 0.4, "B": 0.6})
-
-        weights = sampler.get_weights()
-        assert weights["A"] == pytest.approx(0.7, abs=0.01)
-        assert weights["B"] == pytest.approx(0.3, abs=0.01)
-
-    def test_provider_removal(self):
-        """Providers with negligible weight after smoothing are removed."""
-        sampler = SWRRSampler(alpha=1.0)
-        sampler.update_weights({"A": 0.9, "B": 0.1})
-
-        # Now update with B having weight 0 -> after smoothing with alpha=1.0,
-        # B = 0.0 which is < 0.001, so B should be removed.
-        sampler.update_weights({"A": 1.0, "B": 0.0})
-
-        weights = sampler.get_weights()
-        assert "B" not in weights
-        assert "A" in weights
-
-    def test_empty_sampler(self):
-        """Empty sampler returns None."""
-        sampler = SWRRSampler()
-        assert sampler.sample() is None
-
-
-# ---------------------------------------------------------------------------
-# ShadowHedgeDecision tests
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.unit
-class TestShadowHedgeDecision:
-    def test_dataclass_creation(self):
-        """ShadowHedgeDecision can be instantiated with all fields."""
-        decision = ShadowHedgeDecision(
-            model_id="test-model",
-            primary_endpoint="ep1",
-            backup_endpoint="ep2",
-            hedge_threshold_sec=0.5,
-            reason="hedge_warranted",
-            timestamp=1000.0,
-        )
-        assert decision.model_id == "test-model"
-        assert decision.primary_endpoint == "ep1"
-        assert decision.backup_endpoint == "ep2"
-        assert decision.hedge_threshold_sec == 0.5
-        assert decision.reason == "hedge_warranted"
+        assert profile.max_samples == 1
+        assert len(profile._events) == 1
+        assert profile.sample_count(101.0) == 1

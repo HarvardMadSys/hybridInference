@@ -121,7 +121,7 @@ class RoutingObservation:
         completion_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
         strategy_metadata: dict[str, Any] | None = None,
         quota_committed: float | object = _OBSERVATION_LEGACY_UNSET,
-        selected_tier: str | None | object = _OBSERVATION_LEGACY_UNSET,
+        selected_provider_type: str | None | object = _OBSERVATION_LEGACY_UNSET,
         sc_committed: bool | object = _OBSERVATION_LEGACY_UNSET,
         hedged: bool | object = _OBSERVATION_LEGACY_UNSET,
         backup_won: bool | object = _OBSERVATION_LEGACY_UNSET,
@@ -137,7 +137,7 @@ class RoutingObservation:
             "quota_committed": quota_committed,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "selected_tier": selected_tier,
+            "selected_provider_type": selected_provider_type,
             "sc_committed": sc_committed,
             "hedged": hedged,
             "backup_won": backup_won,
@@ -147,7 +147,7 @@ class RoutingObservation:
             "quota_committed",
             "prompt_tokens",
             "completion_tokens",
-            "selected_tier",
+            "selected_provider_type",
             "sc_committed",
             "hedged",
             "backup_won",
@@ -164,7 +164,7 @@ class RoutingObservation:
         legacy_routewise: dict[str, Any] = {}
         for name in (
             "quota_committed",
-            "selected_tier",
+            "selected_provider_type",
             "sc_committed",
             "hedged",
             "backup_won",
@@ -227,6 +227,7 @@ def _get_endpoint_id(adapter: BaseAdapter) -> str:
 
 
 def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
+    """Return fallback-attempt telemetry."""
     return {
         "provider": adapter.config.provider,
         "endpoint_id": _get_endpoint_id(adapter),
@@ -235,7 +236,12 @@ def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
     }
 
 
-def _routing_chunk(adapter: BaseAdapter, *, fallback: bool = False) -> str:
+def _routing_chunk(
+    adapter: BaseAdapter,
+    *,
+    fallback: bool = False,
+    failed_attempts: list[dict[str, str]] | None = None,
+) -> str:
     """Build a synthetic SSE chunk carrying ``_routing`` metadata for streaming.
 
     Mirrors the ``resp["_routing"]`` injection used by ``chat_completion`` so
@@ -258,6 +264,8 @@ def _routing_chunk(adapter: BaseAdapter, *, fallback: bool = False) -> str:
     }
     if fallback:
         routing["fallback"] = True
+    if failed_attempts:
+        routing["failed_attempts"] = failed_attempts
     return f"data: {json.dumps({'choices': [], '_routing': routing})}\n\n"
 
 
@@ -623,6 +631,7 @@ class BaseRouter:
             raise ValueError(f"No route configured for model {model_id}")
 
         last_attempted = primary
+        failed_attempts: list[dict[str, str]] = []
         try:
             try:
                 resp = await self._execute_adapter(primary, model_id, messages, **params)
@@ -638,7 +647,7 @@ class BaseRouter:
                 return resp
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
-                failed_attempts = [_failed_attempt(primary, primary_error)]
+                failed_attempts.append(_failed_attempt(primary, primary_error))
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     last_attempted = adapter
@@ -673,6 +682,8 @@ class BaseRouter:
                     "base_url": last_attempted.config.base_url,
                     "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
                 }
+            if failed_attempts:
+                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
             raise
 
     async def stream_chat_completion(
@@ -696,6 +707,8 @@ class BaseRouter:
             raise ValueError(f"No route configured for model {model_id}")
 
         last_attempted = primary
+        failed_attempts: list[dict[str, str]] = []
+        chunks_yielded = False
         try:
             try:
                 yield _routing_chunk(primary)
@@ -703,28 +716,41 @@ class BaseRouter:
                     primary, model_id, messages, **params
                 ):
                     yield chunk
+                    chunks_yielded = True
                 return
             except Exception as primary_error:
                 self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+                failed_attempts.append(_failed_attempt(primary, primary_error))
+                # Once provider bytes have reached the client, the SSE response
+                # is committed to that upstream. Falling back would splice a
+                # second provider into the same stream.
+                if chunks_yielded:
+                    raise
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
                     last_attempted = adapter
                     try:
-                        yield _routing_chunk(adapter, fallback=True)
+                        yield _routing_chunk(
+                            adapter,
+                            fallback=True,
+                            failed_attempts=failed_attempts,
+                        )
                         async for chunk in self._execute_stream_adapter(
                             adapter, model_id, messages, **params
                         ):
                             yield chunk
+                            chunks_yielded = True
                         API_FALLBACKS.labels(
                             from_provider=normalize_provider_label(_get_endpoint_id(primary)),
                             to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
                             reason=primary_error.__class__.__name__,
                         ).inc()
                         return
-                    except Exception:
+                    except Exception as fallback_error:
                         self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
+                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
-                raise primary_error
+                raise
         except BaseException as e:
             if not hasattr(e, "_routing"):
                 e._routing = {  # type: ignore[attr-defined]
@@ -732,6 +758,8 @@ class BaseRouter:
                     "base_url": last_attempted.config.base_url,
                     "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
                 }
+            if failed_attempts:
+                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
             raise
 
     def _select_adapter(
@@ -1114,6 +1142,7 @@ class FixedRouter(BaseRouter):
                 stage="adapter_stream",
             ).inc()
             self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+            failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
                 raise primary_error
@@ -1132,7 +1161,11 @@ class FixedRouter(BaseRouter):
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        yield _routing_chunk(adapter, fallback=True)
+                        yield _routing_chunk(
+                            adapter,
+                            fallback=True,
+                            failed_attempts=failed_attempts,
+                        )
                         first = True
                         started = time.perf_counter()
                         adapter_endpoint_id = _get_endpoint_id(adapter)
@@ -1151,12 +1184,13 @@ class FixedRouter(BaseRouter):
                         reason=primary_error.__class__.__name__,
                     ).inc()
                     return
-                except Exception:
+                except Exception as fallback_error:
                     STREAMING_INTERRUPTION.labels(
                         model=model_id,
                         provider=normalize_provider_label(adapter_endpoint_id),
                         stage="adapter_stream",
                     ).inc()
                     self._on_failure(adapter_endpoint_id, reason="stream_exception")
+                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error

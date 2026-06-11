@@ -391,7 +391,7 @@ async def test_error_log_includes_routewise_metadata_from_exception():
     cl_logger = MagicMock(spec=CompletionsLogger)
     session = _make_session(completions_logger=cl_logger, metadata={"user_id": "user-1"})
     routewise = {
-        "selected_tier": "api",
+        "selected_provider_type": "on_demand",
         "selected_provider": "openai",
         "gain_c": float("-inf"),
         "hedging_triggered": True,

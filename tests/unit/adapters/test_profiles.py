@@ -7,6 +7,7 @@ import pytest
 from serving.adapters.profiles import (
     ProviderProfile,
     function_call_delta_to_tool_calls,
+    normalize_usage_deepseek,
     normalize_usage_default,
 )
 
@@ -84,6 +85,9 @@ def test_normalize_usage_default_absent_ollama_shape() -> None:
     assert info.reasoning_tokens == 0
     assert info.cache_read_tokens == 0
     assert info.cache_write_tokens == 0
+    # Provider reported nothing → not a miss, and to_dict omits the field.
+    assert info.cache_read_reported is False
+    assert "cache_read_tokens" not in info.to_dict()
 
 
 def test_normalize_usage_default_anthropic_cache_write_tokens() -> None:
@@ -131,7 +135,11 @@ def test_normalize_usage_default_empty_dict() -> None:
 
 
 def test_normalize_usage_default_explicit_zero_cache_recorded() -> None:
-    """Explicit zero cache fields should still produce 0 (not None)."""
+    """A provider-reported cache_read of 0 is preserved through to_dict.
+
+    Lets downstream logging distinguish a reported miss (0) from "provider did
+    not report" (absent).
+    """
     usage_data = {
         "prompt_tokens": 5,
         "completion_tokens": 5,
@@ -143,3 +151,20 @@ def test_normalize_usage_default_explicit_zero_cache_recorded() -> None:
     assert info.reasoning_tokens == 0
     assert info.cache_read_tokens == 0
     assert info.cache_write_tokens == 0
+    assert info.cache_read_reported is True
+    assert info.to_dict()["cache_read_tokens"] == 0
+
+
+def test_normalize_usage_deepseek_miss_only_reported() -> None:
+    """DeepSeek reporting only prompt_cache_miss_tokens is still a confirmed miss."""
+    info = normalize_usage_deepseek(
+        {
+            "prompt_tokens": 50,
+            "completion_tokens": 10,
+            "total_tokens": 60,
+            "prompt_cache_miss_tokens": 50,
+        }
+    )
+    assert info.cache_read_tokens == 0
+    assert info.cache_read_reported is True
+    assert info.to_dict()["cache_read_tokens"] == 0

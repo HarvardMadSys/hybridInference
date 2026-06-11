@@ -37,14 +37,14 @@ class _FakeFixedRouter:
 
 
 def _make_adapter(
-    subscription_type: str = "api",
+    provider_type: str = "on_demand",
     prompt_price: str = "1.0",
     completion_price: str = "2.0",
     endpoint_id: str = "m:p",
 ) -> MagicMock:
     cfg = MagicMock()
     cfg.id = "m"
-    cfg.subscription_type = subscription_type
+    cfg.provider_type = provider_type
     cfg.endpoint_id = endpoint_id
     cfg.pricing = {"prompt": prompt_price, "completion": completion_price}
     adapter = MagicMock()

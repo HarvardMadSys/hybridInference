@@ -20,9 +20,6 @@ function formatWeight(value: number) {
 }
 
 function displayKey(setting: RoutewiseSettingItem) {
-  if (setting.key === 'routewise_decision_rule' || setting.key === 'decision_rule') {
-    return 'decision_rule';
-  }
   return setting.key;
 }
 
@@ -147,12 +144,7 @@ export function RoutewiseTab() {
       const draft = settingDrafts[setting.key] ?? '';
       let value: string | number = draft;
 
-      if (setting.key === 'routewise_decision_rule' || setting.key === 'decision_rule') {
-        if (draft !== 'pd' && draft !== 'lapd') {
-          toast.error(`${displayKey(setting)}: Select pd or lapd.`);
-          return;
-        }
-      } else if (setting.value_type === 'int' || setting.value_type === 'float') {
+      if (setting.value_type === 'int' || setting.value_type === 'float') {
         const validated = validateNumericSettingInput(draft, {
           min: setting.min,
           max: setting.max,
@@ -211,11 +203,8 @@ export function RoutewiseTab() {
               {routewiseSettings.map((setting) => {
                 const draft = settingDrafts[setting.key] ?? '';
                 const isSaving = savingSettingKey === setting.key;
-                const isDecisionRule =
-                  setting.key === 'routewise_decision_rule' || setting.key === 'decision_rule';
                 const validated = validateSettingDraft(setting, draft);
-                const isDirty =
-                  isDecisionRule || validated.ok ? draft !== String(setting.value ?? '') : false;
+                const isDirty = validated.ok ? draft !== String(setting.value ?? '') : false;
 
                 return (
                   <div
@@ -227,41 +216,26 @@ export function RoutewiseTab() {
                         {displayKey(setting)}
                       </div>
                       <p className="mt-0.5 text-[11px] text-gray-500">{setting.description}</p>
-                      {!isDecisionRule && !validated.ok && draft !== '' && (
+                      {!validated.ok && draft !== '' && (
                         <p className="mt-0.5 text-[11px] text-red-600" role="alert">
                           {validated.error}
                         </p>
                       )}
                     </div>
                     <div className="flex items-center gap-2">
-                      {isDecisionRule ? (
-                        <select
-                          aria-label={`${displayKey(setting)} value`}
-                          className="rounded-md border border-gray-300 px-2 py-1 text-[13px] text-gray-900"
-                          disabled={isSaving}
-                          value={draft}
-                          onChange={(e) =>
-                            setSettingDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
-                          }
-                        >
-                          <option value="pd">pd</option>
-                          <option value="lapd">lapd</option>
-                        </select>
-                      ) : (
-                        <input
-                          aria-label={`${displayKey(setting)} value`}
-                          className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900"
-                          disabled={isSaving}
-                          max={setting.max ?? undefined}
-                          min={setting.min ?? undefined}
-                          step={setting.value_type === 'int' ? 1 : 'any'}
-                          type="number"
-                          value={draft}
-                          onChange={(e) =>
-                            setSettingDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
-                          }
-                        />
-                      )}
+                      <input
+                        aria-label={`${displayKey(setting)} value`}
+                        className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-[13px] text-gray-900"
+                        disabled={isSaving}
+                        max={setting.max ?? undefined}
+                        min={setting.min ?? undefined}
+                        step={setting.value_type === 'int' ? 1 : 'any'}
+                        type="number"
+                        value={draft}
+                        onChange={(e) =>
+                          setSettingDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
+                        }
+                      />
                       <button
                         type="button"
                         aria-label={`Save ${displayKey(setting)}`}

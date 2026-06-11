@@ -466,6 +466,7 @@ def parse_usage(usage_data: dict[str, Any]) -> UsageInfo:
         cache_read_tokens=cache_read,
         cache_write_tokens=cache_write,
         reasoning_tokens=thinking_tokens,
+        cache_read_reported="cache_read_input_tokens" in usage_data,
     )
 
 
@@ -567,6 +568,7 @@ def handle_stream_event(
             input_tokens=input_tokens,
             cache_read_tokens=cache_read,
             cache_write_tokens=cache_write,
+            cache_read_reported="cache_read_input_tokens" in usage_data,
         )
 
     if event_type == "content_block_start":
@@ -613,6 +615,7 @@ class StreamEventResult:
     """Result from processing a single Claude SSE event."""
 
     __slots__ = (
+        "cache_read_reported",
         "cache_read_tokens",
         "cache_write_tokens",
         "finish_reason",
@@ -630,6 +633,7 @@ class StreamEventResult:
         output_tokens: int = 0,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
+        cache_read_reported: bool = False,
         finish_reason: str | None = None,
         is_done: bool = False,
     ) -> None:
@@ -638,6 +642,7 @@ class StreamEventResult:
         self.output_tokens = output_tokens
         self.cache_read_tokens = cache_read_tokens
         self.cache_write_tokens = cache_write_tokens
+        self.cache_read_reported = cache_read_reported
         self.finish_reason = finish_reason
         self.is_done = is_done
 
@@ -648,6 +653,7 @@ def build_final_usage(
     output_tokens: int,
     cache_read_input_tokens: int = 0,
     cache_creation_input_tokens: int = 0,
+    cache_read_reported: bool = False,
 ) -> dict[str, Any]:
     """Build final usage dict with cache token separation for streaming."""
     # Anthropic input/cache_read/cache_creation are disjoint; report
@@ -659,7 +665,7 @@ def build_final_usage(
         "completion_tokens": int(output_tokens),
         "total_tokens": int(prompt_tokens + output_tokens),
     }
-    if cache_read_input_tokens > 0:
+    if cache_read_reported or cache_read_input_tokens > 0:
         usage["cache_read_tokens"] = int(cache_read_input_tokens)
     if cache_creation_input_tokens > 0:
         usage["cache_write_tokens"] = int(cache_creation_input_tokens)

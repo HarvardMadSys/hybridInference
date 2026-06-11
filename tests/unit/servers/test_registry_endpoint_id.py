@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from routing.routers import FixedRouter
-from routing.routewise.router import RouteWiseRouter, SubscriptionType
+from routing.routewise.router import ProviderType, RouteWiseRouter
 from serving.servers.registry import _make_adapter, _make_provider_id, register_from_models_yaml
 
 # ---------------------------------------------------------------------------
@@ -111,10 +111,16 @@ models:
       - kind: openai_compat
         weight: 1.0
         base_url: https://api.example.test/v1
-        subscription_type: quota
+        provider_type: quota
+        quota_source:
+          provider: chutes
+          usage_label: "Daily requests"
+          unit: requests
+        quota:
+          limit: 100
         route_metadata:
-          subscription_type: api
-          lane: quota-tier
+          provider_type: on_demand
+          lane: quota-provider
 """
     )
     fixed = FixedRouter()
@@ -124,11 +130,11 @@ models:
     adapter = fixed.routes["glm-4.7"].adapters[0][0]
     assert adapter.config.route_metadata == {
         "owner": "model-level",
-        "subscription_type": "quota",
-        "lane": "quota-tier",
+        "provider_type": "quota",
+        "lane": "quota-provider",
     }
-    assert adapter.config.subscription_type == "quota"
+    assert adapter.config.provider_type == "quota"
 
     routewise = RouteWiseRouter()
     routewise.attach_fixed_router(fixed)
-    assert routewise.classified["glm-4.7"][0][2] is SubscriptionType.QUOTA
+    assert routewise.classified["glm-4.7"][0][2] is ProviderType.QUOTA

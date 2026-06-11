@@ -7,7 +7,7 @@ export function formatRouteWiseDecision(
   const rw = req.routewise;
   if (!rw) return null;
 
-  const tier = rw.selected_tier ?? 'routewise';
+  const providerType = rw.selected_provider_type ?? 'routewise';
   const provider = rw.selected_provider ?? req.provider;
   let hedge = '';
   if (rw.hedging_triggered === true) {
@@ -17,5 +17,5 @@ export function formatRouteWiseDecision(
   }
 
   const backupWon = rw.backup_won ? '; backup won' : '';
-  return `${tier}: ${provider}${hedge}${backupWon}`;
+  return `${providerType}: ${provider}${hedge}${backupWon}`;
 }

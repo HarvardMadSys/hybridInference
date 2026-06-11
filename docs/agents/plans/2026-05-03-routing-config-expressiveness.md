@@ -56,7 +56,6 @@
 - `apps/backend/routing/routewise/config.py` — enumerate **every** `RouteWiseConfig` dataclass field. As of the snapshot in this plan, the field set is:
 
   ```
-  decision_rule: str = "pd"
   predictor: str = "ema"
   risk_quantile: float = 0.10
   daily_quota: int = 5000
@@ -705,8 +704,7 @@ class RouteWiseParams(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    # Decision rule + predictor
-    decision_rule: str = "pd"
+    # Predictor
     predictor: str = "ema"
     risk_quantile: float = 0.10
 
