@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, Request, Response
 
 from serving.auth.signup_policy import allowlist_is_empty, is_domain_allowed
-from serving.config.settings import is_admin_email, settings
+from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
 from serving.schemas_auth import (
     ForgotPasswordRequest,
     LoginRequest,
@@ -214,10 +214,10 @@ async def signup(
         base_url = get_base_url(request)
         background_tasks.add_task(send_verification_email, body.email, verification_token, base_url)
 
-    # Notify admins of new registration when approval is required
+    # Notify admins of new registration when approval is required.
+    # Recipients come from SIGNUP_NOTIFY_EMAILS when set, otherwise ADMIN_EMAILS.
     if require_approval and is_email_enabled():
-        admin_emails = [e.strip() for e in settings.admin_emails.split(",") if e.strip()]
-        for admin_email in admin_emails:
+        for admin_email in get_signup_notify_emails():
             background_tasks.add_task(
                 send_new_registration_admin_email,
                 to_email=admin_email,

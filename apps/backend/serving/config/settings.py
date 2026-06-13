@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # Admin
     admin_token: str = ""
     admin_emails: str = ""
+    # Recipients for signup/registration approval notifications. Comma-separated.
+    # When empty, falls back to admin_emails so existing deployments are
+    # unaffected. Set this to notify a subset of admins (or a shared inbox)
+    # without changing who holds the admin role.
+    signup_notify_emails: str = ""
     user_auth_enabled: bool = True
     api_key_secret: str = ""
 
@@ -187,6 +192,19 @@ def _parse_admin_emails(raw: str) -> list[str]:
 def is_admin_email(email: str) -> bool:
     """Check if the given email is in the admin list."""
     return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
+
+
+def get_signup_notify_emails() -> list[str]:
+    """Return recipients for signup approval notifications.
+
+    Uses ``signup_notify_emails`` when set, otherwise falls back to
+    ``admin_emails`` so that recipients can be narrowed without altering who
+    holds the admin role.
+    """
+    notify = _parse_admin_emails(settings.signup_notify_emails)
+    if notify:
+        return notify
+    return _parse_admin_emails(settings.admin_emails)
 
 
 ROLE_RANK: dict[str, int] = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
