@@ -360,16 +360,21 @@ async def chat_completions(
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
-    # When the admin enables ``log_synthetic_probes``, treat probe traffic like
-    # normal requests so it is logged/metered and shows in the dashboard. A
-    # single flag gates all the downstream logging/metrics/cost branches.
+    # ``log_synthetic_probes`` opts probe traffic into api_logs persistence (so
+    # it shows in the requests dashboard) WITHOUT changing metrics, cost, or the
+    # X-Provider header — those stay keyed on ``is_synthetic_probe``. A setting
+    # read failure defaults to suppression (the historical behavior).
+    log_synthetic_probes = False
     if (
         is_synthetic_probe
         and runtime_settings is not None
         and hasattr(runtime_settings, "get_bool")
-        and await runtime_settings.get_bool("log_synthetic_probes")
     ):
-        is_synthetic_probe = False
+        try:
+            log_synthetic_probes = await runtime_settings.get_bool("log_synthetic_probes")
+        except Exception:
+            log_synthetic_probes = False
+    suppress_synthetic_logging = is_synthetic_probe and not log_synthetic_probes
 
     def record_model_request(status_code: str, provider_name: str) -> None:
         if is_synthetic_probe:
@@ -424,7 +429,7 @@ async def chat_completions(
     # Check if model has routing configured
     if model not in router_exec.routes:
         record_model_request("404", "router")
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -460,7 +465,7 @@ async def chat_completions(
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
         record_model_request("404", "router")
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -484,7 +489,7 @@ async def chat_completions(
         route.adapters[0][0].config.id if route.adapters else model, user_ctx
     ):
         record_model_request("404", "router")
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -603,7 +608,7 @@ async def chat_completions(
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "image_url":
                     record_model_request("400", "router")
-                    if log_store and not is_synthetic_probe:
+                    if log_store and not suppress_synthetic_logging:
                         completions_logger.schedule_log(
                             request_id,
                             {
@@ -678,6 +683,7 @@ async def chat_completions(
             metadata=metadata,
             user_id=user_id,
             is_synthetic_probe=is_synthetic_probe,
+            suppress_synthetic_logging=suppress_synthetic_logging,
             log_store=log_store,
             active_router=active_router,
             cost_tracker=cost_tracker,
@@ -796,7 +802,7 @@ async def chat_completions(
                 )
 
         # Background DB log so the row write doesn't block the HTTP response.
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             # raw_dict_for_routing prefers adapter-emitted ``extra["pricing"]``
             # then falls back to a registry walk — same precedence the prior
             # ``routing_pricing or get_pricing_for_provider(...)`` had when
@@ -957,7 +963,7 @@ async def chat_completions(
         ctx = req_ctx.get()
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             metadata_for_error = metadata
             if isinstance(exc_routing, dict):
                 metadata_for_error = {

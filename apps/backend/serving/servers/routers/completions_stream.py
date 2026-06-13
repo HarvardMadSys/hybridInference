@@ -196,6 +196,7 @@ class StreamSession:
         metadata: dict[str, Any],
         user_id: str,
         is_synthetic_probe: bool,
+        suppress_synthetic_logging: bool,
         log_store: Any,
         active_router: Any,
         cost_tracker: CostTracker,
@@ -246,6 +247,7 @@ class StreamSession:
         self._metadata = metadata
         self._user_id = user_id
         self._is_synthetic_probe = is_synthetic_probe
+        self._suppress_synthetic_logging = suppress_synthetic_logging
         self._log_store = log_store
         self._active_router = active_router
         self._cost_tracker = cost_tracker
@@ -572,7 +574,7 @@ class StreamSession:
                 reasoning_tokens=int(_usage.get("reasoning_tokens", 0) or 0),
             )
 
-        if self._log_store and not self._is_synthetic_probe:
+        if self._log_store and not self._suppress_synthetic_logging:
             self._completions_logger.schedule_log(
                 self._request_id,
                 {
@@ -633,7 +635,7 @@ class StreamSession:
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
         exc_status_code = _extract_exception_status_code(exc)
 
-        if self._log_store and not self._is_synthetic_probe:
+        if self._log_store and not self._suppress_synthetic_logging:
             metadata_for_error = self._metadata
             if isinstance(exc_routing, dict):
                 metadata_for_error = {
