@@ -57,6 +57,18 @@ If you want admin bootstrap on login, also set:
 ADMIN_EMAILS=you@example.com
 ```
 
+`ADMIN_EMAILS` is a comma-separated list and controls two things: who is
+auto-promoted to the `admin` role, and (by default) who receives signup
+approval-request emails. To send those notifications to a narrower set of
+recipients without changing who holds the admin role, set `SIGNUP_NOTIFY_EMAILS`
+(also comma-separated). When it is empty, notifications fall back to
+`ADMIN_EMAILS`.
+
+```bash
+ADMIN_EMAILS=alice@example.com,bob@example.com,you@example.com
+SIGNUP_NOTIFY_EMAILS=you@example.com
+```
+
 ## Start staging
 
 ```bash
