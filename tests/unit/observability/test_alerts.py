@@ -113,6 +113,8 @@ def test_server_info_has_expected_keys():
         ({}, "https://example.com", True, "unknown"),
         # Built-in default URL with no explicit config => treat as local, not prod.
         ({}, "https://freeinference.org", False, "local"),
+        # Malformed URL (unclosed IPv6 literal) must not raise.
+        ({}, "http://[::1", True, "unknown"),
     ],
 )
 def test_detect_environment(monkeypatch, env_overrides, base_url, explicit, expected):

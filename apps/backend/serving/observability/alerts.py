@@ -112,7 +112,12 @@ def _detect_environment(base_url: str, *, explicit: bool) -> str:
     override = (os.environ.get("DEPLOYMENT_ENV") or os.environ.get("ENVIRONMENT") or "").strip()
     if override:
         return override
-    host = (urlparse(base_url).hostname or "").lower()
+    try:
+        host = (urlparse(base_url).hostname or "").lower()
+    except ValueError:
+        # Malformed base URL (e.g. an unclosed IPv6 literal). Never let a bad
+        # config value abort the alert that is being formatted.
+        return "unknown"
     if host in _LOCAL_HOSTS:
         return "local"
     if "staging" in host:
