@@ -101,7 +101,7 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
             return f"{model_id}:local"
 
         # For generic adapters, extract service name from hostname
-        if kind in ("openai_compat", "vllm", "sglang"):
+        if kind in ("openai_compat", "vllm", "sglang", "kimi"):
             # Extract service name: "api.minimax.io" -> "minimax"
             # Remove common prefixes and get the main domain part
             name = host.replace("api.", "").replace("llm.", "").split(".")[0]
@@ -148,7 +148,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
-              ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"cliproxy"``,
+              ``"kimi"``, ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"cliproxy"``,
               ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
@@ -177,6 +177,10 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     # ZAI routes through OpenAICompatAdapter with a non-/v1 chat path.
     elif kind == "zai":
         cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
+    # Kimi (Moonshot) routes through OpenAICompatAdapter; both the Kimi Code
+    # coding-plan endpoint and the pay-per-token Moonshot API are OpenAI-compatible.
+    elif kind == "kimi":
+        cfg = {**cfg, "provider_profile": "kimi"}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
     elif kind == "sglang":
@@ -195,6 +199,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "openai_compat",
         "deepseek",
         "zai",
+        "kimi",
         "minimax",
     ):
         return OpenAICompatAdapter(model_cfg)
