@@ -34,6 +34,19 @@ describe("consumeSse", () => {
     expect(stats.completionTokens).toBe(1);
   });
 
+  it("throws on a truncated stream with no completion marker or content", async () => {
+    const stream = sseStream(": keep-alive\n\n"); // closes without [DONE] or any delta
+    await expect(consumeSse(stream, Date.now())).rejects.toBeInstanceOf(StreamingProbeError);
+  });
+
+  it("accepts a stream that ends with a finish_reason but no [DONE]", async () => {
+    const stream = sseStream(
+      'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n',
+    );
+    const stats = await consumeSse(stream, Date.now());
+    expect(stats.completionTokens).toBe(1);
+  });
+
   it("throws on an in-band error chunk", async () => {
     const stream = sseStream(
       'data: {"error":{"message":"upstream exploded"}}\n\ndata: [DONE]\n\n',

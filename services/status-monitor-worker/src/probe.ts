@@ -51,13 +51,17 @@ export async function consumeSse(
   let ttftMs: number | null = null;
   let tokens = 0;
   let usageTokens: number | null = null;
+  let sawDone = false;
+  let sawEvent = false;
 
+  // Returns true when the stream is complete ([DONE]).
   const handleLine = (line: string): boolean => {
     if (!line || line.startsWith(":") || !line.startsWith("data:")) {
       return false;
     }
     const body = line.slice("data:".length).trim();
     if (body === "[DONE]") {
+      sawDone = true;
       return true;
     }
     let chunk: any;
@@ -75,9 +79,15 @@ export async function consumeSse(
     }
     if (chunk.usage?.completion_tokens != null) {
       usageTokens = chunk.usage.completion_tokens;
+      sawEvent = true;
     }
-    const delta = chunk.choices?.[0]?.delta ?? {};
+    const choice = chunk.choices?.[0];
+    if (choice?.finish_reason) {
+      sawEvent = true;
+    }
+    const delta = choice?.delta ?? {};
     if (delta.content || delta.reasoning_content || delta.tool_calls) {
+      sawEvent = true;
       if (ttftMs === null) {
         ttftMs = Date.now() - startedAt;
       }
@@ -103,6 +113,11 @@ export async function consumeSse(
     if (stop) break;
   }
 
+  // A stream that closes with neither a completion marker nor any meaningful
+  // event is a truncated/empty response — fail rather than report it healthy.
+  if (!sawDone && !sawEvent) {
+    throw new StreamingProbeError("incomplete stream (no completion marker or content)");
+  }
   return { ttftMs, completionTokens: usageTokens ?? (tokens || null) };
 }
 

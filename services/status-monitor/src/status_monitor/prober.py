@@ -94,6 +94,8 @@ async def _probe_streaming(
     ttft_ms: float | None = None
     tokens = 0
     usage_tokens: int | None = None
+    saw_done = False
+    saw_event = False
     async with client.stream("POST", url, headers=headers, json=payload) as response:
         response.raise_for_status()
         async for line in response.aiter_lines():
@@ -103,6 +105,7 @@ async def _probe_streaming(
                 continue
             body = line[len("data:") :].strip()
             if body == "[DONE]":
+                saw_done = True
                 break
             try:
                 chunk = json.loads(body)
@@ -114,9 +117,12 @@ async def _probe_streaming(
                 raise StreamingProbeError(message or "stream error")
             if chunk.get("usage"):
                 usage_tokens = chunk["usage"].get("completion_tokens")
+                saw_event = True
             choices = chunk.get("choices") or []
             if not choices:
                 continue
+            if choices[0].get("finish_reason"):
+                saw_event = True
             delta = choices[0].get("delta", {}) or {}
             # The gateway's own TTFT tracker treats reasoning_content and tool
             # calls as first-token events too, so reasoning-only models don't
@@ -125,9 +131,14 @@ async def _probe_streaming(
                 delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls")
             )
             if first_token:
+                saw_event = True
                 if ttft_ms is None:
                     ttft_ms = (time.monotonic() - started) * 1000.0
                 tokens += 1
+    # A stream that closes with neither a completion marker nor any meaningful
+    # event is a truncated/empty response — fail rather than report it healthy.
+    if not saw_done and not saw_event:
+        raise StreamingProbeError("incomplete stream (no completion marker or content)")
     return ttft_ms, usage_tokens if usage_tokens is not None else tokens
 
 

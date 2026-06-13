@@ -132,6 +132,25 @@ async def test_streaming_reasoning_only_records_ttft() -> None:
     assert result.ttft_ms is not None  # reasoning counted as first token
 
 
+async def test_streaming_truncated_empty_fails_probe() -> None:
+    # HTTP 200 but the stream closes with no [DONE] and no meaningful event.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=": keep-alive\n\n")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await probe_model(
+            client,
+            gateway=_gateway(),
+            settings=Settings(),
+            model_id="glm-4.7",
+            streaming=True,
+        )
+
+    assert result.ok is False
+    assert "incomplete stream" in result.error
+
+
 async def test_streaming_in_band_error_fails_probe() -> None:
     # Gateway returns HTTP 200 but emits an in-band error chunk on upstream failure.
     sse = (
