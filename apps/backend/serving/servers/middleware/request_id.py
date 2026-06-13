@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 _HEADER_NAME = "x-request-id"
 _HEADER_BYTES = b"x-request-id"
+_USER_AGENT_BYTES = b"user-agent"
 
 
 class RequestIdMiddleware:
@@ -27,15 +28,20 @@ class RequestIdMiddleware:
             return
 
         req_id: str | None = None
+        user_agent: str | None = None
         for name, value in scope.get("headers", []):
             if name == _HEADER_BYTES:
                 req_id = value.decode("latin-1")
-                break
+            elif name == _USER_AGENT_BYTES:
+                user_agent = value.decode("latin-1")
         if not req_id:
             req_id = secrets.token_hex(12)
 
         scope.setdefault("state", {})["request_id"] = req_id
-        req_ctx.update({"request_id": req_id})
+        # Always set both keys (User-Agent may be None) so a request without a
+        # User-Agent overwrites — never inherits — a prior request's value when
+        # the same task handles sequential scopes.
+        req_ctx.update({"request_id": req_id, "client_user_agent": user_agent or None})
 
         req_id_bytes = req_id.encode("latin-1")
 
