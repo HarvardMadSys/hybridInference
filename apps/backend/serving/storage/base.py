@@ -965,6 +965,22 @@ class LogStore(ABC):
         """
 
     @abstractmethod
+    async def get_routewise_bootstrap_rows(
+        self,
+        *,
+        model_ids: list[str],
+        since: datetime,
+        limit: int | None = None,
+    ) -> list[Row]:
+        """Fetch recent request rows for RouteWise startup bootstrap.
+
+        Rows must be returned in ascending timestamp order so RouteWise's
+        in-memory rolling windows can replay them oldest-to-newest.  When
+        ``limit`` is provided, implementations should return the most recent
+        ``limit`` rows from the window, still ordered ascending for replay.
+        """
+
+    @abstractmethod
     async def get_stats(
         self,
         *,

@@ -1,8 +1,9 @@
-"""Tests for SMART_ECONOMIC hedging: survival/CDF, threshold, HedgedAdapter."""
+"""Tests for RouteWise hedge dispatch and probability-target router wiring."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -14,42 +15,10 @@ from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
     HedgedAdapter,
     ProviderEventSink,
-    cdf_separate_at,
-    compute_hedge_threshold,
-    compute_probability_targeted_hedge_threshold,
-    survival_at,
 )
-from routing.routewise.latency import ProviderProfile
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_profile(
-    endpoint_id: str = "test:ep",
-    window_sec: float = 900.0,
-) -> ProviderProfile:
-    return ProviderProfile(endpoint_id=endpoint_id, window_sec=window_sec)
-
-
-def _populate_profile(
-    profile: ProviderProfile,
-    latencies_ms: list[float],
-    now: float | None = None,
-    errors: int = 0,
-) -> float:
-    """Add latency samples to a profile. Returns the timestamp used."""
-    if now is None:
-        now = time.time()
-    for ms in latencies_ms:
-        profile.record(now, ms)
-    for _ in range(errors):
-        profile.record(now, -1.0, error_type="error")
-    return now
 
 
 class _FakeEventSink:
@@ -66,6 +35,34 @@ class _FakeEventSink:
         self.failures.append((provider, reason))
 
 
+def _quota_pool(router):
+    """Return the router's only quota pool (single-pool test fixtures)."""
+    return next(iter(router.quota_pools.values()))
+
+
+def _seed_quota_snapshots(router, *, used: float = 0.0) -> None:
+    """Install a ready provider snapshot for every quota pool on the router."""
+    from datetime import datetime, timezone
+
+    from routing.routewise.quota import ProviderQuotaSnapshot
+
+    now = datetime.now(timezone.utc)
+    for pool in router.quota_pools.values():
+        router.quota_snapshots._snapshots[pool.source] = ProviderQuotaSnapshot(
+            source=pool.source,
+            used=used,
+            limit=float(pool.policy.limit),
+            reset_at=None,
+            fetched_at=now,
+        )
+        router.quota_snapshots._local_increments[pool.source] = 0
+
+
+def _conc_pool(router):
+    """Return the router's only concurrency pool (single-pool test fixtures)."""
+    return next(iter(router.concurrency_pools.values()))
+
+
 def _make_model_config(
     model_id: str = "test-model",
     provider: str = "provider-a",
@@ -75,8 +72,9 @@ def _make_model_config(
     cfg.id = model_id
     cfg.provider = provider
     cfg.endpoint_id = endpoint_id
+    cfg.base_url = f"https://{provider}.example/v1"
     cfg.pricing = {"prompt": "3.0", "completion": "15.0"}
-    cfg.subscription_type = "api"
+    cfg.provider_type = "on_demand"
     return cfg
 
 
@@ -127,270 +125,19 @@ def _make_fake_adapter(
     return adapter
 
 
-# ===========================================================================
-# TestSurvivalFunctions
-# ===========================================================================
-
-
-@pytest.mark.unit
-class TestSurvivalFunctions:
-    def test_empty_profile_survival_is_one(self):
-        """Empty profile returns S=1.0 (no data, assume high latency)."""
-        profile = _make_profile()
-        now = time.time()
-        assert survival_at(profile, 1.0, now) == 1.0
-
-    def test_empty_profile_cdf_is_zero(self):
-        """Empty profile returns F=0.0."""
-        profile = _make_profile()
-        now = time.time()
-        assert cdf_separate_at(profile, 1.0, now) == 0.0
-
-    def test_known_samples_survival(self):
-        """With known samples, S(t) returns correct fraction > t."""
-        profile = _make_profile()
-        now = time.time()
-        # 10 samples: [100, 200, 300, ..., 1000] ms = [0.1, 0.2, ..., 1.0] sec
-        latencies = [i * 100.0 for i in range(1, 11)]
-        _populate_profile(profile, latencies, now)
-
-        # S(0.5) = fraction > 0.5s = {0.6, 0.7, 0.8, 0.9, 1.0} = 5/10
-        assert survival_at(profile, 0.5, now) == pytest.approx(0.5)
-
-        # F(0.5) = 1 - S(0.5) = 0.5
-        assert cdf_separate_at(profile, 0.5, now) == pytest.approx(0.5)
-
-    def test_known_samples_cdf_boundary(self):
-        """CDF at threshold below all samples is 0; above all is 1."""
-        profile = _make_profile()
-        now = time.time()
-        latencies = [500.0, 600.0, 700.0]  # 0.5, 0.6, 0.7 sec
-        _populate_profile(profile, latencies, now)
-
-        assert cdf_separate_at(profile, 0.4, now) == pytest.approx(0.0)
-        assert cdf_separate_at(profile, 1.0, now) == pytest.approx(1.0)
-
-    def test_errors_excluded_separate_mode(self):
-        """Errors do not appear in SEPARATE mode samples."""
-        profile = _make_profile()
-        now = time.time()
-        # 5 successes at 200ms, 5 errors
-        _populate_profile(profile, [200.0] * 5, now, errors=5)
-
-        # All successful samples are 0.2s; S(0.3) should be 0 (none > 0.3)
-        assert survival_at(profile, 0.3, now) == pytest.approx(0.0)
-        # S(0.1) should be 1.0 (all > 0.1)
-        assert survival_at(profile, 0.1, now) == pytest.approx(1.0)
-
-    def test_window_filtering(self):
-        """Samples outside the time window are excluded."""
-        profile = _make_profile(window_sec=60.0)
-        now = time.time()
-
-        # Old samples (outside window).
-        for ms in [100.0, 200.0, 300.0]:
-            profile.record(now - 120.0, ms)
-
-        # Recent samples (inside window).
-        _populate_profile(profile, [500.0, 600.0], now)
-
-        # Only recent samples count: 0.5s and 0.6s.
-        # S(0.4) = 2/2 = 1.0 (both > 0.4)
-        assert survival_at(profile, 0.4, now) == pytest.approx(1.0)
-        # S(0.55) = 1/2 = 0.5
-        assert survival_at(profile, 0.55, now) == pytest.approx(0.5)
-
-
-# ===========================================================================
-# TestComputeHedgeThreshold
-# ===========================================================================
-
-
-@pytest.mark.unit
-class TestComputeHedgeThreshold:
-    def test_primary_fast_returns_inf(self):
-        """If primary is always fast, hedge is never justified -> h*=inf."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # Primary always finishes in 100ms, well within SLO of 3s.
-        _populate_profile(primary, [100.0] * 20, now)
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h == float("inf")
-
-
-@pytest.mark.unit
-class TestProbabilityTargetedHedgeThreshold:
-    def test_probability_threshold_returns_latest_feasible_time(self):
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-        _populate_profile(primary, [1000.0] * 5 + [4000.0] * 5, now)
-        _populate_profile(backup, [500.0] * 10, now)
-
-        h = compute_probability_targeted_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            success_target=0.9,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-            resolution_sec=0.1,
-        )
-
-        assert 0.0 <= h < 3.0
-
-    def test_probability_threshold_returns_inf_when_target_unachievable(self):
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-        _populate_profile(primary, [4000.0] * 10, now)
-        _populate_profile(backup, [4000.0] * 10, now)
-
-        h = compute_probability_targeted_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            success_target=0.99,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-            resolution_sec=0.1,
-        )
-
-        assert h == float("inf")
-
-    def test_primary_slow_backup_fast(self):
-        """If primary often violates SLO and backup is fast, h* should be small."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # Primary: 50% at 3.5s (SLO violation), 50% at 0.5s.
-        _populate_profile(primary, [500.0] * 10 + [3500.0] * 10, now)
-        # Backup always 200ms.
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h < 2.0, f"Expected h* < 2.0, got {h}"
-        assert h != float("inf")
-
-    def test_cost_ratio_monotonicity(self):
-        """Higher cost_ratio -> later or equal h* (harder to justify hedge)."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # Mix of fast and slow primary.
-        latencies = [200.0] * 10 + [2500.0] * 10
-        _populate_profile(primary, latencies, now)
-        _populate_profile(backup, [300.0] * 20, now)
-
-        h_low = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.05,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        h_high = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.5,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h_high >= h_low
-
-    def test_empty_backup_returns_inf(self):
-        """If backup has no samples, F_backup=0 -> hedge never justified."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        _populate_profile(primary, [2500.0] * 20, now)
-        # backup has no samples
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        assert h == float("inf")
-
-    def test_empty_primary_returns_inf(self):
-        """If primary has no samples, S(t)=1 for all t -> P_viol stays 1, but
-        F_backup also matters; with no primary data, return inf."""
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-        )
-        # With empty primary: S(SLO)=1, S(h)=1, P_viol=1, F_backup>0
-        # 1 * F_backup > 0.1 should trigger at h=0 if F_backup(remaining) > 0.1
-        # Actually with empty primary, survival_at returns 1.0, so
-        # P_viol = S(SLO)/S(h) = 1/1 = 1.  If F_backup > cost_ratio, h*=0.
-        # This test documents the behavior rather than asserting inf.
-        assert h is not None  # Just ensure it runs without error.
-
-    def test_cross_validate_with_experiment(self):
-        """Grid search result should match experiment module on identical data.
-
-        We construct profiles with known samples and verify the threshold
-        direction matches: experiment code uses numpy but same math.
-        """
-        primary = _make_profile(endpoint_id="primary")
-        backup = _make_profile(endpoint_id="backup")
-        now = time.time()
-
-        # 50% of primary requests violate SLO (3.5s > 3.0s), 50% fast (0.3s)
-        latencies = [300.0] * 10 + [3500.0] * 10
-        _populate_profile(primary, latencies, now)
-        _populate_profile(backup, [200.0] * 20, now)
-
-        h = compute_hedge_threshold(
-            primary_profile=primary,
-            backup_profile=backup,
-            slo_sec=3.0,
-            cost_ratio=0.1,
-            dispatch_overhead_sec=0.05,
-            current_time=now,
-            resolution_sec=0.1,
-        )
-        # With 50% primary > SLO, hedge should trigger.
-        assert h < float("inf")
-        # h* should be a reasonable value between 0 and SLO.
-        assert 0 <= h <= 3.0
+def _warm_envelope(
+    router: Any,
+    *,
+    lower: float = 0.0000001,
+    upper: float = 0.001,
+    model_id: str = "test-model",
+) -> None:
+    pool = router._routewise_pool(model_id)
+    base_ts = time.time() - 1.0
+    for _ in range(25):
+        router.envelope.observe(pool, lower, now=base_ts)
+    for _ in range(25):
+        router.envelope.observe(pool, upper, now=base_ts)
 
 
 # ===========================================================================
@@ -471,6 +218,14 @@ class TestHedgedAdapterNonStreaming:
         assert result["source"] == "backup"
         assert ("fail-primary", "RuntimeError") in sink.failures
         assert "good-backup" in sink.successes
+        assert hedged.failed_attempts == [
+            {
+                "provider": "fail-primary",
+                "endpoint_id": "test:ep-a",
+                "error_type": "RuntimeError",
+                "error": "primary failed",
+            }
+        ]
 
     @pytest.mark.asyncio
     async def test_both_fail_primary_error_raised(self):
@@ -494,6 +249,19 @@ class TestHedgedAdapterNonStreaming:
             await hedged.chat_completion([{"role": "user", "content": "hi"}])
         assert ("fail-primary", "RuntimeError") in sink.failures
         assert ("fail-backup", "ValueError") in sink.failures
+        assert {
+            "provider": "fail-primary",
+            "endpoint_id": "test:ep-a",
+            "error_type": "RuntimeError",
+            "error": "primary boom",
+        } in hedged.failed_attempts
+        assert {
+            "provider": "fail-backup",
+            "endpoint_id": "test:ep-a",
+            "error_type": "ValueError",
+            "error": "backup boom",
+        } in hedged.failed_attempts
+        assert len(hedged.failed_attempts) == 2
 
     @pytest.mark.asyncio
     async def test_event_sink_called_correctly(self):
@@ -749,12 +517,12 @@ def _make_router_with_two_api(
     api_a = MagicMock()
     api_a.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
     api_a.config.pricing = {"prompt": "3.0", "completion": "15.0"}
-    api_a.config.subscription_type = "api"
+    api_a.config.provider_type = "on_demand"
 
     api_b = MagicMock()
     api_b.config = _make_model_config(provider="provider-b", endpoint_id="test-model:api-b")
     api_b.config.pricing = {"prompt": "4.0", "completion": "20.0"}
-    api_b.config.subscription_type = "api"
+    api_b.config.provider_type = "on_demand"
 
     @dataclass
     class _FakeRouteConfig:
@@ -773,98 +541,533 @@ def _make_router_with_two_api(
     return router, api_a, api_b
 
 
+def _make_router_with_api_and_concurrency(
+    config: RouteWiseConfig,
+) -> tuple[Any, MagicMock, MagicMock]:
+    """Build a RouteWiseRouter with one S_A and one S_C adapter."""
+    from routing.routewise.router import RouteWiseRouter
+
+    api = MagicMock()
+    api.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
+    api.config.pricing = {"prompt": "3.0", "completion": "15.0"}
+    api.config.provider_type = "on_demand"
+
+    concurrency = MagicMock()
+    concurrency.config = _make_model_config(
+        provider="provider-b",
+        endpoint_id="test-model:concurrency-b",
+    )
+    concurrency.config.pricing = {"prompt": "0.0", "completion": "0.0"}
+    concurrency.config.provider_type = "concurrency"
+    concurrency.config.concurrency = {"limit": 1}
+
+    @dataclass
+    class _FakeRouteConfig:
+        adapters: list[tuple[Any, float]]
+
+    class _FakeFixedRouter:
+        def __init__(self) -> None:
+            self.routes: dict[str, _FakeRouteConfig] = {}
+
+        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
+            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
+
+    fr = _FakeFixedRouter()
+    fr.add("test-model", [(api, 0.5), (concurrency, 0.5)])
+    router = RouteWiseRouter(fixed_router=fr, config=config)
+    return router, api, concurrency
+
+
+def _make_router_with_api_and_quota(
+    config: RouteWiseConfig,
+) -> tuple[Any, MagicMock, MagicMock]:
+    """Build a RouteWiseRouter with one S_A and one S_Q adapter."""
+    from routing.routewise.router import RouteWiseRouter
+
+    api = MagicMock()
+    api.config = _make_model_config(provider="provider-a", endpoint_id="test-model:api-a")
+    api.config.pricing = {"prompt": "3.0", "completion": "15.0"}
+    api.config.provider_type = "on_demand"
+
+    quota = MagicMock()
+    quota.config = _make_model_config(
+        provider="provider-q",
+        endpoint_id="test-model:quota-q",
+    )
+    quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
+    quota.config.provider_type = "quota"
+    quota.config.quota = {"limit": 10}
+    quota.config.quota_source = {
+        "provider": "stub",
+        "usage_label": "Daily requests",
+        "unit": "requests",
+    }
+
+    @dataclass
+    class _FakeRouteConfig:
+        adapters: list[tuple[Any, float]]
+
+    class _FakeFixedRouter:
+        def __init__(self) -> None:
+            self.routes: dict[str, _FakeRouteConfig] = {}
+
+        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
+            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
+
+    fr = _FakeFixedRouter()
+    fr.add("test-model", [(api, 0.5), (quota, 0.5)])
+    router = RouteWiseRouter(fixed_router=fr, config=config)
+    _seed_quota_snapshots(router)
+    return router, api, quota
+
+
+def _make_router_with_api_quota_and_api(
+    config: RouteWiseConfig,
+    quota_limit: int = 10,
+) -> tuple[Any, MagicMock, MagicMock, MagicMock]:
+    """Build a RouteWiseRouter with API primary plus S_Q and S_A backups."""
+    from routing.routewise.router import RouteWiseRouter
+
+    api_primary = MagicMock()
+    api_primary.config = _make_model_config(
+        provider="provider-a",
+        endpoint_id="test-model:api-a",
+    )
+    api_primary.config.pricing = {"prompt": "3.0", "completion": "15.0"}
+    api_primary.config.provider_type = "on_demand"
+
+    quota = MagicMock()
+    quota.config = _make_model_config(
+        provider="provider-q",
+        endpoint_id="test-model:quota-q",
+    )
+    quota.config.pricing = {"prompt": "0.0", "completion": "0.0"}
+    quota.config.provider_type = "quota"
+    quota.config.quota = {"limit": quota_limit}
+    quota.config.quota_source = {
+        "provider": "stub",
+        "usage_label": "Daily requests",
+        "unit": "requests",
+    }
+
+    api_backup = MagicMock()
+    api_backup.config = _make_model_config(
+        provider="provider-c",
+        endpoint_id="test-model:api-c",
+    )
+    api_backup.config.pricing = {"prompt": "4.0", "completion": "20.0"}
+    api_backup.config.provider_type = "on_demand"
+
+    @dataclass
+    class _FakeRouteConfig:
+        adapters: list[tuple[Any, float]]
+
+    class _FakeFixedRouter:
+        def __init__(self) -> None:
+            self.routes: dict[str, _FakeRouteConfig] = {}
+
+        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
+            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
+
+    fr = _FakeFixedRouter()
+    fr.add("test-model", [(api_primary, 0.4), (quota, 0.3), (api_backup, 0.3)])
+    router = RouteWiseRouter(fixed_router=fr, config=config)
+    _seed_quota_snapshots(router)
+    return router, api_primary, quota, api_backup
+
+
 @pytest.mark.unit
 class TestRouterHedgeMode:
-    def test_economic_mode_returns_hedged_adapter(self):
-        """Economic mode returns HedgedAdapter when hedge is justified."""
+    def test_probability_target_mode_wraps_router_selection(self):
+        """Probability-target mode returns a real HedgedAdapter."""
         config = RouteWiseConfig(
+            budget_alpha=0.0,
             latency_min_samples=5,
-            latency_lp_interval_sec=0.0,
             latency_slo_sec=3.0,
-            latency_hedge_mode="economic",
-            latency_hedge_cost_ratio=0.05,  # Low threshold -> easy to justify
+            latency_hedge_mode="probability_target",
         )
-        router, _api_a, _api_b = _make_router_with_two_api(config)
+        router, api_a, _api_b = _make_router_with_two_api(config)
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
         now = time.time()
-        # Primary (api-a): 50% SLO violations -> hedging justified.
         for _ in range(10):
             router._latency_profiles["test-model:api-a"].record(now, 500.0)
-        for _ in range(10):
             router._latency_profiles["test-model:api-a"].record(now, 3500.0)
-        # Backup (api-b): fast.
-        for _ in range(20):
             router._latency_profiles["test-model:api-b"].record(now, 200.0)
 
-        # Test _maybe_create_hedged_adapter directly for reliability.
-        hedged = router._maybe_create_hedged_adapter(
-            "test-model",
-            "test-model:api-a",
-            ["test-model:api-a", "test-model:api-b"],
-            now,
-        )
-        assert hedged is not None
-        assert isinstance(hedged, HedgedAdapter)
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
 
-    def test_economic_mode_returns_plain_when_not_justified(self):
-        """Economic mode returns None (plain adapter) when h*=inf."""
+        assert isinstance(selected, HedgedAdapter)
+        assert selected.primary is api_a
+        assert selected.backup is None
+        assert selected.hedge_checkpoints_sec
+        assert selected.hedge_threshold_sec > 0.0
+
+    @pytest.mark.asyncio
+    async def test_probability_target_mode_dispatches_backup_and_updates_metadata(self):
+        """Probability-target hedging dispatches the backup and records the winner."""
         config = RouteWiseConfig(
-            latency_min_samples=5,
-            latency_lp_interval_sec=0.0,
-            latency_slo_sec=3.0,
-            latency_hedge_mode="economic",
-            latency_hedge_cost_ratio=0.9,  # Very high -> hard to justify
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
         )
-        router, _api_a, _api_b = _make_router_with_two_api(config)
+        router, api_a, api_b = _make_router_with_two_api(config)
 
         now = time.time()
-        # Both providers fast.
-        for _ in range(20):
-            router._latency_profiles["test-model:api-a"].record(now, 200.0)
-            router._latency_profiles["test-model:api-b"].record(now, 300.0)
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
 
-        hedged = router._maybe_create_hedged_adapter(
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api_a.chat_completion = _slow_primary
+        api_b.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
             "test-model",
-            "test-model:api-a",
-            ["test-model:api-a", "test-model:api-b"],
-            now,
+            [{"role": "user", "content": "hi"}],
         )
-        assert hedged is None
 
-    def test_shadow_mode_uses_smart_economic_formula(self):
-        """Shadow mode now uses SMART_ECONOMIC compute_hedge_threshold."""
+        assert resp["source"] == "backup"
+        assert resp["_routing"]["endpoint_id"] == "test-model:api-b"
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["hedged"] is True
+        assert routewise["hedge_triggered"] is True
+        assert routewise["backup_won"] is True
+        assert routewise["hedge_winner"] == "backup"
+        assert routewise["backup_provider"] == "test-model:api-b"
+        assert routewise["hedge_algorithm"] == "probability_target"
+        assert routewise["hedge_schedule"] == "slo_relative_checkpoints"
+        assert routewise["primary_routing_estimated_cost_usd"] is not None
+        assert routewise["backup_routing_estimated_cost_usd"] is not None
+        assert routewise["routing_estimated_cost_usd"] == pytest.approx(
+            routewise["primary_routing_estimated_cost_usd"]
+            + routewise["backup_routing_estimated_cost_usd"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_probability_target_primary_failure_surfaces_failed_attempt(self):
+        """A hidden hedged primary failure must feed the normal observation path."""
         config = RouteWiseConfig(
-            latency_min_samples=5,
-            latency_lp_interval_sec=0.0,
-            latency_slo_sec=3.0,
-            latency_hedge_mode="shadow",
-            latency_hedge_cost_ratio=0.05,
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
         )
-        router, _api_a, _api_b = _make_router_with_two_api(config)
-
-        for _ in range(25):
-            router.predictor.update("test-model", 500)
+        router, api_a, api_b = _make_router_with_two_api(config)
 
         now = time.time()
-        # Primary slow, backup fast.
-        for _ in range(20):
-            router._latency_profiles["test-model:api-a"].record(now, 2800.0)
-            router._latency_profiles["test-model:api-b"].record(now, 200.0)
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
 
-        router._select_adapter("test-model", {"prompt_tokens": 1000})
+        async def _failed_primary(messages, **params):
+            raise RuntimeError("primary failed")
 
-        # Shadow log should exist and use economic model reasons.
-        assert len(router._shadow_hedge_log) >= 1
-        entry = router._shadow_hedge_log[-1]
-        assert entry.reason in (
-            "hedge_warranted",
-            "hedge_not_justified",
-            "no_backup",
-            "insufficient_samples",
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api_a.chat_completion = _failed_primary
+        api_b.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
         )
+
+        assert resp["source"] == "backup"
+        assert resp["_routing"]["failed_attempts"] == [
+            {
+                "provider": "provider-a",
+                "endpoint_id": "test-model:api-a",
+                "error_type": "RuntimeError",
+                "error": "primary failed",
+            }
+        ]
+        assert (
+            resp["_routing"]["routewise"]["failed_attempts"] == resp["_routing"]["failed_attempts"]
+        )
+
+    @pytest.mark.asyncio
+    async def test_probability_target_primary_wins_before_dispatch(self):
+        """A planned hedge is not recorded as triggered if primary returns first."""
+        config = RouteWiseConfig(
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
+
+        async def _fast_primary(messages, **params):
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api_a.chat_completion = _fast_primary
+        api_b.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "primary"
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["hedged"] is False
+        assert routewise["hedge_triggered"] is False
+        assert routewise["backup_won"] is False
+        assert routewise["backup_provider"] is None
+
+    @pytest.mark.asyncio
+    async def test_probability_target_streaming_backup_winner_updates_routing(self):
+        """Streaming hedges emit winner routing before backup content."""
+        config = RouteWiseConfig(
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_a, api_b = _make_router_with_two_api(config)
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
+
+        async def _slow_primary_stream(messages, **params):
+            await asyncio.sleep(0.2)
+            yield 'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        async def _fast_backup_stream(messages, **params):
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        api_a.stream_chat_completion = _slow_primary_stream
+        api_b.stream_chat_completion = _fast_backup_stream
+
+        chunks = []
+        async for chunk in router.stream_chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-stream-hedge",
+        ):
+            chunks.append(chunk)
+
+        combined = "".join(chunks)
+        assert "backup" in combined
+        assert '"endpoint_id": "test-model:api-b"' in combined
+
+        routewise_chunks = [
+            json.loads(chunk[6:])
+            for chunk in chunks
+            if isinstance(chunk, str) and chunk.startswith("data: ") and "routewise" in chunk
+        ]
+        assert routewise_chunks
+        routewise = routewise_chunks[-1]["_routing"]["routewise"]
+        assert routewise["hedged"] is True
+        assert routewise["backup_won"] is True
+        assert routewise["hedge_winner"] == "backup"
+
+    @pytest.mark.asyncio
+    async def test_probability_target_can_dispatch_concurrency_backup(self):
+        """Backup selection is not restricted to on-demand providers."""
+        config = RouteWiseConfig(
+            budget_alpha=1.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api, concurrency = _make_router_with_api_and_concurrency(config)
+
+        def _force_api_primary(candidates, solution):
+            return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+
+        router._sample_solution = _force_api_primary
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:concurrency-b"].record(now, 1.0)
+
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api.chat_completion = _slow_primary
+        concurrency.chat_completion = _fast_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "backup"
+        assert len(router.concurrency_pools) == 1
+        assert _conc_pool(router).active == 0
+        assert _conc_pool(router).get_stats()["total_acquired"] == 1
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["backup_provider"] == "test-model:concurrency-b"
+        assert routewise["backup_provider_type"] == "concurrency"
+        assert routewise["backup_won"] is True
+
+    @pytest.mark.asyncio
+    async def test_probability_target_can_dispatch_quota_backup(self):
+        """Quota backups consume quota when the hedge actually dispatches."""
+        config = RouteWiseConfig(
+            budget_alpha=1.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api, quota = _make_router_with_api_and_quota(config)
+        _warm_envelope(router)
+
+        def _force_api_primary(candidates, solution):
+            return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+
+        router._sample_solution = _force_api_primary
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:quota-q"].record(now, 1.0)
+
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "backup"}
+
+        api.chat_completion = _slow_primary
+        quota.chat_completion = _fast_backup
+
+        before = _quota_pool(router).remaining
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "backup"
+        assert before - _quota_pool(router).remaining == 1
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["backup_provider"] == "test-model:quota-q"
+        assert routewise["backup_provider_type"] == "quota"
+        assert routewise["backup_won"] is True
+
+    @pytest.mark.asyncio
+    async def test_probability_target_backup_tiebreak_uses_request_cost_not_shadow_price(self):
+        """Checkpoint backup selection matches SIM/REAL raw marginal-cost tiebreak."""
+        config = RouteWiseConfig(
+            budget_alpha=1.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_primary, quota, api_backup = _make_router_with_api_quota_and_api(config)
+        _warm_envelope(router)
+
+        def _force_api_primary(candidates, solution):
+            return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+
+        router._sample_solution = _force_api_primary
+        for _ in range(9):
+            _quota_pool(router).consume()
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:quota-q"].record(now, 1.0)
+        router._latency_profiles["test-model:api-c"].record(now, 1.0)
+
+        async def _slow_primary(messages, **params):
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _fast_quota_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "quota-q"}
+
+        async def _api_backup_should_not_run(messages, **params):
+            raise AssertionError("API backup should lose to cheaper raw quota backup")
+
+        api_primary.chat_completion = _slow_primary
+        quota.chat_completion = _fast_quota_backup
+        api_backup.chat_completion = _api_backup_should_not_run
+
+        before = _quota_pool(router).remaining
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "quota-q"
+        assert before - _quota_pool(router).remaining == 1
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["backup_provider"] == "test-model:quota-q"
+        assert routewise["backup_provider_type"] == "quota"
+        assert routewise["backup_won"] is True
+
+    @pytest.mark.asyncio
+    async def test_probability_target_reselects_backup_at_checkpoint(self):
+        """Checkpoint hedging re-evaluates current state instead of using a stale backup."""
+        config = RouteWiseConfig(
+            budget_alpha=1.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        router, api_primary, quota, api_backup = _make_router_with_api_quota_and_api(
+            config, quota_limit=1
+        )
+        _warm_envelope(router)
+
+        def _force_api_primary(candidates, solution):
+            return next(c for c in candidates if c.endpoint_id == "test-model:api-a")
+
+        router._sample_solution = _force_api_primary
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:quota-q"].record(now, 1.0)
+        router._latency_profiles["test-model:api-c"].record(now, 1.0)
+
+        async def _slow_primary(messages, **params):
+            _quota_pool(router).consume()
+            await asyncio.sleep(0.2)
+            return {"choices": [{"message": {"content": "primary"}}], "source": "primary"}
+
+        async def _quota_should_not_run(messages, **params):
+            raise AssertionError("stale quota backup should not dispatch")
+
+        async def _fast_api_backup(messages, **params):
+            return {"choices": [{"message": {"content": "backup"}}], "source": "api-c"}
+
+        api_primary.chat_completion = _slow_primary
+        quota.chat_completion = _quota_should_not_run
+        api_backup.chat_completion = _fast_api_backup
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
+
+        assert resp["source"] == "api-c"
+        routewise = resp["_routing"]["routewise"]
+        assert routewise["backup_provider"] == "test-model:api-c"
+        assert routewise["backup_provider_type"] == "on_demand"
+        assert routewise["backup_won"] is True
 
 
 # ===========================================================================
@@ -988,6 +1191,7 @@ class TestWinnerAttribution:
 
         combined = "".join(chunks)
         assert "quick" in combined
+        assert '"endpoint_id": "ep:fast"' in combined
         # Config must be swapped to backup's.
         assert hedged.config.provider == "fast-backup"
         assert hedged.config.endpoint_id == "ep:fast"

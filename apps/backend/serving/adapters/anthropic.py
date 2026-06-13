@@ -223,6 +223,7 @@ class AnthropicAdapter(BaseAdapter):
         output_tokens = 0
         cache_read_input_tokens = 0
         cache_creation_input_tokens = 0
+        cache_read_reported = False
         finish_reason = "stop"
         total_content = ""
 
@@ -265,6 +266,8 @@ class AnthropicAdapter(BaseAdapter):
                             output_tokens = result.output_tokens
                         if result.cache_read_tokens:
                             cache_read_input_tokens = result.cache_read_tokens
+                        if result.cache_read_reported:
+                            cache_read_reported = True
                         if result.cache_write_tokens:
                             cache_creation_input_tokens = result.cache_write_tokens
 
@@ -287,6 +290,7 @@ class AnthropicAdapter(BaseAdapter):
             output_tokens=output_tokens,
             cache_read_input_tokens=cache_read_input_tokens,
             cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_reported=cache_read_reported,
         )
         final_chunk: dict[str, Any] = {
             "id": f"chatcmpl-{int(time.time() * 1000)}",

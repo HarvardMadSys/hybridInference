@@ -26,6 +26,7 @@ class ProviderProfile(str, Enum):
 
     DEFAULT = "default"
     DEEPSEEK = "deepseek"
+    KIMI = "kimi"
     MINIMAX = "minimax"
     OPENROUTER = "openrouter"
     ZAI = "zai"
@@ -59,7 +60,9 @@ def filter_response_format(
 
 def supports_guided_json(profile: ProviderProfile) -> bool:
     """Whether the provider supports the vLLM-style guided_json extension."""
-    return profile != ProviderProfile.DEEPSEEK
+    # Kimi (Moonshot) is a proprietary API: it speaks OpenAI-style
+    # response_format (incl. json_schema) but not the vLLM guided_json field.
+    return profile not in (ProviderProfile.DEEPSEEK, ProviderProfile.KIMI)
 
 
 def default_chat_path(profile: ProviderProfile) -> str | None:
@@ -125,6 +128,7 @@ def normalize_usage_default(usage_data: dict[str, Any]) -> UsageInfo:
         reasoning_tokens=extract_reasoning_tokens(usage_data) or 0,
         cache_read_tokens=cache_read or 0,
         cache_write_tokens=cache_write or 0,
+        cache_read_reported=cache_read is not None,
     )
 
 
@@ -154,6 +158,9 @@ def normalize_usage_deepseek(usage_data: dict[str, Any]) -> UsageInfo:
         cache_read_tokens=cache_hit,
         cache_write_tokens=usage_data.get("cache_creation_input_tokens", 0)
         or usage_data.get("cache_write_tokens", 0),
+        cache_read_reported=(
+            "prompt_cache_hit_tokens" in usage_data or "prompt_cache_miss_tokens" in usage_data
+        ),
     )
 
 

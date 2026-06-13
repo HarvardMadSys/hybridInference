@@ -22,6 +22,9 @@ class UsageInfo:
     # Cache tokens for cost calculation
     cache_read_tokens: int = 0  # Tokens read from cache (cheaper)
     cache_write_tokens: int = 0  # Tokens written to cache (may have cost)
+    # True when the provider explicitly reported a cache-read count (even 0), so
+    # to_dict() can distinguish a reported miss (0) from "not reported" (absent).
+    cache_read_reported: bool = False
     # OpenRouter-reported per-request upstream cost in USD. Internal-only:
     # NOT serialized via to_dict() to avoid leaking to API clients. Logged
     # to api_logs.upstream_cost_usd for ops/billing reconciliation.
@@ -37,8 +40,10 @@ class UsageInfo:
         # Include reasoning tokens if present (for models like DeepSeek-R1)
         if self.reasoning_tokens > 0:
             result["reasoning_tokens"] = self.reasoning_tokens
-        # Include cache tokens if present (for transparency)
-        if self.cache_read_tokens > 0:
+        # Include cache tokens. Emit cache_read even when the provider reported
+        # an explicit 0 (cache_read_reported) so downstream logging and billing
+        # can distinguish a reported miss (0) from "not reported" (absent).
+        if self.cache_read_reported or self.cache_read_tokens > 0:
             result["cache_read_tokens"] = self.cache_read_tokens
             result["cached_tokens"] = self.cache_read_tokens
         if self.cache_write_tokens > 0:
@@ -58,6 +63,12 @@ class ModelConfig:
     # Optional list of API keys for multi-key rotation. When set, takes
     # precedence over ``api_key`` and the adapter constructs a KeyPool.
     # Only one of ``api_key`` / ``api_keys`` should be set per route.
+    #
+    # RouteWise treats one route entry as one endpoint candidate. Therefore,
+    # ``api_keys`` means "this endpoint is an aggregate key pool": latency,
+    # failures, and quota accounting are learned for the pool as a whole. If
+    # individual keys represent separate scarce resources, configure them as
+    # separate route entries with distinct endpoint_id values instead.
     api_keys: list[str] | None = None
     # Model type: "chat" for LLMs, "embedding" for embedding models.
     model_type: str = "chat"
@@ -100,18 +111,28 @@ class ModelConfig:
     auth_format: str | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
     extra_query: dict[str, str] = field(default_factory=dict)
+    # Default fields merged into OpenAI-compatible upstream request bodies.
+    # Core fields and validated client parameters take precedence.
+    extra_body: dict[str, Any] = field(default_factory=dict)
     # Optional upstream chat endpoint path override for OpenAI-like providers
     # that do not expose the default /v1/chat/completions route.
     chat_path: str | None = None
     # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
     # When set, OpenAICompatAdapter uses profile-specific usage normalization.
     provider_profile: str | None = None
-    # Generic per-route metadata consumed by routing strategies. Existing
-    # `subscription_type` is mirrored here for compatibility with RouteWise.
+    # Generic per-route metadata consumed by routing strategies. RouteWise
+    # mirrors `provider_type` here during config loading.
     route_metadata: dict[str, Any] = field(default_factory=dict)
-    # Compatibility route classification. Prefer `route_metadata["subscription_type"]`
-    # for new strategy code; this field remains accepted for existing YAML.
-    subscription_type: str = "api"
+    # RouteWise provider category for this endpoint.
+    provider_type: str = "on_demand"
+    # RouteWise route-level metadata. These fields are not sent upstream; they
+    # are carried from models.yaml to the RouteWise candidate extractor.
+    routewise_pool: str | None = None
+    quota_pool: str | None = None
+    concurrency_pool: str | None = None
+    quota_source: dict[str, Any] | None = None
+    quota: dict[str, Any] | None = None
+    concurrency: dict[str, Any] | None = None
     # Whether to send `stream_options: {"include_usage": True}` on streaming requests.
     # Enable for OpenAI / vLLM / sglang upstreams that support it. Leave False for
     # providers that strictly validate the request body and reject unknown fields
@@ -122,6 +143,20 @@ class ModelConfig:
     # Set automatically by parse_openrouter_kind() when the YAML uses
     # `kind: openrouter[<slug>]`. None for bare `kind: openrouter`.
     openrouter_pinned_provider: str | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize never-None collection fields seeded with an explicit None.
+
+        Config-merge layers (e.g. registry top_cfg inheritance) can pass an
+        explicit ``None`` for a dict field. ``@dataclass`` ``default_factory``
+        only fires when the argument is *omitted*, so the ``None`` is stored
+        verbatim and later crashes spread-unpacks like ``{**extra_body}`` with
+        ``TypeError: 'NoneType' object is not a mapping``. Coerce the dict-typed
+        request/transport fields back to ``{}`` here as a last line of defense.
+        """
+        for _name in ("extra_body", "extra_headers", "extra_query", "route_metadata"):
+            if getattr(self, _name) is None:
+                setattr(self, _name, {})
 
 
 class BaseAdapter(ABC):

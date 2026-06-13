@@ -25,6 +25,12 @@ jobs:
         image: [frontend, backend]
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full fetch: GitHub intermittently serves shallow-clone packs with
+          # missing delta bases ("pack has N unresolved deltas" / "missing
+          # blob object"), which has been failing random jobs at checkout.
+          # A full fetch is self-contained and immune to that.
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -35,5 +41,7 @@ jobs:
           context: .
           file: deploy/docker/Dockerfile.${{ matrix.image }}
           push: false
+          secrets: |
+            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=min,scope=${{ matrix.image }}

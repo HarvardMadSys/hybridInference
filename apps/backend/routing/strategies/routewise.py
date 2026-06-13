@@ -13,17 +13,43 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Any, get_type_hints
 
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel, create_model, model_validator
 
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from routing.strategies import register_strategy
+
+# Former field names and where their replacement lives now.
+# Kept so a stale models.yaml fails at boot with a pointer instead of a bare
+# "extra inputs are not permitted".
+_MOVED_TO_ROUTE_LEVEL = {
+    "shadow_price_window_hours": "renamed to envelope_window_hours",
+    "daily_quota": "route-level quota.limit",
+    "reset_timezone": "route-level quota.window.timezone",
+    "quota_monthly_fee": "removed (subscription fees are sunk cost)",
+    "concurrency_enabled": "route-level provider_type: concurrency",
+    "concurrency_limit": "route-level concurrency.limit",
+    "concurrency_monthly_fee": "removed (subscription fees are sunk cost)",
+}
 
 
 class _RouteWiseParamsBase(BaseModel):
     """Strict base for generated RouteWise strategy parameters."""
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_moved_resource_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            moved = sorted(set(data) & set(_MOVED_TO_ROUTE_LEVEL))
+            if moved:
+                hints = "; ".join(f"'{key}' -> {_MOVED_TO_ROUTE_LEVEL[key]}" for key in moved)
+                raise ValueError(
+                    "RouteWise resource limits moved from router_params to the "
+                    f"route entries in models.yaml: {hints}"
+                )
+        return data
 
 
 def _routewise_param_fields() -> dict[str, tuple[Any, Any]]:

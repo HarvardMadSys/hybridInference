@@ -17,6 +17,22 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _metadata_dict(value: object) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _string_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 class PostgresLogStore(LogStore):
     """LogStore backed by an asyncpg connection pool."""
 
@@ -562,6 +578,89 @@ class PostgresLogStore(LogStore):
                 ),
             }
         return result
+
+    async def get_routewise_bootstrap_rows(
+        self,
+        *,
+        model_ids: list[str],
+        since: dt.datetime,
+        limit: int | None = None,
+    ) -> list[Row]:
+        """Fetch recent api_logs rows for RouteWise startup bootstrap."""
+        if not model_ids or (limit is not None and limit <= 0):
+            return []
+        async with self.pool.acquire() as conn:
+            if limit is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT timestamp, model_id, provider, ttft_ms, latency_ms,
+                           status_code, error, prompt_tokens, completion_tokens,
+                           metadata
+                    FROM api_logs
+                    WHERE timestamp >= $1
+                      AND model_id = ANY($2::text[])
+                    ORDER BY timestamp ASC
+                    """,
+                    since,
+                    model_ids,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM (
+                        SELECT timestamp, model_id, provider, ttft_ms, latency_ms,
+                               status_code, error, prompt_tokens, completion_tokens,
+                               metadata
+                        FROM api_logs
+                        WHERE timestamp >= $1
+                          AND model_id = ANY($2::text[])
+                        ORDER BY timestamp DESC
+                        LIMIT $3
+                    ) recent
+                    ORDER BY timestamp ASC
+                    """,
+                    since,
+                    model_ids,
+                    int(limit),
+                )
+
+        normalized: list[Row] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            metadata = _metadata_dict(row.get("metadata"))
+            routewise = metadata.get("routewise")
+            endpoint_id = (
+                _string_or_none(metadata.get("endpoint_id"))
+                or (
+                    _string_or_none(routewise.get("primary_provider"))
+                    if isinstance(routewise, dict)
+                    else None
+                )
+                or _string_or_none(metadata.get("base_url"))
+                or _string_or_none(row.get("provider"))
+            )
+            failed_attempts = metadata.get("failed_attempts")
+            normalized.append(
+                {
+                    "timestamp": row.get("timestamp"),
+                    "model_id": row.get("model_id"),
+                    "provider": row.get("provider"),
+                    "endpoint_id": endpoint_id,
+                    "ttft_ms": row.get("ttft_ms"),
+                    "latency_ms": row.get("latency_ms"),
+                    "status_code": row.get("status_code"),
+                    "error": row.get("error"),
+                    "prompt_tokens": row.get("prompt_tokens"),
+                    "completion_tokens": row.get("completion_tokens"),
+                    "failed_attempts": tuple(
+                        item for item in failed_attempts if isinstance(item, dict)
+                    )
+                    if isinstance(failed_attempts, list)
+                    else (),
+                }
+            )
+        return normalized
 
     async def get_stats(
         self,

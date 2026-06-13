@@ -114,6 +114,33 @@ class CompletionsLogger:
         exception path — which today receives a raw dict from the adapter —
         keeps working without further plumbing changes.
         """
+        failed_attempts = _extract_failed_attempts(routing)
+        seen_failed_attempts: set[tuple[str, str | None, str | None]] = set()
+        for attempt in failed_attempts:
+            failed_provider, failed_endpoint = _extract_failed_attempt_keys(attempt)
+            failed_key = failed_endpoint or failed_provider or "unknown"
+            dedupe_key = (
+                failed_key,
+                _string_or_none(attempt.get("error_type")),
+                _string_or_none(attempt.get("error")),
+            )
+            if dedupe_key in seen_failed_attempts:
+                continue
+            seen_failed_attempts.add(dedupe_key)
+            active_router.record_observation(
+                RoutingObservation(
+                    model_id=model_id,
+                    endpoint_id=failed_key,
+                    ttft_ms=None,
+                    total_latency_ms=0.0,
+                    token_count=prompt_tokens,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=0,
+                    success=False,
+                    quota_committed=0.0,
+                )
+            )
+
         provider, endpoint_id, strategy_metadata = _extract_observation_keys(routing)
         obs = RoutingObservation(
             model_id=model_id,
@@ -184,3 +211,31 @@ def _extract_observation_keys(
         endpoint,
         strategy_metadata,
     )
+
+
+def _extract_failed_attempts(
+    routing: RoutingInfo | dict[str, Any] | None,
+) -> tuple[dict[str, Any], ...]:
+    if routing is None:
+        return ()
+    if isinstance(routing, RoutingInfo):
+        value = routing.extra.get("failed_attempts")
+    else:
+        value = routing.get("failed_attempts")
+    if not isinstance(value, list):
+        return ()
+    return tuple(attempt for attempt in value if isinstance(attempt, dict))
+
+
+def _extract_failed_attempt_keys(
+    attempt: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    provider = _string_or_none(attempt.get("provider"))
+    endpoint = _string_or_none(attempt.get("endpoint_id")) or _string_or_none(
+        attempt.get("base_url")
+    )
+    return provider, endpoint
+
+
+def _string_or_none(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None

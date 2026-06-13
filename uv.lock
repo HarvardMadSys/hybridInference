@@ -998,7 +998,6 @@ dependencies = [
     { name = "markdown-it-py", version = "4.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "openai" },
     { name = "passlib", extra = ["argon2"] },
-    { name = "pulp" },
     { name = "pydantic", extra = ["email"] },
     { name = "pydantic-settings" },
     { name = "pyjwt" },
@@ -1006,6 +1005,7 @@ dependencies = [
     { name = "python-ulid" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "routewise" },
     { name = "tabulate" },
     { name = "tiktoken" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1047,7 +1047,6 @@ requires-dist = [
     { name = "markdown-it-py", specifier = ">=3.0.0" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "passlib", extras = ["argon2"], specifier = ">=1.7.4" },
-    { name = "pulp", specifier = ">=2.7.0" },
     { name = "pydantic", extras = ["email"], specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pyjwt", specifier = ">=2.13.0" },
@@ -1055,6 +1054,7 @@ requires-dist = [
     { name = "python-ulid", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32.5" },
+    { name = "routewise", git = "https://github.com/realtmxi/RouteWise.git?rev=6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942" },
     { name = "tabulate", specifier = ">=0.9.0" },
     { name = "tiktoken", specifier = ">=0.3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
@@ -1754,15 +1754,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pulp"
-version = "3.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/16/1c/d880b739b841a8aa81143091c9bdda5e72e226a660aa13178cb312d4b27f/pulp-3.3.0.tar.gz", hash = "sha256:7eb99b9ce7beeb8bbb7ea9d1c919f02f003ab7867e0d1e322f2f2c26dd31c8ba", size = 16301847, upload-time = "2025-09-18T08:14:57.552Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/6c/64cafaceea3f99927e84b38a362ec6a8f24f33061c90bda77dfe1cd4c3c6/pulp-3.3.0-py3-none-any.whl", hash = "sha256:dd6ad2d63f196d1254eddf9dcff5cd224912c1f046120cb7c143c5b0eda63fae", size = 16387700, upload-time = "2025-09-18T08:14:53.368Z" },
-]
-
-[[package]]
 name = "pyasn1"
 version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
@@ -2231,6 +2222,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/ae/f9/41dc953bbeb056c17
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/54/6f679c435d28e0a568d8e8a7c0a93a09010818634c3c3907fc98d8983770/roman_numerals-4.1.0-py3-none-any.whl", hash = "sha256:647ba99caddc2cc1e55a51e4360689115551bf4476d90e8162cf8c345fe233c7", size = 7676, upload-time = "2025-12-17T18:25:33.098Z" },
 ]
+
+[[package]]
+name = "routewise"
+version = "0.1.0"
+source = { git = "https://github.com/realtmxi/RouteWise.git?rev=6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942#6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942" }
 
 [[package]]
 name = "ruff"

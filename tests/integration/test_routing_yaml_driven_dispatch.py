@@ -55,7 +55,7 @@ models:
     base_url: http://example.com/v1
     router: routewise
     router_params:
-      daily_quota: 100
+      budget_alpha: 0.5
     pricing:
       prompt: "1.0"
       completion: "2.0"
@@ -102,7 +102,7 @@ models:
     assert "m-default" in r_default.routes
     assert "m-fixed" in r_fixed.routes
     # RouteWise picked up the override.
-    assert r_rw.config.daily_quota == 100
+    assert r_rw.config.budget_alpha == 0.5
     # Cache identity preserved.
     assert reg.get_router("m-default") is r_default
 

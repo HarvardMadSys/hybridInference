@@ -141,6 +141,51 @@ class TestSignupAllowlist:
         assert sent_to == ["admin@trusted-corp.io"]
 
     @pytest.mark.asyncio
+    async def test_signup_notify_emails_overrides_admin_emails(
+        self,
+        auth_app_client: AsyncClient,
+        auth_app_services,
+        clean_auth_tables,
+        monkeypatch,
+    ):
+        op_store = auth_app_services.operational_store
+        await _add_domain(op_store, "trusted-corp.io", is_wildcard=False)
+        invalidate_allowlist_cache()
+
+        # admin_emails still controls who is an admin, but the notification
+        # recipient list is narrowed via signup_notify_emails.
+        from serving.servers.routers import auth_routes as auth_routes_mod
+
+        monkeypatch.setattr(
+            auth_routes_mod.settings,
+            "admin_emails",
+            "murphy@trusted-corp.io,haoran@trusted-corp.io,peter@trusted-corp.io",
+        )
+        monkeypatch.setattr(
+            auth_routes_mod.settings, "signup_notify_emails", "peter@trusted-corp.io"
+        )
+
+        sent_to: list[str] = []
+
+        def _capture(to_email, user_email, user_name, user_id, use_case=None):
+            sent_to.append(to_email)
+            return True
+
+        with (
+            patch(
+                "serving.servers.routers.auth_routes.send_new_registration_admin_email",
+                side_effect=_capture,
+            ),
+            patch("serving.servers.routers.auth_routes.is_email_enabled", return_value=True),
+        ):
+            signup_data = create_signup_request(email="dan@outside-vendor.net")
+            response = await auth_app_client.post("/auth/signup", json=signup_data)
+            assert response.status_code == 201
+
+        # Only the notify recipient is emailed, not all three admins.
+        assert sent_to == ["peter@trusted-corp.io"]
+
+    @pytest.mark.asyncio
     async def test_disposable_blocklist_precedes_allowlist(
         self,
         auth_app_client: AsyncClient,
