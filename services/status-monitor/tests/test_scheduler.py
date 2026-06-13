@@ -1,14 +1,15 @@
-"""Tests for the scheduler's probe cycle reconciliation."""
+"""Tests for the scheduler's discovery and probe-cycle reconciliation."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 
-from status_monitor.config import AppConfig, RegistryConfig, Settings
+from status_monitor.config import AppConfig, E2EModelOverride, GatewayConfig, RegistryConfig, Settings
 from status_monitor.prober import ProbeResult
-from status_monitor.scheduler import probe_once
+from status_monitor.scheduler import discover_targets, probe_once
 from status_monitor.state import StatusStore
 
 pytestmark = pytest.mark.asyncio
@@ -21,10 +22,61 @@ async def test_probe_once_prunes_when_no_targets(tmp_path: Path) -> None:
         ProbeResult(model_id="gone", ok=True, checked_at="2026-06-13T00:00:00+00:00")
     )
 
-    # No registry and no overrides => zero targets; the stale model must be
+    # Discovery disabled + no registry => zero targets; the stale model must be
     # pruned (and persisted) rather than lingering on the dashboard.
-    config = AppConfig(settings=Settings(), registry=RegistryConfig(path=None))
+    config = AppConfig(
+        settings=Settings(),
+        gateway=GatewayConfig(discover_models=False),
+        registry=RegistryConfig(path=None),
+    )
     await probe_once(config, store)
 
     assert store.snapshot()["total"] == 0
-    assert state_path.is_file()  # pruned state was persisted
+    assert state_path.is_file()
+
+
+async def test_discover_targets_from_gateway_catalog() -> None:
+    # The gateway catalog is already role/visibility-filtered; we probe exactly
+    # what it returns, detecting embedding models and applying overrides.
+    catalog = {
+        "data": [
+            {"id": "glm-4.7", "output_modalities": ["text"]},
+            {"id": "bge-m3", "output_modalities": ["embedding"]},
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/models"
+        assert request.headers["Authorization"] == "Bearer k"
+        return httpx.Response(200, json=catalog)
+
+    config = AppConfig(
+        gateway=GatewayConfig(base_url="http://gw:8080", api_key="k"),
+        e2e_models=[E2EModelOverride(model_id="bge-m3"), E2EModelOverride(model_id="extra")],
+    )
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        targets = await discover_targets(config, client)
+
+    assert targets is not None
+    by_id = {t.model_id: t for t in targets}
+    assert set(by_id) == {"glm-4.7", "bge-m3", "extra"}
+    assert by_id["bge-m3"].kind == "embedding"
+    assert by_id["bge-m3"].streaming is False  # embeddings never stream
+    assert by_id["extra"].kind == "chat"  # override-only model appended
+
+
+async def test_discover_targets_falls_back_on_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="down")
+
+    config = AppConfig(gateway=GatewayConfig(base_url="http://gw:8080", api_key="k"))
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        assert await discover_targets(config, client) is None  # signals static fallback
+
+
+async def test_discover_targets_disabled_returns_none() -> None:
+    config = AppConfig(gateway=GatewayConfig(discover_models=False))
+    async with httpx.AsyncClient() as client:
+        assert await discover_targets(config, client) is None

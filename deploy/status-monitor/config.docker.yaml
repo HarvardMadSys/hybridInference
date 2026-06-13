@@ -21,9 +21,12 @@ gateway:
   # Probe every model every 5 minutes.
   e2e_interval: 300
   probe_header: "synthetic"
+  # Discover targets from the gateway's authenticated /models catalog (reflects
+  # role + runtime visibility overrides). Falls back to the static registry.
+  discover_models: true
 
 registry:
-  # Mounted from the repo's config/models.yaml (see docker-compose.yml).
+  # Static fallback registry, mounted from config/models.yaml (see compose).
   path: "/app/models.yaml"
 
 # Manual overrides/additions. These take priority over auto-discovered entries

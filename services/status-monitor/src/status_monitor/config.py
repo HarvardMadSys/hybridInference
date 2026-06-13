@@ -74,6 +74,10 @@ class GatewayConfig:
     api_key: str = ""
     e2e_interval: float = 300.0
     probe_header: str | None = None
+    # Discover probe targets from the gateway's authenticated /models catalog
+    # (reflects role + runtime visibility overrides). Falls back to the static
+    # registry if discovery fails or this is disabled.
+    discover_models: bool = True
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,7 @@ def _build_gateway(raw: dict[str, Any]) -> GatewayConfig:
         api_key=str(raw.get("api_key", "")),
         e2e_interval=float(interval),
         probe_header=raw.get("probe_header"),
+        discover_models=bool(raw.get("discover_models", True)),
     )
 
 

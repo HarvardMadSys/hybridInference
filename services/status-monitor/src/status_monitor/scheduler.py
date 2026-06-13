@@ -17,7 +17,7 @@ from status_monitor.prober import probe_model
 from status_monitor.registry import load_models
 
 if TYPE_CHECKING:
-    from status_monitor.config import AppConfig
+    from status_monitor.config import AppConfig, E2EModelOverride
     from status_monitor.state import StatusStore
 
 logger = logging.getLogger(__name__)
@@ -101,16 +101,73 @@ def resolve_targets(config: AppConfig) -> list[ProbeTarget]:
     return targets
 
 
+def _target_from_catalog(
+    model_id: str, kind: str, overrides: dict[str, E2EModelOverride]
+) -> ProbeTarget:
+    """Builds a probe target for a discovered model, applying any override."""
+    override = overrides.get(model_id)
+    streaming = (override.streaming if override else True) and kind != "embedding"
+    return ProbeTarget(
+        model_id=model_id,
+        streaming=streaming,
+        max_tokens=override.probe_max_tokens if override else None,
+        kind=kind,
+    )
+
+
+async def discover_targets(config: AppConfig, client: httpx.AsyncClient) -> list[ProbeTarget] | None:
+    """Resolves probe targets from the gateway's authenticated /models catalog.
+
+    The catalog already reflects the prober key's role and any runtime
+    visibility/disable overrides, so it is the source of truth for what the key
+    can actually call. Manual ``e2e_models`` entries are merged on top.
+
+    Returns:
+        The resolved targets, or ``None`` if discovery is disabled or fails (the
+        caller then falls back to the static registry).
+    """
+    if not config.gateway.discover_models:
+        return None
+    base = config.gateway.base_url.rstrip("/").removesuffix("/v1")
+    try:
+        response = await client.get(
+            f"{base}/models",
+            headers={"Authorization": f"Bearer {config.gateway.api_key}"},
+        )
+        response.raise_for_status()
+        data = response.json().get("data")
+    except Exception:  # noqa: BLE001 - fall back to the static registry on any failure
+        logger.warning("Gateway model discovery failed; using static registry.", exc_info=True)
+        return None
+    if not isinstance(data, list):
+        return None
+
+    overrides = {o.model_id: o for o in config.e2e_models}
+    targets: list[ProbeTarget] = []
+    seen: set[str] = set()
+    for entry in data:
+        model_id = entry.get("id") if isinstance(entry, dict) else None
+        if not isinstance(model_id, str) or model_id in seen:
+            continue
+        seen.add(model_id)
+        kind = "embedding" if "embedding" in (entry.get("output_modalities") or []) else "chat"
+        targets.append(_target_from_catalog(model_id, kind, overrides))
+    for model_id, override in overrides.items():
+        if model_id not in seen:
+            seen.add(model_id)
+            targets.append(
+                ProbeTarget(
+                    model_id=model_id,
+                    streaming=override.streaming,
+                    max_tokens=override.probe_max_tokens,
+                    kind="chat",
+                )
+            )
+    return targets
+
+
 async def probe_once(config: AppConfig, store: StatusStore) -> None:
     """Probes every resolved target once and records the results."""
-    targets = resolve_targets(config)
-    # Reconcile the store with the active set first, so models that have left
-    # the registry are pruned even when nothing remains to probe.
-    store.retain(target.model_id for target in targets)
-    if not targets:
-        logger.warning("No probe targets resolved; check registry path and e2e_models.")
-        await asyncio.to_thread(store.save)
-        return
     timeout = httpx.Timeout(
         connect=20.0,
         read=config.settings.default_timeout,
@@ -119,6 +176,18 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
     )
     semaphore = asyncio.Semaphore(config.settings.max_concurrency)
     async with httpx.AsyncClient(timeout=timeout) as client:
+        # Prefer the gateway catalog (role/visibility-accurate); fall back to
+        # the static registry when discovery is disabled or unavailable.
+        targets = await discover_targets(config, client)
+        if targets is None:
+            targets = resolve_targets(config)
+        # Reconcile the store first, so models that have left the active set are
+        # pruned even when nothing remains to probe.
+        store.retain(target.model_id for target in targets)
+        if not targets:
+            logger.warning("No probe targets resolved; check gateway, registry, and e2e_models.")
+            await asyncio.to_thread(store.save)
+            return
 
         async def probe_limited(target: ProbeTarget):  # noqa: ANN202 - returns ProbeResult
             async with semaphore:

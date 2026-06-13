@@ -29,10 +29,12 @@ also served under that prefix for reverse-proxy deployments.
 
 ## Configuration
 
-See [`config.yml.example`](config.yml.example). Probe targets are
-auto-discovered from the registry; `e2e_models` entries override discovered
-targets (matched by `model_id`) or add ones not in the registry. `${VAR}` and
-`${VAR:-default}` env references are expanded at load time.
+See [`config.yml.example`](config.yml.example). Probe targets are discovered
+from the gateway's authenticated `/models` catalog (already role- and
+visibility-filtered for the prober key), falling back to the static `registry`
+when discovery is disabled or unavailable. `e2e_models` entries override
+discovered targets (matched by `model_id`) or add ones not in the catalog.
+`${VAR}` and `${VAR:-default}` env references are expanded at load time.
 
 ## Run
 

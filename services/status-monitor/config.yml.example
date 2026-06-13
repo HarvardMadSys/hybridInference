@@ -24,9 +24,13 @@ gateway:
   e2e_interval: 300
   # Marks requests as synthetic so they can be excluded from analytics/billing.
   probe_header: "synthetic"
+  # Discover targets from the gateway's authenticated /models catalog (reflects
+  # role + runtime visibility overrides). Falls back to the static registry
+  # below if discovery fails or this is disabled.
+  discover_models: true
 
 registry:
-  # Probe targets are auto-discovered from this model registry.
+  # Static fallback model registry, used when gateway discovery is unavailable.
   path: "../../config/models.yaml"
 
 # Manual overrides/additions. These take priority over auto-discovered entries
