@@ -1,26 +1,31 @@
-"""RouteWise cost-aware router with primal-dual decision logic.
+"""RouteWise cost-aware router with cost-budgeted, latency-aware selection.
 
 This module provides the ``RouteWiseRouter``, a ``BaseRouter`` subclass that
 classifies adapters by subscription type (quota / concurrency / API) and
-selects among them using a primal-dual (PD) or look-ahead primal-dual (LA-PD)
-threshold algorithm.
+selects among them by *effective cost* under a latency budget.
 
-Layer 1 decides among three tiers with priority **S_C > S_Q > S_A**:
+Each candidate adapter is assigned a finite effective cost per request:
 
-- **S_C** (concurrency): binary gate -- admit if slots available (gain_C = v_t).
-- **S_Q** (quota): exponential shadow price threshold (gain_Q = v_t - theta_Q).
-- **S_A** (API): pay-per-token baseline (gain_A = 0).
+- **S_C** (concurrency): ``shadow_price_L_seed`` when a slot is free.
+- **S_Q** (quota): exponential shadow price ``theta_Q`` when quota remains.
+- **S_A** (API): pay-per-token cost ``p_in*prompt + p_out*output``.
 
-Since theta_Q > 0 always (L_seed > 0), S_C beats S_Q whenever slots exist.
+``_choose_cost_budgeted_candidate`` then picks among the finite-cost candidates:
+while cold (< 2 warmed latency profiles) it takes the cheapest effective cost;
+once warm it solves a min-latency-under-cost-budget LP and samples via SWRR.
+Because ``L_seed`` is the smallest effective cost, the cold path reproduces the
+**S_C > S_Q > S_A** priority. The decision rule (``pd`` vs ``lapd``) selects the
+output-token predictor quantile (median vs conservative LCB) used for costing.
 
-When S_A is chosen and multiple API providers exist, Layer 2 applies LP-based
-latency-aware cost optimization to select among them using empirical latency
-profiles and SWRR sampling.
+When an S_A provider wins and the configured hedge mode is economic/probability,
+a ``HedgedAdapter`` may race it against a backup; in shadow mode the hedge
+decision is only logged.
 
 Slot and quota semantics follow selection-commit: resources are acquired in
-``_select_adapter`` at the moment the decision is made.  Concurrency slots
-are released in the ``_execute_adapter`` / ``_execute_stream_adapter`` finally
-block, covering success, error, and cancellation.
+``_select_adapter`` at the moment the decision is made (with a retry if a commit
+loses a race). Concurrency slots are released in the ``_execute_adapter`` /
+``_execute_stream_adapter`` finally block, covering success, error, and
+cancellation.
 """
 
 from __future__ import annotations
@@ -47,11 +52,7 @@ from .hedging import (
     compute_probability_targeted_hedge_threshold,
 )
 from .latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
-from .lp_solver import (
-    pre_filter_providers,
-    solve_cost_budgeted_latency_lp,
-    solve_provider_lp_with_relaxation,
-)
+from .lp_solver import solve_cost_budgeted_latency_lp
 from .predictor import EMAOutputPredictor, HistogramOutputPredictor
 from .quota import QuotaManager
 
@@ -199,18 +200,15 @@ class RouteWiseRouter(BaseRouter):
         # generation ever changes to truly cross-model physical IDs, this dict
         # must be restructured to avoid profile contamination.
         self._latency_profiles: dict[str, ProviderProfile] = {}
-        # Per-model SWRR samplers, LP timestamps, weights, and statuses.
+        # Per-model SWRR samplers, last LP weights, and last LP statuses.
         # Each model gets its own sampler so multi-model routing never cross-contaminates.
         self._swrr_samplers: dict[str, SWRRSampler] = {}
-        self._last_lp_times: dict[str, float] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
         self._last_lp_statuses: dict[str, str] = {}
         self._shadow_hedge_log: list[ShadowHedgeDecision] = []
         self._shadow_hedge_log_maxlen: int = 10_000  # Cap to prevent unbounded growth
         # Maps endpoint_id -> (adapter, p_in_per_token, p_out_per_token).
         self._api_endpoint_map: dict[str, tuple[Any, float, float]] = {}
-        # Track in-flight LP solves to avoid duplicate concurrent solves.
-        self._pending_lp_solves: set[str] = set()
 
         # Run post-init classification when a fixed_router is available.
         # When constructed via the registry without one, defer to
@@ -244,12 +242,10 @@ class RouteWiseRouter(BaseRouter):
         self._api_adapter_prices = {}
         self._latency_profiles = {}
         self._swrr_samplers = {}
-        self._last_lp_times = {}
         self._last_lp_weights = {}
         self._last_lp_statuses = {}
         self._shadow_hedge_log = []
         self._api_endpoint_map = {}
-        self._pending_lp_solves = set()
         self._classify_all()
         self._build_adapter_sub_type_map()
         self._precompute_api_prices()
@@ -432,92 +428,8 @@ class RouteWiseRouter(BaseRouter):
                 self._swrr_samplers[model_id] = SWRRSampler(
                     alpha=self.config.latency_swrr_alpha,
                 )
-                self._last_lp_times[model_id] = 0.0
                 self._last_lp_weights[model_id] = {}
                 self._last_lp_statuses[model_id] = "not_run"
-
-    def _select_api_adapter(
-        self,
-        model_id: str,
-        prompt_tokens: int,
-        predicted_output: float,
-        api_list: list[tuple[Any, float, float]] | None = None,
-    ) -> tuple[BaseAdapter | None, float]:
-        """Layer 2 entry point: select an S_A adapter with latency awareness.
-
-        Falls back to ``_cheapest_api_for_request`` when:
-        - Single S_A provider for this model.
-        - Fewer than 2 warmed profiles (< min_samples observations).
-
-        Each model_id has its own SWRR sampler and LP state, so
-        multi-model routing never cross-contaminates.
-
-        Args:
-            model_id: Model identifier.
-            prompt_tokens: Number of input tokens.
-            predicted_output: Predicted output token count.
-
-        Returns:
-            Tuple of (selected adapter, estimated cost).
-        """
-        if api_list is None:
-            api_list = self._effective_api_prices(model_id)
-        if len(api_list) <= 1:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        # Collect endpoint IDs for this model's S_A adapters.
-        model_eids: list[str] = []
-        for adapter, _p_in, _p_out in api_list:
-            eid = adapter.config.endpoint_id or adapter.config.id
-            model_eids.append(eid)
-
-        # Check warmup: need >= 2 profiles with sufficient samples.
-        now = time.time()
-        warmed = [
-            eid
-            for eid in model_eids
-            if eid in self._latency_profiles
-            and self._latency_profiles[eid].sample_count(now) >= self.config.latency_min_samples
-        ]
-        if len(warmed) < 2:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        # LP + SWRR path (per-model state).
-        self._maybe_update_lp(model_id, model_eids, prompt_tokens, predicted_output, now)
-
-        sampler = self._swrr_samplers.get(model_id)
-        if sampler is None:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        selected_eid = sampler.sample()
-        if selected_eid is None or selected_eid not in self._api_endpoint_map:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        adapter, p_in, p_out = self._api_endpoint_map[selected_eid]
-        cost = p_in * prompt_tokens + p_out * predicted_output
-
-        # Hedge mode dispatch.
-        if self.config.latency_hedge_mode == "shadow":
-            self._compute_shadow_hedge(model_id, selected_eid, model_eids, now)
-        elif self.config.latency_hedge_mode == "economic":
-            hedged = self._maybe_create_hedged_adapter(
-                model_id,
-                selected_eid,
-                model_eids,
-                now,
-            )
-            if hedged is not None:
-                return hedged, cost
-
-        return adapter, cost
 
     def _predict_output_tokens(self, model_id: str, prompt_tokens: int) -> float:
         """Predict output length using the configured value estimator."""
@@ -629,111 +541,13 @@ class RouteWiseRouter(BaseRouter):
         self._last_lp_statuses[model_id] = status
         selected_eid = sampler.sample()
         by_eid = {c.endpoint_id: c for c in warm}
-        return by_eid.get(selected_eid), status
-
-    def _maybe_update_lp(
-        self,
-        model_id: str,
-        endpoint_ids: list[str],
-        prompt_tokens: int,
-        predicted_output: float,
-        current_time: float,
-    ) -> None:
-        """Schedule LP re-solve if enough time has elapsed.
-
-        The LP solve runs in a thread pool to avoid blocking the event loop.
-        The current request uses cached weights; the next request after the
-        solve completes will use the updated weights.
-
-        Args:
-            model_id: Model identifier for per-model state lookup.
-            endpoint_ids: Candidate endpoint IDs for this model.
-            prompt_tokens: Current request prompt tokens (for cost computation).
-            predicted_output: Predicted output tokens.
-            current_time: Current Unix timestamp.
-        """
-        last_lp_time = self._last_lp_times.get(model_id, 0.0)
-        if (current_time - last_lp_time) < self.config.latency_lp_interval_sec:
-            return
-
-        # Skip if there's already an in-flight solve for this model.
-        if model_id in self._pending_lp_solves:
-            return
-
-        # Eagerly update timestamp to prevent duplicate triggers.
-        self._last_lp_times[model_id] = current_time
-
-        # Snapshot inputs for the thread-safe solve.
-        solve_args = self._prepare_lp_solve_args(
-            endpoint_ids, prompt_tokens, predicted_output, current_time
-        )
-        if solve_args is None:
-            return
-
-        # Try to schedule in thread pool; fall back to sync for tests.
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            result = self._run_lp_solve(*solve_args)
-            self._apply_lp_result(model_id, result, current_time)
-            return
-
-        self._pending_lp_solves.add(model_id)
-
-        def _on_done(future: asyncio.Future) -> None:  # type: ignore[type-arg]
-            self._pending_lp_solves.discard(model_id)
-            try:
-                result = future.result()
-                self._apply_lp_result(model_id, result, current_time)
-            except Exception:
-                logger.warning("LP solve failed for model %s", model_id, exc_info=True)
-
-        fut = loop.run_in_executor(None, self._run_lp_solve, *solve_args)
-        fut.add_done_callback(_on_done)
-
-    def _prepare_lp_solve_args(
-        self,
-        endpoint_ids: list[str],
-        prompt_tokens: int,
-        predicted_output: float,
-        current_time: float,
-    ) -> tuple[list[str], dict[str, float], float, float, float, tuple[float, ...]] | None:
-        """Prepare arguments for the LP solve (read-only snapshot).
-
-        Returns None if no eligible endpoints are available.
-        """
-        profiles_subset = {
-            eid: self._latency_profiles[eid]
-            for eid in endpoint_ids
-            if eid in self._latency_profiles
-        }
-        eligible = pre_filter_providers(profiles_subset, current_time)
-        if not eligible:
-            eligible = list(profiles_subset.keys())
-        if not eligible:
-            return None
-
-        costs: dict[str, float] = {}
-        for eid in eligible:
-            if eid in self._api_endpoint_map:
-                _, p_in, p_out = self._api_endpoint_map[eid]
-                costs[eid] = p_in * prompt_tokens + p_out * predicted_output
-            else:
-                costs[eid] = 1.0
-
-        try:
-            factors = tuple(float(f) for f in self.config.latency_relaxation_factors.split(","))
-        except (ValueError, AttributeError):
-            factors = (1.2, 1.5, 2.0)
-
-        return (
-            eligible,
-            costs,
-            self.config.latency_slo_sec,
-            current_time,
-            self.config.latency_target_cdf,
-            factors,
-        )
+        chosen = by_eid.get(selected_eid)
+        if chosen is None:
+            # SWRR may retain a provider from a prior weight set that is no
+            # longer warm/eligible; fall back to the cheapest candidate so a
+            # non-empty candidate list never yields a None selection.
+            chosen = min(candidates, key=lambda c: c.effective_cost)
+        return chosen, status
 
     def _log_routewise_decision(
         self,
@@ -807,61 +621,6 @@ class RouteWiseRouter(BaseRouter):
             "hedge_backup_provider": backup_provider,
             "hedge_backup_endpoint_id": backup_endpoint_id,
         }
-
-    def _run_lp_solve(
-        self,
-        eligible: list[str],
-        costs: dict[str, float],
-        slo_sec: float,
-        current_time: float,
-        target_cdf: float,
-        factors: tuple[float, ...],
-    ) -> tuple[dict[str, float], str]:
-        """Execute LP solve (CPU-bound, thread-safe).
-
-        This method accesses ``_latency_profiles`` read-only.  Profile
-        updates from ``record_observation`` on the event loop are atomic
-        (deque append + scalar update), so data races are benign.
-        """
-        return solve_provider_lp_with_relaxation(
-            endpoint_ids=eligible,
-            profiles={
-                eid: self._latency_profiles[eid]
-                for eid in eligible
-                if eid in self._latency_profiles
-            },
-            costs=costs,
-            slo_sec=slo_sec,
-            current_time=current_time,
-            target_cdf=target_cdf,
-            kappa=self.config.latency_error_penalty,
-            relaxation_factors=factors,
-        )
-
-    def _apply_lp_result(
-        self,
-        model_id: str,
-        result: tuple[dict[str, float], str],
-        current_time: float,
-    ) -> None:
-        """Apply LP solve result to per-model state (event-loop thread only)."""
-        weights, status = result
-
-        sampler = self._swrr_samplers.get(model_id)
-        if sampler is None:
-            sampler = SWRRSampler(alpha=self.config.latency_swrr_alpha)
-            self._swrr_samplers[model_id] = sampler
-        sampler.update_weights(weights)
-
-        self._last_lp_weights[model_id] = weights
-        self._last_lp_statuses[model_id] = status
-
-        logger.debug(
-            "Layer 2 LP update: model=%s status=%s, weights=%s",
-            model_id,
-            status,
-            weights,
-        )
 
     def _log_shadow_hedge(self, decision: ShadowHedgeDecision) -> None:
         """Append shadow hedge decision with bounded log size."""
@@ -1132,37 +891,31 @@ class RouteWiseRouter(BaseRouter):
     # BaseRouter abstract method implementations
     # ------------------------------------------------------------------
 
-    def _is_eligible(self, sub: SubscriptionType) -> bool:
-        """Check whether an adapter with *sub* type is eligible.
-
-        Concurrency adapters (S_C) are only eligible when
-        ``concurrency_enabled`` is True.  Quota and API adapters are always
-        eligible.  Used as the last-resort filter in the fallthrough path
-        at the end of ``_select_adapter``.
-        """
-        if sub is SubscriptionType.CONCURRENCY:
-            return self.config.concurrency_enabled
-        return True
-
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
-        """Select an adapter for *model_id* using three-tier PD decision logic.
-
-        Priority cascade: **S_C > S_Q > S_A**.
+        """Select an adapter for *model_id* via cost-budgeted, latency-aware selection.
 
         Decision algorithm:
-        1. Estimate prompt_tokens from context.
-        2. Compute predicted output tokens via the EMA predictor.
-        3. Compute value ``v_t`` (cheapest S_A cost for this request).
-        4. Compute gains:
-           - ``gain_C = v_t`` if S_C adapters exist and slots available, else ``-inf``.
-           - ``gain_Q = v_t - theta_Q`` if S_Q adapters exist, quota > 0,
-             and ``v_t >= theta_Q``, else ``-inf``.
-           - ``gain_A = 0`` (baseline).
-        5. Select the tier with the highest gain.
-        6. Selection-commit: acquire slot (S_C) or consume quota (S_Q).
+        1. Estimate ``prompt_tokens`` from context.
+        2. Predict output tokens via the configured predictor (median for PD,
+           conservative LCB for LA-PD).
+        3. Build the finite-effective-cost candidate set across all tiers
+           (``_build_effective_cost_candidates``):
+           - **S_A** (API): per-request token cost ``p_in*prompt + p_out*output``.
+           - **S_Q** (quota): shadow price ``theta_Q`` when quota remains.
+           - **S_C** (concurrency): ``shadow_price_L_seed`` when a slot is free.
+        4. Choose among candidates with ``_choose_cost_budgeted_candidate``: while
+           cold (< 2 warmed latency profiles) pick the cheapest effective cost;
+           once warm, solve the min-latency-under-cost-budget LP and sample via
+           SWRR. Because ``L_seed`` is the smallest effective cost, the cold path
+           reproduces the **S_C > S_Q > S_A** priority.
+        5. Selection-commit the chosen tier (acquire S_C slot / consume S_Q quota;
+           S_A needs no resource). If the commit loses a race, drop that candidate
+           and re-select from the rest.
+        6. For an S_A winner, apply the configured hedge mode (shadow log or
+           economic/probability ``HedgedAdapter``).
 
-        Since ``theta_Q > 0`` always (L_seed > 0), ``gain_C = v_t > v_t - theta_Q = gain_Q``
-        whenever both are available.
+        S_C slots are released in ``_execute_adapter`` / ``_execute_stream_adapter``;
+        quota consumption is permanent per the selection-commit contract.
 
         Args:
             model_id: Model identifier.
@@ -1170,9 +923,8 @@ class RouteWiseRouter(BaseRouter):
                 ``"messages"`` (list of message dicts).
 
         Returns:
-            Selected adapter, or None if no eligible adapter exists.
+            Selected adapter, or None when no tier has an available resource.
         """
-        entries = self._effective_classified_entries(model_id)
         if model_id not in self.classified:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
@@ -1196,47 +948,29 @@ class RouteWiseRouter(BaseRouter):
         # -- Request ID for decision metadata --------------------------------
         request_id = context.get("request_id")
 
-        def _build_base_entry(
-            selected_tier: str,
-            *,
-            hedged: bool,
-            lp_status: str | None,
-            sc_committed: bool,
-            selected_adapter: Any,
-            selected_endpoint_id: str | None,
-        ) -> dict[str, Any]:
-            return {
-                "v_t": v_t,
-                "gain_c": gain_c,
-                "gain_q": gain_q,
-                "gain_a": gain_a,
-                "theta_q": theta_q if theta_q < float("inf") else None,
-                "quota_remaining": self.quota_mgr.remaining,
-                "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
-                "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
-                # Wall-clock timestamp for TTL eviction (see _sweep_pending_decisions_once).
-                "timestamp": time.time(),
-                "is_streaming": False,
-                "selected_tier": selected_tier,
-                "quota_committed": 0.0,
-                "sc_committed": sc_committed,
-                "hedged": hedged,
-                "backup_won": False,
-                "lp_status": lp_status,
-                **self._routewise_provider_fields(
-                    selected_adapter,
-                    selected_endpoint_id,
-                ),
-            }
-
         candidates = self._build_effective_cost_candidates(model_id, prompt_tokens, predicted_out)
         now = time.time()
-        selected_candidate, lp_status = self._choose_cost_budgeted_candidate(
-            model_id,
-            candidates,
-            now,
-        )
-        if selected_candidate is not None and self._commit_candidate_resource(selected_candidate):
+        # Cost-budgeted (latency-aware under a cost budget) selection with a
+        # commit-retry loop. Quota/concurrency commits can lose a race against
+        # a concurrent request (slot just taken / quota just exhausted); when
+        # that happens we drop the contended candidate and re-select from the
+        # rest. API candidates always commit, so the loop terminates by either
+        # returning a committed adapter or exhausting candidates and returning
+        # None (no eligible resource for this request).
+        remaining_candidates = list(candidates)
+        while remaining_candidates:
+            selected_candidate, lp_status = self._choose_cost_budgeted_candidate(
+                model_id,
+                remaining_candidates,
+                now,
+            )
+            if selected_candidate is None:
+                break
+            if not self._commit_candidate_resource(selected_candidate):
+                remaining_candidates = [
+                    c for c in remaining_candidates if c is not selected_candidate
+                ]
+                continue
             gain_c = (
                 v_t
                 if selected_candidate.sub_type is SubscriptionType.CONCURRENCY
@@ -1317,197 +1051,6 @@ class RouteWiseRouter(BaseRouter):
                 theta_q=theta_q_for_logs,
             )
             return selected_adapter
-
-        # -- Classify adapters by tier ------------------------------------
-        conc_adapters = [a for a, _w, s in entries if s is SubscriptionType.CONCURRENCY]
-        quota_adapters = [a for a, _w, s in entries if s is SubscriptionType.QUOTA]
-
-        # -- Compute gains ------------------------------------------------
-        gain_c = float("-inf")
-        if conc_adapters and self.conc_mgr is not None and self.conc_mgr.available > 0:
-            gain_c = v_t
-
-        gain_q = float("-inf")
-        theta_q = float("inf")
-        if quota_adapters:
-            theta_q = self.quota_mgr.get_shadow_price()
-            if v_t >= theta_q and self.quota_mgr.remaining > 0:
-                gain_q = v_t - theta_q
-
-        gain_a = 0.0
-
-        # -- Tier selection (S_C > S_Q > S_A) -----------------------------
-        best_gain = max(gain_c, gain_q, gain_a)
-
-        # Try S_C first.
-        if gain_c == best_gain and gain_c > float("-inf"):
-            # Selection-commit: acquire slot atomically.
-            if self.conc_mgr is not None and self.conc_mgr.try_acquire():
-                logger.debug(
-                    "PD decision: route to S_C (v_t=%.6f, slots=%d/%d)",
-                    v_t,
-                    self.conc_mgr.active,
-                    self.conc_mgr.limit,
-                )
-
-                selected_adapter = conc_adapters[0]
-                selected_endpoint_id = getattr(
-                    getattr(selected_adapter, "config", None),
-                    "endpoint_id",
-                    None,
-                )
-
-                if request_id:
-                    self._pending_decisions[request_id] = _build_base_entry(
-                        selected_tier="concurrency",
-                        hedged=False,
-                        lp_status=None,
-                        sc_committed=True,
-                        selected_adapter=selected_adapter,
-                        selected_endpoint_id=selected_endpoint_id,
-                    )
-
-                self._log_routewise_decision(
-                    model_id=model_id,
-                    request_id=request_id,
-                    selected_tier="concurrency",
-                    selected_adapter=selected_adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                    lp_status=None,
-                    v_t=v_t,
-                    gain_c=gain_c,
-                    gain_q=gain_q,
-                    gain_a=gain_a,
-                    theta_q=theta_q if theta_q < float("inf") else None,
-                )
-                return selected_adapter
-
-            # Race lost -- fall through to S_Q.
-            logger.debug(
-                "PD decision: S_C race lost, falling through to S_Q/S_A",
-            )
-
-        # Try S_Q.
-        if gain_q >= gain_a and gain_q > float("-inf"):
-            self.quota_mgr.consume()
-            logger.debug(
-                "PD decision: route to S_Q (v_t=%.6f >= theta_Q=%.6f, remaining=%d)",
-                v_t,
-                theta_q,
-                self.quota_mgr.remaining,
-            )
-            selected_adapter = quota_adapters[0]
-            selected_endpoint_id = getattr(
-                getattr(selected_adapter, "config", None),
-                "endpoint_id",
-                None,
-            )
-            if request_id:
-                self._pending_decisions[request_id] = _build_base_entry(
-                    selected_tier="quota",
-                    hedged=False,
-                    lp_status=None,
-                    sc_committed=False,
-                    selected_adapter=selected_adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                )
-
-            self._log_routewise_decision(
-                model_id=model_id,
-                request_id=request_id,
-                selected_tier="quota",
-                selected_adapter=selected_adapter,
-                selected_endpoint_id=selected_endpoint_id,
-                lp_status=None,
-                v_t=v_t,
-                gain_c=gain_c,
-                gain_q=gain_q,
-                gain_a=gain_a,
-                theta_q=theta_q if theta_q < float("inf") else None,
-            )
-            return selected_adapter
-
-        if quota_adapters:
-            logger.debug(
-                "PD decision: route to S_A (v_t=%.6f < theta_Q=%.6f or remaining=%d)",
-                v_t,
-                theta_q,
-                self.quota_mgr.remaining,
-            )
-
-        # -- Layer 2: latency-aware S_A selection -------------------------
-        api_adapter, _ = self._select_api_adapter(
-            model_id,
-            prompt_tokens,
-            predicted_out,
-            api_list=api_list,
-        )
-        if api_adapter is not None:
-            selected_endpoint_id = getattr(
-                getattr(api_adapter, "config", None),
-                "endpoint_id",
-                None,
-            )
-            if request_id:
-                self._pending_decisions[request_id] = _build_base_entry(
-                    selected_tier="api",
-                    hedged=isinstance(api_adapter, HedgedAdapter),
-                    lp_status=self._last_lp_statuses.get(model_id),
-                    sc_committed=False,
-                    selected_adapter=api_adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                )
-
-            self._log_routewise_decision(
-                model_id=model_id,
-                request_id=request_id,
-                selected_tier="api",
-                selected_adapter=api_adapter,
-                selected_endpoint_id=selected_endpoint_id,
-                lp_status=self._last_lp_statuses.get(model_id),
-                v_t=v_t,
-                gain_c=gain_c,
-                gain_q=gain_q,
-                gain_a=gain_a,
-                theta_q=theta_q if theta_q < float("inf") else None,
-            )
-            return api_adapter
-
-        # Last resort: return any eligible S_A adapter.  S_C and S_Q are
-        # excluded because this path bypasses try_acquire() / consume() --
-        # returning them here would break slot/quota accounting and cause
-        # spurious releases in _execute_adapter's finally block.
-        for adapter, _w, sub in entries:
-            if sub is SubscriptionType.API:
-                selected_endpoint_id = getattr(
-                    getattr(adapter, "config", None),
-                    "endpoint_id",
-                    None,
-                )
-                if request_id:
-                    self._pending_decisions[request_id] = _build_base_entry(
-                        selected_tier="api",
-                        hedged=False,
-                        lp_status=None,
-                        sc_committed=False,
-                        selected_adapter=adapter,
-                        selected_endpoint_id=selected_endpoint_id,
-                    )
-
-                self._log_routewise_decision(
-                    model_id=model_id,
-                    request_id=request_id,
-                    selected_tier="api",
-                    selected_adapter=adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                    lp_status=None,
-                    v_t=v_t,
-                    gain_c=gain_c,
-                    gain_q=gain_q,
-                    gain_a=gain_a,
-                    theta_q=theta_q if theta_q < float("inf") else None,
-                )
-                return adapter
 
         return None
 

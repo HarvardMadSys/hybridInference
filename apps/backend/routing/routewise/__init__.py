@@ -19,9 +19,7 @@ Exports:
     compute_hedge_threshold -- SMART_ECONOMIC grid search for h*.
     survival_at        -- Empirical survival S(t) in SEPARATE mode.
     cdf_separate_at    -- Empirical CDF F(t) in SEPARATE mode.
-    solve_provider_lp  -- LP solver for cost-minimization with tail constraints.
-    solve_provider_lp_with_relaxation -- LP solver with progressive relaxation.
-    pre_filter_providers -- Hard-filter providers by basic requirements.
+    solve_cost_budgeted_latency_lp -- Min-latency LP under a normalized cost budget.
 """
 
 from .concurrency import ConcurrencyManager
@@ -34,11 +32,7 @@ from .hedging import (
     survival_at,
 )
 from .latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
-from .lp_solver import (
-    pre_filter_providers,
-    solve_provider_lp,
-    solve_provider_lp_with_relaxation,
-)
+from .lp_solver import solve_cost_budgeted_latency_lp
 from .predictor import EMAOutputPredictor, EMAState, QuantilePrediction
 from .quota import QuotaManager
 from .router import RouteWiseRouter, SubscriptionType
@@ -60,8 +54,6 @@ __all__ = [
     "cdf_separate_at",
     "compute_hedge_threshold",
     "load_routewise_config",
-    "pre_filter_providers",
-    "solve_provider_lp",
-    "solve_provider_lp_with_relaxation",
+    "solve_cost_budgeted_latency_lp",
     "survival_at",
 ]
