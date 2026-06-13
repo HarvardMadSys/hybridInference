@@ -152,7 +152,9 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5.2"]
-    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing (2x)
+    # Intentionally billed at 2x the Z.AI PAYG rate
+    # (base: prompt 1.4 / completion 4.4 / cache 0.26 — https://docs.z.ai/guides/overview/pricing).
+    # These values are charged as USD/M tokens against each user's cost quota.
     pricing:
       prompt: "2.8"
       completion: "8.8"
