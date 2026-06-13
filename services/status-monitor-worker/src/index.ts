@@ -174,16 +174,20 @@ export default {
 
     if (path === "/api/health") {
       const snap = await getSnapshot(env.DB);
+      // Healthy only when the monitor ran cleanly AND no model is down, so an
+      // uptime check keyed to this endpoint surfaces detected provider outages.
+      const ok = snap.cycle.ok && snap.unhealthy === 0;
       return json(
         {
-          status: snap.cycle.ok ? "ok" : "degraded",
+          status: ok ? "ok" : "degraded",
           total: snap.total,
           healthy: snap.healthy,
           unhealthy: snap.unhealthy,
+          cycleOk: snap.cycle.ok,
           lastCycleAt: snap.cycle.checkedAt,
           lastCycleError: snap.cycle.error,
         },
-        snap.cycle.ok ? 200 : 503,
+        ok ? 200 : 503,
       );
     }
     if (path === "/api/status") {

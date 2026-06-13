@@ -172,7 +172,13 @@ async function probeEmbedding(
   if (!response.ok) {
     throw await httpError(response);
   }
-  await response.arrayBuffer();
+  // A 2xx with an empty/malformed body means the model produced no embedding,
+  // which a real client couldn't use — require a non-empty embedding vector.
+  const body: any = await response.json().catch(() => null);
+  const vector = body?.data?.[0]?.embedding;
+  if (!Array.isArray(vector) || vector.length === 0) {
+    throw new Error("empty embedding response");
+  }
 }
 
 /** Sends one synthetic request for a model and returns the measured result. */

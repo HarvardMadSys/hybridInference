@@ -1,6 +1,17 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { consumeSse, StreamingProbeError } from "../src/probe";
+import type { Config } from "../src/env";
+import { consumeSse, probeModel, StreamingProbeError } from "../src/probe";
+
+const embedConfig = {
+  gatewayBaseUrl: "https://gw.example",
+  probePrompt: "hi",
+  probeMaxTokens: 32,
+  maxConcurrency: 3,
+  probeHeader: "synthetic",
+  retentionDays: 7,
+  probeDeadlineMs: 1000,
+} as Config;
 
 function sseStream(text: string): ReadableStream<Uint8Array> {
   const bytes = new TextEncoder().encode(text);
@@ -67,5 +78,36 @@ describe("consumeSse", () => {
       'data: {"error":{"message":"upstream exploded"}}\n\ndata: [DONE]\n\n',
     );
     await expect(consumeSse(stream, Date.now())).rejects.toBeInstanceOf(StreamingProbeError);
+  });
+});
+
+describe("probeModel (embedding)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stub(response: Response) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+  }
+
+  it("is healthy for a non-empty embedding", async () => {
+    stub(new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2] }] }), { status: 200 }));
+    const r = await probeModel(embedConfig, "k", { id: "bge-m3", kind: "embedding" });
+    expect(r.ok).toBe(true);
+  });
+
+  it("fails on an empty embedding list (HTTP 200)", async () => {
+    stub(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    const r = await probeModel(embedConfig, "k", { id: "bge-m3", kind: "embedding" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("empty embedding");
+  });
+
+  it("fails on an HTTP error with the gateway message", async () => {
+    stub(new Response(JSON.stringify({ error: { message: "Embedding service error" } }), { status: 500 }));
+    const r = await probeModel(embedConfig, "k", { id: "bge-m3", kind: "embedding" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("Embedding service error");
   });
 });
