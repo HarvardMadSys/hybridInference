@@ -26,6 +26,7 @@ class ProviderProfile(str, Enum):
 
     DEFAULT = "default"
     DEEPSEEK = "deepseek"
+    KIMI = "kimi"
     MINIMAX = "minimax"
     OPENROUTER = "openrouter"
     ZAI = "zai"
@@ -59,7 +60,9 @@ def filter_response_format(
 
 def supports_guided_json(profile: ProviderProfile) -> bool:
     """Whether the provider supports the vLLM-style guided_json extension."""
-    return profile != ProviderProfile.DEEPSEEK
+    # Kimi (Moonshot) is a proprietary API: it speaks OpenAI-style
+    # response_format (incl. json_schema) but not the vLLM guided_json field.
+    return profile not in (ProviderProfile.DEEPSEEK, ProviderProfile.KIMI)
 
 
 def default_chat_path(profile: ProviderProfile) -> str | None:

@@ -167,6 +167,82 @@ def test_make_adapter_minimax_uses_openai_compat_with_profile():
 
 
 @pytest.mark.unit
+def test_make_adapter_kimi_uses_openai_compat_with_profile():
+    """kind: kimi routes through OpenAICompatAdapter with the Kimi profile.
+
+    The Kimi Code coding-plan base_url ends in /v1, so the adapter posts to
+    .../coding/v1/chat/completions (no chat_path override needed).
+    """
+    adapter = registry._make_adapter(
+        "kimi",
+        {
+            "id": "kimi-k2.7-code",
+            "name": "Kimi K2.7 Code",
+            "provider": "kimi",
+            "base_url": "https://api.kimi.com/coding/v1",
+            "api_key": "test-key",
+            "provider_model_id": "kimi-for-coding",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider_profile == "kimi"
+    assert adapter.config.provider_model_id == "kimi-for-coding"
+
+
+@pytest.mark.unit
+def test_kimi_profile_does_not_support_guided_json():
+    """Kimi (Moonshot) speaks OpenAI response_format, not vLLM guided_json."""
+    from serving.adapters.profiles import ProviderProfile, supports_guided_json
+
+    assert supports_guided_json(ProviderProfile.KIMI) is False
+
+
+@pytest.mark.unit
+def test_register_kimi_coding_and_metered_routes_get_distinct_endpoint_ids(tmp_path, monkeypatch):
+    """The two Kimi upstreams must get distinct endpoint IDs for independent tracking."""
+    yaml_text = (
+        "models:\n"
+        "  - id: kimi-k2.7-code\n"
+        "    name: Kimi K2.7 Code\n"
+        "    provider: kimi\n"
+        "    route:\n"
+        "      - kind: kimi\n"
+        "        weight: 1.0\n"
+        "        base_url: ${KIMI_CODING_BASE_URL}\n"
+        "        api_keys:\n"
+        "          - ${KIMI_CODING_API_KEY}\n"
+        '        provider_model_id: "kimi-for-coding"\n'
+        "      - kind: kimi\n"
+        "        weight: 0.1\n"
+        "        base_url: ${MOONSHOT_BASE_URL}\n"
+        "        api_keys:\n"
+        "          - ${MOONSHOT_API_KEY}\n"
+        '        provider_model_id: "kimi-latest"\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("KIMI_CODING_BASE_URL", "https://api.kimi.com/coding/v1")
+    monkeypatch.setenv("KIMI_CODING_API_KEY", "sk-coding")
+    monkeypatch.setenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1")
+    monkeypatch.setenv("MOONSHOT_API_KEY", "sk-moonshot")
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    adapters = exe.routes["kimi-k2.7-code"].adapters
+    assert len(adapters) == 2
+    coding, metered = adapters[0][0], adapters[1][0]
+    assert coding.config.base_url == "https://api.kimi.com/coding/v1"
+    assert coding.config.provider_model_id == "kimi-for-coding"
+    # Distinct endpoint IDs keep circuit-breaker / availability tracking separate.
+    assert coding.config.endpoint_id == "kimi-k2.7-code:kimi-api"
+    assert metered.config.endpoint_id == "kimi-k2.7-code:moonshot-api"
+    assert coding.config.endpoint_id != metered.config.endpoint_id
+
+
+@pytest.mark.unit
 def test_make_adapter_cliproxy_uses_openai_compat():
     """kind: cliproxy routes through OpenAICompatAdapter with a cliproxy provider label."""
     adapter = registry._make_adapter(

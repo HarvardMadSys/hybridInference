@@ -409,32 +409,86 @@ models:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.7"
 
-  # - id: kimi-k2.6
-  #   name: Kimi K2.6
-  #   provider: chutes
-  #   quantization: "int4"
-  #   input_modalities: ["text", "image"]
-  #   output_modalities: ["text"]
-  #   context_length: 262144
-  #   max_output_length: 131072
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
-  #   aliases: ["Kimi-K2.6"]
-  #   pricing:
-  #     prompt: "0.2"
-  #     completion: "0.8"
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.2"
-  #     input_cache_writes: "0"
-  #   route:
-  #     - kind: chutes
-  #       weight: 1.0
-  #       base_url: ${CHUTES_BASE_URL}
-  #       api_keys:
-  #         - ${CHUTES_API_KEY}
-  #       provider_model_id: "moonshotai/Kimi-K2.6-TEE"
+  # ── Kimi / Moonshot (kind: kimi) ─────────────────────────
+  # Flagship served primarily through the Kimi Code coding-plan subscription
+  # (flat fee). The coding plan exposes the unified `kimi-for-coding` model
+  # (currently the latest K2.7-code). Default FixedRouter: the coding-plan route
+  # is strongly preferred by weight, with the pay-per-token Moonshot API kept as
+  # a weighted fallback for when the coding-plan endpoint is unhealthy.
+  - id: kimi-k2.7-code
+    name: Kimi K2.7 Code
+    provider: kimi
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["Kimi-K2.7-Code", "kimi-for-coding", "kimi-k2.7"]
+    # Metered fallback pricing — Moonshot PAYG https://platform.moonshot.ai/pricing
+    # (verify current rates). Under FixedRouter this is used for cost reporting.
+    pricing:
+      prompt: "0.6"
+      completion: "2.5"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.15"
+      input_cache_writes: "0"
+    route:
+      # Kimi Code coding-plan endpoint (flat fee). base_url ends in /v1, so the
+      # adapter posts to .../coding/v1/chat/completions.
+      - kind: kimi
+        weight: 1.0
+        base_url: ${KIMI_CODING_BASE_URL}
+        api_keys:
+          - ${KIMI_CODING_API_KEY}
+        provider_model_id: "kimi-for-coding"
+      # Moonshot pay-per-token API (metered fallback; small weight so it is used
+      # mainly when the coding-plan circuit opens).
+      - kind: kimi
+        weight: 0.1
+        base_url: ${MOONSHOT_BASE_URL}
+        api_keys:
+          - ${MOONSHOT_API_KEY}
+        provider_model_id: "kimi-latest"
+
+  # Pinned older version, metered providers only (the coding plan serves only the
+  # unified latest model, so K2.6 is not available through it).
+  - id: kimi-k2.6
+    name: Kimi K2.6
+    provider: kimi
+    quantization: "int4"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["Kimi-K2.6"]
+    pricing:
+      prompt: "0.2"
+      completion: "0.8"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.2"
+      input_cache_writes: "0"
+    route:
+      - kind: chutes
+        weight: 1.0
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "moonshotai/Kimi-K2.6-TEE"
+      # Featherless fallback
+      - kind: featherless
+        weight: 0.64
+        base_url: ${FEATHERLESS_BASE_URL}
+        api_keys:
+          - ${FEATHERLESS_API_KEY}
+        provider_model_id: "moonshotai/Kimi-K2.6"
 
 
   - id: qwen3.6-35b

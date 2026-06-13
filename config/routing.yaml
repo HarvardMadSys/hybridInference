@@ -16,6 +16,12 @@ local_deployment:
     models:
       - /n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2
 remote_deployment:
+  - endpoint: ${KIMI_CODING_BASE_URL}
+    models:
+      - kimi-k2.7-code
+  - endpoint: ${MOONSHOT_BASE_URL}
+    models:
+      - kimi-k2.7-code
   - endpoint: ${CHUTES_BASE_URL}
     models:
       - moonshotai/Kimi-K2.6-TEE
