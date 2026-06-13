@@ -27,8 +27,11 @@ class KimiCodingAdapter(OpenAICompatAdapter):
 
     def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
         headers = super()._build_headers(api_key_override=api_key_override)
-        # setdefault so an explicit ``extra_headers`` override still wins.
-        headers.setdefault("User-Agent", _USER_AGENT)
+        # Only inject our default when no User-Agent is already present. The
+        # check is case-insensitive so an explicit ``extra_headers`` override
+        # (e.g. ``user-agent``) wins without producing a duplicate header.
+        if not any(key.lower() == "user-agent" for key in headers):
+            headers["User-Agent"] = _USER_AGENT
         return headers
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

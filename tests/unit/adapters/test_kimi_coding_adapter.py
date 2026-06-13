@@ -56,6 +56,16 @@ def test_build_headers_user_agent_overridable_via_extra_headers() -> None:
     assert headers["User-Agent"] == "custom/9.9"
 
 
+def test_build_headers_user_agent_override_is_case_insensitive() -> None:
+    # A lowercase override must win without adding a duplicate "User-Agent" key.
+    adapter = KimiCodingAdapter(_make_cfg(extra_headers={"user-agent": "custom/9.9"}))
+    headers = adapter._build_headers()
+    assert headers["user-agent"] == "custom/9.9"
+    assert "User-Agent" not in headers
+    ua_keys = [k for k in headers if k.lower() == "user-agent"]
+    assert len(ua_keys) == 1
+
+
 def test_prepare_messages_prepends_opencode_system() -> None:
     adapter = KimiCodingAdapter(_make_cfg())
     out = adapter._prepare_messages([{"role": "user", "content": "hi"}])
