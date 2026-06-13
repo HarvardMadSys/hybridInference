@@ -31,8 +31,11 @@ function intOr(value: string | undefined, fallback: number): number {
 export function loadConfig(env: Env): Config {
   return {
     gatewayBaseUrl: (env.GATEWAY_BASE_URL || "https://freeinference.org").replace(/\/+$/, ""),
-    probePrompt: env.PROBE_PROMPT || "Write a short Python function that returns hello world.",
-    probeMaxTokens: intOr(env.PROBE_MAX_TOKENS, 32),
+    probePrompt:
+      env.PROBE_PROMPT ||
+      "Write a Python function that implements binary search over a sorted list. " +
+        "Include a docstring, type hints, and a short example of calling it.",
+    probeMaxTokens: intOr(env.PROBE_MAX_TOKENS, 1024),
     maxConcurrency: intOr(env.MAX_CONCURRENCY, 3),
     probeHeader: env.PROBE_HEADER || null,
     retentionDays: intOr(env.RETENTION_DAYS, 7),
