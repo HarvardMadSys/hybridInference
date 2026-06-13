@@ -83,6 +83,36 @@ export async function reconcileModels(db: D1Database, activeIds: string[]): Prom
     .run();
 }
 
+/**
+ * Tries to acquire the single-cycle lock, preventing overlapping cron
+ * invocations from running probe pools against the same key at once (which
+ * would exceed the gateway concurrency cap). Returns true if acquired.
+ *
+ * The lock auto-expires after `ttlMs` so a crashed invocation can't wedge it.
+ */
+export async function acquireCycleLock(
+  db: D1Database,
+  nowMs: number,
+  ttlMs: number,
+): Promise<boolean> {
+  const expiry = String(nowMs + ttlMs);
+  // Atomic: insert if absent, or take over only if the existing lock expired.
+  const result = await db
+    .prepare(
+      `INSERT INTO meta (key, value) VALUES ('cycle_lock', ?)
+       ON CONFLICT(key) DO UPDATE SET value = ?
+       WHERE CAST(meta.value AS INTEGER) < ?`,
+    )
+    .bind(expiry, expiry, nowMs)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+/** Releases the single-cycle lock. */
+export async function releaseCycleLock(db: D1Database): Promise<void> {
+  await db.prepare(`DELETE FROM meta WHERE key = 'cycle_lock'`).run();
+}
+
 /** Records whether the most recent cron cycle succeeded. */
 export async function setCycleStatus(db: D1Database, status: CycleStatus): Promise<void> {
   const stmt = db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`);

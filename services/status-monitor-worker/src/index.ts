@@ -1,8 +1,20 @@
 import { renderDashboard } from "./dashboard";
-import { getSnapshot, prune, reconcileModels, recordResults, setCycleStatus } from "./db";
+import {
+  acquireCycleLock,
+  getSnapshot,
+  prune,
+  reconcileModels,
+  recordResults,
+  releaseCycleLock,
+  setCycleStatus,
+} from "./db";
 import { loadConfig, type Env } from "./env";
 import { discoverModels } from "./models";
 import { probeModel, type ProbeResult } from "./probe";
+
+// Safety-net expiry for the single-cycle lock; well above a healthy cycle but
+// short enough that a crashed invocation can't wedge probing for long.
+const CYCLE_LOCK_TTL_MS = 15 * 60 * 1000;
 
 /** Runs `worker` over `items` with at most `limit` in flight at once. */
 async function mapPool<T, R>(
@@ -33,31 +45,42 @@ async function runProbeCycle(env: Env): Promise<void> {
     return;
   }
 
-  // Discovering the catalog is itself a probe of the gateway. If it fails, the
-  // gateway is down or the key is invalid — record that so the dashboard turns
-  // unhealthy instead of serving stale green rows.
-  let targets;
-  try {
-    targets = await discoverModels(config, env.PROBER_API_KEY);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`model discovery failed: ${message}`);
-    await setCycleStatus(env.DB, { ok: false, checkedAt: now(), error: message });
+  // Don't let an overlapping invocation start a second pool against the same
+  // key (their combined concurrency would exceed the gateway cap → 429s).
+  if (!(await acquireCycleLock(env.DB, Date.now(), CYCLE_LOCK_TTL_MS))) {
+    console.log("previous probe cycle still running; skipping this invocation.");
     return;
   }
 
-  const results: ProbeResult[] = await mapPool(targets, config.maxConcurrency, (target) =>
-    probeModel(config, env.PROBER_API_KEY, target),
-  );
-  await recordResults(env.DB, results);
-  await reconcileModels(
-    env.DB,
-    results.map((r) => r.modelId),
-  );
-  await prune(env.DB, config.retentionDays);
-  await setCycleStatus(env.DB, { ok: true, checkedAt: now(), error: null });
-  const down = results.filter((r) => !r.ok).length;
-  console.log(`probe cycle complete: ${results.length} models, ${down} down`);
+  try {
+    // Discovering the catalog is itself a probe of the gateway. If it fails, the
+    // gateway is down or the key is invalid — record that so the dashboard turns
+    // unhealthy instead of serving stale green rows.
+    let targets;
+    try {
+      targets = await discoverModels(config, env.PROBER_API_KEY);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`model discovery failed: ${message}`);
+      await setCycleStatus(env.DB, { ok: false, checkedAt: now(), error: message });
+      return;
+    }
+
+    const results: ProbeResult[] = await mapPool(targets, config.maxConcurrency, (target) =>
+      probeModel(config, env.PROBER_API_KEY, target),
+    );
+    await recordResults(env.DB, results);
+    await reconcileModels(
+      env.DB,
+      results.map((r) => r.modelId),
+    );
+    await prune(env.DB, config.retentionDays);
+    await setCycleStatus(env.DB, { ok: true, checkedAt: now(), error: null });
+    const down = results.filter((r) => !r.ok).length;
+    console.log(`probe cycle complete: ${results.length} models, ${down} down`);
+  } finally {
+    await releaseCycleLock(env.DB);
+  }
 }
 
 function json(body: unknown, status = 200): Response {
