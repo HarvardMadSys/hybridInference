@@ -152,12 +152,11 @@ async def test_chat_completion_sends_user_agent_and_system_prompt() -> None:
 def _patch_identity_setting(value: bool):
     """Patch the runtime-settings singleton so the toggle resolves to ``value``.
 
-    The async entrypoints warm the cache via ``get_bool`` and the sync hooks read
-    it via ``get_cached``, so both are stubbed to the same value.
+    The async entrypoints resolve the toggle once via ``get_bool`` and snapshot
+    it for the sync hooks.
     """
     rs = MagicMock()
     rs.get_bool = AsyncMock(return_value=value)
-    rs.get_cached = MagicMock(return_value=(True, value))
     return patch(
         "serving.config.runtime_settings.get_runtime_settings_instance",
         return_value=rs,
@@ -222,31 +221,20 @@ async def test_embeddings_respect_disabled_toggle() -> None:
     assert "User-Agent" not in captured["headers"]
 
 
-def test_identity_enabled_defaults_true_without_singleton() -> None:
+@pytest.mark.asyncio
+async def test_resolve_identity_defaults_true_without_singleton() -> None:
     adapter = KimiCodingAdapter(_make_cfg())
     with patch(
         "serving.config.runtime_settings.get_runtime_settings_instance",
         side_effect=RuntimeError("not initialized"),
     ):
-        assert adapter._identity_enabled() is True
-
-
-def test_identity_enabled_defaults_true_on_cold_cache() -> None:
-    # When the cache is cold (e.g. the warm refresh failed during a store
-    # outage), the sync read returns not-found and we keep default-on.
-    adapter = KimiCodingAdapter(_make_cfg())
-    rs = MagicMock()
-    rs.get_cached = MagicMock(return_value=(False, None))
-    with patch(
-        "serving.config.runtime_settings.get_runtime_settings_instance",
-        return_value=rs,
-    ):
-        assert adapter._identity_enabled() is True
+        assert await adapter._resolve_identity() is True
 
 
 @pytest.mark.asyncio
-async def test_warm_identity_setting_swallows_store_errors() -> None:
-    # A store/DB error while warming must not propagate out of the request path.
+async def test_resolve_identity_defaults_true_on_store_error() -> None:
+    # An unexpected error (e.g. DB outage) when reading the setting must not
+    # break inference — fall back to the default-on behaviour.
     adapter = KimiCodingAdapter(_make_cfg())
     rs = MagicMock()
     rs.get_bool = AsyncMock(side_effect=ConnectionError("db down"))
@@ -254,7 +242,39 @@ async def test_warm_identity_setting_swallows_store_errors() -> None:
         "serving.config.runtime_settings.get_runtime_settings_instance",
         return_value=rs,
     ):
-        await adapter._warm_identity_setting()  # must not raise
+        assert await adapter._resolve_identity() is True
+
+
+@pytest.mark.asyncio
+async def test_identity_snapshot_consistent_within_request() -> None:
+    # The toggle is resolved exactly once per request and both hooks read the
+    # same snapshot — a mid-request setting flip cannot produce a torn read
+    # (e.g. User-Agent without the OpenCode system message).
+    adapter = KimiCodingAdapter(_make_cfg())
+    kimi_reads = {"count": 0}
+
+    def fake_get_bool(key):
+        if key == "kimi_coding_identity_enabled":
+            kimi_reads["count"] += 1
+            # True on the first (only) resolve; a re-read would flip to False.
+            return kimi_reads["count"] == 1
+        return False  # e.g. log_full_payload
+
+    rs = MagicMock()
+    rs.get_bool = AsyncMock(side_effect=fake_get_bool)
+    with _patch_runtime(rs):
+        captured = await _run_chat_capture(adapter)
+    # Snapshot resolved exactly once, and both hooks applied consistently.
+    assert kimi_reads["count"] == 1
+    assert captured["headers"]["User-Agent"] == "claude-code/0.1.0"
+    assert captured["payload"]["messages"][0] == {"role": "system", "content": "You are OpenCode"}
+
+
+def _patch_runtime(rs: MagicMock):
+    return patch(
+        "serving.config.runtime_settings.get_runtime_settings_instance",
+        return_value=rs,
+    )
 
 
 def test_registry_has_kimi_coding_toggle() -> None:
