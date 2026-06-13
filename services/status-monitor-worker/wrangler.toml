@@ -10,7 +10,7 @@ crons = ["*/5 * * * *"]
 # Gateway the probes go through (no trailing slash). The Worker discovers its
 # probe targets from `${GATEWAY_BASE_URL}/models`, which is already role-filtered
 # for the PROBER_API_KEY account.
-GATEWAY_BASE_URL = "https://freeinference.org"
+GATEWAY_BASE_URL = "https://staging.freeinference.org"
 PROBE_PROMPT = "Write a short Python function that returns hello world."
 PROBE_MAX_TOKENS = "32"
 # Bounded fan-out. The gateway caps per-user concurrency (3 free/pro, 10

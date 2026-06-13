@@ -20,13 +20,15 @@ function kindOf(model: RawModel): "chat" | "embedding" {
 }
 
 /**
- * Discovers probe targets from `${gateway}/models`.
+ * Discovers probe targets from `${gateway}/v1/models`.
  *
  * The endpoint is already role-filtered for the prober's API key, so models the
  * account can't access simply don't appear (and won't be reported as outages).
+ * `/v1/models` (not `/models`) is used because the edge routes `/v1/*` to the
+ * gateway; without Anthropic headers it returns the standard OpenAI list shape.
  */
 export async function discoverModels(config: Config, apiKey: string): Promise<TargetModel[]> {
-  const response = await fetch(`${config.gatewayBaseUrl}/models`, {
+  const response = await fetch(`${config.gatewayBaseUrl}/v1/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal: AbortSignal.timeout(config.probeDeadlineMs),
   });
