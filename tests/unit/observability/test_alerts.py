@@ -6,8 +6,11 @@ import pytest
 
 from serving.observability.alerts import (
     AlertSeverity,
+    _detect_environment,
+    _format_message,
     alert_slack,
     reset_dedupe_state,
+    server_info,
 )
 
 
@@ -80,3 +83,47 @@ async def test_alert_slack_swallows_post_errors(monkeypatch):
     ):
         # must not raise
         await alert_slack(AlertSeverity.ERROR, "t", {})
+
+
+def test_server_info_has_expected_keys():
+    info = server_info()
+    assert set(info) >= {
+        "hostname",
+        "fqdn",
+        "ip",
+        "platform",
+        "base_url",
+        "environment",
+    }
+    assert info["hostname"]
+    assert info["platform"]
+
+
+@pytest.mark.parametrize(
+    "env_overrides, base_url, expected",
+    [
+        ({"DEPLOYMENT_ENV": "qa"}, "https://freeinference.org", "qa"),
+        ({"ENVIRONMENT": "canary"}, "https://staging.freeinference.org", "canary"),
+        ({}, "https://staging.freeinference.org", "staging"),
+        ({}, "https://freeinference.org", "production"),
+        ({}, "http://localhost:8000", "local"),
+        ({}, "https://example.com", "unknown"),
+    ],
+)
+def test_detect_environment(monkeypatch, env_overrides, base_url, expected):
+    monkeypatch.delenv("DEPLOYMENT_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    for key, value in env_overrides.items():
+        monkeypatch.setenv(key, value)
+    assert _detect_environment(base_url) == expected
+
+
+def test_format_message_includes_server_block():
+    message = _format_message(AlertSeverity.ERROR, "Boom", {"provider": "openai"})
+    # Per-alert context (upstream provider) is still rendered.
+    assert "• *Provider:* openai" in message
+    # Gateway server identity is appended.
+    assert "*Server*" in message
+    assert "• *Host:*" in message
+    info = server_info()
+    assert info["hostname"] in message
