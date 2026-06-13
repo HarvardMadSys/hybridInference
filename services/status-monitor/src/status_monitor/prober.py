@@ -118,7 +118,13 @@ async def _probe_streaming(
             if not choices:
                 continue
             delta = choices[0].get("delta", {}) or {}
-            if delta.get("content"):
+            # The gateway's own TTFT tracker treats reasoning_content and tool
+            # calls as first-token events too, so reasoning-only models don't
+            # report a delayed or null TTFT.
+            first_token = bool(
+                delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls")
+            )
+            if first_token:
                 if ttft_ms is None:
                     ttft_ms = (time.monotonic() - started) * 1000.0
                 tokens += 1

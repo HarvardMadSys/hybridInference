@@ -13,6 +13,9 @@ settings:
   # Bounded probe fan-out. The gateway caps per-user concurrency (3 free/pro,
   # 10 internal/admin) and 429s the excess. Keep at/below the prober account cap.
   max_concurrency: 3
+  # Role of the PROBER_API_KEY account. Models whose required_role outranks this
+  # are skipped (the gateway 404s them). One of: free, pro, internal, admin.
+  prober_role: "internal"
 
 gateway:
   base_url: "http://localhost:8080"

@@ -60,6 +60,10 @@ class Settings:
     # (3 for free/pro, 10 for internal/admin); exceeding it yields HTTP 429 and
     # false outages. Keep this at or below the prober account's cap.
     max_concurrency: int = 3
+    # Role of the PROBER_API_KEY account. Registry models whose required_role
+    # outranks this are skipped (the gateway 404s them, which would otherwise
+    # look like an outage). One of: free, pro, internal, admin.
+    prober_role: str = "internal"
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,7 @@ def _build_settings(raw: dict[str, Any]) -> Settings:
         log_level=str(raw.get("log_level", "INFO")),
         state_path=raw.get("state_path"),
         max_concurrency=max(1, int(raw.get("max_concurrency", 3))),
+        prober_role=str(raw.get("prober_role", "internal")),
     )
 
 

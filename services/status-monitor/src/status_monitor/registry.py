@@ -18,6 +18,7 @@ class ModelInfo:
 
     model_id: str
     kind: str  # "chat" or "embedding"
+    required_role: str | None = None
 
 
 def _kind_of(entry: dict) -> str:
@@ -51,7 +52,14 @@ def load_models(path: str | Path) -> list[ModelInfo]:
     result: list[ModelInfo] = []
     for entry in models:
         if isinstance(entry, dict) and entry.get("id"):
-            result.append(ModelInfo(model_id=str(entry["id"]), kind=_kind_of(entry)))
+            role = entry.get("required_role")
+            result.append(
+                ModelInfo(
+                    model_id=str(entry["id"]),
+                    kind=_kind_of(entry),
+                    required_role=str(role) if role else None,
+                )
+            )
     return result
 
 

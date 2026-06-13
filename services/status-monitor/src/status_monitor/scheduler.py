@@ -22,6 +22,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Gateway role hierarchy (lowest to highest access).
+_ROLE_RANK = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
+
+
+def _role_allows(prober_role: str, required_role: str | None) -> bool:
+    """Returns whether ``prober_role`` can access a model needing ``required_role``."""
+    if not required_role:
+        return True
+    have = _ROLE_RANK.get(prober_role.lower(), 0)
+    need = _ROLE_RANK.get(required_role.lower(), 0)
+    return have >= need
+
 
 @dataclass(frozen=True)
 class ProbeTarget:
@@ -54,6 +66,13 @@ def resolve_targets(config: AppConfig) -> list[ProbeTarget]:
     for model in discovered:
         if model.model_id in seen:
             continue
+        # Skip models the prober account can't access; the gateway would 404
+        # them, which would otherwise be reported as an outage. A matching
+        # manual override below can still force such a model to be probed.
+        if model.model_id not in overrides and not _role_allows(
+            config.settings.prober_role, model.required_role
+        ):
+            continue
         seen.add(model.model_id)
         override = overrides.get(model.model_id)
         # Embedding models are never streamed regardless of overrides.
@@ -85,8 +104,12 @@ def resolve_targets(config: AppConfig) -> list[ProbeTarget]:
 async def probe_once(config: AppConfig, store: StatusStore) -> None:
     """Probes every resolved target once and records the results."""
     targets = resolve_targets(config)
+    # Reconcile the store with the active set first, so models that have left
+    # the registry are pruned even when nothing remains to probe.
+    store.retain(target.model_id for target in targets)
     if not targets:
         logger.warning("No probe targets resolved; check registry path and e2e_models.")
+        await asyncio.to_thread(store.save)
         return
     timeout = httpx.Timeout(
         connect=20.0,
@@ -110,7 +133,6 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
                 )
 
         results = await asyncio.gather(*(probe_limited(target) for target in targets))
-    store.retain(target.model_id for target in targets)
     for result in results:
         store.record(result)
         logger.info(
