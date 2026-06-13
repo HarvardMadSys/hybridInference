@@ -21,6 +21,7 @@ from serving.adapters import (
     AnthropicAdapter,
     ClaudeAdapter,
     GeminiAdapter,
+    KimiCodingAdapter,
     ModelConfig,
     OpenAICompatAdapter,
     OpenRouterAdapter,
@@ -148,8 +149,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
-              ``"kimi"``, ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"cliproxy"``,
-              ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
+              ``"kimi"``, ``"kimi_coding"``, ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``,
+              ``"cliproxy"``, ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -179,7 +180,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
     # Kimi (Moonshot) routes through OpenAICompatAdapter; both the Kimi Code
     # coding-plan endpoint and the pay-per-token Moonshot API are OpenAI-compatible.
-    elif kind == "kimi":
+    # ``kimi_coding`` shares the usage profile but uses the dedicated
+    # KimiCodingAdapter (coding-tool User-Agent + leading OpenCode system message).
+    elif kind in ("kimi", "kimi_coding"):
         cfg = {**cfg, "provider_profile": "kimi"}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
@@ -206,6 +209,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     if kind == "openrouter":
         return OpenRouterAdapter(model_cfg)
+
+    if kind == "kimi_coding":
+        return KimiCodingAdapter(model_cfg)
 
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
