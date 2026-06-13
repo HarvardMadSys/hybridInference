@@ -54,6 +54,19 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     assert snap["models"][0]["latest"]["latency_ms"] == 42.0
 
 
+def test_retain_prunes_removed_models() -> None:
+    store = StatusStore(history_size=10)
+    store.record(_result("a", ok=True))
+    store.record(_result("b", ok=True))
+    store.record(_result("stale", ok=False))
+
+    store.retain(["a", "b"])  # "stale" left the registry
+
+    snap = store.snapshot()
+    assert snap["total"] == 2
+    assert {m["model_id"] for m in snap["models"]} == {"a", "b"}
+
+
 def test_load_tolerates_malformed_state(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
     # "models" is a list rather than the expected mapping.

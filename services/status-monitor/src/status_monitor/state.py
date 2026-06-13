@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import deque
+from collections.abc import Iterable
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,23 @@ class StatusStore:
                 result.model_id, deque(maxlen=self._history_size)
             )
             history.append(entry)
+
+    def retain(self, active_ids: Iterable[str]) -> None:
+        """Drops models that are no longer in the active target set.
+
+        Keeps the store (and persisted state) in sync with the current registry
+        so models removed/renamed in ``models.yaml`` don't linger on the
+        dashboard with stale results.
+
+        Args:
+            active_ids: The model ids currently being probed.
+        """
+        keep = set(active_ids)
+        with self._lock:
+            for model_id in list(self._latest):
+                if model_id not in keep:
+                    self._latest.pop(model_id, None)
+                    self._history.pop(model_id, None)
 
     def snapshot(self) -> dict[str, Any]:
         """Returns a JSON-serializable snapshot of all model statuses."""

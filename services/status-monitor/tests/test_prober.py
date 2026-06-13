@@ -107,6 +107,30 @@ async def test_embedding_probe_uses_embeddings_endpoint() -> None:
     assert result.ok is True
 
 
+async def test_streaming_in_band_error_fails_probe() -> None:
+    # Gateway returns HTTP 200 but emits an in-band error chunk on upstream failure.
+    sse = (
+        'data: {"error":{"message":"upstream exploded","type":"server_error"}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await probe_model(
+            client,
+            gateway=_gateway(),
+            settings=Settings(),
+            model_id="glm-4.7",
+            streaming=True,
+        )
+
+    assert result.ok is False
+    assert "upstream exploded" in result.error
+
+
 async def test_http_error_is_recorded() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503, text="unavailable")

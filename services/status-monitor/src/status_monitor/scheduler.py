@@ -110,6 +110,7 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
                 )
 
         results = await asyncio.gather(*(probe_limited(target) for target in targets))
+    store.retain(target.model_id for target in targets)
     for result in results:
         store.record(result)
         logger.info(

@@ -18,6 +18,15 @@ if TYPE_CHECKING:
     from status_monitor.config import GatewayConfig, Settings
 
 
+class StreamingProbeError(RuntimeError):
+    """Raised when a streaming response carries an in-band error chunk.
+
+    The gateway returns HTTP 200 and emits ``data: {"error": ...}`` when an
+    upstream fails after streaming has begun, so HTTP status alone is not a
+    reliable success signal.
+    """
+
+
 @dataclass
 class ProbeResult:
     """Outcome of a single probe against one model."""
@@ -99,6 +108,10 @@ async def _probe_streaming(
                 chunk = json.loads(body)
             except json.JSONDecodeError:
                 continue
+            if chunk.get("error"):
+                err = chunk["error"]
+                message = err.get("message") if isinstance(err, dict) else str(err)
+                raise StreamingProbeError(message or "stream error")
             if chunk.get("usage"):
                 usage_tokens = chunk["usage"].get("completion_tokens")
             choices = chunk.get("choices") or []
@@ -238,6 +251,8 @@ def _describe_error(exc: Exception) -> str:
     """Produces a short, log-friendly description of a probe failure."""
     import httpx
 
+    if isinstance(exc, StreamingProbeError):
+        return f"stream error: {exc}"[:200]
     if isinstance(exc, httpx.HTTPStatusError):
         return f"HTTP {exc.response.status_code}"
     if isinstance(exc, httpx.TimeoutException):
