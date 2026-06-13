@@ -142,6 +142,7 @@ models:
   - id: glm-5.2
     name: GLM-5.2
     provider: zai
+    required_role: internal
     quantization: "fp8"
     context_length: 1000000
     max_output_length: 131072
@@ -151,13 +152,13 @@ models:
     input_modalities: ["text"]
     output_modalities: ["text"]
     aliases: ["freeinference-glm-5.2"]
-    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing (2x)
     pricing:
-      prompt: "1.4"
-      completion: "4.4"
+      prompt: "2.8"
+      completion: "8.8"
       image: "0"
       request: "0"
-      input_cache_reads: "0.26"
+      input_cache_reads: "0.52"
       input_cache_writes: "0"
     route:
       - kind: zai
