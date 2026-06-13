@@ -27,7 +27,7 @@ export function SiteFooter(): JSX.Element {
         </a>
         <span aria-hidden="true">·</span>
         <a
-          href="https://status.freeinference.org/"
+          href="https://status.staging.freeinference.org/"
           className="hover:text-crimson"
           target="_blank"
           rel="noopener noreferrer"

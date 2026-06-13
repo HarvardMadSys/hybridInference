@@ -44,7 +44,7 @@ describe('Header', () => {
 
     const statusLink = screen.getByRole('link', { name: 'Status' });
 
-    expect(statusLink).toHaveAttribute('href', 'https://status.freeinference.org/');
+    expect(statusLink).toHaveAttribute('href', 'https://status.staging.freeinference.org/');
     expect(statusLink).toHaveAttribute('target', '_blank');
     expect(statusLink).toHaveAttribute('rel', 'noopener noreferrer');
   });
