@@ -6,7 +6,7 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 | Model ID | Name | Context Length | Max Output | Features |
 |----------|------|----------------|------------|----------|
-| `glm-5.2` | GLM-5.2 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
+| `glm-5.2` | GLM-5.2 | 1M tokens | 131K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-5.1` | GLM-5.1 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-4.7` | GLM-4.7 | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
 | `glm-5-turbo` | GLM-5 Turbo | 200K tokens | 128K tokens | Function calling, Structured output, Bilingual (Chinese/English), Thinking mode |
@@ -24,8 +24,8 @@ FreeInference provides access to multiple state-of-the-art LLM models for coding
 
 **Aliases:** `freeinference-glm-5.2`
 
-- Context length: 200,000 tokens
-- Max output: 128,000 tokens
+- Context length: 1,000,000 tokens
+- Max output: 131,072 tokens
 - Quantization: fp8
 - Input modalities: text
 - Output modalities: text
