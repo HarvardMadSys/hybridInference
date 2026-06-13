@@ -33,8 +33,14 @@ export async function discoverModels(config: Config, apiKey: string): Promise<Ta
   if (!response.ok) {
     throw new Error(`models discovery failed: HTTP ${response.status}`);
   }
-  const body = (await response.json()) as { data?: RawModel[] };
-  const data = Array.isArray(body.data) ? body.data : [];
+  const body = (await response.json()) as { data?: unknown };
+  // Treat a malformed catalog (non-array `data`) as a discovery failure rather
+  // than an empty catalog, so a regression isn't mistaken for "all models
+  // removed" and used to wipe history.
+  if (!Array.isArray(body.data)) {
+    throw new Error("malformed /models response: 'data' is not an array");
+  }
+  const data = body.data as RawModel[];
   const targets: TargetModel[] = [];
   const seen = new Set<string>();
   for (const model of data) {

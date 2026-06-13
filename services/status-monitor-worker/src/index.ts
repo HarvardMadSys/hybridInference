@@ -93,15 +93,15 @@ async function runProbeCycle(env: Env): Promise<void> {
       probeModel(config, env.PROBER_API_KEY, target),
     );
 
-    // An invalid/expired key is treated as anonymous by the gateway, so /models
-    // still returns the free catalog but every probe 401s. Report that as a
-    // credential failure instead of recording every model as a false outage.
-    if (results.length > 0 && results.every((r) => !r.ok && (r.error?.includes("401") ?? false))) {
-      console.error("all probes returned 401; PROBER_API_KEY appears invalid.");
+    // A bad/unverified/over-quota key is rejected for every model at the account
+    // level (401/403/429) before routing. Report that as a single cycle failure
+    // instead of recording every model as a false outage.
+    if (isAccountLevelFailure(results)) {
+      console.error("all probes rejected at account level (401/403/429).");
       await setCycleStatus(env.DB, {
         ok: false,
         checkedAt: now(),
-        error: "probe credentials rejected (HTTP 401); check PROBER_API_KEY",
+        error: "probes rejected account-wide (401/403/429); check PROBER_API_KEY, verification, and quota",
       });
       return;
     }
@@ -121,6 +121,19 @@ async function runProbeCycle(env: Env): Promise<void> {
     await heartbeat;
     await releaseCycleLock(env.DB, lock);
   }
+}
+
+// Statuses the gateway returns for the whole account before model routing:
+// 401 (bad key), 403 (unverified), 429 (quota). Uniform across all probes they
+// indicate an account problem, not provider outages.
+const ACCOUNT_REJECT_CODES = ["401", "403", "429"];
+
+/** True when every probe failed with the same account-level rejection. */
+export function isAccountLevelFailure(results: ProbeResult[]): boolean {
+  return (
+    results.length > 0 &&
+    results.every((r) => !r.ok && ACCOUNT_REJECT_CODES.some((c) => r.error?.includes(c)))
+  );
 }
 
 function json(body: unknown, status = 200): Response {
