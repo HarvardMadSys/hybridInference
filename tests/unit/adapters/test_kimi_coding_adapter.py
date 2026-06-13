@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -147,3 +147,80 @@ async def test_chat_completion_sends_user_agent_and_system_prompt() -> None:
         "role": "system",
         "content": "You are OpenCode",
     }
+
+
+def _patch_identity_setting(value: bool):
+    """Patch the runtime-settings singleton so the toggle resolves to ``value``."""
+    rs = MagicMock()
+    rs.get_bool = AsyncMock(return_value=value)
+    return patch(
+        "serving.config.runtime_settings.get_runtime_settings_instance",
+        return_value=rs,
+    )
+
+
+async def _run_chat_capture(adapter: KimiCodingAdapter) -> dict[str, Any]:
+    upstream_response = {
+        "id": "x",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }
+    captured: dict[str, Any] = {}
+
+    async def fake_json_post_with_retry(*, url, json, headers, timeout, retries):
+        captured["headers"] = headers
+        captured["payload"] = json
+        return upstream_response
+
+    with patch.object(
+        adapter.http, "json_post_with_retry", AsyncMock(side_effect=fake_json_post_with_retry)
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_identity_toggle_enabled_applies_injection() -> None:
+    adapter = KimiCodingAdapter(_make_cfg())
+    with _patch_identity_setting(True):
+        captured = await _run_chat_capture(adapter)
+    assert captured["headers"]["User-Agent"] == "claude-code/0.1.0"
+    assert captured["payload"]["messages"][0] == {"role": "system", "content": "You are OpenCode"}
+
+
+@pytest.mark.asyncio
+async def test_identity_toggle_disabled_skips_injection() -> None:
+    adapter = KimiCodingAdapter(_make_cfg())
+    with _patch_identity_setting(False):
+        captured = await _run_chat_capture(adapter)
+    assert "User-Agent" not in captured["headers"]
+    assert captured["payload"]["messages"][0] == {"role": "user", "content": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_identity_toggle_does_not_leak_across_requests() -> None:
+    # After a disabled request, the per-request flag must reset to the default
+    # so a direct hook call still injects (default-on behaviour).
+    adapter = KimiCodingAdapter(_make_cfg())
+    with _patch_identity_setting(False):
+        await _run_chat_capture(adapter)
+    assert adapter._build_headers()["User-Agent"] == "claude-code/0.1.0"
+
+
+@pytest.mark.asyncio
+async def test_identity_enabled_defaults_true_without_singleton() -> None:
+    adapter = KimiCodingAdapter(_make_cfg())
+    with patch(
+        "serving.config.runtime_settings.get_runtime_settings_instance",
+        side_effect=RuntimeError("not initialized"),
+    ):
+        assert await adapter._identity_enabled() is True
+
+
+def test_registry_has_kimi_coding_toggle() -> None:
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+
+    entry = RUNTIME_SETTINGS_REGISTRY["kimi_coding_identity_enabled"]
+    assert entry["type"] == "bool"
+    assert entry["default"] is True
+    assert entry.get("description")

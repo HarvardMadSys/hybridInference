@@ -59,6 +59,15 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "then buffer and return a normal non-streaming response to clients."
         ),
     },
+    "kimi_coding_identity_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": (
+            "Inject the coding-tool identity on Kimi coding-plan requests: set "
+            "User-Agent: claude-code/0.1.0 and prepend a 'You are OpenCode' "
+            "system message. Disable to send the gateway's own identity instead."
+        ),
+    },
     "user_concurrency_free": {
         "type": "int",
         "default": 3,
