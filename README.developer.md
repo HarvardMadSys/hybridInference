@@ -102,7 +102,7 @@ apps/
     benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, routewise, alerts
-services/         # status-monitor (+ -worker), freeinference-harness, alert-logger
+services/         # status-monitor-worker, freeinference-harness, alert-logger
 tests/            # Unit, API, integration, e2e, external tests
 ops/              # Operational tooling
 deploy/           # Systemd units, Docker, observability manifests

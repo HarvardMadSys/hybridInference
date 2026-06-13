@@ -70,27 +70,6 @@ services:
     networks:
       - hybridinference
 
-  # ===== Status monitor =====
-
-  status-monitor:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile.status-monitor
-    container_name: hybridinference-status-monitor
-    restart: unless-stopped
-    env_file: ../../.env
-    volumes:
-      - ../status-monitor/config.docker.yaml:/app/config.yml:ro
-      - ../../config/models.yaml:/app/models.yaml:ro
-      - status_monitor_state:/app/state
-    ports:
-      - "127.0.0.1:9101:9101"
-    depends_on:
-      backend:
-        condition: service_healthy
-    networks:
-      - hybridinference
-
   # ===== Database =====
 
   postgres:
@@ -156,8 +135,6 @@ volumes:
     external: true
     name: hybridinference_postgres_data
   pgadmin_data:
-    driver: local
-  status_monitor_state:
     driver: local
 
 networks:
