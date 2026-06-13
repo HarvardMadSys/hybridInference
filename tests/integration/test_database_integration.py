@@ -228,7 +228,10 @@ async def test_postgres_log_store_routewise_bootstrap_rows_are_normalized(
                  $4::jsonb),
                 ($5, 'rw-bootstrap-too-old-for-limit', 'm', 'provider-old',
                  900, 1000, 200, NULL, 1000, 100,
-                 $6::jsonb)
+                 $6::jsonb),
+                ($7, 'rw-bootstrap-synthetic', 'm', 'provider-synthetic',
+                 150, 400, 200, NULL, 1000, 100,
+                 $8::jsonb)
             """,
             now,
             json.dumps({"endpoint_id": "m:provider-a"}),
@@ -247,6 +250,10 @@ async def test_postgres_log_store_routewise_bootstrap_rows_are_normalized(
             ),
             now - dt.timedelta(seconds=20),
             json.dumps({"endpoint_id": "m:provider-old"}),
+            # Synthetic probe row: must be excluded from the bootstrap so it
+            # cannot skew replayed latency profiles / cost envelope.
+            now - dt.timedelta(seconds=5),
+            json.dumps({"endpoint_id": "m:provider-synthetic", "synthetic_probe": True}),
         )
 
     log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
@@ -275,6 +282,8 @@ async def test_postgres_log_store_routewise_bootstrap_rows_are_normalized(
         "m:provider-b",
         "m:provider-a",
     ]
+    # The synthetic probe row is filtered out of the bootstrap entirely.
+    assert "m:provider-synthetic" not in [row["endpoint_id"] for row in all_rows]
 
 
 @pytest.mark.asyncio

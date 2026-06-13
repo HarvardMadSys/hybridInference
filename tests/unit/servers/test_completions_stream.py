@@ -80,6 +80,8 @@ def _make_session(
         metadata=metadata if metadata is not None else {},
         user_id="user-1",
         is_synthetic_probe=is_synthetic_probe,
+        # Mirror the historical behavior: a synthetic probe suppresses logging.
+        suppress_synthetic_logging=is_synthetic_probe,
         log_store=log_store,
         active_router=MagicMock(),
         cost_tracker=cost_tracker,

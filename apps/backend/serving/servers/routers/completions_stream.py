@@ -196,6 +196,7 @@ class StreamSession:
         metadata: dict[str, Any],
         user_id: str,
         is_synthetic_probe: bool,
+        suppress_synthetic_logging: bool,
         log_store: Any,
         active_router: Any,
         cost_tracker: CostTracker,
@@ -221,6 +222,10 @@ class StreamSession:
                 adapter routing keys (minus ``upstream_cost_usd``).
             user_id: Stable user identifier for cost increments.
             is_synthetic_probe: Skip DB / cost / observation side effects.
+            suppress_synthetic_logging: Skip only the api_logs persistence for
+                this request. Separate from ``is_synthetic_probe`` so the
+                ``log_synthetic_probes`` admin toggle can log probes (with their
+                cost) while still excluding them from per-user quota and metrics.
             log_store: ``LogStore`` instance — gating only; the
                 ``CompletionsLogger`` performs the actual writes.
             active_router: Router used for the routing observation.
@@ -246,6 +251,7 @@ class StreamSession:
         self._metadata = metadata
         self._user_id = user_id
         self._is_synthetic_probe = is_synthetic_probe
+        self._suppress_synthetic_logging = suppress_synthetic_logging
         self._log_store = log_store
         self._active_router = active_router
         self._cost_tracker = cost_tracker
@@ -572,7 +578,7 @@ class StreamSession:
                 reasoning_tokens=int(_usage.get("reasoning_tokens", 0) or 0),
             )
 
-        if self._log_store and not self._is_synthetic_probe:
+        if self._log_store and not self._suppress_synthetic_logging:
             self._completions_logger.schedule_log(
                 self._request_id,
                 {
@@ -613,11 +619,12 @@ class StreamSession:
 
     async def _finalize_failure(self, exc: BaseException) -> None:
         """Record failure observation and schedule the error DB log."""
+        # ``exc._routing`` is still a raw dict from the routing layer;
+        # ``record_routing_observation`` accepts both shapes so we don't need to
+        # coerce here. Computed unconditionally so the failed-probe log branch
+        # below can reuse it when ``log_synthetic_probes`` is enabled.
+        exc_routing = getattr(exc, "_routing", None)
         if not self._is_synthetic_probe:
-            # ``exc._routing`` is still a raw dict from the routing layer;
-            # ``record_routing_observation`` accepts both shapes so we don't
-            # need to coerce here.
-            exc_routing = getattr(exc, "_routing", None)
             self._completions_logger.record_routing_observation(
                 self._active_router,
                 self._model,
@@ -633,7 +640,7 @@ class StreamSession:
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
         exc_status_code = _extract_exception_status_code(exc)
 
-        if self._log_store and not self._is_synthetic_probe:
+        if self._log_store and not self._suppress_synthetic_logging:
             metadata_for_error = self._metadata
             if isinstance(exc_routing, dict):
                 metadata_for_error = {
