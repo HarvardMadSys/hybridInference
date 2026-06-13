@@ -3,6 +3,9 @@ settings:
   # Optional path prefix for reverse-proxy deployments (e.g. "/status-monitor").
   base_path: ""
   default_timeout: 30
+  # Absolute per-probe deadline (s). SSE keepalives reset the per-read timeout,
+  # so a stalled upstream needs this total cap to fail instead of hanging.
+  probe_deadline: 60
   probe_prompt: "Write a short Python function that returns hello world."
   probe_max_tokens: 32
   probe_temperature: 0

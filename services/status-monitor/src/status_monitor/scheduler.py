@@ -182,10 +182,9 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
         targets = await discover_targets(config, client)
         if targets is None:
             targets = resolve_targets(config)
-        # Reconcile the store first, so models that have left the active set are
-        # pruned even when nothing remains to probe.
-        store.retain(target.model_id for target in targets)
         if not targets:
+            # Legitimately empty catalog: reconcile the dashboard to empty.
+            store.retain(())
             logger.warning("No probe targets resolved; check gateway, registry, and e2e_models.")
             await asyncio.to_thread(store.save)
             return
@@ -205,8 +204,9 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
         results = await asyncio.gather(*(probe_limited(target) for target in targets))
 
         # An invalid/expired key is treated as anonymous by the gateway, so the
-        # catalog still loads but every probe 401s. Report a credential failure
-        # rather than recording every model as a false outage (keep prior state).
+        # catalog still loads (reduced) but every probe 401s. Detect this BEFORE
+        # reconciling, so an expired key doesn't silently drop previously
+        # monitored models; report a credential failure and keep prior state.
         auth_failures = [r for r in results if not r.ok and r.error and "401" in r.error]
         if results and len(auth_failures) == len(results):
             logger.error(
@@ -216,6 +216,9 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
             )
             await asyncio.to_thread(store.save)
             return
+
+        # Validated: now reconcile the store to the active set.
+        store.retain(target.model_id for target in targets)
 
     for result in results:
         store.record(result)

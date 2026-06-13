@@ -8,6 +8,7 @@ export interface Env {
   MAX_CONCURRENCY?: string;
   PROBE_HEADER?: string;
   RETENTION_DAYS?: string;
+  PROBE_DEADLINE_MS?: string;
 }
 
 /** Normalized configuration derived from {@link Env}. */
@@ -18,6 +19,7 @@ export interface Config {
   maxConcurrency: number;
   probeHeader: string | null;
   retentionDays: number;
+  probeDeadlineMs: number;
 }
 
 function intOr(value: string | undefined, fallback: number): number {
@@ -34,5 +36,8 @@ export function loadConfig(env: Env): Config {
     maxConcurrency: intOr(env.MAX_CONCURRENCY, 3),
     probeHeader: env.PROBE_HEADER || null,
     retentionDays: intOr(env.RETENTION_DAYS, 7),
+    // Absolute per-probe deadline; SSE keepalives can otherwise keep a stalled
+    // stream open indefinitely with no per-read timeout to trip.
+    probeDeadlineMs: intOr(env.PROBE_DEADLINE_MS, 60_000),
   };
 }

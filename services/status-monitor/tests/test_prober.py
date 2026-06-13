@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -194,6 +196,33 @@ async def test_streaming_in_band_error_fails_probe() -> None:
 
     assert result.ok is False
     assert "upstream exploded" in result.error
+
+
+async def test_streaming_total_deadline_fails_probe() -> None:
+    # A stream that never finishes (mimicking endless keepalives) must hit the
+    # absolute probe deadline rather than hang forever.
+    class _SlowStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.sleep(5)
+            yield b"data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, stream=_SlowStream(), headers={"content-type": "text/event-stream"}
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await probe_model(
+            client,
+            gateway=_gateway(),
+            settings=Settings(probe_deadline=0.05),
+            model_id="glm-4.7",
+            streaming=True,
+        )
+
+    assert result.ok is False
+    assert result.error == "timeout"
 
 
 async def test_http_error_is_recorded() -> None:

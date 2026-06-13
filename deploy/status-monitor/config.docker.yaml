@@ -2,6 +2,9 @@ settings:
   port: 9101
   base_path: "/status-monitor"
   default_timeout: 30
+  # Absolute per-probe deadline (s); caps stalled upstreams that keep the SSE
+  # stream alive with keepalives.
+  probe_deadline: 60
   probe_prompt: "Write a short Python function that returns hello world."
   probe_max_tokens: 32
   probe_temperature: 0

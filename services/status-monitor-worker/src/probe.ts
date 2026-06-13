@@ -141,6 +141,7 @@ async function probeEmbedding(
     method: "POST",
     headers: headers(config, apiKey),
     body: JSON.stringify({ model: modelId, input: config.probePrompt }),
+    signal: AbortSignal.timeout(config.probeDeadlineMs),
   });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
@@ -182,6 +183,8 @@ export async function probeModel(
         stream: true,
         stream_options: { include_usage: true },
       }),
+      // Total deadline: aborts even when SSE keepalives keep the stream open.
+      signal: AbortSignal.timeout(config.probeDeadlineMs),
     });
     if (!response.ok || !response.body) {
       throw new Error(`HTTP ${response.status}`);

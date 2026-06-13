@@ -28,6 +28,7 @@ function kindOf(model: RawModel): "chat" | "embedding" {
 export async function discoverModels(config: Config, apiKey: string): Promise<TargetModel[]> {
   const response = await fetch(`${config.gatewayBaseUrl}/models`, {
     headers: { Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(config.probeDeadlineMs),
   });
   if (!response.ok) {
     throw new Error(`models discovery failed: HTTP ${response.status}`);

@@ -6,6 +6,7 @@ model and records whether it succeeded along with latency metrics.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -202,13 +203,14 @@ async def probe_model(
 
     if kind == "embedding":
         try:
-            await _probe_embedding(
-                client,
-                url=f"{base}/v1/embeddings",
-                headers=headers,
-                model_id=model_id,
-                prompt=settings.probe_prompt,
-            )
+            async with asyncio.timeout(settings.probe_deadline):
+                await _probe_embedding(
+                    client,
+                    url=f"{base}/v1/embeddings",
+                    headers=headers,
+                    model_id=model_id,
+                    prompt=settings.probe_prompt,
+                )
             latency_ms = (time.monotonic() - started) * 1000.0
             return ProbeResult(
                 model_id=model_id,
@@ -232,15 +234,16 @@ async def probe_model(
         model_id=model_id, settings=settings, max_tokens=tokens_budget, streaming=streaming
     )
     try:
-        if streaming:
-            ttft_ms, completion_tokens = await _probe_streaming(
-                client, url=url, headers=headers, payload=payload, started=started
-            )
-        else:
-            ttft_ms = None
-            completion_tokens = await _probe_nonstreaming(
-                client, url=url, headers=headers, payload=payload
-            )
+        async with asyncio.timeout(settings.probe_deadline):
+            if streaming:
+                ttft_ms, completion_tokens = await _probe_streaming(
+                    client, url=url, headers=headers, payload=payload, started=started
+                )
+            else:
+                ttft_ms = None
+                completion_tokens = await _probe_nonstreaming(
+                    client, url=url, headers=headers, payload=payload
+                )
         latency_ms = (time.monotonic() - started) * 1000.0
         # Decode throughput over the post-TTFT window, matching the gateway
         # metric: (tokens - 1) / (latency - ttft). Excludes queueing/TTFT.
@@ -273,6 +276,8 @@ def _describe_error(exc: Exception) -> str:
 
     if isinstance(exc, StreamingProbeError):
         return f"stream error: {exc}"[:200]
+    if isinstance(exc, TimeoutError):  # includes asyncio.timeout deadline
+        return "timeout"
     if isinstance(exc, httpx.HTTPStatusError):
         return f"HTTP {exc.response.status_code}"
     if isinstance(exc, httpx.TimeoutException):

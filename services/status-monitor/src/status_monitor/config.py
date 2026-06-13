@@ -50,6 +50,9 @@ class Settings:
     port: int = 9101
     base_path: str = ""
     default_timeout: float = 30.0
+    # Absolute per-probe deadline. The gateway sends SSE keepalives that reset
+    # the per-read timeout, so a stalled upstream needs a total cap to fail.
+    probe_deadline: float = 60.0
     probe_prompt: str = "Write a short Python function that returns hello world."
     probe_max_tokens: int = 32
     probe_temperature: float = 0.0
@@ -112,6 +115,7 @@ def _build_settings(raw: dict[str, Any]) -> Settings:
         port=int(raw.get("port", 9101)),
         base_path=str(raw.get("base_path", "")).rstrip("/"),
         default_timeout=float(raw.get("default_timeout", 30.0)),
+        probe_deadline=float(raw.get("probe_deadline", 60.0)),
         probe_prompt=str(
             raw.get("probe_prompt", "Write a short Python function that returns hello world.")
         ),
