@@ -75,6 +75,16 @@ def create_app(config: AppConfig) -> FastAPI:
     async def lifespan(app: FastAPI):  # noqa: ANN202 - FastAPI lifespan signature
         """Starts and stops the background probe scheduler."""
         task = asyncio.create_task(run_scheduler(config, store))
+
+        def _on_done(finished: asyncio.Task) -> None:
+            """Surfaces an unexpected scheduler exit instead of failing silently."""
+            if finished.cancelled():
+                return
+            exc = finished.exception()
+            if exc is not None:
+                logger.error("Probe scheduler exited unexpectedly", exc_info=exc)
+
+        task.add_done_callback(_on_done)
         try:
             yield
         finally:

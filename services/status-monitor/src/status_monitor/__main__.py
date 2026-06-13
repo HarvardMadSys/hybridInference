@@ -61,7 +61,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_once(config)
 
     app = create_app(config)
-    uvicorn.run(app, host=args.host, port=config.settings.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=config.settings.port,
+        log_level=config.settings.log_level.lower(),
+    )
     return 0
 
 

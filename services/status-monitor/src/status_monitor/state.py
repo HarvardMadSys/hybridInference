@@ -76,9 +76,17 @@ class StatusStore:
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("Could not load state from %s: %s", self._state_path, exc)
             return
+        if not isinstance(raw, dict) or not isinstance(raw.get("models"), dict):
+            logger.warning("Ignoring malformed state file %s", self._state_path)
+            return
         with self._lock:
-            for model_id, data in (raw.get("models") or {}).items():
-                history = deque(data.get("history", []), maxlen=self._history_size)
+            for model_id, data in raw["models"].items():
+                if not isinstance(data, dict):
+                    continue
+                history_list = data.get("history")
+                if not isinstance(history_list, list):
+                    continue
+                history = deque(history_list, maxlen=self._history_size)
                 self._history[model_id] = history
                 if history:
                     self._latest[model_id] = history[-1]

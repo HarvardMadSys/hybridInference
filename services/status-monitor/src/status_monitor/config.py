@@ -56,6 +56,10 @@ class Settings:
     history_size: int = 100
     log_level: str = "INFO"
     state_path: str | None = None
+    # Bounded probe fan-out. The gateway enforces a per-user concurrency cap
+    # (3 for free/pro, 10 for internal/admin); exceeding it yields HTTP 429 and
+    # false outages. Keep this at or below the prober account's cap.
+    max_concurrency: int = 3
 
 
 @dataclass(frozen=True)
@@ -108,6 +112,7 @@ def _build_settings(raw: dict[str, Any]) -> Settings:
         history_size=int(raw.get("history_size", 100)),
         log_level=str(raw.get("log_level", "INFO")),
         state_path=raw.get("state_path"),
+        max_concurrency=max(1, int(raw.get("max_concurrency", 3))),
     )
 
 

@@ -2,7 +2,7 @@
 name = "status-monitor"
 version = "0.1.0"
 description = "Status monitoring website that probes every FreeInference model on a schedule."
-license = { file = "../LICENSE" }
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

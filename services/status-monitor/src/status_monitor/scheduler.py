@@ -94,10 +94,12 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
         write=20.0,
         pool=20.0,
     )
+    semaphore = asyncio.Semaphore(config.settings.max_concurrency)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        results = await asyncio.gather(
-            *(
-                probe_model(
+
+        async def probe_limited(target: ProbeTarget):  # noqa: ANN202 - returns ProbeResult
+            async with semaphore:
+                return await probe_model(
                     client,
                     gateway=config.gateway,
                     settings=config.settings,
@@ -106,9 +108,8 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
                     max_tokens=target.max_tokens,
                     kind=target.kind,
                 )
-                for target in targets
-            )
-        )
+
+        results = await asyncio.gather(*(probe_limited(target) for target in targets))
     for result in results:
         store.record(result)
         logger.info(
@@ -118,7 +119,8 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
             result.latency_ms,
             result.error,
         )
-    store.save()
+    # Persist off the event loop; the write touches the filesystem.
+    await asyncio.to_thread(store.save)
 
 
 async def run_scheduler(config: AppConfig, store: StatusStore) -> None:

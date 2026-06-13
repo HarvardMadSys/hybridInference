@@ -34,6 +34,12 @@ def test_load_model_ids_missing_file(tmp_path: Path) -> None:
     assert load_model_ids(tmp_path / "nope.yaml") == []
 
 
+def test_load_model_ids_non_dict_yaml(tmp_path: Path) -> None:
+    path = tmp_path / "models.yaml"
+    path.write_text("- just\n- a\n- list\n", encoding="utf-8")
+    assert load_model_ids(path) == []  # must not raise on non-mapping YAML
+
+
 def test_resolve_targets_merges_overrides(tmp_path: Path) -> None:
     path = _write_registry(tmp_path)
     config = AppConfig(

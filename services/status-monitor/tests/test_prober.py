@@ -17,7 +17,9 @@ def _gateway() -> GatewayConfig:
 
 async def test_nonstreaming_success() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.headers["X-FreeInference-Probe"] == "synthetic"
+        # The gateway only recognizes the "X-Probe" header to mark synthetic traffic.
+        assert request.headers["X-Probe"] == "synthetic"
+        assert "X-FreeInference-Probe" not in request.headers
         body = request.read().decode()
         assert '"stream": false' in body or '"stream":false' in body
         return httpx.Response(200, json={"usage": {"completion_tokens": 12}})
@@ -61,6 +63,27 @@ async def test_streaming_measures_ttft() -> None:
     assert result.ok is True
     assert result.completion_tokens == 2
     assert result.ttft_ms is not None
+
+
+async def test_streaming_handles_data_without_space() -> None:
+    # Some gateways/proxies emit "data:{...}" with no space after the colon.
+    sse = 'data:{"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=sse)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await probe_model(
+            client,
+            gateway=_gateway(),
+            settings=Settings(),
+            model_id="glm-4.7",
+            streaming=True,
+        )
+
+    assert result.ok is True
+    assert result.completion_tokens == 1
 
 
 async def test_embedding_probe_uses_embeddings_endpoint() -> None:

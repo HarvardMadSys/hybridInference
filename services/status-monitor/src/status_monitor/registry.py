@@ -42,8 +42,12 @@ def load_models(path: str | Path) -> list[ModelInfo]:
     registry_path = Path(path)
     if not registry_path.is_file():
         return []
-    raw = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
-    models = raw.get("models") or []
+    raw = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        return []
+    models = raw.get("models")
+    if not isinstance(models, list):
+        return []
     result: list[ModelInfo] = []
     for entry in models:
         if isinstance(entry, dict) and entry.get("id"):

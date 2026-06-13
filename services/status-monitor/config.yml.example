@@ -10,6 +10,9 @@ settings:
   log_level: "INFO"
   # Where to persist recent history so a restart does not lose it.
   state_path: "./state/status-monitor-state.json"
+  # Bounded probe fan-out. The gateway caps per-user concurrency (3 free/pro,
+  # 10 internal/admin) and 429s the excess. Keep at/below the prober account cap.
+  max_concurrency: 3
 
 gateway:
   base_url: "http://localhost:8080"

@@ -8,6 +8,9 @@ settings:
   history_size: 100
   log_level: "INFO"
   state_path: "/app/state/status-monitor-state.json"
+  # Bounded probe fan-out. The gateway caps per-user concurrency (3 free/pro,
+  # 10 internal/admin) and 429s the excess. Keep at/below the prober account cap.
+  max_concurrency: 3
 
 gateway:
   base_url: "http://backend:8080"

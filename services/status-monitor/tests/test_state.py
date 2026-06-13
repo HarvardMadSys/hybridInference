@@ -52,3 +52,12 @@ def test_persistence_round_trip(tmp_path: Path) -> None:
     snap = reloaded.snapshot()
     assert snap["total"] == 1
     assert snap["models"][0]["latest"]["latency_ms"] == 42.0
+
+
+def test_load_tolerates_malformed_state(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    # "models" is a list rather than the expected mapping.
+    state_path.write_text('{"models": ["nonsense"]}', encoding="utf-8")
+    store = StatusStore(history_size=10, state_path=str(state_path))
+    store.load()  # must not raise
+    assert store.snapshot()["total"] == 0

@@ -58,13 +58,18 @@ def _build_payload(
 
 
 def _headers(gateway: GatewayConfig) -> dict[str, str]:
-    """Builds request headers, including the synthetic-probe marker."""
+    """Builds request headers, including the synthetic-probe marker.
+
+    The gateway recognizes ``X-Probe: synthetic`` to exclude requests from
+    request logs, metrics, and cost tracking (see ``completions.py`` and
+    ``request_log.py``), so probes must use exactly that header name.
+    """
     headers = {
         "Authorization": f"Bearer {gateway.api_key}",
         "Content-Type": "application/json",
     }
     if gateway.probe_header:
-        headers["X-FreeInference-Probe"] = gateway.probe_header
+        headers["X-Probe"] = gateway.probe_header
     return headers
 
 
@@ -83,9 +88,11 @@ async def _probe_streaming(
     async with client.stream("POST", url, headers=headers, json=payload) as response:
         response.raise_for_status()
         async for line in response.aiter_lines():
-            if not line or line.startswith(":") or not line.startswith("data: "):
+            # SSE comments start with ":"; data lines may use "data:" with or
+            # without a leading space ("data: {..}" or "data:{..}").
+            if not line or line.startswith(":") or not line.startswith("data:"):
                 continue
-            body = line[6:].strip()
+            body = line[len("data:") :].strip()
             if body == "[DONE]":
                 break
             try:
@@ -189,7 +196,7 @@ async def probe_model(
             )
 
     url = f"{base}/v1/chat/completions"
-    tokens_budget = max_tokens or settings.probe_max_tokens
+    tokens_budget = max_tokens if max_tokens is not None else settings.probe_max_tokens
     payload = _build_payload(
         model_id=model_id, settings=settings, max_tokens=tokens_budget, streaming=streaming
     )
