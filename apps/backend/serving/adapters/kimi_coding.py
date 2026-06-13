@@ -9,11 +9,12 @@ encoded here:
    prepended unless the request already starts with exactly that message.
 
 The injection is gated by the ``kimi_coding_identity_enabled`` runtime setting
-(admin-dashboard toggle, default on). The setting read is async, but the header
-and message hooks are synchronous, so the resolved value is stashed in a
-:class:`~contextvars.ContextVar` by the async request entrypoints and read back
-by the sync hooks. ContextVars are per-task, so this stays correct when the
-shared adapter instance serves concurrent requests.
+(admin-dashboard toggle, default on). This is a *global* setting, so the
+synchronous header/message hooks read it straight from the runtime-settings TTL
+cache via :meth:`RuntimeSettings.get_cached`; the async request entrypoints warm
+that cache first (a best-effort DB-backed refresh). Reading the cache is
+synchronous and per-instance-safe, so it works correctly under concurrency and
+across task hand-offs (e.g. RouteWise hedging advancing a stream in a new task).
 
 Everything else (auth, payload shape, usage parsing, key-pool rotation) is
 inherited unchanged from OpenAICompatAdapter.
@@ -21,7 +22,6 @@ inherited unchanged from OpenAICompatAdapter.
 
 from __future__ import annotations
 
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.logging import get_logger
@@ -39,49 +39,62 @@ _SYSTEM_PROMPT = "You are OpenCode"
 # Admin-dashboard toggle key (see RUNTIME_SETTINGS_REGISTRY).
 _SETTING_KEY = "kimi_coding_identity_enabled"
 
-# Per-request flag set by the async entrypoints and read by the sync hooks.
-# Defaults to True so direct hook calls (and pre-init paths) preserve behaviour.
-_identity_active: ContextVar[bool] = ContextVar("kimi_coding_identity_active", default=True)
-
 
 class KimiCodingAdapter(OpenAICompatAdapter):
     """OpenAI-compatible adapter for the Kimi coding plan."""
 
-    async def _identity_enabled(self) -> bool:
-        """Resolve the admin toggle, defaulting to enabled if unavailable."""
+    async def _warm_identity_setting(self) -> None:
+        """Refresh the toggle into the runtime-settings TTL cache.
+
+        Best-effort: the synchronous hooks read the cached value, so we resolve
+        it (DB-backed) here first. Any failure is logged and left to the hooks'
+        default-on fallback, so a settings outage never breaks a request.
+        """
         try:
             from serving.config.runtime_settings import get_runtime_settings_instance
 
-            return await get_runtime_settings_instance().get_bool(_SETTING_KEY)
+            await get_runtime_settings_instance().get_bool(_SETTING_KEY)
         except Exception:
-            # Singleton not initialized, key missing, or DB/store error — never
-            # let a settings lookup break inference; keep default behaviour.
             logger.warning(
                 "kimi_identity_toggle_read_failed",
                 extra={"event": "kimi_identity_toggle_read_failed"},
             )
-            return True
+
+    def _identity_enabled(self) -> bool:
+        """Read the toggle synchronously from the runtime-settings cache.
+
+        Defaults to enabled when the cache is cold or settings are unavailable,
+        matching the registry default and preserving behaviour on cold starts.
+        """
+        try:
+            from serving.config.runtime_settings import get_runtime_settings_instance
+
+            found, value = get_runtime_settings_instance().get_cached(_SETTING_KEY)
+            if found:
+                return bool(value)
+        except Exception:
+            pass
+        return True
 
     async def chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
-        """Resolve the identity toggle, then run the standard completion path."""
-        token = _identity_active.set(await self._identity_enabled())
-        try:
-            return await super().chat_completion(messages, **params)
-        finally:
-            _identity_active.reset(token)
+        """Warm the identity toggle, then run the standard completion path."""
+        await self._warm_identity_setting()
+        return await super().chat_completion(messages, **params)
 
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncGenerator[str, None]:
-        """Resolve the identity toggle, then run the standard streaming path."""
-        token = _identity_active.set(await self._identity_enabled())
-        try:
-            async for chunk in super().stream_chat_completion(messages, **params):
-                yield chunk
-        finally:
-            _identity_active.reset(token)
+        """Warm the identity toggle, then run the standard streaming path."""
+        await self._warm_identity_setting()
+        async for chunk in super().stream_chat_completion(messages, **params):
+            yield chunk
+
+    async def embeddings(self, input_data: str | list[str], **params: Any) -> dict[str, Any]:
+        """Warm the identity toggle, then run the standard embeddings path."""
+        await self._warm_identity_setting()
+        return await super().embeddings(input_data, **params)
 
     def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
         headers = super()._build_headers(api_key_override=api_key_override)
@@ -89,13 +102,13 @@ class KimiCodingAdapter(OpenAICompatAdapter):
         # already present. The check is case-insensitive so an explicit
         # ``extra_headers`` override (e.g. ``user-agent``) wins without
         # producing a duplicate header.
-        if _identity_active.get() and not any(key.lower() == "user-agent" for key in headers):
+        if self._identity_enabled() and not any(key.lower() == "user-agent" for key in headers):
             headers["User-Agent"] = _USER_AGENT
         return headers
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared = super()._prepare_messages(messages)
-        if _identity_active.get() and not _starts_with_opencode_system(prepared):
+        if self._identity_enabled() and not _starts_with_opencode_system(prepared):
             prepared = [{"role": "system", "content": _SYSTEM_PROMPT}, *prepared]
         return prepared
 

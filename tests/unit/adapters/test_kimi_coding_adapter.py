@@ -150,9 +150,14 @@ async def test_chat_completion_sends_user_agent_and_system_prompt() -> None:
 
 
 def _patch_identity_setting(value: bool):
-    """Patch the runtime-settings singleton so the toggle resolves to ``value``."""
+    """Patch the runtime-settings singleton so the toggle resolves to ``value``.
+
+    The async entrypoints warm the cache via ``get_bool`` and the sync hooks read
+    it via ``get_cached``, so both are stubbed to the same value.
+    """
     rs = MagicMock()
     rs.get_bool = AsyncMock(return_value=value)
+    rs.get_cached = MagicMock(return_value=(True, value))
     return patch(
         "serving.config.runtime_settings.get_runtime_settings_instance",
         return_value=rs,
@@ -198,29 +203,50 @@ async def test_identity_toggle_disabled_skips_injection() -> None:
 
 
 @pytest.mark.asyncio
-async def test_identity_toggle_does_not_leak_across_requests() -> None:
-    # After a disabled request, the per-request flag must reset to the default
-    # so a direct hook call still injects (default-on behaviour).
-    adapter = KimiCodingAdapter(_make_cfg())
-    with _patch_identity_setting(False):
-        await _run_chat_capture(adapter)
-    assert adapter._build_headers()["User-Agent"] == "claude-code/0.1.0"
+async def test_embeddings_respect_disabled_toggle() -> None:
+    # Inherited request paths (embeddings) must also honour the toggle.
+    adapter = KimiCodingAdapter(_make_cfg(model_type="embedding"))
+    captured: dict[str, Any] = {}
+
+    async def fake_json_post_with_retry(*, url, json, headers, timeout, retries):
+        captured["headers"] = headers
+        return {"data": [{"embedding": [0.1]}], "usage": {"prompt_tokens": 1, "total_tokens": 1}}
+
+    with (
+        _patch_identity_setting(False),
+        patch.object(
+            adapter.http, "json_post_with_retry", AsyncMock(side_effect=fake_json_post_with_retry)
+        ),
+    ):
+        await adapter.embeddings("hello")
+    assert "User-Agent" not in captured["headers"]
 
 
-@pytest.mark.asyncio
-async def test_identity_enabled_defaults_true_without_singleton() -> None:
+def test_identity_enabled_defaults_true_without_singleton() -> None:
     adapter = KimiCodingAdapter(_make_cfg())
     with patch(
         "serving.config.runtime_settings.get_runtime_settings_instance",
         side_effect=RuntimeError("not initialized"),
     ):
-        assert await adapter._identity_enabled() is True
+        assert adapter._identity_enabled() is True
+
+
+def test_identity_enabled_defaults_true_on_cold_cache() -> None:
+    # When the cache is cold (e.g. the warm refresh failed during a store
+    # outage), the sync read returns not-found and we keep default-on.
+    adapter = KimiCodingAdapter(_make_cfg())
+    rs = MagicMock()
+    rs.get_cached = MagicMock(return_value=(False, None))
+    with patch(
+        "serving.config.runtime_settings.get_runtime_settings_instance",
+        return_value=rs,
+    ):
+        assert adapter._identity_enabled() is True
 
 
 @pytest.mark.asyncio
-async def test_identity_enabled_defaults_true_on_store_error() -> None:
-    # An unexpected error (e.g. DB outage) when reading the setting must not
-    # break inference — fall back to the default-on behaviour.
+async def test_warm_identity_setting_swallows_store_errors() -> None:
+    # A store/DB error while warming must not propagate out of the request path.
     adapter = KimiCodingAdapter(_make_cfg())
     rs = MagicMock()
     rs.get_bool = AsyncMock(side_effect=ConnectionError("db down"))
@@ -228,7 +254,7 @@ async def test_identity_enabled_defaults_true_on_store_error() -> None:
         "serving.config.runtime_settings.get_runtime_settings_instance",
         return_value=rs,
     ):
-        assert await adapter._identity_enabled() is True
+        await adapter._warm_identity_setting()  # must not raise
 
 
 def test_registry_has_kimi_coding_toggle() -> None:
