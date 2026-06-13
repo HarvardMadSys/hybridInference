@@ -67,7 +67,9 @@ export async function consumeSse(
     try {
       chunk = JSON.parse(body);
     } catch {
-      return false;
+      // A non-[DONE] data line that isn't valid JSON means the stream is
+      // corrupted; a real client couldn't consume it, so fail the probe.
+      throw new StreamingProbeError("malformed SSE data chunk");
     }
     if (chunk.error) {
       const message =

@@ -71,7 +71,13 @@ async function runProbeCycle(env: Env): Promise<void> {
         };
       });
       if (!renewing) break;
-      await renewCycleLock(env.DB, lock, Date.now(), CYCLE_LOCK_TTL_MS);
+      try {
+        await renewCycleLock(env.DB, lock, Date.now(), CYCLE_LOCK_TTL_MS);
+      } catch (err) {
+        // A transient renew failure must not crash the heartbeat or block lock
+        // release; the lease's TTL still bounds takeover.
+        console.error("cycle lock renew failed", err);
+      }
     }
   })();
 
@@ -118,8 +124,13 @@ async function runProbeCycle(env: Env): Promise<void> {
   } finally {
     renewing = false;
     wake(); // wake the pending sleep so the lock releases immediately
-    await heartbeat;
-    await releaseCycleLock(env.DB, lock);
+    // Release must run even if awaiting the heartbeat throws, or the lock would
+    // leak until its lease expires and skip subsequent crons.
+    try {
+      await heartbeat;
+    } finally {
+      await releaseCycleLock(env.DB, lock);
+    }
   }
 }
 
