@@ -47,7 +47,8 @@ async function runProbeCycle(env: Env): Promise<void> {
 
   // Don't let an overlapping invocation start a second pool against the same
   // key (their combined concurrency would exceed the gateway cap → 429s).
-  if (!(await acquireCycleLock(env.DB, Date.now(), CYCLE_LOCK_TTL_MS))) {
+  const lock = await acquireCycleLock(env.DB, Date.now(), CYCLE_LOCK_TTL_MS);
+  if (!lock) {
     console.log("previous probe cycle still running; skipping this invocation.");
     return;
   }
@@ -79,7 +80,7 @@ async function runProbeCycle(env: Env): Promise<void> {
     const down = results.filter((r) => !r.ok).length;
     console.log(`probe cycle complete: ${results.length} models, ${down} down`);
   } finally {
-    await releaseCycleLock(env.DB);
+    await releaseCycleLock(env.DB, lock);
   }
 }
 

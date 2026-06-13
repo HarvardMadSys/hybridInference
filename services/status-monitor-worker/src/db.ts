@@ -73,9 +73,17 @@ export async function prune(db: D1Database, retentionDays: number): Promise<void
  * Drops probe rows for models no longer in the active set, so models removed,
  * disabled, or hidden by a runtime visibility change leave the dashboard
  * promptly instead of lingering for `RETENTION_DAYS`.
+ *
+ * Only call this after a *successful* cycle: an empty `activeIds` then means the
+ * authenticated catalog is legitimately empty, so all rows are cleared. (A
+ * failed discovery is handled by the caller before reaching here, so it never
+ * wipes the dashboard during an outage.)
  */
 export async function reconcileModels(db: D1Database, activeIds: string[]): Promise<void> {
-  if (activeIds.length === 0) return; // never wipe everything on an empty cycle
+  if (activeIds.length === 0) {
+    await db.prepare(`DELETE FROM probe_results`).run();
+    return;
+  }
   const placeholders = activeIds.map(() => "?").join(",");
   await db
     .prepare(`DELETE FROM probe_results WHERE model_id NOT IN (${placeholders})`)
@@ -86,31 +94,40 @@ export async function reconcileModels(db: D1Database, activeIds: string[]): Prom
 /**
  * Tries to acquire the single-cycle lock, preventing overlapping cron
  * invocations from running probe pools against the same key at once (which
- * would exceed the gateway concurrency cap). Returns true if acquired.
+ * would exceed the gateway concurrency cap).
  *
- * The lock auto-expires after `ttlMs` so a crashed invocation can't wedge it.
+ * The lock value is `"{expiryMs}:{token}"`: the expiry lets a later invocation
+ * take over a crashed/overrun cycle after `ttlMs`, and the unique token lets
+ * {@link releaseCycleLock} release only the lock this cycle actually owns.
+ *
+ * @returns The owned lock value to pass to {@link releaseCycleLock}, or `null`
+ *   if another cycle holds an unexpired lock.
  */
 export async function acquireCycleLock(
   db: D1Database,
   nowMs: number,
   ttlMs: number,
-): Promise<boolean> {
-  const expiry = String(nowMs + ttlMs);
+): Promise<string | null> {
+  const value = `${nowMs + ttlMs}:${crypto.randomUUID()}`;
   // Atomic: insert if absent, or take over only if the existing lock expired.
+  // CAST stops at the first non-digit, so it compares the expiry prefix.
   const result = await db
     .prepare(
       `INSERT INTO meta (key, value) VALUES ('cycle_lock', ?)
        ON CONFLICT(key) DO UPDATE SET value = ?
        WHERE CAST(meta.value AS INTEGER) < ?`,
     )
-    .bind(expiry, expiry, nowMs)
+    .bind(value, value, nowMs)
     .run();
-  return (result.meta.changes ?? 0) > 0;
+  return (result.meta.changes ?? 0) > 0 ? value : null;
 }
 
-/** Releases the single-cycle lock. */
-export async function releaseCycleLock(db: D1Database): Promise<void> {
-  await db.prepare(`DELETE FROM meta WHERE key = 'cycle_lock'`).run();
+/** Releases the single-cycle lock, but only if this cycle still owns it. */
+export async function releaseCycleLock(db: D1Database, lockValue: string): Promise<void> {
+  await db
+    .prepare(`DELETE FROM meta WHERE key = 'cycle_lock' AND value = ?`)
+    .bind(lockValue)
+    .run();
 }
 
 /** Records whether the most recent cron cycle succeeded. */
