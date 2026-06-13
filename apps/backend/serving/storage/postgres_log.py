@@ -586,7 +586,13 @@ class PostgresLogStore(LogStore):
         since: dt.datetime,
         limit: int | None = None,
     ) -> list[Row]:
-        """Fetch recent api_logs rows for RouteWise startup bootstrap."""
+        """Fetch recent api_logs rows for RouteWise startup bootstrap.
+
+        Synthetic probe rows (``metadata.synthetic_probe``) are excluded so that
+        probe traffic logged via ``log_synthetic_probes`` does not skew the
+        replayed latency profiles or cost envelope, matching the live path which
+        never records routing observations for probes.
+        """
         if not model_ids or (limit is not None and limit <= 0):
             return []
         async with self.pool.acquire() as conn:
@@ -599,6 +605,7 @@ class PostgresLogStore(LogStore):
                     FROM api_logs
                     WHERE timestamp >= $1
                       AND model_id = ANY($2::text[])
+                      AND (metadata->>'synthetic_probe') IS DISTINCT FROM 'true'
                     ORDER BY timestamp ASC
                     """,
                     since,
@@ -615,6 +622,7 @@ class PostgresLogStore(LogStore):
                         FROM api_logs
                         WHERE timestamp >= $1
                           AND model_id = ANY($2::text[])
+                          AND (metadata->>'synthetic_probe') IS DISTINCT FROM 'true'
                         ORDER BY timestamp DESC
                         LIMIT $3
                     ) recent
