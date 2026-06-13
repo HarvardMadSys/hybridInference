@@ -31,6 +31,7 @@ remote_deployment:
       - glm-5
       - glm-5-turbo
       - glm-5.1
+      - glm-5.2
   - endpoint: ${DEEPSEEK_BASE_URL}
     models:
       - deepseek-v4-flash

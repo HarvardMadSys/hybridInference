@@ -139,6 +139,34 @@ models:
         # api_keys:
         #   - ${LOCAL_API_KEY}
 
+  - id: glm-5.2
+    name: GLM-5.2
+    provider: zai
+    quantization: "fp8"
+    context_length: 200000
+    max_output_length: 128000
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    aliases: ["freeinference-glm-5.2"]
+    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
+    pricing:
+      prompt: "1.4"
+      completion: "4.4"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.26"
+      input_cache_writes: "0"
+    route:
+      - kind: zai
+        weight: 1.0
+        base_url: ${ZAI_BASE_URL}
+        api_keys:
+          - ${ZAI_API_KEY}
+        provider_model_id: "glm-5.2"
+
   - id: glm-5-turbo
     name: GLM-5 Turbo
     provider: zai
