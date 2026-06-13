@@ -366,14 +366,33 @@ class RouteWiseRouter(BaseRouter):
         This cap is the backstop. Eviction is oldest-first and metadata-only:
         it never releases a concurrency reservation (those stay owned by the
         execution finally blocks), so a still-running request never has its
-        slot freed out from under it.
+        slot freed out from under it. Each cap eviction mirrors the TTL
+        sweep's bookkeeping: it drops the sibling ``_prefix_cache_pending``
+        entry and emits ``routewise_decision_evicted`` so the leak this cap
+        guards against stays visible to ``PendingDecisionsLeakRule`` (the TTL
+        sweep deliberately skips streaming entries, so this is the only path
+        that reclaims an abandoned streaming generator's metadata).
         """
+        now = time.time()
         self._pending_decisions[request_id] = metadata
         while len(self._pending_decisions) > _PENDING_DECISIONS_MAX:
             oldest = next(iter(self._pending_decisions))
             if oldest == request_id:
                 break
-            self._pending_decisions.pop(oldest, None)
+            decision = self._pending_decisions.pop(oldest, None)
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(oldest, None)
+            if decision is None:
+                continue
+            logger.info(
+                "routewise_decision_evicted",
+                extra={
+                    "event": "routewise_decision_evicted",
+                    "request_id": oldest,
+                    "age_sec": int(now - float(decision.get("timestamp", now))),
+                    "reason": "size_cap",
+                },
+            )
 
     async def _sweep_pending_decisions_once(self) -> int:
         now = time.time()

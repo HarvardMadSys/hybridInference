@@ -305,11 +305,16 @@ def test_pending_decisions_size_cap_evicts_oldest(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(router_module, "_PENDING_DECISIONS_MAX", 3)
 
     for i in range(5):
+        router._prefix_cache_pending[f"req-{i}"] = (None, {})
+
+    for i in range(5):
         router._store_pending_decision(f"req-{i}", {"timestamp": float(i)})
 
     assert len(router._pending_decisions) == 3
-    # Oldest three were evicted; newest three remain.
+    # Oldest two (req-0, req-1) were evicted; newest three remain.
     assert set(router._pending_decisions) == {"req-2", "req-3", "req-4"}
+    # Cap eviction also drops the sibling prefix-cache entries.
+    assert set(router._prefix_cache_pending) == {"req-2", "req-3", "req-4"}
 
 
 @pytest.mark.unit
@@ -325,6 +330,31 @@ def test_pending_decisions_size_cap_never_drops_just_stored(
 
     assert "second" in router._pending_decisions
     assert len(router._pending_decisions) == 1
+
+
+@pytest.mark.unit
+def test_pending_decisions_size_cap_emits_leak_event(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Cap evictions emit ``routewise_decision_evicted`` so the leak rule sees them.
+
+    The TTL sweep skips streaming entries, so cap eviction is the only path that
+    reclaims an abandoned streaming generator's metadata — it must stay visible
+    to ``PendingDecisionsLeakRule``.
+    """
+    router = _make_router()
+    monkeypatch.setattr(router_module, "_PENDING_DECISIONS_MAX", 1)
+
+    with caplog.at_level(logging.INFO, logger="routing.routewise.router"):
+        router._store_pending_decision("first", {"timestamp": 1.0})
+        router._store_pending_decision("second", {"timestamp": 2.0})
+
+    record = next(
+        r for r in caplog.records if getattr(r, "event", None) == "routewise_decision_evicted"
+    )
+    assert record.request_id == "first"
+    assert record.reason == "size_cap"
 
 
 @pytest.mark.unit
