@@ -43,6 +43,37 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
 
 
 @pytest.mark.unit
+def test_register_from_models_yaml_merges_route_extra_body(tmp_path):
+    yaml_text = (
+        "models:\n"
+        "  - id: qwen-test\n"
+        "    name: Qwen Test\n"
+        "    provider: sglang\n"
+        "    extra_body:\n"
+        "      shared: model-default\n"
+        "    route:\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        base_url: http://sglang.local/v1\n"
+        "        extra_body:\n"
+        "          shared: route-override\n"
+        "          chat_template_kwargs:\n"
+        "            enable_thinking: false\n"
+    )
+    path = tmp_path / "models.yaml"
+    path.write_text(yaml_text)
+
+    executor = RouteExecutor()
+    registry.register_from_models_yaml(executor, path)
+
+    adapter = executor.routes["qwen-test"].adapters[0][0]
+    assert adapter.config.extra_body == {
+        "shared": "route-override",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+@pytest.mark.unit
 def test_register_defaults_to_single_route_when_no_route_list(tmp_path, monkeypatch):
     yaml_text = (
         "models:\n"
@@ -396,7 +427,7 @@ models:
     base_url: http://example.com/v1
     router: routewise
     router_params:
-      daily_quota: 1000
+      budget_alpha: 0.5
     route:
       - kind: openai_compat
         weight: 1.0
@@ -417,6 +448,60 @@ models:
 
     by_id = {i.model_id: i for i in infos}
     assert by_id["model-with-router"].router == "routewise"
-    assert by_id["model-with-router"].router_params == {"daily_quota": 1000}
+    assert by_id["model-with-router"].router_params == {"budget_alpha": 0.5}
     assert by_id["model-without-router"].router is None
     assert by_id["model-without-router"].router_params is None
+
+
+@pytest.mark.unit
+def test_register_from_models_yaml_propagates_routewise_route_metadata(tmp_path):
+    yaml = """
+models:
+  - id: routewise-model
+    name: RouteWise Model
+    provider: openai_compat
+    base_url: http://example.com/v1
+    router: routewise
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://example.com/v1
+        provider_type: quota
+        routewise_pool: glm-paid-pool
+        quota_pool: chutes-glm-daily
+        quota_source:
+          provider: chutes
+          usage_label: Daily requests
+          unit: requests
+        quota:
+          limit: 5000
+          window: daily
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://example-two.com/v1
+        provider_type: concurrency
+        concurrency_pool: featherless-glm
+        concurrency:
+          limit: 4
+"""
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml)
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    first = exe.routes["routewise-model"].adapters[0][0].config
+    second = exe.routes["routewise-model"].adapters[1][0].config
+
+    assert first.provider_type == "quota"
+    assert first.routewise_pool == "glm-paid-pool"
+    assert first.quota_pool == "chutes-glm-daily"
+    assert first.quota_source == {
+        "provider": "chutes",
+        "usage_label": "Daily requests",
+        "unit": "requests",
+    }
+    assert first.quota == {"limit": 5000, "window": "daily"}
+
+    assert second.provider_type == "concurrency"
+    assert second.concurrency_pool == "featherless-glm"
+    assert second.concurrency == {"limit": 4}

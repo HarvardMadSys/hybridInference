@@ -281,6 +281,7 @@ def register_from_models_yaml(
                     "supported_params",
                     "pricing",
                     "route_metadata",
+                    "extra_body",
                 )
             }
             if top_cfg.get("base_url"):
@@ -395,6 +396,13 @@ def register_from_models_yaml(
                 if route_provider_model_id is not None:
                     adapter_cfg["provider_model_id"] = expand_env(route_provider_model_id)
 
+                # Route-level request body defaults extend or override model defaults.
+                extra_body = dict(adapter_cfg.get("extra_body") or {})
+                if isinstance(r.get("extra_body"), dict):
+                    extra_body.update(r["extra_body"])
+                if extra_body:
+                    adapter_cfg["extra_body"] = extra_body
+
                 # Route-level pricing override (key for cost-aware routing in Phase 2)
                 if "pricing" in r:
                     adapter_cfg["pricing"] = r["pricing"]
@@ -403,13 +411,23 @@ def register_from_models_yaml(
                 if "processor" in r:
                     adapter_cfg["processor"] = r["processor"]
 
-                # RouteWise subscription classification
+                # RouteWise provider category classification
                 route_metadata = dict(adapter_cfg.get("route_metadata") or {})
                 if isinstance(r.get("route_metadata"), dict):
                     route_metadata.update(r["route_metadata"])
-                if "subscription_type" in r:
-                    adapter_cfg["subscription_type"] = r["subscription_type"]
-                    route_metadata["subscription_type"] = r["subscription_type"]
+                if "provider_type" in r:
+                    adapter_cfg["provider_type"] = r["provider_type"]
+                    route_metadata["provider_type"] = r["provider_type"]
+                for routewise_key in (
+                    "routewise_pool",
+                    "quota_pool",
+                    "concurrency_pool",
+                    "quota_source",
+                    "quota",
+                    "concurrency",
+                ):
+                    if routewise_key in r:
+                        adapter_cfg[routewise_key] = r[routewise_key]
                 if route_metadata:
                     adapter_cfg["route_metadata"] = route_metadata
 

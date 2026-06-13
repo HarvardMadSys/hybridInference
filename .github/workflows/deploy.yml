@@ -97,6 +97,9 @@ jobs:
           PROD_HOST: ${{ secrets.PROD_HOST }}
           PROD_PORT: ${{ secrets.PROD_PORT || '22' }}
           PROD_USER: ${{ secrets.PROD_USER }}
+          # Token for the private routewise git dependency in the backend
+          # image build (compose forwards it as the github_token build secret).
+          ROUTEWISE_GITHUB_TOKEN: ${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
         run: |
           set -euo pipefail
 
@@ -108,4 +111,4 @@ jobs:
             -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             -o GlobalKnownHostsFile=/dev/null \
             "${PROD_USER}@${PROD_HOST}" \
-            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} bash ops/deploy/deploy_production.sh"
+            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && DEPLOY_SHA=${DEPLOY_SHA} GITHUB_TOKEN='${ROUTEWISE_GITHUB_TOKEN}' bash ops/deploy/deploy_production.sh"

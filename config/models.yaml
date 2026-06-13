@@ -119,11 +119,11 @@ models:
     aliases: ["freeinference-glm-5.1"]
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "1.6"
-      completion: "4.8"
+      prompt: "1.4"
+      completion: "4.4"
       image: "0"
       request: "0"
-      input_cache_reads: "0.4"
+      input_cache_reads: "0.26"
       input_cache_writes: "0"
     route:
       - kind: zai
@@ -281,35 +281,36 @@ models:
     aliases: ["MiniMax-Fast"]
     router: routewise
     router_params:
-      # RouteWise options reference:
-      # decision_rule: pd                  # pd | lapd
-      predictor: histogram
-      # risk_quantile: 0.10
-      # daily_quota: 5000
-      # quota_monthly_fee: 20.0
-      # reset_timezone: UTC
-      # concurrency_enabled: false
-      # concurrency_limit: 8
-      # concurrency_monthly_fee: 25.0
-      # shadow_price_L_seed: 0.001
-      # shadow_price_U_seed: 0.500
-      # shadow_price_adaptive: true
-      # shadow_price_window_hours: 24
-      # shadow_price_min_ratio: 10
+      # RouteWise algorithm options reference. Resource limits are configured
+      # per route entry below: `quota: {limit}` plus a `quota_source:` block
+      # (the provider usage API is the quota truth source, incl. window/reset
+      # semantics) and `concurrency: {limit}`.
+      budget_alpha: 0.5
+      latency_hedge_mode: probability_target
+      # Cold-start the cost envelope from minimax-m2.5's logged traffic (same
+      # underlying model/workload; donor rows are priced with THIS model's
+      # routes and only seed the DB bootstrap -- runtime updates stay own-traffic).
+      envelope_bootstrap_donor_models: ["minimax-m2.5"]
+      # random_seed: null
+      # reference_api_price: {prompt: "1.2", completion: "4.0"}
+      # db_bootstrap_enabled: true
+      # db_bootstrap_max_rows: 50000
+      # stateful_providers_single_worker_only: true
+      # quota_snapshot_refresh_interval_sec: 60.0
+      # envelope_window_hours: 24
+      # envelope_lower_percentile: 10.0
+      # envelope_upper_percentile: 90.0
+      # envelope_min_samples: 1
+      # output_default_tokens: 512.0
+      # output_min_bucket_samples: 3
+      # output_min_model_samples: 3
+      # output_min_global_samples: 3
       # latency_slo_sec: 3.0
-      # latency_target_cdf: 0.99
-      # latency_error_penalty: 0.0
       # latency_window_sec: 900.0
+      # latency_max_samples_per_profile: 5000
       # latency_min_samples: 10
-      # latency_lp_interval_sec: 60.0
-      # latency_swrr_alpha: 0.3
-      # latency_relaxation_factors: "1.2,1.5,2.0"
-      # latency_hedge_mode: shadow         # shadow | economic | probability | disabled
-      latency_cost_budget_alpha: 0.5
-      latency_hedge_mode: probability
-      latency_hedge_success_target: 0.99
-      # latency_hedge_cost_ratio: 0.1
-      # latency_hedge_dispatch_overhead_sec: 0.05
+      # latency_unprofiled_ttft_ms: 5000.0
+      # prefix_cache_cost_adjustment_enabled: false
       # canary_enabled: false
       # canary_enabled_models: null        # null = all routewise models
       # canary_traffic_fraction: 1.0
@@ -322,38 +323,55 @@ models:
       input_cache_reads: "0.03"
       input_cache_writes: "0.375"
     route:
-      # Remote MiniMax API endpoint
-      - kind: minimax
-        weight: 1.0
-        base_url: ${MINIMAX_BASE_URL}
-        api_keys:
-          - ${MINIMAX_API_KEY}
-        provider_model_id: "MiniMax-M2.5"
-        subscription_type: api
-      # Ollama Cloud fallback
-      - kind: ollama
-        weight: 0.24
-        base_url: ${OLLAMA_BASE_URL}
-        api_keys:
-          - ${OLLAMA_API_KEY}
-        provider_model_id: "minimax-m2.5"
-        subscription_type: api
-      # Chutes fallback
+      # S_Q: Chutes subscription quota, using provider quota snapshots.
       - kind: chutes
-        weight: 0.24
+        weight: 1.0
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
-        subscription_type: api
-      # Featherless fallback
+        provider_type: quota
+        quota_pool: chutes-minimax-fast-daily
+        quota_source:
+          provider: chutes
+          usage_label: "Daily requests"
+          unit: requests
+        quota:
+          limit: 5000
+      # S_Q (future): MiniMax coding plan 5h window. The official token-plan
+      # remains API works (fetcher wired for admin observability), but it
+      # reports remaining PERCENT only -- counts are zero -- so there is no
+      # per-request consume scale and percent-unit quota sources are rejected
+      # at boot. To enable MiniMax as a quota provider later, either the API
+      # must expose real counts or the plan's window capacity must be
+      # configured explicitly (e.g. requests_per_window) so percent can be
+      # converted to a count-based usage in the fetcher.
+      # S_C: Featherless Premium; paper real-eval used C=1 for MiniMax-M2.5.
       - kind: featherless
-        weight: 0.64
+        weight: 1.0
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
-        subscription_type: api
+        provider_type: concurrency
+        concurrency_pool: featherless-minimax-fast
+        concurrency:
+          limit: 1
+      # S_A: OpenRouter-pinned DeepInfra, cheapest/highest-use MiniMax real-eval API leg.
+      - kind: openrouter[deepinfra]
+        weight: 1.0
+        base_url: https://openrouter.ai/api/v1
+        api_keys:
+          - ${OPENROUTER_API_KEY}
+        provider_type: on_demand
+        provider_model_id: "minimax/minimax-m2.5"
+        pricing:
+          prompt: "0.15"
+          completion: "1.15"
+          image: "0"
+          request: "0"
+          input_cache_reads: "0"
+          input_cache_writes: "0"
 
   - id: minimax-m2.7
     name: MiniMax M2.7
@@ -445,6 +463,9 @@ models:
         provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
         api_keys:
           - ${LOCAL_API_KEY}
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
 
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────

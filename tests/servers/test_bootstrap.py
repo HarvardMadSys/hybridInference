@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add project root to Python path
@@ -240,6 +241,195 @@ class TestBootstrapInitialization:
             await bootstrap.initialize()
 
         mock_routewise.start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_routewise_db_bootstrap_replays_recent_logs(self):
+        """RouteWise DB bootstrap queries assigned model ids and replays rows."""
+        log_store = AsyncMock()
+        log_store.get_routewise_bootstrap_rows.side_effect = [
+            [{"model_id": "m", "source": "latency"}],
+            [{"model_id": "m", "source": "envelope"}],
+        ]
+        rw = MagicMock()
+        rw.config = SimpleNamespace(
+            db_bootstrap_enabled=True,
+            db_bootstrap_max_rows=123,
+            latency_window_sec=900.0,
+            envelope_window_hours=24,
+        )
+        rw.bootstrap_from_log_rows.return_value = {
+            "rows": 1,
+            "latency_events": 1,
+            "failed_attempts": 0,
+            "envelope_samples": 1,
+        }
+
+        await bootstrap._bootstrap_routewise_from_logs(
+            log_store,
+            [rw],
+            {id(rw): {"m", "alias"}},
+        )
+
+        assert log_store.get_routewise_bootstrap_rows.await_count == 2
+        latency_call = log_store.get_routewise_bootstrap_rows.await_args_list[0].kwargs
+        envelope_call = log_store.get_routewise_bootstrap_rows.await_args_list[1].kwargs
+        assert latency_call["model_ids"] == ["alias", "m"]
+        assert envelope_call["model_ids"] == ["alias", "m"]
+        assert latency_call["limit"] == 123
+        assert envelope_call["limit"] is None
+        assert (envelope_call["since"] - latency_call["since"]).total_seconds() < 0
+        rw.bootstrap_from_log_rows.assert_any_call(
+            [{"model_id": "m", "source": "latency"}],
+            include_latency=True,
+            include_envelope=False,
+        )
+        rw.bootstrap_from_log_rows.assert_any_call(
+            [{"model_id": "m", "source": "envelope"}],
+            include_latency=False,
+            include_envelope=True,
+            envelope_model_overrides={},
+        )
+
+    @pytest.mark.asyncio
+    async def test_routewise_db_bootstrap_includes_envelope_donor_models(self):
+        """Donor model ids widen the envelope query and map onto the target."""
+        log_store = AsyncMock()
+        log_store.get_routewise_bootstrap_rows.side_effect = [
+            [{"model_id": "m", "source": "latency"}],
+            [{"model_id": "donor", "source": "envelope"}],
+        ]
+        rw = MagicMock()
+        rw.config = SimpleNamespace(
+            db_bootstrap_enabled=True,
+            db_bootstrap_max_rows=123,
+            latency_window_sec=900.0,
+            envelope_window_hours=24,
+        )
+        rw.bootstrap_from_log_rows.return_value = {
+            "rows": 1,
+            "latency_events": 0,
+            "failed_attempts": 0,
+            "envelope_samples": 1,
+        }
+
+        await bootstrap._bootstrap_routewise_from_logs(
+            log_store,
+            [rw],
+            {id(rw): {"m"}},
+            {id(rw): {"donor": "m", "Donor-Alias": "m"}},
+        )
+
+        latency_call = log_store.get_routewise_bootstrap_rows.await_args_list[0].kwargs
+        envelope_call = log_store.get_routewise_bootstrap_rows.await_args_list[1].kwargs
+        # Latency stays own-model; envelope query includes donors + aliases.
+        assert latency_call["model_ids"] == ["m"]
+        assert envelope_call["model_ids"] == ["Donor-Alias", "donor", "m"]
+        rw.bootstrap_from_log_rows.assert_any_call(
+            [{"model_id": "donor", "source": "envelope"}],
+            include_latency=False,
+            include_envelope=True,
+            envelope_model_overrides={"donor": "m", "Donor-Alias": "m"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_routewise_db_bootstrap_swallow_query_failures(self):
+        """RouteWise DB bootstrap is best-effort and must not block startup."""
+        log_store = AsyncMock()
+        log_store.get_routewise_bootstrap_rows.side_effect = RuntimeError("db down")
+        rw = MagicMock()
+        rw.config = SimpleNamespace(
+            db_bootstrap_enabled=True,
+            db_bootstrap_max_rows=123,
+            latency_window_sec=900.0,
+            envelope_window_hours=24,
+        )
+
+        await bootstrap._bootstrap_routewise_from_logs(
+            log_store,
+            [rw],
+            {id(rw): {"m"}},
+        )
+
+        log_store.get_routewise_bootstrap_rows.assert_awaited_once()
+        rw.bootstrap_from_log_rows.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_routewise_db_bootstrap_keeps_latency_when_envelope_fetch_fails(self):
+        """Latency warmup survives a later envelope bootstrap query failure."""
+        log_store = AsyncMock()
+        log_store.get_routewise_bootstrap_rows.side_effect = [
+            [{"model_id": "m", "source": "latency"}],
+            RuntimeError("db blip"),
+        ]
+        rw = MagicMock()
+        rw.config = SimpleNamespace(
+            db_bootstrap_enabled=True,
+            db_bootstrap_max_rows=123,
+            latency_window_sec=900.0,
+            envelope_window_hours=24,
+        )
+        rw.bootstrap_from_log_rows.return_value = {
+            "rows": 1,
+            "latency_events": 1,
+            "failed_attempts": 0,
+            "envelope_samples": 0,
+        }
+
+        await bootstrap._bootstrap_routewise_from_logs(
+            log_store,
+            [rw],
+            {id(rw): {"m"}},
+        )
+
+        assert log_store.get_routewise_bootstrap_rows.await_count == 2
+        rw.bootstrap_from_log_rows.assert_called_once_with(
+            [{"model_id": "m", "source": "latency"}],
+            include_latency=True,
+            include_envelope=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_envelope_not_calibrated_aborts_initialization(self, mock_env):
+        """An uncalibrated quota envelope must fail boot, not silently start."""
+        from routing.routewise.envelope import EnvelopeNotCalibratedError
+
+        mock_routewise = MagicMock()
+        mock_routewise.start = AsyncMock(
+            side_effect=EnvelopeNotCalibratedError("envelope is uncalibrated")
+        )
+
+        info = MagicMock()
+        info.model_id = "m"
+        info.aliases = []
+        info.router = "routewise"
+        info.strategy = None
+        info.router_params = None
+
+        registry_instance = MagicMock()
+        registry_instance.bind_fixed_router = MagicMock()
+        registry_instance.get_router = MagicMock(return_value=mock_routewise)
+        from routing.routewise.router import RouteWiseRouter as _RWR
+
+        mock_routewise.__class__ = _RWR
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [info])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch(
+                "serving.servers.bootstrap.ModelRouterRegistry",
+                return_value=registry_instance,
+            ),
+            patch(
+                "serving.servers.bootstrap._bootstrap_routewise_from_logs",
+                new=AsyncMock(),
+            ),
+            pytest.raises(EnvelopeNotCalibratedError, match="uncalibrated"),
+        ):
+            await bootstrap.initialize()
 
 
 class TestBootstrapShutdown:

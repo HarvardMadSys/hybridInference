@@ -38,11 +38,12 @@ vi.mock('@/lib/api/admin', async () => {
     listRoutewiseSettings: vi.fn(async () => ({
       settings: [
         {
-          key: 'decision_rule',
-          value: 'pd',
-          value_type: 'str',
-          default_value: 'pd',
-          description: 'Decision rule used by Routewise.',
+          key: 'routewise_latency_min_samples',
+          value: 10,
+          value_type: 'int',
+          default_value: 10,
+          description: 'Minimum samples before latency is considered.',
+          min: 1,
         },
       ],
     })),
