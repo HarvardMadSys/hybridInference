@@ -1,31 +1,29 @@
 settings:
   port: 9101
-  base_path: "/llm-prober"
+  base_path: "/status-monitor"
   default_timeout: 30
   probe_prompt: "Write a short Python function that returns hello world."
   probe_max_tokens: 32
   probe_temperature: 0
   history_size: 100
   log_level: "INFO"
-  state_path: "/app/state/llm-prober-state.json"
+  state_path: "/app/state/status-monitor-state.json"
 
 gateway:
   base_url: "http://backend:8080"
   api_key: "${PROBER_API_KEY}"
-  health_interval: 300
+  # Probe every model every 5 minutes.
   e2e_interval: 300
   probe_header: "synthetic"
 
 registry:
+  # Mounted from the repo's config/models.yaml (see docker-compose.yml).
   path: "/app/models.yaml"
-  interval: 300
 
-# Optional manual overrides/additional direct probes.
-providers: []
-
-# Gateway E2E targets are auto-discovered from models.yaml.
-# Manual overrides take priority over auto-discovered entries (matched by model_id).
-# Use probe_max_tokens to give thinking models enough budget for visible output.
+# Manual overrides/additions. These take priority over auto-discovered entries
+# (matched by model_id). Probe targets are otherwise auto-discovered from the
+# registry above. Use probe_max_tokens to give thinking models enough budget
+# for visible output.
 e2e_models:
   - model_id: minimax-m2.5
     streaming: true

@@ -25,7 +25,7 @@ apps/
     benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, routewise, alerts
-services/         # llm-prober, freeinference-harness, alert-logger
+services/         # status-monitor, freeinference-harness, alert-logger
 tests/
   unit/           # Fast, mocked. Default in CI.
   api/            # Per-provider API surface tests.
