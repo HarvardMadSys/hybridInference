@@ -57,11 +57,19 @@ async function runProbeCycle(env: Env): Promise<void> {
   }
 
   // Keep extending the lease while this cycle runs, so a slow-but-live cycle is
-  // never seen as expired and taken over (which would overlap the pools).
+  // never seen as expired and taken over (which would overlap the pools). The
+  // sleep is wakeable so the lock is released the instant the cycle finishes.
   let renewing = true;
+  let wake = () => {};
   const heartbeat = (async () => {
     while (renewing) {
-      await new Promise((r) => setTimeout(r, CYCLE_LOCK_RENEW_MS));
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, CYCLE_LOCK_RENEW_MS);
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
       if (!renewing) break;
       await renewCycleLock(env.DB, lock, Date.now(), CYCLE_LOCK_TTL_MS);
     }
@@ -109,6 +117,7 @@ async function runProbeCycle(env: Env): Promise<void> {
     console.log(`probe cycle complete: ${results.length} models, ${down} down`);
   } finally {
     renewing = false;
+    wake(); // wake the pending sleep so the lock releases immediately
     await heartbeat;
     await releaseCycleLock(env.DB, lock);
   }
