@@ -360,6 +360,16 @@ async def chat_completions(
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
+    # When the admin enables ``log_synthetic_probes``, treat probe traffic like
+    # normal requests so it is logged/metered and shows in the dashboard. A
+    # single flag gates all the downstream logging/metrics/cost branches.
+    if (
+        is_synthetic_probe
+        and runtime_settings is not None
+        and hasattr(runtime_settings, "get_bool")
+        and await runtime_settings.get_bool("log_synthetic_probes")
+    ):
+        is_synthetic_probe = False
 
     def record_model_request(status_code: str, provider_name: str) -> None:
         if is_synthetic_probe:

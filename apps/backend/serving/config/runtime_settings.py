@@ -51,6 +51,15 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "model-not-found) to api_logs with metadata.rejection=true."
         ),
     },
+    "log_synthetic_probes": {
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Log synthetic probe requests (X-Probe: synthetic) like normal "
+            "traffic. When off, probes are excluded from logs, metrics, and "
+            "cost; when on, they appear in the requests dashboard."
+        ),
+    },
     "force_chat_completions_streaming": {
         "type": "bool",
         "default": False,
