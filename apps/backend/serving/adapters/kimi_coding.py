@@ -42,12 +42,12 @@ class KimiCodingAdapter(OpenAICompatAdapter):
 
 
 def _starts_with_opencode_system(messages: list[dict[str, Any]]) -> bool:
-    """Return True when the first message is the OpenCode system message."""
+    """Return True when the first message is exactly the OpenCode system message.
+
+    Uses full dict equality (not just role/content) so a near-match carrying
+    extra keys still triggers a prepend — keeping the leading message an exact
+    match in case the upstream gate is strict.
+    """
     if not messages:
         return False
-    first = messages[0]
-    return (
-        isinstance(first, dict)
-        and first.get("role") == "system"
-        and first.get("content") == _SYSTEM_PROMPT
-    )
+    return messages[0] == {"role": "system", "content": _SYSTEM_PROMPT}

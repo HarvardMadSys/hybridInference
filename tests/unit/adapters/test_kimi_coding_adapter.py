@@ -101,6 +101,20 @@ def test_prepare_messages_no_duplicate_when_already_present() -> None:
     assert [m["content"] for m in out].count("You are OpenCode") == 1
 
 
+def test_prepare_messages_prepends_when_first_has_extra_keys() -> None:
+    # A near-match carrying extra keys is not an exact match, so we prepend a
+    # clean OpenCode system message to keep the leading message exact.
+    adapter = KimiCodingAdapter(_make_cfg())
+    out = adapter._prepare_messages(
+        [
+            {"role": "system", "content": "You are OpenCode", "name": "tool"},
+            {"role": "user", "content": "hi"},
+        ]
+    )
+    assert out[0] == {"role": "system", "content": "You are OpenCode"}
+    assert out[1] == {"role": "system", "content": "You are OpenCode", "name": "tool"}
+
+
 def test_prepare_messages_empty_list() -> None:
     adapter = KimiCodingAdapter(_make_cfg())
     out = adapter._prepare_messages([])
