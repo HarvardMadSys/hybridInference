@@ -22,6 +22,11 @@ h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
 .spark { margin-top: .8rem; display: flex; gap: 2px; align-items: flex-end; height: 22px; }
 .spark span { flex: 1; border-radius: 1px; min-width: 2px; }
 .spark span.up { background: #2f6b46; } .spark span.down { background: #7a2b2b; }
+.ttft { margin-top: .8rem; }
+.ttft-head { display: flex; justify-content: space-between; font-size: .72rem; color: #9aa0a6; margin-bottom: .3rem; }
+.ttft-svg { width: 100%; height: 32px; display: block; overflow: visible; }
+.ttft-svg polyline { fill: none; stroke: #60a5fa; stroke-width: 1.4; vector-effect: non-scaling-stroke; }
+.ttft-empty { margin-top: .8rem; font-size: .72rem; color: #6b7280; }
 .err { margin-top: .5rem; color: #f87171; font-size: .8rem; word-break: break-word; }
 .banner { background: #3a1414; color: #fca5a5; border: 1px solid #7a2b2b; border-radius: 10px; padding: .75rem 1rem; margin-bottom: 1.5rem; font-size: .9rem; }
 footer { margin-top: 2rem; color: #6b7280; font-size: .8rem; }
@@ -48,6 +53,39 @@ function spark(rows: ProbeRow[]): string {
     .join("");
 }
 
+/** Inline SVG line chart of TTFT (ms) over the recent probe history. */
+export function ttftSparkline(rows: ProbeRow[]): string {
+  const n = rows.length;
+  const pts: { i: number; ttft: number }[] = [];
+  for (let i = 0; i < n; i++) {
+    const t = rows[i].ttftMs;
+    if (t != null) pts.push({ i, ttft: t });
+  }
+  if (pts.length < 2) {
+    return '<div class="ttft-empty">TTFT trend — not enough data yet</div>';
+  }
+  const vals = pts.map((p) => p.ttft);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const span = max - min || 1;
+  const W = 100;
+  const H = 32;
+  const PAD = 3;
+  const xy = (p: { i: number; ttft: number }): [number, number] => [
+    n > 1 ? (p.i / (n - 1)) * W : 0,
+    H - PAD - ((p.ttft - min) / span) * (H - 2 * PAD),
+  ];
+  const coords = pts.map((p) => xy(p).map((v) => v.toFixed(1)).join(",")).join(" ");
+  const latest = vals[vals.length - 1];
+  return `
+      <div class="ttft">
+        <div class="ttft-head"><span>TTFT trend (${pts.length})</span><span>${latest} ms · ${min}–${max} ms</span></div>
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ttft-svg" role="img" aria-label="TTFT over time, latest ${latest} ms (min ${min}, max ${max})">
+          <polyline points="${coords}" />
+        </svg>
+      </div>`;
+}
+
 function card(model: Snapshot["models"][number]): string {
   const latest = model.latest;
   const ok = latest.ok;
@@ -68,6 +106,7 @@ function card(model: Snapshot["models"][number]): string {
         <span class="k">Checked</span><span class="v">${esc(latest.checkedAt).slice(0, 19)}</span>
       </div>
       <div class="spark">${spark(model.spark)}</div>
+      ${ttftSparkline(model.history)}
       ${err}
     </div>`;
 }

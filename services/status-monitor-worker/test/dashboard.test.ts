@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import type { Snapshot } from "../src/db";
-import { renderDashboard } from "../src/dashboard";
+import type { ProbeRow, Snapshot } from "../src/db";
+import { renderDashboard, ttftSparkline } from "../src/dashboard";
+
+function row(ttftMs: number | null, ok = true): ProbeRow {
+  return {
+    ok,
+    checkedAt: "2026-06-13T00:00:00.000Z",
+    latencyMs: 100,
+    ttftMs,
+    completionTokens: 5,
+    throughputTps: 50,
+    error: ok ? null : "HTTP 503",
+  };
+}
 
 const SNAPSHOT: Snapshot = {
   total: 2,
@@ -70,5 +82,29 @@ describe("renderDashboard", () => {
     });
     expect(html).toContain("Last probe cycle failed");
     expect(html).toContain("HTTP 502");
+  });
+});
+
+describe("ttftSparkline", () => {
+  it("renders a polyline with one point per probe that has a ttft", () => {
+    const html = ttftSparkline([row(40), row(60), row(50)]);
+    expect(html).toContain("TTFT trend");
+    expect(html).toContain("<polyline");
+    expect(html).toContain("50 ms"); // latest value shown in the header
+    const points = (html.match(/points="([^"]+)"/)?.[1] ?? "").trim().split(/\s+/);
+    expect(points).toHaveLength(3);
+  });
+
+  it("skips failed probes (null ttft) but keeps their time position", () => {
+    const html = ttftSparkline([row(40), row(null, false), row(80)]);
+    const points = (html.match(/points="([^"]+)"/)?.[1] ?? "").trim().split(/\s+/);
+    expect(points).toHaveLength(2); // only the two non-null points are plotted
+    expect(points[0].startsWith("0.0,")).toBe(true); // first probe at the left edge
+    expect(points[1].startsWith("100.0,")).toBe(true); // third probe at the right edge
+  });
+
+  it("shows a fallback when there are fewer than two data points", () => {
+    expect(ttftSparkline([row(40)])).toContain("not enough data");
+    expect(ttftSparkline([])).toContain("not enough data");
   });
 });
