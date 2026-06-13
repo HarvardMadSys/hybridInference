@@ -17,24 +17,31 @@ function result(ok: boolean, error: string | null): ProbeResult {
 }
 
 describe("isAccountLevelFailure", () => {
-  it("is true when every probe failed with 401/403/429", () => {
+  it("is true when every probe failed with a gateway account-level message", () => {
     expect(
       isAccountLevelFailure([
-        result(false, "HTTP 401"),
-        result(false, "HTTP 403"),
-        result(false, "Error: HTTP 429"),
+        result(false, "HTTP 401: Invalid or expired API key"),
+        result(false, "HTTP 403: Email not verified. Please verify your email to continue."),
+        result(false, "HTTP 429: Daily cost quota exceeded"),
       ]),
     ).toBe(true);
   });
 
   it("is false when any probe succeeded", () => {
-    expect(isAccountLevelFailure([result(true, null), result(false, "HTTP 403")])).toBe(false);
+    expect(
+      isAccountLevelFailure([result(true, null), result(false, "HTTP 401: Invalid or expired API key")]),
+    ).toBe(false);
   });
 
-  it("is false for ordinary provider outages (e.g. 503)", () => {
-    expect(isAccountLevelFailure([result(false, "HTTP 503"), result(false, "timeout")])).toBe(
-      false,
-    );
+  it("is false for upstream failures even with account-ish status codes", () => {
+    // A provider 401/429 surfaces with a different message (or as 500), so it
+    // must be recorded as a real outage, not suppressed.
+    expect(
+      isAccountLevelFailure([
+        result(false, "HTTP 401: upstream provider rejected key"),
+        result(false, "HTTP 500: Internal server error (req_x)"),
+      ]),
+    ).toBe(false);
   });
 
   it("is false for an empty result set", () => {

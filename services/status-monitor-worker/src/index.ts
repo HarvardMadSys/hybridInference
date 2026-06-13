@@ -134,16 +134,23 @@ async function runProbeCycle(env: Env): Promise<void> {
   }
 }
 
-// Statuses the gateway returns for the whole account before model routing:
-// 401 (bad key), 403 (unverified), 429 (quota). Uniform across all probes they
-// indicate an account problem, not provider outages.
-const ACCOUNT_REJECT_CODES = ["401", "403", "429"];
+// Gateway account-level rejection messages (auth/verification/quota), which are
+// distinct from upstream/provider failures. Matching the message (not the bare
+// status code) avoids misclassifying a provider 401/429 on one model as a
+// prober-account problem.
+const ACCOUNT_REJECT_PATTERNS = [
+  /invalid or expired api key/i, // 401
+  /not verified|verify your email/i, // 403
+  /quota exceeded|daily cost quota/i, // 429
+];
 
-/** True when every probe failed with the same account-level rejection. */
+/** True when every probe failed with the same gateway account-level rejection. */
 export function isAccountLevelFailure(results: ProbeResult[]): boolean {
   return (
     results.length > 0 &&
-    results.every((r) => !r.ok && ACCOUNT_REJECT_CODES.some((c) => r.error?.includes(c)))
+    results.every(
+      (r) => !r.ok && r.error != null && ACCOUNT_REJECT_PATTERNS.some((p) => p.test(r.error!)),
+    )
   );
 }
 

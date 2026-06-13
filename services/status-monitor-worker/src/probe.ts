@@ -115,13 +115,34 @@ export async function consumeSse(
     if (stop) break;
   }
 
-  // A stream that closes without a terminal marker ([DONE]/finish_reason/usage)
-  // is truncated — even if some content arrived — so fail rather than report
-  // it healthy.
+  // A terminal marker proves the stream completed; a content/reasoning/tool
+  // delta proves the model actually generated something. Require both, so a
+  // truncated stream OR an empty completion (no tokens + synthesized [DONE])
+  // is failed rather than reported healthy.
   if (!sawTerminal) {
     throw new StreamingProbeError("incomplete stream (no terminal marker)");
   }
+  if (tokens === 0) {
+    throw new StreamingProbeError("empty completion (no content generated)");
+  }
   return { ttftMs, completionTokens: usageTokens ?? (tokens || null) };
+}
+
+/** Builds an Error preserving the gateway's error message from a non-2xx body. */
+async function httpError(response: Response): Promise<Error> {
+  let detail = "";
+  try {
+    const body: any = await response.json();
+    detail =
+      body?.error?.message ||
+      (typeof body?.error === "string" ? body.error : "") ||
+      (typeof body?.detail === "string" ? body.detail : body?.detail?.error) ||
+      "";
+  } catch {
+    // non-JSON body
+  }
+  detail = String(detail).slice(0, 160);
+  return new Error(detail ? `HTTP ${response.status}: ${detail}` : `HTTP ${response.status}`);
 }
 
 function describeError(err: unknown): string {
@@ -129,7 +150,10 @@ function describeError(err: unknown): string {
     return `stream error: ${err.message}`.slice(0, 200);
   }
   if (err instanceof Error) {
-    return `${err.name}: ${err.message}`.slice(0, 200);
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      return "timeout";
+    }
+    return err.message.slice(0, 200);
   }
   return String(err).slice(0, 200);
 }
@@ -146,7 +170,7 @@ async function probeEmbedding(
     signal: AbortSignal.timeout(config.probeDeadlineMs),
   });
   if (!response.ok) {
-    throw new Error(`HTTP ${response.status}`);
+    throw await httpError(response);
   }
   await response.arrayBuffer();
 }
@@ -188,8 +212,11 @@ export async function probeModel(
       // Total deadline: aborts even when SSE keepalives keep the stream open.
       signal: AbortSignal.timeout(config.probeDeadlineMs),
     });
-    if (!response.ok || !response.body) {
-      throw new Error(`HTTP ${response.status}`);
+    if (!response.ok) {
+      throw await httpError(response);
+    }
+    if (!response.body) {
+      throw new Error("no response body");
     }
     const { ttftMs, completionTokens } = await consumeSse(response.body, started);
     const latencyMs = Date.now() - started;

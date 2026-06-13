@@ -52,6 +52,11 @@ describe("consumeSse", () => {
     expect(stats.completionTokens).toBe(1);
   });
 
+  it("throws on an empty completion (terminal marker but no content)", async () => {
+    const stream = sseStream('data: {"usage":{"completion_tokens":0}}\n\ndata: [DONE]\n\n');
+    await expect(consumeSse(stream, Date.now())).rejects.toBeInstanceOf(StreamingProbeError);
+  });
+
   it("throws on a malformed JSON data chunk even if [DONE] follows", async () => {
     const stream = sseStream('data: {not valid json\n\ndata: [DONE]\n\n');
     await expect(consumeSse(stream, Date.now())).rejects.toBeInstanceOf(StreamingProbeError);
