@@ -65,7 +65,8 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "description": (
             "Inject the coding-tool identity on Kimi coding-plan requests: set "
             "User-Agent: claude-code/0.1.0 and prepend a 'You are OpenCode' "
-            "system message. Disable to send the gateway's own identity instead."
+            "system message. Disable to forward the caller's own User-Agent and "
+            "skip the system message."
         ),
     },
     "user_concurrency_free": {

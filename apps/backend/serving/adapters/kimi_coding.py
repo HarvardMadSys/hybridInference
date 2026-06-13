@@ -8,6 +8,10 @@ encoded here:
 2. A leading ``{"role": "system", "content": "You are OpenCode"}`` message,
    prepended unless the request already starts with exactly that message.
 
+When the toggle is off, the system message is not injected and the caller's own
+``User-Agent`` (captured into the request context by the request-id middleware)
+is forwarded upstream instead of the coding-tool identity.
+
 The injection is gated by the ``kimi_coding_identity_enabled`` runtime setting
 (admin-dashboard toggle, default on). Each async request entrypoint resolves the
 toggle exactly once and snapshots it into a :class:`~contextvars.ContextVar`; the
@@ -88,12 +92,16 @@ class KimiCodingAdapter(OpenAICompatAdapter):
 
     def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
         headers = super()._build_headers(api_key_override=api_key_override)
-        # Only inject our default when the toggle is on and no User-Agent is
-        # already present. The check is case-insensitive so an explicit
-        # ``extra_headers`` override (e.g. ``user-agent``) wins without
-        # producing a duplicate header.
-        if _identity_snapshot.get() and not any(key.lower() == "user-agent" for key in headers):
+        # An explicit ``extra_headers`` User-Agent (any casing) always wins.
+        if any(key.lower() == "user-agent" for key in headers):
+            return headers
+        if _identity_snapshot.get():
             headers["User-Agent"] = _USER_AGENT
+        else:
+            # Toggle off: forward the caller's own User-Agent when available.
+            client_ua = _client_user_agent()
+            if client_ua:
+                headers["User-Agent"] = client_ua
         return headers
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -101,6 +109,14 @@ class KimiCodingAdapter(OpenAICompatAdapter):
         if _identity_snapshot.get() and not _starts_with_opencode_system(prepared):
             prepared = [{"role": "system", "content": _SYSTEM_PROMPT}, *prepared]
         return prepared
+
+
+def _client_user_agent() -> str | None:
+    """Return the caller's User-Agent from the request context, if present."""
+    from serving.utils import context as req_ctx
+
+    ua = req_ctx.get().get("client_user_agent")
+    return ua if isinstance(ua, str) and ua else None
 
 
 def _starts_with_opencode_system(messages: list[dict[str, Any]]) -> bool:

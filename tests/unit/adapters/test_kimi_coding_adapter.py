@@ -202,6 +202,39 @@ async def test_identity_toggle_disabled_skips_injection() -> None:
 
 
 @pytest.mark.asyncio
+async def test_identity_disabled_forwards_client_user_agent() -> None:
+    # When the toggle is off, forward the caller's own User-Agent (captured into
+    # the request context) instead of the coding-tool identity, and skip the
+    # OpenCode system message.
+    from serving.utils import context as req_ctx
+
+    adapter = KimiCodingAdapter(_make_cfg())
+    with req_ctx.push(client_user_agent="my-client/2.0"), _patch_identity_setting(False):
+        captured = await _run_chat_capture(adapter)
+    assert captured["headers"]["User-Agent"] == "my-client/2.0"
+    assert captured["payload"]["messages"][0] == {"role": "user", "content": "hi"}
+
+
+@pytest.mark.asyncio
+async def test_identity_enabled_ignores_client_user_agent() -> None:
+    # When on, the coding-tool identity is used even if the caller sent its own.
+    from serving.utils import context as req_ctx
+
+    adapter = KimiCodingAdapter(_make_cfg())
+    with req_ctx.push(client_user_agent="my-client/2.0"), _patch_identity_setting(True):
+        captured = await _run_chat_capture(adapter)
+    assert captured["headers"]["User-Agent"] == "claude-code/0.1.0"
+
+
+@pytest.mark.asyncio
+async def test_identity_disabled_without_client_ua_sets_no_user_agent() -> None:
+    adapter = KimiCodingAdapter(_make_cfg())
+    with _patch_identity_setting(False):
+        captured = await _run_chat_capture(adapter)
+    assert "User-Agent" not in captured["headers"]
+
+
+@pytest.mark.asyncio
 async def test_embeddings_respect_disabled_toggle() -> None:
     # Inherited request paths (embeddings) must also honour the toggle.
     adapter = KimiCodingAdapter(_make_cfg(model_type="embedding"))
