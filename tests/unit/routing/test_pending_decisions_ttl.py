@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from routing.routewise import router as router_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import (
     PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS,
@@ -263,6 +264,67 @@ async def test_streaming_decisions_are_not_ttl_evicted(
         r for r in caplog.records if getattr(r, "event", None) == "routewise_decision_evicted"
     ]
     assert matching == []
+
+
+@pytest.mark.unit
+async def test_sweep_loop_survives_sweep_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failing sweep must be logged and retried, not kill the loop forever."""
+    router = _make_router()
+
+    calls = 0
+
+    async def flaky_sweep() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("boom")
+        return 0
+
+    monkeypatch.setattr(
+        "routing.routewise.router.PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(router, "_sweep_pending_decisions_once", flaky_sweep)
+
+    await router.start()
+    await asyncio.sleep(0.05)
+    sweep_task = router._sweep_task
+    await router.stop()
+
+    # The loop kept running past the first raising call.
+    assert calls >= 2
+    # The task ended via cancellation (stop), not because the exception escaped.
+    assert sweep_task is not None
+    assert not (sweep_task.done() and sweep_task.exception() is not None)
+
+
+@pytest.mark.unit
+def test_pending_decisions_size_cap_evicts_oldest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hard cap bounds the map by dropping the oldest entries, keeping the newest."""
+    router = _make_router()
+    monkeypatch.setattr(router_module, "_PENDING_DECISIONS_MAX", 3)
+
+    for i in range(5):
+        router._store_pending_decision(f"req-{i}", {"timestamp": float(i)})
+
+    assert len(router._pending_decisions) == 3
+    # Oldest three were evicted; newest three remain.
+    assert set(router._pending_decisions) == {"req-2", "req-3", "req-4"}
+
+
+@pytest.mark.unit
+def test_pending_decisions_size_cap_never_drops_just_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even at cap, the entry just stored is retained (the just-inserted req wins)."""
+    router = _make_router()
+    monkeypatch.setattr(router_module, "_PENDING_DECISIONS_MAX", 1)
+
+    router._store_pending_decision("first", {"timestamp": 1.0})
+    router._store_pending_decision("second", {"timestamp": 2.0})
+
+    assert "second" in router._pending_decisions
+    assert len(router._pending_decisions) == 1
 
 
 @pytest.mark.unit

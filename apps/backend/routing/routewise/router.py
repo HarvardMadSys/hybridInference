@@ -79,6 +79,14 @@ logger = get_logger(__name__)
 
 PENDING_DECISIONS_TTL_SECONDS: float = 300.0
 PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
+# Hard cap on in-flight decision metadata. The TTL sweep normally bounds this
+# map, but it exempts active streaming entries, so a streaming generator that is
+# garbage-collected without its finally/aclose ever running would otherwise leak
+# its entry permanently. This cap is metadata-only defense-in-depth: evicting an
+# entry drops its routing metadata but never releases a concurrency reservation
+# (those stay owned by the execution finally blocks, so the slot is not freed
+# out from under a still-running request).
+_PENDING_DECISIONS_MAX: int = 50_000
 PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
 RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
 _PREFIX_CACHE_PENDING_MAX: int = 10_000
@@ -337,9 +345,35 @@ class RouteWiseRouter(BaseRouter):
         try:
             while True:
                 await asyncio.sleep(PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS)
-                await self._sweep_pending_decisions_once()
+                try:
+                    await self._sweep_pending_decisions_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "routewise_pending_decisions_sweep_failed",
+                        extra={"event": "routewise_pending_decisions_sweep_failed"},
+                    )
         except asyncio.CancelledError:
             return
+
+    def _store_pending_decision(self, request_id: str, metadata: dict[str, Any]) -> None:
+        """Record decision metadata for *request_id*, bounding the map size.
+
+        The TTL sweep normally reclaims these entries, but it exempts active
+        streaming requests, so an abandoned streaming generator (GC'd without
+        its finally/aclose running) would otherwise leak its entry forever.
+        This cap is the backstop. Eviction is oldest-first and metadata-only:
+        it never releases a concurrency reservation (those stay owned by the
+        execution finally blocks), so a still-running request never has its
+        slot freed out from under it.
+        """
+        self._pending_decisions[request_id] = metadata
+        while len(self._pending_decisions) > _PENDING_DECISIONS_MAX:
+            oldest = next(iter(self._pending_decisions))
+            if oldest == request_id:
+                break
+            self._pending_decisions.pop(oldest, None)
 
     async def _sweep_pending_decisions_once(self) -> int:
         now = time.time()
@@ -1521,16 +1555,19 @@ class RouteWiseRouter(BaseRouter):
                         checkpoint_backup_selector=_select_checkpoint_backup_for_request,
                     )
                 if request_id:
-                    self._pending_decisions[request_id] = self._decision_metadata(
-                        model_id=model_id,
-                        request_id=request_id,
-                        prompt_tokens=prompt_tokens,
-                        prediction=prediction,
-                        envelope=envelope,
-                        candidates=candidates,
-                        solution=solution,
-                        selected=selected,
-                        hedge_plan=hedge_plan,
+                    self._store_pending_decision(
+                        request_id,
+                        self._decision_metadata(
+                            model_id=model_id,
+                            request_id=request_id,
+                            prompt_tokens=prompt_tokens,
+                            prediction=prediction,
+                            envelope=envelope,
+                            candidates=candidates,
+                            solution=solution,
+                            selected=selected,
+                            hedge_plan=hedge_plan,
+                        ),
                     )
                 if self.prefix_cache.enabled:
                     self._stash_prefix_for_commit(prefix_context, request_id)
