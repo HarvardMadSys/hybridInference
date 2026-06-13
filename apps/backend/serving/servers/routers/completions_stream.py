@@ -619,11 +619,12 @@ class StreamSession:
 
     async def _finalize_failure(self, exc: BaseException) -> None:
         """Record failure observation and schedule the error DB log."""
+        # ``exc._routing`` is still a raw dict from the routing layer;
+        # ``record_routing_observation`` accepts both shapes so we don't need to
+        # coerce here. Computed unconditionally so the failed-probe log branch
+        # below can reuse it when ``log_synthetic_probes`` is enabled.
+        exc_routing = getattr(exc, "_routing", None)
         if not self._is_synthetic_probe:
-            # ``exc._routing`` is still a raw dict from the routing layer;
-            # ``record_routing_observation`` accepts both shapes so we don't
-            # need to coerce here.
-            exc_routing = getattr(exc, "_routing", None)
             self._completions_logger.record_routing_observation(
                 self._active_router,
                 self._model,

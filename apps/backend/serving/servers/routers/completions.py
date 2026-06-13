@@ -937,11 +937,13 @@ async def chat_completions(
         ) from exc
 
     except Exception as exc:
+        # ``exc._routing`` is still a raw dict from the routing layer;
+        # ``record_routing_observation`` accepts both shapes. Computed
+        # unconditionally so the failed-probe log branch below can reuse it
+        # when ``log_synthetic_probes`` is enabled.
+        exc_routing = getattr(exc, "_routing", None)
         # Record failure observation for online learning (RouteWise)
         if not is_synthetic_probe:
-            # ``exc._routing`` is still a raw dict from the routing layer;
-            # ``record_routing_observation`` accepts both shapes.
-            exc_routing = getattr(exc, "_routing", None)
             completions_logger.record_routing_observation(
                 active_router,
                 model,
