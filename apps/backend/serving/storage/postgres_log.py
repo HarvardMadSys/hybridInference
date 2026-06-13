@@ -511,7 +511,13 @@ class PostgresLogStore(LogStore):
     # -- analytics -----------------------------------------------------------
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
-        """Aggregate recent real-user traffic per (model_id, provider)."""
+        """Aggregate recent real-user traffic per (model_id, provider).
+
+        Synthetic probe rows (``metadata.synthetic_probe``, persisted when
+        ``log_synthetic_probes`` is on) are excluded so probe traffic can't be
+        mistaken for real activity — which feeds ``/health/model-activity`` and
+        would otherwise let a probe suppress subsequent probes.
+        """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -541,6 +547,7 @@ class PostgresLogStore(LogStore):
                 FROM api_logs
                 WHERE timestamp >= NOW() - ($1 || ' minutes')::interval
                   AND user_id IS NOT NULL
+                  AND (metadata->>'synthetic_probe') IS DISTINCT FROM 'true'
                 GROUP BY model_id, provider
                 """,
                 str(window_minutes),
