@@ -70,6 +70,20 @@ async function runProbeCycle(env: Env): Promise<void> {
     const results: ProbeResult[] = await mapPool(targets, config.maxConcurrency, (target) =>
       probeModel(config, env.PROBER_API_KEY, target),
     );
+
+    // An invalid/expired key is treated as anonymous by the gateway, so /models
+    // still returns the free catalog but every probe 401s. Report that as a
+    // credential failure instead of recording every model as a false outage.
+    if (results.length > 0 && results.every((r) => !r.ok && (r.error?.includes("401") ?? false))) {
+      console.error("all probes returned 401; PROBER_API_KEY appears invalid.");
+      await setCycleStatus(env.DB, {
+        ok: false,
+        checkedAt: now(),
+        error: "probe credentials rejected (HTTP 401); check PROBER_API_KEY",
+      });
+      return;
+    }
+
     await recordResults(env.DB, results);
     await reconcileModels(
       env.DB,

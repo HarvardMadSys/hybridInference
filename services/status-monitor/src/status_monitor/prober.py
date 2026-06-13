@@ -241,9 +241,11 @@ async def probe_model(
                 client, url=url, headers=headers, payload=payload
             )
         latency_ms = (time.monotonic() - started) * 1000.0
+        # Decode throughput over the post-TTFT window, matching the gateway
+        # metric: (tokens - 1) / (latency - ttft). Excludes queueing/TTFT.
         throughput = None
-        if completion_tokens and latency_ms > 0:
-            throughput = completion_tokens / (latency_ms / 1000.0)
+        if completion_tokens and completion_tokens > 1 and ttft_ms is not None and latency_ms > ttft_ms:
+            throughput = (completion_tokens - 1) / ((latency_ms - ttft_ms) / 1000.0)
         return ProbeResult(
             model_id=model_id,
             ok=True,

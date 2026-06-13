@@ -187,8 +187,12 @@ export async function probeModel(
     }
     const { ttftMs, completionTokens } = await consumeSse(response.body, started);
     const latencyMs = Date.now() - started;
+    // Decode throughput over the post-TTFT window, matching the gateway metric:
+    // (tokens - 1) / (latency - ttft). Excludes queueing/TTFT.
     const throughputTps =
-      completionTokens && latencyMs > 0 ? completionTokens / (latencyMs / 1000) : null;
+      completionTokens && completionTokens > 1 && ttftMs != null && latencyMs > ttftMs
+        ? (completionTokens - 1) / ((latencyMs - ttftMs) / 1000)
+        : null;
     return {
       modelId: target.id,
       ok: true,

@@ -63,6 +63,8 @@ async def test_streaming_measures_ttft() -> None:
     assert result.ok is True
     assert result.completion_tokens == 2
     assert result.ttft_ms is not None
+    # Decode-window throughput is computed when tokens > 1 and TTFT is known.
+    assert result.throughput_tps is not None
 
 
 async def test_streaming_handles_data_without_space() -> None:

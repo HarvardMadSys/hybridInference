@@ -140,14 +140,23 @@ export async function setCycleStatus(db: D1Database, status: CycleStatus): Promi
   ]);
 }
 
+// A cycle older than this (≈3 missed 5-minute crons) is treated as stale, so a
+// stopped/undeployed cron or a never-run monitor doesn't show stale green.
+const CYCLE_FRESHNESS_MS = 15 * 60 * 1000;
+
 async function getCycleStatus(db: D1Database): Promise<CycleStatus> {
   const result = await db.prepare(`SELECT key, value FROM meta`).all<{ key: string; value: string }>();
   const map = new Map((result.results ?? []).map((r) => [r.key, r.value]));
-  return {
-    ok: map.get("last_cycle_ok") !== "0", // default ok until a failure is recorded
-    checkedAt: map.get("last_cycle_at") || null,
-    error: map.get("last_cycle_error") || null,
-  };
+  const checkedAt = map.get("last_cycle_at") || null;
+  if (!checkedAt) {
+    return { ok: false, checkedAt: null, error: "no probe cycle has run yet" };
+  }
+  const ageMs = Date.now() - Date.parse(checkedAt);
+  if (Number.isFinite(ageMs) && ageMs > CYCLE_FRESHNESS_MS) {
+    return { ok: false, checkedAt, error: `probe cycle stale (last run ${checkedAt})` };
+  }
+  const ok = map.get("last_cycle_ok") === "1";
+  return { ok, checkedAt, error: ok ? null : map.get("last_cycle_error") || null };
 }
 
 interface RawRow {
