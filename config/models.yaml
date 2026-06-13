@@ -378,16 +378,23 @@ models:
       # configured explicitly (e.g. requests_per_window) so percent can be
       # converted to a count-based usage in the fetcher.
       # S_C: Featherless Premium; paper real-eval used C=1 for MiniMax-M2.5.
-      - kind: featherless
-        weight: 1.0
-        base_url: ${FEATHERLESS_BASE_URL}
-        api_keys:
-          - ${FEATHERLESS_API_KEY}
-        provider_model_id: "MiniMaxAI/MiniMax-M2.5"
-        provider_type: concurrency
-        concurrency_pool: featherless-minimax-fast
-        concurrency:
-          limit: 1
+      # DISABLED: the Featherless account/key on staging returns an
+      # account-level 403 ("The current subscription plan does not have API
+      # access enabled", code=upgrade_required) on every request, so this leg
+      # never serves -- it only trips its circuit and, combined with the masked
+      # chutes quota leg, leaves OpenRouter as a single point of failure
+      # (manifesting as intermittent 500 "No route configured for model
+      # minimax-fast"). Re-enable once the Featherless plan has API access.
+      # - kind: featherless
+      #   weight: 1.0
+      #   base_url: ${FEATHERLESS_BASE_URL}
+      #   api_keys:
+      #     - ${FEATHERLESS_API_KEY}
+      #   provider_model_id: "MiniMaxAI/MiniMax-M2.5"
+      #   provider_type: concurrency
+      #   concurrency_pool: featherless-minimax-fast
+      #   concurrency:
+      #     limit: 1
       # S_A: OpenRouter-pinned DeepInfra, cheapest/highest-use MiniMax real-eval API leg.
       - kind: openrouter[deepinfra]
         weight: 1.0
@@ -403,6 +410,19 @@ models:
           request: "0"
           input_cache_reads: "0"
           input_cache_writes: "0"
+      # S_A (fallback): MiniMax direct PAYG API. Reliable always-on on-demand
+      # leg using the dedicated `minimax` provider profile (proper reasoning /
+      # structured-output handling), mirroring minimax-m2.5/m2.7. Added so the
+      # model is not left with OpenRouter[deepinfra] as a single point of
+      # failure when the other legs are unavailable (chutes masked /
+      # featherless disabled).
+      - kind: minimax
+        weight: 1.0
+        base_url: ${MINIMAX_BASE_URL}
+        api_keys:
+          - ${MINIMAX_API_KEY}
+        provider_model_id: "MiniMax-M2.5"
+        provider_type: on_demand
 
   - id: minimax-m2.7
     name: MiniMax M2.7
