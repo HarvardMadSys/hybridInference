@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -2291,12 +2292,36 @@ class TestRouteWiseDecisionMetadata:
 
 @pytest.mark.unit
 class TestRouteWiseEnvelopeCalibration:
-    """``start()`` must refuse to run if any quota pool is uncalibrated."""
+    """``start()`` degrades an uncalibrated quota pool that has a fallback leg,
+    and only refuses to run when such a pool is the model's only route."""
 
     @pytest.mark.asyncio
-    async def test_start_raises_when_quota_pool_uncalibrated(self):
+    async def test_start_degrades_when_quota_pool_has_fallback_leg(self, caplog):
+        # test-model has both a quota and an on-demand leg, so an uncalibrated
+        # envelope must NOT crash startup: the quota leg is masked at request
+        # time and the model serves via on-demand until traffic calibrates it.
         router, _quota, _api = _make_router_with_quota_and_api()
-        with pytest.raises(EnvelopeNotCalibratedError, match="uncalibrated"):
+        with caplog.at_level(logging.WARNING):
+            try:
+                await router.start()
+            finally:
+                await router.stop()
+        assert any("uncalibrated" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_start_raises_when_quota_only_pool_uncalibrated(self):
+        # Quota-only model with no fallback leg: an uncalibrated envelope leaves
+        # it unroutable, so startup must fail fast.
+        quota_adapter = _make_adapter(
+            provider_type="quota",
+            endpoint_id="quota-only:quota-provider",
+            quota={"limit": 5000},
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota_adapter, 1.0)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
+        with pytest.raises(EnvelopeNotCalibratedError, match="quota-only"):
             await router.start()
 
     @pytest.mark.asyncio

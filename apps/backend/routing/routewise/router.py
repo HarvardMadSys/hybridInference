@@ -300,11 +300,13 @@ class RouteWiseRouter(BaseRouter):
     async def start(self) -> None:
         """Start periodic maintenance tasks.
 
-        Validates that any quota-bearing pool has a calibrated envelope before
-        any background tasks are scheduled; an uncalibrated envelope raises
-        :class:`EnvelopeNotCalibratedError`, which the server bootstrap path
-        propagates so deployment fails fast instead of silently routing on
-        fabricated shadow prices.
+        Checks quota-bearing pools for a calibrated envelope before any
+        background tasks are scheduled. An uncalibrated pool that still has a
+        non-quota leg is degraded (its quota provider is masked until traffic
+        calibrates the envelope) rather than fatal; only a quota-only pool with
+        no fallback raises :class:`EnvelopeNotCalibratedError`, which the server
+        bootstrap path propagates so deployment fails fast instead of leaving a
+        model unroutable. See :meth:`_validate_envelope_calibration`.
         """
         self._validate_envelope_calibration()
         if self._sweep_task is None or self._sweep_task.done():
@@ -542,35 +544,61 @@ class RouteWiseRouter(BaseRouter):
             )
 
     def _validate_envelope_calibration(self) -> None:
-        """Refuse to operate if any quota-bearing pool has an uncalibrated envelope.
+        """Guard quota-bearing pools whose cost envelope is uncalibrated.
 
         The RouteWise paper requires the quota shadow price to be parameterized
-        by a workload-derived ``[L, U]``; there is no seed fallback. Pools that
-        contain at least one quota provider must therefore have a non-empty
-        envelope before requests are served. Pure API or pure concurrency
-        models are unaffected.
+        by a workload-derived ``[L, U]``; there is no seed fallback. A pool that
+        contains at least one quota provider therefore cannot price that
+        provider until its envelope has samples.
+
+        Rather than crash the whole gateway on a cold start, we degrade: a model
+        that still has a non-quota leg (on-demand or concurrency) keeps serving
+        on that leg while its quota provider is masked at request time (see
+        ``_select_adapter``), and the quota leg activates once real traffic
+        calibrates the envelope. We only hard-fail for a model whose *only*
+        route is the uncalibrated quota pool, because that model would otherwise
+        be unroutable. Pure API or pure concurrency models are unaffected.
         """
-        uncalibrated: list[tuple[str, str, int]] = []
+        degraded: list[tuple[str, str, int]] = []
+        unroutable: list[tuple[str, str, int]] = []
         for model_id, candidates in self.route_candidates.items():
             if not any(candidate.provider_type is ProviderType.QUOTA for candidate in candidates):
                 continue
             pool = self._routewise_pool(model_id)
-            if self.envelope.snapshot(pool) is None:
-                uncalibrated.append((pool, model_id, self.envelope.sample_count(pool)))
-        if not uncalibrated:
-            return
+            if self.envelope.snapshot(pool) is not None:
+                continue
+            entry = (pool, model_id, self.envelope.sample_count(pool))
+            has_fallback = any(
+                candidate.provider_type is not ProviderType.QUOTA for candidate in candidates
+            )
+            (degraded if has_fallback else unroutable).append(entry)
+
         needed = max(int(self.envelope.min_samples), 1)
-        details = "\n".join(
-            f"  - pool='{p}', model='{m}': {n}/{needed} envelope samples in window"
-            for p, m, n in uncalibrated
-        )
-        raise EnvelopeNotCalibratedError(
-            "RouteWise refuses to start: cost envelope is uncalibrated for "
-            f"quota-bearing pools (each needs >= {needed} request-cost samples "
-            "within the lookback window). Ensure api_logs has recent traffic "
-            "for these models before deploying, or remove their quota "
-            "providers.\n" + details
-        )
+        if degraded:
+            details = "\n".join(
+                f"  - pool='{p}', model='{m}': {n}/{needed} envelope samples in window"
+                for p, m, n in degraded
+            )
+            logger.warning(
+                "RouteWise cost envelope is uncalibrated for quota-bearing pools; "
+                "masking their quota providers and serving via fallback legs until "
+                "real traffic calibrates them (each needs >= %d request-cost samples "
+                "within the lookback window):\n%s",
+                needed,
+                details,
+            )
+        if unroutable:
+            details = "\n".join(
+                f"  - pool='{p}', model='{m}': {n}/{needed} envelope samples in window"
+                for p, m, n in unroutable
+            )
+            raise EnvelopeNotCalibratedError(
+                "RouteWise refuses to start: cost envelope is uncalibrated for "
+                f"quota-only pools with no fallback leg (each needs >= {needed} "
+                "request-cost samples within the lookback window). Ensure api_logs "
+                "has recent traffic for these models before deploying, add a "
+                "non-quota route, or remove their quota providers.\n" + details
+            )
 
     @staticmethod
     def _parse_reference_api_price(raw: dict[str, Any] | None) -> CandidatePricing | None:
