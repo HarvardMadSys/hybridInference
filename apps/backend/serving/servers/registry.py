@@ -21,6 +21,7 @@ from serving.adapters import (
     AnthropicAdapter,
     ClaudeAdapter,
     GeminiAdapter,
+    KimiCodingAdapter,
     ModelConfig,
     OpenAICompatAdapter,
     OpenRouterAdapter,
@@ -149,7 +150,8 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
               ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``, ``"cliproxy"``,
-              ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
+              ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``,
+              ``"kimi_coding"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -201,6 +203,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     if kind == "openrouter":
         return OpenRouterAdapter(model_cfg)
+
+    if kind == "kimi_coding":
+        return KimiCodingAdapter(model_cfg)
 
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
