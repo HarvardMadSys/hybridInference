@@ -9,14 +9,15 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import enum
-import functools
 import logging
 import os
 import platform
 import socket
+import threading
 import time
 from collections import defaultdict
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -25,6 +26,9 @@ log = logging.getLogger(__name__)
 _HOST = socket.gethostname()
 _DEDUPE_LOCK = asyncio.Lock()
 _LAST_FIRED: dict[str, float] = defaultdict(float)
+
+# Hostnames that always indicate a non-deployed (local/dev) gateway.
+_LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"))
 
 
 def _detect_ip() -> str:
@@ -48,37 +52,76 @@ def _detect_ip() -> str:
             return ""
 
 
-@functools.lru_cache(maxsize=1)
+# Static host identity, resolved once off the event loop. ``socket.getfqdn()``
+# may issue a blocking reverse-DNS lookup, so a background daemon thread warms
+# this at import time; alerts that fire before it lands use non-blocking
+# defaults rather than stalling the loop.
+_STATIC_HOST_FACTS: tuple[str, str, str, str] | None = None
+
+
+def _resolve_static_host_facts() -> None:
+    global _STATIC_HOST_FACTS
+    try:
+        _STATIC_HOST_FACTS = (_HOST, socket.getfqdn(), _detect_ip(), platform.platform())
+    except Exception:
+        log.debug("static host-fact resolution failed", exc_info=True)
+
+
+threading.Thread(target=_resolve_static_host_facts, name="alert-host-facts", daemon=True).start()
+
+
 def _static_host_facts() -> tuple[str, str, str, str]:
-    """Host identity that does not change over the process lifetime."""
-    return _HOST, socket.getfqdn(), _detect_ip(), platform.platform()
+    """Return resolved host identity, or non-blocking defaults if not yet ready."""
+    facts = _STATIC_HOST_FACTS
+    if facts is None:
+        # platform.platform() and the cached hostname are cheap and never block.
+        return _HOST, _HOST, "", platform.platform()
+    return facts
 
 
-def _base_url() -> str:
-    """Configured public base URL of this gateway, or empty when unavailable."""
+def _base_url() -> tuple[str, bool]:
+    """Resolve the gateway's public base URL and whether it was set explicitly.
+
+    Prefers a per-call ``BASE_URL`` environment read so runtime changes are
+    picked up, then falls back to settings. The boolean is ``True`` only when
+    the value came from an explicit source (env var or ``.env``) rather than the
+    built-in field default — which is needed to tell a real production deploy
+    apart from a local run that inherits the default URL.
+    """
+    env_url = os.environ.get("BASE_URL")
+    if env_url:
+        return env_url, True
     try:
         from serving.config.settings import get_settings
 
-        return get_settings().base_url or ""
+        settings = get_settings()
+        explicit = "base_url" in settings.model_fields_set
+        return (settings.base_url or ""), explicit
     except Exception:
-        return os.environ.get("BASE_URL", "")
+        return "", False
 
 
-def _detect_environment(base_url: str) -> str:
+def _detect_environment(base_url: str, *, explicit: bool) -> str:
     """Resolve the deployment environment for an alert.
 
     Honors an explicit ``DEPLOYMENT_ENV``/``ENVIRONMENT`` override, otherwise
-    infers from the base URL (staging vs production vs local).
+    infers from the base URL host. ``explicit`` indicates whether ``base_url``
+    was configured (vs the built-in default); an unconfigured base URL is
+    treated as a local run rather than assumed to be production.
     """
-    explicit = os.environ.get("DEPLOYMENT_ENV") or os.environ.get("ENVIRONMENT")
-    if explicit:
-        return explicit
-    url = base_url.lower()
-    if "staging" in url:
-        return "staging"
-    if "localhost" in url or "127.0.0.1" in url:
+    override = (os.environ.get("DEPLOYMENT_ENV") or os.environ.get("ENVIRONMENT") or "").strip()
+    if override:
+        return override
+    host = (urlparse(base_url).hostname or "").lower()
+    if host in _LOCAL_HOSTS:
         return "local"
-    if "freeinference.org" in url:
+    if "staging" in host:
+        return "staging"
+    if not explicit:
+        # Built-in default URL with no override — almost certainly a local/dev
+        # process, not production. Deployments set BASE_URL or DEPLOYMENT_ENV.
+        return "local"
+    if host.endswith("freeinference.org"):
         return "production"
     return "unknown"
 
@@ -90,14 +133,14 @@ def server_info() -> dict[str, str]:
     current deployment environment and public base URL.
     """
     host, fqdn, ip, plat = _static_host_facts()
-    base_url = _base_url()
+    base_url, explicit = _base_url()
     return {
         "hostname": host,
         "fqdn": fqdn,
         "ip": ip,
         "platform": plat,
         "base_url": base_url,
-        "environment": _detect_environment(base_url),
+        "environment": _detect_environment(base_url, explicit=explicit),
     }
 
 

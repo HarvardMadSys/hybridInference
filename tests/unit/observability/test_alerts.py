@@ -100,22 +100,27 @@ def test_server_info_has_expected_keys():
 
 
 @pytest.mark.parametrize(
-    "env_overrides, base_url, expected",
+    "env_overrides, base_url, explicit, expected",
     [
-        ({"DEPLOYMENT_ENV": "qa"}, "https://freeinference.org", "qa"),
-        ({"ENVIRONMENT": "canary"}, "https://staging.freeinference.org", "canary"),
-        ({}, "https://staging.freeinference.org", "staging"),
-        ({}, "https://freeinference.org", "production"),
-        ({}, "http://localhost:8000", "local"),
-        ({}, "https://example.com", "unknown"),
+        # Explicit DEPLOYMENT_ENV/ENVIRONMENT overrides always win (and are stripped).
+        ({"DEPLOYMENT_ENV": "qa"}, "https://freeinference.org", True, "qa"),
+        ({"ENVIRONMENT": "  canary\n"}, "https://staging.freeinference.org", True, "canary"),
+        # Host-based inference (urlparse, so path segments don't misclassify).
+        ({}, "https://staging.freeinference.org", True, "staging"),
+        ({}, "https://freeinference.org", True, "production"),
+        ({}, "http://localhost:8000", True, "local"),
+        ({}, "http://127.0.0.1:8080/staging", True, "local"),
+        ({}, "https://example.com", True, "unknown"),
+        # Built-in default URL with no explicit config => treat as local, not prod.
+        ({}, "https://freeinference.org", False, "local"),
     ],
 )
-def test_detect_environment(monkeypatch, env_overrides, base_url, expected):
+def test_detect_environment(monkeypatch, env_overrides, base_url, explicit, expected):
     monkeypatch.delenv("DEPLOYMENT_ENV", raising=False)
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     for key, value in env_overrides.items():
         monkeypatch.setenv(key, value)
-    assert _detect_environment(base_url) == expected
+    assert _detect_environment(base_url, explicit=explicit) == expected
 
 
 def test_format_message_includes_server_block():
