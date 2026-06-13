@@ -155,6 +155,44 @@ class RoutingConfig(BaseModel):  # type: ignore[no-any-unimported]
         return self
 
 
+def _drop_unset_deployments(expanded: dict[str, Any]) -> dict[str, Any]:
+    """Drop deployment entries whose endpoint expanded to an empty string.
+
+    A ``${VAR}`` referencing an unset env var with no ``:-default`` expands to
+    ``""`` (see ``_expand_env_value``). Such an entry would fail the
+    ``Deployment.endpoint`` validator and invalidate the *entire*
+    ``RoutingConfig``, degrading routing for every other (healthy) endpoint.
+    Instead, prune those entries with a warning so the remaining deployments
+    keep loading.
+
+    Args:
+        expanded: Raw config dict after environment-variable expansion.
+
+    Returns:
+        The dict with unset deployment entries removed from
+        ``local_deployment`` and ``remote_deployment``.
+    """
+    for section in ("local_deployment", "remote_deployment"):
+        entries = expanded.get(section)
+        if not isinstance(entries, list):
+            continue
+        kept: list[Any] = []
+        for entry in entries:
+            endpoint = entry.get("endpoint") if isinstance(entry, dict) else None
+            if isinstance(endpoint, str) and endpoint.strip():
+                kept.append(entry)
+                continue
+            models = entry.get("models") if isinstance(entry, dict) else None
+            _logger.warning(
+                "routing.yaml %s entry has unset/blank endpoint; dropping it. "
+                "Check the env var for this endpoint. Orphaned models: %s",
+                section,
+                models or "(none)",
+            )
+        expanded[section] = kept
+    return expanded
+
+
 def load_routing_config(path: Path) -> RoutingConfig:
     """Load and validate routing configuration from YAML file.
 
@@ -169,6 +207,7 @@ def load_routing_config(path: Path) -> RoutingConfig:
     """
     raw = yaml.safe_load(path.read_text()) or {}
     expanded = _expand_env_value(raw)
+    expanded = _drop_unset_deployments(expanded)
     try:
         return cast("RoutingConfig", RoutingConfig.model_validate(expanded))
     except ValidationError as e:
