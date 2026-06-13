@@ -360,10 +360,10 @@ async def chat_completions(
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
-    # ``log_synthetic_probes`` opts probe traffic into api_logs persistence (so
-    # it shows in the requests dashboard) WITHOUT changing metrics, cost, or the
-    # X-Provider header — those stay keyed on ``is_synthetic_probe``. A setting
-    # read failure defaults to suppression (the historical behavior).
+    # ``log_synthetic_probes`` opts probe traffic into api_logs persistence so it
+    # (and its real usage/cost) shows in the requests dashboard. The Prometheus
+    # request metrics, per-user quota increment, and X-Provider header stay keyed
+    # on ``is_synthetic_probe``. A setting read failure defaults to suppression.
     log_synthetic_probes = False
     if (
         is_synthetic_probe

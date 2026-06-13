@@ -56,8 +56,9 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": False,
         "description": (
             "Persist synthetic probe requests (X-Probe: synthetic) to api_logs "
-            "so they appear in the requests dashboard. Metrics, cost, and the "
-            "X-Provider header continue to treat them as probes."
+            "so they — and their real usage/cost — appear in the requests "
+            "dashboard, which is useful for tracking monitoring cost. They stay "
+            "excluded from per-user quota increments and the request metrics."
         ),
     },
     "force_chat_completions_streaming": {
