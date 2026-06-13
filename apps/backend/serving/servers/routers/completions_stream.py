@@ -222,6 +222,10 @@ class StreamSession:
                 adapter routing keys (minus ``upstream_cost_usd``).
             user_id: Stable user identifier for cost increments.
             is_synthetic_probe: Skip DB / cost / observation side effects.
+            suppress_synthetic_logging: Skip only the api_logs persistence for
+                this request. Separate from ``is_synthetic_probe`` so the
+                ``log_synthetic_probes`` admin toggle can log probes while still
+                excluding them from metrics/cost.
             log_store: ``LogStore`` instance — gating only; the
                 ``CompletionsLogger`` performs the actual writes.
             active_router: Router used for the routing observation.
