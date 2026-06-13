@@ -5,105 +5,105 @@
 # from inside Docker. For bare-metal (non-Docker) development, replace with "localhost".
 
 models:
-  - id: glm-4.7
-    name: GLM-4.7
-    provider: zai
-    quantization: "fp8"
-    context_length: 200000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    aliases: ["freeinference-glm-4.7"]
-    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
-    pricing:
-      prompt: "0.6"
-      completion: "2.2"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0.11"
-      input_cache_writes: "0"
-    route:
-      - kind: zai
-        weight: 1.0
-        base_url: ${ZAI_BASE_URL}
-        api_keys:
-          - ${ZAI_API_KEY}
-          - ${ZAI_API_KEY2}
-        provider_model_id: "glm-4.7"
-      # Ollama Cloud fallback
-      - kind: ollama
-        weight: 0.64
-        base_url: ${OLLAMA_BASE_URL}
-        api_keys:
-          - ${OLLAMA_API_KEY}
-        provider_model_id: "glm-4.7"
-      # Chutes fallback
-      - kind: chutes
-        weight: 0.64
-        base_url: ${CHUTES_BASE_URL}
-        api_keys:
-          - ${CHUTES_API_KEY}
-        provider_model_id: "zai-org/GLM-4.7-TEE"
-      # Featherless fallback
-      - kind: featherless
-        weight: 1.0
-        base_url: ${FEATHERLESS_BASE_URL}
-        api_keys:
-          - ${FEATHERLESS_API_KEY}
-        provider_model_id: "zai-org/GLM-4.7"
+  # - id: glm-4.7
+  #   name: GLM-4.7
+  #   provider: zai
+  #   quantization: "fp8"
+  #   context_length: 200000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   aliases: ["freeinference-glm-4.7"]
+  #   # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
+  #   pricing:
+  #     prompt: "0.6"
+  #     completion: "2.2"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.11"
+  #     input_cache_writes: "0"
+  #   route:
+  #     - kind: zai
+  #       weight: 1.0
+  #       base_url: ${ZAI_BASE_URL}
+  #       api_keys:
+  #         - ${ZAI_API_KEY}
+  #         - ${ZAI_API_KEY2}
+  #       provider_model_id: "glm-4.7"
+  #     # Ollama Cloud fallback
+  #     - kind: ollama
+  #       weight: 0.64
+  #       base_url: ${OLLAMA_BASE_URL}
+  #       api_keys:
+  #         - ${OLLAMA_API_KEY}
+  #       provider_model_id: "glm-4.7"
+  #     # Chutes fallback
+  #     - kind: chutes
+  #       weight: 0.64
+  #       base_url: ${CHUTES_BASE_URL}
+  #       api_keys:
+  #         - ${CHUTES_API_KEY}
+  #       provider_model_id: "zai-org/GLM-4.7-TEE"
+  #     # Featherless fallback
+  #     - kind: featherless
+  #       weight: 1.0
+  #       base_url: ${FEATHERLESS_BASE_URL}
+  #       api_keys:
+  #         - ${FEATHERLESS_API_KEY}
+  #       provider_model_id: "zai-org/GLM-4.7"
 
-  - id: glm-5
-    name: GLM-5 (please use GLM-5.1 or GLM-5 Turbo if possible; GLM-5 is an older version that may be less cost-effective)
-    provider: zai
-    quantization: "fp8"
-    context_length: 200000
-    max_output_length: 128000
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    aliases: ["freeinference-glm-5"]
-    # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
-    pricing:
-      prompt: "1.0"
-      completion: "3.2"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0.2"
-      input_cache_writes: "0"
-    route:
-      - kind: zai
-        weight: 0.64
-        base_url: ${ZAI_BASE_URL}
-        api_keys:
-          - ${ZAI_API_KEY}
-          - ${ZAI_API_KEY2}
-        provider_model_id: "glm-5"
-      # Ollama Cloud fallback
-      - kind: ollama
-        weight: 0.64
-        base_url: ${OLLAMA_BASE_URL}
-        api_keys:
-          - ${OLLAMA_API_KEY}
-        provider_model_id: "glm-5"
-      # # Chutes fallback
-      - kind: chutes
-        weight: 0.64
-        base_url: ${CHUTES_BASE_URL}
-        api_keys:
-          - ${CHUTES_API_KEY}
-        provider_model_id: "zai-org/GLM-5-TEE"
-      # Featherless fallback
-      - kind: featherless
-        weight: 0.64
-        base_url: ${FEATHERLESS_BASE_URL}
-        api_keys:
-          - ${FEATHERLESS_API_KEY}
-        provider_model_id: "zai-org/GLM-5"
+  # - id: glm-5
+  #   name: GLM-5 (please use GLM-5.1 or GLM-5 Turbo if possible; GLM-5 is an older version that may be less cost-effective)
+  #   provider: zai
+  #   quantization: "fp8"
+  #   context_length: 200000
+  #   max_output_length: 128000
+  #   supports_tools: true
+  #   supports_structured_output: true
+  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+  #   input_modalities: ["text"]
+  #   output_modalities: ["text"]
+  #   aliases: ["freeinference-glm-5"]
+  #   # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
+  #   pricing:
+  #     prompt: "1.0"
+  #     completion: "3.2"
+  #     image: "0"
+  #     request: "0"
+  #     input_cache_reads: "0.2"
+  #     input_cache_writes: "0"
+  #   route:
+  #     - kind: zai
+  #       weight: 0.64
+  #       base_url: ${ZAI_BASE_URL}
+  #       api_keys:
+  #         - ${ZAI_API_KEY}
+  #         - ${ZAI_API_KEY2}
+  #       provider_model_id: "glm-5"
+  #     # Ollama Cloud fallback
+  #     - kind: ollama
+  #       weight: 0.64
+  #       base_url: ${OLLAMA_BASE_URL}
+  #       api_keys:
+  #         - ${OLLAMA_API_KEY}
+  #       provider_model_id: "glm-5"
+  #     # # Chutes fallback
+  #     - kind: chutes
+  #       weight: 0.64
+  #       base_url: ${CHUTES_BASE_URL}
+  #       api_keys:
+  #         - ${CHUTES_API_KEY}
+  #       provider_model_id: "zai-org/GLM-5-TEE"
+  #     # Featherless fallback
+  #     - kind: featherless
+  #       weight: 0.64
+  #       base_url: ${FEATHERLESS_BASE_URL}
+  #       api_keys:
+  #         - ${FEATHERLESS_API_KEY}
+  #       provider_model_id: "zai-org/GLM-5"
 
   - id: glm-5.1
     name: GLM-5.1
@@ -139,6 +139,37 @@ models:
         # api_keys:
         #   - ${LOCAL_API_KEY}
 
+  - id: glm-5.2
+    name: GLM-5.2
+    provider: zai
+    required_role: internal
+    quantization: "fp8"
+    context_length: 1000000
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    aliases: ["freeinference-glm-5.2"]
+    # Intentionally billed at 2x the Z.AI PAYG rate
+    # (base: prompt 1.4 / completion 4.4 / cache 0.26 — https://docs.z.ai/guides/overview/pricing).
+    # These values are charged as USD/M tokens against each user's cost quota.
+    pricing:
+      prompt: "2.8"
+      completion: "8.8"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.52"
+      input_cache_writes: "0"
+    route:
+      - kind: zai
+        weight: 1.0
+        base_url: ${ZAI_BASE_URL}
+        api_keys:
+          - ${ZAI_API_KEY}
+        provider_model_id: "glm-5.2"
+
   - id: glm-5-turbo
     name: GLM-5 Turbo
     provider: zai
@@ -166,12 +197,12 @@ models:
         api_keys:
           - ${ZAI_API_KEY}
         provider_model_id: "glm-5-turbo"
-      - kind: chutes
-        weight: 0.05
-        base_url: ${CHUTES_BASE_URL}
-        api_keys:
-          - ${CHUTES_API_KEY}
-        provider_model_id: "zai-org/GLM-5-Turbo"
+      # - kind: chutes
+      #   weight: 0.05
+      #   base_url: ${CHUTES_BASE_URL}
+      #   api_keys:
+      #     - ${CHUTES_API_KEY}
+      #   provider_model_id: "zai-org/GLM-5-Turbo"
       # # Featherless fallback
       # - kind: featherless
       #   weight: 0
@@ -409,36 +440,90 @@ models:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.7"
 
-  # - id: kimi-k2.6
-  #   name: Kimi K2.6
-  #   provider: chutes
-  #   quantization: "int4"
-  #   input_modalities: ["text", "image"]
-  #   output_modalities: ["text"]
-  #   context_length: 262144
-  #   max_output_length: 131072
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
-  #   aliases: ["Kimi-K2.6"]
-  #   pricing:
-  #     prompt: "0.2"
-  #     completion: "0.8"
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.2"
-  #     input_cache_writes: "0"
-  #   route:
-  #     - kind: chutes
-  #       weight: 1.0
-  #       base_url: ${CHUTES_BASE_URL}
-  #       api_keys:
-  #         - ${CHUTES_API_KEY}
-  #       provider_model_id: "moonshotai/Kimi-K2.6-TEE"
+  # ── Kimi / Moonshot (kind: kimi) ─────────────────────────
+  # Flagship served primarily through the Kimi Code coding-plan subscription
+  # (flat fee). The coding plan exposes the unified `kimi-for-coding` model
+  # (currently the latest K2.7-code). Default FixedRouter: the coding-plan route
+  # is strongly preferred by weight, with the pay-per-token Moonshot API kept as
+  # a weighted fallback for when the coding-plan endpoint is unhealthy.
+  - id: kimi-k2.7-code
+    name: Kimi K2.7 Code
+    provider: kimi
+    quantization: "bf16"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["Kimi-K2.7-Code", "kimi-for-coding", "kimi-k2.7"]
+    # Metered fallback pricing — Moonshot PAYG https://platform.moonshot.ai/pricing
+    # (verify current rates). Under FixedRouter this is used for cost reporting.
+    pricing:
+      prompt: "0.6"
+      completion: "2.5"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.15"
+      input_cache_writes: "0"
+    route:
+      # Kimi Code coding-plan endpoint (flat fee). base_url ends in /v1, so the
+      # adapter posts to .../coding/v1/chat/completions.
+      - kind: kimi
+        weight: 1.0
+        base_url: ${KIMI_CODING_BASE_URL}
+        api_keys:
+          - ${KIMI_CODING_API_KEY}
+        provider_model_id: "kimi-for-coding"
+      # Moonshot pay-per-token API (metered fallback; small weight so it is used
+      # mainly when the coding-plan circuit opens).
+
+  # Pinned older version, metered providers only (the coding plan serves only the
+  # unified latest model, so K2.6 is not available through it).
+  - id: kimi-k2.6
+    name: Kimi K2.6
+    provider: kimi
+    quantization: "int4"
+    input_modalities: ["text", "image"]
+    output_modalities: ["text"]
+    context_length: 262144
+    max_output_length: 131072
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
+    aliases: ["Kimi-K2.6"]
+    pricing:
+      prompt: "0.6"
+      completion: "2.5"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0.2"
+      input_cache_writes: "0"
+    route:
+      - kind: kimi
+        weight: 1.0
+        base_url: ${KIMI_CODING_BASE_URL}
+        api_keys:
+          - ${KIMI_CODING_API_KEY}
+        provider_model_id: "kimi-for-coding"
+      - kind: chutes
+        weight: 0.2
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "moonshotai/Kimi-K2.6-TEE"
+      # # Featherless fallback
+      # - kind: featherless
+      #   weight: 0.64
+      #   base_url: ${FEATHERLESS_BASE_URL}
+      #   api_keys:
+      #     - ${FEATHERLESS_API_KEY}
+      #   provider_model_id: "moonshotai/Kimi-K2.6"
 
 
   - id: qwen3.6-35b
-    name: Qwen3.6 35B
+    name: Qwen3.6 35B (no concurrency limit currently)
     provider: sglang
     quantization: "fp8"
     input_modalities: ["text"]
@@ -505,12 +590,6 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "deepseek-v4-flash"
-      - kind: featherless
-        weight: 1.0
-        base_url: ${FEATHERLESS_BASE_URL}
-        api_keys:
-          - ${FEATHERLESS_API_KEY}
-        provider_model_id: "deepseek-ai/DeepSeek-V4-Flash"
 
   - id: deepseek-v4-pro
     name: DeepSeek V4 Pro
@@ -548,12 +627,6 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "deepseek-v4-pro"
-      - kind: featherless
-        weight: 1.0
-        base_url: ${FEATHERLESS_BASE_URL}
-        api_keys:
-          - ${FEATHERLESS_API_KEY}
-        provider_model_id: "deepseek-ai/DeepSeek-V4-Pro"
 
 
   # ── OpenRouter examples ────────────────────────────────────

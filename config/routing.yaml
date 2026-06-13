@@ -16,6 +16,14 @@ local_deployment:
     models:
       - /n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2
 remote_deployment:
+  # List only the primary (coding-plan) endpoint. Listing the metered Moonshot
+  # endpoint too would make FixedRatioStrategy split kimi-k2.7-code 0.5/0.5 across
+  # both remotes, overriding the models.yaml primary/fallback weights; keeping just
+  # the coding endpoint boosts it to 1.0 and lets the metered route keep its small
+  # carried-over fallback weight after renormalization.
+  - endpoint: ${KIMI_CODING_BASE_URL}
+    models:
+      - kimi-k2.7-code
   - endpoint: ${CHUTES_BASE_URL}
     models:
       - moonshotai/Kimi-K2.6-TEE
@@ -31,6 +39,7 @@ remote_deployment:
       - glm-5
       - glm-5-turbo
       - glm-5.1
+      - glm-5.2
   - endpoint: ${DEEPSEEK_BASE_URL}
     models:
       - deepseek-v4-flash

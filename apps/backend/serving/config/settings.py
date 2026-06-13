@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     # Admin
     admin_token: str = ""
     admin_emails: str = ""
+    # Recipients for signup/registration approval notifications. Comma-separated.
+    # When empty, falls back to admin_emails so existing deployments are
+    # unaffected. Set this to notify a subset of admins (or a shared inbox)
+    # without changing who holds the admin role.
+    signup_notify_emails: str = ""
     user_auth_enabled: bool = True
     api_key_secret: str = ""
 
@@ -177,16 +182,39 @@ def get_settings() -> Settings:
 settings = get_settings()
 
 
-def _parse_admin_emails(raw: str) -> list[str]:
-    """Parse comma-separated admin emails string into a lowercase list."""
+def _split_email_list(raw: str) -> list[str]:
+    """Split a comma-separated email string, trimming whitespace and blanks.
+
+    Case is preserved: email local-parts may be case-sensitive, so callers that
+    deliver mail must not lowercase. Membership checks should lowercase
+    separately via :func:`_parse_admin_emails`.
+    """
     if not raw:
         return []
-    return [e.strip().lower() for e in raw.split(",") if e.strip()]
+    return [e.strip() for e in raw.split(",") if e.strip()]
+
+
+def _parse_admin_emails(raw: str) -> list[str]:
+    """Parse comma-separated admin emails string into a lowercase list."""
+    return [e.lower() for e in _split_email_list(raw)]
 
 
 def is_admin_email(email: str) -> bool:
     """Check if the given email is in the admin list."""
     return email.strip().lower() in _parse_admin_emails(settings.admin_emails)
+
+
+def get_signup_notify_emails() -> list[str]:
+    """Return recipients for signup approval notifications.
+
+    Uses ``signup_notify_emails`` when set, otherwise falls back to
+    ``admin_emails`` so that recipients can be narrowed without altering who
+    holds the admin role. Recipient casing is preserved for SMTP delivery.
+    """
+    notify = _split_email_list(settings.signup_notify_emails)
+    if notify:
+        return notify
+    return _split_email_list(settings.admin_emails)
 
 
 ROLE_RANK: dict[str, int] = {"free": 0, "pro": 1, "internal": 2, "admin": 3}
