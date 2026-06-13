@@ -51,8 +51,7 @@ export async function consumeSse(
   let ttftMs: number | null = null;
   let tokens = 0;
   let usageTokens: number | null = null;
-  let sawDone = false;
-  let sawEvent = false;
+  let sawTerminal = false; // [DONE], finish_reason, or end-of-stream usage
 
   // Returns true when the stream is complete ([DONE]).
   const handleLine = (line: string): boolean => {
@@ -61,7 +60,7 @@ export async function consumeSse(
     }
     const body = line.slice("data:".length).trim();
     if (body === "[DONE]") {
-      sawDone = true;
+      sawTerminal = true;
       return true;
     }
     let chunk: any;
@@ -77,17 +76,18 @@ export async function consumeSse(
           : String(chunk.error);
       throw new StreamingProbeError(message || "stream error");
     }
+    // usage and finish_reason only appear at end-of-stream, so they mark a
+    // complete response; a content delta alone does not.
     if (chunk.usage?.completion_tokens != null) {
       usageTokens = chunk.usage.completion_tokens;
-      sawEvent = true;
+      sawTerminal = true;
     }
     const choice = chunk.choices?.[0];
     if (choice?.finish_reason) {
-      sawEvent = true;
+      sawTerminal = true;
     }
     const delta = choice?.delta ?? {};
     if (delta.content || delta.reasoning_content || delta.tool_calls) {
-      sawEvent = true;
       if (ttftMs === null) {
         ttftMs = Date.now() - startedAt;
       }
@@ -113,10 +113,11 @@ export async function consumeSse(
     if (stop) break;
   }
 
-  // A stream that closes with neither a completion marker nor any meaningful
-  // event is a truncated/empty response — fail rather than report it healthy.
-  if (!sawDone && !sawEvent) {
-    throw new StreamingProbeError("incomplete stream (no completion marker or content)");
+  // A stream that closes without a terminal marker ([DONE]/finish_reason/usage)
+  // is truncated — even if some content arrived — so fail rather than report
+  // it healthy.
+  if (!sawTerminal) {
+    throw new StreamingProbeError("incomplete stream (no terminal marker)");
   }
   return { ttftMs, completionTokens: usageTokens ?? (tokens || null) };
 }

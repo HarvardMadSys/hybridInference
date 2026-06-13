@@ -39,6 +39,11 @@ describe("consumeSse", () => {
     await expect(consumeSse(stream, Date.now())).rejects.toBeInstanceOf(StreamingProbeError);
   });
 
+  it("throws when content arrives but the stream is cut before a terminal marker", async () => {
+    const stream = sseStream('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'); // no finish/usage/[DONE]
+    await expect(consumeSse(stream, Date.now())).rejects.toBeInstanceOf(StreamingProbeError);
+  });
+
   it("accepts a stream that ends with a finish_reason but no [DONE]", async () => {
     const stream = sseStream(
       'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n',
