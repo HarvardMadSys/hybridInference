@@ -214,13 +214,14 @@ async def signup(
         base_url = get_base_url(request)
         background_tasks.add_task(send_verification_email, body.email, verification_token, base_url)
 
-    # Notify admins of new registration when approval is required.
-    # Recipients come from SIGNUP_NOTIFY_EMAILS when set, otherwise ADMIN_EMAILS.
+    # Notify configured recipients of a new registration when approval is
+    # required. Recipients come from SIGNUP_NOTIFY_EMAILS when set, otherwise
+    # ADMIN_EMAILS, so they may be a subset of admins or a shared inbox.
     if require_approval and is_email_enabled():
-        for admin_email in get_signup_notify_emails():
+        for notify_email in get_signup_notify_emails():
             background_tasks.add_task(
                 send_new_registration_admin_email,
-                to_email=admin_email,
+                to_email=notify_email,
                 user_email=body.email,
                 user_name=body.user_name,
                 user_id=user_id,

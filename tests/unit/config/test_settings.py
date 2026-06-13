@@ -185,10 +185,13 @@ def test_has_role_fails_closed_for_unknown_required_role() -> None:
 
 
 def test_signup_notify_emails_falls_back_to_admin_emails(monkeypatch) -> None:
-    """With no notify list set, recipients come from admin_emails."""
-    monkeypatch.setattr(settings_module.settings, "admin_emails", "a@x.com, B@x.com")
+    """With no notify list set, recipients come from admin_emails.
+
+    Casing is preserved for delivery: email local-parts may be case-sensitive.
+    """
+    monkeypatch.setattr(settings_module.settings, "admin_emails", "a@x.com, OpsMailbox@x.com")
     monkeypatch.setattr(settings_module.settings, "signup_notify_emails", "")
-    assert get_signup_notify_emails() == ["a@x.com", "b@x.com"]
+    assert get_signup_notify_emails() == ["a@x.com", "OpsMailbox@x.com"]
 
 
 def test_signup_notify_emails_overrides_admin_emails(monkeypatch) -> None:
@@ -196,8 +199,9 @@ def test_signup_notify_emails_overrides_admin_emails(monkeypatch) -> None:
     monkeypatch.setattr(
         settings_module.settings, "admin_emails", "murphy@x.com,haoran@x.com,peter@x.com"
     )
-    monkeypatch.setattr(settings_module.settings, "signup_notify_emails", "peter@x.com")
-    assert get_signup_notify_emails() == ["peter@x.com"]
+    monkeypatch.setattr(settings_module.settings, "signup_notify_emails", "Peter@x.com")
+    # Casing preserved for SMTP delivery; only the notify recipient is returned.
+    assert get_signup_notify_emails() == ["Peter@x.com"]
 
 
 def test_has_role_treats_unknown_user_role_as_lowest() -> None:
