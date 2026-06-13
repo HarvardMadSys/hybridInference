@@ -38,12 +38,10 @@ class RequestIdMiddleware:
             req_id = secrets.token_hex(12)
 
         scope.setdefault("state", {})["request_id"] = req_id
-        ctx_update: dict[str, str] = {"request_id": req_id}
-        # Stash the caller's User-Agent so adapters can forward it upstream when
-        # configured to (e.g. KimiCodingAdapter when identity injection is off).
-        if user_agent:
-            ctx_update["client_user_agent"] = user_agent
-        req_ctx.update(ctx_update)
+        # Always set both keys (User-Agent may be None) so a request without a
+        # User-Agent overwrites — never inherits — a prior request's value when
+        # the same task handles sequential scopes.
+        req_ctx.update({"request_id": req_id, "client_user_agent": user_agent or None})
 
         req_id_bytes = req_id.encode("latin-1")
 
