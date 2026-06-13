@@ -23,6 +23,7 @@ h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
 .spark span { flex: 1; border-radius: 1px; min-width: 2px; }
 .spark span.up { background: #2f6b46; } .spark span.down { background: #7a2b2b; }
 .err { margin-top: .5rem; color: #f87171; font-size: .8rem; word-break: break-word; }
+.banner { background: #3a1414; color: #fca5a5; border: 1px solid #7a2b2b; border-radius: 10px; padding: .75rem 1rem; margin-bottom: 1.5rem; font-size: .9rem; }
 footer { margin-top: 2rem; color: #6b7280; font-size: .8rem; }
 a { color: #60a5fa; }
 `;
@@ -76,6 +77,13 @@ export function renderDashboard(snapshot: Snapshot, refreshSeconds = 30): string
   const cards = snapshot.models.length
     ? snapshot.models.map(card).join("")
     : '<p class="sub">No probe results yet — the first cron cycle is pending.</p>';
+  const banner = snapshot.cycle.ok
+    ? ""
+    : `<div class="banner">⚠ Last probe cycle failed${
+        snapshot.cycle.error ? `: ${esc(snapshot.cycle.error)}` : ""
+      }${
+        snapshot.cycle.checkedAt ? ` (${esc(snapshot.cycle.checkedAt).slice(0, 19)})` : ""
+      }. Results below may be stale.</div>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -88,6 +96,7 @@ export function renderDashboard(snapshot: Snapshot, refreshSeconds = 30): string
 <body>
   <h1>FreeInference Model Status</h1>
   <div class="sub">Each model is probed with a synthetic request every 5 minutes (Cloudflare cron).</div>
+  ${banner}
   <div class="summary">
     <span class="pill ok">${snapshot.healthy} up</span>
     <span class="pill ${snapshot.unhealthy ? "bad" : "muted"}">${snapshot.unhealthy} down</span>

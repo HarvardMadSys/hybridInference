@@ -23,12 +23,20 @@ export interface ModelStatus {
   uptimeRatio: number;
 }
 
+/** Health of the most recent cron cycle. */
+export interface CycleStatus {
+  ok: boolean;
+  checkedAt: string | null;
+  error: string | null;
+}
+
 /** Aggregated dashboard snapshot. */
 export interface Snapshot {
   models: ModelStatus[];
   total: number;
   healthy: number;
   unhealthy: number;
+  cycle: CycleStatus;
 }
 
 /** Inserts the results of one probe cycle. */
@@ -59,6 +67,40 @@ export async function recordResults(db: D1Database, results: ProbeResult[]): Pro
 export async function prune(db: D1Database, retentionDays: number): Promise<void> {
   const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
   await db.prepare(`DELETE FROM probe_results WHERE checked_at < ?`).bind(cutoff).run();
+}
+
+/**
+ * Drops probe rows for models no longer in the active set, so models removed,
+ * disabled, or hidden by a runtime visibility change leave the dashboard
+ * promptly instead of lingering for `RETENTION_DAYS`.
+ */
+export async function reconcileModels(db: D1Database, activeIds: string[]): Promise<void> {
+  if (activeIds.length === 0) return; // never wipe everything on an empty cycle
+  const placeholders = activeIds.map(() => "?").join(",");
+  await db
+    .prepare(`DELETE FROM probe_results WHERE model_id NOT IN (${placeholders})`)
+    .bind(...activeIds)
+    .run();
+}
+
+/** Records whether the most recent cron cycle succeeded. */
+export async function setCycleStatus(db: D1Database, status: CycleStatus): Promise<void> {
+  const stmt = db.prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`);
+  await db.batch([
+    stmt.bind("last_cycle_ok", status.ok ? "1" : "0"),
+    stmt.bind("last_cycle_at", status.checkedAt ?? ""),
+    stmt.bind("last_cycle_error", status.error ?? ""),
+  ]);
+}
+
+async function getCycleStatus(db: D1Database): Promise<CycleStatus> {
+  const result = await db.prepare(`SELECT key, value FROM meta`).all<{ key: string; value: string }>();
+  const map = new Map((result.results ?? []).map((r) => [r.key, r.value]));
+  return {
+    ok: map.get("last_cycle_ok") !== "0", // default ok until a failure is recorded
+    checkedAt: map.get("last_cycle_at") || null,
+    error: map.get("last_cycle_error") || null,
+  };
 }
 
 interface RawRow {
@@ -123,5 +165,6 @@ export async function getSnapshot(db: D1Database): Promise<Snapshot> {
   }
 
   const healthy = models.filter((m) => m.latest.ok).length;
-  return { models, total: models.length, healthy, unhealthy: models.length - healthy };
+  const cycle = await getCycleStatus(db);
+  return { models, total: models.length, healthy, unhealthy: models.length - healthy, cycle };
 }

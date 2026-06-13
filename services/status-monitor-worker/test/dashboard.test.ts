@@ -7,6 +7,7 @@ const SNAPSHOT: Snapshot = {
   total: 2,
   healthy: 1,
   unhealthy: 1,
+  cycle: { ok: true, checkedAt: "2026-06-13T00:00:00.000Z", error: null },
   models: [
     {
       modelId: "glm-4.7",
@@ -52,7 +53,22 @@ describe("renderDashboard", () => {
   });
 
   it("shows a placeholder when there are no models", () => {
-    const html = renderDashboard({ total: 0, healthy: 0, unhealthy: 0, models: [] });
+    const html = renderDashboard({
+      total: 0,
+      healthy: 0,
+      unhealthy: 0,
+      cycle: { ok: true, checkedAt: null, error: null },
+      models: [],
+    });
     expect(html).toContain("first cron cycle is pending");
+  });
+
+  it("renders a banner when the last cycle failed", () => {
+    const html = renderDashboard({
+      ...SNAPSHOT,
+      cycle: { ok: false, checkedAt: "2026-06-13T00:05:00.000Z", error: "HTTP 502" },
+    });
+    expect(html).toContain("Last probe cycle failed");
+    expect(html).toContain("HTTP 502");
   });
 });

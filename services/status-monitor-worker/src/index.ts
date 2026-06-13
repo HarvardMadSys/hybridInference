@@ -1,5 +1,5 @@
 import { renderDashboard } from "./dashboard";
-import { getSnapshot, prune, recordResults } from "./db";
+import { getSnapshot, prune, reconcileModels, recordResults, setCycleStatus } from "./db";
 import { loadConfig, type Env } from "./env";
 import { discoverModels } from "./models";
 import { probeModel, type ProbeResult } from "./probe";
@@ -26,16 +26,36 @@ async function mapPool<T, R>(
 /** Probes every discovered model once and records the results in D1. */
 async function runProbeCycle(env: Env): Promise<void> {
   const config = loadConfig(env);
+  const now = () => new Date().toISOString();
   if (!env.PROBER_API_KEY) {
     console.error("PROBER_API_KEY is not set; skipping probe cycle.");
+    await setCycleStatus(env.DB, { ok: false, checkedAt: now(), error: "PROBER_API_KEY not set" });
     return;
   }
-  const targets = await discoverModels(config, env.PROBER_API_KEY);
+
+  // Discovering the catalog is itself a probe of the gateway. If it fails, the
+  // gateway is down or the key is invalid — record that so the dashboard turns
+  // unhealthy instead of serving stale green rows.
+  let targets;
+  try {
+    targets = await discoverModels(config, env.PROBER_API_KEY);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`model discovery failed: ${message}`);
+    await setCycleStatus(env.DB, { ok: false, checkedAt: now(), error: message });
+    return;
+  }
+
   const results: ProbeResult[] = await mapPool(targets, config.maxConcurrency, (target) =>
     probeModel(config, env.PROBER_API_KEY, target),
   );
   await recordResults(env.DB, results);
+  await reconcileModels(
+    env.DB,
+    results.map((r) => r.modelId),
+  );
   await prune(env.DB, config.retentionDays);
+  await setCycleStatus(env.DB, { ok: true, checkedAt: now(), error: null });
   const down = results.filter((r) => !r.ok).length;
   console.log(`probe cycle complete: ${results.length} models, ${down} down`);
 }
@@ -60,12 +80,17 @@ export default {
 
     if (path === "/api/health") {
       const snap = await getSnapshot(env.DB);
-      return json({
-        status: "ok",
-        total: snap.total,
-        healthy: snap.healthy,
-        unhealthy: snap.unhealthy,
-      });
+      return json(
+        {
+          status: snap.cycle.ok ? "ok" : "degraded",
+          total: snap.total,
+          healthy: snap.healthy,
+          unhealthy: snap.unhealthy,
+          lastCycleAt: snap.cycle.checkedAt,
+          lastCycleError: snap.cycle.error,
+        },
+        snap.cycle.ok ? 200 : 503,
+      );
     }
     if (path === "/api/status") {
       return json(await getSnapshot(env.DB));
