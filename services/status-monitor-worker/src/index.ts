@@ -195,7 +195,13 @@ export default {
     }
     if (path === "/") {
       const snap = await getSnapshot(env.DB);
-      return new Response(renderDashboard(snap), {
+      let gatewayHost: string | undefined;
+      try {
+        gatewayHost = new URL(loadConfig(env).gatewayBaseUrl).host;
+      } catch {
+        gatewayHost = undefined;
+      }
+      return new Response(renderDashboard(snap, gatewayHost), {
         headers: { "content-type": "text/html; charset=utf-8" },
       });
     }

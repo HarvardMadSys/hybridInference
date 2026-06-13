@@ -73,7 +73,12 @@ function card(model: Snapshot["models"][number]): string {
 }
 
 /** Renders the full auto-refreshing status dashboard HTML page. */
-export function renderDashboard(snapshot: Snapshot, refreshSeconds = 30): string {
+export function renderDashboard(
+  snapshot: Snapshot,
+  gatewayHost?: string,
+  refreshSeconds = 30,
+): string {
+  const target = gatewayHost ? ` · monitoring <strong>${esc(gatewayHost)}</strong>` : "";
   const cards = snapshot.models.length
     ? snapshot.models.map(card).join("")
     : '<p class="sub">No probe results yet — the first cron cycle is pending.</p>';
@@ -95,7 +100,7 @@ export function renderDashboard(snapshot: Snapshot, refreshSeconds = 30): string
 </head>
 <body>
   <h1>FreeInference Model Status</h1>
-  <div class="sub">Each model is probed with a synthetic request every 5 minutes (Cloudflare cron).</div>
+  <div class="sub">Each model is probed with a synthetic request every 5 minutes (Cloudflare cron)${target}.</div>
   ${banner}
   <div class="summary">
     <span class="pill ok">${snapshot.healthy} up</span>

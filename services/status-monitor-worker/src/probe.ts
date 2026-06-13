@@ -89,7 +89,10 @@ export async function consumeSse(
       sawTerminal = true;
     }
     const delta = choice?.delta ?? {};
-    if (delta.content || delta.reasoning_content || delta.tool_calls) {
+    // An empty tool_calls array ([]) is truthy but carries no output, so only
+    // count a non-empty one as a generated token.
+    const hasToolCalls = Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
+    if (delta.content || delta.reasoning_content || hasToolCalls) {
       if (ttftMs === null) {
         ttftMs = Date.now() - startedAt;
       }
