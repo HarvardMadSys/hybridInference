@@ -217,6 +217,20 @@ async def test_identity_enabled_defaults_true_without_singleton() -> None:
         assert await adapter._identity_enabled() is True
 
 
+@pytest.mark.asyncio
+async def test_identity_enabled_defaults_true_on_store_error() -> None:
+    # An unexpected error (e.g. DB outage) when reading the setting must not
+    # break inference — fall back to the default-on behaviour.
+    adapter = KimiCodingAdapter(_make_cfg())
+    rs = MagicMock()
+    rs.get_bool = AsyncMock(side_effect=ConnectionError("db down"))
+    with patch(
+        "serving.config.runtime_settings.get_runtime_settings_instance",
+        return_value=rs,
+    ):
+        assert await adapter._identity_enabled() is True
+
+
 def test_registry_has_kimi_coding_toggle() -> None:
     from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 

@@ -24,10 +24,14 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
+from serving.utils.logging import get_logger
+
 from .openai_compat import OpenAICompatAdapter
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+logger = get_logger(__name__)
 
 # Coding-tool identity expected by the Kimi coding plan.
 _USER_AGENT = "claude-code/0.1.0"
@@ -49,8 +53,13 @@ class KimiCodingAdapter(OpenAICompatAdapter):
             from serving.config.runtime_settings import get_runtime_settings_instance
 
             return await get_runtime_settings_instance().get_bool(_SETTING_KEY)
-        except (RuntimeError, KeyError):
-            # Singleton not initialized or key missing — keep default behaviour.
+        except Exception:
+            # Singleton not initialized, key missing, or DB/store error — never
+            # let a settings lookup break inference; keep default behaviour.
+            logger.warning(
+                "kimi_identity_toggle_read_failed",
+                extra={"event": "kimi_identity_toggle_read_failed"},
+            )
             return True
 
     async def chat_completion(
