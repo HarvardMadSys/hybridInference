@@ -76,6 +76,40 @@ async def test_discover_targets_falls_back_on_error() -> None:
         assert await discover_targets(config, client) is None  # signals static fallback
 
 
+async def test_probe_once_skips_recording_on_uniform_401(tmp_path: Path) -> None:
+    # Catalog loads (anonymous), but every probe 401s => credential failure, not
+    # a dozen false outages. The store must not record the all-down results.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/models":
+            return httpx.Response(200, json={"data": [{"id": "glm-4.7"}]})
+        return httpx.Response(401, text="unauthorized")
+
+    store = StatusStore(history_size=5, state_path=str(tmp_path / "state.json"))
+    config = AppConfig(
+        settings=Settings(),
+        gateway=GatewayConfig(base_url="http://gw:8080", api_key="bad"),
+    )
+    transport = httpx.MockTransport(handler)
+    # probe_once builds its own client, so patch discovery to use our transport
+    # by routing through a monkeypatched AsyncClient is overkill; instead probe
+    # via the public path and assert nothing was recorded.
+    import status_monitor.scheduler as sched
+
+    orig = httpx.AsyncClient
+
+    def client_factory(*args, **kwargs):  # noqa: ANN002, ANN003
+        kwargs.pop("timeout", None)
+        return orig(transport=transport)
+
+    sched.httpx.AsyncClient = client_factory  # type: ignore[assignment]
+    try:
+        await sched.probe_once(config, store)
+    finally:
+        sched.httpx.AsyncClient = orig  # type: ignore[assignment]
+
+    assert store.snapshot()["total"] == 0
+
+
 async def test_discover_targets_disabled_returns_none() -> None:
     config = AppConfig(gateway=GatewayConfig(discover_models=False))
     async with httpx.AsyncClient() as client:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -202,6 +203,20 @@ async def probe_once(config: AppConfig, store: StatusStore) -> None:
                 )
 
         results = await asyncio.gather(*(probe_limited(target) for target in targets))
+
+        # An invalid/expired key is treated as anonymous by the gateway, so the
+        # catalog still loads but every probe 401s. Report a credential failure
+        # rather than recording every model as a false outage (keep prior state).
+        auth_failures = [r for r in results if not r.ok and r.error and "401" in r.error]
+        if results and len(auth_failures) == len(results):
+            logger.error(
+                "All %d probes returned 401; PROBER_API_KEY appears invalid. "
+                "Skipping record to avoid false outages.",
+                len(results),
+            )
+            await asyncio.to_thread(store.save)
+            return
+
     for result in results:
         store.record(result)
         logger.info(
@@ -220,10 +235,13 @@ async def run_scheduler(config: AppConfig, store: StatusStore) -> None:
     interval = config.gateway.e2e_interval
     logger.info("Starting probe scheduler (interval=%ss).", interval)
     while True:
+        start = time.monotonic()
         try:
             await probe_once(config, store)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - never let the loop die on a probe error
             logger.exception("Probe cycle failed; will retry next interval.")
-        await asyncio.sleep(interval)
+        # Sleep only the remainder so probe starts keep to the configured
+        # interval rather than drifting by each cycle's duration.
+        await asyncio.sleep(max(0.0, interval - (time.monotonic() - start)))

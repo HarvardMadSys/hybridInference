@@ -97,18 +97,20 @@ export async function reconcileModels(db: D1Database, activeIds: string[]): Prom
  * would exceed the gateway concurrency cap).
  *
  * The lock value is `"{expiryMs}:{token}"`: the expiry lets a later invocation
- * take over a crashed/overrun cycle after `ttlMs`, and the unique token lets
- * {@link releaseCycleLock} release only the lock this cycle actually owns.
+ * take over a crashed cycle after `ttlMs`, while a live cycle keeps extending it
+ * via {@link renewCycleLock}. The unique token identifies this cycle so renew
+ * and {@link releaseCycleLock} only ever touch the lock this cycle owns.
  *
- * @returns The owned lock value to pass to {@link releaseCycleLock}, or `null`
- *   if another cycle holds an unexpired lock.
+ * @returns The owned token to pass to renew/release, or `null` if another cycle
+ *   holds an unexpired lock.
  */
 export async function acquireCycleLock(
   db: D1Database,
   nowMs: number,
   ttlMs: number,
 ): Promise<string | null> {
-  const value = `${nowMs + ttlMs}:${crypto.randomUUID()}`;
+  const token = crypto.randomUUID();
+  const value = `${nowMs + ttlMs}:${token}`;
   // Atomic: insert if absent, or take over only if the existing lock expired.
   // CAST stops at the first non-digit, so it compares the expiry prefix.
   const result = await db
@@ -119,14 +121,31 @@ export async function acquireCycleLock(
     )
     .bind(value, value, nowMs)
     .run();
-  return (result.meta.changes ?? 0) > 0 ? value : null;
+  return (result.meta.changes ?? 0) > 0 ? token : null;
+}
+
+const LOCK_TOKEN_SQL = `substr(value, instr(value, ':') + 1)`;
+
+/** Extends the lock's expiry, but only while this cycle still owns it. */
+export async function renewCycleLock(
+  db: D1Database,
+  token: string,
+  nowMs: number,
+  ttlMs: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE meta SET value = ? WHERE key = 'cycle_lock' AND ${LOCK_TOKEN_SQL} = ?`,
+    )
+    .bind(`${nowMs + ttlMs}:${token}`, token)
+    .run();
 }
 
 /** Releases the single-cycle lock, but only if this cycle still owns it. */
-export async function releaseCycleLock(db: D1Database, lockValue: string): Promise<void> {
+export async function releaseCycleLock(db: D1Database, token: string): Promise<void> {
   await db
-    .prepare(`DELETE FROM meta WHERE key = 'cycle_lock' AND value = ?`)
-    .bind(lockValue)
+    .prepare(`DELETE FROM meta WHERE key = 'cycle_lock' AND ${LOCK_TOKEN_SQL} = ?`)
+    .bind(token)
     .run();
 }
 

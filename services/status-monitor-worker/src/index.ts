@@ -6,15 +6,18 @@ import {
   reconcileModels,
   recordResults,
   releaseCycleLock,
+  renewCycleLock,
   setCycleStatus,
 } from "./db";
 import { loadConfig, type Env } from "./env";
 import { discoverModels } from "./models";
 import { probeModel, type ProbeResult } from "./probe";
 
-// Safety-net expiry for the single-cycle lock; well above a healthy cycle but
-// short enough that a crashed invocation can't wedge probing for long.
-const CYCLE_LOCK_TTL_MS = 15 * 60 * 1000;
+// Lock lease TTL. A live cycle renews well within this window; only a crashed
+// invocation lets it lapse so a successor can take over.
+const CYCLE_LOCK_TTL_MS = 10 * 60 * 1000;
+// Renew comfortably inside the TTL so a slow-but-live cycle never looks expired.
+const CYCLE_LOCK_RENEW_MS = 2 * 60 * 1000;
 
 /** Runs `worker` over `items` with at most `limit` in flight at once. */
 async function mapPool<T, R>(
@@ -52,6 +55,17 @@ async function runProbeCycle(env: Env): Promise<void> {
     console.log("previous probe cycle still running; skipping this invocation.");
     return;
   }
+
+  // Keep extending the lease while this cycle runs, so a slow-but-live cycle is
+  // never seen as expired and taken over (which would overlap the pools).
+  let renewing = true;
+  const heartbeat = (async () => {
+    while (renewing) {
+      await new Promise((r) => setTimeout(r, CYCLE_LOCK_RENEW_MS));
+      if (!renewing) break;
+      await renewCycleLock(env.DB, lock, Date.now(), CYCLE_LOCK_TTL_MS);
+    }
+  })();
 
   try {
     // Discovering the catalog is itself a probe of the gateway. If it fails, the
@@ -94,6 +108,8 @@ async function runProbeCycle(env: Env): Promise<void> {
     const down = results.filter((r) => !r.ok).length;
     console.log(`probe cycle complete: ${results.length} models, ${down} down`);
   } finally {
+    renewing = false;
+    await heartbeat;
     await releaseCycleLock(env.DB, lock);
   }
 }
