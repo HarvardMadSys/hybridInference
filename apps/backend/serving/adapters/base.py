@@ -144,6 +144,20 @@ class ModelConfig:
     # `kind: openrouter[<slug>]`. None for bare `kind: openrouter`.
     openrouter_pinned_provider: str | None = None
 
+    def __post_init__(self) -> None:
+        """Normalize never-None collection fields seeded with an explicit None.
+
+        Config-merge layers (e.g. registry top_cfg inheritance) can pass an
+        explicit ``None`` for a dict field. ``@dataclass`` ``default_factory``
+        only fires when the argument is *omitted*, so the ``None`` is stored
+        verbatim and later crashes spread-unpacks like ``{**extra_body}`` with
+        ``TypeError: 'NoneType' object is not a mapping``. Coerce the dict-typed
+        request/transport fields back to ``{}`` here as a last line of defense.
+        """
+        for _name in ("extra_body", "extra_headers", "extra_query", "route_metadata"):
+            if getattr(self, _name) is None:
+                setattr(self, _name, {})
+
 
 class BaseAdapter(ABC):
     """Abstract base class for LLM provider adapters."""

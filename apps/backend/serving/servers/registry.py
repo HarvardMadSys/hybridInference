@@ -397,11 +397,13 @@ def register_from_models_yaml(
                     adapter_cfg["provider_model_id"] = expand_env(route_provider_model_id)
 
                 # Route-level request body defaults extend or override model defaults.
+                # Always write back (even when empty) so a None inherited from
+                # top_cfg is normalized to {}; ModelConfig stores an explicit
+                # None as-is, which then breaks `{**extra_body}` at request time.
                 extra_body = dict(adapter_cfg.get("extra_body") or {})
                 if isinstance(r.get("extra_body"), dict):
                     extra_body.update(r["extra_body"])
-                if extra_body:
-                    adapter_cfg["extra_body"] = extra_body
+                adapter_cfg["extra_body"] = extra_body
 
                 # Route-level pricing override (key for cost-aware routing in Phase 2)
                 if "pricing" in r:
