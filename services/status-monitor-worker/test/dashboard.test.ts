@@ -142,6 +142,16 @@ describe("seriesPayload", () => {
       { ok: 0, t: "2026-06-13T00:00:00.000Z", latencyMs: 100, ttftMs: null, throughputTps: 50 },
     ]);
   });
+
+  it("preserves a model whose id is __proto__ (no prototype-setter swallow)", () => {
+    const payload = seriesPayload([
+      { modelId: "__proto__", latest: row(40), history: [row(40)], spark: [], uptimeRatio: 1 },
+    ]);
+    expect(Object.keys(payload)).toEqual(["__proto__"]);
+    // Survives serialization, which is how it reaches the client.
+    const json = JSON.stringify(payload);
+    expect(JSON.parse(json)["__proto__"]).toHaveLength(1);
+  });
 });
 
 describe("ttftSparkline", () => {

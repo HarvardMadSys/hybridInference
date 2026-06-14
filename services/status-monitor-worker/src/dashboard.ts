@@ -147,7 +147,9 @@ export interface SeriesPoint {
 
 /** Maps each model to its retained history as a compact, JSON-friendly series. */
 export function seriesPayload(models: Snapshot["models"]): Record<string, SeriesPoint[]> {
-  const out: Record<string, SeriesPoint[]> = {};
+  // Prototype-safe map: a model literally named "__proto__" would otherwise hit
+  // the prototype setter and be dropped from the serialized payload.
+  const out: Record<string, SeriesPoint[]> = Object.create(null);
   for (const m of models) {
     out[m.modelId] = m.history.map((r) => ({
       ok: r.ok ? 1 : 0,
@@ -170,9 +172,13 @@ function clientScript(refreshMs: number): string {
   return `
 (function () {
   var data = {};
-  try { data = JSON.parse(document.getElementById("model-data").textContent); } catch (e) {}
+  var modelDataEl = document.getElementById("model-data");
+  if (modelDataEl) {
+    try { data = JSON.parse(modelDataEl.textContent); } catch (e) {}
+  }
   var overlay = document.getElementById("zoom");
   var timer = null;
+  var activeTrigger = null;
   function scheduleRefresh() { timer = setTimeout(function () { location.reload(); }, ${refreshMs}); }
   function cancelRefresh() { if (timer) { clearTimeout(timer); timer = null; } }
   scheduleRefresh();
@@ -200,12 +206,27 @@ function clientScript(refreshMs: number): string {
     function x(i) { return PADL + (n > 1 ? i / (n - 1) : 0) * (W - PADL - PADR); }
     function y(v) { return PADT + (1 - (v - min) / (max - min)) * (H - PADT - PADB); }
 
-    // Break the line wherever the series skips a probe (gap in row index).
-    var segs = [], cur = [], prev = null;
+    // Self-calibrating gap threshold: break the line across an unusually long
+    // pause between samples (e.g. a skipped cron cycle), derived from the median
+    // interval between consecutive probes.
+    var deltas = [];
+    for (var d = 1; d < rows.length; d++) {
+      var ta = Date.parse(rows[d - 1].t), tb = Date.parse(rows[d].t);
+      if (isFinite(ta) && isFinite(tb) && tb > ta) deltas.push(tb - ta);
+    }
+    deltas.sort(function (a, b) { return a - b; });
+    var med = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 0;
+    var gapMs = med ? med * 2.5 : Infinity;
+
+    // Break the line where the series skips probes (gap in row index) or where
+    // too much wall-clock time elapsed between adjacent plotted points.
+    var segs = [], cur = [], prev = null, prevT = null;
     for (var k = 0; k < pts.length; k++) {
       var p = pts[k];
-      if (prev != null && p.i !== prev + 1) { if (cur.length) segs.push(cur); cur = []; }
-      cur.push(p); prev = p.i;
+      var pT = Date.parse(p.t);
+      var jumped = prev != null && (p.i !== prev + 1 || (prevT != null && isFinite(pT) && pT - prevT > gapMs));
+      if (jumped) { if (cur.length) segs.push(cur); cur = []; }
+      cur.push(p); prev = p.i; prevT = isFinite(pT) ? pT : prevT;
     }
     if (cur.length) segs.push(cur);
 
@@ -230,15 +251,20 @@ function clientScript(refreshMs: number): string {
     if (present.length) {
       var mn = Math.min.apply(null, present), mx = Math.max.apply(null, present);
       var avg = present.reduce(function (a, b) { return a + b; }, 0) / present.length;
-      meta = '<div class="chart-meta"><span>latest ' + round(present[present.length - 1], 2) + " " + unit +
+      // "latest" reflects the most recent sample, not the last non-null value —
+      // a failed probe shows "—" rather than a stale earlier reading.
+      var lastRaw = rows.length ? rows[rows.length - 1][key] : null;
+      var lastStr = lastRaw != null && isFinite(lastRaw) ? round(lastRaw, 2) + " " + unit : "\\u2014";
+      meta = '<div class="chart-meta"><span>latest ' + lastStr +
         '</span><span>min ' + round(mn, 1) + " \\u00B7 avg " + round(avg, 1) + " \\u00B7 max " + round(mx, 1) + " " + unit + "</span></div>";
     }
     return '<div class="chart-block"><h3>' + escHtml(label) + '<span class="accent">' + unit + '</span></h3>' + meta + lineChart(rows, key, color, unit) + "</div>";
   }
 
-  function openZoom(modelId) {
+  function openZoom(modelId, trigger) {
     var rows = data[modelId];
     if (!rows) return;
+    activeTrigger = trigger;
     var latest = rows.length ? rows[rows.length - 1] : null;
     var okCount = 0;
     for (var i = 0; i < rows.length; i++) if (rows[i].ok) okCount++;
@@ -269,18 +295,23 @@ function clientScript(refreshMs: number): string {
     overlay.innerHTML = "";
     cancelRefresh();
     scheduleRefresh();
+    // Restore focus to the card that opened the overlay (WCAG keyboard nav).
+    if (activeTrigger) {
+      activeTrigger.focus();
+      activeTrigger = null;
+    }
   }
 
   var grid = document.querySelector(".grid");
   if (grid) {
     grid.addEventListener("click", function (e) {
       var card = e.target.closest(".card");
-      if (card && card.dataset.model) openZoom(card.dataset.model);
+      if (card && card.dataset.model) openZoom(card.dataset.model, card);
     });
     grid.addEventListener("keydown", function (e) {
       if (e.key !== "Enter" && e.key !== " ") return;
       var card = e.target.closest(".card");
-      if (card && card.dataset.model) { e.preventDefault(); openZoom(card.dataset.model); }
+      if (card && card.dataset.model) { e.preventDefault(); openZoom(card.dataset.model, card); }
     });
   }
   overlay.addEventListener("click", function (e) { if (e.target === overlay) closeZoom(); });
