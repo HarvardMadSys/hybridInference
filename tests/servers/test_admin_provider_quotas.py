@@ -16,6 +16,7 @@ from serving.admin.provider_quotas import (
     _next_reset,
     _parse_iso,
     fetch_chutes,
+    fetch_kimi,
     fetch_minimax,
     fetch_ollama,
     fetch_zai,
@@ -1030,6 +1031,96 @@ class TestFetchMinimax:
         assert result.usages[0].limit == 4500.0
 
 
+class TestFetchKimi:
+    @pytest.mark.asyncio
+    async def test_not_configured_when_key_missing(self, monkeypatch):
+        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        results = await fetch_kimi()
+        assert len(results) == 1
+        result = results[0]
+        assert result.ok is False
+        assert result.error == "not_configured"
+        assert result.name == "kimi"
+
+    @pytest.mark.asyncio
+    async def test_success_parses_summary_and_limits(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        reset_iso = "2026-06-21T05:24:18Z"
+        payload = {
+            "usage": {"limit": 10000, "remaining": 4000, "reset_at": reset_iso},
+            "limits": [
+                {
+                    "detail": {"limit": 1200, "used": 300},
+                    "window": {"duration": 300, "timeUnit": "MINUTE"},
+                },
+                {
+                    "name": "Daily limit",
+                    "detail": {"limit": 5000, "remaining": 5000},
+                    "window": {"duration": 1, "timeUnit": "DAY"},
+                },
+            ],
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        result = results[0]
+        assert result.ok is True
+        assert result.name == "kimi"
+        assert len(result.usages) == 3
+
+        summary = result.usages[0]
+        assert summary.label == "Weekly limit"
+        assert summary.used == 6000.0  # limit - remaining
+        assert summary.limit == 10000.0
+        assert summary.unit == "requests"
+        assert summary.reset_at == datetime(2026, 6, 21, 5, 24, 18, tzinfo=timezone.utc)
+
+        five_hour = result.usages[1]
+        assert five_hour.label == "5h limit"  # 300 minutes -> 5h
+        assert five_hour.used == 300.0
+        assert five_hour.limit == 1200.0
+
+        daily = result.usages[2]
+        assert daily.label == "Daily limit"
+        assert daily.used == 0.0  # limit - remaining
+        assert daily.limit == 5000.0
+
+    @pytest.mark.asyncio
+    async def test_auth_failed_on_401(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=401),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is False
+        assert results[0].error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_no_quota_api_on_404(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=404),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is False
+        assert results[0].error == "no_quota_api"
+
+    @pytest.mark.asyncio
+    async def test_parse_error_on_empty_payload(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data={"unrelated": "junk"}),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is False
+        assert results[0].error == "parse_error"
+
+
 class TestFetchOllama:
     @pytest.mark.asyncio
     async def test_not_configured_when_cookie_missing(self, monkeypatch):
@@ -1113,13 +1204,14 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 
         results = await gather_all()
-        assert len(results) == 5
+        assert len(results) == 6
         names = {r.name for r in results}
-        assert names == {"chutes", "zai", "minimax", "ollama", "featherless"}
+        assert names == {"chutes", "zai", "minimax", "kimi", "ollama", "featherless"}
         assert all(r.error == "not_configured" for r in results)
 
     @pytest.mark.asyncio
@@ -1132,11 +1224,12 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 
         results = await gather_all()
-        assert len(results) == 5
+        assert len(results) == 6
         chutes = next(r for r in results if r.name == "chutes")
         assert chutes.ok is False
         assert chutes.error == "unexpected"
@@ -1178,6 +1271,7 @@ class TestProviderQuotasRoute:
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 
@@ -1188,11 +1282,12 @@ class TestProviderQuotasRoute:
         assert resp.status_code == 200
         body = resp.json()
         assert "generated_at" in body
-        assert len(body["providers"]) == 5
+        assert len(body["providers"]) == 6
         assert {p["name"] for p in body["providers"]} == {
             "chutes",
             "zai",
             "minimax",
+            "kimi",
             "ollama",
             "featherless",
         }

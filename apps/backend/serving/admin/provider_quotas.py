@@ -932,6 +932,204 @@ def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
     return usages
 
 
+def _kimi_usages_url() -> str:
+    """Resolve the Kimi coding-plan usage endpoint, honoring ``KIMI_CODING_BASE_URL``.
+
+    The base already includes the ``/coding/v1`` prefix (e.g.
+    ``https://api.kimi.com/coding/v1``), matching the value used for inference
+    requests. The official Kimi Code CLI fetches quota from ``{base}/usages``.
+    """
+    base = (os.getenv("KIMI_CODING_BASE_URL") or "https://api.kimi.com/coding/v1").rstrip("/")
+    return f"{base}/usages"
+
+
+def _kimi_reset_at(data: dict[str, Any]) -> datetime | None:
+    """Extract a reset time from a Kimi usage entry.
+
+    Prefers absolute ISO timestamps (``reset_at``/``resetAt``/…); falls back to
+    a relative ``reset_in``/``ttl`` count of seconds added to *now*.
+    """
+    for key in ("reset_at", "resetAt", "reset_time", "resetTime"):
+        parsed = _parse_iso(data.get(key))
+        if parsed is not None:
+            return parsed
+    for key in ("reset_in", "resetIn", "ttl"):
+        seconds = _as_float(data.get(key))
+        if seconds is not None and seconds > 0:
+            return _now() + timedelta(seconds=seconds)
+    return None
+
+
+def _kimi_limit_label(
+    item: dict[str, Any],
+    detail: dict[str, Any],
+    window: dict[str, Any],
+    idx: int,
+) -> str:
+    """Build a human-readable label for a Kimi ``limits`` entry.
+
+    Mirrors the Kimi CLI: prefer an explicit name/title/scope, otherwise derive
+    one from the window duration (e.g. 300 MINUTE -> "5h limit").
+    """
+    for key in ("name", "title", "scope"):
+        val = item.get(key) or detail.get(key)
+        if val:
+            return str(val)
+
+    duration = _as_float(window.get("duration") or item.get("duration") or detail.get("duration"))
+    time_unit = str(window.get("timeUnit") or item.get("timeUnit") or detail.get("timeUnit") or "")
+    if duration:
+        amount = int(duration)
+        if "MINUTE" in time_unit:
+            if amount >= 60 and amount % 60 == 0:
+                return f"{amount // 60}h limit"
+            return f"{amount}m limit"
+        if "HOUR" in time_unit:
+            return f"{amount}h limit"
+        if "DAY" in time_unit:
+            return f"{amount}d limit"
+        return f"{amount}s limit"
+    return f"Limit #{idx + 1}"
+
+
+def _kimi_usage_row(data: dict[str, Any], default_label: str) -> ProviderQuotaUsage | None:
+    """Parse a single Kimi usage object into a ``ProviderQuotaUsage``.
+
+    Kimi reports request counts. ``used`` is derived from ``limit - remaining``
+    when not given directly. Returns None when neither used nor limit is present.
+    """
+    limit = _as_float(data.get("limit"))
+    used = _as_float(data.get("used"))
+    if used is None:
+        remaining = _as_float(data.get("remaining"))
+        if remaining is not None and limit is not None:
+            used = max(0.0, limit - remaining)
+    if used is None and limit is None:
+        return None
+    label = str(data.get("name") or data.get("title") or default_label)
+    return ProviderQuotaUsage(
+        label=label,
+        used=used,
+        limit=limit,
+        unit="requests",
+        reset_at=_kimi_reset_at(data),
+    )
+
+
+def _parse_kimi_usage(payload: dict[str, Any]) -> list[ProviderQuotaUsage]:
+    """Parse the Kimi ``/usages`` payload into a list of usages.
+
+    The payload has an optional top-level ``usage`` summary plus a ``limits``
+    array; each limit may nest its figures under ``detail`` and its period
+    under ``window``.
+    """
+    usages: list[ProviderQuotaUsage] = []
+
+    usage = payload.get("usage")
+    if isinstance(usage, dict):
+        row = _kimi_usage_row(usage, "Weekly limit")
+        if row is not None:
+            usages.append(row)
+
+    limits = payload.get("limits")
+    if isinstance(limits, list):
+        for idx, item in enumerate(limits):
+            if not isinstance(item, dict):
+                continue
+            detail = item.get("detail")
+            detail = detail if isinstance(detail, dict) else item
+            window = item.get("window")
+            window = window if isinstance(window, dict) else {}
+            label = _kimi_limit_label(item, detail, window, idx)
+            row = _kimi_usage_row(detail, label)
+            if row is not None:
+                usages.append(row)
+
+    return usages
+
+
+async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
+    """Fetch coding-plan quota for a single Kimi API key."""
+    url = _kimi_usages_url()
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("kimi", "Kimi", key, "auth_failed")
+            # The usage endpoint exists only for coding-plan keys; a plain
+            # Moonshot API key gets a 404 here.
+            if resp.status == 404:
+                return _err("kimi", "Kimi", key, "no_quota_api")
+            if resp.status >= 400:
+                return _err("kimi", "Kimi", key, "unexpected")
+            try:
+                data: dict[str, Any] = await resp.json()
+            except Exception:
+                return _err("kimi", "Kimi", key, "parse_error")
+    except asyncio.TimeoutError:
+        return _err("kimi", "Kimi", key, "timeout")
+    except aiohttp.ClientError:
+        return _err("kimi", "Kimi", key, "unexpected")
+    except Exception:
+        logger.exception("fetch_kimi: unexpected error")
+        return _err("kimi", "Kimi", key, "unexpected")
+
+    if not isinstance(data, dict):
+        return _err("kimi", "Kimi", key, "parse_error")
+    usages = _parse_kimi_usage(data)
+    if not usages:
+        return _err("kimi", "Kimi", key, "parse_error")
+
+    return ProviderQuotaResult(
+        name="kimi",
+        display_name="Kimi",
+        key_configured=True,
+        key_masked=_mask_key(key),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+async def fetch_kimi() -> list[ProviderQuotaResult]:
+    """Fetch coding-plan quota from Kimi for all configured API keys.
+
+    Endpoint discovered from the official Kimi Code CLI ``/usage`` command,
+    which queries ``{base}/usages`` with ``Authorization: Bearer`` auth.
+    """
+    keys = _discover_env_keys("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY")
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="kimi",
+                display_name="Kimi",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    results = await asyncio.gather(
+        *[_fetch_kimi_for_key(k) for _, k in keys],
+        return_exceptions=True,
+    )
+
+    return _process_multi_key_results("kimi", "Kimi", keys, results)
+
+
 async def gather_all() -> list[ProviderQuotaResult]:
     """Run all provider fetchers in parallel; never raise.
 
@@ -943,6 +1141,7 @@ async def gather_all() -> list[ProviderQuotaResult]:
         ("chutes", "Chutes", fetch_chutes),
         ("zai", "ZAI", fetch_zai),
         ("minimax", "MiniMax", fetch_minimax),
+        ("kimi", "Kimi", fetch_kimi),
         ("ollama", "Ollama Cloud", fetch_ollama),
         ("featherless", "Featherless", fetch_featherless),
     ]

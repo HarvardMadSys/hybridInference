@@ -643,7 +643,9 @@ class ProviderQuotaUsage(BaseModel):
 class ProviderQuotaResult(BaseModel):
     """Result of querying a single upstream provider's quota."""
 
-    name: str = Field(..., description="Lowercase identifier: chutes | zai | minimax | ollama")
+    name: str = Field(
+        ..., description="Lowercase identifier: chutes | zai | minimax | kimi | ollama"
+    )
     display_name: str = Field(..., description="Human-readable name")
     key_index: int | None = Field(
         None,
