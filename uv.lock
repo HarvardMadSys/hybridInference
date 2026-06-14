@@ -1054,7 +1054,7 @@ requires-dist = [
     { name = "python-ulid", specifier = ">=2.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32.5" },
-    { name = "routewise", git = "https://github.com/realtmxi/RouteWise.git?rev=6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942" },
+    { name = "routewise", git = "https://github.com/HarvardMadSys/RouteWise.git?rev=6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942" },
     { name = "tabulate", specifier = ">=0.9.0" },
     { name = "tiktoken", specifier = ">=0.3.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.27.0" },
@@ -2226,7 +2226,7 @@ wheels = [
 [[package]]
 name = "routewise"
 version = "0.1.0"
-source = { git = "https://github.com/realtmxi/RouteWise.git?rev=6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942#6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942" }
+source = { git = "https://github.com/HarvardMadSys/RouteWise.git?rev=6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942#6c42bf0e2c5ea7559a069bb14cf550d2f6a5d942" }
 
 [[package]]
 name = "ruff"
