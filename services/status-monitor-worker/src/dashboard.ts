@@ -207,19 +207,19 @@ function clientScript(refreshMs: number): string {
     function y(v) { return PADT + (1 - (v - min) / (max - min)) * (H - PADT - PADB); }
 
     // Self-calibrating gap threshold: break the line across an unusually long
-    // pause between samples (e.g. a skipped cron cycle), derived from the median
-    // interval between consecutive probes. Parse each timestamp once and reuse.
+    // pause between samples (e.g. a skipped cron cycle). The baseline is the
+    // SHORTEST observed interval — the cadence floor (probes can't run faster
+    // than the cron), which a large gap cannot inflate the way it can a median.
+    // Parse each timestamp once and reuse.
     var times = rows.map(function (r) { return Date.parse(r.t); });
-    var deltas = [];
+    var base = Infinity;
     for (var d = 1; d < rows.length; d++) {
       var ta = times[d - 1], tb = times[d];
-      if (isFinite(ta) && isFinite(tb) && tb > ta) deltas.push(tb - ta);
+      if (isFinite(ta) && isFinite(tb) && tb > ta && tb - ta < base) base = tb - ta;
     }
-    deltas.sort(function (a, b) { return a - b; });
-    var med = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 0;
     // 1.5x sits between a normal interval (1x) and one skipped cron cycle (2x),
     // so a single missed probe already shows as a gap while jitter does not.
-    var gapMs = med ? med * 1.5 : Infinity;
+    var gapMs = isFinite(base) ? base * 1.5 : Infinity;
 
     // Break the line where the series skips probes (gap in row index) or where
     // too much wall-clock time elapsed between adjacent plotted points.
