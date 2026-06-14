@@ -1,6 +1,9 @@
 """Unit tests for user-facing error scrubbing."""
 
+import aiohttp
 import pytest
+from multidict import CIMultiDict, CIMultiDictProxy
+from yarl import URL
 
 from serving.exceptions import (
     AuthenticationError,
@@ -8,7 +11,31 @@ from serving.exceptions import (
     QuotaExceededError,
     UserFacingError,
     scrub_error_for_user,
+    scrub_provider_identity,
+    user_safe_upstream_error,
 )
+
+
+def _make_client_response_error(
+    status: int,
+    *,
+    message: str = "Service Unavailable",
+    url: str = "https://api.deepseek.com/v1/chat/completions",
+    error_body: str | None = None,
+) -> aiohttp.ClientResponseError:
+    """Build a realistic aiohttp.ClientResponseError for tests."""
+    yarl_url = URL(url)
+    req_info = aiohttp.RequestInfo(yarl_url, "POST", CIMultiDictProxy(CIMultiDict()), yarl_url)
+    exc = aiohttp.ClientResponseError(
+        request_info=req_info,
+        history=(),
+        status=status,
+        message=message,
+    )
+    if error_body is not None:
+        exc.error_body = error_body  # type: ignore[attr-defined]
+    return exc
+
 
 # Realistic provider error bodies (must NEVER appear in user-facing output).
 PROVIDER_ERROR_SAMPLES = [
@@ -95,3 +122,88 @@ def test_provider_pin_error_is_scrubbed():
     assert "anthropic" not in msg.lower()
     assert "claude" not in msg.lower()
     assert "(request_id: req_p)" in msg
+
+
+# ----------------------------------------------------------------------
+# Upstream message surfacing (hide provider identity, keep the message)
+# ----------------------------------------------------------------------
+
+
+def test_upstream_json_body_message_is_surfaced():
+    """A genuine upstream error surfaces the provider's human-readable message."""
+    exc = _make_client_response_error(
+        402,
+        message="Payment Required",
+        url="https://api.deepseek.com/v1/chat/completions",
+        error_body='{"error": {"message": "Insufficient Balance", "type": "quota"}}',
+    )
+    msg = scrub_error_for_user(exc, "req_u", 402)
+    assert "Insufficient Balance" in msg
+    assert "(request_id: req_u)" in msg
+    # Provider identity must not leak.
+    for forbidden in FORBIDDEN_SUBSTRINGS:
+        assert forbidden not in msg.lower(), msg
+
+
+def test_upstream_error_without_body_drops_url():
+    """A ClientResponseError with no body surfaces its message but never the URL."""
+    exc = _make_client_response_error(
+        503,
+        message="Service Unavailable",
+        url="https://api.anthropic.com/v1/messages",
+    )
+    msg = scrub_error_for_user(exc, "req_v", 503)
+    assert msg.startswith("Service Unavailable")
+    assert "http" not in msg.lower()
+    assert "anthropic" not in msg.lower()
+    assert "api." not in msg.lower()
+
+
+def test_internal_exception_stays_generic():
+    """Non-upstream exceptions (no error_body, not ClientResponseError) stay generic."""
+    msg = scrub_error_for_user(RuntimeError("boom in our own code"), "req_w", 500)
+    assert msg.startswith("Internal server error")
+    assert "boom" not in msg.lower()
+
+
+def test_streaming_db_format_is_unwrapped():
+    """The persisted streaming format ('... | upstream_body=<json>') is unwrapped."""
+    raw = (
+        "503, message='Service Unavailable', "
+        "url='https://api.deepseek.com/v1/chat/completions' "
+        '| upstream_body={"error": {"message": "Model is overloaded"}}'
+    )
+    out = user_safe_upstream_error(raw)
+    assert out == "Model is overloaded"
+
+
+def test_claude_wrapper_is_unwrapped():
+    out = user_safe_upstream_error("Upstream API error: rate limit reached for this key")
+    assert out == "rate limit reached for this key"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "Connection refused to https://api.anthropic.com/v1/messages",
+        "openrouter upstream timeout from api.openrouter.ai",
+        'OpenAI error: {"detail": "model overloaded"}',
+        "503, message='busy', url='https://api.deepseek.com/v1'",
+    ],
+)
+def test_scrub_provider_identity_removes_all_identity_tokens(raw):
+    out = scrub_provider_identity(raw)
+    lowered = out.lower()
+    for forbidden in FORBIDDEN_SUBSTRINGS:
+        assert forbidden not in lowered, f"{forbidden!r} leaked in {out!r}"
+
+
+def test_user_safe_upstream_error_returns_none_for_blank():
+    assert user_safe_upstream_error(None) is None
+    assert user_safe_upstream_error("") is None
+
+
+def test_user_safe_upstream_error_truncates_long_messages():
+    out = user_safe_upstream_error("x" * 5000)
+    assert out is not None
+    assert len(out) <= 500

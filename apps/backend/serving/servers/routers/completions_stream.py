@@ -27,7 +27,6 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import json
-import re
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
@@ -39,6 +38,7 @@ from serving.servers.routers.routing_info import RoutingInfo, merge_adapter_rout
 from serving.storage.utils import json_safe
 from serving.stream import make_role_chunk
 from serving.utils import context as req_ctx
+from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
@@ -83,27 +83,6 @@ def _extract_exception_status_code(exc: BaseException, default: int = 500) -> in
         return int(status_code)
     except (TypeError, ValueError):
         return default
-
-
-def _format_exception_for_db(exc: BaseException, max_len: int = 4000) -> str:
-    """Return capped, redacted operator-facing error text for api_logs.error."""
-    exc_text = str(exc)
-    upstream_body = getattr(exc, "error_body", None)
-    if upstream_body is None:
-        value = exc_text
-    else:
-        body_text = upstream_body if isinstance(upstream_body, str) else str(upstream_body)
-        value = f"{exc_text} | upstream_body={body_text}"
-
-    value = re.sub(
-        r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?\s*[:=]\s*)("?)[^"\s,}]+("?)',
-        r"\1\2[REDACTED]\3",
-        value,
-    )
-    value = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [REDACTED]", value)
-    if len(value) > max_len:
-        return value[: max_len - 14] + "...[truncated]"
-    return value
 
 
 class ToolCallAccumulator:
@@ -658,7 +637,7 @@ class StreamSession:
                     "usage": None,
                     "latency_ms": int((time.time() - self._start_time) * 1000),
                     "status_code": exc_status_code,
-                    "error": _format_exception_for_db(exc),
+                    "error": format_exception_for_db(exc),
                     "params": self._params,
                     "metadata": metadata_for_error,
                     "ttft_ms": self._ttft.ttft_ms,
