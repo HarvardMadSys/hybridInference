@@ -61,10 +61,31 @@ class AsyncHTTPClient:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
-        """Send a POST request with JSON payload."""
+        """Send a POST request with JSON payload.
+
+        On a non-2xx response, the upstream body is read and attached to the
+        raised ``ClientResponseError`` as ``error_body`` so the actual provider
+        error message survives for logging and user-facing display (the URL is
+        scrubbed downstream before any user sees it).
+        """
         session = await self._ensure_session()
         async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
-            resp.raise_for_status()
+            if resp.status >= 400:
+                from contextlib import suppress
+
+                error_body = ""
+                with suppress(Exception):
+                    error_body = await resp.text()
+                error = aiohttp.ClientResponseError(
+                    request_info=resp.request_info,
+                    history=resp.history,
+                    status=resp.status,
+                    message=resp.reason or "Unknown error",
+                    headers=resp.headers,
+                )
+                if error_body:
+                    error.error_body = error_body  # type: ignore[attr-defined]
+                raise error
             from typing import cast
 
             return cast("dict[str, Any]", await resp.json())

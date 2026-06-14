@@ -50,6 +50,7 @@ from serving.servers.routers.routing_info import (
 )
 from serving.storage.utils import json_safe
 from serving.utils import context as req_ctx
+from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
@@ -983,7 +984,7 @@ async def chat_completions(
                     "usage": None,
                     "latency_ms": int((time.time() - start_time) * 1000),
                     "status_code": exc_status_code,
-                    "error": str(exc),
+                    "error": format_exception_for_db(exc),
                     "params": params,
                     "metadata": metadata_for_error,
                     "pricing": None,  # Error case - no pricing available
