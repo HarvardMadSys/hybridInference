@@ -37,4 +37,10 @@ describe('SiteFooter', () => {
 
     expect(screen.getByRole('link', { name: /terms/i })).toHaveAttribute('href', '/terms');
   });
+
+  it('includes a footer link to the team page', () => {
+    render(<SiteFooter />);
+
+    expect(screen.getByRole('link', { name: /team/i })).toHaveAttribute('href', '/team');
+  });
 });

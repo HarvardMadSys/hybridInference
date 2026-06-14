@@ -1,0 +1,73 @@
+import { config } from '@/config/env';
+
+export const metadata = {
+  title: `Team | ${config.appName}`,
+  description: `The people building ${config.appName}.`,
+};
+
+interface TeamMember {
+  name: string;
+  role: string;
+  affiliations: string[];
+  lead?: boolean;
+}
+
+const members: TeamMember[] = [
+  {
+    name: 'Juncheng Yang',
+    role: 'Lead',
+    affiliations: ['Assistant Professor at Harvard University'],
+    lead: true,
+  },
+  {
+    name: 'Murphy Tian',
+    role: 'Research Intern',
+    affiliations: [
+      'Research Intern at Harvard University',
+      'Undergraduate at University of Toronto',
+    ],
+  },
+  {
+    name: 'Haoran Ni',
+    role: 'Research Intern',
+    affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
+  },
+];
+
+export default function TeamPage(): JSX.Element {
+  return (
+    <article className="mx-auto w-full max-w-3xl rounded-2xl border border-gray-200 bg-white px-6 py-8 shadow-sm sm:px-10 sm:py-10">
+      <div className="border-b border-gray-200 pb-6">
+        <h1 className="text-3xl font-bold tracking-tight text-gray-950 sm:text-4xl">Team</h1>
+        <p className="mt-4 text-sm leading-6 text-gray-600">
+          The people building {config.appName} at Harvard SEAS.
+        </p>
+      </div>
+
+      <ul className="mt-8 space-y-6">
+        {members.map((member) => (
+          <li
+            key={member.name}
+            className="rounded-xl border border-gray-200 bg-gray-50 px-5 py-4 sm:px-6 sm:py-5"
+          >
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h2 className="text-xl font-semibold tracking-tight text-gray-950">{member.name}</h2>
+              {member.lead && (
+                <span className="rounded-full bg-crimson/10 px-2.5 py-0.5 text-xs font-medium text-crimson">
+                  Lead
+                </span>
+              )}
+            </div>
+            <ul className="mt-2 space-y-1">
+              {member.affiliations.map((affiliation) => (
+                <li key={affiliation} className="text-sm leading-6 text-gray-700">
+                  {affiliation}
+                </li>
+              ))}
+            </ul>
+          </li>
+        ))}
+      </ul>
+    </article>
+  );
+}
