@@ -40,10 +40,12 @@ class ModelRouterRegistry:
         self,
         models_config: dict[str, dict[str, Any]],
         default_router_name: str = "fixed",
+        alias_to_model: dict[str, str] | None = None,
     ) -> None:
         self._configs = models_config
         self._default = default_router_name
         self._cache: dict[str, BaseRouter] = {}
+        self._alias_to_model = dict(alias_to_model or {})
         # The shared FixedRouter is bound after construction (see
         # bind_fixed_router); RouteWise needs it for classification, and
         # the "fixed" strategy returns this exact instance so models with
@@ -72,17 +74,20 @@ class ModelRouterRegistry:
 
     def get_router(self, model_id: str) -> BaseRouter:
         """Return (constructing on first call) the router for ``model_id``."""
-        cached = self._cache.get(model_id)
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        cached = self._cache.get(canonical_model_id)
         if cached is not None:
+            self._cache[model_id] = cached
             return cached
-        name = self.get_router_name(model_id)
-        cfg = self._configs.get(model_id, {})
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
+        name = cfg.get("router") or self._default
         params = cfg.get("router_params") or {}
         logger.info(
             "router_initialized",
             extra={
                 "event": "router_initialized",
-                "model": model_id,
+                "model": canonical_model_id,
+                "requested_model": model_id,
                 "strategy": name,
                 "param_keys": sorted(params.keys()),
             },
@@ -108,12 +113,14 @@ class ModelRouterRegistry:
             attach = getattr(router, "attach_fixed_router", None)
             if attach is not None and self._shared_fixed is not None:
                 attach(self._shared_fixed)
+        self._cache[canonical_model_id] = router
         self._cache[model_id] = router
         return router
 
     def get_router_name(self, model_id: str) -> str:
         """Return the configured strategy name for ``model_id``."""
-        cfg = self._configs.get(model_id, {})
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         return str(cfg.get("router") or self._default)
 
     def registered_models(self) -> dict[str, str]:

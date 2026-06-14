@@ -80,6 +80,8 @@ def _make_session(
         metadata=metadata if metadata is not None else {},
         user_id="user-1",
         is_synthetic_probe=is_synthetic_probe,
+        # Mirror the historical behavior: a synthetic probe suppresses logging.
+        suppress_synthetic_logging=is_synthetic_probe,
         log_store=log_store,
         active_router=MagicMock(),
         cost_tracker=cost_tracker,
@@ -391,7 +393,7 @@ async def test_error_log_includes_routewise_metadata_from_exception():
     cl_logger = MagicMock(spec=CompletionsLogger)
     session = _make_session(completions_logger=cl_logger, metadata={"user_id": "user-1"})
     routewise = {
-        "selected_tier": "api",
+        "selected_provider_type": "on_demand",
         "selected_provider": "openai",
         "gain_c": float("-inf"),
         "hedging_triggered": True,

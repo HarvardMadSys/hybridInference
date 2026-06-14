@@ -24,8 +24,8 @@ apps/
     routing/      # Routing engine: strategies, routers, health, circuit breaker
     benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
-config/           # YAML config: models, routing, routewise, alerts
-services/         # llm-prober, freeinference-harness, alert-logger
+config/           # YAML config: models, routing, alerts
+services/         # status-monitor-worker, freeinference-harness, alert-logger
 tests/
   unit/           # Fast, mocked. Default in CI.
   api/            # Per-provider API surface tests.
@@ -107,9 +107,17 @@ For the full diagram (network layer, observability, storage), see
   does weighted random selection plus automatic fallback.
 - **`routing/executor.py`** — backward-compatibility shim that re-exports
   `FixedRouter` as `RouteExecutor`. **Do not edit it** — edit `routers.py` instead.
-- **Strategy** — decision layer in [apps/backend/routing/manager.py](apps/backend/routing/manager.py)
-  and [apps/backend/routing/strategies.py](apps/backend/routing/strategies.py).
-  Reads `config/routing.yaml` and computes weights.
+- **Strategy** — two layers. The deployment-wide weight strategy
+  (`FixedRatioStrategy` in
+  [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))
+  is applied by `RoutingManager` in
+  [apps/backend/routing/manager.py](apps/backend/routing/manager.py) from
+  `config/routing.yaml` (`default_router:`, formerly `routing_strategy:`).
+  Per-model router selection (`fixed` / `routewise`) lives in the
+  [apps/backend/routing/strategies/](apps/backend/routing/strategies/) package
+  and is dispatched by
+  [apps/backend/routing/model_router_registry.py](apps/backend/routing/model_router_registry.py)
+  from each model's `router:` field in `config/models.yaml`.
 - **Circuit breaker / EWMA health** — provider health tracking in
   [apps/backend/routing/](apps/backend/routing/).
 
@@ -117,9 +125,8 @@ For the full diagram (network layer, observability, storage), see
 
 | File | Owns |
 |---|---|
-| `config/models.yaml` | Model registry (required) |
+| `config/models.yaml` | Model registry (required); per-model `router:` / `router_params:` (incl. RouteWise tuning) |
 | `config/routing.yaml` | Local/remote split, health checks (optional) |
-| `config/routewise.yaml` | Per-model routing overrides |
 | `config/alerts.yaml` | Alert rules |
 
 YAML supports env var interpolation: `${VAR}` and `${VAR:-default}`.

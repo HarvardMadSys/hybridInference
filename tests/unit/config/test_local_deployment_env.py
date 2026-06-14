@@ -17,6 +17,7 @@ def test_sglang_local_route_uses_local_deployment_url() -> None:
     assert sglang_route is not None, "SGLang route not found for model 'qwen3.6-35b'"
 
     assert sglang_route["base_url"] == "${LOCAL_DEPLOYMENT_URL}"
+    assert sglang_route["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
 def test_routing_local_deployment_uses_local_deployment_url() -> None:
@@ -47,47 +48,35 @@ def test_minimax_fast_uses_routewise() -> None:
         "stream",
     ]
     assert minimax_fast["router"] == "routewise"
-    assert minimax_fast["router_params"]["predictor"] == "histogram"
-    assert minimax_fast["router_params"]["latency_cost_budget_alpha"] == 0.5
-    assert minimax_fast["router_params"]["latency_hedge_success_target"] == 0.99
+    assert minimax_fast["router_params"]["budget_alpha"] == 0.5
+    assert minimax_fast["router_params"]["latency_hedge_mode"] == "probability_target"
     assert minimax_fast["aliases"] == ["MiniMax-Fast"]
-    assert {route["subscription_type"] for route in minimax_fast["route"]} == {"api"}
+    routes_by_type = {route["provider_type"]: route for route in minimax_fast["route"]}
+    assert set(routes_by_type) == {"concurrency", "on_demand", "quota"}
+    # Resource limits live on the route entries, not in router_params.
+    assert "concurrency_enabled" not in minimax_fast["router_params"]
+    assert "concurrency_limit" not in minimax_fast["router_params"]
+    assert routes_by_type["quota"]["quota"]["limit"] == 5000
+    assert routes_by_type["quota"]["quota_source"]["provider"] == "chutes"
+    assert routes_by_type["concurrency"]["concurrency"]["limit"] == 1
 
 
 def test_minimax_fast_lists_routewise_options_in_comments() -> None:
-    """RouteWise example config should keep all tunable options visible."""
+    """RouteWise example config should keep all tunable options visible.
+
+    Derived from the ``RouteWiseConfig`` dataclass so the reference block in
+    ``models.yaml`` cannot silently go stale when fields change.
+    """
+    from dataclasses import fields as dataclass_fields
+
+    from routing.routewise.config import RouteWiseConfig
+
     text = (ROOT / "config" / "models.yaml").read_text()
 
-    for option in [
-        "decision_rule",
-        "predictor",
-        "risk_quantile",
-        "daily_quota",
-        "quota_monthly_fee",
-        "reset_timezone",
-        "concurrency_enabled",
-        "concurrency_limit",
-        "concurrency_monthly_fee",
-        "shadow_price_L_seed",
-        "shadow_price_U_seed",
-        "shadow_price_adaptive",
-        "shadow_price_window_hours",
-        "shadow_price_min_ratio",
-        "latency_slo_sec",
-        "latency_target_cdf",
-        "latency_error_penalty",
-        "latency_window_sec",
-        "latency_min_samples",
-        "latency_lp_interval_sec",
-        "latency_swrr_alpha",
-        "latency_relaxation_factors",
-        "latency_hedge_mode",
-        "latency_cost_budget_alpha",
-        "latency_hedge_success_target",
-        "latency_hedge_cost_ratio",
-        "latency_hedge_dispatch_overhead_sec",
-        "canary_enabled",
-        "canary_enabled_models",
-        "canary_traffic_fraction",
-    ]:
-        assert option in text
+    for field in dataclass_fields(RouteWiseConfig):
+        assert field.name in text, (
+            f"models.yaml RouteWise reference block is missing option {field.name!r}"
+        )
+    # Route-level resource blocks are documented alongside the algorithm knobs.
+    for route_option in ("quota:", "concurrency:", "quota_pool:", "concurrency_pool:"):
+        assert route_option in text

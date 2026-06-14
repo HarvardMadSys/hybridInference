@@ -151,10 +151,10 @@ A: Set `health_check: 0` or omit the field entirely.
 **Q: Can I use other routing strategies?**
 A: Two routing layers exist with different scopes:
 
-- The deployment-wide weight strategy in `config/routing.yaml` (`routing_strategy:`) currently only supports `fixed`. `RoutingManager.apply()` returns without applying weights for any other value (see `routing/manager.py`).
-- A per-model `routewise` strategy is also built-in. Opt in by setting `routing_strategy: routewise` on a model entry in `config/models.yaml`; tuning parameters live in `config/routewise.yaml`. RouteWise provides cost-aware routing via a primal-dual decision algorithm.
+- The deployment-wide weight strategy in `config/routing.yaml` (`default_router:`, formerly `routing_strategy:`) currently only supports `fixed`. `RoutingManager.apply()` returns without applying weights for any other value (see `routing/manager.py`).
+- A per-model `routewise` strategy is also built-in. Opt in by setting `router: routewise` on a model entry in `config/models.yaml`; tuning parameters go under that model's `router_params:` block, validated by the `RouteWiseParams` schema in `routing/strategies/routewise.py`. RouteWise provides cost-aware routing via a primal-dual decision algorithm.
 
-To add new deployment-wide strategies, implement them in `routing/strategies.py` and extend the dispatch in `routing/manager.py`.
+To add new deployment-wide strategies, implement them in the `routing/strategies/` package and extend the dispatch in `routing/manager.py`.
 
 **Q: What happens during failover?**
 A: The system automatically tries alternative adapters when the primary fails, ensuring continuous service availability.

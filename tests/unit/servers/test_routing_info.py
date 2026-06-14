@@ -31,10 +31,10 @@ def test_routing_info_constructor_accepts_legacy_routewise():
     r = RoutingInfo(
         request_id="rid",
         model="gpt-4",
-        routewise={"selected_tier": "A"},
+        routewise={"selected_provider_type": "A"},
     )
-    assert r.strategy_metadata == {"routewise": {"selected_tier": "A"}}
-    assert r.routewise == {"selected_tier": "A"}
+    assert r.strategy_metadata == {"routewise": {"selected_provider_type": "A"}}
+    assert r.routewise == {"selected_provider_type": "A"}
 
 
 def test_routing_info_constructor_routewise_merges_over_strategy_metadata_routewise():
@@ -42,14 +42,14 @@ def test_routing_info_constructor_routewise_merges_over_strategy_metadata_routew
         request_id="rid",
         model="gpt-4",
         strategy_metadata={
-            "routewise": {"lp_status": "optimal", "selected_tier": "generic"},
+            "routewise": {"lp_status": "optimal", "selected_provider_type": "generic"},
             "other": {"x": 1},
         },
-        routewise={"selected_tier": "legacy"},
+        routewise={"selected_provider_type": "legacy"},
     )
 
     assert r.strategy_metadata == {
-        "routewise": {"lp_status": "optimal", "selected_tier": "legacy"},
+        "routewise": {"lp_status": "optimal", "selected_provider_type": "legacy"},
         "other": {"x": 1},
     }
 
@@ -68,7 +68,7 @@ def test_routing_info_replace_routewise_none_clears_routewise():
     r = RoutingInfo(
         request_id="rid",
         model="gpt-4",
-        routewise={"selected_tier": "A"},
+        routewise={"selected_provider_type": "A"},
     )
     r2 = dataclasses.replace(r, routewise=None)
 
@@ -81,7 +81,7 @@ def test_routing_info_replace_routewise_none_preserves_other_metadata():
         request_id="rid",
         model="gpt-4",
         strategy_metadata={"existing": {"kept": True}},
-        routewise={"selected_tier": "A"},
+        routewise={"selected_provider_type": "A"},
     )
     r2 = dataclasses.replace(r, routewise=None)
 
@@ -141,7 +141,7 @@ def test_merge_adapter_routing_populates_known_fields():
         "base_url": "https://api.openai.com/v1",
         "endpoint_id": "openai-prod",
         "pricing": {"prompt": "0.5", "completion": "1.5"},
-        "routewise": {"selected_tier": "A"},
+        "routewise": {"selected_provider_type": "A"},
         "upstream_cost_usd": 0.012,
     }
     enriched = merge_adapter_routing(base, routing_dict)
@@ -153,8 +153,8 @@ def test_merge_adapter_routing_populates_known_fields():
     # dict flows through ``extra["pricing"]`` for the log payload.
     assert enriched.pricing is None
     assert enriched.extra["pricing"] == {"prompt": "0.5", "completion": "1.5"}
-    assert enriched.strategy_metadata == {"routewise": {"selected_tier": "A"}}
-    assert enriched.routewise == {"selected_tier": "A"}
+    assert enriched.strategy_metadata == {"routewise": {"selected_provider_type": "A"}}
+    assert enriched.routewise == {"selected_provider_type": "A"}
     assert enriched.upstream_cost_usd == 0.012
     # Original is untouched (frozen + immutability invariant)
     assert base.provider is None
@@ -170,16 +170,16 @@ def test_merge_adapter_routing_merges_strategy_metadata():
         base,
         {
             "strategy_metadata": {"custom": {"value": 1}},
-            "routewise": {"selected_tier": "quota"},
+            "routewise": {"selected_provider_type": "quota"},
         },
     )
 
     assert enriched.strategy_metadata == {
         "existing": {"kept": True},
         "custom": {"value": 1},
-        "routewise": {"selected_tier": "quota"},
+        "routewise": {"selected_provider_type": "quota"},
     }
-    assert enriched.routewise == {"selected_tier": "quota"}
+    assert enriched.routewise == {"selected_provider_type": "quota"}
 
 
 def test_merge_adapter_routing_strategy_metadata_routewise_merges_existing_routewise():
@@ -187,7 +187,7 @@ def test_merge_adapter_routing_strategy_metadata_routewise_merges_existing_route
         request_id="rid",
         model="gpt-4",
         strategy_metadata={
-            "routewise": {"lp_status": "optimal", "selected_tier": "base"},
+            "routewise": {"lp_status": "optimal", "selected_provider_type": "base"},
             "base": {"y": 2},
         },
     )
@@ -195,7 +195,7 @@ def test_merge_adapter_routing_strategy_metadata_routewise_merges_existing_route
         base,
         {
             "strategy_metadata": {
-                "routewise": {"selected_tier": "incoming", "hedged": True},
+                "routewise": {"selected_provider_type": "incoming", "hedged": True},
                 "other": {"x": 1},
             },
         },
@@ -204,7 +204,7 @@ def test_merge_adapter_routing_strategy_metadata_routewise_merges_existing_route
     assert enriched.strategy_metadata == {
         "routewise": {
             "lp_status": "optimal",
-            "selected_tier": "incoming",
+            "selected_provider_type": "incoming",
             "hedged": True,
         },
         "base": {"y": 2},
@@ -217,15 +217,15 @@ def test_merge_adapter_routing_top_level_routewise_merges_over_strategy_metadata
     enriched = merge_adapter_routing(
         base,
         {
-            "routewise": {"selected_tier": "legacy"},
+            "routewise": {"selected_provider_type": "legacy"},
             "strategy_metadata": {
-                "routewise": {"selected_tier": "generic", "lp_status": "optimal"},
+                "routewise": {"selected_provider_type": "generic", "lp_status": "optimal"},
                 "other": {"x": 1},
             },
         },
     )
     assert enriched.strategy_metadata == {
-        "routewise": {"selected_tier": "legacy", "lp_status": "optimal"},
+        "routewise": {"selected_provider_type": "legacy", "lp_status": "optimal"},
         "other": {"x": 1},
     }
 
@@ -233,7 +233,7 @@ def test_merge_adapter_routing_top_level_routewise_merges_over_strategy_metadata
 def test_routewise_metadata_shape_for_recent_requests() -> None:
     """RouteWise DB metadata carries provider and hedging details for recent requests."""
     routewise = {
-        "selected_tier": "api",
+        "selected_provider_type": "on_demand",
         "selected_provider": "openai",
         "selected_endpoint_id": "openai:key-1",
         "hedging_triggered": True,

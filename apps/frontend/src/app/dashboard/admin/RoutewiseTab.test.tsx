@@ -63,13 +63,6 @@ describe('RoutewiseTab', () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       settings: [
         {
-          key: 'decision_rule',
-          value: 'pd',
-          value_type: 'str',
-          default_value: 'pd',
-          description: 'Decision rule used by Routewise.',
-        },
-        {
           key: 'routewise_latency_min_samples',
           value: 5,
           value_type: 'int',
@@ -90,40 +83,7 @@ describe('RoutewiseTab', () => {
     expect(screen.getByText('routewise-model:remote')).toBeInTheDocument();
     expect(screen.queryByText('fixed-model')).not.toBeInTheDocument();
     expect(screen.queryByText('fixed-model:remote')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('decision_rule value')).toHaveValue('pd');
-  });
-
-  it('updates decision_rule through the select control', async () => {
-    vi.mocked(listRouteWeights).mockResolvedValue([]);
-    vi.mocked(listRoutewiseSettings).mockResolvedValue({
-      settings: [
-        {
-          key: 'decision_rule',
-          value: 'pd',
-          value_type: 'str',
-          default_value: 'pd',
-          description: 'Decision rule used by Routewise.',
-        },
-      ],
-    });
-    vi.mocked(updateRoutewiseSetting).mockResolvedValue({
-      key: 'decision_rule',
-      value: 'lapd',
-      value_type: 'str',
-      default_value: 'pd',
-      description: 'Decision rule used by Routewise.',
-    });
-
-    render(<RoutewiseTab />);
-
-    const select = await screen.findByLabelText('decision_rule value');
-    fireEvent.change(select, { target: { value: 'lapd' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save decision_rule' }));
-
-    await waitFor(() => {
-      expect(updateRoutewiseSetting).toHaveBeenCalledWith('decision_rule', 'lapd');
-    });
-    expect(await screen.findByDisplayValue('lapd')).toBeInTheDocument();
+    expect(screen.getByLabelText('routewise_latency_min_samples value')).toHaveValue(5);
   });
 
   it('validates numeric routewise settings before saving', async () => {

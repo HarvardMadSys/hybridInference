@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from routing.config import RoutingConfig
+from routing.config import RoutingConfig, load_routing_config
 
 
 @pytest.mark.unit
@@ -54,3 +54,38 @@ def test_legacy_routing_parameter_still_accepted(caplog):
     assert cfg.routing_parameter.local_fraction == 0.3
     msgs = [r.getMessage() for r in caplog.records]
     assert any("deprecated" in m.lower() for m in msgs)
+
+
+@pytest.mark.unit
+def test_unset_endpoint_is_dropped_not_fatal(tmp_path, monkeypatch, caplog):
+    """An unset ${VAR} endpoint is pruned, leaving healthy endpoints loadable."""
+    monkeypatch.delenv("RC_DEPLOYMENT_URL", raising=False)
+    monkeypatch.setenv("ZAI_BASE_URL", "https://zai.example")
+    yaml_path = tmp_path / "routing.yaml"
+    yaml_path.write_text(
+        "local_deployment:\n"
+        "  - endpoint: ${RC_DEPLOYMENT_URL}\n"
+        "    models:\n"
+        "      - orphan-model\n"
+        "remote_deployment:\n"
+        "  - endpoint: ${ZAI_BASE_URL}\n"
+        "    models:\n"
+        "      - glm-4.7\n"
+    )
+    with caplog.at_level(logging.WARNING, logger="routing.config"):
+        cfg = load_routing_config(yaml_path)
+    # The blank local endpoint is dropped; the healthy remote one survives.
+    assert cfg.local_deployment == []
+    assert [d.endpoint for d in cfg.remote_deployment] == ["https://zai.example"]
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("orphan-model" in m for m in msgs)
+
+
+@pytest.mark.unit
+def test_whitespace_endpoint_is_dropped(tmp_path, caplog):
+    """A whitespace-only endpoint is treated as unset and pruned."""
+    yaml_path = tmp_path / "routing.yaml"
+    yaml_path.write_text('local_deployment:\n  - endpoint: "   "\n    models:\n      - m1\n')
+    with caplog.at_level(logging.WARNING, logger="routing.config"):
+        cfg = load_routing_config(yaml_path)
+    assert cfg.local_deployment == []

@@ -1,121 +1,191 @@
-"""RouteWise cost-aware router with primal-dual decision logic.
+"""RouteWise router for FreeInference.
 
-This module provides the ``RouteWiseRouter``, a ``BaseRouter`` subclass that
-classifies adapters by subscription type (quota / concurrency / API) and
-selects among them using a primal-dual (PD) or look-ahead primal-dual (LA-PD)
-threshold algorithm.
+The production ``routewise`` strategy follows the RouteWise paper/simulator
+selection semantics:
 
-Layer 1 decides among three tiers with priority **S_C > S_Q > S_A**:
+1. Convert every feasible provider to one effective cost.
+2. Solve a cost-budgeted mean-TTFT LP over all feasible providers.
+3. Sample one primary provider from the sparse LP mixture.
 
-- **S_C** (concurrency): binary gate -- admit if slots available (gain_C = v_t).
-- **S_Q** (quota): exponential shadow price threshold (gain_Q = v_t - theta_Q).
-- **S_A** (API): pay-per-token baseline (gain_A = 0).
-
-Since theta_Q > 0 always (L_seed > 0), S_C beats S_Q whenever slots exist.
-
-When S_A is chosen and multiple API providers exist, Layer 2 applies LP-based
-latency-aware cost optimization to select among them using empirical latency
-profiles and SWRR sampling.
-
-Slot and quota semantics follow selection-commit: resources are acquired in
-``_select_adapter`` at the moment the decision is made.  Concurrency slots
-are released in the ``_execute_adapter`` / ``_execute_stream_adapter`` finally
-block, covering success, error, and cancellation.
+When ``latency_hedge_mode="probability_target"``, the router may wrap the
+selected primary in a delayed ``HedgedAdapter`` using RouteWise checkpoint
+probability math. The session prefix cache is gated by
+``prefix_cache_cost_adjustment_enabled`` (default off): when enabled, API
+candidates fold the session-scoped prefix estimate into effective cost before
+the LP and successful selections warm the cache for the next turn; the
+``L/U`` envelope and actual billing remain driven by observed cost.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
+import random
+import threading
 import time
 import uuid
 from dataclasses import dataclass
-from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
+
+from routewise.core import (
+    HEDGE_SUCCESS_TARGET,
+    BackupCandidate,
+    CheckpointBackupDispatch,
+    combined_success_probability,
+    hedge_checkpoints_for_slo,
+    select_probability_backup,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable, Mapping
 
-from routing.routers import BaseRouter, RoutingObservation
-from serving.utils.logging import get_logger
-from serving.utils.tokens import estimate_prompt_tokens
-
-from .concurrency import ConcurrencyManager
-from .hedging import (
-    HedgedAdapter,
-    compute_hedge_threshold,
-    compute_probability_targeted_hedge_threshold,
-)
-from .latency import ProviderProfile, ShadowHedgeDecision, SWRRSampler
-from .lp_solver import (
-    pre_filter_providers,
-    solve_cost_budgeted_latency_lp,
-    solve_provider_lp_with_relaxation,
-)
-from .predictor import EMAOutputPredictor, HistogramOutputPredictor
-from .quota import QuotaManager
-
-if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
     from .config import RouteWiseConfig
 
+from routing.routers import BaseRouter, RoutingObservation
+from serving.utils import context as req_ctx
+from serving.utils.logging import get_logger
+from serving.utils.tokens import estimate_prompt_tokens
+
+from .candidates import (
+    CandidatePricing,
+    ConcurrencyPolicy,
+    ProviderCandidate as RouteProviderCandidate,
+    ProviderType,
+    QuotaPolicy,
+    QuotaSource,
+    build_provider_candidates,
+    endpoint_id_for_adapter,
+)
+from .concurrency import ConcurrencyManager
+from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
+from .envelope import (
+    CostEnvelopeEstimator,
+    CostEnvelopeSnapshot,
+    EnvelopeNotCalibratedError,
+)
+from .hedging import HedgedAdapter
+from .latency import ProviderProfile
+from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
+from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
+from .prefix_cache import PrefixCacheCoordinator, price_delta_per_token
+from .quota import ProviderQuotaSnapshotStore, QuotaPool
+
 logger = get_logger(__name__)
 
 
-# TTL for non-streaming entries in RouteWiseRouter._pending_decisions. If
-# ``chat_completion`` / ``stream_chat_completion`` doesn't consume an entry
-# within this window — typically because the request was aborted, timed out,
-# or hit a code-path bug — the periodic sweep evicts it and emits a
-# ``routewise_decision_evicted`` log event. Active streaming requests are
-# intentionally excluded because they can legitimately remain in-flight for
-# longer than the fixed TTL.
 PENDING_DECISIONS_TTL_SECONDS: float = 300.0
 PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
-
-
-class SubscriptionType(Enum):
-    """Subscription tier for an adapter endpoint.
-
-    Each route entry in ``models.yaml`` can declare a ``subscription_type``
-    field.  RouteWiseRouter reads this field from ``ModelConfig`` and uses
-    it to classify adapters into one of the three tiers.
-    """
-
-    QUOTA = "quota"  # S_Q: daily quota subscription
-    CONCURRENCY = "concurrency"  # S_C: concurrency-limited subscription
-    API = "api"  # S_A: pay-per-token (default)
+# Hard cap on in-flight decision metadata. The TTL sweep normally bounds this
+# map, but it exempts active streaming entries, so a streaming generator that is
+# garbage-collected without its finally/aclose ever running would otherwise leak
+# its entry permanently. This cap is metadata-only defense-in-depth: evicting an
+# entry drops its routing metadata but never releases a concurrency reservation
+# (those stay owned by the execution finally blocks, so the slot is not freed
+# out from under a still-running request).
+_PENDING_DECISIONS_MAX: int = 50_000
+PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
+RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
+_PREFIX_CACHE_PENDING_MAX: int = 10_000
+_WORKER_COUNT_ENV_KEYS = (
+    "WEB_CONCURRENCY",
+    "UVICORN_WORKERS",
+    "GUNICORN_WORKERS",
+)
 
 
 @dataclass(frozen=True)
-class _ProviderCandidate:
-    """Per-provider paper-design candidate snapshot."""
+class FeasibleProviderCandidate:
+    """Internal feasible-provider representation used by the provider-mixer LP."""
 
-    adapter: Any
     endpoint_id: str
-    sub_type: SubscriptionType
-    effective_cost: float
+    adapter: BaseAdapter
+    provider_type: Literal["on_demand", "quota", "concurrency"]
+    weight: float
+    effective_cost_usd: float
+    request_cost_usd: float
+    mean_ttft_sec: float
+    cost_reason: str
+    prefix_cache_discount_usd: float = 0.0
+    prefix_cache_expected_tokens: float = 0.0
+    prefix_cache_adjustment_applied: bool = False
+    quota_pool: str | None = None
+    concurrency_pool: str | None = None
+    quota_used_fraction: float | None = None
+    quota_remaining: int | None = None
+
+
+@dataclass(frozen=True)
+class HedgePlan:
+    """In-flight checkpoint hedge schedule for one primary dispatch."""
+
+    checkpoints_sec: tuple[float, ...]
+
+
+@dataclass
+class ProviderReservation:
+    """Resource reservation for one concrete provider dispatch."""
+
+    router: RouteWiseRouter
+    candidate: FeasibleProviderCandidate
+    acquired: bool = False
+
+    def acquire(self) -> bool:
+        """Acquire quota or concurrency for the candidate if needed."""
+        if self.acquired:
+            return True
+        self.acquired = self.router._commit_candidate(self.candidate)
+        return self.acquired
+
+    def release(self) -> None:
+        """Release a previously acquired reservation."""
+        if not self.acquired:
+            return
+        self.router._release_candidate(self.candidate)
+        self.acquired = False
+
+
+def _dedupe_failed_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str | None, str | None, str | None]] = set()
+    result: list[dict[str, Any]] = []
+    for attempt in attempts:
+        endpoint = attempt.get("endpoint_id") or attempt.get("base_url") or attempt.get("provider")
+        key = (
+            endpoint if isinstance(endpoint, str) else None,
+            attempt.get("error_type") if isinstance(attempt.get("error_type"), str) else None,
+            attempt.get("error") if isinstance(attempt.get("error"), str) else None,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(attempt)
+    return result
+
+
+def _configured_worker_count() -> int | None:
+    """Best-effort detection for common ASGI worker-count environment vars."""
+    for key in _WORKER_COUNT_ENV_KEYS:
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+        try:
+            count = int(raw)
+        except ValueError:
+            continue
+        if count > 0:
+            return count
+    return None
 
 
 class RouteWiseRouter(BaseRouter):
-    """Cost-aware router with primal-dual / LA-PD adapter selection.
+    """RouteWise router.
 
-    RouteWiseRouter is a **peer** of NimbusRouter -- both extend BaseRouter
-    directly and operate on routes registered in a shared ``FixedRouter``.
-
-    The router classifies adapters into S_C / S_Q / S_A tiers, then applies
-    either the PD or LA-PD decision rule (controlled by ``config.decision_rule``)
-    to decide tier priority: **S_C > S_Q > S_A**.
-
-    Attributes:
-        fixed_router: The shared ``FixedRouter`` whose ``routes`` dict
-            provides the per-model adapter lists.
-        config: ``RouteWiseConfig`` policy parameters.
-        classified: Per-model adapter classification:
-            ``{model_id: [(adapter, weight, SubscriptionType), ...]}``.
-        predictor: EMA output-token predictor for value estimation.
-        quota_mgr: Daily quota manager with shadow price computation.
-        conc_mgr: Concurrency slot manager (None when disabled).
+    ``fixed_router.routes`` remains the source of model -> adapter mappings;
+    this router only changes the selection policy for models configured with
+    ``router: routewise``.
     """
 
     def __init__(
@@ -124,27 +194,9 @@ class RouteWiseRouter(BaseRouter):
         config: RouteWiseConfig | None = None,
         params: Any = None,
     ) -> None:
-        """Initialize RouteWiseRouter.
-
-        Two construction shapes are supported:
-
-        1. Direct (legacy): pass ``fixed_router`` + ``config`` (a
-           ``RouteWiseConfig`` dataclass).  Used by the existing bootstrap
-           path and tests.
-        2. Strategy-registry: pass ``params`` (a ``RouteWiseParams`` Pydantic
-           model from the strategy registry).  ``params`` is translated to
-           ``RouteWiseConfig`` via ``model_dump()``.  ``fixed_router`` is
-           bound later by ``ModelRouterRegistry`` via
-           :meth:`attach_fixed_router`.
-
-        Exactly one of ``config`` or ``params`` should be provided.  When
-        constructed via the registry without a ``fixed_router``, post-init
-        classification is deferred until ``attach_fixed_router`` runs.
-        """
         super().__init__()
 
         if config is None and params is not None:
-            # Translate Pydantic params -> RouteWiseConfig dataclass.
             from .config import RouteWiseConfig as _RWC
 
             config = _RWC(**params.model_dump())
@@ -152,1429 +204,1652 @@ class RouteWiseRouter(BaseRouter):
             from .config import RouteWiseConfig as _RWC
 
             config = _RWC()
+
         self.fixed_router = fixed_router
         self.config = config
+        self._rng = random.Random(self.config.random_seed)
+        self.reference_api_price = self._parse_reference_api_price(config.reference_api_price)
+        self.route_candidates: dict[str, list[RouteProviderCandidate]] = {}
+        self._model_routewise_pools: dict[str, str] = {}
+        self.classified: dict[str, list[tuple[Any, float, ProviderType]]] = {}
+        self._adapter_provider_type: dict[int, ProviderType] = {}
+        self._adapter_endpoint_ids: dict[int, str] = {}
+        self._endpoint_adapter: dict[str, Any] = {}
 
-        # Per-model adapter classification.
-        self.classified: dict[str, list[tuple[Any, float, SubscriptionType]]] = {}
-        self._adapter_sub_type_by_model: dict[str, dict[int, SubscriptionType]] = {}
+        self.predictor = BucketMeanOutputPredictor(
+            default_output=self.config.output_default_tokens,
+            min_bucket_samples=self.config.output_min_bucket_samples,
+            min_model_samples=self.config.output_min_model_samples,
+            min_global_samples=self.config.output_min_global_samples,
+        )
+        self.envelope = CostEnvelopeEstimator(
+            lower_percentile=self.config.envelope_lower_percentile,
+            upper_percentile=self.config.envelope_upper_percentile,
+            window_sec=self.config.envelope_window_hours * 3600.0,
+            min_samples=self.config.envelope_min_samples,
+        )
+        self.quota_snapshots = ProviderQuotaSnapshotStore()
+        # One resource manager per pool id, built from route-level policies.
+        self.quota_pools: dict[str, QuotaPool] = {}
+        self.concurrency_pools: dict[str, ConcurrencyManager] = {}
+        self._endpoint_concurrency_pool: dict[str, str] = {}
+        self.prefix_cache = PrefixCacheCoordinator(
+            enabled=self.config.prefix_cache_cost_adjustment_enabled,
+        )
 
-        # Reverse lookup: adapter id(obj) -> SubscriptionType.
-        self._adapter_sub_type: dict[int, SubscriptionType] = {}
-
-        # Online predictors and quota tracking.
-        if self.config.predictor == "histogram":
-            self.predictor = HistogramOutputPredictor(
-                min_samples=20,
-                default_output=500.0,
-            )
-        else:
-            self.predictor = EMAOutputPredictor(
-                alpha=0.1,
-                min_samples=20,
-                default_output=500.0,
-            )
-        self.quota_mgr = QuotaManager(config)
-
-        # S_C concurrency manager (None when concurrency_enabled=False).
-        self.conc_mgr: ConcurrencyManager | None = None
-        if self.config.concurrency_enabled:
-            self.conc_mgr = ConcurrencyManager(config)
-
-        # Per-request decision metadata, keyed by request_id.
-        # Populated in _select_adapter(), consumed in chat_completion() /
-        # stream_chat_completion().  Same pattern as NimbusRouter.
-        self._pending_decisions: dict[str, dict[str, Any]] = {}
-        # Periodic TTL-cleanup task; populated by start(), cancelled by stop().
-        self._sweep_task: asyncio.Task[None] | None = None
-
-        # Precomputed per-token prices for all S_A adapters, keyed by model and adapter id.
-        # Each entry: adapter id -> (adapter, price_prompt_per_token, price_completion_per_token).
-        self._api_adapter_prices: dict[str, dict[int, tuple[Any, float, float]]] = {}
-
-        # Layer 2: Latency-aware provider selection state.
-        # Latency profiles are keyed by endpoint_id.  This dict is router-global,
-        # but endpoint_ids are model-scoped ("{model}:{location}") as generated
-        # by registry.py, so profiles are implicitly per-model.  If endpoint_id
-        # generation ever changes to truly cross-model physical IDs, this dict
-        # must be restructured to avoid profile contamination.
         self._latency_profiles: dict[str, ProviderProfile] = {}
-        # Per-model SWRR samplers, LP timestamps, weights, and statuses.
-        # Each model gets its own sampler so multi-model routing never cross-contaminates.
-        self._swrr_samplers: dict[str, SWRRSampler] = {}
-        self._last_lp_times: dict[str, float] = {}
-        self._last_lp_weights: dict[str, dict[str, float]] = {}
+        self._pending_decisions: dict[str, dict[str, Any]] = {}
+        self._prefix_cache_pending: dict[str, tuple[Any, dict[str, Any]]] = {}
+        self._primary_reservations: dict[str, ProviderReservation] = {}
+        self._route_commit_lock = threading.RLock()
+        self._sweep_task: asyncio.Task[None] | None = None
+        self._quota_refresh_task: asyncio.Task[None] | None = None
+        # Last LP state retained for tests and diagnostics.
         self._last_lp_statuses: dict[str, str] = {}
-        self._shadow_hedge_log: list[ShadowHedgeDecision] = []
-        self._shadow_hedge_log_maxlen: int = 10_000  # Cap to prevent unbounded growth
-        # Maps endpoint_id -> (adapter, p_in_per_token, p_out_per_token).
-        self._api_endpoint_map: dict[str, tuple[Any, float, float]] = {}
-        # Track in-flight LP solves to avoid duplicate concurrent solves.
-        self._pending_lp_solves: set[str] = set()
+        self._last_lp_weights: dict[str, dict[str, float]] = {}
 
-        # Run post-init classification when a fixed_router is available.
-        # When constructed via the registry without one, defer to
-        # attach_fixed_router (ModelRouterRegistry calls it immediately).
         if self.fixed_router is not None:
-            self._classify_all()
-            self._build_adapter_sub_type_map()
-            self._precompute_api_prices()
-            self._validate_api_baseline()
-            self._init_latency_profiles()
+            self._rebuild_from_fixed_router()
+
+    # ------------------------------------------------------------------
+    # Lifecycle / registry binding
+    # ------------------------------------------------------------------
 
     def attach_fixed_router(self, fixed_router: Any) -> None:
-        """Bind a ``FixedRouter`` after construction.
-
-        Used by ``ModelRouterRegistry`` when a model is configured with
-        ``router: routewise`` in YAML — the registry constructs the router
-        via ``build_router("routewise", params)`` first, then attaches the
-        shared ``FixedRouter`` so classification and latency-profile init
-        can run.
-
-        Safe to call more than once: this method rebuilds classification and
-        clears any derived state tied to the previously attached router. In
-        normal use it is called exactly once, immediately after
-        ``build_router`` returns.
-        """
+        """Bind the shared ``FixedRouter`` after strategy construction."""
         self.fixed_router = fixed_router
-        self.classified = {}
-        self._adapter_sub_type_by_model = {}
-        self._adapter_sub_type = {}
         self._pending_decisions = {}
-        self._api_adapter_prices = {}
-        self._latency_profiles = {}
-        self._swrr_samplers = {}
-        self._last_lp_times = {}
-        self._last_lp_weights = {}
+        self._primary_reservations = {}
         self._last_lp_statuses = {}
-        self._shadow_hedge_log = []
-        self._api_endpoint_map = {}
-        self._pending_lp_solves = set()
-        self._classify_all()
-        self._build_adapter_sub_type_map()
-        self._precompute_api_prices()
-        self._validate_api_baseline()
-        self._init_latency_profiles()
+        self._last_lp_weights = {}
+        self._rebuild_from_fixed_router()
 
     def apply_runtime_overrides(
         self,
         *,
-        decision_rule: str,
-        daily_quota: int,
-        latency_slo_sec: float,
-        latency_min_samples: int,
+        latency_slo_sec: float | None = None,
+        latency_min_samples: int | None = None,
     ) -> None:
-        """Apply live RouteWise runtime settings to this router instance.
+        """Apply live RouteWise runtime settings from the admin API.
 
-        Only the curated runtime-editable fields are updated here. Helpers that
-        snapshot those values at construction time are rebuilt so subsequent
-        requests observe the new settings without reconstructing the router.
+        Only algorithm knobs are runtime-overridable; resource limits are
+        route-level configuration (``quota:`` / ``concurrency:`` blocks).
         """
-        self.config.decision_rule = decision_rule
-        self.config.daily_quota = daily_quota
-        self.config.latency_slo_sec = latency_slo_sec
-        self.config.latency_min_samples = latency_min_samples
-        previous_quota_mgr = self.quota_mgr
-        self.quota_mgr = QuotaManager(self.config)
-        self.quota_mgr._used_today = previous_quota_mgr._used_today
-        self.quota_mgr._last_reset_date = previous_quota_mgr._last_reset_date
+        if latency_slo_sec is not None:
+            self.config.latency_slo_sec = latency_slo_sec
+        if latency_min_samples is not None:
+            self.config.latency_min_samples = latency_min_samples
+
+    def _rebuild_from_fixed_router(self) -> None:
+        self.classified = {}
+        self.route_candidates = {}
+        self._model_routewise_pools = {}
+        self._adapter_provider_type = {}
+        self._adapter_endpoint_ids = {}
+        self._endpoint_adapter = {}
+        self._latency_profiles = {}
+        self._classify_all()
+        self._build_resource_pools()
+        for candidates in self.route_candidates.values():
+            for candidate in candidates:
+                adapter = candidate.adapter
+                self._adapter_provider_type[id(adapter)] = candidate.provider_type
+                endpoint_id = candidate.endpoint_id
+                self._adapter_endpoint_ids[id(adapter)] = endpoint_id
+                self._endpoint_adapter[endpoint_id] = adapter
+                if endpoint_id not in self._latency_profiles:
+                    self._latency_profiles[endpoint_id] = ProviderProfile(
+                        endpoint_id=endpoint_id,
+                        window_sec=self.config.latency_window_sec,
+                        max_samples=self.config.latency_max_samples_per_profile,
+                    )
+        self._validate_routes()
+
+    async def start(self) -> None:
+        """Start periodic maintenance tasks.
+
+        Checks quota-bearing pools for a calibrated envelope before any
+        background tasks are scheduled. An uncalibrated pool that still has a
+        non-quota leg is degraded (its quota provider is masked until traffic
+        calibrates the envelope) rather than fatal; only a quota-only pool with
+        no fallback raises :class:`EnvelopeNotCalibratedError`, which the server
+        bootstrap path propagates so deployment fails fast instead of leaving a
+        model unroutable. See :meth:`_validate_envelope_calibration`.
+        """
+        self._validate_envelope_calibration()
+        if self._sweep_task is None or self._sweep_task.done():
+            self._sweep_task = asyncio.create_task(
+                self._sweep_pending_decisions_loop(),
+                name="RouteWiseRouter.sweep_pending_decisions",
+            )
+        if self._quota_sources() and (
+            self._quota_refresh_task is None or self._quota_refresh_task.done()
+        ):
+            self._quota_refresh_task = asyncio.create_task(
+                self._refresh_quota_snapshots_loop(),
+                name="RouteWiseRouter.refresh_quota_snapshots",
+            )
+
+    async def stop(self) -> None:
+        """Stop periodic maintenance tasks."""
+        tasks = [task for task in (self._sweep_task, self._quota_refresh_task) if task is not None]
+        self._sweep_task = None
+        self._quota_refresh_task = None
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def _sweep_pending_decisions_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS)
+                try:
+                    await self._sweep_pending_decisions_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "routewise_pending_decisions_sweep_failed",
+                        extra={"event": "routewise_pending_decisions_sweep_failed"},
+                    )
+        except asyncio.CancelledError:
+            return
+
+    def _store_pending_decision(self, request_id: str, metadata: dict[str, Any]) -> None:
+        """Record decision metadata for *request_id*, bounding the map size.
+
+        The TTL sweep normally reclaims these entries, but it exempts active
+        streaming requests, so an abandoned streaming generator (GC'd without
+        its finally/aclose running) would otherwise leak its entry forever.
+        This cap is the backstop. Eviction is oldest-first and metadata-only:
+        it never releases a concurrency reservation (those stay owned by the
+        execution finally blocks), so a still-running request never has its
+        slot freed out from under it. Each cap eviction mirrors the TTL
+        sweep's bookkeeping: it drops the sibling ``_prefix_cache_pending``
+        entry and emits ``routewise_decision_evicted`` so the leak this cap
+        guards against stays visible to ``PendingDecisionsLeakRule`` (the TTL
+        sweep deliberately skips streaming entries, so this is the only path
+        that reclaims an abandoned streaming generator's metadata).
+        """
+        now = time.time()
+        self._pending_decisions[request_id] = metadata
+        while len(self._pending_decisions) > _PENDING_DECISIONS_MAX:
+            oldest = next(iter(self._pending_decisions))
+            if oldest == request_id:
+                break
+            decision = self._pending_decisions.pop(oldest, None)
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(oldest, None)
+            if decision is None:
+                continue
+            logger.info(
+                "routewise_decision_evicted",
+                extra={
+                    "event": "routewise_decision_evicted",
+                    "request_id": oldest,
+                    "age_sec": int(now - float(decision.get("timestamp", now))),
+                    "reason": "size_cap",
+                },
+            )
+
+    async def _sweep_pending_decisions_once(self) -> int:
+        now = time.time()
+        cutoff = now - PENDING_DECISIONS_TTL_SECONDS
+        stale = [
+            request_id
+            for request_id, decision in self._pending_decisions.items()
+            if not decision.get("is_streaming")
+            and isinstance(decision.get("timestamp"), (int, float))
+            and float(decision["timestamp"]) < cutoff
+        ]
+        evicted = 0
+        for request_id in stale:
+            decision = self._pending_decisions.pop(request_id, None)
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(request_id, None)
+            if decision is None:
+                continue
+            evicted += 1
+            logger.info(
+                "routewise_decision_evicted",
+                extra={
+                    "event": "routewise_decision_evicted",
+                    "request_id": request_id,
+                    "age_sec": int(now - float(decision.get("timestamp", now))),
+                },
+            )
+        return evicted
+
+    async def refresh_quota_snapshots_once(self) -> None:
+        """Refresh provider quota snapshots for configured S_Q candidates."""
+        await self.quota_snapshots.refresh_once(self._quota_sources())
+
+    async def _refresh_quota_snapshots_loop(self) -> None:
+        interval = max(1.0, float(self.config.quota_snapshot_refresh_interval_sec))
+        try:
+            while True:
+                try:
+                    await self.refresh_quota_snapshots_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "routewise_quota_snapshot_loop_failed",
+                        extra={"event": "routewise_quota_snapshot_loop_failed"},
+                    )
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
 
     # ------------------------------------------------------------------
-    # ProviderEventSink conformance
+    # Classification and helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _endpoint_id(adapter: BaseAdapter) -> str:
+        return endpoint_id_for_adapter(adapter)
+
+    def _candidate_endpoint_id(self, adapter: BaseAdapter) -> str:
+        return self._adapter_endpoint_ids.get(id(adapter), self._endpoint_id(adapter))
+
+    @staticmethod
+    def _pricing(adapter: BaseAdapter) -> tuple[float, float]:
+        pricing = adapter.config.pricing or {}
+        return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
+
+    def _classify_all(self) -> None:
+        for route_key, route_cfg in self.fixed_router.routes.items():
+            model_id = getattr(route_cfg, "canonical_model_id", None) or route_key
+            if model_id in self.route_candidates:
+                continue
+            candidates = build_provider_candidates(model_id, route_cfg.adapters)
+            self.route_candidates[model_id] = candidates
+            self.classified[model_id] = [
+                (candidate.adapter, candidate.weight, candidate.provider_type)
+                for candidate in candidates
+            ]
+            pools = {candidate.routewise_pool for candidate in candidates}
+            if len(pools) == 1:
+                self._model_routewise_pools[model_id] = next(iter(pools))
+            else:
+                self._model_routewise_pools[model_id] = model_id
+                if pools:
+                    logger.warning(
+                        "Model '%s' has multiple routewise_pool values %s; using model_id pool",
+                        model_id,
+                        sorted(pools),
+                    )
+
+    def _build_resource_pools(self) -> None:
+        """(Re)build per-pool resource managers from route-level policies.
+
+        Routes sharing a pool id share one manager and must declare identical
+        policies; conflicting declarations fail at boot. Quota pools are
+        snapshot-backed (provider-reported usage is the truth source), so a
+        shared pool id naturally shares the provider's global accounting.
+        Concurrency counters are router-scoped.
+        """
+        quota_specs: dict[str, tuple[QuotaPolicy, QuotaSource | None, str]] = {}
+        concurrency_specs: dict[str, tuple[ConcurrencyPolicy, str]] = {}
+        self._endpoint_concurrency_pool = {}
+        for candidates in self.route_candidates.values():
+            for candidate in candidates:
+                if (
+                    candidate.provider_type is ProviderType.QUOTA
+                    and candidate.quota_pool is not None
+                    and candidate.quota_policy is not None
+                ):
+                    prior = quota_specs.get(candidate.quota_pool)
+                    spec = (candidate.quota_policy, candidate.quota_source)
+                    if prior is not None and (prior[0], prior[1]) != spec:
+                        raise ValueError(
+                            f"RouteWise quota_pool {candidate.quota_pool!r} is declared "
+                            f"with conflicting quota policies by {prior[2]!r} and "
+                            f"{candidate.endpoint_id!r}; routes sharing a pool must "
+                            "declare identical quota blocks."
+                        )
+                    quota_specs[candidate.quota_pool] = (*spec, candidate.endpoint_id)
+                elif (
+                    candidate.provider_type is ProviderType.CONCURRENCY
+                    and candidate.concurrency_pool is not None
+                    and candidate.concurrency_policy is not None
+                ):
+                    prior_c = concurrency_specs.get(candidate.concurrency_pool)
+                    if prior_c is not None and prior_c[0] != candidate.concurrency_policy:
+                        raise ValueError(
+                            f"RouteWise concurrency_pool {candidate.concurrency_pool!r} is "
+                            f"declared with conflicting limits by {prior_c[1]!r} and "
+                            f"{candidate.endpoint_id!r}; routes sharing a pool must "
+                            "declare identical concurrency blocks."
+                        )
+                    concurrency_specs[candidate.concurrency_pool] = (
+                        candidate.concurrency_policy,
+                        candidate.endpoint_id,
+                    )
+                    self._endpoint_concurrency_pool[candidate.endpoint_id] = (
+                        candidate.concurrency_pool
+                    )
+
+        quota_pools: dict[str, QuotaPool] = {}
+        for pool_id, (policy, source, endpoint) in quota_specs.items():
+            if source is None:  # pragma: no cover - enforced in candidates.py
+                raise ValueError(
+                    f"RouteWise quota_pool {pool_id!r} ({endpoint!r}) has no quota_source"
+                )
+            # Snapshot pools are stateless wrappers (truth lives in the
+            # store), so they are always rebuilt against the current store.
+            quota_pools[pool_id] = QuotaPool(
+                self.quota_snapshots,
+                source,
+                policy=policy,
+            )
+        self.quota_pools = quota_pools
+
+        concurrency_pools: dict[str, ConcurrencyManager] = {}
+        for pool_id, (policy, _endpoint) in concurrency_specs.items():
+            existing_c = self.concurrency_pools.get(pool_id)
+            if existing_c is not None and existing_c.limit == policy.limit:
+                concurrency_pools[pool_id] = existing_c
+            else:
+                concurrency_pools[pool_id] = ConcurrencyManager(policy.limit)
+        self.concurrency_pools = concurrency_pools
+
+    def _canonical_model_id(self, model_id: str) -> str:
+        route_cfg = getattr(self.fixed_router, "routes", {}).get(model_id)
+        return getattr(route_cfg, "canonical_model_id", None) or model_id
+
+    def _validate_routes(self) -> None:
+        has_stateful_provider = False
+        for model_id, candidates in self.route_candidates.items():
+            route_has_stateful_provider = any(
+                candidate.provider_type in (ProviderType.QUOTA, ProviderType.CONCURRENCY)
+                for candidate in candidates
+            )
+            has_stateful_provider = has_stateful_provider or route_has_stateful_provider
+            if not any(
+                candidate.provider_type is ProviderType.ON_DEMAND for candidate in candidates
+            ):
+                logger.warning(
+                    "Model '%s' has no on-demand baseline; RouteWise will use "
+                    "reference_api_price for L/U if configured. no P_O baseline is configured.",
+                    model_id,
+                )
+        if has_stateful_provider:
+            self._validate_stateful_provider_worker_scope()
+
+    def _validate_stateful_provider_worker_scope(self) -> None:
+        worker_count = _configured_worker_count()
+        if worker_count is not None and worker_count > 1:
+            if self.config.stateful_providers_single_worker_only:
+                raise RuntimeError(
+                    "RouteWise quota/concurrency providers are process-local in this "
+                    "integration and require a single backend worker. Configure "
+                    "only on-demand providers for routewise in multi-worker deployments, "
+                    "or disable stateful_providers_single_worker_only after adding "
+                    "shared quota/concurrency state."
+                )
+            logger.warning(
+                "RouteWise quota/concurrency providers are process-local but worker_count=%d; "
+                "quota and concurrency limits will be per-worker.",
+                worker_count,
+            )
+
+    def _validate_envelope_calibration(self) -> None:
+        """Guard quota-bearing pools whose cost envelope is uncalibrated.
+
+        The RouteWise paper requires the quota shadow price to be parameterized
+        by a workload-derived ``[L, U]``; there is no seed fallback. A pool that
+        contains at least one quota provider therefore cannot price that
+        provider until its envelope has samples.
+
+        Rather than crash the whole gateway on a cold start, we degrade: a model
+        that still has a non-quota leg (on-demand or concurrency) keeps serving
+        on that leg while its quota provider is masked at request time (see
+        ``_select_adapter``), and the quota leg activates once real traffic
+        calibrates the envelope. We only hard-fail for a model whose *only*
+        route is the uncalibrated quota pool, because that model would otherwise
+        be unroutable. Pure API or pure concurrency models are unaffected.
+        """
+        degraded: list[tuple[str, str, int]] = []
+        unroutable: list[tuple[str, str, int]] = []
+        for model_id, candidates in self.route_candidates.items():
+            if not any(candidate.provider_type is ProviderType.QUOTA for candidate in candidates):
+                continue
+            pool = self._routewise_pool(model_id)
+            if self.envelope.snapshot(pool) is not None:
+                continue
+            entry = (pool, model_id, self.envelope.sample_count(pool))
+            has_fallback = any(
+                candidate.provider_type is not ProviderType.QUOTA for candidate in candidates
+            )
+            (degraded if has_fallback else unroutable).append(entry)
+
+        needed = max(int(self.envelope.min_samples), 1)
+        if degraded:
+            details = "\n".join(
+                f"  - pool='{p}', model='{m}': {n}/{needed} envelope samples in window"
+                for p, m, n in degraded
+            )
+            logger.warning(
+                "RouteWise cost envelope is uncalibrated for quota-bearing pools; "
+                "masking their quota providers and serving via fallback legs until "
+                "real traffic calibrates them (each needs >= %d request-cost samples "
+                "within the lookback window):\n%s",
+                needed,
+                details,
+            )
+        if unroutable:
+            details = "\n".join(
+                f"  - pool='{p}', model='{m}': {n}/{needed} envelope samples in window"
+                for p, m, n in unroutable
+            )
+            raise EnvelopeNotCalibratedError(
+                "RouteWise refuses to start: cost envelope is uncalibrated for "
+                f"quota-only pools with no fallback leg (each needs >= {needed} "
+                "request-cost samples within the lookback window). Ensure api_logs "
+                "has recent traffic for these models before deploying, add a "
+                "non-quota route, or remove their quota providers.\n" + details
+            )
+
+    @staticmethod
+    def _parse_reference_api_price(raw: dict[str, Any] | None) -> CandidatePricing | None:
+        if raw is None:
+            return None
+        return CandidatePricing.from_raw(raw, context="reference_api_price")
+
+    def _routewise_pool(self, model_id: str) -> str:
+        model_id = self._canonical_model_id(model_id)
+        return self._model_routewise_pools.get(model_id, model_id)
+
+    def _quota_sources(self) -> list[QuotaSource]:
+        sources: dict[QuotaSource, QuotaSource] = {}
+        for candidates in self.route_candidates.values():
+            for candidate in candidates:
+                if (
+                    candidate.provider_type is ProviderType.QUOTA
+                    and candidate.quota_source is not None
+                ):
+                    sources[candidate.quota_source] = candidate.quota_source
+        return list(sources.values())
+
+    def _max_tokens_from_context(self, context: dict[str, Any]) -> int | None:
+        params = context.get("params")
+        if isinstance(params, dict):
+            for key in ("max_completion_tokens", "max_tokens"):
+                value = params.get(key)
+                if value is not None:
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        return None
+        return None
+
+    def _prompt_tokens_from_context(self, context: dict[str, Any]) -> int:
+        value = context.get("prompt_tokens")
+        if value is None and isinstance(context.get("params"), dict):
+            value = context["params"].get("prompt_tokens")
+        try:
+            tokens = int(value or 0)
+        except (TypeError, ValueError):
+            tokens = 0
+        if tokens > 0:
+            return tokens
+        return estimate_prompt_tokens(context.get("messages") or [])
+
+    def _predict_output(
+        self,
+        model_id: str,
+        prompt_tokens: int,
+        context: dict[str, Any],
+    ) -> BucketMeanPrediction:
+        model_id = self._canonical_model_id(model_id)
+        return self.predictor.predict(
+            model_id,
+            prompt_tokens,
+            max_tokens=self._max_tokens_from_context(context),
+        )
+
+    def _mean_ttft_sec(self, endpoint_id: str, now: float) -> float:
+        profile = self._latency_profiles.get(endpoint_id)
+        if profile is None:
+            return self.config.latency_unprofiled_ttft_ms / 1000.0
+        if profile.total_count(now) <= 0:
+            return self.config.latency_unprofiled_ttft_ms / 1000.0
+        mean = profile.mean_with_errors_sec(
+            now,
+            error_penalty_ms=RATE_LIMIT_ERROR_PENALTY_MS,
+        )
+        if mean is None:
+            return self.config.latency_unprofiled_ttft_ms / 1000.0
+        return mean
+
+    def _api_cost_for_adapter(
+        self,
+        adapter: BaseAdapter,
+        *,
+        prompt_tokens: int,
+        predicted_output_tokens: float,
+    ) -> float:
+        p_in, p_out = self._pricing(adapter)
+        return api_request_cost_usd(
+            prompt_tokens=prompt_tokens,
+            predicted_output_tokens=predicted_output_tokens,
+            input_price_per_m=p_in,
+            output_price_per_m=p_out,
+        )
+
+    @staticmethod
+    def _api_cost_for_pricing(
+        pricing: CandidatePricing,
+        *,
+        prompt_tokens: int,
+        output_tokens: float,
+    ) -> float:
+        return api_request_cost_usd(
+            prompt_tokens=prompt_tokens,
+            predicted_output_tokens=output_tokens,
+            input_price_per_m=pricing.prompt,
+            output_price_per_m=pricing.completion,
+        )
+
+    def _cheapest_api_cost(
+        self,
+        model_id: str,
+        *,
+        prompt_tokens: int,
+        output_tokens: float,
+    ) -> float | None:
+        model_id = self._canonical_model_id(model_id)
+        entries = self.route_candidates.get(model_id, [])
+        costs = [
+            self._api_cost_for_pricing(
+                candidate.pricing,
+                prompt_tokens=prompt_tokens,
+                output_tokens=output_tokens,
+            )
+            for candidate in entries
+            if candidate.provider_type is ProviderType.ON_DEMAND
+        ]
+        return min(costs) if costs else None
+
+    def _reference_api_cost(
+        self,
+        model_id: str,
+        *,
+        prompt_tokens: int,
+        output_tokens: float,
+    ) -> float | None:
+        api_cost = self._cheapest_api_cost(
+            model_id,
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+        )
+        if api_cost is not None:
+            return api_cost
+        if self.reference_api_price is None:
+            return None
+        return self._api_cost_for_pricing(
+            self.reference_api_price,
+            prompt_tokens=prompt_tokens,
+            output_tokens=output_tokens,
+        )
+
+    def _estimate_value(self, model_id: str, prompt_tokens: int) -> float:
+        """Compatibility helper: cheapest cold-cache API cost for one request."""
+        model_id = self._canonical_model_id(model_id)
+        prediction = self.predictor.predict(model_id, prompt_tokens)
+        cost = self._reference_api_cost(
+            model_id,
+            prompt_tokens=prompt_tokens,
+            output_tokens=prediction.tokens,
+        )
+        return cost if cost is not None else 0.0
+
+    def _build_candidates(
+        self,
+        model_id: str,
+        *,
+        prompt_tokens: int,
+        predicted_output_tokens: float,
+        envelope: CostEnvelopeSnapshot | None,
+        now: float,
+        context: dict[str, Any] | None = None,
+    ) -> tuple[list[FeasibleProviderCandidate], tuple[tuple[Any, ...], dict[str, Any]] | None]:
+        model_id = self._canonical_model_id(model_id)
+        entries = self.route_candidates.get(model_id)
+        if entries is None:
+            raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
+
+        candidates: list[FeasibleProviderCandidate] = []
+        prefix_context = self._prefix_cache_cost_context(model_id, context)
+
+        for route_candidate in entries:
+            adapter = route_candidate.adapter
+            endpoint_id = route_candidate.endpoint_id
+            self._ensure_health(endpoint_id)
+            circuit = self._circuits[endpoint_id]
+            if not circuit.allow_request():
+                continue
+
+            request_cost = self._api_cost_for_pricing(
+                route_candidate.pricing,
+                prompt_tokens=prompt_tokens,
+                output_tokens=predicted_output_tokens,
+            )
+
+            provider_type: Literal["on_demand", "quota", "concurrency"]
+            if route_candidate.provider_type is ProviderType.ON_DEMAND:
+                provider_type = "on_demand"
+                cost = request_cost
+                reason = "cold_api_cost"
+                prefix_discount = 0.0
+                prefix_expected = 0.0
+                prefix_applied = False
+                if prefix_context is not None:
+                    (
+                        cost,
+                        prefix_discount,
+                        prefix_expected,
+                        prefix_applied,
+                    ) = self._apply_prefix_cache_cost_adjustment(
+                        model_id=model_id,
+                        route_candidate=route_candidate,
+                        cold_cost=request_cost,
+                        prefix_context=prefix_context,
+                    )
+                    if prefix_applied:
+                        reason = "prefix_cache_adjusted_api_cost"
+            elif route_candidate.provider_type is ProviderType.QUOTA:
+                if envelope is None:
+                    # No calibrated envelope: skip quota providers rather than
+                    # invent a shadow price. Startup validation should
+                    # normally have caught this before we got here.
+                    logger.warning(
+                        "Skipping quota provider %s for model %s: envelope uncalibrated",
+                        endpoint_id,
+                        model_id,
+                    )
+                    continue
+                quota_pool_id = route_candidate.quota_pool
+                quota_pool = self.quota_pools.get(quota_pool_id) if quota_pool_id else None
+                if quota_pool is None or not quota_pool.ready:
+                    # Snapshot-backed pools are skipped until the first provider
+                    # snapshot lands rather than priced off invented state.
+                    continue
+                if quota_pool.remaining <= 0:
+                    continue
+                used_fraction = quota_pool.used_fraction
+                quota_remaining = quota_pool.remaining
+                provider_type = "quota"
+                cost = quota_shadow_price_usd(
+                    used_fraction=used_fraction,
+                    lower=envelope.lower,
+                    upper=envelope.upper,
+                )
+                reason = "quota_shadow_price"
+                prefix_discount = 0.0
+                prefix_expected = 0.0
+                prefix_applied = False
+            elif route_candidate.provider_type is ProviderType.CONCURRENCY:
+                concurrency_pool_id = route_candidate.concurrency_pool
+                concurrency_pool = (
+                    self.concurrency_pools.get(concurrency_pool_id) if concurrency_pool_id else None
+                )
+                if concurrency_pool is None or concurrency_pool.available <= 0:
+                    continue
+                provider_type = "concurrency"
+                cost = 0.0
+                reason = "available_concurrency_slot"
+                prefix_discount = 0.0
+                prefix_expected = 0.0
+                prefix_applied = False
+            else:
+                continue
+
+            if route_candidate.provider_type is not ProviderType.QUOTA:
+                quota_pool_id = None
+                used_fraction = None
+                quota_remaining = None
+            if route_candidate.provider_type is not ProviderType.CONCURRENCY:
+                concurrency_pool_id = None
+
+            candidates.append(
+                FeasibleProviderCandidate(
+                    endpoint_id=endpoint_id,
+                    adapter=adapter,
+                    provider_type=provider_type,
+                    weight=route_candidate.weight,
+                    effective_cost_usd=cost,
+                    request_cost_usd=request_cost,
+                    mean_ttft_sec=self._mean_ttft_sec(endpoint_id, now),
+                    cost_reason=reason,
+                    prefix_cache_discount_usd=prefix_discount,
+                    prefix_cache_expected_tokens=prefix_expected,
+                    prefix_cache_adjustment_applied=prefix_applied,
+                    quota_pool=quota_pool_id,
+                    concurrency_pool=concurrency_pool_id,
+                    quota_used_fraction=used_fraction,
+                    quota_remaining=quota_remaining,
+                )
+            )
+        return candidates, prefix_context
+
+    def _prefix_cache_cost_context(
+        self,
+        model_id: str,
+        context: dict[str, Any] | None,
+    ) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
+        """Return request prefix-cache inputs for cost adjustment, if eligible."""
+        if not self.config.prefix_cache_cost_adjustment_enabled or context is None:
+            return None
+        params = context.get("params")
+        session = str(params.get("session_id") or "") if isinstance(params, dict) else ""
+        if not session:
+            return None
+        messages = context.get("messages") or []
+        try:
+            blocks = self.prefix_cache.build_blocks(
+                messages,
+                tools=params.get("tools") if isinstance(params, dict) else None,
+                response_format=params.get("response_format") if isinstance(params, dict) else None,
+            )
+        except Exception:
+            logger.debug("prefix_cache cost build_blocks failed", exc_info=True)
+            return None
+        user = str(req_ctx.get().get("affinity_key") or "")
+        cache_params = self._cache_affecting_params(params)
+        # ``scopes`` is filled in by _apply_prefix_cache_cost_adjustment as each
+        # eligible candidate is priced, so the post-success warm only covers the
+        # providers the cost estimate actually applied to (direct, cache-priced,
+        # non-rotating) and never rebuilds blocks/scopes a second time.
+        return blocks, {
+            "model_id": model_id,
+            "session": session,
+            "user": user,
+            "cache_params": cache_params,
+            "scopes": {},
+        }
+
+    def _apply_prefix_cache_cost_adjustment(
+        self,
+        *,
+        model_id: str,
+        route_candidate: RouteProviderCandidate,
+        cold_cost: float,
+        prefix_context: tuple[tuple[Any, ...], dict[str, Any]],
+    ) -> tuple[float, float, float, bool]:
+        """Return API effective cost after a guarded prefix-cache discount."""
+        adapter = route_candidate.adapter
+        if self._has_rotating_key_pool(adapter):
+            return cold_cost, 0.0, 0.0, False
+        delta = price_delta_per_token(
+            route_candidate.pricing.prompt,
+            route_candidate.pricing.cache_read,
+        )
+        if delta <= 0.0:
+            return cold_cost, 0.0, 0.0, False
+
+        blocks, info = prefix_context
+        provider_id = str(getattr(adapter.config, "provider", "") or "")
+        scope = self.prefix_cache.scope_for(
+            session=str(info["session"]),
+            provider_id=provider_id,
+            endpoint_id=route_candidate.endpoint_id,
+            model_profile=model_id,
+            user=str(info["user"]),
+            cache_params=str(info["cache_params"]),
+        )
+        # Stash this eligible candidate's scope so the selected request can warm
+        # it after a successful observation without rebuilding blocks/scopes.
+        scopes = info.get("scopes")
+        if isinstance(scopes, dict):
+            scopes[route_candidate.endpoint_id] = scope
+        record = self.prefix_cache.evaluate(
+            scope,
+            blocks,
+            cold_cost=cold_cost,
+            price_delta=delta,
+        )
+        discount = record.cache_discount if record.would_apply else 0.0
+        adjusted = max(0.0, cold_cost - discount)
+        return adjusted, discount, record.expected_cached_tokens, record.would_apply
+
+    @staticmethod
+    def _has_rotating_key_pool(adapter: Any) -> bool:
+        keys = getattr(adapter.config, "api_keys", None)
+        return isinstance(keys, list) and len(keys) > 1
+
+    @staticmethod
+    def _routing_dollar_estimate(candidate: FeasibleProviderCandidate) -> float:
+        """Return the decision-time dollar estimate for metadata / hedging cost."""
+        if candidate.provider_type == "on_demand":
+            return candidate.effective_cost_usd
+        return candidate.request_cost_usd
+
+    def _sample_solution(
+        self,
+        candidates: list[FeasibleProviderCandidate],
+        solution: LPSolution,
+    ) -> FeasibleProviderCandidate | None:
+        by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+        total = sum(solution.weights.values())
+        if total <= 0:
+            return None
+        threshold = self._rng.random()
+        cumulative = 0.0
+        last: FeasibleProviderCandidate | None = None
+        for endpoint_id, weight in solution.weights.items():
+            candidate = by_id.get(endpoint_id)
+            if candidate is None or weight <= 0:
+                continue
+            last = candidate
+            cumulative += weight / total
+            if threshold <= cumulative:
+                return candidate
+        return last
+
+    def _commit_candidate(self, candidate: FeasibleProviderCandidate) -> bool:
+        if candidate.provider_type == "concurrency":
+            pool = (
+                self.concurrency_pools.get(candidate.concurrency_pool)
+                if candidate.concurrency_pool
+                else None
+            )
+            return pool is not None and pool.try_acquire()
+        if candidate.provider_type == "quota":
+            quota_pool = (
+                self.quota_pools.get(candidate.quota_pool) if candidate.quota_pool else None
+            )
+            if quota_pool is None:
+                return False
+            # Commit at selection time and do not refund on provider failure:
+            # fallback is API-only, so refunding would let failed quota attempts
+            # become free retries against the same scarce subscription.
+            return quota_pool.consume()
+        return True
+
+    def _release_candidate(self, candidate: FeasibleProviderCandidate) -> None:
+        if candidate.provider_type != "concurrency" or not candidate.concurrency_pool:
+            return
+        pool = self.concurrency_pools.get(candidate.concurrency_pool)
+        if pool is not None:
+            pool.release()
+
+    def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
+        return ProviderReservation(router=self, candidate=candidate)
+
+    def _remember_primary_reservation(
+        self,
+        request_id: str | None,
+        candidate: FeasibleProviderCandidate,
+    ) -> None:
+        if not request_id:
+            return
+        self._release_pending_primary_reservation(request_id)
+        if candidate.provider_type == "concurrency":
+            self._primary_reservations[request_id] = ProviderReservation(
+                router=self,
+                candidate=candidate,
+                acquired=True,
+            )
+
+    def _release_pending_primary_reservation(self, request_id: str | None) -> bool:
+        if not request_id:
+            return False
+        reservation = self._primary_reservations.pop(request_id, None)
+        if reservation is None:
+            return False
+        reservation.release()
+        return True
+
+    def _release_execution_primary_capacity(
+        self,
+        request_id: str | None,
+        primary_adapter: Any,
+    ) -> None:
+        if self._release_pending_primary_reservation(request_id):
+            return
+        if self._adapter_provider_type.get(id(primary_adapter)) is not ProviderType.CONCURRENCY:
+            return
+        endpoint_id = self._adapter_endpoint_ids.get(id(primary_adapter))
+        pool_id = self._endpoint_concurrency_pool.get(endpoint_id) if endpoint_id else None
+        pool = self.concurrency_pools.get(pool_id) if pool_id else None
+        if pool is not None:
+            pool.release()
+
+    def _quota_metadata_state(
+        self,
+        selected: FeasibleProviderCandidate,
+    ) -> tuple[float | None, int | None]:
+        """Post-commit quota state of the selected candidate's pool, if any."""
+        if selected.provider_type == "quota" and selected.quota_pool:
+            pool = self.quota_pools.get(selected.quota_pool)
+            if pool is not None:
+                return pool.used_fraction, pool.remaining
+        return None, None
+
+    def _decision_metadata(
+        self,
+        *,
+        model_id: str,
+        request_id: str | None,
+        prompt_tokens: int,
+        prediction: BucketMeanPrediction,
+        envelope: CostEnvelopeSnapshot | None,
+        candidates: list[FeasibleProviderCandidate],
+        solution: LPSolution,
+        selected: FeasibleProviderCandidate,
+        hedge_plan: HedgePlan | None = None,
+    ) -> dict[str, Any]:
+        selected_weight = solution.weights.get(selected.endpoint_id, 0.0)
+        api_cost = self._reference_api_cost(
+            model_id,
+            prompt_tokens=prompt_tokens,
+            output_tokens=prediction.tokens,
+        )
+        quota_used_fraction, quota_remaining = self._quota_metadata_state(selected)
+        selected_quota_source = (
+            getattr(self.quota_pools.get(selected.quota_pool), "source", None)
+            if selected.quota_pool
+            else None
+        )
+        selected_concurrency_pool = (
+            self.concurrency_pools.get(selected.concurrency_pool)
+            if selected.concurrency_pool
+            else None
+        )
+        return {
+            "request_id": request_id,
+            "timestamp": time.time(),
+            "is_streaming": False,
+            "selected_provider_type": selected.provider_type,
+            "selected_endpoint": selected.endpoint_id,
+            "selected_effective_cost_usd": selected.effective_cost_usd,
+            "selected_mean_ttft_sec": selected.mean_ttft_sec,
+            "selected_lp_weight": selected_weight,
+            "budget_usd": solution.budget_usd,
+            "lp_status": solution.status,
+            "lp_weights": dict(solution.weights),
+            "candidate_costs_usd": {c.endpoint_id: c.effective_cost_usd for c in candidates},
+            "candidate_request_costs_usd": {c.endpoint_id: c.request_cost_usd for c in candidates},
+            "candidate_cost_reasons": {c.endpoint_id: c.cost_reason for c in candidates},
+            "candidate_prefix_cache_discounts_usd": {
+                c.endpoint_id: c.prefix_cache_discount_usd
+                for c in candidates
+                if c.prefix_cache_discount_usd > 0
+            },
+            "candidate_prefix_cache_expected_tokens": {
+                c.endpoint_id: c.prefix_cache_expected_tokens
+                for c in candidates
+                if c.prefix_cache_expected_tokens > 0
+            },
+            "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
+            "candidate_provider_types": {c.endpoint_id: c.provider_type for c in candidates},
+            "candidate_quota_used_fraction": {
+                c.endpoint_id: c.quota_used_fraction
+                for c in candidates
+                if c.quota_used_fraction is not None
+            },
+            "candidate_quota_remaining": {
+                c.endpoint_id: c.quota_remaining
+                for c in candidates
+                if c.quota_remaining is not None
+            },
+            "prompt_tokens": prompt_tokens,
+            "predicted_output_tokens": prediction.tokens,
+            "output_prediction_source": prediction.source,
+            "output_prediction_bucket": prediction.bucket,
+            "output_prediction_sample_count": prediction.sample_count,
+            "api_reference_cost_usd": api_cost,
+            "api_cheapest_cost_usd": api_cost,
+            "v_t": api_cost if api_cost is not None else 0.0,
+            "cache_assumption": "cold",
+            "estimated_cached_input_tokens": 0,
+            "stateful_providers_single_worker_only": self.config.stateful_providers_single_worker_only,
+            "L": envelope.lower if envelope is not None else None,
+            "U": envelope.upper if envelope is not None else None,
+            "envelope_sample_count": (envelope.sample_count if envelope is not None else 0),
+            "quota_pool": selected.quota_pool,
+            "quota_source": (
+                {
+                    "provider": selected_quota_source.provider,
+                    "usage_label": selected_quota_source.usage_label,
+                    "unit": selected_quota_source.unit,
+                }
+                if selected_quota_source is not None
+                else None
+            ),
+            "quota_used_fraction": quota_used_fraction,
+            "quota_remaining": quota_remaining,
+            "quota_committed": 0.0,
+            "concurrency_pool": selected.concurrency_pool,
+            "sc_active": selected_concurrency_pool.active if selected_concurrency_pool else 0,
+            "sc_limit": selected_concurrency_pool.limit if selected_concurrency_pool else 0,
+            "sc_committed": selected.provider_type == "concurrency",
+            "hedged": False,
+            "backup_won": False,
+            # --- H6 canonical cross-source fields ---------------------------
+            # Aligned with the SIM/REAL PerRequestRecord schema
+            # (docs in the RouteWise simulator repo: SCHEMA_UNIFICATION). These
+            # are added alongside the prod-native fields above (which the
+            # observation/health pipeline still reads) so cross-source parity
+            # has one field-name contract. Provider granularity is endpoint-level
+            # here vs provider-level in SIM/REAL — that value difference is
+            # inherent to the source, not a schema gap.
+            "policy": "routewise",
+            "primary_provider": selected.endpoint_id,
+            "primary_provider_type": selected.provider_type,
+            "backup_provider": None,
+            "backup_provider_type": None,
+            "hedge_triggered": False,
+            "hedge_winner": None,
+            "hedge_algorithm": "probability_target" if hedge_plan is not None else "disabled",
+            "hedge_schedule": "slo_relative_checkpoints" if hedge_plan is not None else None,
+            "hedge_delay_ms": None,
+            "hedge_success_probability": None,
+            "lp_budget_usd": solution.budget_usd,
+            # Decision-time dollar estimate at predicted tokens. On-demand uses the
+            # effective cost because guarded prefix-cache adjustment is part of
+            # the P_O cost formula; P_Q/P_C retain the raw API reference because
+            # their effective cost is a quota/concurrency shadow price.
+            "primary_routing_estimated_cost_usd": self._routing_dollar_estimate(selected),
+            "backup_routing_estimated_cost_usd": None,
+            "routing_estimated_cost_usd": self._routing_dollar_estimate(selected),
+            # lp_weights and lp_status (above) already use canonical names.
+        }
+
+    def _select_hedge_plan(
+        self,
+        *,
+        selected: FeasibleProviderCandidate,
+        now: float,
+    ) -> HedgePlan | None:
+        """Return the checkpoint schedule for probability-target hedging."""
+        if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
+            return None
+
+        primary_profile = self._latency_profiles.get(selected.endpoint_id)
+        if (
+            primary_profile is None
+            or primary_profile.sample_count(now) < self.config.latency_min_samples
+        ):
+            return None
+
+        checkpoints = hedge_checkpoints_for_slo(self.config.latency_slo_sec * 1000.0)
+        return HedgePlan(checkpoints_sec=checkpoints) if checkpoints else None
+
+    def _select_checkpoint_backup(
+        self,
+        *,
+        model_id: str,
+        request_id: str | None,
+        context: dict[str, Any] | None,
+        prompt_tokens: int,
+        predicted_output_tokens: float,
+        envelope: CostEnvelopeSnapshot | None,
+        selected: FeasibleProviderCandidate,
+        checkpoints_sec: tuple[float, ...],
+        elapsed_sec: float,
+        checkpoint_ts: float,
+    ) -> CheckpointBackupDispatch | None:
+        """Select and reserve a backup at one in-flight checkpoint."""
+        with self._route_commit_lock:
+            return self._select_checkpoint_backup_locked(
+                model_id=model_id,
+                request_id=request_id,
+                context=context,
+                prompt_tokens=prompt_tokens,
+                predicted_output_tokens=predicted_output_tokens,
+                envelope=envelope,
+                selected=selected,
+                checkpoints_sec=checkpoints_sec,
+                elapsed_sec=elapsed_sec,
+                checkpoint_ts=checkpoint_ts,
+            )
+
+    def _select_checkpoint_backup_locked(
+        self,
+        *,
+        model_id: str,
+        request_id: str | None,
+        context: dict[str, Any] | None,
+        prompt_tokens: int,
+        predicted_output_tokens: float,
+        envelope: CostEnvelopeSnapshot | None,
+        selected: FeasibleProviderCandidate,
+        checkpoints_sec: tuple[float, ...],
+        elapsed_sec: float,
+        checkpoint_ts: float,
+    ) -> CheckpointBackupDispatch | None:
+        primary_profile = self._latency_profiles.get(selected.endpoint_id)
+        if (
+            primary_profile is None
+            or primary_profile.sample_count(checkpoint_ts) < self.config.latency_min_samples
+        ):
+            return None
+
+        candidates, _ = self._build_candidates(
+            model_id,
+            prompt_tokens=prompt_tokens,
+            predicted_output_tokens=predicted_output_tokens,
+            envelope=envelope,
+            now=checkpoint_ts,
+            context=context,
+        )
+        current = self._select_hedge_candidate_at_elapsed(
+            primary_profile=primary_profile,
+            candidates=candidates,
+            selected=selected,
+            now=checkpoint_ts,
+            elapsed_sec=elapsed_sec,
+        )
+        if current is None:
+            return None
+
+        scheduled_checkpoint = any(
+            abs(checkpoint - elapsed_sec) <= 1e-9 for checkpoint in checkpoints_sec
+        )
+        # Primary failure asks for an immediate backup at an arbitrary elapsed
+        # time; only scheduled checkpoints should defer to a later checkpoint.
+        if scheduled_checkpoint:
+            for future_elapsed in checkpoints_sec:
+                if future_elapsed <= elapsed_sec + 1e-9:
+                    continue
+                future = self._select_hedge_candidate_at_elapsed(
+                    primary_profile=primary_profile,
+                    candidates=candidates,
+                    selected=selected,
+                    now=checkpoint_ts,
+                    elapsed_sec=future_elapsed,
+                )
+                if future is not None:
+                    return None
+
+        backup = current.provider
+        reservation = self._reserve_candidate(backup)
+        if not reservation.acquire():
+            return None
+
+        self._record_hedge_dispatch(
+            request_id=request_id,
+            backup=backup,
+            elapsed_sec=elapsed_sec,
+            success_probability=current.success_probability,
+        )
+        return CheckpointBackupDispatch(
+            backup=backup.adapter,
+            elapsed_sec=elapsed_sec,
+            success_probability=current.success_probability,
+            release=reservation.release,
+        )
+
+    def _select_hedge_candidate_at_elapsed(
+        self,
+        *,
+        primary_profile: ProviderProfile,
+        candidates: list[FeasibleProviderCandidate],
+        selected: FeasibleProviderCandidate,
+        now: float,
+        elapsed_sec: float,
+    ) -> BackupCandidate[FeasibleProviderCandidate] | None:
+        backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
+        for candidate in candidates:
+            if candidate.endpoint_id == selected.endpoint_id:
+                continue
+            profile = self._latency_profiles.get(candidate.endpoint_id)
+            if profile is None or profile.sample_count(now) < self.config.latency_min_samples:
+                continue
+            success_probability = combined_success_probability(
+                lambda value_ms: primary_profile.cdf_at(value_ms / 1000.0, now),
+                lambda value_ms, backup_profile=profile: backup_profile.cdf_at(
+                    value_ms / 1000.0,
+                    now,
+                ),
+                elapsed_ms=elapsed_sec * 1000.0,
+                slo_ms=self.config.latency_slo_sec * 1000.0,
+                dispatch_overhead_ms=0.0,
+            )
+            backup_candidates.append(
+                BackupCandidate(
+                    provider=candidate,
+                    success_probability=success_probability,
+                    marginal_cost=self._routing_dollar_estimate(candidate),
+                    true_mean_ms=candidate.mean_ttft_sec * 1000.0,
+                    success_target=HEDGE_SUCCESS_TARGET,
+                )
+            )
+        return select_probability_backup(backup_candidates)
+
+    def _record_hedge_dispatch(
+        self,
+        *,
+        request_id: str | None,
+        backup: FeasibleProviderCandidate,
+        elapsed_sec: float,
+        success_probability: float,
+    ) -> None:
+        if not request_id or request_id not in self._pending_decisions:
+            return
+        meta = self._pending_decisions[request_id]
+        meta["backup_provider"] = backup.endpoint_id
+        meta["backup_provider_type"] = backup.provider_type
+        meta["hedge_delay_ms"] = elapsed_sec * 1000.0
+        meta["hedge_success_probability"] = success_probability
+        backup_cost = self._routing_dollar_estimate(backup)
+        meta["backup_routing_estimated_cost_usd"] = backup_cost
+        primary_cost = meta.get("primary_routing_estimated_cost_usd")
+        if primary_cost is not None:
+            meta["routing_estimated_cost_usd"] = float(primary_cost) + backup_cost
+        else:
+            meta["routing_estimated_cost_usd"] = backup_cost
+
+    def _apply_hedge_execution_metadata(self, adapter: Any, request_id: str | None) -> None:
+        """Update pending RouteWise metadata after a HedgedAdapter has run."""
+        if not request_id or request_id not in self._pending_decisions:
+            return
+        if not isinstance(adapter, HedgedAdapter):
+            return
+
+        meta = self._pending_decisions[request_id]
+        hedge_triggered = bool(getattr(adapter, "hedge_triggered", False))
+        backup_won = bool(getattr(adapter, "backup_won", False))
+        meta["hedged"] = hedge_triggered
+        meta["hedge_triggered"] = hedge_triggered
+        meta["backup_won"] = backup_won
+        if hedge_triggered and getattr(adapter, "hedge_delay_sec", None) is not None:
+            meta["hedge_delay_ms"] = float(adapter.hedge_delay_sec) * 1000.0
+        if hedge_triggered and getattr(adapter, "hedge_success_probability", None) is not None:
+            meta["hedge_success_probability"] = adapter.hedge_success_probability
+        if hedge_triggered:
+            meta["hedge_winner"] = "backup" if backup_won else "primary"
+        else:
+            meta["backup_provider"] = None
+            meta["backup_provider_type"] = None
+            meta["hedge_winner"] = None
+        failed_attempts = getattr(adapter, "failed_attempts", None)
+        if failed_attempts:
+            existing = meta.get("failed_attempts")
+            meta["failed_attempts"] = _dedupe_failed_attempts(
+                [
+                    *(existing if isinstance(existing, list) else []),
+                    *failed_attempts,
+                ]
+            )
+
+    # ------------------------------------------------------------------
+    # BaseRouter integration
     # ------------------------------------------------------------------
 
     def on_provider_success(self, provider: str) -> None:
-        """Record a successful request for *provider* (ProviderEventSink)."""
+        """Record a provider success emitted by HedgedAdapter."""
         self._on_success(provider)
 
     def on_provider_failure(self, provider: str, reason: str) -> None:
-        """Record a failed request for *provider* (ProviderEventSink)."""
+        """Record a provider failure emitted by HedgedAdapter."""
         self._on_failure(provider, reason=reason)
 
-    # ------------------------------------------------------------------
-    # Classification
-    # ------------------------------------------------------------------
-
-    def _classify_all(self) -> None:
-        """Walk every route in FixedRouter and classify adapters."""
-        for model_id, route_cfg in self.fixed_router.routes.items():
-            entries: list[tuple[Any, float, SubscriptionType]] = []
-            for adapter, weight in route_cfg.adapters:
-                metadata = getattr(adapter.config, "route_metadata", None)
-                if isinstance(metadata, dict):
-                    sub_str = metadata.get(
-                        "subscription_type", getattr(adapter.config, "subscription_type", "api")
-                    )
-                else:
-                    sub_str = getattr(adapter.config, "subscription_type", "api")
-                try:
-                    sub_type = SubscriptionType(sub_str)
-                except ValueError:
-                    logger.warning(
-                        "Unknown subscription_type '%s' for %s; defaulting to API",
-                        sub_str,
-                        adapter.config.endpoint_id or adapter.config.id,
-                    )
-                    sub_type = SubscriptionType.API
-                entries.append((adapter, weight, sub_type))
-            self.classified[model_id] = entries
-
-    def _effective_fixed_entries(self, model_id: str, route_cfg: Any) -> list[tuple[Any, float]]:
-        """Return FixedRouter route entries with live admin weight overrides applied."""
-        get_effective = getattr(self.fixed_router, "_get_effective_adapters", None)
-        if get_effective is not None:
-            return list(get_effective(model_id, route_cfg))
-        return list(route_cfg.adapters)
-
-    def _effective_classified_entries(
-        self, model_id: str
-    ) -> list[tuple[Any, float, SubscriptionType]]:
-        """Return currently enabled RouteWise entries after live weight overrides."""
-        route_cfg = self.fixed_router.routes.get(model_id)
-        if route_cfg is None:
-            return self.classified.get(model_id, [])
-
-        sub_by_adapter = self._adapter_sub_type_by_model.get(model_id, {})
-        entries: list[tuple[Any, float, SubscriptionType]] = []
-        for adapter, weight in self._effective_fixed_entries(model_id, route_cfg):
-            if weight <= 0:
-                continue
-            sub_type = sub_by_adapter.get(id(adapter))
-            if sub_type is not None:
-                entries.append((adapter, weight, sub_type))
-        return entries
-
-    def _build_adapter_sub_type_map(self) -> None:
-        """Build reverse lookup from ``id(adapter)`` to ``SubscriptionType``.
-
-        Called after ``_classify_all()`` so the execution overrides
-        (``_execute_adapter``, ``_execute_stream_adapter``) can determine
-        whether a given adapter is S_C without touching ``self.classified``.
-        """
-        self._adapter_sub_type = {}
-        self._adapter_sub_type_by_model = {}
-        for model_id, entries in self.classified.items():
-            model_sub_types: dict[int, SubscriptionType] = {}
-            for adapter, _w, sub in entries:
-                self._adapter_sub_type[id(adapter)] = sub
-                model_sub_types[id(adapter)] = sub
-            self._adapter_sub_type_by_model[model_id] = model_sub_types
-
-    def _validate_api_baseline(self) -> None:
-        """Warn if any model lacks an S_A baseline adapter.
-
-        Without S_A, the value estimation (v_t) is undefined (inf from
-        cheapest-API lookup) and the last-resort fallthrough in
-        ``_select_adapter`` has no safe adapter to return.
-        """
-        for model_id, entries in self.classified.items():
-            has_api = any(s is SubscriptionType.API for _, _, s in entries)
-            if not has_api:
-                logger.warning(
-                    "Model '%s' has no S_A (API) adapter. "
-                    "RouteWise routing requires at least one S_A baseline "
-                    "for value estimation; requests may return None when "
-                    "S_C/S_Q resources are exhausted.",
-                    model_id,
-                )
-
-    # ------------------------------------------------------------------
-    # Per-request API cost computation
-    # ------------------------------------------------------------------
-
-    def _precompute_api_prices(self) -> None:
-        """Cache per-token prices for every S_A adapter per model.
-
-        Prices in ``models.yaml`` are per-1M-token; we store them as
-        per-token for direct multiplication in value estimation.
-        """
-        for model_id, entries in self.classified.items():
-            api_prices: dict[int, tuple[Any, float, float]] = {}
-            for adapter, _w, sub in entries:
-                if sub is not SubscriptionType.API:
-                    continue
-                pricing = adapter.config.pricing
-                p_in = float(pricing.get("prompt", "0")) / 1_000_000.0
-                p_out = float(pricing.get("completion", "0")) / 1_000_000.0
-                api_prices[id(adapter)] = (adapter, p_in, p_out)
-            if api_prices:
-                self._api_adapter_prices[model_id] = api_prices
-
-    # ------------------------------------------------------------------
-    # Layer 2: Latency-aware provider selection
-    # ------------------------------------------------------------------
-
-    def _init_latency_profiles(self) -> None:
-        """Initialize latency profiles, endpoint map, and per-model SWRR samplers."""
-        for model_id, entries in self.classified.items():
-            has_api = False
-            for adapter, _w, sub in entries:
-                eid = adapter.config.endpoint_id or adapter.config.id
-                if sub is not SubscriptionType.API:
-                    if eid not in self._latency_profiles:
-                        self._latency_profiles[eid] = ProviderProfile(
-                            endpoint_id=eid,
-                            window_sec=self.config.latency_window_sec,
-                        )
-                    continue
-                has_api = True
-                if eid not in self._latency_profiles:
-                    self._latency_profiles[eid] = ProviderProfile(
-                        endpoint_id=eid,
-                        window_sec=self.config.latency_window_sec,
-                    )
-                if eid not in self._api_endpoint_map:
-                    pricing = adapter.config.pricing
-                    p_in = float(pricing.get("prompt", "0")) / 1_000_000.0
-                    p_out = float(pricing.get("completion", "0")) / 1_000_000.0
-                    self._api_endpoint_map[eid] = (adapter, p_in, p_out)
-            if has_api:
-                self._swrr_samplers[model_id] = SWRRSampler(
-                    alpha=self.config.latency_swrr_alpha,
-                )
-                self._last_lp_times[model_id] = 0.0
-                self._last_lp_weights[model_id] = {}
-                self._last_lp_statuses[model_id] = "not_run"
-
-    def _select_api_adapter(
-        self,
-        model_id: str,
-        prompt_tokens: int,
-        predicted_output: float,
-        api_list: list[tuple[Any, float, float]] | None = None,
-    ) -> tuple[BaseAdapter | None, float]:
-        """Layer 2 entry point: select an S_A adapter with latency awareness.
-
-        Falls back to ``_cheapest_api_for_request`` when:
-        - Single S_A provider for this model.
-        - Fewer than 2 warmed profiles (< min_samples observations).
-
-        Each model_id has its own SWRR sampler and LP state, so
-        multi-model routing never cross-contaminates.
-
-        Args:
-            model_id: Model identifier.
-            prompt_tokens: Number of input tokens.
-            predicted_output: Predicted output token count.
-
-        Returns:
-            Tuple of (selected adapter, estimated cost).
-        """
-        if api_list is None:
-            api_list = self._effective_api_prices(model_id)
-        if len(api_list) <= 1:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        # Collect endpoint IDs for this model's S_A adapters.
-        model_eids: list[str] = []
-        for adapter, _p_in, _p_out in api_list:
-            eid = adapter.config.endpoint_id or adapter.config.id
-            model_eids.append(eid)
-
-        # Check warmup: need >= 2 profiles with sufficient samples.
-        now = time.time()
-        warmed = [
-            eid
-            for eid in model_eids
-            if eid in self._latency_profiles
-            and self._latency_profiles[eid].sample_count(now) >= self.config.latency_min_samples
-        ]
-        if len(warmed) < 2:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        # LP + SWRR path (per-model state).
-        self._maybe_update_lp(model_id, model_eids, prompt_tokens, predicted_output, now)
-
-        sampler = self._swrr_samplers.get(model_id)
-        if sampler is None:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        selected_eid = sampler.sample()
-        if selected_eid is None or selected_eid not in self._api_endpoint_map:
-            return self._cheapest_api_for_request(
-                model_id, prompt_tokens, predicted_output, api_list=api_list
-            )
-
-        adapter, p_in, p_out = self._api_endpoint_map[selected_eid]
-        cost = p_in * prompt_tokens + p_out * predicted_output
-
-        # Hedge mode dispatch.
-        if self.config.latency_hedge_mode == "shadow":
-            self._compute_shadow_hedge(model_id, selected_eid, model_eids, now)
-        elif self.config.latency_hedge_mode == "economic":
-            hedged = self._maybe_create_hedged_adapter(
-                model_id,
-                selected_eid,
-                model_eids,
-                now,
-            )
-            if hedged is not None:
-                return hedged, cost
-
-        return adapter, cost
-
-    def _predict_output_tokens(self, model_id: str, prompt_tokens: int) -> float:
-        """Predict output length using the configured value estimator."""
-        if isinstance(self.predictor, HistogramOutputPredictor):
-            prediction = self.predictor.predict(model_id, prompt_tokens)
-        else:
-            prediction = self.predictor.predict(model_id)
-        return prediction.lcb if self.config.decision_rule == "lapd" else prediction.median
-
-    def _build_effective_cost_candidates(
-        self,
-        model_id: str,
-        prompt_tokens: int,
-        predicted_output: float,
-    ) -> list[_ProviderCandidate]:
-        """Compute finite-cost provider candidates across all subscription categories."""
-        candidates: list[_ProviderCandidate] = []
-        theta_q = self.quota_mgr.get_shadow_price()
-        for adapter, _weight, sub_type in self._effective_classified_entries(model_id):
-            endpoint_id = adapter.config.endpoint_id or adapter.config.id
-            effective_cost = float("inf")
-            if sub_type is SubscriptionType.API:
-                pricing = adapter.config.pricing
-                p_in = float(pricing.get("prompt", "0")) / 1_000_000.0
-                p_out = float(pricing.get("completion", "0")) / 1_000_000.0
-                effective_cost = p_in * prompt_tokens + p_out * predicted_output
-            elif sub_type is SubscriptionType.QUOTA:
-                if self.quota_mgr.remaining > 0:
-                    effective_cost = theta_q
-            elif (
-                sub_type is SubscriptionType.CONCURRENCY
-                and self.conc_mgr is not None
-                and self.conc_mgr.available > 0
-            ):
-                effective_cost = self.config.shadow_price_L_seed
-            if effective_cost < float("inf"):
-                candidates.append(
-                    _ProviderCandidate(
-                        adapter=adapter,
-                        endpoint_id=endpoint_id,
-                        sub_type=sub_type,
-                        effective_cost=effective_cost,
-                    )
-                )
-        return candidates
-
-    def _effective_api_prices(self, model_id: str) -> list[tuple[Any, float, float]]:
-        """Return currently enabled API adapter prices for a model."""
-        api_prices = self._api_adapter_prices.get(model_id, {})
-        prices: list[tuple[Any, float, float]] = []
-        for adapter, _weight, sub_type in self._effective_classified_entries(model_id):
-            if sub_type is not SubscriptionType.API:
-                continue
-            cached = api_prices.get(id(adapter))
-            if cached is not None:
-                prices.append(cached)
-        return prices
-
-    def _commit_candidate_resource(self, candidate: _ProviderCandidate) -> bool:
-        """Commit selected quota/concurrency resources after final selection."""
-        if candidate.sub_type is SubscriptionType.CONCURRENCY:
-            return self.conc_mgr is not None and self.conc_mgr.try_acquire()
-        if candidate.sub_type is SubscriptionType.QUOTA:
-            if self.quota_mgr.remaining <= 0:
-                return False
-            self.quota_mgr.consume()
-        return True
-
-    def _choose_cost_budgeted_candidate(
-        self,
-        model_id: str,
-        candidates: list[_ProviderCandidate],
-        current_time: float,
-    ) -> tuple[_ProviderCandidate | None, str]:
-        """Choose a candidate via min-latency LP under normalized cost budget."""
-        if not candidates:
-            return None, "no_providers"
-        warm = [
-            c
-            for c in candidates
-            if c.endpoint_id in self._latency_profiles
-            and self._latency_profiles[c.endpoint_id].sample_count(current_time)
-            >= self.config.latency_min_samples
-        ]
-        if len(warm) < 2:
-            return min(candidates, key=lambda c: c.effective_cost), "cold_cost_fallback"
-
-        endpoint_ids = [c.endpoint_id for c in warm]
-        mean_latencies = {
-            c.endpoint_id: self._latency_profiles[c.endpoint_id].mean_ttft_sec(current_time)
-            for c in warm
-        }
-        costs = {c.endpoint_id: c.effective_cost for c in warm}
-        weights, status = solve_cost_budgeted_latency_lp(
-            endpoint_ids=endpoint_ids,
-            mean_latencies_sec=mean_latencies,
-            costs=costs,
-            alpha=self.config.latency_cost_budget_alpha,
-        )
-        if not weights:
-            return min(candidates, key=lambda c: c.effective_cost), status
-
-        sampler = self._swrr_samplers.get(model_id)
-        if sampler is None:
-            sampler = SWRRSampler(alpha=self.config.latency_swrr_alpha)
-            self._swrr_samplers[model_id] = sampler
-        sampler.update_weights(weights)
-        self._last_lp_weights[model_id] = weights
-        self._last_lp_statuses[model_id] = status
-        selected_eid = sampler.sample()
-        by_eid = {c.endpoint_id: c for c in warm}
-        return by_eid.get(selected_eid), status
-
-    def _maybe_update_lp(
-        self,
-        model_id: str,
-        endpoint_ids: list[str],
-        prompt_tokens: int,
-        predicted_output: float,
-        current_time: float,
-    ) -> None:
-        """Schedule LP re-solve if enough time has elapsed.
-
-        The LP solve runs in a thread pool to avoid blocking the event loop.
-        The current request uses cached weights; the next request after the
-        solve completes will use the updated weights.
-
-        Args:
-            model_id: Model identifier for per-model state lookup.
-            endpoint_ids: Candidate endpoint IDs for this model.
-            prompt_tokens: Current request prompt tokens (for cost computation).
-            predicted_output: Predicted output tokens.
-            current_time: Current Unix timestamp.
-        """
-        last_lp_time = self._last_lp_times.get(model_id, 0.0)
-        if (current_time - last_lp_time) < self.config.latency_lp_interval_sec:
-            return
-
-        # Skip if there's already an in-flight solve for this model.
-        if model_id in self._pending_lp_solves:
-            return
-
-        # Eagerly update timestamp to prevent duplicate triggers.
-        self._last_lp_times[model_id] = current_time
-
-        # Snapshot inputs for the thread-safe solve.
-        solve_args = self._prepare_lp_solve_args(
-            endpoint_ids, prompt_tokens, predicted_output, current_time
-        )
-        if solve_args is None:
-            return
-
-        # Try to schedule in thread pool; fall back to sync for tests.
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            result = self._run_lp_solve(*solve_args)
-            self._apply_lp_result(model_id, result, current_time)
-            return
-
-        self._pending_lp_solves.add(model_id)
-
-        def _on_done(future: asyncio.Future) -> None:  # type: ignore[type-arg]
-            self._pending_lp_solves.discard(model_id)
-            try:
-                result = future.result()
-                self._apply_lp_result(model_id, result, current_time)
-            except Exception:
-                logger.warning("LP solve failed for model %s", model_id, exc_info=True)
-
-        fut = loop.run_in_executor(None, self._run_lp_solve, *solve_args)
-        fut.add_done_callback(_on_done)
-
-    def _prepare_lp_solve_args(
-        self,
-        endpoint_ids: list[str],
-        prompt_tokens: int,
-        predicted_output: float,
-        current_time: float,
-    ) -> tuple[list[str], dict[str, float], float, float, float, tuple[float, ...]] | None:
-        """Prepare arguments for the LP solve (read-only snapshot).
-
-        Returns None if no eligible endpoints are available.
-        """
-        profiles_subset = {
-            eid: self._latency_profiles[eid]
-            for eid in endpoint_ids
-            if eid in self._latency_profiles
-        }
-        eligible = pre_filter_providers(profiles_subset, current_time)
-        if not eligible:
-            eligible = list(profiles_subset.keys())
-        if not eligible:
-            return None
-
-        costs: dict[str, float] = {}
-        for eid in eligible:
-            if eid in self._api_endpoint_map:
-                _, p_in, p_out = self._api_endpoint_map[eid]
-                costs[eid] = p_in * prompt_tokens + p_out * predicted_output
-            else:
-                costs[eid] = 1.0
-
-        try:
-            factors = tuple(float(f) for f in self.config.latency_relaxation_factors.split(","))
-        except (ValueError, AttributeError):
-            factors = (1.2, 1.5, 2.0)
-
-        return (
-            eligible,
-            costs,
-            self.config.latency_slo_sec,
-            current_time,
-            self.config.latency_target_cdf,
-            factors,
-        )
-
-    def _log_routewise_decision(
-        self,
-        model_id: str,
-        request_id: str | None,
-        selected_tier: str,
-        selected_adapter: Any,
-        selected_endpoint_id: str | None,
-        lp_status: str | None,
-        v_t: float,
-        gain_c: float,
-        gain_q: float,
-        gain_a: float,
-        theta_q: float | None,
-    ) -> None:
-        """Emit a structured routewise decision log with provider/hedge details."""
-        decision_fields = self._routewise_provider_fields(
-            selected_adapter,
-            selected_endpoint_id,
-        )
-
-        logger.info(
-            "RouteWise decision: model=%s request_id=%s tier=%s provider=%s endpoint=%s hedged=%s backup=%s",
-            model_id,
-            request_id,
-            selected_tier,
-            decision_fields["selected_provider"],
-            selected_endpoint_id,
-            decision_fields["hedging_triggered"],
-            decision_fields["hedge_backup_provider"],
-            extra={
-                "event": "routewise_decision",
-                "model_id": model_id,
-                "request_id": request_id,
-                "selected_tier": selected_tier,
-                **decision_fields,
-                "v_t": v_t,
-                "gain_c": gain_c,
-                "gain_q": gain_q,
-                "gain_a": gain_a,
-                "theta_q": theta_q,
-                "lp_status": lp_status,
-            },
-        )
-
-    def _routewise_provider_fields(
-        self,
-        selected_adapter: Any,
-        selected_endpoint_id: str | None,
-    ) -> dict[str, Any]:
-        """Return provider/hedging fields shared by logs and persisted metadata."""
-        config = getattr(selected_adapter, "config", None)
-        selected_provider = getattr(config, "provider", None) if config is not None else None
-
-        backup_provider = None
-        backup_endpoint_id = None
-        is_hedged = isinstance(selected_adapter, HedgedAdapter)
-        if is_hedged:
-            backup_config = getattr(selected_adapter.backup, "config", None)
-            backup_provider = (
-                getattr(backup_config, "provider", None) if backup_config is not None else None
-            )
-            backup_endpoint_id = (
-                getattr(backup_config, "endpoint_id", None) if backup_config is not None else None
-            )
-
-        return {
-            "selected_provider": selected_provider,
-            "selected_endpoint_id": selected_endpoint_id,
-            "hedging_triggered": is_hedged,
-            "hedge_backup_provider": backup_provider,
-            "hedge_backup_endpoint_id": backup_endpoint_id,
-        }
-
-    def _run_lp_solve(
-        self,
-        eligible: list[str],
-        costs: dict[str, float],
-        slo_sec: float,
-        current_time: float,
-        target_cdf: float,
-        factors: tuple[float, ...],
-    ) -> tuple[dict[str, float], str]:
-        """Execute LP solve (CPU-bound, thread-safe).
-
-        This method accesses ``_latency_profiles`` read-only.  Profile
-        updates from ``record_observation`` on the event loop are atomic
-        (deque append + scalar update), so data races are benign.
-        """
-        return solve_provider_lp_with_relaxation(
-            endpoint_ids=eligible,
-            profiles={
-                eid: self._latency_profiles[eid]
-                for eid in eligible
-                if eid in self._latency_profiles
-            },
-            costs=costs,
-            slo_sec=slo_sec,
-            current_time=current_time,
-            target_cdf=target_cdf,
-            kappa=self.config.latency_error_penalty,
-            relaxation_factors=factors,
-        )
-
-    def _apply_lp_result(
-        self,
-        model_id: str,
-        result: tuple[dict[str, float], str],
-        current_time: float,
-    ) -> None:
-        """Apply LP solve result to per-model state (event-loop thread only)."""
-        weights, status = result
-
-        sampler = self._swrr_samplers.get(model_id)
-        if sampler is None:
-            sampler = SWRRSampler(alpha=self.config.latency_swrr_alpha)
-            self._swrr_samplers[model_id] = sampler
-        sampler.update_weights(weights)
-
-        self._last_lp_weights[model_id] = weights
-        self._last_lp_statuses[model_id] = status
-
-        logger.debug(
-            "Layer 2 LP update: model=%s status=%s, weights=%s",
-            model_id,
-            status,
-            weights,
-        )
-
-    def _log_shadow_hedge(self, decision: ShadowHedgeDecision) -> None:
-        """Append shadow hedge decision with bounded log size."""
-        if len(self._shadow_hedge_log) >= self._shadow_hedge_log_maxlen:
-            # Evict oldest half to amortize cost
-            self._shadow_hedge_log = self._shadow_hedge_log[self._shadow_hedge_log_maxlen // 2 :]
-        self._shadow_hedge_log.append(decision)
-
-    def _compute_shadow_hedge(
-        self,
-        model_id: str,
-        primary_eid: str,
-        candidate_eids: list[str],
-        current_time: float,
-    ) -> None:
-        """Compute and log a shadow hedge decision (no actual dispatch).
-
-        Uses SMART_ECONOMIC ``compute_hedge_threshold()`` to determine
-        whether hedging is cost-justified.  Logs "hedge_warranted" when
-        h* < inf, "hedge_not_justified" otherwise.
-
-        Args:
-            model_id: Model that triggered this decision.
-            primary_eid: Endpoint selected by SWRR.
-            candidate_eids: All candidate endpoints for this model.
-            current_time: Current Unix timestamp.
-        """
-        backups = [eid for eid in candidate_eids if eid != primary_eid]
-        if not backups:
-            self._log_shadow_hedge(
-                ShadowHedgeDecision(
-                    model_id=model_id,
-                    primary_endpoint=primary_eid,
-                    backup_endpoint=None,
-                    hedge_threshold_sec=None,
-                    reason="no_backup",
-                    timestamp=current_time,
-                )
-            )
-            return
-
-        # Find backup with lowest p50.
-        best_backup = min(
-            backups,
-            key=lambda eid: (
-                self._latency_profiles[eid].percentile(50, current_time)
-                if eid in self._latency_profiles
-                else float("inf")
-            ),
-        )
-
-        # Check backup has sufficient samples.
-        backup_profile = self._latency_profiles.get(best_backup)
-        primary_profile = self._latency_profiles.get(primary_eid)
-        if (
-            backup_profile is None
-            or primary_profile is None
-            or backup_profile.sample_count(current_time) < self.config.latency_min_samples
-        ):
-            self._log_shadow_hedge(
-                ShadowHedgeDecision(
-                    model_id=model_id,
-                    primary_endpoint=primary_eid,
-                    backup_endpoint=best_backup,
-                    hedge_threshold_sec=None,
-                    reason="insufficient_samples",
-                    timestamp=current_time,
-                )
-            )
-            return
-
-        if self.config.latency_hedge_mode == "probability":
-            h_star = compute_probability_targeted_hedge_threshold(
-                primary_profile=primary_profile,
-                backup_profile=backup_profile,
-                slo_sec=self.config.latency_slo_sec,
-                success_target=self.config.latency_hedge_success_target,
-                dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
-                current_time=current_time,
-            )
-        else:
-            h_star = compute_hedge_threshold(
-                primary_profile=primary_profile,
-                backup_profile=backup_profile,
-                slo_sec=self.config.latency_slo_sec,
-                cost_ratio=self.config.latency_hedge_cost_ratio,
-                dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
-                current_time=current_time,
-            )
-
-        if h_star == float("inf"):
-            reason = "hedge_not_justified"
-            hedge_threshold: float | None = None
-        else:
-            reason = "hedge_warranted"
-            hedge_threshold = h_star
-
-        self._log_shadow_hedge(
-            ShadowHedgeDecision(
-                model_id=model_id,
-                primary_endpoint=primary_eid,
-                backup_endpoint=best_backup,
-                hedge_threshold_sec=hedge_threshold,
-                reason=reason,
-                timestamp=current_time,
-            )
-        )
-
-        logger.debug(
-            "Shadow hedge: model=%s primary=%s backup=%s reason=%s threshold=%s",
-            model_id,
-            primary_eid,
-            best_backup,
-            reason,
-            hedge_threshold,
-        )
-
-    def _maybe_create_hedged_adapter(
-        self,
-        model_id: str,
-        primary_eid: str,
-        candidate_eids: list[str],
-        current_time: float,
-    ) -> HedgedAdapter | None:
-        """Create a HedgedAdapter if hedging is cost-justified.
-
-        Finds the fastest backup provider (lowest p50), checks that both
-        profiles have sufficient samples, computes h* via SMART_ECONOMIC
-        grid search, and returns a HedgedAdapter if h* < inf.
-
-        Args:
-            model_id: Model identifier.
-            primary_eid: Primary endpoint selected by SWRR.
-            candidate_eids: All candidate endpoint IDs for this model.
-            current_time: Current Unix timestamp.
-
-        Returns:
-            A HedgedAdapter wrapping primary and backup, or None if
-            hedging is not justified.
-        """
-        backups = [eid for eid in candidate_eids if eid != primary_eid]
-        if not backups:
-            return None
-
-        # Find backup with lowest p50.
-        best_backup_eid = min(
-            backups,
-            key=lambda eid: (
-                self._latency_profiles[eid].percentile(50, current_time)
-                if eid in self._latency_profiles
-                else float("inf")
-            ),
-        )
-
-        primary_profile = self._latency_profiles.get(primary_eid)
-        backup_profile = self._latency_profiles.get(best_backup_eid)
-
-        if primary_profile is None or backup_profile is None:
-            return None
-
-        # Check both profiles have sufficient samples.
-        if (
-            primary_profile.sample_count(current_time) < self.config.latency_min_samples
-            or backup_profile.sample_count(current_time) < self.config.latency_min_samples
-        ):
-            return None
-
-        h_star = compute_hedge_threshold(
-            primary_profile=primary_profile,
-            backup_profile=backup_profile,
-            slo_sec=self.config.latency_slo_sec,
-            cost_ratio=self.config.latency_hedge_cost_ratio,
-            dispatch_overhead_sec=self.config.latency_hedge_dispatch_overhead_sec,
-            current_time=current_time,
-        )
-
-        if h_star == float("inf"):
-            return None
-
-        # Look up adapters for primary and backup.
-        primary_entry = self._api_endpoint_map.get(primary_eid)
-        backup_entry = self._api_endpoint_map.get(best_backup_eid)
-        if primary_entry is None or backup_entry is None:
-            return None
-
-        primary_adapter = primary_entry[0]
-        backup_adapter = backup_entry[0]
-
-        logger.debug(
-            "Creating HedgedAdapter: model=%s primary=%s backup=%s h*=%.3f",
-            model_id,
-            primary_eid,
-            best_backup_eid,
-            h_star,
-        )
-
-        return HedgedAdapter(
-            primary=primary_adapter,
-            backup=backup_adapter,
-            hedge_threshold_sec=h_star,
-            event_sink=self,
-        )
-
-    def _cheapest_api_for_request(
-        self,
-        model_id: str,
-        prompt_tokens: int,
-        predicted_output: float,
-        *,
-        api_list: list[tuple[Any, float, float]] | None = None,
-    ) -> tuple[BaseAdapter | None, float]:
-        """Return (adapter, estimated_cost) for the cheapest S_A option.
-
-        The cost is ``p_in * prompt_tokens + p_out * predicted_output``,
-        computed per adapter so the winner can change depending on the
-        prompt/output ratio of the current request.
-
-        Args:
-            model_id: Model identifier.
-            prompt_tokens: Number of input tokens in the current request.
-            predicted_output: Predicted output token count.
-
-        Returns:
-            Tuple of (cheapest adapter, estimated cost).  If no S_A adapters
-            exist, returns ``(None, inf)``.
-        """
-        if api_list is None:
-            api_list = self._effective_api_prices(model_id)
-        if not api_list:
-            return None, float("inf")
-
-        best_adapter: Any = None
-        best_cost = float("inf")
-        for adapter, p_in, p_out in api_list:
-            cost = p_in * prompt_tokens + p_out * predicted_output
-            if cost < best_cost:
-                best_cost = cost
-                best_adapter = adapter
-        return best_adapter, best_cost
-
-    # ------------------------------------------------------------------
-    # Value estimation
-    # ------------------------------------------------------------------
-
-    def _estimate_value(self, model_id: str, prompt_tokens: int) -> float:
-        """Estimate the API cost ``v_t`` saved by routing to S_Q.
-
-        Computes the minimum over all S_A adapters of
-        ``p_in * prompt_tokens + p_out * predicted_output``, so the cheapest
-        baseline is chosen per-request rather than fixed at init time.
-
-        For PD (``config.decision_rule == "pd"``), uses the median (q50)
-        prediction.  For LA-PD (``"lapd"``), uses the conservative lower
-        confidence bound (q10).
-
-        Args:
-            model_id: The model being requested.
-            prompt_tokens: Number of prompt tokens in the current request.
-
-        Returns:
-            Estimated API cost in dollars.
-        """
-        predicted_out = self._predict_output_tokens(model_id, prompt_tokens)
-        _, cost = self._cheapest_api_for_request(model_id, prompt_tokens, predicted_out)
-        return cost if cost < float("inf") else 0.0
-
-    # ------------------------------------------------------------------
-    # BaseRouter abstract method implementations
-    # ------------------------------------------------------------------
-
-    def _is_eligible(self, sub: SubscriptionType) -> bool:
-        """Check whether an adapter with *sub* type is eligible.
-
-        Concurrency adapters (S_C) are only eligible when
-        ``concurrency_enabled`` is True.  Quota and API adapters are always
-        eligible.  Used as the last-resort filter in the fallthrough path
-        at the end of ``_select_adapter``.
-        """
-        if sub is SubscriptionType.CONCURRENCY:
-            return self.config.concurrency_enabled
-        return True
-
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
-        """Select an adapter for *model_id* using three-tier PD decision logic.
-
-        Priority cascade: **S_C > S_Q > S_A**.
-
-        Decision algorithm:
-        1. Estimate prompt_tokens from context.
-        2. Compute predicted output tokens via the EMA predictor.
-        3. Compute value ``v_t`` (cheapest S_A cost for this request).
-        4. Compute gains:
-           - ``gain_C = v_t`` if S_C adapters exist and slots available, else ``-inf``.
-           - ``gain_Q = v_t - theta_Q`` if S_Q adapters exist, quota > 0,
-             and ``v_t >= theta_Q``, else ``-inf``.
-           - ``gain_A = 0`` (baseline).
-        5. Select the tier with the highest gain.
-        6. Selection-commit: acquire slot (S_C) or consume quota (S_Q).
-
-        Since ``theta_Q > 0`` always (L_seed > 0), ``gain_C = v_t > v_t - theta_Q = gain_Q``
-        whenever both are available.
-
-        Args:
-            model_id: Model identifier.
-            context: Routing context; may contain ``"prompt_tokens"`` or
-                ``"messages"`` (list of message dicts).
-
-        Returns:
-            Selected adapter, or None if no eligible adapter exists.
-        """
-        entries = self._effective_classified_entries(model_id)
+        model_id = self._canonical_model_id(model_id)
         if model_id not in self.classified:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
 
-        # -- Prompt tokens ------------------------------------------------
-        prompt_tokens = context.get("prompt_tokens", 0)
-        if prompt_tokens <= 0:
-            prompt_tokens = estimate_prompt_tokens(context.get("messages") or [])
+        with self._route_commit_lock:
+            return self._select_adapter_locked(model_id, context)
 
-        # -- Output prediction --------------------------------------------
-        predicted_out = self._predict_output_tokens(model_id, prompt_tokens)
-        api_list = self._effective_api_prices(model_id)
-
-        # -- Value estimation for Layer 1 (uses cheapest API baseline) ------
-        _, v_t = self._cheapest_api_for_request(
-            model_id,
-            prompt_tokens,
-            predicted_out,
-            api_list=api_list,
-        )
-
-        # -- Request ID for decision metadata --------------------------------
-        request_id = context.get("request_id")
-
-        def _build_base_entry(
-            selected_tier: str,
-            *,
-            hedged: bool,
-            lp_status: str | None,
-            sc_committed: bool,
-            selected_adapter: Any,
-            selected_endpoint_id: str | None,
-        ) -> dict[str, Any]:
-            return {
-                "v_t": v_t,
-                "gain_c": gain_c,
-                "gain_q": gain_q,
-                "gain_a": gain_a,
-                "theta_q": theta_q if theta_q < float("inf") else None,
-                "quota_remaining": self.quota_mgr.remaining,
-                "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
-                "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
-                # Wall-clock timestamp for TTL eviction (see _sweep_pending_decisions_once).
-                "timestamp": time.time(),
-                "is_streaming": False,
-                "selected_tier": selected_tier,
-                "quota_committed": 0.0,
-                "sc_committed": sc_committed,
-                "hedged": hedged,
-                "backup_won": False,
-                "lp_status": lp_status,
-                **self._routewise_provider_fields(
-                    selected_adapter,
-                    selected_endpoint_id,
-                ),
-            }
-
-        candidates = self._build_effective_cost_candidates(model_id, prompt_tokens, predicted_out)
+    def _select_adapter_locked(
+        self,
+        model_id: str,
+        context: dict[str, Any],
+    ) -> BaseAdapter | None:
+        prompt_tokens = self._prompt_tokens_from_context(context)
+        prediction = self._predict_output(model_id, prompt_tokens, context)
+        pool = self._routewise_pool(model_id)
+        envelope = self.envelope.snapshot(pool)
         now = time.time()
-        selected_candidate, lp_status = self._choose_cost_budgeted_candidate(
+
+        candidates, prefix_context = self._build_candidates(
             model_id,
-            candidates,
-            now,
+            prompt_tokens=prompt_tokens,
+            predicted_output_tokens=prediction.tokens,
+            envelope=envelope,
+            now=now,
+            context=context,
         )
-        if selected_candidate is not None and self._commit_candidate_resource(selected_candidate):
-            gain_c = (
-                v_t
-                if selected_candidate.sub_type is SubscriptionType.CONCURRENCY
-                else float("-inf")
+        if not candidates:
+            return None
+
+        # If a selected concurrency/quota candidate loses a race while
+        # committing, remove it and re-solve with the remaining candidates.
+        while candidates:
+            lp_candidates = [
+                LPCandidate(c.endpoint_id, c.effective_cost_usd, c.mean_ttft_sec)
+                for c in candidates
+            ]
+            solution = solve_cost_budgeted_mean_ttft(
+                lp_candidates,
+                alpha=self.config.budget_alpha,
             )
-            gain_q = (
-                v_t - selected_candidate.effective_cost
-                if selected_candidate.sub_type is SubscriptionType.QUOTA
-                else float("-inf")
-            )
-            gain_a = 0.0
-            if selected_candidate.sub_type is SubscriptionType.API:
-                model_eids = [
-                    c.endpoint_id for c in candidates if c.sub_type is SubscriptionType.API
-                ]
-                if self.config.latency_hedge_mode == "shadow":
-                    self._compute_shadow_hedge(
-                        model_id, selected_candidate.endpoint_id, model_eids, now
-                    )
-                elif self.config.latency_hedge_mode in {"economic", "probability"}:
-                    hedged = self._maybe_create_hedged_adapter(
-                        model_id,
-                        selected_candidate.endpoint_id,
-                        model_eids,
-                        now,
-                    )
-                    if hedged is not None:
-                        selected_candidate = _ProviderCandidate(
-                            adapter=hedged,
-                            endpoint_id=selected_candidate.endpoint_id,
-                            sub_type=selected_candidate.sub_type,
-                            effective_cost=selected_candidate.effective_cost,
+            self._last_lp_statuses[model_id] = solution.status
+            self._last_lp_weights[model_id] = dict(solution.weights)
+            selected = self._sample_solution(candidates, solution)
+            if selected is None:
+                return None
+            if self._commit_candidate(selected):
+                request_id = context.get("request_id")
+                self._remember_primary_reservation(request_id, selected)
+                hedge_plan = self._select_hedge_plan(
+                    selected=selected,
+                    now=now,
+                )
+                adapter: BaseAdapter = selected.adapter
+                if hedge_plan is not None:
+
+                    def _select_checkpoint_backup_for_request(
+                        elapsed_sec: float,
+                        checkpoint_ts: float,
+                        *,
+                        request_id: str | None = request_id,
+                        selected: FeasibleProviderCandidate = selected,
+                        checkpoints_sec: tuple[float, ...] = hedge_plan.checkpoints_sec,
+                    ) -> CheckpointBackupDispatch | None:
+                        return self._select_checkpoint_backup(
+                            model_id=model_id,
+                            request_id=request_id,
+                            context=context,
+                            prompt_tokens=prompt_tokens,
+                            predicted_output_tokens=prediction.tokens,
+                            envelope=envelope,
+                            selected=selected,
+                            checkpoints_sec=checkpoints_sec,
+                            elapsed_sec=elapsed_sec,
+                            checkpoint_ts=checkpoint_ts,
                         )
 
-            selected_adapter = selected_candidate.adapter
-            selected_tier = selected_candidate.sub_type.value
-            selected_endpoint_id = selected_candidate.endpoint_id
-            is_hedged = isinstance(selected_adapter, HedgedAdapter)
-            theta_q_val = self.quota_mgr.get_shadow_price()
-            theta_q_for_logs = theta_q_val if theta_q_val < float("inf") else None
-
-            if request_id:
-                self._pending_decisions[request_id] = {
-                    "v_t": v_t,
-                    "gain_c": gain_c,
-                    "gain_q": gain_q,
-                    "gain_a": gain_a,
-                    "theta_q": theta_q_for_logs,
-                    "quota_remaining": self.quota_mgr.remaining,
-                    "sc_active": self.conc_mgr.active if self.conc_mgr else 0,
-                    "sc_limit": self.conc_mgr.limit if self.conc_mgr else 0,
-                    "timestamp": now,
-                    "is_streaming": False,
-                    "selected_tier": selected_tier,
-                    "effective_cost": selected_candidate.effective_cost,
-                    "quota_committed": 0.0,
-                    "sc_committed": selected_candidate.sub_type is SubscriptionType.CONCURRENCY,
-                    "hedged": is_hedged,
-                    "backup_won": False,
-                    "lp_status": lp_status,
-                    **self._routewise_provider_fields(
-                        selected_adapter,
-                        selected_endpoint_id,
-                    ),
-                }
-
-            self._log_routewise_decision(
-                model_id=model_id,
-                request_id=request_id,
-                selected_tier=selected_tier,
-                selected_adapter=selected_adapter,
-                selected_endpoint_id=selected_endpoint_id,
-                lp_status=lp_status,
-                v_t=v_t,
-                gain_c=gain_c,
-                gain_q=gain_q,
-                gain_a=gain_a,
-                theta_q=theta_q_for_logs,
-            )
-            return selected_adapter
-
-        # -- Classify adapters by tier ------------------------------------
-        conc_adapters = [a for a, _w, s in entries if s is SubscriptionType.CONCURRENCY]
-        quota_adapters = [a for a, _w, s in entries if s is SubscriptionType.QUOTA]
-
-        # -- Compute gains ------------------------------------------------
-        gain_c = float("-inf")
-        if conc_adapters and self.conc_mgr is not None and self.conc_mgr.available > 0:
-            gain_c = v_t
-
-        gain_q = float("-inf")
-        theta_q = float("inf")
-        if quota_adapters:
-            theta_q = self.quota_mgr.get_shadow_price()
-            if v_t >= theta_q and self.quota_mgr.remaining > 0:
-                gain_q = v_t - theta_q
-
-        gain_a = 0.0
-
-        # -- Tier selection (S_C > S_Q > S_A) -----------------------------
-        best_gain = max(gain_c, gain_q, gain_a)
-
-        # Try S_C first.
-        if gain_c == best_gain and gain_c > float("-inf"):
-            # Selection-commit: acquire slot atomically.
-            if self.conc_mgr is not None and self.conc_mgr.try_acquire():
-                logger.debug(
-                    "PD decision: route to S_C (v_t=%.6f, slots=%d/%d)",
-                    v_t,
-                    self.conc_mgr.active,
-                    self.conc_mgr.limit,
-                )
-
-                selected_adapter = conc_adapters[0]
-                selected_endpoint_id = getattr(
-                    getattr(selected_adapter, "config", None),
-                    "endpoint_id",
-                    None,
-                )
-
-                if request_id:
-                    self._pending_decisions[request_id] = _build_base_entry(
-                        selected_tier="concurrency",
-                        hedged=False,
-                        lp_status=None,
-                        sc_committed=True,
-                        selected_adapter=selected_adapter,
-                        selected_endpoint_id=selected_endpoint_id,
+                    adapter = HedgedAdapter(
+                        primary=selected.adapter,
+                        event_sink=self,
+                        hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
+                        checkpoint_backup_selector=_select_checkpoint_backup_for_request,
                     )
-
-                self._log_routewise_decision(
-                    model_id=model_id,
-                    request_id=request_id,
-                    selected_tier="concurrency",
-                    selected_adapter=selected_adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                    lp_status=None,
-                    v_t=v_t,
-                    gain_c=gain_c,
-                    gain_q=gain_q,
-                    gain_a=gain_a,
-                    theta_q=theta_q if theta_q < float("inf") else None,
-                )
-                return selected_adapter
-
-            # Race lost -- fall through to S_Q.
-            logger.debug(
-                "PD decision: S_C race lost, falling through to S_Q/S_A",
-            )
-
-        # Try S_Q.
-        if gain_q >= gain_a and gain_q > float("-inf"):
-            self.quota_mgr.consume()
-            logger.debug(
-                "PD decision: route to S_Q (v_t=%.6f >= theta_Q=%.6f, remaining=%d)",
-                v_t,
-                theta_q,
-                self.quota_mgr.remaining,
-            )
-            selected_adapter = quota_adapters[0]
-            selected_endpoint_id = getattr(
-                getattr(selected_adapter, "config", None),
-                "endpoint_id",
-                None,
-            )
-            if request_id:
-                self._pending_decisions[request_id] = _build_base_entry(
-                    selected_tier="quota",
-                    hedged=False,
-                    lp_status=None,
-                    sc_committed=False,
-                    selected_adapter=selected_adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                )
-
-            self._log_routewise_decision(
-                model_id=model_id,
-                request_id=request_id,
-                selected_tier="quota",
-                selected_adapter=selected_adapter,
-                selected_endpoint_id=selected_endpoint_id,
-                lp_status=None,
-                v_t=v_t,
-                gain_c=gain_c,
-                gain_q=gain_q,
-                gain_a=gain_a,
-                theta_q=theta_q if theta_q < float("inf") else None,
-            )
-            return selected_adapter
-
-        if quota_adapters:
-            logger.debug(
-                "PD decision: route to S_A (v_t=%.6f < theta_Q=%.6f or remaining=%d)",
-                v_t,
-                theta_q,
-                self.quota_mgr.remaining,
-            )
-
-        # -- Layer 2: latency-aware S_A selection -------------------------
-        api_adapter, _ = self._select_api_adapter(
-            model_id,
-            prompt_tokens,
-            predicted_out,
-            api_list=api_list,
-        )
-        if api_adapter is not None:
-            selected_endpoint_id = getattr(
-                getattr(api_adapter, "config", None),
-                "endpoint_id",
-                None,
-            )
-            if request_id:
-                self._pending_decisions[request_id] = _build_base_entry(
-                    selected_tier="api",
-                    hedged=isinstance(api_adapter, HedgedAdapter),
-                    lp_status=self._last_lp_statuses.get(model_id),
-                    sc_committed=False,
-                    selected_adapter=api_adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                )
-
-            self._log_routewise_decision(
-                model_id=model_id,
-                request_id=request_id,
-                selected_tier="api",
-                selected_adapter=api_adapter,
-                selected_endpoint_id=selected_endpoint_id,
-                lp_status=self._last_lp_statuses.get(model_id),
-                v_t=v_t,
-                gain_c=gain_c,
-                gain_q=gain_q,
-                gain_a=gain_a,
-                theta_q=theta_q if theta_q < float("inf") else None,
-            )
-            return api_adapter
-
-        # Last resort: return any eligible S_A adapter.  S_C and S_Q are
-        # excluded because this path bypasses try_acquire() / consume() --
-        # returning them here would break slot/quota accounting and cause
-        # spurious releases in _execute_adapter's finally block.
-        for adapter, _w, sub in entries:
-            if sub is SubscriptionType.API:
-                selected_endpoint_id = getattr(
-                    getattr(adapter, "config", None),
-                    "endpoint_id",
-                    None,
-                )
                 if request_id:
-                    self._pending_decisions[request_id] = _build_base_entry(
-                        selected_tier="api",
-                        hedged=False,
-                        lp_status=None,
-                        sc_committed=False,
-                        selected_adapter=adapter,
-                        selected_endpoint_id=selected_endpoint_id,
+                    self._store_pending_decision(
+                        request_id,
+                        self._decision_metadata(
+                            model_id=model_id,
+                            request_id=request_id,
+                            prompt_tokens=prompt_tokens,
+                            prediction=prediction,
+                            envelope=envelope,
+                            candidates=candidates,
+                            solution=solution,
+                            selected=selected,
+                            hedge_plan=hedge_plan,
+                        ),
                     )
-
-                self._log_routewise_decision(
-                    model_id=model_id,
-                    request_id=request_id,
-                    selected_tier="api",
-                    selected_adapter=adapter,
-                    selected_endpoint_id=selected_endpoint_id,
-                    lp_status=None,
-                    v_t=v_t,
-                    gain_c=gain_c,
-                    gain_q=gain_q,
-                    gain_a=gain_a,
-                    theta_q=theta_q if theta_q < float("inf") else None,
-                )
+                if self.prefix_cache.enabled:
+                    self._stash_prefix_for_commit(prefix_context, request_id)
                 return adapter
-
+            candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
+            if not candidates:
+                return None
         return None
+
+    def _stash_prefix_for_commit(
+        self,
+        prefix_context: tuple[tuple[Any, ...], dict[str, Any]] | None,
+        request_id: str | None,
+    ) -> None:
+        """Stash request blocks and eligible-candidate scopes for the warm on success.
+
+        The scopes were collected by :meth:`_apply_prefix_cache_cost_adjustment`
+        while pricing candidates, so only providers the cost estimate applied to
+        (direct, cache-priced, non-rotating) are present. The commit
+        (:meth:`_commit_prefix_cache_observation`) looks the winning endpoint up by
+        id, so a winner without a scope here -- e.g. a rotating-key or no-delta
+        provider -- is simply not warmed.
+
+        Keyed by the external request id from the request context, the same id the
+        observation path reads back.
+        """
+        if prefix_context is None:
+            return
+        blocks, info = prefix_context
+        scopes = info.get("scopes") or {}
+        if not scopes:
+            return
+        stash_key = str(req_ctx.get().get("request_id") or request_id or "")
+        if not stash_key:
+            return
+        self._prefix_cache_pending[stash_key] = (blocks, scopes)
+        while len(self._prefix_cache_pending) > _PREFIX_CACHE_PENDING_MAX:
+            self._prefix_cache_pending.pop(next(iter(self._prefix_cache_pending)), None)
+
+    def _commit_prefix_cache_observation(self, obs: RoutingObservation) -> None:
+        """On a selected success, commit the winning provider's prefix to memory.
+
+        Only successful observations warm history, and only under the endpoint that
+        actually served (``obs.endpoint_id``) — so failed, fallback, or lost-hedge
+        attempts are never recorded as warm. The request is correlated to its
+        route-time blocks via ``request_id`` from the request context.
+        """
+        request_id = str(req_ctx.get().get("request_id") or "")
+        if not request_id:
+            return
+        with self._route_commit_lock:
+            stashed = self._prefix_cache_pending.pop(request_id, None)
+        if not obs.success:
+            return
+        if stashed is None:
+            return
+        blocks, scopes = stashed
+        scope = scopes.get(obs.endpoint_id)
+        if scope is None:
+            return
+        self.prefix_cache.remember(
+            scope,
+            blocks,
+        )
+
+    @staticmethod
+    def _cache_affecting_params(params: Any) -> str:
+        """Return a stable string of the request params that bust prefix cache."""
+        if not isinstance(params, dict):
+            return ""
+        keys = ("temperature", "top_p", "top_k", "tools", "response_format")
+        relevant = {key: params[key] for key in keys if params.get(key) is not None}
+        return json.dumps(relevant, sort_keys=True, default=str)
 
     def _get_fallback_adapters(
         self,
         model_id: str,
         failed_adapter: BaseAdapter,
     ) -> list[BaseAdapter]:
-        """Return fallback adapters for *model_id*, excluding the failed one.
-
-        Only S_A adapters are eligible for fallback.  S_Q and S_C are
-        excluded because the ``BaseRouter`` fallback path bypasses
-        ``_select_adapter`` entirely -- no PD decision is re-evaluated
-        and no quota / concurrency accounting is performed.
-
-        * **S_Q excluded**: if primary was S_Q the slot is already
-          consumed; if primary was S_A the PD rule said "don't use quota".
-        * **S_C excluded**: the fallback path does not call
-          ``_execute_adapter`` / ``_execute_stream_adapter``, so the
-          slot acquire/release lifecycle cannot be guaranteed.
-        """
-        entries = self._effective_classified_entries(model_id)
-        return [a for a, _w, s in entries if a is not failed_adapter and s is SubscriptionType.API]
+        model_id = self._canonical_model_id(model_id)
+        entries = self.classified.get(model_id, [])
+        return [
+            a
+            for a, _w, provider_type in entries
+            if a is not failed_adapter and provider_type is ProviderType.ON_DEMAND
+        ]
 
     def record_observation(self, obs: RoutingObservation) -> None:
-        """Record a completed request observation.
-
-        Updates the EMA output-token predictor and Layer 2 latency profiles.
-        Quota accounting is handled by selection-commit in ``_select_adapter``
-        and is intentionally *not* done here -- otherwise failed, cancelled,
-        or fallback-to-S_A requests would silently leak quota.
-
-        Args:
-            obs: Observation from the completed request.
-        """
-        strategy_metadata = obs.strategy_metadata if isinstance(obs.strategy_metadata, dict) else {}
-        routewise_metadata = strategy_metadata.get("routewise")
-        if not isinstance(routewise_metadata, dict):
-            routewise_metadata = {}
-
+        """Update output predictor, latency profile, and L/U envelope."""
+        if self.prefix_cache.enabled:
+            self._commit_prefix_cache_observation(obs)
+        model_id = self._canonical_model_id(obs.model_id)
         if obs.completion_tokens > 0:
-            if isinstance(self.predictor, HistogramOutputPredictor):
-                self.predictor.update(
-                    obs.model_id,
-                    prompt_tokens=obs.prompt_tokens,
-                    output_tokens=obs.completion_tokens,
-                )
-            else:
-                self.predictor.update(obs.model_id, obs.completion_tokens)
+            self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
-        # Layer 2: update latency profile for the endpoint.
         if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:
             now = time.time()
             error_type: str | None = None if obs.success else "error"
-            ttft = obs.ttft_ms if obs.ttft_ms is not None else -1.0
-            self._latency_profiles[obs.endpoint_id].record(now, ttft, error_type)
+            latency_ms = (
+                obs.ttft_ms
+                if obs.ttft_ms is not None
+                else obs.total_latency_ms
+                if obs.success
+                else -1.0
+            )
+            self._latency_profiles[obs.endpoint_id].record(now, latency_ms, error_type)
+
+        if obs.prompt_tokens > 0 and obs.completion_tokens > 0:
+            sample_cost = self._reference_api_cost(
+                model_id,
+                prompt_tokens=obs.prompt_tokens,
+                output_tokens=obs.completion_tokens,
+            )
+            if sample_cost is not None:
+                self.envelope.observe(self._routewise_pool(model_id), sample_cost)
 
         logger.debug(
-            "RouteWise observation: model=%s endpoint=%s completion_tokens=%d success=%s "
-            "selected_tier=%s lp_status=%s",
-            obs.model_id,
+            "RouteWise observation: model=%s endpoint=%s completion_tokens=%d success=%s",
+            model_id,
             obs.endpoint_id,
             obs.completion_tokens,
             obs.success,
-            routewise_metadata.get("selected_tier"),
-            routewise_metadata.get("lp_status"),
         )
+
+    def bootstrap_from_log_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        include_latency: bool = True,
+        include_envelope: bool = True,
+        envelope_model_overrides: Mapping[str, str] | None = None,
+    ) -> dict[str, int]:
+        """Warm latency profiles and the cost envelope from historical api_logs rows.
+
+        ``envelope_model_overrides`` maps donor model ids to the model whose
+        envelope their rows should seed: the donor row contributes only its
+        token counts, priced with the target model's routes and observed into
+        the target model's pool (``envelope_bootstrap_donor_models``).
+        """
+        counts = {"rows": 0, "latency_events": 0, "failed_attempts": 0, "envelope_samples": 0}
+        for row in rows:
+            counts["rows"] += 1
+            ts = self._timestamp_sec(row.get("timestamp"))
+            if ts is None:
+                continue
+
+            model_id = self._canonical_model_id(str(row.get("model_id") or ""))
+            if include_latency:
+                endpoint_id = self._string_or_none(row.get("endpoint_id")) or self._string_or_none(
+                    row.get("provider")
+                )
+                success = self._is_success_status(row.get("status_code"), row.get("error"))
+
+                if endpoint_id and endpoint_id in self._latency_profiles:
+                    latency_ms = self._bootstrap_latency_ms(row, success)
+                    error_type = None if success else self._bootstrap_error_type(row)
+                    self._latency_profiles[endpoint_id].record(ts, latency_ms, error_type)
+                    counts["latency_events"] += 1
+
+                for attempt in self._bootstrap_failed_attempts(row):
+                    failed_endpoint = (
+                        self._string_or_none(attempt.get("endpoint_id"))
+                        or self._string_or_none(attempt.get("base_url"))
+                        or self._string_or_none(attempt.get("provider"))
+                    )
+                    if not failed_endpoint or failed_endpoint not in self._latency_profiles:
+                        continue
+                    error_type = self._string_or_none(attempt.get("error_type")) or "error"
+                    self._latency_profiles[failed_endpoint].record(ts, -1.0, error_type)
+                    counts["failed_attempts"] += 1
+
+            if include_envelope:
+                prompt_tokens = self._int_or_zero(row.get("prompt_tokens"))
+                completion_tokens = self._int_or_zero(row.get("completion_tokens"))
+                if prompt_tokens > 0 and completion_tokens > 0:
+                    target_model = (envelope_model_overrides or {}).get(model_id, model_id)
+                    sample_cost = self._reference_api_cost(
+                        target_model,
+                        prompt_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                    )
+                    if sample_cost is not None:
+                        self.envelope.observe(
+                            self._routewise_pool(target_model),
+                            sample_cost,
+                            now=ts,
+                        )
+                        counts["envelope_samples"] += 1
+        return counts
+
+    @staticmethod
+    def _timestamp_sec(value: Any) -> float | None:
+        if isinstance(value, (int, float)):
+            return float(value)
+        timestamp = getattr(value, "timestamp", None)
+        if callable(timestamp):
+            try:
+                return float(timestamp())
+            except (TypeError, ValueError, OSError, OverflowError):
+                return None
+        return None
+
+    @staticmethod
+    def _string_or_none(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _int_or_zero(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _is_success_status(cls, status_code: Any, error: Any) -> bool:
+        code = cls._int_or_zero(status_code)
+        return code > 0 and code < 400 and not error
+
+    @classmethod
+    def _bootstrap_latency_ms(cls, row: Mapping[str, Any], success: bool) -> float:
+        if not success:
+            return -1.0
+        ttft_ms = row.get("ttft_ms")
+        if ttft_ms is not None:
+            try:
+                return float(ttft_ms)
+            except (TypeError, ValueError):
+                pass
+        try:
+            return float(row.get("latency_ms") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _bootstrap_error_type(cls, row: Mapping[str, Any]) -> str:
+        error = cls._string_or_none(row.get("error"))
+        if error:
+            return error[:120]
+        return "error"
+
+    @staticmethod
+    def _bootstrap_failed_attempts(row: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+        attempts = row.get("failed_attempts")
+        if not isinstance(attempts, (list, tuple)):
+            return ()
+        seen: set[tuple[str | None, str | None, str | None]] = set()
+        result: list[Mapping[str, Any]] = []
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            endpoint = (
+                attempt.get("endpoint_id") or attempt.get("base_url") or attempt.get("provider")
+            )
+            key = (
+                endpoint if isinstance(endpoint, str) else None,
+                attempt.get("error_type") if isinstance(attempt.get("error_type"), str) else None,
+                attempt.get("error") if isinstance(attempt.get("error"), str) else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(attempt)
+        return tuple(result)
 
     # ------------------------------------------------------------------
     # Execution overrides: S_C slot lifecycle
@@ -1587,26 +1862,22 @@ class RouteWiseRouter(BaseRouter):
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> dict[str, Any]:
-        """Execute adapter with S_C slot release and backup_won detection.
-
-        If *adapter* was selected as S_C, the concurrency slot acquired in
-        ``_select_adapter`` is released here regardless of success or failure.
-
-        For HedgedAdapter, detects config swap (backup won) and records it
-        in ``_pending_decisions``.
-        """
-        is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
-        original_config = adapter.config if isinstance(adapter, HedgedAdapter) else None
+        primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
+        request_id = params.get("request_id")
+        original_config = getattr(adapter, "config", None)
         try:
             result = await super()._execute_adapter(adapter, model_id, messages, **params)
-            if original_config is not None and adapter.config is not original_config:
-                request_id = params.get("request_id")
-                if request_id and request_id in self._pending_decisions:
-                    self._pending_decisions[request_id]["backup_won"] = True
+            if (
+                getattr(adapter, "config", None) is not original_config
+                and request_id
+                and request_id in self._pending_decisions
+            ):
+                self._pending_decisions[request_id]["backup_won"] = True
+            self._apply_hedge_execution_metadata(adapter, request_id)
             return result
         finally:
-            if is_sc and self.conc_mgr is not None:
-                self.conc_mgr.release()
+            self._apply_hedge_execution_metadata(adapter, request_id)
+            self._release_execution_primary_capacity(request_id, primary_adapter)
 
     async def _execute_stream_adapter(
         self,
@@ -1615,186 +1886,106 @@ class RouteWiseRouter(BaseRouter):
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> AsyncIterator[Any]:
-        """Execute streaming adapter with S_C slot release and backup_won detection.
-
-        Mirrors ``_execute_adapter`` for the streaming path.  The slot is
-        released when the generator exits (normal completion, error, or
-        ``GeneratorExit`` from cancellation).
-
-        For HedgedAdapter, config swap happens before first yield, so we
-        check in the finally block.
-        """
-        is_sc = self._adapter_sub_type.get(id(adapter)) is SubscriptionType.CONCURRENCY
-        original_config = adapter.config if isinstance(adapter, HedgedAdapter) else None
+        primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
+        request_id = params.get("request_id")
+        original_config = getattr(adapter, "config", None)
         try:
             async for chunk in super()._execute_stream_adapter(
                 adapter, model_id, messages, **params
             ):
                 yield chunk
         finally:
-            if original_config is not None and adapter.config is not original_config:
-                request_id = params.get("request_id")
-                if request_id and request_id in self._pending_decisions:
-                    self._pending_decisions[request_id]["backup_won"] = True
-            if is_sc and self.conc_mgr is not None:
-                self.conc_mgr.release()
+            if (
+                getattr(adapter, "config", None) is not original_config
+                and request_id
+                and request_id in self._pending_decisions
+            ):
+                self._pending_decisions[request_id]["backup_won"] = True
+            self._apply_hedge_execution_metadata(adapter, request_id)
+            self._release_execution_primary_capacity(request_id, primary_adapter)
 
     # ------------------------------------------------------------------
     # chat_completion / stream_chat_completion: merge decision metadata
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _attach_decision_info(routing: dict[str, Any], decision_info: dict[str, Any]) -> None:
+        routing["routewise"] = decision_info
+        failed_attempts = decision_info.get("failed_attempts")
+        if not isinstance(failed_attempts, list) or not failed_attempts:
+            return
+        existing = routing.get("failed_attempts")
+        routing["failed_attempts"] = _dedupe_failed_attempts(
+            [
+                *(existing if isinstance(existing, list) else []),
+                *failed_attempts,
+            ]
+        )
+
     async def chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
-        """Execute chat completion and merge RouteWise decision metadata.
-
-        Follows the same ``_pending_decisions`` pattern as NimbusRouter:
-        ensures request_id exists, calls super(), then merges decision
-        metadata into ``resp["_routing"]["routewise"]``.
-        """
+        """Run a non-streaming RouteWise chat completion."""
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
 
         try:
-            resp = await super().chat_completion(model_id, messages, **params)
-        except BaseException as e:
-            decision_info = self._pending_decisions.pop(request_id, None)
-            if decision_info:
-                exc_routing = getattr(e, "_routing", None)
-                if exc_routing is not None:
-                    exc_routing["routewise"] = decision_info
-            raise
+            try:
+                resp = await super().chat_completion(model_id, messages, **params)
+            except BaseException as e:
+                decision_info = self._pending_decisions.pop(request_id, None)
+                if decision_info:
+                    exc_routing = getattr(e, "_routing", None)
+                    if isinstance(exc_routing, dict):
+                        self._attach_decision_info(exc_routing, decision_info)
+                raise
 
-        decision_info = self._pending_decisions.pop(request_id, None)
-        if decision_info and isinstance(resp, dict) and "_routing" in resp:
-            resp["_routing"]["routewise"] = decision_info
-        return resp
+            decision_info = self._pending_decisions.pop(request_id, None)
+            if decision_info and isinstance(resp, dict) and "_routing" in resp:
+                self._attach_decision_info(resp["_routing"], decision_info)
+            return resp
+        finally:
+            self._release_pending_primary_reservation(request_id)
 
     async def stream_chat_completion(
         self, model_id: str, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncIterator[Any]:
-        """Stream chat completion and inject RouteWise decision metadata.
-
-        Buffers the ``[DONE]`` sentinel, injects a routing metadata chunk
-        containing ``_routing.routewise``, then yields ``[DONE]``.
-        Same pattern as NimbusRouter.
-        """
+        """Run a streaming RouteWise chat completion."""
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
 
-        if request_id in self._pending_decisions:
-            self._pending_decisions[request_id]["is_streaming"] = True
-
         done_chunk: str | None = None
-
         try:
-            async for chunk in super().stream_chat_completion(model_id, messages, **params):
-                if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
-                    done_chunk = chunk
-                    continue
-                yield chunk
-        except BaseException as e:
+            try:
+                async for chunk in super().stream_chat_completion(model_id, messages, **params):
+                    if request_id in self._pending_decisions:
+                        self._pending_decisions[request_id]["is_streaming"] = True
+                    if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
+                        done_chunk = chunk
+                        continue
+                    yield chunk
+            except BaseException as e:
+                decision_info = self._pending_decisions.pop(request_id, None)
+                if decision_info:
+                    exc_routing = getattr(e, "_routing", None)
+                    if isinstance(exc_routing, dict):
+                        self._attach_decision_info(exc_routing, decision_info)
+                raise
+
             decision_info = self._pending_decisions.pop(request_id, None)
             if decision_info:
-                exc_routing = getattr(e, "_routing", None)
-                if exc_routing is not None:
-                    exc_routing["routewise"] = decision_info
-            raise
+                decision_info["is_streaming"] = True
+                routing: dict[str, Any] = {}
+                self._attach_decision_info(routing, decision_info)
+                routing_chunk = {
+                    "choices": [],
+                    "_routing": routing,
+                }
+                yield f"data: {json.dumps(routing_chunk)}\n\n"
 
-        decision_info = self._pending_decisions.pop(request_id, None)
-        if decision_info:
-            routing_chunk = {
-                "choices": [],
-                "_routing": {"routewise": decision_info},
-            }
-            yield f"data: {json.dumps(routing_chunk)}\n\n"
-
-        if done_chunk:
-            yield done_chunk
-
-    # ------------------------------------------------------------------
-    # Lifecycle: TTL sweep for _pending_decisions
-    # ------------------------------------------------------------------
-
-    async def start(self) -> None:
-        """Start the periodic ``_pending_decisions`` TTL sweep task.
-
-        Idempotent — calling it again while the sweep task is already running
-        is a no-op so AppServices restart paths don't double-schedule.
-        """
-        if self._sweep_task is not None and not self._sweep_task.done():
-            return
-        self._sweep_task = asyncio.create_task(
-            self._sweep_pending_decisions_loop(),
-            name="RouteWiseRouter.sweep_pending_decisions",
-        )
-
-    async def stop(self) -> None:
-        """Cancel the periodic ``_pending_decisions`` sweep task cleanly."""
-        import contextlib
-
-        task = self._sweep_task
-        self._sweep_task = None
-        if task is None:
-            return
-        task.cancel()
-        # Cancellation is the expected exit path; swallow other errors so
-        # shutdown can proceed even if the loop raised on its way out.
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
-
-    async def _sweep_pending_decisions_loop(self) -> None:
-        """Run the TTL sweep on a fixed interval until cancelled."""
-        try:
-            while True:
-                await asyncio.sleep(PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS)
-                try:
-                    await self._sweep_pending_decisions_once()
-                except Exception:
-                    logger.exception("RouteWise pending-decisions sweep failed")
-        except asyncio.CancelledError:
-            return
-
-    async def _sweep_pending_decisions_once(self) -> int:
-        """Evict stale ``_pending_decisions`` entries; return count evicted.
-
-        Entries whose ``timestamp`` is older than
-        :data:`PENDING_DECISIONS_TTL_SECONDS` are removed and a
-        ``routewise_decision_evicted`` log event is emitted for each.
-        Active streaming requests are skipped because their generator may
-        legitimately remain open longer than the fixed TTL.
-        """
-        now = time.time()
-        cutoff = now - PENDING_DECISIONS_TTL_SECONDS
-        evicted = 0
-        stale: list[tuple[str, float]] = []
-        for request_id, decision in self._pending_decisions.items():
-            if decision.get("is_streaming"):
-                continue
-            ts = decision.get("timestamp")
-            if not isinstance(ts, (int, float)):
-                # Defensive: skip entries with no usable timestamp rather
-                # than evicting them (can't compute an age).
-                continue
-            if ts < cutoff:
-                stale.append((request_id, float(ts)))
-        for request_id, ts in stale:
-            # Only count + log an actual eviction. Completion paths pop
-            # without coordinating with the sweep, so an entry we picked up
-            # in ``stale`` may already have been consumed by a finishing
-            # request by the time we reach this pop. Treat that race as
-            # "not evicted" rather than emitting a misleading event.
-            if self._pending_decisions.pop(request_id, None) is None:
-                continue
-            evicted += 1
-            logger.info(
-                "routewise_decision_evicted",
-                extra={
-                    "event": "routewise_decision_evicted",
-                    "request_id": request_id,
-                    "age_sec": int(now - ts),
-                },
-            )
-        return evicted
+            if done_chunk:
+                yield done_chunk
+        finally:
+            self._release_pending_primary_reservation(request_id)

@@ -453,6 +453,46 @@ class TestFetchMinimax:
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
 
     @pytest.mark.asyncio
+    async def test_api_key_path_preferred_over_cookie(self, monkeypatch):
+        """With MINIMAX_API_KEY configured, the official token-plan endpoint wins."""
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-api-key-abcdefghijklmnop")
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+
+        payload = {
+            "model_remains": [
+                {
+                    "model_name": "general",
+                    "current_interval_remaining_percent": 98,
+                    "end_time": 1781085600000,
+                    "current_weekly_remaining_percent": 100,
+                    "weekly_end_time": 1781481600000,
+                }
+            ],
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+        }
+        session_cm = _mock_aiohttp_get(status=200, json_data=payload)
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=session_cm,
+        ):
+            results = await fetch_minimax()
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.ok is True
+
+        session = session_cm.__aenter__.return_value
+        url = session.get.call_args.args[0]
+        headers = session.get.call_args.kwargs["headers"]
+        assert url == "https://api.minimax.io/v1/token_plan/remains"
+        assert headers["Authorization"].startswith("Bearer mm-api-key")
+
+        interval = next(u for u in result.usages if u.label == "general (interval)")
+        assert interval.unit == "%"
+        assert interval.limit == 100.0
+        assert interval.used == pytest.approx(2.0)
+
+    @pytest.mark.asyncio
     async def test_not_configured_when_cookie_missing(self, monkeypatch):
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         results = await fetch_minimax()
@@ -1070,6 +1110,7 @@ class TestGatherAll:
     async def test_gather_all_returns_five_results_when_unconfigured(self, monkeypatch):
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
@@ -1088,6 +1129,7 @@ class TestGatherAll:
 
         monkeypatch.setattr("serving.admin.provider_quotas.fetch_chutes", boom)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
@@ -1133,6 +1175,7 @@ class TestProviderQuotasRoute:
 
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)

@@ -360,6 +360,21 @@ async def chat_completions(
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
+    # ``log_synthetic_probes`` opts probe traffic into api_logs persistence so it
+    # (and its real usage/cost) shows in the requests dashboard. The Prometheus
+    # request metrics, per-user quota increment, and X-Provider header stay keyed
+    # on ``is_synthetic_probe``. A setting read failure defaults to suppression.
+    log_synthetic_probes = False
+    if (
+        is_synthetic_probe
+        and runtime_settings is not None
+        and hasattr(runtime_settings, "get_bool")
+    ):
+        try:
+            log_synthetic_probes = await runtime_settings.get_bool("log_synthetic_probes")
+        except Exception:
+            log_synthetic_probes = False
+    suppress_synthetic_logging = is_synthetic_probe and not log_synthetic_probes
 
     def record_model_request(status_code: str, provider_name: str) -> None:
         if is_synthetic_probe:
@@ -414,7 +429,7 @@ async def chat_completions(
     # Check if model has routing configured
     if model not in router_exec.routes:
         record_model_request("404", "router")
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -450,7 +465,7 @@ async def chat_completions(
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
         record_model_request("404", "router")
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -474,7 +489,7 @@ async def chat_completions(
         route.adapters[0][0].config.id if route.adapters else model, user_ctx
     ):
         record_model_request("404", "router")
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
                 {
@@ -537,6 +552,7 @@ async def chat_completions(
     affinity_key = derive_affinity_key(auth_key_hash, get_client_ip(request))
     req_ctx.update(
         {
+            "request_id": request_id,
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
         }
@@ -592,7 +608,7 @@ async def chat_completions(
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "image_url":
                     record_model_request("400", "router")
-                    if log_store and not is_synthetic_probe:
+                    if log_store and not suppress_synthetic_logging:
                         completions_logger.schedule_log(
                             request_id,
                             {
@@ -642,6 +658,11 @@ async def chat_completions(
     if model_router_registry is not None and not pin_provider:
         active_router = model_router_registry.get_router(model)
 
+    # Thread the external request id into params so the router correlates its
+    # routing metadata, prefix-cache stash, and observation under one id instead
+    # of generating a divergent internal id.
+    params["request_id"] = request_id
+
     # Streaming path
     if effective_stream:
         if active_router is router_exec:
@@ -662,6 +683,7 @@ async def chat_completions(
             metadata=metadata,
             user_id=user_id,
             is_synthetic_probe=is_synthetic_probe,
+            suppress_synthetic_logging=suppress_synthetic_logging,
             log_store=log_store,
             active_router=active_router,
             cost_tracker=cost_tracker,
@@ -780,7 +802,7 @@ async def chat_completions(
                 )
 
         # Background DB log so the row write doesn't block the HTTP response.
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             # raw_dict_for_routing prefers adapter-emitted ``extra["pricing"]``
             # then falls back to a registry walk — same precedence the prior
             # ``routing_pricing or get_pricing_for_provider(...)`` had when
@@ -915,11 +937,13 @@ async def chat_completions(
         ) from exc
 
     except Exception as exc:
+        # ``exc._routing`` is still a raw dict from the routing layer;
+        # ``record_routing_observation`` accepts both shapes. Computed
+        # unconditionally so the failed-probe log branch below can reuse it
+        # when ``log_synthetic_probes`` is enabled.
+        exc_routing = getattr(exc, "_routing", None)
         # Record failure observation for online learning (RouteWise)
         if not is_synthetic_probe:
-            # ``exc._routing`` is still a raw dict from the routing layer;
-            # ``record_routing_observation`` accepts both shapes.
-            exc_routing = getattr(exc, "_routing", None)
             completions_logger.record_routing_observation(
                 active_router,
                 model,
@@ -941,7 +965,7 @@ async def chat_completions(
         ctx = req_ctx.get()
         provider_for_error = ctx.get("provider", "router") if ctx else "router"
 
-        if log_store and not is_synthetic_probe:
+        if log_store and not suppress_synthetic_logging:
             metadata_for_error = metadata
             if isinstance(exc_routing, dict):
                 metadata_for_error = {

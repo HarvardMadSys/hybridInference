@@ -51,12 +51,32 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "model-not-found) to api_logs with metadata.rejection=true."
         ),
     },
+    "log_synthetic_probes": {
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Persist synthetic probe requests (X-Probe: synthetic) to api_logs "
+            "so they — and their real usage/cost — appear in the requests "
+            "dashboard, which is useful for tracking monitoring cost. They stay "
+            "excluded from per-user quota increments and the request metrics."
+        ),
+    },
     "force_chat_completions_streaming": {
         "type": "bool",
         "default": False,
         "description": (
             "Send non-streaming chat completions upstream as streaming requests, "
             "then buffer and return a normal non-streaming response to clients."
+        ),
+    },
+    "kimi_coding_identity_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": (
+            "Inject the coding-tool identity on Kimi coding-plan requests: set "
+            "User-Agent: claude-code/0.1.0 and prepend a 'You are OpenCode' "
+            "system message. Disable to forward the caller's own User-Agent and "
+            "skip the system message."
         ),
     },
     "user_concurrency_free": {
@@ -114,17 +134,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "description": (
             "Default daily USD spend quota seeded onto an admin user's active API key at signup."
         ),
-    },
-    "routewise_decision_rule": {
-        "type": "str",
-        "default": "pd",
-        "description": "Decision rule for Routewise routing (pd or lapd)",
-    },
-    "routewise_daily_quota": {
-        "type": "int",
-        "default": 5000,
-        "min": 1,
-        "description": "Daily request quota for Routewise S_Q routing",
     },
     "routewise_latency_slo_sec": {
         "type": "float",
