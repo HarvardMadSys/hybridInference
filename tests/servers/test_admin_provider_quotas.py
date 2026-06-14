@@ -447,6 +447,11 @@ class TestFetchZai:
 
 
 class TestFetchMinimax:
+    @pytest.fixture(autouse=True)
+    def _no_api_key(self, monkeypatch):
+        """Default to the cookie fallback path unless a test opts into the API key."""
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+
     @pytest.mark.asyncio
     async def test_not_configured_when_cookie_missing(self, monkeypatch):
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
@@ -837,6 +842,92 @@ class TestFetchMinimax:
             ("Token Plan (weekly)", 60.0, 100.0, "%"),
         ]
 
+    @pytest.mark.asyncio
+    async def test_uses_api_key_endpoint_with_bearer_auth(self, monkeypatch):
+        # API key configured -> hit /token_plan/remains with Bearer auth, no cookie.
+        monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M2.7",
+                    "end_time": 1777752000000,
+                    "current_interval_total_count": 4500,
+                    "current_interval_usage_count": 1200,
+                }
+            ],
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        assert result.usages[0].used == 3300.0
+        assert result.usages[0].limit == 4500.0
+        session = mock_session_cls.return_value.__aenter__.return_value
+        call_args = session.get.call_args
+        assert call_args.args[0] == "https://api.minimax.io/v1/token_plan/remains"
+        headers = call_args.kwargs["headers"]
+        assert headers["Authorization"] == "Bearer minimax_key_1234567890abcd"
+        assert "Cookie" not in headers
+
+    @pytest.mark.asyncio
+    async def test_api_key_takes_precedence_over_cookie(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M2.7",
+                    "current_interval_total_count": 1000,
+                    "current_interval_usage_count": 200,
+                }
+            ],
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            result = (await fetch_minimax())[0]
+
+        assert result.ok is True
+        session = mock_session_cls.return_value.__aenter__.return_value
+        assert session.get.call_args.args[0].endswith("/token_plan/remains")
+
+    @pytest.mark.asyncio
+    async def test_api_key_auth_failed_on_401(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=401),
+        ):
+            result = (await fetch_minimax())[0]
+        assert result.ok is False
+        assert result.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_api_key_auth_failed_on_status_1004(self, monkeypatch):
+        # HTTP 200 but MiniMax signals a key/auth problem in the body.
+        monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        payload = {
+            "base_resp": {
+                "status_code": 1004,
+                "status_msg": "carry the API secret key in the Authorization field",
+            }
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            result = (await fetch_minimax())[0]
+        assert result.ok is False
+        assert result.error == "auth_failed"
+
 
 class TestFetchOllama:
     @pytest.mark.asyncio
@@ -919,6 +1010,7 @@ class TestGatherAll:
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 
@@ -936,6 +1028,7 @@ class TestGatherAll:
         monkeypatch.setattr("serving.admin.provider_quotas.fetch_chutes", boom)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 
@@ -980,6 +1073,7 @@ class TestProviderQuotasRoute:
         monkeypatch.delenv("CHUTES_API_KEY", raising=False)
         monkeypatch.delenv("ZAI_API_KEY", raising=False)
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 

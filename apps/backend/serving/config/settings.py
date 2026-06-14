@@ -86,6 +86,8 @@ class Settings(BaseSettings):
     # Provider quota cookies (admin dashboard "Providers" tab)
     # Pasted from browser DevTools after logging into the provider's web dashboard.
     # Re-paste when the cookie expires.
+    # MiniMax: prefer MINIMAX_API_KEY (Bearer auth, no expiry); this cookie is a
+    # legacy fallback used only when no API key is configured.
     minimax_session_cookie: str = ""
     minimax_group_id: str = ""
     ollama_session_cookie: str = ""
