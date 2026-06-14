@@ -222,7 +222,6 @@ async function streamProbe(
         { role: "user", content: prompt },
       ],
       max_tokens: maxTokens,
-      temperature: 1,
       stream: true,
       stream_options: { include_usage: true },
       ...extraBody,
