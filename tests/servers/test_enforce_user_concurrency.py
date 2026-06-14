@@ -74,6 +74,25 @@ def _make_app(user: dict[str, Any], limiter: UserConcurrencyLimiter | None) -> F
     return app
 
 
+async def _wait_until_in_use(limiter: UserConcurrencyLimiter, user_id: str, n: int) -> None:
+    """Yield the event loop until *user_id* holds at least *n* slots.
+
+    The held-slot handlers block on an ``asyncio.Event``, so an over-limit
+    request sent before the saturating requests have acquired their slots would
+    itself grab a free slot and then wait on that Event forever, deadlocking the
+    test until pytest-timeout kills the whole shard. A fixed ``asyncio.sleep``
+    raced this on loaded CI hosts; polling the live ``in_use`` count is
+    deterministic and fails fast if saturation never happens.
+    """
+    for _ in range(2000):
+        slot = limiter._slots.get(user_id)
+        if slot is not None and slot.in_use >= n:
+            return
+        await asyncio.sleep(0)
+    in_use = getattr(limiter._slots.get(user_id), "in_use", 0)
+    raise AssertionError(f"{user_id}: only {in_use}/{n} slots acquired")
+
+
 @pytest.mark.asyncio
 async def test_grant_then_reject_for_free_user():
     user = {"user_id": "u1", "role": "free", "is_admin": False}
@@ -84,8 +103,9 @@ async def test_grant_then_reject_for_free_user():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Start request 1, hold it open
         task1 = asyncio.create_task(client.get("/probe"))
-        # Give it a moment to enter the dependency
-        await asyncio.sleep(0.1)
+        # Wait until it actually holds the slot before sending the over-limit
+        # request (a fixed sleep races on a loaded host and would deadlock).
+        await _wait_until_in_use(limiter, "u1", 1)
         # Request 2 must be rejected with 429
         resp2 = await client.get("/probe")
         assert resp2.status_code == 429
@@ -141,8 +161,8 @@ async def test_streaming_response_holds_slot_until_drained():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Start streaming request — the body generator will pause on stream_event
         stream_task = asyncio.create_task(client.get("/probe_stream"))
-        # Give the task time to enter the dependency and start streaming
-        await asyncio.sleep(0.1)
+        # Wait until the streaming request holds the slot before competing.
+        await _wait_until_in_use(limiter, "u1", 1)
 
         # Slot should still be held — second request gets 429
         resp2 = await client.get("/probe")
@@ -194,7 +214,7 @@ async def test_two_users_have_independent_budgets_via_dependency():
         AsyncClient(transport=transport_b, base_url="http://test-b") as client_b,
     ):
         task_a = asyncio.create_task(client_a.get("/probe"))
-        await asyncio.sleep(0.1)
+        await _wait_until_in_use(limiter, "user-A", 1)
         # User B must succeed even while user A is holding
         app_b.unary_event.set()  # type: ignore[attr-defined]
         r_b = await client_b.get("/probe")
@@ -215,7 +235,7 @@ async def test_pro_user_three_slots_via_dependency():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Hold three concurrent requests
         tasks = [asyncio.create_task(client.get("/probe")) for _ in range(3)]
-        await asyncio.sleep(0.1)
+        await _wait_until_in_use(limiter, "pro-1", 3)
         # Fourth gets 429
         resp4 = await client.get("/probe")
         assert resp4.status_code == 429
@@ -237,7 +257,7 @@ async def test_admin_flag_yields_admin_role_in_response_body():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Saturate 10 admin slots
         tasks = [asyncio.create_task(client.get("/probe")) for _ in range(10)]
-        await asyncio.sleep(0.1)
+        await _wait_until_in_use(limiter, "adm-1", 10)
         resp11 = await client.get("/probe")
         assert resp11.status_code == 429
         body = resp11.json()
