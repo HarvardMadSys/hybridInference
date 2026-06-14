@@ -119,13 +119,20 @@ describe("probeModel (chat)", () => {
   // (max_tokens=1) and the workload throughput probe (max_tokens>1). Dispatch on
   // max_tokens so each leg gets a fresh, body-appropriate Response.
   function stubChat(ttftProbe: () => Response, workloadProbe: () => Response) {
+    const bodies: Record<string, any> = {};
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => {
         const body = JSON.parse(String(init.body));
-        return body.max_tokens === 1 ? ttftProbe() : workloadProbe();
+        if (body.max_tokens === 1) {
+          bodies.ttft = body;
+          return ttftProbe();
+        }
+        bodies.workload = body;
+        return workloadProbe();
       }),
     );
+    return bodies;
   }
 
   // One-token completion for the TTFT probe.
@@ -151,12 +158,18 @@ describe("probeModel (chat)", () => {
     );
 
   it("is healthy and reports TTFT, latency, and token count", async () => {
-    stubChat(oneToken, workload);
+    const bodies = stubChat(oneToken, workload);
     const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
     expect(r.ok).toBe(true);
     expect(r.ttftMs).not.toBeNull();
     expect(r.latencyMs).toBeGreaterThanOrEqual(0);
     expect(r.completionTokens).toBe(7); // from the workload probe, not the TTFT probe
+    // TTFT probe caps at one token with reasoning disabled, so the single token
+    // is plain content; the workload probe leaves reasoning untouched.
+    expect(bodies.ttft.max_tokens).toBe(1);
+    expect(bodies.ttft.reasoning_effort).toBe("none");
+    expect(bodies.ttft.thinking).toEqual({ type: "disabled" });
+    expect(bodies.workload.reasoning_effort).toBeUndefined();
   });
 
   it("fails when the TTFT probe errors", async () => {

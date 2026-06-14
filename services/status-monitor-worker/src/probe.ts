@@ -209,6 +209,7 @@ async function streamProbe(
   modelId: string,
   prompt: string,
   maxTokens: number,
+  extraBody: Record<string, unknown> = {},
 ): Promise<StreamProbe> {
   const started = Date.now();
   const response = await fetch(`${config.gatewayBaseUrl}/v1/chat/completions`, {
@@ -224,6 +225,7 @@ async function streamProbe(
       temperature: 1,
       stream: true,
       stream_options: { include_usage: true },
+      ...extraBody,
     }),
     // Total deadline: aborts even when SSE keepalives keep the stream open.
     signal: AbortSignal.timeout(config.probeDeadlineMs),
@@ -278,11 +280,17 @@ export async function probeModel(
       };
     }
 
-    // Request A — TTFT probe: a one-token "hi" completion. With max_tokens=1 the
-    // whole response is a single token, so the request's duration is the time to
-    // first (and only) token — a clean TTFT even though Workers can't see the
-    // sub-read timing that an in-stream measurement would need.
-    const { ttftMs } = await streamProbe(config, apiKey, target.id, "hi", 1);
+    // Request A — TTFT probe: a one-token "hi" completion with reasoning turned
+    // off, so the single token is plain content rather than a thinking preamble.
+    // With max_tokens=1 the whole response is that one token, so the request's
+    // duration is the time to first (and only) token — a clean TTFT even though
+    // Workers can't see the sub-read timing an in-stream measurement would need.
+    // reasoning_effort/thinking are forwarded only to models that declare them
+    // (the gateway drops unsupported params), so this is a no-op elsewhere.
+    const { ttftMs } = await streamProbe(config, apiKey, target.id, "hi", 1, {
+      reasoning_effort: "none",
+      thinking: { type: "disabled" },
+    });
 
     // Request B — throughput probe: the real workload prompt generates enough
     // tokens to measure decode rate. Latency and token count come from here.
