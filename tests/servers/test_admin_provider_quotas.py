@@ -902,6 +902,7 @@ class TestFetchMinimax:
     @pytest.mark.asyncio
     async def test_api_key_auth_failed_on_401(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         with patch(
             "serving.admin.provider_quotas.aiohttp.ClientSession",
             return_value=_mock_aiohttp_get(status=401),
@@ -914,6 +915,7 @@ class TestFetchMinimax:
     async def test_api_key_auth_failed_on_status_1004(self, monkeypatch):
         # HTTP 200 but MiniMax signals a key/auth problem in the body.
         monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         payload = {
             "base_resp": {
                 "status_code": 1004,
@@ -927,6 +929,65 @@ class TestFetchMinimax:
             result = (await fetch_minimax())[0]
         assert result.ok is False
         assert result.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_empty_base_url_falls_back_to_default_endpoint(self, monkeypatch):
+        # MINIMAX_BASE_URL set but empty must not yield a host-less URL.
+        monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        monkeypatch.setenv("MINIMAX_BASE_URL", "")
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        payload = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M2.7",
+                    "current_interval_total_count": 1000,
+                    "current_interval_usage_count": 200,
+                }
+            ],
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            result = (await fetch_minimax())[0]
+        assert result.ok is True
+        session = mock_session_cls.return_value.__aenter__.return_value
+        assert session.get.call_args.args[0] == "https://api.minimax.io/v1/token_plan/remains"
+
+    @pytest.mark.asyncio
+    async def test_rejected_api_key_falls_back_to_cookie(self, monkeypatch):
+        # A PAYG key is rejected by /token_plan/remains; a configured cookie
+        # should still be tried rather than surfacing a spurious auth error.
+        monkeypatch.setenv("MINIMAX_API_KEY", "minimax_key_1234567890abcd")
+        monkeypatch.setenv("MINIMAX_SESSION_COOKIE", "session=abcdefghijklmnop")
+        api_key_resp = {"base_resp": {"status_code": 1004, "status_msg": "bad key"}}
+        cookie_resp = {
+            "base_resp": {"status_code": 0, "status_msg": "success"},
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M2.7",
+                    "current_interval_total_count": 4500,
+                    "current_interval_usage_count": 1200,
+                }
+            ],
+        }
+
+        # First ClientSession (API key) returns 1004; second (cookie) succeeds.
+        sessions = iter(
+            [
+                _mock_aiohttp_get(status=200, json_data=api_key_resp),
+                _mock_aiohttp_get(status=200, json_data=cookie_resp),
+            ]
+        )
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            side_effect=lambda *a, **k: next(sessions),
+        ):
+            result = (await fetch_minimax())[0]
+        assert result.ok is True
+        assert result.usages[0].used == 3300.0
+        assert result.usages[0].limit == 4500.0
 
 
 class TestFetchOllama:

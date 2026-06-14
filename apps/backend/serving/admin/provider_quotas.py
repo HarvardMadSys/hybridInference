@@ -734,7 +734,7 @@ def _minimax_token_plan_url() -> str:
     ``/v1`` prefix (e.g. ``https://api.minimax.io/v1``), matching the value
     used for inference requests.
     """
-    base = os.getenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1").rstrip("/")
+    base = (os.getenv("MINIMAX_BASE_URL") or "https://api.minimax.io/v1").rstrip("/")
     return f"{base}/token_plan/remains"
 
 
@@ -782,20 +782,29 @@ async def fetch_minimax() -> list[ProviderQuotaResult]:
 
     Prefers API-key auth (``MINIMAX_API_KEY``) against the documented
     ``/token_plan/remains`` endpoint, which does not expire. Falls back to the
-    legacy browser session cookie only when no API key is configured.
+    legacy browser session cookie when no API key is configured, or when the
+    key is rejected (e.g. a standard pay-as-you-go key, which the token-plan
+    endpoint does not accept) and a cookie is available.
     """
+    cookie_keys = _discover_env_keys("MINIMAX_SESSION_COOKIE", "MINIMAX_SESSION_COOKIE")
+    if not cookie_keys and settings.minimax_session_cookie:
+        cookie_keys = [(1, settings.minimax_session_cookie)]
+
     api_keys = _discover_env_keys("MINIMAX_API_KEY", "MINIMAX_API_KEY")
     if api_keys:
         results = await asyncio.gather(
             *[_fetch_minimax_via_api_key(k) for _, k in api_keys],
             return_exceptions=True,
         )
-        return _process_multi_key_results("minimax", "MiniMax", api_keys, results)
+        processed = _process_multi_key_results("minimax", "MiniMax", api_keys, results)
+        # A standard PAYG key is rejected by the token-plan endpoint. Only fall
+        # back to a configured cookie when every key failed auth, so a partial
+        # success is never discarded.
+        key_rejected = all(not r.ok and r.error == "auth_failed" for r in processed)
+        if not (cookie_keys and key_rejected):
+            return processed
 
-    keys = _discover_env_keys("MINIMAX_SESSION_COOKIE", "MINIMAX_SESSION_COOKIE")
-    if not keys and settings.minimax_session_cookie:
-        keys = [(1, settings.minimax_session_cookie)]
-    if not keys:
+    if not cookie_keys:
         return [
             ProviderQuotaResult(
                 name="minimax",
@@ -810,11 +819,11 @@ async def fetch_minimax() -> list[ProviderQuotaResult]:
         ]
 
     results = await asyncio.gather(
-        *[_fetch_minimax_for_key(k) for _, k in keys],
+        *[_fetch_minimax_for_key(k) for _, k in cookie_keys],
         return_exceptions=True,
     )
 
-    return _process_multi_key_results("minimax", "MiniMax", keys, results)
+    return _process_multi_key_results("minimax", "MiniMax", cookie_keys, results)
 
 
 _USAGE_PATTERN = re.compile(
