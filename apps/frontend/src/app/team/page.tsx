@@ -7,7 +7,6 @@ export const metadata = {
 
 interface TeamMember {
   name: string;
-  role: string;
   affiliations: string[];
   lead?: boolean;
 }
@@ -15,13 +14,11 @@ interface TeamMember {
 const members: TeamMember[] = [
   {
     name: 'Juncheng Yang',
-    role: 'Lead',
     affiliations: ['Assistant Professor at Harvard University'],
     lead: true,
   },
   {
     name: 'Murphy Tian',
-    role: 'Research Intern',
     affiliations: [
       'Research Intern at Harvard University',
       'Undergraduate at University of Toronto',
@@ -29,7 +26,6 @@ const members: TeamMember[] = [
   },
   {
     name: 'Haoran Ni',
-    role: 'Research Intern',
     affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
   },
 ];
