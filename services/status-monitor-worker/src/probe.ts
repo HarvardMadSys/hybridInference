@@ -186,22 +186,30 @@ async function probeEmbedding(
   }
 }
 
+interface StreamProbe {
+  ttftMs: number | null;
+  completionTokens: number | null;
+  latencyMs: number;
+}
+
 /**
- * Sends one non-streaming chat completion and returns its end-to-end latency.
+ * Sends one streaming chat completion and measures TTFT, token count, and
+ * end-to-end latency.
  *
- * On Cloudflare Workers the clock only advances across I/O, so a streaming read
- * that delivers the whole body in one buffered chunk collapses latency onto
- * TTFT (both timestamps read the same frozen clock). A non-streaming request
- * completes at a single `await response.json()` I/O boundary, yielding an
- * accurate total latency regardless of how the upstream buffers its output.
- * Token count and TTFT come from the streaming probe; this measures latency
- * only.
+ * `latencyMs` (the time of the final read) is accurate on Cloudflare Workers
+ * even when the upstream delivers the whole body in one buffered chunk — that
+ * read still happens at a real I/O boundary. Only the *split* between TTFT and
+ * latency collapses in the single-read case, since the clock does not advance
+ * during the pure-compute parsing between the first and last delta. The caller
+ * works around that by measuring TTFT with its own near-empty probe.
  */
-async function probeLatency(
+async function streamProbe(
   config: Config,
   apiKey: string,
   modelId: string,
-): Promise<number> {
+  prompt: string,
+  maxTokens: number,
+): Promise<StreamProbe> {
   const started = Date.now();
   const response = await fetch(`${config.gatewayBaseUrl}/v1/chat/completions`, {
     method: "POST",
@@ -210,32 +218,32 @@ async function probeLatency(
       model: modelId,
       messages: [
         { role: "system", content: "You are OpenCode" },
-        { role: "user", content: config.probePrompt },
+        { role: "user", content: prompt },
       ],
-      max_tokens: config.probeMaxTokens,
+      max_tokens: maxTokens,
       temperature: 1,
-      stream: false,
+      stream: true,
+      stream_options: { include_usage: true },
     }),
+    // Total deadline: aborts even when SSE keepalives keep the stream open.
     signal: AbortSignal.timeout(config.probeDeadlineMs),
   });
   if (!response.ok) {
     throw await httpError(response);
   }
-  const body: any = await response.json().catch(() => null);
-  const latencyMs = Date.now() - started;
-  const content = body?.choices?.[0]?.message?.content;
-  if (typeof content !== "string" || content.length === 0) {
-    throw new Error("empty completion (no content generated)");
+  if (!response.body) {
+    throw new Error("no response body");
   }
-  return latencyMs;
+  const { ttftMs, completionTokens } = await consumeSse(response.body, started);
+  return { ttftMs, completionTokens, latencyMs: Date.now() - started };
 }
 
 /**
  * Decode throughput (tokens/sec) over the post-TTFT window.
  *
- * `ttftMs` comes from the streaming probe (request A); `latencyMs` and
- * `completionTokens` come from the non-streaming probe (request B). Because
- * these are two separate requests, the inputs are not guaranteed monotonic.
+ * `ttftMs` comes from the one-token TTFT probe (request A); `latencyMs` and
+ * `completionTokens` come from the workload probe (request B). Because these
+ * are two separate requests, the inputs are not guaranteed monotonic.
  */
 function decodeThroughput(
   ttftMs: number | null,
@@ -270,39 +278,21 @@ export async function probeModel(
       };
     }
 
-    // Request A — streaming: measure TTFT. On Workers, started→first-read spans
-    // real I/O, so the first-token time is accurate even though the stream's own
-    // end-time may collapse onto it when the whole body arrives in one read.
-    const response = await fetch(`${config.gatewayBaseUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: headers(config, apiKey),
-      body: JSON.stringify({
-        model: target.id,
-        messages: [
-          { role: "system", content: "You are OpenCode" },
-          { role: "user", content: config.probePrompt },
-        ],
-        max_tokens: config.probeMaxTokens,
-        temperature: 1,
-        stream: true,
-        stream_options: { include_usage: true },
-      }),
-      // Total deadline: aborts even when SSE keepalives keep the stream open.
-      signal: AbortSignal.timeout(config.probeDeadlineMs),
-    });
-    if (!response.ok) {
-      throw await httpError(response);
-    }
-    if (!response.body) {
-      throw new Error("no response body");
-    }
-    // TTFT and token count come from the streaming probe: started→first-read is
-    // accurate on Workers, and consumeSse counts tokens with a usage fallback.
-    const { ttftMs, completionTokens } = await consumeSse(response.body, started);
+    // Request A — TTFT probe: a one-token "hi" completion. With max_tokens=1 the
+    // whole response is a single token, so the request's duration is the time to
+    // first (and only) token — a clean TTFT even though Workers can't see the
+    // sub-read timing that an in-stream measurement would need.
+    const { ttftMs } = await streamProbe(config, apiKey, target.id, "hi", 1);
 
-    // Request B — non-streaming: measure end-to-end latency at a real I/O
-    // boundary, since the streaming read above can't on Workers.
-    const latencyMs = await probeLatency(config, apiKey, target.id);
+    // Request B — throughput probe: the real workload prompt generates enough
+    // tokens to measure decode rate. Latency and token count come from here.
+    const { latencyMs, completionTokens } = await streamProbe(
+      config,
+      apiKey,
+      target.id,
+      config.probePrompt,
+      config.probeMaxTokens,
+    );
 
     const throughputTps = decodeThroughput(ttftMs, latencyMs, completionTokens);
     return {

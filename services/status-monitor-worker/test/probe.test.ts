@@ -115,59 +115,67 @@ describe("probeModel (embedding)", () => {
 describe("probeModel (chat)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  // The chat probe issues two requests: a streaming one (TTFT + token count)
-  // and a non-streaming one (end-to-end latency). Dispatch on the `stream` flag
-  // so each leg gets a fresh, body-appropriate Response.
-  function stubChat(streaming: () => Response, nonStreaming: () => Response) {
+  // The chat probe issues two streaming requests: a one-token TTFT probe
+  // (max_tokens=1) and the workload throughput probe (max_tokens>1). Dispatch on
+  // max_tokens so each leg gets a fresh, body-appropriate Response.
+  function stubChat(ttftProbe: () => Response, workloadProbe: () => Response) {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => {
         const body = JSON.parse(String(init.body));
-        return body.stream ? streaming() : nonStreaming();
+        return body.max_tokens === 1 ? ttftProbe() : workloadProbe();
       }),
     );
   }
 
-  const okStream = () =>
+  // One-token completion for the TTFT probe.
+  const oneToken = () =>
     new Response(
       sseStream(
-        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+        'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"length"}]}\n\n' +
+          'data: {"usage":{"completion_tokens":1}}\n\n' +
+          "data: [DONE]\n\n",
+      ),
+      { status: 200 },
+    );
+  // Multi-token workload completion carrying the usage token count.
+  const workload = () =>
+    new Response(
+      sseStream(
+        'data: {"choices":[{"delta":{"content":"def search"}}]}\n\n' +
+          'data: {"choices":[{"delta":{"content":"(xs):"}}]}\n\n' +
           'data: {"usage":{"completion_tokens":7}}\n\n' +
           "data: [DONE]\n\n",
       ),
       { status: 200 },
     );
-  const okJson = () =>
-    new Response(JSON.stringify({ choices: [{ message: { content: "hi there" } }] }), {
-      status: 200,
-    });
 
   it("is healthy and reports TTFT, latency, and token count", async () => {
-    stubChat(okStream, okJson);
+    stubChat(oneToken, workload);
     const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
     expect(r.ok).toBe(true);
     expect(r.ttftMs).not.toBeNull();
     expect(r.latencyMs).toBeGreaterThanOrEqual(0);
-    expect(r.completionTokens).toBe(7); // from the streaming probe, not request B
+    expect(r.completionTokens).toBe(7); // from the workload probe, not the TTFT probe
   });
 
-  it("fails when the streaming (TTFT) request errors", async () => {
+  it("fails when the TTFT probe errors", async () => {
     stubChat(
-      () => new Response(JSON.stringify({ error: { message: "stream gw error" } }), { status: 500 }),
-      okJson,
+      () => new Response(JSON.stringify({ error: { message: "ttft gw error" } }), { status: 500 }),
+      workload,
     );
     const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain("stream gw error");
+    expect(r.error).toContain("ttft gw error");
   });
 
-  it("fails when the non-streaming (latency) request errors", async () => {
+  it("fails when the workload (throughput) probe errors", async () => {
     stubChat(
-      okStream,
-      () => new Response(JSON.stringify({ error: { message: "latency gw error" } }), { status: 500 }),
+      oneToken,
+      () => new Response(JSON.stringify({ error: { message: "workload gw error" } }), { status: 500 }),
     );
     const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain("latency gw error");
+    expect(r.error).toContain("workload gw error");
   });
 });
