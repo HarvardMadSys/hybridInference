@@ -29,11 +29,17 @@ describe('TeamPage', () => {
     };
 
     const murphyCard = cardFor(/murphy tian/i);
-    expect(within(murphyCard).getByText(/research intern at harvard university/i)).toBeInTheDocument();
-    expect(within(murphyCard).getByText(/undergraduate at university of toronto/i)).toBeInTheDocument();
+    expect(
+      within(murphyCard).getByText(/research intern at harvard university/i),
+    ).toBeInTheDocument();
+    expect(
+      within(murphyCard).getByText(/undergraduate at university of toronto/i),
+    ).toBeInTheDocument();
 
     const haoranCard = cardFor(/haoran ni/i);
-    expect(within(haoranCard).getByText(/research intern at harvard university/i)).toBeInTheDocument();
+    expect(
+      within(haoranCard).getByText(/research intern at harvard university/i),
+    ).toBeInTheDocument();
     expect(within(haoranCard).getByText(/undergraduate at nju/i)).toBeInTheDocument();
   });
 });
