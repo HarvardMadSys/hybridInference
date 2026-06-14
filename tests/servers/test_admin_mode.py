@@ -281,7 +281,7 @@ class TestPlaygroundAccess:
         ) as response:
             assert response.status_code == 200
             assert response.headers["content-type"].startswith("text/event-stream")
-            assert response.headers["cache-control"] == "no-cache"
+            assert response.headers["cache-control"] == "no-cache, no-transform"
             assert response.headers["x-accel-buffering"] == "no"
 
             lines: list[str] = []

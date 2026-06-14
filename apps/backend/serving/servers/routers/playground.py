@@ -189,7 +189,9 @@ async def playground_chat(
         _generate(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from
+            # buffering the stream to compress it, which collapses TTFT.
+            "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
         },
     )

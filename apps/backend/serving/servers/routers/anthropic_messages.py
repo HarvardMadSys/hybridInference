@@ -577,7 +577,9 @@ async def anthropic_messages(
         from fastapi.responses import StreamingResponse
 
         sse_headers = {
-            "Cache-Control": "no-cache",
+            # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from
+            # buffering the stream to compress it, which collapses TTFT.
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         }

@@ -737,7 +737,12 @@ async def chat_completions(
 
         # Record 200 for streaming response (HTTP layer success)
         record_model_request("200", provider)
-        response_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering
+        # the stream to compress it, which collapses TTFT to total latency.
+        response_headers = {
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        }
         if is_synthetic_probe:
             provider_header = get_single_route_provider()
             if provider_header:
