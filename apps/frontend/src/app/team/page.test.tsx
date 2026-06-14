@@ -19,7 +19,9 @@ describe('TeamPage', () => {
   it('renders the team heading and lead member with a photo', () => {
     render(<TeamPage />);
 
-    expect(screen.getByRole('heading', { level: 1, name: /^team$/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { level: 1, name: /the people behind/i }),
+    ).toBeInTheDocument();
 
     const junchengCard = cardFor(/juncheng yang/i);
     expect(within(junchengCard).getByText(/^lead$/i)).toBeInTheDocument();
