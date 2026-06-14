@@ -20,6 +20,8 @@ function headers(config: Config, apiKey: string): Record<string, string> {
   const h: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
+    // Probe as a typical client so the request resembles real traffic.
+    "User-Agent": "claude-code/0.1.0",
   };
   // The gateway recognizes "X-Probe: synthetic" to exclude requests from logs,
   // metrics, and cost tracking.
@@ -212,9 +214,12 @@ export async function probeModel(
       headers: headers(config, apiKey),
       body: JSON.stringify({
         model: target.id,
-        messages: [{ role: "user", content: config.probePrompt }],
+        messages: [
+          { role: "system", content: "You are OpenCode" },
+          { role: "user", content: config.probePrompt },
+        ],
         max_tokens: config.probeMaxTokens,
-        temperature: 0,
+        temperature: 1,
         stream: true,
         stream_options: { include_usage: true },
       }),
