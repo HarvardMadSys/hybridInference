@@ -295,6 +295,32 @@ def test_auto_gpu_selection_excludes_gpu_held_by_running_backend(
     assert starting._current_gpu == "0"
 
 
+def test_colocate_group_follows_sibling_onto_its_gpu(monkeypatch: Any, tmp_path: Path) -> None:
+    # A backend sharing a colocate_group with an already-running backend must
+    # land on that sibling's GPU instead of auto-picking a different one.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    running = proxy.BackendManager(
+        "running-model",
+        {"container": "running", "model_dir": "/tmp/running", "colocate_group": "primary"},
+    )
+    with running._lock:
+        running._state = "ready"
+    running._current_gpu = "2"
+    starting = proxy.BackendManager(
+        "starting-model",
+        {"container": "starting", "model_dir": "/tmp/starting", "colocate_group": "primary"},
+    )
+    proxy._backends = {"running-model": running, "starting-model": starting}
+
+    def fail_pick(exclude: set[str] | None = None) -> str:
+        raise AssertionError("should colocate without auto-picking a free GPU")
+
+    monkeypatch.setattr(proxy, "_pick_free_gpu", fail_pick)
+
+    assert starting._resolve_gpu() == "2"
+    assert starting._current_gpu == "2"
+
+
 def test_huggingface_download_failure_prevents_container_start(
     monkeypatch: Any, tmp_path: Path
 ) -> None:

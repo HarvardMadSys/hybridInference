@@ -116,6 +116,7 @@ Models are defined in `sglang_idle_proxy/models.json`:
 |---|---|
 | `container` | Docker container name |
 | `gpu_index` | GPU device index (omit to auto-pick) |
+| `colocate_group` | optional label; models sharing a value run on the same auto-picked GPU |
 | `backend_port` | Host port mapped to the container |
 | `model_dir` | Host path to model weights |
 | `hf_repo` | optional Hugging Face repository downloaded into `model_dir` when absent |
@@ -145,6 +146,8 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 ## GPU auto-selection
 
 When `gpu_index` is not set for a model, the proxy queries `nvidia-smi` at container start time and picks the GPU with the lowest memory utilization. It also excludes the GPU that each other starting/running backend actually resolved to (tracked at runtime, since auto-selected models have no `gpu_index` in config), so concurrent backends do not collide on the same device. Set `gpu_index` explicitly to pin a model to a specific device.
+
+To intentionally **colocate** models on one GPU, give them a shared `colocate_group`. The first member to start auto-picks a free GPU; every other member of the group then follows it onto that same device instead of being excluded from it. Keep the group's combined `mem_fraction` at ~0.9 or below.
 
 ## On-demand Hugging Face download
 

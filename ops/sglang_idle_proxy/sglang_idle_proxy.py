@@ -58,6 +58,11 @@ Example::
 
 ``gpu_index`` can be omitted to auto-pick the least-used GPU.
 
+Give two or more models the same ``colocate_group`` to make them share one
+GPU: the first to start auto-picks a free device and the rest follow it there
+(instead of being spread onto separate GPUs). Size their ``mem_fraction``
+values so the group sums to roughly 0.9 or less.
+
 Set ``"is_embedding": true`` on a model to launch sglang in encode-only mode
 (adds ``--is-embedding``); such models serve ``/v1/embeddings`` instead of chat.
 """
@@ -261,6 +266,30 @@ class BackendManager:
             log.info("[%s] Using pinned GPU %s", self.model_name, pinned)
             self._current_gpu = str(pinned)
             return self._current_gpu
+        # Colocation: if another backend sharing this model's colocate_group is
+        # already starting or running, land on the same GPU it resolved to.
+        # Whichever group member starts first auto-picks a free GPU; the rest
+        # follow it onto that device (the inverse of the exclusion below). This
+        # lets, e.g., a chat model and its embedding model share one GPU.
+        group = self.config.get("colocate_group")
+        if group:
+            for mgr in _backends.values():
+                if mgr is self:
+                    continue
+                if (
+                    mgr.state in ("starting", "ready")
+                    and mgr._current_gpu is not None
+                    and mgr.config.get("colocate_group") == group
+                ):
+                    log.info(
+                        "[%s] Colocating on GPU %s with %s (group %r)",
+                        self.model_name,
+                        mgr._current_gpu,
+                        mgr.model_name,
+                        group,
+                    )
+                    self._current_gpu = mgr._current_gpu
+                    return self._current_gpu
         # Exclude GPUs already claimed by other backends that are starting or
         # running. Auto-selected backends carry no gpu_index in their config, so
         # rely on the runtime GPU each one actually resolved to.
