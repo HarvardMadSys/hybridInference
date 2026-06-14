@@ -208,10 +208,11 @@ function clientScript(refreshMs: number): string {
 
     // Self-calibrating gap threshold: break the line across an unusually long
     // pause between samples (e.g. a skipped cron cycle), derived from the median
-    // interval between consecutive probes.
+    // interval between consecutive probes. Parse each timestamp once and reuse.
+    var times = rows.map(function (r) { return Date.parse(r.t); });
     var deltas = [];
     for (var d = 1; d < rows.length; d++) {
-      var ta = Date.parse(rows[d - 1].t), tb = Date.parse(rows[d].t);
+      var ta = times[d - 1], tb = times[d];
       if (isFinite(ta) && isFinite(tb) && tb > ta) deltas.push(tb - ta);
     }
     deltas.sort(function (a, b) { return a - b; });
@@ -223,7 +224,7 @@ function clientScript(refreshMs: number): string {
     var segs = [], cur = [], prev = null, prevT = null;
     for (var k = 0; k < pts.length; k++) {
       var p = pts[k];
-      var pT = Date.parse(p.t);
+      var pT = times[p.i];
       var jumped = prev != null && (p.i !== prev + 1 || (prevT != null && isFinite(pT) && pT - prevT > gapMs));
       if (jumped) { if (cur.length) segs.push(cur); cur = []; }
       cur.push(p); prev = p.i; prevT = isFinite(pT) ? pT : prevT;
@@ -276,13 +277,17 @@ function clientScript(refreshMs: number): string {
       "<span>Throughput <b>" + (latest && latest.throughputTps != null ? round(latest.throughputTps, 1) + " tok/s" : "\\u2014") + "</b></span>" +
       "<span>Uptime <b>" + uptime + "%</b></span>" +
       "<span>Samples <b>" + rows.length + "</b></span></div>";
+    // Single source of truth for which metrics get a detail chart.
+    var charts = [
+      ["Latency", "latencyMs", "#60a5fa", "ms"],
+      ["Throughput", "throughputTps", "#4ade80", "tok/s"],
+      ["Time to first token", "ttftMs", "#fbbf24", "ms"]
+    ].map(function (m) { return chartBlock(m[0], rows, m[1], m[2], m[3]); }).join("");
     overlay.innerHTML = '<div class="zoom-card" role="dialog" aria-modal="true" aria-label="' + escHtml(modelId) + ' detail">' +
       '<div class="zoom-head"><span class="zoom-title">' + escHtml(modelId) + '</span>' +
       '<button class="zoom-close" aria-label="Close detail view">\\u2715</button></div>' +
       stats +
-      chartBlock("Latency", rows, "latencyMs", "#60a5fa", "ms") +
-      chartBlock("Throughput", rows, "throughputTps", "#4ade80", "tok/s") +
-      chartBlock("Time to first token", rows, "ttftMs", "#fbbf24", "ms") +
+      charts +
       "</div>";
     overlay.classList.add("open");
     cancelRefresh();
