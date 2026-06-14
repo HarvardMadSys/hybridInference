@@ -111,3 +111,63 @@ describe("probeModel (embedding)", () => {
     expect(r.error).toContain("Embedding service error");
   });
 });
+
+describe("probeModel (chat)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  // The chat probe issues two requests: a streaming one (TTFT + token count)
+  // and a non-streaming one (end-to-end latency). Dispatch on the `stream` flag
+  // so each leg gets a fresh, body-appropriate Response.
+  function stubChat(streaming: () => Response, nonStreaming: () => Response) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body));
+        return body.stream ? streaming() : nonStreaming();
+      }),
+    );
+  }
+
+  const okStream = () =>
+    new Response(
+      sseStream(
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n' +
+          'data: {"usage":{"completion_tokens":7}}\n\n' +
+          "data: [DONE]\n\n",
+      ),
+      { status: 200 },
+    );
+  const okJson = () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "hi there" } }] }), {
+      status: 200,
+    });
+
+  it("is healthy and reports TTFT, latency, and token count", async () => {
+    stubChat(okStream, okJson);
+    const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
+    expect(r.ok).toBe(true);
+    expect(r.ttftMs).not.toBeNull();
+    expect(r.latencyMs).toBeGreaterThanOrEqual(0);
+    expect(r.completionTokens).toBe(7); // from the streaming probe, not request B
+  });
+
+  it("fails when the streaming (TTFT) request errors", async () => {
+    stubChat(
+      () => new Response(JSON.stringify({ error: { message: "stream gw error" } }), { status: 500 }),
+      okJson,
+    );
+    const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("stream gw error");
+  });
+
+  it("fails when the non-streaming (latency) request errors", async () => {
+    stubChat(
+      okStream,
+      () => new Response(JSON.stringify({ error: { message: "latency gw error" } }), { status: 500 }),
+    );
+    const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("latency gw error");
+  });
+});

@@ -186,6 +186,67 @@ async function probeEmbedding(
   }
 }
 
+/**
+ * Sends one non-streaming chat completion and returns its end-to-end latency.
+ *
+ * On Cloudflare Workers the clock only advances across I/O, so a streaming read
+ * that delivers the whole body in one buffered chunk collapses latency onto
+ * TTFT (both timestamps read the same frozen clock). A non-streaming request
+ * completes at a single `await response.json()` I/O boundary, yielding an
+ * accurate total latency regardless of how the upstream buffers its output.
+ * Token count and TTFT come from the streaming probe; this measures latency
+ * only.
+ */
+async function probeLatency(
+  config: Config,
+  apiKey: string,
+  modelId: string,
+): Promise<number> {
+  const started = Date.now();
+  const response = await fetch(`${config.gatewayBaseUrl}/v1/chat/completions`, {
+    method: "POST",
+    headers: headers(config, apiKey),
+    body: JSON.stringify({
+      model: modelId,
+      messages: [
+        { role: "system", content: "You are OpenCode" },
+        { role: "user", content: config.probePrompt },
+      ],
+      max_tokens: config.probeMaxTokens,
+      temperature: 1,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(config.probeDeadlineMs),
+  });
+  if (!response.ok) {
+    throw await httpError(response);
+  }
+  const body: any = await response.json().catch(() => null);
+  const latencyMs = Date.now() - started;
+  const content = body?.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || content.length === 0) {
+    throw new Error("empty completion (no content generated)");
+  }
+  return latencyMs;
+}
+
+/**
+ * Decode throughput (tokens/sec) over the post-TTFT window.
+ *
+ * `ttftMs` comes from the streaming probe (request A); `latencyMs` and
+ * `completionTokens` come from the non-streaming probe (request B). Because
+ * these are two separate requests, the inputs are not guaranteed monotonic.
+ */
+function decodeThroughput(
+  ttftMs: number | null,
+  latencyMs: number,
+  completionTokens: number | null,
+): number | null {
+  if (completionTokens == null || completionTokens <= 1) return null;
+  if (ttftMs == null || latencyMs <= ttftMs) return null;
+  return (completionTokens - 1) / ((latencyMs - ttftMs) / 1000);
+}
+
 /** Sends one synthetic request for a model and returns the measured result. */
 export async function probeModel(
   config: Config,
@@ -209,6 +270,9 @@ export async function probeModel(
       };
     }
 
+    // Request A — streaming: measure TTFT. On Workers, started→first-read spans
+    // real I/O, so the first-token time is accurate even though the stream's own
+    // end-time may collapse onto it when the whole body arrives in one read.
     const response = await fetch(`${config.gatewayBaseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: headers(config, apiKey),
@@ -232,14 +296,15 @@ export async function probeModel(
     if (!response.body) {
       throw new Error("no response body");
     }
+    // TTFT and token count come from the streaming probe: started→first-read is
+    // accurate on Workers, and consumeSse counts tokens with a usage fallback.
     const { ttftMs, completionTokens } = await consumeSse(response.body, started);
-    const latencyMs = Date.now() - started;
-    // Decode throughput over the post-TTFT window, matching the gateway metric:
-    // (tokens - 1) / (latency - ttft). Excludes queueing/TTFT.
-    const throughputTps =
-      completionTokens && completionTokens > 1 && ttftMs != null && latencyMs > ttftMs
-        ? (completionTokens - 1) / ((latencyMs - ttftMs) / 1000)
-        : null;
+
+    // Request B — non-streaming: measure end-to-end latency at a real I/O
+    // boundary, since the streaming read above can't on Workers.
+    const latencyMs = await probeLatency(config, apiKey, target.id);
+
+    const throughputTps = decodeThroughput(ttftMs, latencyMs, completionTokens);
     return {
       modelId: target.id,
       ok: true,
