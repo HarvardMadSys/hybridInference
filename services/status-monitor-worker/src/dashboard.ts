@@ -217,7 +217,9 @@ function clientScript(refreshMs: number): string {
     }
     deltas.sort(function (a, b) { return a - b; });
     var med = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 0;
-    var gapMs = med ? med * 2.5 : Infinity;
+    // 1.5x sits between a normal interval (1x) and one skipped cron cycle (2x),
+    // so a single missed probe already shows as a gap while jitter does not.
+    var gapMs = med ? med * 1.5 : Infinity;
 
     // Break the line where the series skips probes (gap in row index) or where
     // too much wall-clock time elapsed between adjacent plotted points.
@@ -320,7 +322,17 @@ function clientScript(refreshMs: number): string {
     });
   }
   overlay.addEventListener("click", function (e) { if (e.target === overlay) closeZoom(); });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && overlay.classList.contains("open")) closeZoom(); });
+  document.addEventListener("keydown", function (e) {
+    if (!overlay.classList.contains("open")) return;
+    if (e.key === "Escape") { closeZoom(); return; }
+    if (e.key !== "Tab") return;
+    // Trap focus inside the modal dialog (aria-modal) until it closes.
+    var f = overlay.querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"])');
+    if (!f.length) { e.preventDefault(); return; }
+    var first = f[0], last = f[f.length - 1], active = document.activeElement;
+    if (e.shiftKey && (active === first || !overlay.contains(active))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (active === last || !overlay.contains(active))) { e.preventDefault(); first.focus(); }
+  });
 })();
 `;
 }
