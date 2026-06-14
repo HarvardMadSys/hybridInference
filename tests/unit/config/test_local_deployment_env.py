@@ -38,13 +38,13 @@ def test_minimax_fast_uses_routewise() -> None:
 
     assert minimax_fast is not None, "Model 'minimax-fast' not found in config/models.yaml"
     assert minimax_fast["name"] == "MiniMax Fast"
+    # Mirrors the canonical minimax-m2.5 surface; top_k / seed are intentionally
+    # not advertised (MiniMax's API does not support them).
     assert minimax_fast["supported_params"] == [
         "temperature",
         "top_p",
-        "top_k",
         "max_tokens",
         "stop",
-        "seed",
         "stream",
     ]
     assert minimax_fast["router"] == "routewise"

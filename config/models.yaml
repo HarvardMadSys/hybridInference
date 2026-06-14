@@ -312,7 +312,11 @@ models:
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
-    supported_params: [temperature, top_p, top_k, max_tokens, stop, seed, stream]
+    # Matches the canonical minimax-m2.5 surface: MiniMax's API does not support
+    # top_k / seed, so they are not advertised. Forwarding them to the
+    # minimax-direct leg would otherwise be ignored or rejected, making behavior
+    # route-dependent.
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
     aliases: ["MiniMax-Fast"]
     router: routewise
     router_params:
