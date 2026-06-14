@@ -117,6 +117,24 @@ describe("renderDashboard", () => {
     expect(parsed["a</script>b"][1].ok).toBe(0);
   });
 
+  it("caps the throughput chart so outliers above 400 tok/s are skipped", () => {
+    const html = renderDashboard(SNAPSHOT);
+    // Throughput is the only metric with an upper cap (5th config field = 400).
+    expect(html).toContain('"throughputTps", "#4ade80", "tok/s", 400');
+    // Latency and TTFT stay uncapped.
+    expect(html).toContain('"latencyMs", "#60a5fa", "ms", null');
+    // Points above the cap are dropped before plotting/scaling.
+    expect(html).toContain("cap == null || v <= cap");
+  });
+
+  it("renders a cursor-following tooltip for chart points", () => {
+    const html = renderDashboard(SNAPSHOT);
+    expect(html).toContain("#chart-tip"); // styled tooltip element
+    expect(html).toContain("function showTip");
+    expect(html).toContain('tip.id = "chart-tip"');
+    expect(html).toContain('"data-tip"'); // points expose their hover text
+  });
+
   it("buckets probes by the fixed cron cadence to detect skipped cycles", () => {
     const html = renderDashboard(SNAPSHOT);
     // 5-minute cron interval in ms; charts floor each timestamp by this.

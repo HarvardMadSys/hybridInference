@@ -59,6 +59,12 @@ a { color: #60a5fa; }
 .chart .axl { fill: #6b7280; font-size: 9px; }
 .chart .axt { fill: #6b7280; font-size: 8px; }
 .chart-empty { font-size: .78rem; color: #6b7280; padding: .5rem 0 .8rem; }
+.chart .hit { cursor: crosshair; }
+/* Cursor-following tooltip — larger, readable, and easier to trigger than the
+   native SVG <title> (no hover delay, generous hit targets). */
+#chart-tip { position: fixed; z-index: 60; pointer-events: none; display: none; max-width: 280px; padding: .3rem .55rem; font-size: .74rem; line-height: 1.3; white-space: nowrap; color: #e6e6e6; background: #0b0e13; border: 1px solid #2a323d; border-radius: 6px; box-shadow: 0 6px 18px rgba(0, 0, 0, .55); transform: translate(-50%, calc(-100% - 12px)); }
+#chart-tip.below { transform: translate(-50%, 12px); }
+#chart-tip .tv { font-weight: 600; }
 `;
 
 function esc(value: string): string {
@@ -186,6 +192,20 @@ function clientScript(refreshMs: number, cycleMs: number): string {
   var overlay = document.getElementById("zoom");
   var timer = null;
   var activeTrigger = null;
+
+  // Shared cursor-following tooltip for chart points.
+  var tip = document.createElement("div");
+  tip.id = "chart-tip";
+  document.body.appendChild(tip);
+  function showTip(text, x, y) {
+    tip.textContent = text;
+    tip.style.left = x + "px";
+    // Flip below the cursor near the top edge so the tooltip never clips offscreen.
+    if (y < 70) { tip.style.top = (y + 4) + "px"; tip.classList.add("below"); }
+    else { tip.style.top = y + "px"; tip.classList.remove("below"); }
+    tip.style.display = "block";
+  }
+  function hideTip() { tip.style.display = "none"; }
   function scheduleRefresh() { timer = setTimeout(function () { location.reload(); }, ${refreshMs}); }
   function cancelRefresh() { if (timer) { clearTimeout(timer); timer = null; } }
   scheduleRefresh();
@@ -198,12 +218,14 @@ function clientScript(refreshMs: number, cycleMs: number): string {
   function fmtTime(s) { return s ? s.slice(0, 19).replace("T", " ") : ""; }
   function round(v, d) { var f = Math.pow(10, d || 0); return Math.round(v * f) / f; }
 
-  function lineChart(rows, key, color, unit) {
+  function lineChart(rows, key, color, unit, cap) {
     var W = 640, H = 170, PADL = 46, PADR = 14, PADT = 12, PADB = 24;
     var pts = [];
     for (var i = 0; i < rows.length; i++) {
       var v = rows[i][key];
-      if (v != null && isFinite(v)) pts.push({ i: i, v: v, t: rows[i].t, ok: rows[i].ok });
+      // Skip out-of-range outliers (e.g. throughput spikes) so they neither
+      // distort the y-scale nor draw a misleading line; the gap reads as a break.
+      if (v != null && isFinite(v) && (cap == null || v <= cap)) pts.push({ i: i, v: v, t: rows[i].t, ok: rows[i].ok });
     }
     if (pts.length < 1) return '<div class="chart-empty">No ' + unit + ' data captured for this model yet.</div>';
     var vals = pts.map(function (p) { return p.v; });
@@ -239,7 +261,12 @@ function clientScript(refreshMs: number, cycleMs: number): string {
       return '<polyline points="' + s.map(function (p) { return x(p.i).toFixed(1) + "," + y(p.v).toFixed(1); }).join(" ") + '" style="stroke:' + color + '"/>';
     }).join("");
     var dots = pts.map(function (p) {
-      return '<circle cx="' + x(p.i).toFixed(1) + '" cy="' + y(p.v).toFixed(1) + '" r="2.4" style="fill:' + (p.ok ? color : "#f87171") + '"><title>' + fmtTime(p.t) + " \\u2014 " + round(p.v, 2) + " " + unit + "</title></circle>";
+      var cx = x(p.i).toFixed(1), cy = y(p.v).toFixed(1);
+      var tip = fmtTime(p.t) + "\\u2003" + round(p.v, 2) + " " + unit;
+      // A small visible dot plus a larger transparent hit circle: the wide
+      // target makes the cursor-following tooltip easy to summon.
+      return '<circle cx="' + cx + '" cy="' + cy + '" r="2.4" style="fill:' + (p.ok ? color : "#f87171") + '"/>' +
+             '<circle class="hit" cx="' + cx + '" cy="' + cy + '" r="9" fill="transparent" data-tip="' + escHtml(tip) + '"/>';
     }).join("");
     var grid = '<line x1="' + PADL + '" y1="' + y(max).toFixed(1) + '" x2="' + (W - PADR) + '" y2="' + y(max).toFixed(1) + '" class="axg"/>' +
                '<line x1="' + PADL + '" y1="' + y(min).toFixed(1) + '" x2="' + (W - PADR) + '" y2="' + y(min).toFixed(1) + '" class="axg"/>';
@@ -250,20 +277,28 @@ function clientScript(refreshMs: number, cycleMs: number): string {
     return '<svg viewBox="0 0 ' + W + ' ' + H + '" class="chart" role="img" aria-label="' + unit + ' over time">' + grid + polys + dots + ylab + xlab + '</svg>';
   }
 
-  function chartBlock(label, rows, key, color, unit) {
-    var present = rows.filter(function (r) { return r[key] != null && isFinite(r[key]); }).map(function (r) { return r[key]; });
+  function chartBlock(label, rows, key, color, unit, cap) {
+    function inRange(v) { return v != null && isFinite(v) && (cap == null || v <= cap); }
+    var present = rows.filter(function (r) { return inRange(r[key]); }).map(function (r) { return r[key]; });
+    var skipped = cap == null ? 0 : rows.filter(function (r) { var v = r[key]; return v != null && isFinite(v) && v > cap; }).length;
     var meta = "";
-    if (present.length) {
-      var mn = Math.min.apply(null, present), mx = Math.max.apply(null, present);
-      var avg = present.reduce(function (a, b) { return a + b; }, 0) / present.length;
+    if (present.length || skipped) {
+      var summary = "";
+      if (present.length) {
+        var mn = Math.min.apply(null, present), mx = Math.max.apply(null, present);
+        var avg = present.reduce(function (a, b) { return a + b; }, 0) / present.length;
+        summary = "min " + round(mn, 1) + " \\u00B7 avg " + round(avg, 1) + " \\u00B7 max " + round(mx, 1) + " " + unit;
+      }
+      // Note any points dropped by the range cap so the gap isn't mistaken for
+      // missing data.
+      if (skipped) summary += (summary ? " \\u00B7 " : "") + skipped + " >" + cap + " skipped";
       // "latest" reflects the most recent sample, not the last non-null value —
-      // a failed probe shows "—" rather than a stale earlier reading.
+      // a failed probe (or a capped outlier) shows "—" rather than a stale read.
       var lastRaw = rows.length ? rows[rows.length - 1][key] : null;
-      var lastStr = lastRaw != null && isFinite(lastRaw) ? round(lastRaw, 2) + " " + unit : "\\u2014";
-      meta = '<div class="chart-meta"><span>latest ' + lastStr +
-        '</span><span>min ' + round(mn, 1) + " \\u00B7 avg " + round(avg, 1) + " \\u00B7 max " + round(mx, 1) + " " + unit + "</span></div>";
+      var lastStr = inRange(lastRaw) ? round(lastRaw, 2) + " " + unit : "\\u2014";
+      meta = '<div class="chart-meta"><span>latest ' + lastStr + "</span><span>" + summary + "</span></div>";
     }
-    return '<div class="chart-block"><h3>' + escHtml(label) + '<span class="accent">' + unit + '</span></h3>' + meta + lineChart(rows, key, color, unit) + "</div>";
+    return '<div class="chart-block"><h3>' + escHtml(label) + '<span class="accent">' + unit + '</span></h3>' + meta + lineChart(rows, key, color, unit, cap) + "</div>";
   }
 
   function openZoom(modelId, trigger) {
@@ -281,12 +316,14 @@ function clientScript(refreshMs: number, cycleMs: number): string {
       "<span>Throughput <b>" + (latest && latest.throughputTps != null ? round(latest.throughputTps, 1) + " tok/s" : "\\u2014") + "</b></span>" +
       "<span>Uptime <b>" + uptime + "%</b></span>" +
       "<span>Samples <b>" + rows.length + "</b></span></div>";
-    // Single source of truth for which metrics get a detail chart.
+    // Single source of truth for which metrics get a detail chart. The 5th
+    // field is an optional upper cap: throughput readings above it are treated
+    // as outliers and skipped so the chart stays readable.
     var charts = [
-      ["Latency", "latencyMs", "#60a5fa", "ms"],
-      ["Throughput", "throughputTps", "#4ade80", "tok/s"],
-      ["Time to first token", "ttftMs", "#fbbf24", "ms"]
-    ].map(function (m) { return chartBlock(m[0], rows, m[1], m[2], m[3]); }).join("");
+      ["Latency", "latencyMs", "#60a5fa", "ms", null],
+      ["Throughput", "throughputTps", "#4ade80", "tok/s", 400],
+      ["Time to first token", "ttftMs", "#fbbf24", "ms", null]
+    ].map(function (m) { return chartBlock(m[0], rows, m[1], m[2], m[3], m[4]); }).join("");
     overlay.innerHTML = '<div class="zoom-card" role="dialog" aria-modal="true" aria-label="' + escHtml(modelId) + ' detail">' +
       '<div class="zoom-head"><span class="zoom-title">' + escHtml(modelId) + '</span>' +
       '<button class="zoom-close" aria-label="Close detail view">\\u2715</button></div>' +
@@ -302,6 +339,7 @@ function clientScript(refreshMs: number, cycleMs: number): string {
   function closeZoom() {
     overlay.classList.remove("open");
     overlay.innerHTML = "";
+    hideTip();
     cancelRefresh();
     scheduleRefresh();
     // Restore focus to the card that opened the overlay (WCAG keyboard nav).
@@ -324,6 +362,19 @@ function clientScript(refreshMs: number, cycleMs: number): string {
     });
   }
   overlay.addEventListener("click", function (e) { if (e.target === overlay) closeZoom(); });
+  // Cursor-following tooltip on chart points (delegated; survives re-render).
+  overlay.addEventListener("mouseover", function (e) {
+    var t = e.target.getAttribute && e.target.getAttribute("data-tip");
+    if (t) showTip(t, e.clientX, e.clientY);
+  });
+  overlay.addEventListener("mousemove", function (e) {
+    if (tip.style.display !== "block") return;
+    var t = e.target.getAttribute && e.target.getAttribute("data-tip");
+    if (t) showTip(t, e.clientX, e.clientY); else hideTip();
+  });
+  overlay.addEventListener("mouseout", function (e) {
+    if (e.target.getAttribute && e.target.getAttribute("data-tip")) hideTip();
+  });
   document.addEventListener("keydown", function (e) {
     if (!overlay.classList.contains("open")) return;
     if (e.key === "Escape") { closeZoom(); return; }
