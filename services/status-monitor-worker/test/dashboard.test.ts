@@ -117,6 +117,12 @@ describe("renderDashboard", () => {
     expect(parsed["a</script>b"][1].ok).toBe(0);
   });
 
+  it("derives the chart line-break gap threshold from the fixed cron cadence", () => {
+    const html = renderDashboard(SNAPSHOT);
+    // 1.5 x the 5-minute cron interval = 450000 ms, not inferred from jittery data.
+    expect(html).toContain("var GAP_MS = 450000;");
+  });
+
   it("uses a noscript fallback for auto-refresh so the zoom view is not interrupted", () => {
     const html = renderDashboard(SNAPSHOT, undefined, 45);
     // Auto-refresh only fires without JS; with JS the client pauses it while zoomed.

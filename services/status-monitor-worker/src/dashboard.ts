@@ -1,5 +1,10 @@
 import type { ProbeRow, Snapshot } from "./db";
 
+// Probe cadence — must match the cron schedule in wrangler.toml (`*/5` = 5 min).
+// Used to size the chart line-break threshold so a skipped cycle shows as a gap.
+const PROBE_INTERVAL_MS = 5 * 60 * 1000;
+const GAP_THRESHOLD_MS = PROBE_INTERVAL_MS * 1.5;
+
 const STYLE = `
 :root { color-scheme: light dark; }
 * { box-sizing: border-box; }
@@ -168,9 +173,12 @@ export function seriesPayload(models: Snapshot["models"]): Record<string, Series
  * from the embedded per-model history. Written with string concatenation (no
  * template literals) so it injects verbatim without `${}` collisions.
  */
-function clientScript(refreshMs: number): string {
+function clientScript(refreshMs: number, gapMs: number): string {
   return `
 (function () {
+  // Line-break threshold for chart gaps, from the fixed cron cadence (see GAP_MS
+  // derivation in renderDashboard); kept here so charts need no per-render value.
+  var GAP_MS = ${gapMs};
   var data = {};
   var modelDataEl = document.getElementById("model-data");
   if (modelDataEl) {
@@ -206,20 +214,14 @@ function clientScript(refreshMs: number): string {
     function x(i) { return PADL + (n > 1 ? i / (n - 1) : 0) * (W - PADL - PADR); }
     function y(v) { return PADT + (1 - (v - min) / (max - min)) * (H - PADT - PADB); }
 
-    // Self-calibrating gap threshold: break the line across an unusually long
-    // pause between samples (e.g. a skipped cron cycle). The baseline is the
-    // SHORTEST observed interval — the cadence floor (probes can't run faster
-    // than the cron), which a large gap cannot inflate the way it can a median.
-    // Parse each timestamp once and reuse.
+    // Break the line across a pause longer than GAP_MS. The threshold is derived
+    // from the fixed cron cadence (1.5x the probe interval), not inferred from the
+    // data: per-model checkedAt is stamped when each probe starts within the pool,
+    // not at the cron tick, so observed intervals jitter and even dip below the
+    // cadence — a single skipped cycle (~2x) still exceeds GAP_MS while jitter
+    // (sub-2x) does not. Parse each timestamp once and reuse.
     var times = rows.map(function (r) { return Date.parse(r.t); });
-    var base = Infinity;
-    for (var d = 1; d < rows.length; d++) {
-      var ta = times[d - 1], tb = times[d];
-      if (isFinite(ta) && isFinite(tb) && tb > ta && tb - ta < base) base = tb - ta;
-    }
-    // 1.5x sits between a normal interval (1x) and one skipped cron cycle (2x),
-    // so a single missed probe already shows as a gap while jitter does not.
-    var gapMs = isFinite(base) ? base * 1.5 : Infinity;
+    var gapMs = GAP_MS;
 
     // Break the line where the series skips probes (gap in row index) or where
     // too much wall-clock time elapsed between adjacent plotted points.
@@ -379,7 +381,7 @@ export function renderDashboard(
   <div id="zoom" role="presentation"></div>
   <footer>Auto-refreshes every ${refreshSeconds}s · <a href="api/status">JSON</a></footer>
   <script id="model-data" type="application/json">${dataJson}</script>
-  <script>${clientScript(refreshSeconds * 1000)}</script>
+  <script>${clientScript(refreshSeconds * 1000, GAP_THRESHOLD_MS)}</script>
 </body>
 </html>`;
 }
