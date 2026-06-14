@@ -196,12 +196,14 @@ interface StreamProbe {
  * Sends one streaming chat completion and measures TTFT, token count, and
  * end-to-end latency.
  *
- * `latencyMs` (the time of the final read) is accurate on Cloudflare Workers
- * even when the upstream delivers the whole body in one buffered chunk — that
- * read still happens at a real I/O boundary. Only the *split* between TTFT and
- * latency collapses in the single-read case, since the clock does not advance
- * during the pure-compute parsing between the first and last delta. The caller
- * works around that by measuring TTFT with its own near-empty probe.
+ * `ttftMs` is the clock at the read that delivered the first token and
+ * `latencyMs` the clock at the final read — both real I/O boundaries on Workers,
+ * so the two are distinct as long as the response spans more than one read. They
+ * collapse to the same value only when the whole body arrives in a single read
+ * (heavy upstream buffering), since the clock does not advance during the
+ * pure-compute parsing between the first and last delta; the gateway's
+ * no-transform SSE header (PR #670) is what keeps responses streaming across
+ * reads. {@link decodeThroughput} returns null in that collapsed case.
  */
 async function streamProbe(
   config: Config,
@@ -209,7 +211,6 @@ async function streamProbe(
   modelId: string,
   prompt: string,
   maxTokens: number,
-  extraBody: Record<string, unknown> = {},
 ): Promise<StreamProbe> {
   const started = Date.now();
   const response = await fetch(`${config.gatewayBaseUrl}/v1/chat/completions`, {
@@ -222,9 +223,9 @@ async function streamProbe(
         { role: "user", content: prompt },
       ],
       max_tokens: maxTokens,
+      temperature: 1,
       stream: true,
       stream_options: { include_usage: true },
-      ...extraBody,
     }),
     // Total deadline: aborts even when SSE keepalives keep the stream open.
     signal: AbortSignal.timeout(config.probeDeadlineMs),
@@ -242,9 +243,10 @@ async function streamProbe(
 /**
  * Decode throughput (tokens/sec) over the post-TTFT window.
  *
- * `ttftMs` comes from the one-token TTFT probe (request A); `latencyMs` and
- * `completionTokens` come from the workload probe (request B). Because these
- * are two separate requests, the inputs are not guaranteed monotonic.
+ * All three inputs come from the same streaming request, so they are coherent.
+ * The `latencyMs > ttftMs` guard also handles the single-read collapse: when the
+ * whole response arrives in one read, the two timestamps are equal and this
+ * returns null rather than a bogus rate.
  */
 function decodeThroughput(
   ttftMs: number | null,
@@ -279,21 +281,17 @@ export async function probeModel(
       };
     }
 
-    // Request A — TTFT probe: a one-token "hi" completion with reasoning turned
-    // off, so the single token is plain content rather than a thinking preamble.
-    // With max_tokens=1 the whole response is that one token, so the request's
-    // duration is the time to first (and only) token — a clean TTFT even though
-    // Workers can't see the sub-read timing an in-stream measurement would need.
-    // reasoning_effort/thinking are forwarded only to models that declare them
-    // (the gateway drops unsupported params), so this is a no-op elsewhere.
-    const { ttftMs } = await streamProbe(config, apiKey, target.id, "hi", 1, {
-      reasoning_effort: "none",
-      thinking: { type: "disabled" },
-    });
-
-    // Request B — throughput probe: the real workload prompt generates enough
-    // tokens to measure decode rate. Latency and token count come from here.
-    const { latencyMs, completionTokens } = await streamProbe(
+    // Single streaming request: TTFT, token count, and latency all come from the
+    // one workload stream. ttftMs is the clock at the read that delivered the
+    // first token and latencyMs the clock at the final read — both real I/O
+    // boundaries on Workers. This is coherent (same request, same endpoint) and
+    // needs no second request, provided the response spans more than one read.
+    // When the whole body arrives in a single read (heavy upstream buffering),
+    // the two timestamps collapse to the same frozen-clock value; decodeThroughput
+    // then returns null because latencyMs is not greater than ttftMs. The gateway's
+    // no-transform SSE header (PR #670) is what keeps responses un-buffered enough
+    // to stream across multiple reads.
+    const { ttftMs, latencyMs, completionTokens } = await streamProbe(
       config,
       apiKey,
       target.id,

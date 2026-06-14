@@ -115,36 +115,21 @@ describe("probeModel (embedding)", () => {
 describe("probeModel (chat)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  // The chat probe issues two streaming requests: a one-token TTFT probe
-  // (max_tokens=1) and the workload throughput probe (max_tokens>1). Dispatch on
-  // max_tokens so each leg gets a fresh, body-appropriate Response.
-  function stubChat(ttftProbe: () => Response, workloadProbe: () => Response) {
-    const bodies: Record<string, any> = {};
+  // The chat probe issues a single streaming request and records how many fetches
+  // it made, so the test can assert there is exactly one.
+  function stubChat(response: () => Response) {
+    const calls = { count: 0, lastBody: undefined as any };
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => {
-        const body = JSON.parse(String(init.body));
-        if (body.max_tokens === 1) {
-          bodies.ttft = body;
-          return ttftProbe();
-        }
-        bodies.workload = body;
-        return workloadProbe();
+        calls.count += 1;
+        calls.lastBody = JSON.parse(String(init.body));
+        return response();
       }),
     );
-    return bodies;
+    return calls;
   }
 
-  // One-token completion for the TTFT probe.
-  const oneToken = () =>
-    new Response(
-      sseStream(
-        'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"length"}]}\n\n' +
-          'data: {"usage":{"completion_tokens":1}}\n\n' +
-          "data: [DONE]\n\n",
-      ),
-      { status: 200 },
-    );
   // Multi-token workload completion carrying the usage token count.
   const workload = () =>
     new Response(
@@ -157,38 +142,22 @@ describe("probeModel (chat)", () => {
       { status: 200 },
     );
 
-  it("is healthy and reports TTFT, latency, and token count", async () => {
-    const bodies = stubChat(oneToken, workload);
+  it("is healthy and reports TTFT, latency, and token count from one request", async () => {
+    const calls = stubChat(workload);
     const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
     expect(r.ok).toBe(true);
+    expect(calls.count).toBe(1); // single request, no separate TTFT probe
+    expect(calls.lastBody.stream).toBe(true);
+    expect(calls.lastBody.max_tokens).toBe(embedConfig.probeMaxTokens);
     expect(r.ttftMs).not.toBeNull();
     expect(r.latencyMs).toBeGreaterThanOrEqual(0);
-    expect(r.completionTokens).toBe(7); // from the workload probe, not the TTFT probe
-    // TTFT probe caps at one token with reasoning disabled, so the single token
-    // is plain content; the workload probe leaves reasoning untouched.
-    expect(bodies.ttft.max_tokens).toBe(1);
-    expect(bodies.ttft.reasoning_effort).toBe("none");
-    expect(bodies.ttft.thinking).toEqual({ type: "disabled" });
-    expect(bodies.workload.reasoning_effort).toBeUndefined();
+    expect(r.completionTokens).toBe(7);
   });
 
-  it("fails when the TTFT probe errors", async () => {
-    stubChat(
-      () => new Response(JSON.stringify({ error: { message: "ttft gw error" } }), { status: 500 }),
-      workload,
-    );
+  it("fails when the request errors", async () => {
+    stubChat(() => new Response(JSON.stringify({ error: { message: "gw error" } }), { status: 500 }));
     const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
     expect(r.ok).toBe(false);
-    expect(r.error).toContain("ttft gw error");
-  });
-
-  it("fails when the workload (throughput) probe errors", async () => {
-    stubChat(
-      oneToken,
-      () => new Response(JSON.stringify({ error: { message: "workload gw error" } }), { status: 500 }),
-    );
-    const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
-    expect(r.ok).toBe(false);
-    expect(r.error).toContain("workload gw error");
+    expect(r.error).toContain("gw error");
   });
 });
