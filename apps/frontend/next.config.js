@@ -4,6 +4,9 @@ const BACKEND_INTERNAL_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  images: {
+    remotePatterns: [{ protocol: 'https', hostname: 'junchengyang.com' }],
+  },
   async rewrites() {
     return [
       { source: '/v1/:path*', destination: `${BACKEND_INTERNAL_URL}/v1/:path*` },

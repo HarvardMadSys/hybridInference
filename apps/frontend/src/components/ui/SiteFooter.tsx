@@ -39,6 +39,10 @@ export function SiteFooter(): JSX.Element {
           Terms
         </Link>
         <span aria-hidden="true">·</span>
+        <Link href="/team" className="hover:text-crimson">
+          Team
+        </Link>
+        <span aria-hidden="true">·</span>
         <a
           href="https://github.com/HarvardMadSys/hybridInference"
           className="hover:text-crimson"
