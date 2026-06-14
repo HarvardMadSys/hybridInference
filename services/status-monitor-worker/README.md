@@ -25,6 +25,21 @@ what the prober key can actually call.
 | `/api/status` | Full snapshot (latest + history per model) as JSON |
 | `/api/health` | `total` / `healthy` / `unhealthy` summary |
 
+### Dashboard zoom-in
+
+Each model card shows the latest metrics, a latency sparkline, and a TTFT trend.
+**Click a card (or focus it and press Enter/Space) to zoom in** — this opens a
+detail overlay with full-size time-series charts for **latency** (ms),
+**throughput** (tok/s), and **time to first token** (ms), each with
+min / avg / max / latest summaries and per-point hover tooltips. Down-probes are
+highlighted in red and gaps are left where a probe was skipped. Close with the
+✕ button, by clicking outside the card, or with `Esc`.
+
+The history is embedded from the same snapshot the cards use, so the zoom view
+needs no extra request. The page's periodic refresh is paused while a detail
+view is open and resumes on close (a `<noscript>` fallback keeps auto-refresh
+working without JavaScript).
+
 ## Configuration
 
 `wrangler.toml` `[vars]`: `GATEWAY_BASE_URL`, `PROBE_PROMPT`, `PROBE_MAX_TOKENS`,
