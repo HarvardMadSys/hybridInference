@@ -977,7 +977,9 @@ def _kimi_limit_label(
             return str(val)
 
     duration = _as_float(window.get("duration") or item.get("duration") or detail.get("duration"))
-    time_unit = str(window.get("timeUnit") or item.get("timeUnit") or detail.get("timeUnit") or "")
+    time_unit = str(
+        window.get("timeUnit") or item.get("timeUnit") or detail.get("timeUnit") or ""
+    ).upper()
     if duration:
         amount = int(duration)
         if "MINUTE" in time_unit:

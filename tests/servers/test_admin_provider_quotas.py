@@ -1088,6 +1088,24 @@ class TestFetchKimi:
         assert daily.limit == 5000.0
 
     @pytest.mark.asyncio
+    async def test_window_time_unit_is_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = {
+            "limits": [
+                {
+                    "detail": {"limit": 1200, "used": 300},
+                    "window": {"duration": 300, "timeUnit": "minute"},
+                },
+            ],
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].usages[0].label == "5h limit"
+
+    @pytest.mark.asyncio
     async def test_auth_failed_on_401(self, monkeypatch):
         monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
         with patch(
