@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import { config } from '@/config/env';
 
 export const metadata = {
@@ -8,14 +9,16 @@ export const metadata = {
 interface TeamMember {
   name: string;
   affiliations: string[];
-  lead?: boolean;
+  badge?: string;
+  image?: string;
 }
 
 const members: TeamMember[] = [
   {
     name: 'Juncheng Yang',
     affiliations: ['Assistant Professor at Harvard University'],
-    lead: true,
+    badge: 'Lead',
+    image: 'https://junchengyang.com/img/me4.jpg',
   },
   {
     name: 'Murphy Tian',
@@ -23,12 +26,22 @@ const members: TeamMember[] = [
       'Research Intern at Harvard University',
       'Undergraduate at University of Toronto',
     ],
+    badge: 'Core developer',
   },
   {
     name: 'Haoran Ni',
     affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
   },
 ];
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('');
+}
 
 export default function TeamPage(): JSX.Element {
   return (
@@ -44,23 +57,46 @@ export default function TeamPage(): JSX.Element {
         {members.map((member) => (
           <li
             key={member.name}
-            className="rounded-xl border border-gray-200 bg-gray-50 px-5 py-4 sm:px-6 sm:py-5"
+            className="flex items-start gap-4 rounded-xl border border-gray-200 bg-gray-50 px-5 py-4 sm:gap-5 sm:px-6 sm:py-5"
           >
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <h2 className="text-xl font-semibold tracking-tight text-gray-950">{member.name}</h2>
-              {member.lead && (
-                <span className="rounded-full bg-crimson/10 px-2.5 py-0.5 text-xs font-medium text-crimson">
-                  Lead
+            <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-full border border-gray-200 bg-gray-100">
+              {member.image ? (
+                <Image
+                  src={member.image}
+                  alt={`Photo of ${member.name}`}
+                  fill
+                  sizes="64px"
+                  className="object-cover"
+                />
+              ) : (
+                <span
+                  role="img"
+                  aria-label={`Placeholder avatar for ${member.name}`}
+                  className="flex h-full w-full items-center justify-center text-lg font-semibold text-gray-500"
+                >
+                  {initials(member.name)}
                 </span>
               )}
             </div>
-            <ul className="mt-2 space-y-1">
-              {member.affiliations.map((affiliation) => (
-                <li key={affiliation} className="text-sm leading-6 text-gray-700">
-                  {affiliation}
-                </li>
-              ))}
-            </ul>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h2 className="text-xl font-semibold tracking-tight text-gray-950">
+                  {member.name}
+                </h2>
+                {member.badge && (
+                  <span className="rounded-full bg-crimson/10 px-2.5 py-0.5 text-xs font-medium text-crimson">
+                    {member.badge}
+                  </span>
+                )}
+              </div>
+              <ul className="mt-2 space-y-1">
+                {member.affiliations.map((affiliation) => (
+                  <li key={affiliation} className="text-sm leading-6 text-gray-700">
+                    {affiliation}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </li>
         ))}
       </ul>
