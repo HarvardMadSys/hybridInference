@@ -22,6 +22,10 @@ function headers(config: Config, apiKey: string): Record<string, string> {
     "Content-Type": "application/json",
     // Probe as a typical client so the request resembles real traffic.
     "User-Agent": "claude-code/0.1.0",
+    // Ask for an uncompressed response. A compressed SSE stream forces the
+    // Workers runtime to buffer-and-decompress, so every chunk arrives in one
+    // read and TTFT collapses to total latency. identity keeps it incremental.
+    "Accept-Encoding": "identity",
   };
   // The gateway recognizes "X-Probe: synthetic" to exclude requests from logs,
   // metrics, and cost tracking.
