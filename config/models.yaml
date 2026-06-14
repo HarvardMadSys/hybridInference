@@ -302,7 +302,11 @@ models:
     name: MiniMax Fast
     provider: minimax
     quantization: "bf16"
-    input_modalities: ["text", "image"]
+    # Text-only: every active leg serves MiniMax-M2.5 (text-only upstream), so
+    # advertising image input would let the gateway accept image requests that
+    # the routes cannot satisfy (404 "No endpoints found that support image
+    # input"). Matches the canonical minimax-m2.5 modality declaration.
+    input_modalities: ["text"]
     output_modalities: ["text"]
     context_length: 204800
     max_output_length: 131072

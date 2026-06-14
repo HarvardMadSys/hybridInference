@@ -52,7 +52,6 @@ def test_minimax_fast_uses_routewise() -> None:
     assert minimax_fast["router_params"]["latency_hedge_mode"] == "probability_target"
     assert minimax_fast["aliases"] == ["MiniMax-Fast"]
     route_types = [route["provider_type"] for route in minimax_fast["route"]]
-    routes_by_type = {route["provider_type"]: route for route in minimax_fast["route"]}
     # Featherless (concurrency) leg is disabled on staging: the account returns
     # an account-level 403 (upgrade_required) on every request. The active legs
     # are the chutes quota leg plus two on-demand API legs (OpenRouter/DeepInfra
@@ -64,8 +63,12 @@ def test_minimax_fast_uses_routewise() -> None:
     # Resource limits live on the route entries, not in router_params.
     assert "concurrency_enabled" not in minimax_fast["router_params"]
     assert "concurrency_limit" not in minimax_fast["router_params"]
-    assert routes_by_type["quota"]["quota"]["limit"] == 5000
-    assert routes_by_type["quota"]["quota_source"]["provider"] == "chutes"
+    # Extract the quota route explicitly: keying a dict by provider_type would
+    # silently collapse the two on-demand legs and could mask a regression.
+    quota_routes = [r for r in minimax_fast["route"] if r["provider_type"] == "quota"]
+    assert len(quota_routes) == 1
+    assert quota_routes[0]["quota"]["limit"] == 5000
+    assert quota_routes[0]["quota_source"]["provider"] == "chutes"
 
 
 def test_minimax_fast_lists_routewise_options_in_comments() -> None:
