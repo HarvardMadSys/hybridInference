@@ -306,12 +306,12 @@ function clientScript(refreshMs: number): string {
   if (grid) {
     grid.addEventListener("click", function (e) {
       var card = e.target.closest(".card");
-      if (card && card.dataset.model) openZoom(card.dataset.model, card);
+      if (card && card.dataset.model != null) openZoom(card.dataset.model, card);
     });
     grid.addEventListener("keydown", function (e) {
       if (e.key !== "Enter" && e.key !== " ") return;
       var card = e.target.closest(".card");
-      if (card && card.dataset.model) { e.preventDefault(); openZoom(card.dataset.model, card); }
+      if (card && card.dataset.model != null) { e.preventDefault(); openZoom(card.dataset.model, card); }
     });
   }
   overlay.addEventListener("click", function (e) { if (e.target === overlay) closeZoom(); });
