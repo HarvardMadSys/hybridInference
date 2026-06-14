@@ -1,9 +1,8 @@
 import type { ProbeRow, Snapshot } from "./db";
 
 // Probe cadence — must match the cron schedule in wrangler.toml (`*/5` = 5 min).
-// Used to size the chart line-break threshold so a skipped cycle shows as a gap.
+// Charts bucket each probe into its cron cycle by this interval to detect gaps.
 const PROBE_INTERVAL_MS = 5 * 60 * 1000;
-const GAP_THRESHOLD_MS = PROBE_INTERVAL_MS * 1.5;
 
 const STYLE = `
 :root { color-scheme: light dark; }
@@ -173,12 +172,12 @@ export function seriesPayload(models: Snapshot["models"]): Record<string, Series
  * from the embedded per-model history. Written with string concatenation (no
  * template literals) so it injects verbatim without `${}` collisions.
  */
-function clientScript(refreshMs: number, gapMs: number): string {
+function clientScript(refreshMs: number, cycleMs: number): string {
   return `
 (function () {
-  // Line-break threshold for chart gaps, from the fixed cron cadence (see GAP_MS
-  // derivation in renderDashboard); kept here so charts need no per-render value.
-  var GAP_MS = ${gapMs};
+  // Cron cadence in ms (probe interval). Charts bucket each probe into its cycle
+  // by flooring its timestamp with this, to detect skipped cycles robustly.
+  var CYCLE_MS = ${cycleMs};
   var data = {};
   var modelDataEl = document.getElementById("model-data");
   if (modelDataEl) {
@@ -214,24 +213,25 @@ function clientScript(refreshMs: number, gapMs: number): string {
     function x(i) { return PADL + (n > 1 ? i / (n - 1) : 0) * (W - PADL - PADR); }
     function y(v) { return PADT + (1 - (v - min) / (max - min)) * (H - PADT - PADB); }
 
-    // Break the line across a pause longer than GAP_MS. The threshold is derived
-    // from the fixed cron cadence (1.5x the probe interval), not inferred from the
-    // data: per-model checkedAt is stamped when each probe starts within the pool,
-    // not at the cron tick, so observed intervals jitter and even dip below the
-    // cadence — a single skipped cycle (~2x) still exceeds GAP_MS while jitter
-    // (sub-2x) does not. Parse each timestamp once and reuse.
-    var times = rows.map(function (r) { return Date.parse(r.t); });
-    var gapMs = GAP_MS;
+    // Bucket each probe into its cron cycle: floor(checkedAt / CYCLE_MS). Because
+    // checkedAt is the per-model probe-start (which drifts within a cycle as pool
+    // latency varies), raw time deltas are unreliable; the cycle index is not —
+    // any within-cycle offset (< one interval) floors to the same cron tick. A
+    // skipped cron cycle shows up as a cycle-index jump of 2+.
+    var cyc = rows.map(function (r) {
+      var t = Date.parse(r.t);
+      return isFinite(t) ? Math.floor(t / CYCLE_MS) : null;
+    });
 
-    // Break the line where the series skips probes (gap in row index) or where
-    // too much wall-clock time elapsed between adjacent plotted points.
-    var segs = [], cur = [], prev = null, prevT = null;
+    // Break the line where the series skips plotted points (gap in row index) or
+    // skips a whole cron cycle (cycle index jumps by more than one).
+    var segs = [], cur = [], prev = null, prevC = null;
     for (var k = 0; k < pts.length; k++) {
       var p = pts[k];
-      var pT = times[p.i];
-      var jumped = prev != null && (p.i !== prev + 1 || (prevT != null && isFinite(pT) && pT - prevT > gapMs));
+      var c = cyc[p.i];
+      var jumped = prev != null && (p.i !== prev + 1 || (prevC != null && c != null && c - prevC > 1));
       if (jumped) { if (cur.length) segs.push(cur); cur = []; }
-      cur.push(p); prev = p.i; prevT = isFinite(pT) ? pT : prevT;
+      cur.push(p); prev = p.i; prevC = c != null ? c : prevC;
     }
     if (cur.length) segs.push(cur);
 
@@ -381,7 +381,7 @@ export function renderDashboard(
   <div id="zoom" role="presentation"></div>
   <footer>Auto-refreshes every ${refreshSeconds}s · <a href="api/status">JSON</a></footer>
   <script id="model-data" type="application/json">${dataJson}</script>
-  <script>${clientScript(refreshSeconds * 1000, GAP_THRESHOLD_MS)}</script>
+  <script>${clientScript(refreshSeconds * 1000, PROBE_INTERVAL_MS)}</script>
 </body>
 </html>`;
 }

@@ -117,10 +117,10 @@ describe("renderDashboard", () => {
     expect(parsed["a</script>b"][1].ok).toBe(0);
   });
 
-  it("derives the chart line-break gap threshold from the fixed cron cadence", () => {
+  it("buckets probes by the fixed cron cadence to detect skipped cycles", () => {
     const html = renderDashboard(SNAPSHOT);
-    // 1.5 x the 5-minute cron interval = 450000 ms, not inferred from jittery data.
-    expect(html).toContain("var GAP_MS = 450000;");
+    // 5-minute cron interval in ms; charts floor each timestamp by this.
+    expect(html).toContain("var CYCLE_MS = 300000;");
   });
 
   it("uses a noscript fallback for auto-refresh so the zoom view is not interrupted", () => {
