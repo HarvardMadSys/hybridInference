@@ -96,6 +96,12 @@ FROM (
         END AS throughput_tps
     FROM api_logs
     WHERE timestamp >= $1 AND timestamp < $2
+      -- Exclude embeddings from the provider performance rollup: they have a
+      -- different latency profile and no completion tokens, so they would skew
+      -- ttft/latency/throughput stats. Billing spend is tracked separately
+      -- (query_provider_hourly_spend reads api_logs directly), so cost
+      -- reporting is unaffected.
+      AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'
 ) src
 GROUP BY hour_bucket, provider, model_id
 HAVING COUNT(*) > 0

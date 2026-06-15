@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -121,6 +122,7 @@ async def _insert_api_log(
     cost_usd: float | None = None,
     status_code: int = 200,
     error: str | None = None,
+    metadata: dict | None = None,
 ) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
@@ -130,9 +132,9 @@ async def _insert_api_log(
                 stream, ttft_ms, latency_ms,
                 prompt_tokens, completion_tokens,
                 cache_read_tokens, reasoning_tokens, cost_usd,
-                status_code, error
+                status_code, error, metadata
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb)
             """,
             request_id,
             model_id,
@@ -148,6 +150,7 @@ async def _insert_api_log(
             cost_usd,
             status_code,
             error,
+            json.dumps(metadata) if metadata else None,
         )
 
 
@@ -227,6 +230,57 @@ async def test_run_rollup_aggregates_one_hour(db_logger: DatabaseLogger):
     # avg ≈ 36.11
     assert 33.0 <= row["throughput_avg_tps"] <= 40.0
     assert row["total_completion_tokens"] == 200 + 400 + 220 + 160
+
+
+@pytest.mark.asyncio
+async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
+    """Embedding rows must not feed the provider performance rollup."""
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 3, 9, 0, tzinfo=timezone.utc)
+    # One chat completion and one embedding on the same provider/model/hour.
+    await _insert_api_log(
+        pool,
+        request_id="r-chat",
+        provider="local",
+        model_id="shared-model",
+        timestamp=hour + timedelta(minutes=5),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=3000,
+        completion_tokens=120,
+    )
+    await _insert_api_log(
+        pool,
+        request_id="r-emb",
+        provider="local",
+        model_id="shared-model",
+        timestamp=hour + timedelta(minutes=6),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=50,
+        completion_tokens=None,
+        metadata={"request_type": "embedding"},
+    )
+
+    written = await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    assert written == 1
+
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT * FROM provider_hourly_stats
+            WHERE provider='local' AND model_id='shared-model'
+            """
+        )
+    assert row is not None
+    # Only the chat row is counted; the embedding (50ms, no completion tokens)
+    # is excluded so it can't drag down the latency distribution.
+    assert row["request_count"] == 1
+    assert row["total_completion_tokens"] == 120
 
 
 @pytest.mark.asyncio

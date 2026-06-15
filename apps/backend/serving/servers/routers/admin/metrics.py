@@ -87,6 +87,9 @@ WITH base AS (
     FROM api_logs
     WHERE timestamp >= NOW() - ($1::int * interval '1 minute')
       AND status_code BETWEEN 200 AND 399
+      -- Embeddings have a fundamentally different latency/token profile and no
+      -- completion tokens; exclude them so they don't skew chat-perf percentiles.
+      AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'
 ),
 derived AS (
     SELECT
