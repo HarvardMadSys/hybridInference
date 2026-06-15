@@ -104,6 +104,28 @@ async def test_toggle_on_writes_row(fake_log_store, runtime_on):
     assert md["route"] == "/v1/chat/completions"
     assert md["role"] == "free"
     assert md["user_id"] == "u1"
+    # Chat rejections are not tagged as embeddings.
+    assert "request_type" not in md
+
+
+@pytest.mark.asyncio
+async def test_embedding_rejection_is_tagged(fake_log_store, runtime_on):
+    """Embedding rejections carry request_type so they match success-path
+    tagging and stay out of chat-performance aggregates.
+    """
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request("/v1/embeddings"),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="limit=1 role=free",
+        user={"user_id": "u1", "role": "free"},
+        model_id="bge-m3",
+    )
+    fake_log_store.log_request.assert_awaited_once()
+    md = fake_log_store.log_request.await_args.kwargs["metadata"]
+    assert md["request_type"] == "embedding"
 
 
 @pytest.mark.asyncio

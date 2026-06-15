@@ -169,6 +169,9 @@ export interface RecentRequestItem {
   cost_usd?: number | null;
   error?: string | null;
   routewise?: RouteWiseDecision | null;
+  // "embedding" for /v1/embeddings traffic; null/undefined implies a
+  // chat/completion request.
+  request_type?: string | null;
 }
 
 export interface RouteWiseDecision {

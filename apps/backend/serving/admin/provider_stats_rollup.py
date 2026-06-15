@@ -96,6 +96,14 @@ FROM (
         END AS throughput_tps
     FROM api_logs
     WHERE timestamp >= $1 AND timestamp < $2
+      -- Exclude embeddings entirely from the provider rollup: they have a
+      -- different latency profile and no completion tokens, so they'd skew the
+      -- chat-performance KPIs (request/error counts, ttft/latency/throughput,
+      -- prefill tokens) that ProviderPerformanceTab reads. Per-user usage and
+      -- the Recent Requests dashboard read api_logs directly, so embeddings
+      -- still surface there; provider billing spend uses
+      -- query_provider_hourly_spend (also api_logs), so cost is unaffected.
+      AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'
 ) src
 GROUP BY hour_bucket, provider, model_id
 HAVING COUNT(*) > 0

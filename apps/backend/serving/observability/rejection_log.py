@@ -95,6 +95,11 @@ async def log_rejection(
         "user_id": user.get("user_id") if user else None,
         "ip": get_client_ip(request),
     }
+    # Classify embedding rejections so they match the success-path tagging and
+    # are excluded from chat-performance aggregates (deps like verify_api_key /
+    # enforce_user_concurrency reject before the handler sets this metadata).
+    if request.url.path.startswith("/v1/embeddings"):
+        metadata["request_type"] = "embedding"
 
     try:
         await log_store.log_request(

@@ -882,7 +882,8 @@ async def get_recent_requests(
                     prompt_tokens, completion_tokens, reasoning_tokens,
                     cache_read_tokens, cache_write_tokens,
                     total_tokens, cost_usd, error,
-                    metadata->'routewise' AS routewise
+                    metadata->'routewise' AS routewise,
+                    metadata->>'request_type' AS request_type
                 FROM api_logs
                 WHERE {where_sql}
                 ORDER BY timestamp DESC
@@ -917,6 +918,7 @@ async def get_recent_requests(
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=user_safe_upstream_error(row["error"]),
             routewise=coerce_json_object(row["routewise"]),
+            request_type=row["request_type"],
         )
         for row in rows
     ]

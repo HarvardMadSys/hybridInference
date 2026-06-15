@@ -7,7 +7,7 @@ with upstream providers while validating required fields and ranges.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -191,15 +191,23 @@ class EmbeddingData(BaseModel):  # type: ignore[no-any-unimported]
 
     object: Literal["embedding"] = "embedding"
     index: int
-    # list[float] for default float format, str for base64 encoding_format
-    embedding: list[float] | str
+    # list[float] for default float format, str for base64 encoding_format.
+    # allow_inf_nan=False rejects NaN/inf: Pydantic permits them by default,
+    # but Starlette's JSON serialization (allow_nan=False) would 500 on them
+    # after the handler has already logged a billable 200.
+    embedding: list[Annotated[float, Field(allow_inf_nan=False)]] | str
 
 
 class EmbeddingUsage(BaseModel):  # type: ignore[no-any-unimported]
     """Token usage for an embedding request."""
 
-    prompt_tokens: int
-    total_tokens: int
+    # Bound to [0, INT4_MAX]: api_logs.prompt_tokens/total_tokens are Postgres
+    # INTEGER columns. Negatives would be logged/billed as a successful request
+    # while calculate_cost clamps the cost to zero; a value above INT4_MAX would
+    # pass validation but fail the background log insert (integer out of range)
+    # after the client already got a 200 and the quota was incremented.
+    prompt_tokens: int = Field(ge=0, le=2147483647)
+    total_tokens: int = Field(ge=0, le=2147483647)
 
 
 class EmbeddingResponse(BaseModel):  # type: ignore[no-any-unimported]

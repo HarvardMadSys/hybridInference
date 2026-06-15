@@ -565,6 +565,9 @@ class AdminRecentRequestItem(BaseModel):
     cost_usd: float | None = None
     error: str | None = None
     routewise: dict[str, Any] | None = None
+    # "embedding" for /v1/embeddings traffic; None (legacy) implies a
+    # chat/completion request.
+    request_type: str | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):
