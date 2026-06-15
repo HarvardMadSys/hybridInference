@@ -144,6 +144,38 @@ def test_operator_safe_error_scrubs_secrets_in_plain_exception():
     assert "[REDACTED]" in detail
 
 
+@pytest.mark.parametrize(
+    "body,secret",
+    [
+        (
+            "Incorrect API key provided: sk-proj-ABC123DEF456GHI789. "
+            "You can find your API key at https://platform.openai.com/account/api-keys.",
+            "sk-proj-ABC123DEF456GHI789",
+        ),
+        ("API key: sk-live-SECRETVALUE123", "sk-live-SECRETVALUE123"),
+        ("your api key sk-abc12345 is wrong", "sk-abc12345"),
+        ('{"error": {"message": "Incorrect API key provided: sk-1234567890"}}', "sk-1234567890"),
+        ("auth failed for key AIzaSyD1234567890abcdefghij", "AIzaSyD1234567890abcdefghij"),
+        ("groq rejected gsk_abcdef1234567890XYZ", "gsk_abcdef1234567890XYZ"),
+    ],
+)
+def test_operator_safe_error_redacts_spaced_and_prefixed_keys(body, secret):
+    """Upstream 401 bodies echo the key without an api_key= separator.
+
+    OpenAI-family providers return "Incorrect API key provided: sk-..." which
+    the assignment-based secret regex misses; the value-based token regex must
+    redact it before it reaches a Slack alert.
+    """
+    detail = operator_safe_error(RuntimeError(body))
+    assert detail is not None
+    assert secret not in detail
+    assert "[REDACTED]" in detail
+
+
+def test_scrub_provider_identity_redacts_bare_key_token():
+    assert "sk-abcdef123456" not in scrub_provider_identity("token sk-abcdef123456 invalid")
+
+
 def test_operator_safe_error_none_for_no_exception():
     assert operator_safe_error(None) is None
 

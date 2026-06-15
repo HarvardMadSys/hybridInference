@@ -189,10 +189,21 @@ _PROVIDER_NAME_RE = re.compile(
     r"(?i)\b(?:" + "|".join(re.escape(t) for t in _PROVIDER_NAME_TOKENS) + r")\b"
 )
 _SECRET_RE = re.compile(
-    r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?'
+    r'(?i)("?(?:api[ _-]?key|access[ _-]?token|refresh[ _-]?token|secret|token|authorization)"?'
     r'\s*[:=]\s*)("?)[^"\s,}]+("?)'
 )
 _BEARER_RE = re.compile(r"(?i)bearer\s+[a-z0-9._~+/=-]+")
+# Provider API-key token shapes, redacted by value regardless of the surrounding
+# phrasing. Upstream 401 bodies commonly echo the key without an ``api_key=``
+# separator, e.g. OpenAI's ``Incorrect API key provided: sk-...`` — which the
+# assignment-based _SECRET_RE above does not catch.
+_API_KEY_TOKEN_RE = re.compile(
+    # OpenAI / Anthropic / DeepSeek / OpenRouter (sk-…, sk-ant-…, sk-proj-…),
+    # Groq (gsk_…), xAI (xai-…), Stripe-style restricted keys (rk_…).
+    r"(?i)\b(?:sk|gsk|xai|rk)[-_][a-z0-9._-]{6,}"
+    # Google / Gemini API keys (AIza…).
+    r"|\bAIza[0-9A-Za-z_-]{10,}"
+)
 
 # Upstream error string shapes we know how to unwrap into a bare message.
 _UPSTREAM_BODY_MARKER = "upstream_body="
@@ -267,6 +278,7 @@ def scrub_provider_identity(text: str) -> str:
     text = _HOSTNAME_RE.sub("", text)
     text = _PROVIDER_NAME_RE.sub("", text)
     text = _SECRET_RE.sub(r"\1\2[REDACTED]\3", text)
+    text = _API_KEY_TOKEN_RE.sub("[REDACTED]", text)
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
     # Tidy up artefacts left behind by the removals above.
     text = re.sub(r"\s+([.,:;])", r"\1", text)
