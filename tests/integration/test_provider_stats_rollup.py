@@ -233,11 +233,13 @@ async def test_run_rollup_aggregates_one_hour(db_logger: DatabaseLogger):
 
 
 @pytest.mark.asyncio
-async def test_run_rollup_counts_embeddings_in_usage_but_not_performance(
-    db_logger: DatabaseLogger,
-):
-    """Embeddings count toward usage totals (request_count, tokens, cost) but
-    are excluded from the latency/throughput performance metrics.
+async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
+    """Embedding rows are excluded entirely from the provider rollup.
+
+    They have a different latency profile and no completion tokens, so they
+    would skew the chat-performance KPIs that ProviderPerformanceTab reads.
+    Per-user usage and the Recent Requests dashboard read api_logs directly,
+    so embeddings still surface there.
     """
     from serving.admin.provider_stats_rollup import run_rollup
 
@@ -257,7 +259,6 @@ async def test_run_rollup_counts_embeddings_in_usage_but_not_performance(
         latency_ms=3000,
         completion_tokens=120,
         prompt_tokens=100,
-        cost_usd=0.02,
     )
     await _insert_api_log(
         pool,
@@ -270,7 +271,6 @@ async def test_run_rollup_counts_embeddings_in_usage_but_not_performance(
         latency_ms=50,
         completion_tokens=None,
         prompt_tokens=80,
-        cost_usd=0.01,
         metadata={"request_type": "embedding"},
     )
 
@@ -285,14 +285,10 @@ async def test_run_rollup_counts_embeddings_in_usage_but_not_performance(
             """
         )
     assert row is not None
-    # Usage totals include the embedding row...
-    assert row["request_count"] == 2
-    assert row["total_prompt_tokens"] == 100 + 80
-    assert float(row["total_cost_usd"]) == pytest.approx(0.03)
-    # ...completion tokens only the chat row contributed.
+    # Only the chat row counts; the embedding (50ms, 80 prompt tokens) is gone.
+    assert row["request_count"] == 1
+    assert row["total_prompt_tokens"] == 100
     assert row["total_completion_tokens"] == 120
-    # ...but the embedding's 50ms is excluded from the latency distribution,
-    # leaving only the chat row's 3000ms.
     assert row["latency_p50_ms"] == 3000
 
 

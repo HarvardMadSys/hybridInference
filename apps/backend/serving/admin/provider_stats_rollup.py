@@ -57,13 +57,13 @@ SELECT
 
     PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY latency_ms)
         FILTER (WHERE status_code < 400 AND error IS NULL
-                      AND latency_ms IS NOT NULL AND NOT is_embedding)::INT AS latency_p50_ms,
+                      AND latency_ms IS NOT NULL)::INT                      AS latency_p50_ms,
     PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY latency_ms)
         FILTER (WHERE status_code < 400 AND error IS NULL
-                      AND latency_ms IS NOT NULL AND NOT is_embedding)::INT AS latency_p95_ms,
+                      AND latency_ms IS NOT NULL)::INT                      AS latency_p95_ms,
     PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms)
         FILTER (WHERE status_code < 400 AND error IS NULL
-                      AND latency_ms IS NOT NULL AND NOT is_embedding)::INT AS latency_p99_ms,
+                      AND latency_ms IS NOT NULL)::INT                      AS latency_p99_ms,
 
     AVG(throughput_tps)                                                     AS throughput_avg_tps,
     PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY throughput_tps)            AS throughput_p50_tps,
@@ -82,15 +82,9 @@ FROM (
         timestamp, provider, model_id, status_code, error,
         stream, ttft_ms, latency_ms, prompt_tokens, completion_tokens,
         cache_read_tokens, reasoning_tokens, cost_usd,
-        -- Tagged so embeddings can be dropped from the *performance* metrics
-        -- below while still counting toward usage totals (request_count,
-        -- tokens, cost) that the provider-token-usage dashboard reads.
-        -- COALESCE to FALSE so chat rows (NULL request_type) stay included.
-        COALESCE((metadata->>'request_type') = 'embedding', FALSE)  AS is_embedding,
         CASE
             WHEN status_code >= 400
                  OR error IS NOT NULL
-                 OR (metadata->>'request_type') = 'embedding'
                  OR completion_tokens IS NULL
                  OR completion_tokens <= 0                  THEN NULL
             WHEN stream = TRUE AND ttft_ms IS NOT NULL
@@ -102,6 +96,14 @@ FROM (
         END AS throughput_tps
     FROM api_logs
     WHERE timestamp >= $1 AND timestamp < $2
+      -- Exclude embeddings entirely from the provider rollup: they have a
+      -- different latency profile and no completion tokens, so they'd skew the
+      -- chat-performance KPIs (request/error counts, ttft/latency/throughput,
+      -- prefill tokens) that ProviderPerformanceTab reads. Per-user usage and
+      -- the Recent Requests dashboard read api_logs directly, so embeddings
+      -- still surface there; provider billing spend uses
+      -- query_provider_hourly_spend (also api_logs), so cost is unaffected.
+      AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'
 ) src
 GROUP BY hour_bucket, provider, model_id
 HAVING COUNT(*) > 0
