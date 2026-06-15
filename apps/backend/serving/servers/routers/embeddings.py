@@ -11,6 +11,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import ValidationError
 
+from serving.config.runtime_settings import get_runtime_settings
 from serving.observability.tracked_tasks import tracked_task
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
 from serving.servers.auth import verify_api_key
@@ -125,6 +126,7 @@ async def create_embeddings(
     log_store=Depends(get_log_store),
     completions_logger=Depends(get_completions_logger),
     op_store=Depends(get_operational_store),
+    runtime_settings=Depends(get_runtime_settings),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Create embeddings for the given input text(s).
@@ -140,6 +142,23 @@ async def create_embeddings(
     is_authenticated = bool(user_ctx.get("authenticated"))
     session_id = http_request.headers.get("X-Session-ID")
 
+    # Synthetic health-probe traffic is suppressed from api_logs unless the
+    # ``log_synthetic_probes`` toggle opts it in — mirrors the chat-completions
+    # path so probes don't pollute the dashboards or get billed. A setting read
+    # failure defaults to suppression.
+    is_synthetic_probe = http_request.headers.get("x-probe", "").lower() == "synthetic"
+    log_synthetic_probes = False
+    if (
+        is_synthetic_probe
+        and runtime_settings is not None
+        and hasattr(runtime_settings, "get_bool")
+    ):
+        try:
+            log_synthetic_probes = await runtime_settings.get_bool("log_synthetic_probes")
+        except Exception:
+            log_synthetic_probes = False
+    suppress_synthetic_logging = is_synthetic_probe and not log_synthetic_probes
+
     metadata: dict[str, Any] = {
         "request_type": "embedding",
         "user_agent": http_request.headers.get("user-agent"),
@@ -148,6 +167,8 @@ async def create_embeddings(
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
     }
+    if is_synthetic_probe:
+        metadata["synthetic_probe"] = True
     if session_id:
         metadata["session_id"] = session_id
 
@@ -160,7 +181,7 @@ async def create_embeddings(
         pricing: dict[str, str] | None,
         error: str | None,
     ) -> None:
-        if log_store is None or completions_logger is None:
+        if log_store is None or completions_logger is None or suppress_synthetic_logging:
             return
         completions_logger.schedule_log(
             request_id,
@@ -243,7 +264,9 @@ async def create_embeddings(
         )
         # Bump the daily quota cost counter for paid embedding models so
         # repeated paid requests are subject to the same quota as chat.
-        _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
+        # Probes never bill, regardless of the log_synthetic_probes toggle.
+        if not is_synthetic_probe:
+            _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
         return response
     except HTTPException:
         raise

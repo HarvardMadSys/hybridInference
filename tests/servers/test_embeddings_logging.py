@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.config.runtime_settings import get_runtime_settings
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import (
@@ -71,10 +72,22 @@ class _CapturingOpStore:
         self.increments.append((user_id, cost_usd))
 
 
+class _FakeRuntimeSettings:
+    """Minimal RuntimeSettings stub returning a fixed log_synthetic_probes."""
+
+    def __init__(self, log_synthetic_probes: bool = False) -> None:
+        self._log_synthetic_probes = log_synthetic_probes
+
+    async def get_bool(self, key: str) -> bool:
+        return self._log_synthetic_probes if key == "log_synthetic_probes" else False
+
+
 def _build_app(
     adapter: _FakeAdapter,
     logger: _CapturingLogger,
     op_store: _CapturingOpStore | None = None,
+    *,
+    log_synthetic_probes: bool = False,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(embeddings.router)
@@ -88,13 +101,16 @@ def _build_app(
     app.dependency_overrides[get_log_store] = lambda: object()  # truthy → logging enabled
     app.dependency_overrides[get_completions_logger] = lambda: logger
     app.dependency_overrides[get_operational_store] = lambda: op_store
+    app.dependency_overrides[get_runtime_settings] = lambda: _FakeRuntimeSettings(
+        log_synthetic_probes
+    )
     return app
 
 
-async def _post(app: FastAPI, payload: dict[str, Any]):
+async def _post(app: FastAPI, payload: dict[str, Any], headers: dict[str, str] | None = None):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/v1/embeddings", json=payload)
+        resp = await client.post("/v1/embeddings", json=payload, headers=headers)
     # Let the fire-and-forget cost-increment background task settle.
     await asyncio.sleep(0.05)
     return resp
@@ -342,3 +358,72 @@ async def test_non_finite_embedding_not_billable_200(bad_value):
     _, log_data = logger.calls[0]
     assert log_data["status_code"] == 500
     assert op_store.increments == []
+
+
+_OK_RESPONSE = {
+    "object": "list",
+    "model": "emb-model",
+    "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}],
+    "usage": {"prompt_tokens": 5, "total_tokens": 5},
+}
+_PROBE_HEADERS = {"x-probe": "synthetic"}
+
+
+@pytest.mark.asyncio
+async def test_synthetic_probe_not_logged_by_default():
+    """Probe traffic is suppressed from api_logs unless opted in."""
+    adapter = _FakeAdapter(response=_OK_RESPONSE)
+    logger = _CapturingLogger()
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, logger, op_store, log_synthetic_probes=False)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hi"}, headers=_PROBE_HEADERS)
+    assert resp.status_code == 200
+    # Neither logged nor billed.
+    assert logger.calls == []
+    assert op_store.increments == []
+
+
+@pytest.mark.asyncio
+async def test_synthetic_probe_logged_when_enabled_but_not_billed():
+    """When log_synthetic_probes is on, the probe is logged and tagged, but a
+    probe never increments the quota counter.
+    """
+    adapter = _FakeAdapter(response=_OK_RESPONSE, pricing=_PAID_PRICING)
+    logger = _CapturingLogger()
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, logger, op_store, log_synthetic_probes=True)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hi"}, headers=_PROBE_HEADERS)
+    assert resp.status_code == 200
+
+    assert len(logger.calls) == 1
+    _, log_data = logger.calls[0]
+    assert log_data["metadata"]["synthetic_probe"] is True
+    # Probes never bill, even when logged.
+    assert op_store.increments == []
+
+
+@pytest.mark.asyncio
+async def test_synthetic_probe_unknown_model_not_logged_by_default():
+    """A suppressed probe to an unknown model is a clean 404 with no log row."""
+    adapter = _FakeAdapter(response=_OK_RESPONSE)
+    logger = _CapturingLogger()
+    app = _build_app(adapter, logger, log_synthetic_probes=False)
+
+    resp = await _post(app, {"model": "nope", "input": "hi"}, headers=_PROBE_HEADERS)
+    assert resp.status_code == 404
+    assert logger.calls == []
+
+
+@pytest.mark.asyncio
+async def test_non_probe_request_still_logged():
+    """A normal (non-probe) request is unaffected by the suppression logic."""
+    adapter = _FakeAdapter(response=_OK_RESPONSE)
+    logger = _CapturingLogger()
+    app = _build_app(adapter, logger, log_synthetic_probes=False)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hi"})
+    assert resp.status_code == 200
+    assert len(logger.calls) == 1
+    assert "synthetic_probe" not in logger.calls[0][1]["metadata"]
