@@ -95,7 +95,7 @@ async def _wait_until_in_use(
     checks lets every pending callback drain each iteration and gives competing
     tasks real time to make progress.
     """
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while True:
         slot = limiter._slots.get(user_id)
