@@ -233,8 +233,12 @@ async def test_run_rollup_aggregates_one_hour(db_logger: DatabaseLogger):
 
 
 @pytest.mark.asyncio
-async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
-    """Embedding rows must not feed the provider performance rollup."""
+async def test_run_rollup_counts_embeddings_in_usage_but_not_performance(
+    db_logger: DatabaseLogger,
+):
+    """Embeddings count toward usage totals (request_count, tokens, cost) but
+    are excluded from the latency/throughput performance metrics.
+    """
     from serving.admin.provider_stats_rollup import run_rollup
 
     assert db_logger.pool is not None
@@ -252,6 +256,8 @@ async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
         ttft_ms=None,
         latency_ms=3000,
         completion_tokens=120,
+        prompt_tokens=100,
+        cost_usd=0.02,
     )
     await _insert_api_log(
         pool,
@@ -263,6 +269,8 @@ async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
         ttft_ms=None,
         latency_ms=50,
         completion_tokens=None,
+        prompt_tokens=80,
+        cost_usd=0.01,
         metadata={"request_type": "embedding"},
     )
 
@@ -277,10 +285,15 @@ async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
             """
         )
     assert row is not None
-    # Only the chat row is counted; the embedding (50ms, no completion tokens)
-    # is excluded so it can't drag down the latency distribution.
-    assert row["request_count"] == 1
+    # Usage totals include the embedding row...
+    assert row["request_count"] == 2
+    assert row["total_prompt_tokens"] == 100 + 80
+    assert float(row["total_cost_usd"]) == pytest.approx(0.03)
+    # ...completion tokens only the chat row contributed.
     assert row["total_completion_tokens"] == 120
+    # ...but the embedding's 50ms is excluded from the latency distribution,
+    # leaving only the chat row's 3000ms.
+    assert row["latency_p50_ms"] == 3000
 
 
 @pytest.mark.asyncio
