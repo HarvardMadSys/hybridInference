@@ -70,17 +70,16 @@ Models are defined in `spark_idle_proxy/models.json`:
         "container": "gpt-oss-20b-vllm",
         "gpu_index": "0",
         "backend_port": 18003,
-        "model_dir": "/home/juncheng/models/gpt-oss-20b",
         "hf_repo": "openai/gpt-oss-20b",
+        "hf_cache_dir": "/home/juncheng/.cache/huggingface",
+        "serve_hf_repo": true,
         "served_name": "openai/gpt-oss-20b",
-        "docker_image": "vllm/vllm-openai:cu130-nightly",
-        "max_model_len": 131072,
-        "gpu_memory_utilization": 0.85,
-        "max_num_seqs": 4,
+        "docker_image": "nvcr.io/nvidia/vllm:26.01-py3",
+        "max_model_len": 16384,
+        "gpu_memory_utilization": 0.64,
+        "max_num_seqs": 1,
         "trust_remote_code": true,
-        "enable_auto_tool_choice": true,
-        "tool_call_parser": "openai",
-        "reasoning_parser": "openai_gptoss"
+        "vllm_extra_args": ["--dtype", "bfloat16"]
     }
 }
 ```
@@ -90,10 +89,11 @@ Models are defined in `spark_idle_proxy/models.json`:
 | `container` | Docker container name |
 | `gpu_index` | GPU device index (omit to auto-pick) |
 | `backend_port` | Host port mapped to the container |
-| `model_dir` | Host path to model weights |
-| `hf_repo` | Hugging Face repo downloaded into `model_dir` when absent |
-| `hf_cache_dir` | Optional extra HF cache mount inside the container |
-| `docker_image` | vLLM OpenAI server image (default `cu130-nightly` for Spark) |
+| `model_dir` | Host path to model weights (for local `/model` mount) |
+| `hf_repo` | Hugging Face repo id; also used for on-demand download into `model_dir` |
+| `hf_cache_dir` | Host Hugging Face cache mounted at `/root/.cache/huggingface` |
+| `serve_hf_repo` | `true` → serve `hf_repo` from cache (required for HF hub snapshots with blob symlinks) |
+| `docker_image` | vLLM OpenAI server image (Spark-validated: `nvcr.io/nvidia/vllm:26.01-py3`) |
 | `served_name` | `--served-model-name` for vLLM |
 | `max_model_len` | `--max-model-len` |
 | `gpu_memory_utilization` | `--gpu-memory-utilization` |

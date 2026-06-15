@@ -230,7 +230,20 @@ class BackendManager:
         self._current_gpu = gpu
         return gpu
 
+    def _serve_hf_repo(self) -> bool:
+        """Serve by Hugging Face repo id with a cache mount instead of ``/model``."""
+        if self.config.get("serve_hf_repo"):
+            return True
+        model_dir = Path(self.config["model_dir"])
+        # HF hub snapshots use out-of-tree blob symlinks; mounting only the
+        # snapshot dir breaks config resolution inside the container.
+        return model_dir.name.startswith("snapshots")
+
     def _serve_model_path(self) -> str:
+        if self._serve_hf_repo():
+            repo = self.config.get("hf_repo")
+            if repo:
+                return str(repo)
         model_dir = Path(self.config["model_dir"])
         if (model_dir / "config.json").is_file():
             return "/model"
@@ -290,10 +303,17 @@ class BackendManager:
             check=False,
             capture_output=True,
         )
-        volume_args = ["-v", f"{self.config['model_dir']}:/model:ro"]
         hf_cache = self.config.get("hf_cache_dir")
-        if hf_cache:
-            volume_args += ["-v", f"{hf_cache}:/root/.cache/huggingface"]
+        if self._serve_hf_repo():
+            if not hf_cache:
+                raise RuntimeError(
+                    f"[{self.model_name}] serve_hf_repo requires hf_cache_dir to be set"
+                )
+            volume_args = ["-v", f"{hf_cache}:/root/.cache/huggingface"]
+        else:
+            volume_args = ["-v", f"{self.config['model_dir']}:/model:ro"]
+            if hf_cache:
+                volume_args += ["-v", f"{hf_cache}:/root/.cache/huggingface"]
         cmd = [
             "sudo",
             "docker",
@@ -317,6 +337,22 @@ class BackendManager:
         subprocess.run(cmd, check=True, capture_output=True)
 
     def _ensure_model_dir(self) -> None:
+        if self._serve_hf_repo():
+            hf_cache = Path(self.config.get("hf_cache_dir", ""))
+            repo_id = self.config.get("hf_repo", "")
+            if hf_cache.is_dir() and repo_id:
+                slug = "models--" + str(repo_id).replace("/", "--")
+                if (hf_cache / "hub" / slug).is_dir():
+                    log.info(
+                        "[%s] Using cached Hugging Face weights for %s",
+                        self.model_name,
+                        repo_id,
+                    )
+                    return
+            raise RuntimeError(
+                f"[{self.model_name}] Hugging Face cache missing for {repo_id}: {hf_cache}"
+            )
+
         model_dir = Path(self.config["model_dir"])
         config_path = model_dir / "config.json"
         sentinel_path = model_dir / ".download_complete"
