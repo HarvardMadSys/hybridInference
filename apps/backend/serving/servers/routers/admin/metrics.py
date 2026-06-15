@@ -650,6 +650,7 @@ async def admin_list_recent_requests(
                 l.metadata->>'user_agent' AS user_agent,
                 l.metadata->>'session_id' AS session_id,
                 l.metadata->>'surface' AS request_surface,
+                l.metadata->>'request_type' AS request_type,
                 l.metadata->'routewise' AS routewise
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
@@ -697,6 +698,7 @@ async def admin_list_recent_requests(
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
+            request_type=row["request_type"],
         )
         for row in rows
     ]

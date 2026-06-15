@@ -920,6 +920,11 @@ export function RequestsTab() {
                         <td className="py-2.5 pl-4 pr-3 text-[13px]">
                           <div className="flex items-center gap-1.5 font-medium text-gray-900">
                             <span className="whitespace-nowrap">{req.model_id}</span>
+                            {req.request_type === 'embedding' && (
+                              <span className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-inset ring-violet-600/20">
+                                embedding
+                              </span>
+                            )}
                             {req.reasoning_tokens != null && req.reasoning_tokens > 0 && (
                               <span
                                 className="inline-flex items-center rounded-md bg-purple-50 px-1.5 py-0.5 text-[10px] font-medium text-purple-700 ring-1 ring-inset ring-purple-600/20"

@@ -76,6 +76,7 @@ function DetailStat({ label, value }: { label: string; value: string }): JSX.Ele
 function RequestRow({ req }: { req: RecentRequestItem }) {
   const [expanded, setExpanded] = useState(false);
   const cachedTokens = req.cache_read_tokens ?? null;
+  const isEmbedding = req.request_type === 'embedding';
   const routewiseDecision = formatRouteWiseDecision(req);
 
   const throughputTps =
@@ -97,6 +98,11 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
         <td className="py-3 pl-4 pr-3 text-sm">
           <div className="flex items-center gap-2">
             <span className="font-medium text-gray-900 whitespace-nowrap">{req.model_id}</span>
+            {isEmbedding && (
+              <span className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-inset ring-violet-600/20">
+                embedding
+              </span>
+            )}
             {req.stream && (
               <span className="inline-flex items-center rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 ring-1 ring-inset ring-blue-600/20">
                 stream
