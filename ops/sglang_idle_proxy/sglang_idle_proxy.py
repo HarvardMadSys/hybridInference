@@ -65,6 +65,19 @@ values so the group sums to roughly 0.9 or less.
 
 Set ``"is_embedding": true`` on a model to launch sglang in encode-only mode
 (adds ``--is-embedding``); such models serve ``/v1/embeddings`` instead of chat.
+
+Set ``"mtp": true`` on a generative model that ships native Multi-Token
+Prediction layers (Qwen3.6 MoE, DeepSeek V3, …) to enable speculative decoding
+via sglang's ``NEXTN`` algorithm. The defaults (1 step, eagle-topk 1, 2 draft
+tokens) suit a single MTP layer; override with ``speculative_num_steps``,
+``speculative_eagle_topk``, ``speculative_num_draft_tokens``, or
+``speculative_algorithm`` if needed.
+
+Additionally set ``"mamba": true`` on hybrid Mamba/linear-attention models
+(Qwen3.5/3.6 MoE). sglang rejects MTP spec decoding alongside the default
+radix cache for these unless the Mamba scheduler reserves extra buffers; the
+flag adds ``--mamba-scheduler-strategy extra_buffer`` (override with
+``mamba_scheduler_strategy``) and exports ``SGLANG_ENABLE_SPEC_V2=1``.
 """
 
 from __future__ import annotations
@@ -308,6 +321,21 @@ class BackendManager:
         self._current_gpu = gpu
         return gpu
 
+    def _docker_env_args(self) -> list[str]:
+        """Build ``-e VAR=val`` flags for the ``docker run`` invocation.
+
+        Hybrid Mamba models running MTP spec decoding with radix cache need the
+        v2 speculative path (paired with ``--mamba-scheduler-strategy
+        extra_buffer``); see ``_start_container``.
+        """
+        env: dict[str, str] = {}
+        if self.config.get("mtp") and self.config.get("mamba"):
+            env["SGLANG_ENABLE_SPEC_V2"] = "1"
+        args: list[str] = []
+        for key, val in env.items():
+            args += ["-e", f"{key}={val}"]
+        return args
+
     def _start_container(self) -> None:
         gpu = self._resolve_gpu()
         self._ensure_model_dir()
@@ -331,6 +359,7 @@ class BackendManager:
             f"{self.backend_port}:8001",
             "-v",
             f"{self.config['model_dir']}:/model:ro",
+            *self._docker_env_args(),
             "lmsysorg/sglang:latest",
             "python3",
             "-m",
@@ -363,6 +392,32 @@ class BackendManager:
             tcp = self.config.get("tool_call_parser")
             if tcp:
                 cmd += ["--tool-call-parser", tcp]
+            # Multi-Token Prediction (MTP) speculative decoding. Models that ship
+            # native MTP layers (e.g. Qwen3.6 MoE, DeepSeek V3) use sglang's
+            # NEXTN algorithm with the in-checkpoint MTP module, so no separate
+            # draft model path is needed. The step/topk/draft-token counts are
+            # tunable; the defaults suit a single MTP layer (one extra token).
+            if self.config.get("mtp"):
+                cmd += [
+                    "--speculative-algorithm",
+                    str(self.config.get("speculative_algorithm", "NEXTN")),
+                    "--speculative-num-steps",
+                    str(self.config.get("speculative_num_steps", 1)),
+                    "--speculative-eagle-topk",
+                    str(self.config.get("speculative_eagle_topk", 1)),
+                    "--speculative-num-draft-tokens",
+                    str(self.config.get("speculative_num_draft_tokens", 2)),
+                ]
+                # Hybrid Mamba/linear-attention models (Qwen3.5/3.6 MoE) reject
+                # spec decoding alongside radix cache unless the Mamba scheduler
+                # reserves extra cache buffers and the v2 spec path is enabled
+                # (SGLANG_ENABLE_SPEC_V2 is set in _docker_env_args). Set
+                # "mamba": true on such models; harmless to omit otherwise.
+                if self.config.get("mamba"):
+                    cmd += [
+                        "--mamba-scheduler-strategy",
+                        str(self.config.get("mamba_scheduler_strategy", "extra_buffer")),
+                    ]
         log.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, capture_output=True)
 
