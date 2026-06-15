@@ -100,6 +100,30 @@ async def test_embeddings_success_is_logged():
     assert "data" not in log_data["response"]  # raw vectors omitted
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        None,
+        ["unexpected", "shape"],
+        "not-a-dict",
+        {"data": "not-a-list"},
+        {"data": ["not-a-dict-item"]},
+        {},
+    ],
+)
+def test_response_summary_is_defensive(response):
+    """``_response_summary`` must never raise on unexpected response shapes.
+
+    It runs on the success path, so a crash here would turn a successful
+    embedding into a 500 for the client.
+    """
+    summary = embeddings._response_summary(response, "emb-model")
+    # The invariant is "never raises"; dimensions can't be inferred from any of
+    # these malformed shapes, so it must stay None.
+    assert isinstance(summary["data_count"], int)
+    assert summary["dimensions"] is None
+
+
 @pytest.mark.asyncio
 async def test_embeddings_unknown_model_is_logged():
     adapter = _FakeAdapter(response={})

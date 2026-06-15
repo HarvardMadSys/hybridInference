@@ -698,7 +698,7 @@ async def admin_list_recent_requests(
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
-            request_type=row["request_type"],
+            request_type=row.get("request_type"),
         )
         for row in rows
     ]

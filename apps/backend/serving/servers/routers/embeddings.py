@@ -24,23 +24,37 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-def _response_summary(response: dict[str, Any], model: str) -> dict[str, Any]:
+def _response_summary(response: Any, model: str) -> dict[str, Any]:
     """Build a compact log-friendly summary of an embeddings response.
 
     Full embedding vectors are large (hundreds/thousands of floats per input)
     and not useful in the request log, so we persist only counts and the
     reported usage rather than the raw ``data`` array.
+
+    Fully defensive against unexpected response shapes: this runs on the
+    success path, so a crash here must never turn a successful embedding into
+    a 500 for the client.
     """
-    data = response.get("data") or []
+    if not isinstance(response, dict):
+        return {
+            "object": "list",
+            "model": model,
+            "data_count": 0,
+            "dimensions": None,
+            "usage": None,
+        }
+
+    data = response.get("data")
+    data_list = data if isinstance(data, list) else []
     dimensions: int | None = None
-    if data:
-        first = data[0].get("embedding") if isinstance(data[0], dict) else None
+    if data_list:
+        first = data_list[0].get("embedding") if isinstance(data_list[0], dict) else None
         if isinstance(first, list):
             dimensions = len(first)
     return {
         "object": response.get("object", "list"),
         "model": response.get("model", model),
-        "data_count": len(data),
+        "data_count": len(data_list),
         "dimensions": dimensions,
         "usage": response.get("usage"),
     }
@@ -98,7 +112,7 @@ async def create_embeddings(
         pricing: dict[str, str] | None,
         error: str | None,
     ) -> None:
-        if log_store is None:
+        if log_store is None or completions_logger is None:
             return
         completions_logger.schedule_log(
             request_id,
