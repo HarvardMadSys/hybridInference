@@ -44,6 +44,48 @@ async def test_circuit_open_fires_alert(monkeypatch):
         mock_alert.assert_awaited_once()
 
 
+async def test_circuit_open_alert_includes_upstream_error(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cb = _CircuitBreaker(provider="openai")
+
+    with patch("routing.routers.alert_slack", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="stream_exception", detail="HTTP 502 from upstream: bad gateway")
+        cb.on_failure(reason="stream_exception", detail="HTTP 502 from upstream: bad gateway")
+        assert cb.state == _CircuitState.OPEN
+        await asyncio.sleep(0)
+        mock_alert.assert_awaited_once()
+        context = mock_alert.await_args.args[2]
+        assert context["upstream_error"] == "HTTP 502 from upstream: bad gateway"
+        assert context["reason"] == "stream_exception"
+
+
+async def test_circuit_open_alert_omits_upstream_error_when_absent(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cb = _CircuitBreaker(provider="openai")
+
+    with patch("routing.routers.alert_slack", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="upstream_500")
+        cb.on_failure(reason="upstream_500")
+        await asyncio.sleep(0)
+        mock_alert.assert_awaited_once()
+        context = mock_alert.await_args.args[2]
+        assert "upstream_error" not in context
+
+
 async def test_circuit_open_alert_only_on_first_transition(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")

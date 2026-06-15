@@ -313,6 +313,20 @@ def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
 
 
+def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
+    """Normalize an upstream error message for inclusion in alerts.
+
+    Collapses whitespace and truncates to keep Slack messages readable.
+    Returns ``None`` for empty/blank input.
+    """
+    if not s:
+        return None
+    cleaned = " ".join(s.split())
+    if not cleaned:
+        return None
+    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
+
+
 # ============================================================================
 # Health Tracking
 # ============================================================================
@@ -415,7 +429,13 @@ class _CircuitBreaker:
                 self.state = _CircuitState.CLOSED
                 CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(0)
 
-    def on_failure(self, *, availability: float | None = None, reason: str = "error") -> None:
+    def on_failure(
+        self,
+        *,
+        availability: float | None = None,
+        reason: str = "error",
+        detail: str | None = None,
+    ) -> None:
         with self._lock:
             self.consecutive_failures += 1
             trip = False
@@ -433,19 +453,24 @@ class _CircuitBreaker:
                 ).inc()
                 # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
                 if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
+                    context: dict[str, Any] = {
+                        "provider": self.provider,
+                        "consecutive_failures": self.consecutive_failures,
+                        "availability": (
+                            f"{availability:.2f}" if availability is not None else "n/a"
+                        ),
+                        "reason": reason or "unknown",
+                    }
+                    # Surface the actual upstream error text when available so
+                    # the alert is actionable without grepping logs.
+                    if detail:
+                        context["upstream_error"] = detail
                     try:
                         task = asyncio.ensure_future(
                             alert_slack(
                                 AlertSeverity.ERROR,
                                 "Provider circuit opened",
-                                {
-                                    "provider": self.provider,
-                                    "consecutive_failures": self.consecutive_failures,
-                                    "availability": (
-                                        f"{availability:.2f}" if availability is not None else "n/a"
-                                    ),
-                                    "reason": reason or "unknown",
-                                },
+                                context,
                                 dedupe_key=f"circuit_open:{self.provider}",
                                 cooldown_sec=300,
                             )
@@ -499,12 +524,16 @@ class BaseRouter:
             self._circuits[endpoint_id].on_success()
         _safe_set_availability(endpoint_id, avail)
 
-    def _on_failure(self, endpoint_id: str, *, reason: str = "error") -> None:
+    def _on_failure(
+        self, endpoint_id: str, *, reason: str = "error", detail: str | None = None
+    ) -> None:
         with self._lock:
             self._ensure_health(endpoint_id)
             self._health[endpoint_id].record(False)
             avail = self._health[endpoint_id].availability
-            self._circuits[endpoint_id].on_failure(availability=avail, reason=_reason_str(reason))
+            self._circuits[endpoint_id].on_failure(
+                availability=avail, reason=_reason_str(reason), detail=_detail_str(detail)
+            )
         _safe_set_availability(endpoint_id, avail)
 
     def _drop_affinity(self, model_id: str) -> None:
@@ -646,7 +675,11 @@ class BaseRouter:
                 )
                 return resp
             except Exception as primary_error:
-                self._on_failure(_get_endpoint_id(primary), reason=primary_error.__class__.__name__)
+                self._on_failure(
+                    _get_endpoint_id(primary),
+                    reason=primary_error.__class__.__name__,
+                    detail=str(primary_error),
+                )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
                 for adapter in fallback_adapters:
@@ -671,7 +704,11 @@ class BaseRouter:
                         ).inc()
                         return resp
                     except Exception as fallback_error:
-                        self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
+                        self._on_failure(
+                            _get_endpoint_id(adapter),
+                            reason="chat_exception",
+                            detail=str(fallback_error),
+                        )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
                 raise primary_error
@@ -719,7 +756,11 @@ class BaseRouter:
                     chunks_yielded = True
                 return
             except Exception as primary_error:
-                self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+                self._on_failure(
+                    _get_endpoint_id(primary),
+                    reason="stream_exception",
+                    detail=str(primary_error),
+                )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 # Once provider bytes have reached the client, the SSE response
                 # is committed to that upstream. Falling back would splice a
@@ -747,7 +788,11 @@ class BaseRouter:
                         ).inc()
                         return
                     except Exception as fallback_error:
-                        self._on_failure(_get_endpoint_id(adapter), reason="stream_exception")
+                        self._on_failure(
+                            _get_endpoint_id(adapter),
+                            reason="stream_exception",
+                            detail=str(fallback_error),
+                        )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
                 raise
@@ -1035,7 +1080,11 @@ class FixedRouter(BaseRouter):
             return resp
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
-            self._on_failure(_get_endpoint_id(primary), reason="chat_exception")
+            self._on_failure(
+                _get_endpoint_id(primary),
+                reason="chat_exception",
+                detail=str(primary_error),
+            )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — the caller explicitly requested this
             # provider, so a silent switch would produce misleading results.
@@ -1073,7 +1122,11 @@ class FixedRouter(BaseRouter):
                     ).inc()
                     return resp
                 except Exception as fallback_error:
-                    self._on_failure(_get_endpoint_id(adapter), reason="chat_exception")
+                    self._on_failure(
+                        _get_endpoint_id(adapter),
+                        reason="chat_exception",
+                        detail=str(fallback_error),
+                    )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error
@@ -1141,7 +1194,11 @@ class FixedRouter(BaseRouter):
                 provider=normalize_provider_label(_get_endpoint_id(primary)),
                 stage="adapter_stream",
             ).inc()
-            self._on_failure(_get_endpoint_id(primary), reason="stream_exception")
+            self._on_failure(
+                _get_endpoint_id(primary),
+                reason="stream_exception",
+                detail=str(primary_error),
+            )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
@@ -1190,7 +1247,11 @@ class FixedRouter(BaseRouter):
                         provider=normalize_provider_label(adapter_endpoint_id),
                         stage="adapter_stream",
                     ).inc()
-                    self._on_failure(adapter_endpoint_id, reason="stream_exception")
+                    self._on_failure(
+                        adapter_endpoint_id,
+                        reason="stream_exception",
+                        detail=str(fallback_error),
+                    )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error
