@@ -69,7 +69,7 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "then buffer and return a normal non-streaming response to clients."
         ),
     },
-    "kimi_coding_identity_enabled": {
+    "coding_identity_enabled": {
         "type": "bool",
         "default": True,
         "description": (

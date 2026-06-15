@@ -17,14 +17,13 @@ adapter (e.g. the ``kimi_coding`` and ``zai`` adapter kinds), so the behaviour
 is provider-neutral. Everything else (auth, payload shape, usage parsing,
 key-pool rotation) is inherited unchanged from OpenAICompatAdapter.
 
-The injection is gated by the ``kimi_coding_identity_enabled`` runtime setting
-(admin-dashboard toggle, default on). The setting key keeps its original name
-for continuity even though it now governs every coding-plan provider. Each
-async request entrypoint resolves the toggle exactly once and snapshots it into
-a :class:`~contextvars.ContextVar`; the synchronous header/message hooks read
-that snapshot, so both see one consistent value for the lifetime of the request
-even if an admin flips the setting mid-request. The snapshot is ``set`` but
-never ``reset`` — so it is safe across task hand-offs (e.g. RouteWise hedging
+The injection is gated by the ``coding_identity_enabled`` runtime setting
+(admin-dashboard toggle, default on), which governs every coding-plan provider.
+Each async request entrypoint resolves the toggle exactly once and snapshots it
+into a :class:`~contextvars.ContextVar`; the synchronous header/message hooks
+read that snapshot, so both see one consistent value for the lifetime of the
+request even if an admin flips the setting mid-request. The snapshot is ``set``
+but never ``reset`` — so it is safe across task hand-offs (e.g. RouteWise hedging
 advancing a stream in a new task), and because each request runs in its own task
 context the value never leaks between requests.
 """
@@ -46,9 +45,9 @@ logger = get_logger(__name__)
 # Coding-tool identity expected by the coding plans.
 _USER_AGENT = "claude-code/0.1.0"
 _SYSTEM_PROMPT = "You are OpenCode"
-# Admin-dashboard toggle key (see RUNTIME_SETTINGS_REGISTRY). Kept under its
-# original name for continuity; it now governs every coding-plan provider.
-_SETTING_KEY = "kimi_coding_identity_enabled"
+# Admin-dashboard toggle key (see RUNTIME_SETTINGS_REGISTRY). Governs every
+# coding-plan provider routed through this adapter.
+_SETTING_KEY = "coding_identity_enabled"
 
 # Per-request snapshot of the toggle. Defaults to True so direct hook calls and
 # pre-init paths preserve behaviour. See the module docstring for the rationale

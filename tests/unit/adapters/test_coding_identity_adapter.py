@@ -307,7 +307,7 @@ async def test_identity_snapshot_consistent_within_request() -> None:
     kimi_reads = {"count": 0}
 
     def fake_get_bool(key):
-        if key == "kimi_coding_identity_enabled":
+        if key == "coding_identity_enabled":
             kimi_reads["count"] += 1
             # True on the first (only) resolve; a re-read would flip to False.
             return kimi_reads["count"] == 1
@@ -330,10 +330,10 @@ def _patch_runtime(rs: MagicMock):
     )
 
 
-def test_registry_has_kimi_coding_toggle() -> None:
+def test_registry_has_coding_identity_toggle() -> None:
     from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
-    entry = RUNTIME_SETTINGS_REGISTRY["kimi_coding_identity_enabled"]
+    entry = RUNTIME_SETTINGS_REGISTRY["coding_identity_enabled"]
     assert entry["type"] == "bool"
     assert entry["default"] is True
     assert entry.get("description")
