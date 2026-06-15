@@ -34,8 +34,8 @@ PROBE_DEADLINE_MS = "60000"
 # (see README); the binding name `DB` is what the Worker code uses.
 [[d1_databases]]
 binding = "DB"
-database_name = "status_monitor"
-database_id = "38622155-2d15-4317-872e-432d9aedec70"
+database_name = "freeinference-monitor"
+database_id = "61cbb4c5-f79e-4aae-9e9a-f065e0d7679c"
 migrations_dir = "migrations"
 
 # PROBER_API_KEY is a secret, not a var. Set it with:
