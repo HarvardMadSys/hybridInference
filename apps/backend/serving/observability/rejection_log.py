@@ -85,6 +85,18 @@ async def log_rejection(
     if not enabled:
         return
 
+    # Synthetic probes are suppressed from rejection logging too, unless
+    # ``log_synthetic_probes`` opts them in — mirrors the handler-path
+    # suppression so a probe rejected at the gate (e.g. during the overload it
+    # is meant to detect) does not pollute api_logs while probe logging is off.
+    is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
+    if is_synthetic_probe:
+        try:
+            if not await runtime_settings.get_bool("log_synthetic_probes"):
+                return
+        except Exception:
+            return
+
     ctx = req_ctx.get()
     request_id = ctx.get("request_id") or ""
     metadata: dict[str, Any] = {
@@ -95,6 +107,11 @@ async def log_rejection(
         "user_id": user.get("user_id") if user else None,
         "ip": get_client_ip(request),
     }
+    # Tag persisted probe rejections so consumers that exclude probes via this
+    # field (e.g. PostgresLogStore.get_model_activity) don't miscount them as
+    # real-user traffic. Only reached when log_synthetic_probes opted them in.
+    if is_synthetic_probe:
+        metadata["synthetic_probe"] = True
     # Classify embedding rejections so they match the success-path tagging and
     # are excluded from chat-performance aggregates (deps like verify_api_key /
     # enforce_user_concurrency reject before the handler sets this metadata).
