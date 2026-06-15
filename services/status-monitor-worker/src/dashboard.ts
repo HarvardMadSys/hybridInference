@@ -87,37 +87,55 @@ function spark(rows: ProbeRow[]): string {
     .join("");
 }
 
-/** Inline SVG line chart of TTFT (ms) over the recent probe history. */
-export function ttftSparkline(rows: ProbeRow[]): string {
+/** Inline SVG line chart of a per-probe metric (ms) over the recent history. */
+function metricSparkline(
+  rows: ProbeRow[],
+  label: string,
+  pick: (r: ProbeRow) => number | null,
+): string {
   const n = rows.length;
-  const pts: { i: number; ttft: number }[] = [];
+  const pts: { i: number; v: number }[] = [];
   for (let i = 0; i < n; i++) {
-    const t = rows[i].ttftMs;
-    if (t != null) pts.push({ i, ttft: t });
+    const v = pick(rows[i]);
+    if (v != null) pts.push({ i, v });
   }
   if (pts.length < 2) {
-    return '<div class="ttft-empty">TTFT trend — not enough data yet</div>';
+    return `<div class="ttft-empty">${label} — not enough data yet</div>`;
   }
-  const vals = pts.map((p) => p.ttft);
+  const vals = pts.map((p) => p.v);
   const min = Math.min(...vals);
   const max = Math.max(...vals);
   const span = max - min || 1;
   const W = 100;
   const H = 32;
   const PAD = 3;
-  const xy = (p: { i: number; ttft: number }): [number, number] => [
+  const xy = (p: { i: number; v: number }): [number, number] => [
     n > 1 ? (p.i / (n - 1)) * W : 0,
-    H - PAD - ((p.ttft - min) / span) * (H - 2 * PAD),
+    H - PAD - ((p.v - min) / span) * (H - 2 * PAD),
   ];
   const coords = pts.map((p) => xy(p).map((v) => v.toFixed(1)).join(",")).join(" ");
   const latest = vals[vals.length - 1];
   return `
       <div class="ttft">
-        <div class="ttft-head"><span>TTFT trend (${pts.length})</span><span>${latest} ms · ${min}–${max} ms</span></div>
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ttft-svg" role="img" aria-label="TTFT over time, latest ${latest} ms (min ${min}, max ${max})">
+        <div class="ttft-head"><span>${label} (${pts.length})</span><span>${latest} ms · ${min}–${max} ms</span></div>
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ttft-svg" role="img" aria-label="${label} over time, latest ${latest} ms (min ${min}, max ${max})">
           <polyline points="${coords}" />
         </svg>
       </div>`;
+}
+
+/**
+ * Trend sparkline for a model card.
+ *
+ * Chat/completion models report a time-to-first-token, so they get a TTFT
+ * trend. Embedding models (e.g. bge-m3) never report TTFT — for them, fall back
+ * to a latency trend over successful probes instead of an empty placeholder.
+ */
+export function ttftSparkline(rows: ProbeRow[]): string {
+  const hasTtft = rows.some((r) => r.ttftMs != null);
+  return hasTtft
+    ? metricSparkline(rows, "TTFT trend", (r) => r.ttftMs)
+    : metricSparkline(rows, "Latency trend", (r) => (r.ok ? r.latencyMs : null));
 }
 
 function card(model: Snapshot["models"][number]): string {

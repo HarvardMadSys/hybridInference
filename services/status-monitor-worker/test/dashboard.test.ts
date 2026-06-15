@@ -200,4 +200,25 @@ describe("ttftSparkline", () => {
     expect(ttftSparkline([row(40)])).toContain("not enough data");
     expect(ttftSparkline([])).toContain("not enough data");
   });
+
+  it("falls back to a latency trend when no probe reports TTFT (embeddings)", () => {
+    // bge-m3 and other embedding models never report TTFT.
+    const rows = [row(null), row(null), row(null)];
+    const html = ttftSparkline(rows);
+    expect(html).toContain("Latency trend");
+    expect(html).not.toContain("TTFT trend");
+    expect(html).toContain("<polyline");
+    // row() fixes latencyMs at 100 for every probe, so all three plot.
+    const points = (html.match(/points="([^"]+)"/)?.[1] ?? "").trim().split(/\s+/);
+    expect(points).toHaveLength(3);
+  });
+
+  it("excludes failed probes from the latency-trend fallback", () => {
+    // ok=false probes carry a time-to-error, not a real serving latency.
+    const html = ttftSparkline([row(null), row(null, false), row(null)]);
+    const points = (html.match(/points="([^"]+)"/)?.[1] ?? "").trim().split(/\s+/);
+    expect(points).toHaveLength(2);
+    expect(points[0].startsWith("0.0,")).toBe(true); // first probe at the left edge
+    expect(points[1].startsWith("100.0,")).toBe(true); // third probe at the right edge
+  });
 });
