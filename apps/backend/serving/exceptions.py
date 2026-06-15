@@ -384,6 +384,12 @@ def operator_safe_error(exc: BaseException | None, *, max_len: int = 500) -> str
             raw = str(exc)
         except Exception:
             raw = exc.__class__.__name__
+    # Bound before scrubbing: error_body can hold a full upstream response body
+    # (e.g. a large HTML 5xx page), and running every regex substitution over
+    # it on each failed attempt is wasted work since only ``max_len`` chars are
+    # ever surfaced. A margin above ``max_len`` keeps scrubbing context intact.
+    if len(raw) > max_len * 4:
+        raw = raw[: max_len * 4]
     cleaned = scrub_provider_identity(raw)
     if not cleaned:
         return None
