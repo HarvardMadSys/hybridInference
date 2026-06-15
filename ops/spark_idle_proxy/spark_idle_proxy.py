@@ -29,14 +29,18 @@ import contextlib
 import json as _json
 import logging
 import os
+import signal
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.error import URLError
+from typing import TYPE_CHECKING, Any
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,8 +100,8 @@ def _pick_free_gpu(exclude: set[str] | None = None) -> str:
             text=True,
             check=True,
         )
-    except FileNotFoundError:
-        log.warning("nvidia-smi not found — defaulting to GPU 0.")
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        log.warning("nvidia-smi failed (%s) — defaulting to GPU 0.", exc)
         return "0"
     best_idx = "0"
     best_usage = 1.0
@@ -142,8 +146,10 @@ class BackendManager:
         self.container: str = config["container"]
         self.backend_port: int = int(config.get("backend_port", 18003))
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._state: str = "stopped"
         self._last_activity: float = 0.0
+        self._active_requests: int = 0
         self._watcher_thread: threading.Thread | None = None
         self._ready_event = threading.Event()
         self._start_error: Exception | None = None
@@ -160,44 +166,68 @@ class BackendManager:
         with self._lock:
             self._last_activity = time.monotonic()
 
+    def begin_request(self) -> None:
+        """Mark an in-flight proxy request so idle shutdown waits for it."""
+        with self._lock:
+            self._active_requests += 1
+            self._last_activity = time.monotonic()
+
+    def end_request(self) -> None:
+        """Clear an in-flight proxy request."""
+        with self._lock:
+            self._active_requests = max(0, self._active_requests - 1)
+            self._last_activity = time.monotonic()
+
     def ensure_running(self) -> None:
         """Start the container if needed and block until it is healthy."""
-        should_start = False
-        with self._lock:
-            if self._state == "ready":
-                self._last_activity = time.monotonic()
-                return
-            if self._state == "starting":
-                pass
-            else:
-                self._state = "starting"
-                self._ready_event.clear()
-                self._start_error = None
-                should_start = True
-
-        if should_start:
-            try:
-                log.info("[%s] Starting container %s …", self.model_name, self.container)
-                self._start_container()
-                self._wait_healthy()
-                with self._lock:
-                    self._state = "ready"
+        while True:
+            should_start = False
+            wait_for_stop = False
+            with self._lock:
+                if self._state == "ready":
                     self._last_activity = time.monotonic()
-                    if self._watcher_thread is None or not self._watcher_thread.is_alive():
-                        self._watcher_thread = threading.Thread(
-                            target=self._idle_watcher, daemon=True
-                        )
-                        self._watcher_thread.start()
-                log.info("[%s] Container %s is ready.", self.model_name, self.container)
-                self._ready_event.set()
-            except Exception as exc:
-                with self._lock:
-                    self._state = "stopped"
-                    self._current_gpu = None
-                    self._start_error = exc
-                self._ready_event.set()
-                raise
-        else:
+                    return
+                if self._state == "stopping":
+                    wait_for_stop = True
+                elif self._state == "starting":
+                    pass
+                else:
+                    self._state = "starting"
+                    self._ready_event.clear()
+                    self._start_error = None
+                    should_start = True
+
+            if should_start:
+                with self._lifecycle_lock:
+                    try:
+                        log.info("[%s] Starting container %s …", self.model_name, self.container)
+                        self._start_container()
+                        self._wait_healthy()
+                        with self._lock:
+                            self._state = "ready"
+                            self._last_activity = time.monotonic()
+                            if self._watcher_thread is None or not self._watcher_thread.is_alive():
+                                self._watcher_thread = threading.Thread(
+                                    target=self._idle_watcher, daemon=True
+                                )
+                                self._watcher_thread.start()
+                        log.info("[%s] Container %s is ready.", self.model_name, self.container)
+                        self._ready_event.set()
+                        return
+                    except Exception as exc:
+                        self._remove_container()
+                        with self._lock:
+                            self._state = "stopped"
+                            self._current_gpu = None
+                            self._start_error = exc
+                        self._ready_event.set()
+                        raise
+
+            if wait_for_stop:
+                with self._lifecycle_lock:
+                    pass
+                continue
+
             self._ready_event.wait(timeout=HEALTH_TIMEOUT)
             with self._lock:
                 if self._state == "ready":
@@ -252,10 +282,19 @@ class BackendManager:
             return str(repo)
         return "/model"
 
-    def _build_vllm_serve_args(self) -> list[str]:
-        args = [
-            "vllm",
-            "serve",
+    def _uses_image_entrypoint(self) -> bool:
+        """Return True when the image already runs ``vllm serve`` as its entrypoint."""
+        configured = self.config.get("docker_serve_via_entrypoint")
+        if configured is not None:
+            return bool(configured)
+        image = str(self.config.get("docker_image", DEFAULT_DOCKER_IMAGE))
+        return image.startswith("vllm/vllm-openai")
+
+    def _build_vllm_serve_args(self, *, include_prefix: bool = True) -> list[str]:
+        args: list[str] = []
+        if include_prefix:
+            args += ["vllm", "serve"]
+        args += [
             self._serve_model_path(),
             "--served-model-name",
             self.config.get("served_name", self.model_name),
@@ -331,27 +370,71 @@ class BackendManager:
             *volume_args,
             *self._docker_env_args(),
             self.config.get("docker_image", DEFAULT_DOCKER_IMAGE),
-            *self._build_vllm_serve_args(),
+            *self._build_vllm_serve_args(include_prefix=not self._uses_image_entrypoint()),
         ]
         log.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, capture_output=True)
+
+    def _hf_cache_has_repo(self, hf_cache: Path, repo_id: str) -> bool:
+        slug = "models--" + str(repo_id).replace("/", "--")
+        return (hf_cache / "hub" / slug).is_dir()
+
+    def _download_hf_repo(self, repo_id: str, *, cache_dir: Path | None, local_dir: Path) -> None:
+        revision = self.config.get("hf_revision")
+        ignore_patterns = self.config.get("hf_ignore_patterns")
+        if isinstance(ignore_patterns, str):
+            ignore_patterns = [ignore_patterns]
+        elif ignore_patterns:
+            ignore_patterns = list(ignore_patterns)
+        else:
+            ignore_patterns = None
+        try:
+            from huggingface_hub import snapshot_download
+
+            kwargs: dict[str, Any] = {
+                "repo_id": str(repo_id),
+                "revision": str(revision) if revision else None,
+                "ignore_patterns": ignore_patterns,
+            }
+            if cache_dir is not None:
+                kwargs["cache_dir"] = str(cache_dir)
+            else:
+                kwargs["local_dir"] = str(local_dir)
+            snapshot_download(**kwargs)
+        except Exception as exc:
+            raise RuntimeError(
+                f"[{self.model_name}] failed to download Hugging Face model {repo_id}: {exc}"
+            ) from exc
 
     def _ensure_model_dir(self) -> None:
         if self._serve_hf_repo():
             hf_cache = Path(self.config.get("hf_cache_dir", ""))
             repo_id = self.config.get("hf_repo", "")
-            if hf_cache.is_dir() and repo_id:
-                slug = "models--" + str(repo_id).replace("/", "--")
-                if (hf_cache / "hub" / slug).is_dir():
-                    log.info(
-                        "[%s] Using cached Hugging Face weights for %s",
-                        self.model_name,
-                        repo_id,
-                    )
-                    return
-            raise RuntimeError(
-                f"[{self.model_name}] Hugging Face cache missing for {repo_id}: {hf_cache}"
+            if not hf_cache or not repo_id:
+                raise RuntimeError(
+                    f"[{self.model_name}] serve_hf_repo requires hf_cache_dir and hf_repo"
+                )
+            hf_cache.mkdir(parents=True, exist_ok=True)
+            if self._hf_cache_has_repo(hf_cache, str(repo_id)):
+                log.info(
+                    "[%s] Using cached Hugging Face weights for %s",
+                    self.model_name,
+                    repo_id,
+                )
+                return
+            log.info(
+                "[%s] Downloading %s into Hugging Face cache %s …",
+                self.model_name,
+                repo_id,
+                hf_cache,
             )
+            self._download_hf_repo(str(repo_id), cache_dir=hf_cache, local_dir=hf_cache)
+            if not self._hf_cache_has_repo(hf_cache, str(repo_id)):
+                raise RuntimeError(
+                    f"[{self.model_name}] Hugging Face cache missing for {repo_id}: {hf_cache}"
+                )
+            log.info("[%s] Downloaded %s into HF cache.", self.model_name, repo_id)
+            return
 
         model_dir = Path(self.config["model_dir"])
         config_path = model_dir / "config.json"
@@ -365,30 +448,10 @@ class BackendManager:
             raise RuntimeError(f"[{self.model_name}] model_dir missing config.json: {model_dir}")
 
         model_dir.mkdir(parents=True, exist_ok=True)
-        revision = self.config.get("hf_revision")
-        ignore_patterns = self.config.get("hf_ignore_patterns")
-        if isinstance(ignore_patterns, str):
-            ignore_patterns = [ignore_patterns]
-        elif ignore_patterns:
-            ignore_patterns = list(ignore_patterns)
-        else:
-            ignore_patterns = None
         log.info(
             "[%s] Downloading %s from Hugging Face to %s …", self.model_name, repo_id, model_dir
         )
-        try:
-            from huggingface_hub import snapshot_download
-
-            snapshot_download(
-                repo_id=str(repo_id),
-                revision=str(revision) if revision else None,
-                local_dir=str(model_dir),
-                ignore_patterns=ignore_patterns,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"[{self.model_name}] failed to download Hugging Face model {repo_id}: {exc}"
-            ) from exc
+        self._download_hf_repo(str(repo_id), cache_dir=None, local_dir=model_dir)
 
         if not config_path.is_file():
             raise RuntimeError(
@@ -397,16 +460,21 @@ class BackendManager:
         sentinel_path.touch()
         log.info("[%s] Downloaded %s.", self.model_name, repo_id)
 
-    def _stop_container(self) -> None:
-        log.info("[%s] Stopping container %s …", self.model_name, self.container)
+    def _remove_container(self) -> None:
         subprocess.run(
             ["sudo", "docker", "rm", "-f", self.container],
             check=False,
             capture_output=True,
         )
+
+    def _stop_container(self) -> None:
+        log.info("[%s] Stopping container %s …", self.model_name, self.container)
+        self._remove_container()
         with self._lock:
-            self._state = "stopped"
+            if self._state == "stopping" or self._state in ("ready", "starting"):
+                self._state = "stopped"
             self._current_gpu = None
+        self._ready_event.set()
         log.info("[%s] Container %s stopped.", self.model_name, self.container)
 
     def _container_running(self) -> bool:
@@ -458,21 +526,31 @@ class BackendManager:
                         return
                     continue
                 idle_for = time.monotonic() - self._last_activity
-            if idle_for >= IDLE_TIMEOUT:
+                if idle_for < IDLE_TIMEOUT:
+                    continue
+                if self._active_requests > 0:
+                    continue
+                self._state = "stopping"
+            with self._lifecycle_lock:
                 with self._lock:
-                    if self._state != "ready":
+                    if self._state != "stopping":
+                        continue
+                    if self._active_requests > 0:
+                        self._state = "ready"
                         continue
                 self._stop_container()
                 return
 
 
-def _copy_stream(resp: Any, wfile: Any) -> None:
+def _copy_stream(resp: Any, wfile: Any, *, on_chunk: Callable[[], None] | None = None) -> None:
     while True:
         chunk = resp.read(8192)
         if not chunk:
             break
         wfile.write(chunk)
         wfile.flush()
+        if on_chunk is not None:
+            on_chunk()
 
 
 _backends: dict[str, BackendManager] = {}
@@ -536,6 +614,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         body = self._read_body()
+        if body is None:
+            return
         backend = _get_backend(body, request_path=self.path, request_method=self.command)
         if backend is None:
             self.send_error(404, f"Unknown model. Available: {list(_backends.keys())}")
@@ -554,7 +634,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
             try:
                 backend.ensure_running()
-            except RuntimeError as exc:
+            except Exception as exc:
                 self.send_error(502, str(exc))
                 return
             self._forward_with_body(backend, body)
@@ -580,8 +660,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _read_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", 0))
+    def _read_body(self) -> bytes | None:
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            self.send_error(400, "Invalid Content-Length header")
+            return None
         return self.rfile.read(length) if length else b""
 
     def _send_sse_chunk(self, data: str) -> None:
@@ -604,17 +688,24 @@ class ProxyHandler(BaseHTTPRequestHandler):
         def _warm_up() -> None:
             try:
                 backend.ensure_running()
-            except RuntimeError as exc:
+            except Exception as exc:
                 log.error("[%s] Backend failed to start: %s", backend.model_name, exc)
                 return
             log.info("[%s] Backend ready — client should retry.", backend.model_name)
 
-        threading.Thread(target=_warm_up, daemon=True).start()
+        if hasattr(backend, "_lock"):
+            with backend._lock:
+                spawn_warmup = backend._state == "stopped"
+        else:
+            spawn_warmup = backend.state == "stopped"
+        if spawn_warmup:
+            threading.Thread(target=_warm_up, daemon=True).start()
 
     def _forward_with_body(self, backend: BackendManager, body: bytes) -> None:
         target = f"http://localhost:{backend.backend_port}{self.path}"
         headers = {k: v for k, v in self.headers.items() if k.lower() != "host"}
         req = Request(target, data=body if body else None, headers=headers, method=self.command)
+        backend.begin_request()
         try:
             with urlopen(req, timeout=300) as resp:
                 is_streaming = resp.headers.get("Content-type", "").startswith("text/event-stream")
@@ -625,13 +716,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_header(key, val)
                 self.end_headers()
                 if is_streaming:
-                    _copy_stream(resp, self.wfile)
+                    _copy_stream(resp, self.wfile, on_chunk=backend.touch)
                 else:
                     self.wfile.write(resp.read())
+        except HTTPError as exc:
+            self.send_response(exc.code)
+            for key, val in exc.headers.items():
+                if key.lower() in ("transfer-encoding", "connection"):
+                    continue
+                self.send_header(key, val)
+            self.end_headers()
+            self.wfile.write(exc.read())
         except URLError as exc:
             self.send_error(502, f"Backend error: {exc}")
         except Exception as exc:
             self.send_error(500, str(exc))
+        finally:
+            backend.end_request()
 
     def do_GET(self) -> None:
         """Handle GET by proxying to the matching backend."""
@@ -666,6 +767,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
         log.info(fmt, *args)
 
 
+def _shutdown_proxy(server: ThreadingHTTPServer) -> None:
+    log.info("Shutting down proxy …")
+    server.shutdown()
+    server.server_close()
+    for mgr in _backends.values():
+        if mgr.state != "stopped":
+            with mgr._lifecycle_lock:
+                mgr._stop_container()
+
+
 def main() -> None:
     """Start the proxy HTTP server and serve until interrupted."""
     models = list(_backends.keys())
@@ -677,14 +788,14 @@ def main() -> None:
         IDLE_TIMEOUT,
     )
     server = ThreadingHTTPServer(("0.0.0.0", LISTEN_PORT), ProxyHandler)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        log.info("Shutting down proxy …")
-        server.server_close()
-        for mgr in _backends.values():
-            if mgr.state != "stopped":
-                mgr._stop_container()
+
+    def _handle_signal(signum: int, _frame: object | None) -> None:
+        log.info("Received signal %s", signum)
+        _shutdown_proxy(server)
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+    server.serve_forever()
 
 
 if __name__ == "__main__":

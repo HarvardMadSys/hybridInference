@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import subprocess
 import sys
 import threading
 from contextlib import contextmanager
@@ -223,7 +224,7 @@ def test_serve_hf_repo_mounts_cache_and_serves_repo_id(monkeypatch: Any, tmp_pat
     assert launch_command[serve_idx + 1] == MODEL_NAME
 
 
-def test_vllm_container_uses_spark_runtime_flags(monkeypatch: Any, tmp_path: Path) -> None:
+def test_vllm_openai_image_uses_entrypoint_args_only(monkeypatch: Any, tmp_path: Path) -> None:
     proxy = _load_proxy(monkeypatch, tmp_path)
     model_dir = tmp_path / "installed-model"
     model_dir.mkdir()
@@ -261,9 +262,11 @@ def test_vllm_container_uses_spark_runtime_flags(monkeypatch: Any, tmp_path: Pat
     launch_command = commands[-1]
     assert "--ipc=host" in launch_command
     assert "vllm/vllm-openai:cu130-nightly" in launch_command
-    assert "vllm" in launch_command
-    assert "serve" in launch_command
-    assert "/model" in launch_command
+    image_idx = launch_command.index("vllm/vllm-openai:cu130-nightly")
+    docker_args = launch_command[image_idx + 1 :]
+    assert "vllm" not in docker_args
+    assert "serve" not in docker_args
+    assert "/model" in docker_args
     assert "--gpu-memory-utilization" in launch_command
     assert "--max-num-seqs" in launch_command
     assert "--trust-remote-code" in launch_command
@@ -328,6 +331,130 @@ def test_ready_backend_request_is_proxied_to_matching_model(
     assert RecordingBackendHandler.requests[0]["path"] == "/v1/chat/completions"
     assert json.loads(RecordingBackendHandler.requests[0]["body"])["model"] == MODEL_NAME
     assert RecordingBackendHandler.requests[0]["authorization"] == "Bearer manual-secret"
+
+
+def test_serve_hf_repo_downloads_into_cache_when_missing(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    hf_cache = tmp_path / "hf-cache"
+
+    def download(**kwargs: Any) -> None:
+        assert kwargs["cache_dir"] == str(hf_cache)
+        slug_dir = hf_cache / "hub" / "models--openai--gpt-oss-20b"
+        slug_dir.mkdir(parents=True)
+
+    snapshot_download = Mock(side_effect=download)
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=snapshot_download),
+    )
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "manual-test-vllm",
+            "hf_repo": MODEL_NAME,
+            "hf_cache_dir": str(hf_cache),
+            "serve_hf_repo": True,
+        },
+    )
+
+    backend._ensure_model_dir()
+
+    snapshot_download.assert_called_once()
+
+
+def test_failed_startup_removes_container(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    model_dir = tmp_path / "installed-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "gpt_oss"}')
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "manual-test-vllm",
+            "gpu_index": "0",
+            "backend_port": 18080,
+            "model_dir": str(model_dir),
+        },
+    )
+    commands: list[list[str]] = []
+
+    def record_run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        commands.append(command)
+        if "docker" in command and "run" in command:
+            raise subprocess.CalledProcessError(1, command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(proxy.subprocess, "run", record_run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        backend.ensure_running()
+
+    assert backend.state == "stopped"
+    assert any("rm" in command and "-f" in command for command in commands)
+
+
+def test_nvidia_smi_failure_falls_back_to_gpu_zero(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    def fail_run(*_: Any, **__: Any) -> SimpleNamespace:
+        raise subprocess.CalledProcessError(1, ["nvidia-smi"])
+
+    monkeypatch.setattr(proxy.subprocess, "run", fail_run)
+    assert proxy._pick_free_gpu() == "0"
+
+
+def test_invalid_content_length_returns_400(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        status, _, body = _request(
+            f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+            method="POST",
+            headers={
+                "Authorization": "Bearer manual-secret",
+                "Content-Length": "not-a-number",
+            },
+            body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}]},
+        )
+
+    assert status == 400
+    assert b"Invalid Content-Length" in body
+
+
+def test_upstream_http_error_is_forwarded(monkeypatch: Any, tmp_path: Path) -> None:
+    class ErrorBackendHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            payload = json.dumps({"error": "context too long"}).encode()
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    with _serve(ErrorBackendHandler) as backend_port:
+        proxy = _load_proxy(monkeypatch, tmp_path, backend_port=backend_port)
+        backend = proxy._backends[MODEL_NAME]
+        with backend._lock:
+            backend._state = "ready"
+
+        with _serve(proxy.ProxyHandler) as proxy_port:
+            status, headers, body = _request(
+                f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+                method="POST",
+                headers={"Authorization": "Bearer manual-secret"},
+                body={
+                    "model": MODEL_NAME,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+            )
+
+    assert status == 400
+    assert headers["Content-Type"] == "application/json"
+    assert json.loads(body) == {"error": "context too long"}
 
 
 def test_streaming_chat_returns_warmup_sse_while_backend_starts(
