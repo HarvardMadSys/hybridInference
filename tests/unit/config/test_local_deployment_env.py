@@ -20,6 +20,19 @@ def test_sglang_local_route_uses_local_deployment_url() -> None:
     assert sglang_route["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
+def test_spark_route_uses_spark_deployment_url() -> None:
+    """Spark vLLM routes must use SPARK_DEPLOYMENT_URL, not LOCAL_DEPLOYMENT_URL."""
+    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
+
+    gpt_oss = next((model for model in models["models"] if model["id"] == "gpt-oss-20b"), None)
+    assert gpt_oss is not None, "Model 'gpt-oss-20b' not found in config/models.yaml"
+    vllm_route = next((route for route in gpt_oss["route"] if route["kind"] == "vllm"), None)
+    assert vllm_route is not None, "vLLM route not found for model 'gpt-oss-20b'"
+
+    assert vllm_route["base_url"] == "${SPARK_DEPLOYMENT_URL}"
+    assert vllm_route["provider_model_id"] == "openai/gpt-oss-20b"
+
+
 def test_routing_local_deployment_uses_local_deployment_url() -> None:
     """Routing local_deployment must match the SGLang deployment env var."""
     routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())

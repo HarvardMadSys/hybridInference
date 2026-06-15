@@ -186,6 +186,43 @@ def test_missing_huggingface_model_is_downloaded_on_demand(
     assert (model_dir / ".download_complete").is_file()
 
 
+def test_serve_hf_repo_mounts_cache_and_serves_repo_id(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    hf_cache = tmp_path / "hf-cache"
+    (hf_cache / "hub" / "models--openai--gpt-oss-20b").mkdir(parents=True)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "manual-test-vllm",
+            "gpu_index": "0",
+            "backend_port": 18080,
+            "model_dir": str(hf_cache),
+            "hf_repo": MODEL_NAME,
+            "hf_cache_dir": str(hf_cache),
+            "serve_hf_repo": True,
+            "served_name": MODEL_NAME,
+            "docker_image": "nvcr.io/nvidia/vllm:26.01-py3",
+        },
+    )
+    commands: list[list[str]] = []
+
+    def record_run(command: list[str], **_: Any) -> SimpleNamespace:
+        commands.append(command)
+        if "inspect" in command:
+            return SimpleNamespace(returncode=0, stdout="true\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(proxy.subprocess, "run", record_run)
+
+    backend._start_container()
+
+    launch_command = commands[-1]
+    assert f"{hf_cache}:/root/.cache/huggingface" in launch_command
+    assert "/model" not in launch_command
+    serve_idx = launch_command.index("serve")
+    assert launch_command[serve_idx + 1] == MODEL_NAME
+
+
 def test_vllm_container_uses_spark_runtime_flags(monkeypatch: Any, tmp_path: Path) -> None:
     proxy = _load_proxy(monkeypatch, tmp_path)
     model_dir = tmp_path / "installed-model"
