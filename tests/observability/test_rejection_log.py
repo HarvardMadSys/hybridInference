@@ -247,3 +247,6 @@ async def test_synthetic_probe_rejection_logged_when_probe_logging_on(fake_log_s
         user={"user_id": "u1", "role": "free"},
     )
     fake_log_store.log_request.assert_awaited_once()
+    md = fake_log_store.log_request.await_args.kwargs["metadata"]
+    assert md["synthetic_probe"] is True
+    assert md["request_type"] == "embedding"
