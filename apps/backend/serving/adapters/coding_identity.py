@@ -74,6 +74,7 @@ class CodingIdentityAdapter(OpenAICompatAdapter):
             # let a settings lookup break inference; keep default behaviour.
             logger.warning(
                 "coding_identity_toggle_read_failed",
+                exc_info=True,
                 extra={"event": "coding_identity_toggle_read_failed"},
             )
             return True
