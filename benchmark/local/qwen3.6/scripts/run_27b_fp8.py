@@ -38,27 +38,45 @@ DECODE_CONCURRENCIES = (1, 2, 4, 8, 16, 32)
 GENAI_PERF = shutil.which("genai-perf") or "genai-perf"
 
 
-def _common_args(input_len: int, output_len: int, concurrency: int,
-                 count: int, warmup: int, out: Path) -> list[str]:
+def _common_args(
+    input_len: int, output_len: int, concurrency: int, count: int, warmup: int, out: Path
+) -> list[str]:
     return [
-        GENAI_PERF, "profile",
-        "--model", MODEL,
-        "--endpoint-type", "completions",
+        GENAI_PERF,
+        "profile",
+        "--model",
+        MODEL,
+        "--endpoint-type",
+        "completions",
         "--streaming",
-        "--url", URL,
-        "--tokenizer", TOKENIZER,
-        "--synthetic-input-tokens-mean", str(input_len),
-        "--synthetic-input-tokens-stddev", "0",
-        "--output-tokens-mean", str(output_len),
-        "--output-tokens-stddev", "0",
-        "--extra-inputs", "ignore_eos:true",
-        "--extra-inputs", f"max_tokens:{output_len}",
-        "--extra-inputs", "min_tokens:" + str(output_len),
-        "--concurrency", str(concurrency),
-        "--request-count", str(count),
-        "--warmup-request-count", str(warmup),
-        "--artifact-dir", str(out.parent),
-        "--profile-export-file", out.name,
+        "--url",
+        URL,
+        "--tokenizer",
+        TOKENIZER,
+        "--synthetic-input-tokens-mean",
+        str(input_len),
+        "--synthetic-input-tokens-stddev",
+        "0",
+        "--output-tokens-mean",
+        str(output_len),
+        "--output-tokens-stddev",
+        "0",
+        "--extra-inputs",
+        "ignore_eos:true",
+        "--extra-inputs",
+        f"max_tokens:{output_len}",
+        "--extra-inputs",
+        "min_tokens:" + str(output_len),
+        "--concurrency",
+        str(concurrency),
+        "--request-count",
+        str(count),
+        "--warmup-request-count",
+        str(warmup),
+        "--artifact-dir",
+        str(out.parent),
+        "--profile-export-file",
+        out.name,
     ]
 
 
@@ -81,6 +99,7 @@ def _g(d: dict, top: str, sub: str):
 
 
 def main() -> None:
+    """Run the prefill and decode batteries and print summary tables."""
     results = []
 
     # ---- Prefill battery: 8k in / 1 out, concurrency 1 ----
@@ -89,12 +108,17 @@ def main() -> None:
         d = _run(_common_args(PREFILL_INPUT, 1, 1, 100, 10, out), out)
         in_len = _g(d, "input_sequence_length", "avg") or PREFILL_INPUT
         ttft = _g(d, "time_to_first_token", "p50")
-        results.append({
-            "phase": "prefill", "conc": 1, "in": int(in_len), "out": 1,
-            "prefill_tps": (in_len / (ttft / 1000.0)) if ttft else None,
-            "ttft_ms_p50": ttft,
-            "ttft_ms_p95": _g(d, "time_to_first_token", "p95"),
-        })
+        results.append(
+            {
+                "phase": "prefill",
+                "conc": 1,
+                "in": int(in_len),
+                "out": 1,
+                "prefill_tps": (in_len / (ttft / 1000.0)) if ttft else None,
+                "ttft_ms_p50": ttft,
+                "ttft_ms_p95": _g(d, "time_to_first_token", "p95"),
+            }
+        )
 
     # ---- Decode battery: 8k in / 1k out, concurrency sweep ----
     for c in DECODE_CONCURRENCIES:
@@ -102,17 +126,20 @@ def main() -> None:
         warmup = max(3, c)
         out = OUT_DIR / f"decode_concurrency_{c}_run1.json"
         d = _run(_common_args(DECODE_INPUT, DECODE_OUTPUT, c, count, warmup, out), out)
-        results.append({
-            "phase": "decode", "conc": c,
-            "in": int(_g(d, "input_sequence_length", "avg") or DECODE_INPUT),
-            "out": int(_g(d, "output_sequence_length", "avg") or DECODE_OUTPUT),
-            "decode_tps": _g(d, "output_token_throughput", "avg"),
-            "tps_per_user": _g(d, "output_token_throughput_per_user", "avg"),
-            "req_throughput": _g(d, "request_throughput", "avg"),
-            "ttft_ms_p50": _g(d, "time_to_first_token", "p50"),
-            "tpot_ms_p50": _g(d, "inter_token_latency", "p50"),
-            "tpot_ms_p95": _g(d, "inter_token_latency", "p95"),
-        })
+        results.append(
+            {
+                "phase": "decode",
+                "conc": c,
+                "in": int(_g(d, "input_sequence_length", "avg") or DECODE_INPUT),
+                "out": int(_g(d, "output_sequence_length", "avg") or DECODE_OUTPUT),
+                "decode_tps": _g(d, "output_token_throughput", "avg"),
+                "tps_per_user": _g(d, "output_token_throughput_per_user", "avg"),
+                "req_throughput": _g(d, "request_throughput", "avg"),
+                "ttft_ms_p50": _g(d, "time_to_first_token", "p50"),
+                "tpot_ms_p50": _g(d, "inter_token_latency", "p50"),
+                "tpot_ms_p95": _g(d, "inter_token_latency", "p95"),
+            }
+        )
 
     (OUT_DIR.parent / "summary.json").write_text(json.dumps(results, indent=2))
 
@@ -121,17 +148,23 @@ def main() -> None:
     print(f"{'in_tok':>7} {'prefill_tps':>12} {'ttft_p50_ms':>12} {'ttft_p95_ms':>12}")
     for r in results:
         if r["phase"] == "prefill":
-            print(f"{r['in']:>7} {r['prefill_tps']:>12.0f} "
-                  f"{r['ttft_ms_p50']:>12.1f} {r['ttft_ms_p95']:>12.1f}")
+            print(
+                f"{r['in']:>7} {r['prefill_tps']:>12.0f} "
+                f"{r['ttft_ms_p50']:>12.1f} {r['ttft_ms_p95']:>12.1f}"
+            )
 
     print("\n===== DECODE (8192 in / 1024 out) =====")
-    print(f"{'batch':>5} {'decode_tps':>11} {'tps/user':>9} "
-          f"{'ttft_p50_ms':>12} {'tpot_p50_ms':>12} {'tpot_p95_ms':>12}")
+    print(
+        f"{'batch':>5} {'decode_tps':>11} {'tps/user':>9} "
+        f"{'ttft_p50_ms':>12} {'tpot_p50_ms':>12} {'tpot_p95_ms':>12}"
+    )
     for r in results:
         if r["phase"] == "decode":
-            print(f"{r['conc']:>5} {r['decode_tps']:>11.1f} {r['tps_per_user']:>9.1f} "
-                  f"{r['ttft_ms_p50']:>12.1f} {r['tpot_ms_p50']:>12.2f} "
-                  f"{r['tpot_ms_p95']:>12.2f}")
+            print(
+                f"{r['conc']:>5} {r['decode_tps']:>11.1f} {r['tps_per_user']:>9.1f} "
+                f"{r['ttft_ms_p50']:>12.1f} {r['tpot_ms_p50']:>12.2f} "
+                f"{r['tpot_ms_p95']:>12.2f}"
+            )
 
 
 if __name__ == "__main__":

@@ -74,8 +74,10 @@ def _make_app(user: dict[str, Any], limiter: UserConcurrencyLimiter | None) -> F
     return app
 
 
-async def _wait_until_in_use(limiter: UserConcurrencyLimiter, user_id: str, n: int) -> None:
-    """Yield the event loop until *user_id* holds at least *n* slots.
+async def _wait_until_in_use(
+    limiter: UserConcurrencyLimiter, user_id: str, n: int, timeout: float = 5.0
+) -> None:
+    """Poll the event loop until *user_id* holds at least *n* slots.
 
     The held-slot handlers block on an ``asyncio.Event``, so an over-limit
     request sent before the saturating requests have acquired their slots would
@@ -83,12 +85,25 @@ async def _wait_until_in_use(limiter: UserConcurrencyLimiter, user_id: str, n: i
     test until pytest-timeout kills the whole shard. A fixed ``asyncio.sleep``
     raced this on loaded CI hosts; polling the live ``in_use`` count is
     deterministic and fails fast if saturation never happens.
+
+    Poll with a short *real* ``asyncio.sleep`` against a wall-clock deadline
+    rather than a fixed number of bare ``await asyncio.sleep(0)`` yields. A bare
+    yield drains only the currently-ready callbacks; the streaming path
+    (``httpx.ASGITransport`` + ``StreamingResponse``) schedules work through
+    several anyio hops that can need real loop time to reach slot acquisition,
+    so a fixed yield budget raced on loaded CI hosts. Sleeping a few ms between
+    checks lets every pending callback drain each iteration and gives competing
+    tasks real time to make progress.
     """
-    for _ in range(2000):
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + timeout
+    while True:
         slot = limiter._slots.get(user_id)
         if slot is not None and slot.in_use >= n:
             return
-        await asyncio.sleep(0)
+        if loop.time() >= deadline:
+            break
+        await asyncio.sleep(0.005)
     in_use = getattr(limiter._slots.get(user_id), "in_use", 0)
     raise AssertionError(f"{user_id}: only {in_use}/{n} slots acquired")
 
