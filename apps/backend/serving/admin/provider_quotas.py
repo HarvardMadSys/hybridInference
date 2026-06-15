@@ -1000,15 +1000,15 @@ def _kimi_usage_row(data: dict[str, Any], default_label: str) -> ProviderQuotaUs
     Kimi reports request counts. ``used`` is derived from ``limit - remaining``
     when not given directly. Returns None when neither used nor limit is present.
     """
-    limit = _as_float(data.get("limit"))
-    used = _as_float(data.get("used"))
+    limit = _first_float(data, "limit", "total", "quota", "max")
+    used = _first_float(data, "used", "usage", "consumed")
     if used is None:
-        remaining = _as_float(data.get("remaining"))
+        remaining = _first_float(data, "remaining", "remain", "left")
         if remaining is not None and limit is not None:
             used = max(0.0, limit - remaining)
     if used is None and limit is None:
         return None
-    label = str(data.get("name") or data.get("title") or default_label)
+    label = str(data.get("name") or data.get("title") or data.get("scope") or default_label)
     return ProviderQuotaUsage(
         label=label,
         used=used,
@@ -1021,19 +1021,33 @@ def _kimi_usage_row(data: dict[str, Any], default_label: str) -> ProviderQuotaUs
 def _parse_kimi_usage(payload: dict[str, Any]) -> list[ProviderQuotaUsage]:
     """Parse the Kimi ``/usages`` payload into a list of usages.
 
-    The payload has an optional top-level ``usage`` summary plus a ``limits``
-    array; each limit may nest its figures under ``detail`` and its period
-    under ``window``.
+    The body has an optional ``usage`` summary plus a ``limits`` array; each
+    limit may nest its figures under ``detail`` and its period under ``window``.
+    Some deployments wrap the body in a ``data``/``result`` envelope, so we
+    descend into that when the figures are not present at the top level.
     """
+    body = payload
+    if not (isinstance(payload.get("usage"), dict) or isinstance(payload.get("limits"), list)):
+        for envelope_key in ("data", "result"):
+            inner = payload.get(envelope_key)
+            if isinstance(inner, dict) and (
+                isinstance(inner.get("usage"), dict) or isinstance(inner.get("limits"), list)
+            ):
+                body = inner
+                break
+
     usages: list[ProviderQuotaUsage] = []
 
-    usage = payload.get("usage")
+    usage = body.get("usage")
     if isinstance(usage, dict):
         row = _kimi_usage_row(usage, "Weekly limit")
         if row is not None:
             usages.append(row)
 
-    limits = payload.get("limits")
+    # Accept both ``limits`` and the plural ``usages`` array some responses use.
+    limits = body.get("limits")
+    if not isinstance(limits, list):
+        limits = body.get("usages")
     if isinstance(limits, list):
         for idx, item in enumerate(limits):
             if not isinstance(item, dict):
@@ -1074,7 +1088,10 @@ async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
             if resp.status >= 400:
                 return _err("kimi", "Kimi", key, "unexpected")
             try:
-                data: dict[str, Any] = await resp.json()
+                # Kimi's Connect/gRPC-gateway endpoint may serve the body with a
+                # non-``application/json`` content type, which aiohttp rejects by
+                # default; ``content_type=None`` parses it regardless.
+                data: dict[str, Any] = await resp.json(content_type=None)
             except Exception:
                 return _err("kimi", "Kimi", key, "parse_error")
     except asyncio.TimeoutError:
@@ -1089,6 +1106,12 @@ async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
         return _err("kimi", "Kimi", key, "parse_error")
     usages = _parse_kimi_usage(data)
     if not usages:
+        # Log the payload shape (keys only, no values) so an unexpected schema
+        # can be diagnosed from server logs without leaking quota figures.
+        logger.warning(
+            "fetch_kimi: no usages parsed",
+            extra={"event": "kimi_quota_parse_empty", "payload_keys": sorted(data.keys())},
+        )
         return _err("kimi", "Kimi", key, "parse_error")
 
     return ProviderQuotaResult(
