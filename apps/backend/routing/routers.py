@@ -321,6 +321,10 @@ def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     """
     if not s:
         return None
+    # Bound the input before splitting/joining so a massive upstream body
+    # (e.g. an HTML 502 page) can't cause large allocations / CPU spikes.
+    if len(s) > limit * 2:
+        s = s[: limit * 2]
     cleaned = " ".join(s.split())
     if not cleaned:
         return None
