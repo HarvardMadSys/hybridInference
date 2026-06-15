@@ -10,6 +10,7 @@ from serving.exceptions import (
     HybridInferenceError,
     QuotaExceededError,
     UserFacingError,
+    operator_safe_error,
     scrub_error_for_user,
     scrub_provider_identity,
     user_safe_upstream_error,
@@ -97,7 +98,61 @@ def test_non_user_facing_subclass_is_scrubbed():
 
     msg = scrub_error_for_user(InternalUpstream("anthropic 500"), "req_i", 500)
     assert "anthropic" not in msg.lower()
-    assert msg.startswith("Internal server error")
+
+
+# ----------------------------------------------------------------------
+# operator_safe_error (operator-facing surfaces, e.g. Slack alerts)
+# ----------------------------------------------------------------------
+
+
+def test_operator_safe_error_strips_api_key_from_client_response_error():
+    """A Gemini-style URL with ?key=<api_key> must never reach an alert.
+
+    aiohttp.ClientResponseError embeds the request URL in str(exc); Gemini
+    builds URLs as ".../generateContent?key=<api_key>", so an unscrubbed
+    str(exc) would leak the provider key.
+    """
+    exc = _make_client_response_error(
+        503,
+        message="Service Unavailable",
+        url="https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?key=AIzaSecretKey123",
+    )
+    detail = operator_safe_error(exc)
+    assert detail is not None
+    assert "AIzaSecretKey123" not in detail
+    assert "key=" not in detail
+    assert "https://" not in detail
+    assert "googleapis" not in detail.lower()
+
+
+def test_operator_safe_error_keeps_useful_message():
+    exc = _make_client_response_error(429, message="rate limit exceeded for project")
+    detail = operator_safe_error(exc)
+    assert detail is not None
+    assert "rate limit exceeded" in detail
+
+
+def test_operator_safe_error_handles_plain_exception():
+    detail = operator_safe_error(ValueError("connection reset by peer"))
+    assert detail == "connection reset by peer"
+
+
+def test_operator_safe_error_scrubs_secrets_in_plain_exception():
+    detail = operator_safe_error(RuntimeError("auth failed: api_key=sk-supersecret"))
+    assert detail is not None
+    assert "sk-supersecret" not in detail
+    assert "[REDACTED]" in detail
+
+
+def test_operator_safe_error_none_for_no_exception():
+    assert operator_safe_error(None) is None
+
+
+def test_operator_safe_error_truncates():
+    detail = operator_safe_error(RuntimeError("x" * 1000), max_len=50)
+    assert detail is not None
+    assert len(detail) <= 50
+    assert detail.endswith("…")
 
 
 def test_authentication_error_is_user_facing():

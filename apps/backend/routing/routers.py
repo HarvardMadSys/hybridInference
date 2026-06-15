@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     from serving.adapters.base import BaseAdapter
 
+from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.observability.metrics import (
     API_FALLBACKS,
@@ -682,7 +683,7 @@ class BaseRouter:
                 self._on_failure(
                     _get_endpoint_id(primary),
                     reason=primary_error.__class__.__name__,
-                    detail=str(primary_error),
+                    detail=operator_safe_error(primary_error),
                 )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
@@ -711,7 +712,7 @@ class BaseRouter:
                         self._on_failure(
                             _get_endpoint_id(adapter),
                             reason="chat_exception",
-                            detail=str(fallback_error),
+                            detail=operator_safe_error(fallback_error),
                         )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
@@ -763,7 +764,7 @@ class BaseRouter:
                 self._on_failure(
                     _get_endpoint_id(primary),
                     reason="stream_exception",
-                    detail=str(primary_error),
+                    detail=operator_safe_error(primary_error),
                 )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 # Once provider bytes have reached the client, the SSE response
@@ -795,7 +796,7 @@ class BaseRouter:
                         self._on_failure(
                             _get_endpoint_id(adapter),
                             reason="stream_exception",
-                            detail=str(fallback_error),
+                            detail=operator_safe_error(fallback_error),
                         )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
@@ -1087,7 +1088,7 @@ class FixedRouter(BaseRouter):
             self._on_failure(
                 _get_endpoint_id(primary),
                 reason="chat_exception",
-                detail=str(primary_error),
+                detail=operator_safe_error(primary_error),
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — the caller explicitly requested this
@@ -1129,7 +1130,7 @@ class FixedRouter(BaseRouter):
                     self._on_failure(
                         _get_endpoint_id(adapter),
                         reason="chat_exception",
-                        detail=str(fallback_error),
+                        detail=operator_safe_error(fallback_error),
                     )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
@@ -1201,7 +1202,7 @@ class FixedRouter(BaseRouter):
             self._on_failure(
                 _get_endpoint_id(primary),
                 reason="stream_exception",
-                detail=str(primary_error),
+                detail=operator_safe_error(primary_error),
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — re-raise immediately.
@@ -1254,7 +1255,7 @@ class FixedRouter(BaseRouter):
                     self._on_failure(
                         adapter_endpoint_id,
                         reason="stream_exception",
-                        detail=str(fallback_error),
+                        detail=operator_safe_error(fallback_error),
                     )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
