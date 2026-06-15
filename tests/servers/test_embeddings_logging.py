@@ -292,14 +292,17 @@ async def test_coercible_string_usage_logged_as_int():
 
 
 @pytest.mark.asyncio
-async def test_negative_usage_not_billable_200():
-    """Negative token counts must be rejected before recording success."""
+@pytest.mark.parametrize("bad_count", [-5, 2147483648])
+async def test_out_of_range_usage_not_billable_200(bad_count):
+    """Token counts outside the api_logs INTEGER range (negative or above
+    INT4_MAX) must be rejected before recording success.
+    """
     adapter = _FakeAdapter(
         response={
             "object": "list",
             "model": "emb-model",
             "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
-            "usage": {"prompt_tokens": -5, "total_tokens": -5},
+            "usage": {"prompt_tokens": bad_count, "total_tokens": bad_count},
         },
         pricing=_PAID_PRICING,
     )

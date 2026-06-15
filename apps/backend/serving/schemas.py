@@ -201,11 +201,13 @@ class EmbeddingData(BaseModel):  # type: ignore[no-any-unimported]
 class EmbeddingUsage(BaseModel):  # type: ignore[no-any-unimported]
     """Token usage for an embedding request."""
 
-    # ge=0: token counts can never be negative. A broken upstream reporting
-    # negatives would otherwise be logged/analyzed as a successful paid request
-    # while calculate_cost clamps the cost to zero (no quota increment).
-    prompt_tokens: int = Field(ge=0)
-    total_tokens: int = Field(ge=0)
+    # Bound to [0, INT4_MAX]: api_logs.prompt_tokens/total_tokens are Postgres
+    # INTEGER columns. Negatives would be logged/billed as a successful request
+    # while calculate_cost clamps the cost to zero; a value above INT4_MAX would
+    # pass validation but fail the background log insert (integer out of range)
+    # after the client already got a 200 and the quota was incremented.
+    prompt_tokens: int = Field(ge=0, le=2147483647)
+    total_tokens: int = Field(ge=0, le=2147483647)
 
 
 class EmbeddingResponse(BaseModel):  # type: ignore[no-any-unimported]
