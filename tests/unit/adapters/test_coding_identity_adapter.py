@@ -1,4 +1,4 @@
-"""Unit tests for the Kimi coding-plan adapter."""
+"""Unit tests for the coding-plan identity adapter (Kimi and Z.AI GLM)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from serving.adapters.base import ModelConfig
-from serving.adapters.kimi_coding import KimiCodingAdapter
+from serving.adapters.coding_identity import CodingIdentityAdapter
 from serving.servers.registry import _make_adapter
 
 
@@ -40,25 +40,45 @@ def test_make_adapter_returns_kimi_coding_adapter() -> None:
             "provider_model_id": "kimi-k2-0905-preview",
         },
     )
-    assert isinstance(adapter, KimiCodingAdapter)
+    assert isinstance(adapter, CodingIdentityAdapter)
+
+
+def test_make_adapter_zai_glm_returns_coding_identity_adapter() -> None:
+    # The Z.AI GLM coding plan gates on the same coding-tool identity, so the
+    # zai kind also routes through CodingIdentityAdapter (with the zai profile
+    # and chat-path override preserved).
+    adapter = _make_adapter(
+        "zai",
+        {
+            "id": "glm-5.1",
+            "name": "GLM-5.1",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/api/coding/paas/v4/",
+            "api_key": "test-key",
+            "provider_model_id": "glm-5.1",
+        },
+    )
+    assert isinstance(adapter, CodingIdentityAdapter)
+    assert adapter.config.provider_profile == "zai"
+    assert adapter.config.chat_path == "/chat/completions"
 
 
 def test_build_headers_sets_user_agent() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     headers = adapter._build_headers()
     assert headers["User-Agent"] == "claude-code/0.1.0"
     assert headers["Authorization"] == "Bearer sk-kimi-test"
 
 
 def test_build_headers_user_agent_overridable_via_extra_headers() -> None:
-    adapter = KimiCodingAdapter(_make_cfg(extra_headers={"User-Agent": "custom/9.9"}))
+    adapter = CodingIdentityAdapter(_make_cfg(extra_headers={"User-Agent": "custom/9.9"}))
     headers = adapter._build_headers()
     assert headers["User-Agent"] == "custom/9.9"
 
 
 def test_build_headers_user_agent_override_is_case_insensitive() -> None:
     # A lowercase override must win without adding a duplicate "User-Agent" key.
-    adapter = KimiCodingAdapter(_make_cfg(extra_headers={"user-agent": "custom/9.9"}))
+    adapter = CodingIdentityAdapter(_make_cfg(extra_headers={"user-agent": "custom/9.9"}))
     headers = adapter._build_headers()
     assert headers["user-agent"] == "custom/9.9"
     assert "User-Agent" not in headers
@@ -67,14 +87,14 @@ def test_build_headers_user_agent_override_is_case_insensitive() -> None:
 
 
 def test_prepare_messages_prepends_opencode_system() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     out = adapter._prepare_messages([{"role": "user", "content": "hi"}])
     assert out[0] == {"role": "system", "content": "You are OpenCode"}
     assert out[1] == {"role": "user", "content": "hi"}
 
 
 def test_prepare_messages_prepends_before_other_system_message() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     out = adapter._prepare_messages(
         [
             {"role": "system", "content": "You are a helpful assistant"},
@@ -87,7 +107,7 @@ def test_prepare_messages_prepends_before_other_system_message() -> None:
 
 
 def test_prepare_messages_no_duplicate_when_already_present() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     out = adapter._prepare_messages(
         [
             {"role": "system", "content": "You are OpenCode"},
@@ -104,7 +124,7 @@ def test_prepare_messages_no_duplicate_when_already_present() -> None:
 def test_prepare_messages_prepends_when_first_has_extra_keys() -> None:
     # A near-match carrying extra keys is not an exact match, so we prepend a
     # clean OpenCode system message to keep the leading message exact.
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     out = adapter._prepare_messages(
         [
             {"role": "system", "content": "You are OpenCode", "name": "tool"},
@@ -116,14 +136,14 @@ def test_prepare_messages_prepends_when_first_has_extra_keys() -> None:
 
 
 def test_prepare_messages_empty_list() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     out = adapter._prepare_messages([])
     assert out == [{"role": "system", "content": "You are OpenCode"}]
 
 
 @pytest.mark.asyncio
 async def test_chat_completion_sends_user_agent_and_system_prompt() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     upstream_response = {
         "id": "x",
         "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
@@ -163,7 +183,7 @@ def _patch_identity_setting(value: bool):
     )
 
 
-async def _run_chat_capture(adapter: KimiCodingAdapter) -> dict[str, Any]:
+async def _run_chat_capture(adapter: CodingIdentityAdapter) -> dict[str, Any]:
     upstream_response = {
         "id": "x",
         "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
@@ -185,7 +205,7 @@ async def _run_chat_capture(adapter: KimiCodingAdapter) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_identity_toggle_enabled_applies_injection() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     with _patch_identity_setting(True):
         captured = await _run_chat_capture(adapter)
     assert captured["headers"]["User-Agent"] == "claude-code/0.1.0"
@@ -194,7 +214,7 @@ async def test_identity_toggle_enabled_applies_injection() -> None:
 
 @pytest.mark.asyncio
 async def test_identity_toggle_disabled_skips_injection() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     with _patch_identity_setting(False):
         captured = await _run_chat_capture(adapter)
     assert "User-Agent" not in captured["headers"]
@@ -208,7 +228,7 @@ async def test_identity_disabled_forwards_client_user_agent() -> None:
     # OpenCode system message.
     from serving.utils import context as req_ctx
 
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     with req_ctx.push(client_user_agent="my-client/2.0"), _patch_identity_setting(False):
         captured = await _run_chat_capture(adapter)
     assert captured["headers"]["User-Agent"] == "my-client/2.0"
@@ -220,7 +240,7 @@ async def test_identity_enabled_ignores_client_user_agent() -> None:
     # When on, the coding-tool identity is used even if the caller sent its own.
     from serving.utils import context as req_ctx
 
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     with req_ctx.push(client_user_agent="my-client/2.0"), _patch_identity_setting(True):
         captured = await _run_chat_capture(adapter)
     assert captured["headers"]["User-Agent"] == "claude-code/0.1.0"
@@ -228,7 +248,7 @@ async def test_identity_enabled_ignores_client_user_agent() -> None:
 
 @pytest.mark.asyncio
 async def test_identity_disabled_without_client_ua_sets_no_user_agent() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     with _patch_identity_setting(False):
         captured = await _run_chat_capture(adapter)
     assert "User-Agent" not in captured["headers"]
@@ -237,7 +257,7 @@ async def test_identity_disabled_without_client_ua_sets_no_user_agent() -> None:
 @pytest.mark.asyncio
 async def test_embeddings_respect_disabled_toggle() -> None:
     # Inherited request paths (embeddings) must also honour the toggle.
-    adapter = KimiCodingAdapter(_make_cfg(model_type="embedding"))
+    adapter = CodingIdentityAdapter(_make_cfg(model_type="embedding"))
     captured: dict[str, Any] = {}
 
     async def fake_json_post_with_retry(*, url, json, headers, timeout, retries):
@@ -256,7 +276,7 @@ async def test_embeddings_respect_disabled_toggle() -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_identity_defaults_true_without_singleton() -> None:
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     with patch(
         "serving.config.runtime_settings.get_runtime_settings_instance",
         side_effect=RuntimeError("not initialized"),
@@ -268,7 +288,7 @@ async def test_resolve_identity_defaults_true_without_singleton() -> None:
 async def test_resolve_identity_defaults_true_on_store_error() -> None:
     # An unexpected error (e.g. DB outage) when reading the setting must not
     # break inference — fall back to the default-on behaviour.
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     rs = MagicMock()
     rs.get_bool = AsyncMock(side_effect=ConnectionError("db down"))
     with patch(
@@ -283,7 +303,7 @@ async def test_identity_snapshot_consistent_within_request() -> None:
     # The toggle is resolved exactly once per request and both hooks read the
     # same snapshot — a mid-request setting flip cannot produce a torn read
     # (e.g. User-Agent without the OpenCode system message).
-    adapter = KimiCodingAdapter(_make_cfg())
+    adapter = CodingIdentityAdapter(_make_cfg())
     kimi_reads = {"count": 0}
 
     def fake_get_bool(key):
