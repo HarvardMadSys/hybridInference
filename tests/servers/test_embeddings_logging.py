@@ -370,24 +370,28 @@ _PROBE_HEADERS = {"x-probe": "synthetic"}
 
 
 @pytest.mark.asyncio
-async def test_synthetic_probe_not_logged_by_default():
-    """Probe traffic is suppressed from api_logs unless opted in."""
-    adapter = _FakeAdapter(response=_OK_RESPONSE)
+async def test_synthetic_probe_not_logged_but_still_billed():
+    """Probe traffic is suppressed from api_logs unless opted in, but billing
+    is NOT skipped: the x-probe header is caller-controlled, so exempting it
+    from quota would let any client bypass enforcement.
+    """
+    adapter = _FakeAdapter(response=_OK_RESPONSE, pricing=_PAID_PRICING)
     logger = _CapturingLogger()
     op_store = _CapturingOpStore()
     app = _build_app(adapter, logger, op_store, log_synthetic_probes=False)
 
     resp = await _post(app, {"model": "emb-model", "input": "hi"}, headers=_PROBE_HEADERS)
     assert resp.status_code == 200
-    # Neither logged nor billed.
+    # Not logged...
     assert logger.calls == []
-    assert op_store.increments == []
+    # ...but still billed (5 prompt tokens * $1.0 / 1M).
+    assert op_store.increments == [("user-emb", pytest.approx(5 * 1.0 / 1_000_000))]
 
 
 @pytest.mark.asyncio
-async def test_synthetic_probe_logged_when_enabled_but_not_billed():
-    """When log_synthetic_probes is on, the probe is logged and tagged, but a
-    probe never increments the quota counter.
+async def test_synthetic_probe_logged_when_enabled_and_billed():
+    """When log_synthetic_probes is on, the probe is logged and tagged, and is
+    billed like any other request.
     """
     adapter = _FakeAdapter(response=_OK_RESPONSE, pricing=_PAID_PRICING)
     logger = _CapturingLogger()
@@ -400,8 +404,7 @@ async def test_synthetic_probe_logged_when_enabled_but_not_billed():
     assert len(logger.calls) == 1
     _, log_data = logger.calls[0]
     assert log_data["metadata"]["synthetic_probe"] is True
-    # Probes never bill, even when logged.
-    assert op_store.increments == []
+    assert op_store.increments == [("user-emb", pytest.approx(5 * 1.0 / 1_000_000))]
 
 
 @pytest.mark.asyncio

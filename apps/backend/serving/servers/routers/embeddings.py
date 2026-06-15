@@ -262,11 +262,12 @@ async def create_embeddings(
             pricing=pricing,
             error=None,
         )
-        # Bump the daily quota cost counter for paid embedding models so
-        # repeated paid requests are subject to the same quota as chat.
-        # Probes never bill, regardless of the log_synthetic_probes toggle.
-        if not is_synthetic_probe:
-            _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
+        # Bump the daily quota cost counter for paid embedding models. This is
+        # intentionally NOT gated on ``is_synthetic_probe``: the ``x-probe``
+        # header is caller-controlled, so exempting it from billing would let
+        # any authenticated client bypass quota by setting it. The probe flag
+        # affects log suppression only — never cost/quota.
+        _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
         return response
     except HTTPException:
         raise
