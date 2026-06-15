@@ -1,6 +1,6 @@
 name: Deploy Status Monitor
 
-# Builds, tests, and deploys the Cloudflare status-monitor Worker
+# Builds, tests, and deploys the Cloudflare freeinference-monitor Worker
 # (services/status-monitor-worker) whenever its source lands on dev. The Worker
 # probes the staging gateway, which also deploys from dev, so dev is the source
 # of truth for it. Runs on manual dispatch too.
@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Deploy status-monitor Worker
+    name: Deploy freeinference-monitor Worker
     runs-on: self-hosted
     timeout-minutes: 15
     defaults:

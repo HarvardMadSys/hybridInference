@@ -1,4 +1,4 @@
-name = "status-monitor"
+name = "freeinference-monitor"
 main = "src/index.ts"
 compatibility_date = "2025-06-01"
 # Account that owns the Worker. Not a secret (it appears in dashboard URLs);
