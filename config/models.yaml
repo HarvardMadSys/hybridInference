@@ -531,6 +531,34 @@ models:
       #     - ${OLLAMA_API_KEY}
       #   provider_model_id: "qwen-3.6:35b"
 
+  # Served on DGX Spark by ops/spark_idle_proxy (vLLM + NVFP4 kernels).
+  - id: gpt-oss-20b
+    name: GPT-OSS 20B
+    provider: vllm
+    required_role: internal
+    provider_model_id: "openai/gpt-oss-20b"
+    quantization: "nvfp4"
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    context_length: 131072
+    max_output_length: 32768
+    supports_tools: true
+    supports_structured_output: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        base_url: ${SPARK_DEPLOYMENT_URL}
+        provider_model_id: "openai/gpt-oss-20b"
+        api_keys:
+          - ${LOCAL_API_KEY}
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
   - id: deepseek-v4-flash

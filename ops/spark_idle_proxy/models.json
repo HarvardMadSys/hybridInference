@@ -1,0 +1,18 @@
+{
+    "openai/gpt-oss-20b": {
+        "container": "gpt-oss-20b-vllm",
+        "gpu_index": "0",
+        "backend_port": 18003,
+        "model_dir": "/home/juncheng/models/gpt-oss-20b",
+        "hf_repo": "openai/gpt-oss-20b",
+        "served_name": "openai/gpt-oss-20b",
+        "docker_image": "vllm/vllm-openai:cu130-nightly",
+        "max_model_len": 131072,
+        "gpu_memory_utilization": 0.85,
+        "max_num_seqs": 4,
+        "trust_remote_code": true,
+        "enable_auto_tool_choice": true,
+        "tool_call_parser": "openai",
+        "reasoning_parser": "openai_gptoss"
+    }
+}
