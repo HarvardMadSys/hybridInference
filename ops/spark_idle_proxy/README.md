@@ -79,7 +79,7 @@ Models are defined in `spark_idle_proxy/models.json`:
         "gpu_memory_utilization": 0.64,
         "max_num_seqs": 1,
         "trust_remote_code": true,
-        "vllm_extra_args": ["--dtype", "bfloat16"]
+        "vllm_extra_args": ["--quantization", "mxfp4"]
     }
 }
 ```
