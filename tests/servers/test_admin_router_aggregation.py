@@ -7,8 +7,31 @@ that no route was dropped or duplicated during the split.
 from __future__ import annotations
 
 from fastapi import APIRouter
+from fastapi.routing import APIRoute
 
 from serving.servers.routers import admin
+
+
+def _admin_api_routes() -> list[APIRoute]:
+    """Flatten ``admin.router`` to its leaf ``APIRoute`` objects.
+
+    FastAPI >= 0.137 includes sub-routers lazily: ``admin.router.routes`` holds
+    ``_IncludedRouter`` wrappers (with no flat ``path``) rather than the
+    flattened routes earlier versions produced. Recurse through each wrapper's
+    ``original_router`` to recover the real routes. A loud failure here on a
+    future FastAPI change is intentional — it signals this introspection needs
+    revisiting rather than silently counting zero routes.
+    """
+
+    def walk(router: APIRouter):
+        for route in router.routes:
+            included = getattr(route, "original_router", None)
+            if included is not None:
+                yield from walk(included)
+            elif isinstance(route, APIRoute):
+                yield route
+
+    return list(walk(admin.router))
 
 
 def test_admin_module_exports_router() -> None:
@@ -24,7 +47,7 @@ def test_admin_router_has_expected_route_count() -> None:
     """
     expected = 58  # includes role-quota, provider-key, visibility, concurrency,
     # routewise, and routing-weight routes
-    routes = [r for r in admin.router.routes if hasattr(r, "path") and r.path.startswith("/admin")]
+    routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"
     )
@@ -33,9 +56,7 @@ def test_admin_router_has_expected_route_count() -> None:
 def test_admin_routes_have_no_path_collisions() -> None:
     """Each (method, path) tuple appears at most once."""
     seen: set[tuple[str, str]] = set()
-    for r in admin.router.routes:
-        if not hasattr(r, "path") or not hasattr(r, "methods"):
-            continue
+    for r in _admin_api_routes():
         for method in r.methods:
             key = (method, r.path)
             assert key not in seen, f"duplicate route: {method} {r.path}"
