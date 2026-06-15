@@ -263,6 +263,35 @@ async def test_malformed_response_logged_as_error_not_billable_200():
 
 
 @pytest.mark.asyncio
+async def test_coercible_string_usage_logged_as_int():
+    """Coercible upstream usage (e.g. ``"prompt_tokens": "1000"``) must be
+    logged as validated ints so the integer-column insert can't fail while the
+    quota increment silently succeeds.
+    """
+    adapter = _FakeAdapter(
+        response={
+            "object": "list",
+            "model": "emb-model",
+            "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+            "usage": {"prompt_tokens": "1000", "total_tokens": "1000"},
+        },
+        pricing=_PAID_PRICING,
+    )
+    logger = _CapturingLogger()
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, logger, op_store)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 200
+
+    _, log_data = logger.calls[0]
+    assert log_data["usage"]["prompt_tokens"] == 1000
+    assert isinstance(log_data["usage"]["prompt_tokens"], int)
+    # Billing still happens, on the coerced value: 1000 * $1.0 / 1M = $0.001.
+    assert op_store.increments == [("user-emb", pytest.approx(0.001))]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
 async def test_non_finite_embedding_not_billable_200(bad_value):
     """Non-finite floats (which Starlette can't serialize) must be rejected

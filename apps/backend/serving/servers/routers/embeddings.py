@@ -213,7 +213,7 @@ async def create_embeddings(
         # response would otherwise be logged as a billable 200 and increment
         # the quota even though the client receives a 500.
         try:
-            EmbeddingResponse.model_validate(response)
+            validated = EmbeddingResponse.model_validate(response)
         except ValidationError as exc:
             logger.error(f"Malformed embedding response for model={model}: {exc}")
             _schedule_log(
@@ -226,7 +226,13 @@ async def create_embeddings(
             )
             raise HTTPException(500, "Embedding service error") from exc
 
-        usage = response.get("usage") if isinstance(response, dict) else None
+        # Use the *validated* usage (type-coerced ints) rather than the raw
+        # upstream dict: an OpenAI-compatible server may report coercible
+        # values like ``"prompt_tokens": "5"`` that Pydantic accepts but that
+        # would fail the integer-column bind in the background log insert while
+        # the quota increment still succeeds — leaving a billed request missing
+        # from the dashboards.
+        usage = validated.usage.model_dump()
         _schedule_log(
             provider=provider,
             status_code=200,
