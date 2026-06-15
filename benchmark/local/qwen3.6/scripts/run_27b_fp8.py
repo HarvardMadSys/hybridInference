@@ -99,7 +99,7 @@ def _g(d: dict, top: str, sub: str):
 
 
 def main() -> None:
-    """Run the prefill/decode benchmark matrix and print the summary table."""
+    """Run the prefill and decode batteries and print summary tables."""
     results = []
 
     # ---- Prefill battery: 8k in / 1 out, concurrency 1 ----

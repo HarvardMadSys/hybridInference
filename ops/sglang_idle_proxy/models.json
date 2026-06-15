@@ -7,6 +7,8 @@
         "max_model_len": 135168,
         "mem_fraction": "0.80",
         "tool_call_parser": "qwen3_coder",
+        "mtp": true,
+        "mamba": true,
         "colocate_group": "primary"
     },
     "BAAI/bge-m3": {

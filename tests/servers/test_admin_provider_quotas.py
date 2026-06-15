@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -1137,6 +1138,60 @@ class TestFetchKimi:
             results = await fetch_kimi()
         assert results[0].ok is False
         assert results[0].error == "parse_error"
+
+    @pytest.mark.asyncio
+    async def test_parses_body_with_non_json_content_type(self, monkeypatch):
+        # Kimi's gateway can serve the body with a non-application/json content
+        # type; aiohttp rejects that unless content_type=None is passed. curl
+        # ignores the header, so "curl works but the dashboard doesn't".
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = {
+            "limits": [
+                {
+                    "detail": {"limit": 1200, "used": 300},
+                    "window": {"duration": 300, "timeUnit": "MINUTE"},
+                },
+            ],
+        }
+
+        async def _json(content_type: Any = "application/json"):
+            if content_type is not None:
+                raise aiohttp.ContentTypeError(MagicMock(), ())
+            return payload
+
+        response = MagicMock()
+        response.status = 200
+        response.json = _json
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=response)
+        cm.__aexit__ = AsyncMock(return_value=None)
+        session = MagicMock()
+        session.get = MagicMock(return_value=cm)
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=session_cm,
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert results[0].usages[0].label == "5h limit"
+        assert results[0].usages[0].used == 300.0
+
+    @pytest.mark.asyncio
+    async def test_parses_data_envelope(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = {"data": {"limits": [{"detail": {"limit": 1000, "remaining": 250}}]}}
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert results[0].usages[0].used == 750.0  # limit - remaining
+        assert results[0].usages[0].limit == 1000.0
 
 
 class TestFetchOllama:

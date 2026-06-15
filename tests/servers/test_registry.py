@@ -128,8 +128,13 @@ def test_make_adapter_deepseek_uses_openai_compat_with_profile():
 
 
 @pytest.mark.unit
-def test_make_adapter_zai_uses_openai_compat_with_chat_path():
-    """kind: zai routes through OpenAICompatAdapter with ZAI chat path override."""
+def test_make_adapter_zai_uses_coding_identity_with_chat_path():
+    """kind: zai routes through CodingIdentityAdapter with ZAI chat path override.
+
+    The Z.AI GLM coding plan gates on the same coding-tool identity as the Kimi
+    coding plan, so it uses CodingIdentityAdapter (a subclass of
+    OpenAICompatAdapter) while preserving the zai profile and chat-path override.
+    """
     adapter = registry._make_adapter(
         "zai",
         {
@@ -140,9 +145,9 @@ def test_make_adapter_zai_uses_openai_compat_with_chat_path():
             "api_key": "test-key",
         },
     )
-    from serving.adapters.openai_compat import OpenAICompatAdapter
+    from serving.adapters.coding_identity import CodingIdentityAdapter
 
-    assert isinstance(adapter, OpenAICompatAdapter)
+    assert isinstance(adapter, CodingIdentityAdapter)
     assert adapter.config.provider_profile == "zai"
     assert adapter.config.chat_path == "/chat/completions"
 

@@ -129,6 +129,13 @@ Models are defined in `sglang_idle_proxy/models.json`:
 | `is_embedding` | `true` → launch with `--is-embedding` (encode-only); serves `/v1/embeddings` |
 | `attention_backend` | optional `--attention-backend` (embedding models) |
 | `disable_radix_cache` | `true` → launch embedding models with `--disable-radix-cache` |
+| `mtp` | `true` → enable Multi-Token Prediction speculative decoding for models with native MTP layers (Qwen3.6 MoE, DeepSeek V3); uses `--speculative-algorithm NEXTN` (chat models only) |
+| `speculative_algorithm` | optional override for `--speculative-algorithm` (default `NEXTN`; one of `EAGLE`/`EAGLE3`/`NEXTN`/`STANDALONE`/`NGRAM`) |
+| `speculative_num_steps` | optional `--speculative-num-steps` (default `1`) |
+| `speculative_eagle_topk` | optional `--speculative-eagle-topk` (default `1`) |
+| `speculative_num_draft_tokens` | optional `--speculative-num-draft-tokens` (default `2`) |
+| `mamba` | `true` → hybrid Mamba/linear-attention model (Qwen3.5/3.6 MoE); with `mtp` adds `--mamba-scheduler-strategy extra_buffer` and exports `SGLANG_ENABLE_SPEC_V2=1` so spec decoding works with radix cache |
+| `mamba_scheduler_strategy` | optional override for `--mamba-scheduler-strategy` (default `extra_buffer`) |
 
 To add a new model, append an entry to `models.json` and restart the proxy.
 

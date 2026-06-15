@@ -1,8 +1,8 @@
-"""Kimi coding-plan adapter: OpenAICompatAdapter subclass with coding-tool identity.
+"""Coding-plan adapter: OpenAICompatAdapter subclass with coding-tool identity.
 
-The Kimi (Moonshot) coding plan gates access to requests that present a
-recognized coding-tool identity. When enabled, two upstream requirements are
-encoded here:
+Several vendor coding plans (Kimi/Moonshot, the Z.AI GLM coding plan) gate
+access to requests that present a recognized coding-tool identity. When
+enabled, two upstream requirements are encoded here:
 
 1. A ``User-Agent: claude-code/0.1.0`` request header.
 2. A leading ``{"role": "system", "content": "You are OpenCode"}`` message,
@@ -12,18 +12,20 @@ When the toggle is off, the system message is not injected and the caller's own
 ``User-Agent`` (captured into the request context by the request-id middleware)
 is forwarded upstream instead of the coding-tool identity.
 
-The injection is gated by the ``kimi_coding_identity_enabled`` runtime setting
-(admin-dashboard toggle, default on). Each async request entrypoint resolves the
-toggle exactly once and snapshots it into a :class:`~contextvars.ContextVar`; the
-synchronous header/message hooks read that snapshot, so both see one consistent
-value for the lifetime of the request even if an admin flips the setting
-mid-request. The snapshot is ``set`` but never ``reset`` — so it is safe across
-task hand-offs (e.g. RouteWise hedging advancing a stream in a new task), and
-because each request runs in its own task context the value never leaks between
-requests.
+The same identity works for every coding-plan provider routed through this
+adapter (e.g. the ``kimi_coding`` and ``zai`` adapter kinds), so the behaviour
+is provider-neutral. Everything else (auth, payload shape, usage parsing,
+key-pool rotation) is inherited unchanged from OpenAICompatAdapter.
 
-Everything else (auth, payload shape, usage parsing, key-pool rotation) is
-inherited unchanged from OpenAICompatAdapter.
+The injection is gated by the ``coding_identity_enabled`` runtime setting
+(admin-dashboard toggle, default on), which governs every coding-plan provider.
+Each async request entrypoint resolves the toggle exactly once and snapshots it
+into a :class:`~contextvars.ContextVar`; the synchronous header/message hooks
+read that snapshot, so both see one consistent value for the lifetime of the
+request even if an admin flips the setting mid-request. The snapshot is ``set``
+but never ``reset`` — so it is safe across task hand-offs (e.g. RouteWise hedging
+advancing a stream in a new task), and because each request runs in its own task
+context the value never leaks between requests.
 """
 
 from __future__ import annotations
@@ -40,20 +42,25 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Coding-tool identity expected by the Kimi coding plan.
+# Coding-tool identity expected by the coding plans.
 _USER_AGENT = "claude-code/0.1.0"
 _SYSTEM_PROMPT = "You are OpenCode"
-# Admin-dashboard toggle key (see RUNTIME_SETTINGS_REGISTRY).
-_SETTING_KEY = "kimi_coding_identity_enabled"
+# Admin-dashboard toggle key (see RUNTIME_SETTINGS_REGISTRY). Governs every
+# coding-plan provider routed through this adapter.
+_SETTING_KEY = "coding_identity_enabled"
 
 # Per-request snapshot of the toggle. Defaults to True so direct hook calls and
 # pre-init paths preserve behaviour. See the module docstring for the rationale
 # behind set-without-reset.
-_identity_snapshot: ContextVar[bool] = ContextVar("kimi_coding_identity", default=True)
+_identity_snapshot: ContextVar[bool] = ContextVar("coding_identity", default=True)
 
 
-class KimiCodingAdapter(OpenAICompatAdapter):
-    """OpenAI-compatible adapter for the Kimi coding plan."""
+class CodingIdentityAdapter(OpenAICompatAdapter):
+    """OpenAI-compatible adapter that presents a coding-tool identity.
+
+    Used by vendor coding plans (Kimi/Moonshot, Z.AI GLM) that gate access on a
+    recognized coding-tool ``User-Agent`` plus a leading OpenCode system message.
+    """
 
     async def _resolve_identity(self) -> bool:
         """Resolve the admin toggle, defaulting to enabled if unavailable."""
@@ -65,8 +72,9 @@ class KimiCodingAdapter(OpenAICompatAdapter):
             # Singleton not initialized, key missing, or DB/store error — never
             # let a settings lookup break inference; keep default behaviour.
             logger.warning(
-                "kimi_identity_toggle_read_failed",
-                extra={"event": "kimi_identity_toggle_read_failed"},
+                "coding_identity_toggle_read_failed",
+                exc_info=True,
+                extra={"event": "coding_identity_toggle_read_failed"},
             )
             return True
 
