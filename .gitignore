@@ -185,6 +185,7 @@ tmp_run/run_cmds.log
 
 **/res
 results/*
+benchmark/local/qwen3.6/results_*/vllm/
 .claude/*
 
 # Runtime data directories (var/)
