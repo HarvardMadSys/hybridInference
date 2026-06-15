@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import aiohttp
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
+from serving.observability.tracked_tasks import tracked_task
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
@@ -16,12 +18,56 @@ from serving.servers.deps import (
     get_completions_logger,
     get_embedding_adapters,
     get_log_store,
+    get_operational_store,
 )
+from serving.storage.utils import calculate_cost
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
+from serving.utils.token_utils import normalize_usage
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Retains in-flight cost-increment tasks so the event loop's garbage collector
+# can't cancel a fire-and-forget increment before it commits.
+_increment_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _schedule_cost_increment(
+    op_store: Any,
+    user_id: str | None,
+    usage: dict[str, Any] | None,
+    pricing: dict[str, str] | None,
+) -> None:
+    """Fire-and-forget the daily quota cost increment for a billed embedding.
+
+    Mirrors the chat path's ``CostTracker.schedule_increment`` effect: the
+    ``api_logs.cost_usd`` column alone is not read by ``verify_api_key`` for
+    quota enforcement, so paid embeddings must also bump the operational
+    counter. Uses the same ``calculate_cost`` helper as the log row, so the
+    increment and the logged cost stay in lockstep. No-ops for unauthenticated
+    callers, missing stores, or zero-cost (free) models.
+    """
+    if op_store is None or not user_id:
+        return
+    cost = calculate_cost(normalize_usage(usage) or usage, pricing)
+    if not cost or cost <= 0:
+        return
+
+    async def _increment() -> None:
+        try:
+            await op_store.increment_user_cost(user_id, cost)
+        except Exception as exc:
+            logger.warning(f"Failed to increment embedding cost counter for {user_id}: {exc}")
+            raise  # let tracked_task record the failure
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = tracked_task(_increment(), name="embedding_cost_increment")
+    _increment_tasks.add(task)
+    task.add_done_callback(_increment_tasks.discard)
 
 
 def _response_summary(response: Any, model: str) -> dict[str, Any]:
@@ -77,6 +123,7 @@ async def create_embeddings(
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
     log_store=Depends(get_log_store),
     completions_logger=Depends(get_completions_logger),
+    op_store=Depends(get_operational_store),
     _concurrency_slot=Depends(enforce_user_concurrency),
 ) -> dict[str, Any]:
     """Create embeddings for the given input text(s).
@@ -159,14 +206,18 @@ async def create_embeddings(
 
     try:
         response = await adapter.embeddings(request.input, **params)
+        usage = response.get("usage") if isinstance(response, dict) else None
         _schedule_log(
             provider=provider,
             status_code=200,
             response=_response_summary(response, model),
-            usage=response.get("usage") if isinstance(response, dict) else None,
+            usage=usage,
             pricing=pricing,
             error=None,
         )
+        # Bump the daily quota cost counter for paid embedding models so
+        # repeated paid requests are subject to the same quota as chat.
+        _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
         return response
     except aiohttp.ClientResponseError as exc:
         logger.error(f"Embedding request failed for model={model}: {exc.status} {exc.message}")

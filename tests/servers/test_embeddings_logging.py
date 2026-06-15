@@ -7,6 +7,7 @@ the chat/completions logging contract that the dashboards read from.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,15 +21,26 @@ from serving.servers.deps import (
     get_completions_logger,
     get_embedding_adapters,
     get_log_store,
+    get_operational_store,
 )
 from serving.servers.routers import embeddings
 
+# A prompt price of 1.0 USD / 1M tokens.
+_PAID_PRICING = {"prompt": "1.0", "completion": "0"}
+_FREE_PRICING = {"prompt": "0", "completion": "0"}
+
 
 class _FakeAdapter:
-    def __init__(self, *, response: dict[str, Any] | None = None, raises: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        response: dict[str, Any] | None = None,
+        raises: Exception | None = None,
+        pricing: dict[str, str] | None = None,
+    ):
         self.config = SimpleNamespace(
             provider="fake-provider",
-            pricing={"prompt": "1.0", "completion": "0"},
+            pricing=_PAID_PRICING if pricing is None else pricing,
         )
         self._response = response
         self._raises = raises
@@ -49,7 +61,21 @@ class _CapturingLogger:
         self.calls.append((request_id, log_data))
 
 
-def _build_app(adapter: _FakeAdapter, logger: _CapturingLogger) -> FastAPI:
+class _CapturingOpStore:
+    """Records ``increment_user_cost`` calls from the embeddings handler."""
+
+    def __init__(self) -> None:
+        self.increments: list[tuple[str, float]] = []
+
+    async def increment_user_cost(self, user_id: str, cost_usd: float, *, day=None) -> None:
+        self.increments.append((user_id, cost_usd))
+
+
+def _build_app(
+    adapter: _FakeAdapter,
+    logger: _CapturingLogger,
+    op_store: _CapturingOpStore | None = None,
+) -> FastAPI:
     app = FastAPI()
     app.include_router(embeddings.router)
 
@@ -61,13 +87,17 @@ def _build_app(adapter: _FakeAdapter, logger: _CapturingLogger) -> FastAPI:
     app.dependency_overrides[get_embedding_adapters] = lambda: {"emb-model": adapter}
     app.dependency_overrides[get_log_store] = lambda: object()  # truthy → logging enabled
     app.dependency_overrides[get_completions_logger] = lambda: logger
+    app.dependency_overrides[get_operational_store] = lambda: op_store
     return app
 
 
 async def _post(app: FastAPI, payload: dict[str, Any]):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        return await client.post("/v1/embeddings", json=payload)
+        resp = await client.post("/v1/embeddings", json=payload)
+    # Let the fire-and-forget cost-increment background task settle.
+    await asyncio.sleep(0.05)
+    return resp
 
 
 @pytest.mark.asyncio
@@ -154,3 +184,53 @@ async def test_embeddings_adapter_error_is_logged():
     assert log_data["status_code"] == 500
     assert log_data["metadata"]["request_type"] == "embedding"
     assert "boom" in log_data["error"]
+
+
+def _ok_response() -> dict[str, Any]:
+    return {
+        "object": "list",
+        "model": "emb-model",
+        "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2]}],
+        "usage": {"prompt_tokens": 1000, "total_tokens": 1000},
+    }
+
+
+@pytest.mark.asyncio
+async def test_paid_embedding_increments_quota_counter():
+    """A paid embedding model must bump the daily quota cost counter."""
+    adapter = _FakeAdapter(response=_ok_response(), pricing=_PAID_PRICING)
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, _CapturingLogger(), op_store)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 200
+
+    assert len(op_store.increments) == 1
+    user_id, cost = op_store.increments[0]
+    assert user_id == "user-emb"
+    # 1000 prompt tokens * $1.0 / 1M = $0.001
+    assert cost == pytest.approx(0.001)
+
+
+@pytest.mark.asyncio
+async def test_free_embedding_does_not_increment_quota_counter():
+    """A free (zero-priced) embedding model must not touch the cost counter."""
+    adapter = _FakeAdapter(response=_ok_response(), pricing=_FREE_PRICING)
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, _CapturingLogger(), op_store)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 200
+    assert op_store.increments == []
+
+
+@pytest.mark.asyncio
+async def test_embedding_error_does_not_increment_quota_counter():
+    """Failed embeddings must not be billed against the quota."""
+    adapter = _FakeAdapter(raises=RuntimeError("boom"), pricing=_PAID_PRICING)
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, _CapturingLogger(), op_store)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 500
+    assert op_store.increments == []
