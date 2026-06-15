@@ -114,11 +114,15 @@ function metricSparkline(
     H - PAD - ((p.v - min) / span) * (H - 2 * PAD),
   ];
   const coords = pts.map((p) => xy(p).map((v) => v.toFixed(1)).join(",")).join(" ");
-  const latest = vals[vals.length - 1];
+  // Round for display only (the card metrics round latency the same way);
+  // the polyline still scales off the raw min/max/span above.
+  const latest = Math.round(vals[vals.length - 1]);
+  const rMin = Math.round(min);
+  const rMax = Math.round(max);
   return `
       <div class="ttft">
-        <div class="ttft-head"><span>${label} (${pts.length})</span><span>${latest} ms · ${min}–${max} ms</span></div>
-        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ttft-svg" role="img" aria-label="${label} over time, latest ${latest} ms (min ${min}, max ${max})">
+        <div class="ttft-head"><span>${label} (${pts.length})</span><span>${latest} ms · ${rMin}–${rMax} ms</span></div>
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" class="ttft-svg" role="img" aria-label="${label} over time, latest ${latest} ms (min ${rMin}, max ${rMax})">
           <polyline points="${coords}" />
         </svg>
       </div>`;
