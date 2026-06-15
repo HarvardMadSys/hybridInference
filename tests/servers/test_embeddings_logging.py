@@ -234,3 +234,29 @@ async def test_embedding_error_does_not_increment_quota_counter():
     resp = await _post(app, {"model": "emb-model", "input": "hello"})
     assert resp.status_code == 500
     assert op_store.increments == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_response_logged_as_error_not_billable_200():
+    """A malformed (but non-raising) upstream response must not be logged as a
+    billable 200 nor increment the quota — the client receives a 500.
+    """
+    # Missing the required ``usage`` field → fails EmbeddingResponse validation.
+    adapter = _FakeAdapter(
+        response={"object": "list", "model": "emb-model", "data": []},
+        pricing=_PAID_PRICING,
+    )
+    logger = _CapturingLogger()
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, logger, op_store)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 500
+
+    # Logged exactly once, as a 500 — never a 200.
+    assert len(logger.calls) == 1
+    _, log_data = logger.calls[0]
+    assert log_data["status_code"] == 500
+    assert "invalid embedding response" in log_data["error"]
+    # And the paid quota counter is untouched.
+    assert op_store.increments == []

@@ -9,6 +9,7 @@ from typing import Any
 
 import aiohttp
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import ValidationError
 
 from serving.observability.tracked_tasks import tracked_task
 from serving.schemas import EmbeddingRequest, EmbeddingResponse, ErrorResponse
@@ -206,6 +207,25 @@ async def create_embeddings(
 
     try:
         response = await adapter.embeddings(request.input, **params)
+        # Validate against the response schema *before* recording any success
+        # side effects. ``response_model=EmbeddingResponse`` is only enforced
+        # after the handler returns, so a malformed (but non-raising) upstream
+        # response would otherwise be logged as a billable 200 and increment
+        # the quota even though the client receives a 500.
+        try:
+            EmbeddingResponse.model_validate(response)
+        except ValidationError as exc:
+            logger.error(f"Malformed embedding response for model={model}: {exc}")
+            _schedule_log(
+                provider=provider,
+                status_code=500,
+                response=None,
+                usage=None,
+                pricing=None,
+                error=f"invalid embedding response: {exc}",
+            )
+            raise HTTPException(500, "Embedding service error") from exc
+
         usage = response.get("usage") if isinstance(response, dict) else None
         _schedule_log(
             provider=provider,
@@ -219,6 +239,8 @@ async def create_embeddings(
         # repeated paid requests are subject to the same quota as chat.
         _schedule_cost_increment(op_store, user_ctx.get("user_id"), usage, pricing)
         return response
+    except HTTPException:
+        raise
     except aiohttp.ClientResponseError as exc:
         logger.error(f"Embedding request failed for model={model}: {exc.status} {exc.message}")
         _schedule_log(
