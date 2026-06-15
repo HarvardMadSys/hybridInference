@@ -67,10 +67,10 @@ npm install
 
 # 1. Create the D1 database (once) and copy the printed database_id into
 #    wrangler.toml under [[d1_databases]].
-npx wrangler d1 create status_monitor
+npx wrangler d1 create freeinference-monitor
 
 # 2. Apply the schema.
-npx wrangler d1 migrations apply status_monitor --remote
+npx wrangler d1 migrations apply freeinference-monitor --remote
 
 # 3. Set the prober API key (internal/admin key recommended).
 npx wrangler secret put PROBER_API_KEY
