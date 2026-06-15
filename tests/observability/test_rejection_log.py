@@ -12,7 +12,9 @@ from serving.observability.rejection_log import (
 )
 
 
-def _fake_request(path: str = "/v1/chat/completions") -> MagicMock:
+def _fake_request(
+    path: str = "/v1/chat/completions", headers: dict[str, str] | None = None
+) -> MagicMock:
     """Minimal Request-shaped mock with the URL path the helper reads.
 
     ``request.app.state.services`` is pinned to ``None`` so the helper's
@@ -22,13 +24,20 @@ def _fake_request(path: str = "/v1/chat/completions") -> MagicMock:
     req = MagicMock()
     req.url.path = path
     # Simulate the headers FastAPI requests expose; remote-IP helper reads them.
-    req.headers = {"x-forwarded-for": "203.0.113.5"}
+    req.headers = {"x-forwarded-for": "203.0.113.5", **(headers or {})}
     req.client = MagicMock()
     req.client.host = "127.0.0.1"
     # Pin services so MagicMock's auto-attribute creation doesn't shadow the
     # explicit-kwargs path.
     req.app.state.services = None
     return req
+
+
+def _runtime_with(values: dict[str, bool]) -> MagicMock:
+    """RuntimeSettings mock whose get_bool resolves per-key from *values*."""
+    rs = MagicMock()
+    rs.get_bool = AsyncMock(side_effect=lambda key: values.get(key, False))
+    return rs
 
 
 @pytest.fixture
@@ -204,3 +213,37 @@ async def test_log_store_failure_is_swallowed(fake_log_store, runtime_on, caplog
     )
     # Spot-check: an error-level log was emitted.
     assert any("rejection_log_failed" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_synthetic_probe_rejection_suppressed_when_probe_logging_off(fake_log_store):
+    """A probe rejected at the gate is not persisted while log_synthetic_probes
+    is off, even though log_rejected_requests is on.
+    """
+    rs = _runtime_with({"log_rejected_requests": True, "log_synthetic_probes": False})
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=rs,
+        request=_fake_request("/v1/embeddings", headers={"x-probe": "synthetic"}),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="limit=1 role=free",
+        user={"user_id": "u1", "role": "free"},
+    )
+    fake_log_store.log_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_synthetic_probe_rejection_logged_when_probe_logging_on(fake_log_store):
+    """When log_synthetic_probes is on, a rejected probe is still persisted."""
+    rs = _runtime_with({"log_rejected_requests": True, "log_synthetic_probes": True})
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=rs,
+        request=_fake_request("/v1/embeddings", headers={"x-probe": "synthetic"}),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="limit=1 role=free",
+        user={"user_id": "u1", "role": "free"},
+    )
+    fake_log_store.log_request.assert_awaited_once()

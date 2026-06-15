@@ -85,6 +85,17 @@ async def log_rejection(
     if not enabled:
         return
 
+    # Synthetic probes are suppressed from rejection logging too, unless
+    # ``log_synthetic_probes`` opts them in — mirrors the handler-path
+    # suppression so a probe rejected at the gate (e.g. during the overload it
+    # is meant to detect) does not pollute api_logs while probe logging is off.
+    if request.headers.get("x-probe", "").lower() == "synthetic":
+        try:
+            if not await runtime_settings.get_bool("log_synthetic_probes"):
+                return
+        except Exception:
+            return
+
     ctx = req_ctx.get()
     request_id = ctx.get("request_id") or ""
     metadata: dict[str, Any] = {
