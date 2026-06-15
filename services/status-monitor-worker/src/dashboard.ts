@@ -136,7 +136,16 @@ function metricSparkline(
  * to a latency trend over successful probes instead of an empty placeholder.
  */
 export function ttftSparkline(rows: ProbeRow[]): string {
-  const hasTtft = rows.some((r) => r.ttftMs != null);
+  // Choose the metric from the most recent *successful* probe, not any retained
+  // row: if a model id switches kind (e.g. chat → embedding), stale TTFT samples
+  // still in history must not keep the card on a TTFT trend.
+  let hasTtft = false;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].ok) {
+      hasTtft = rows[i].ttftMs != null;
+      break;
+    }
+  }
   return hasTtft
     ? metricSparkline(rows, "TTFT trend", (r) => r.ttftMs)
     : metricSparkline(rows, "Latency trend", (r) => (r.ok ? r.latencyMs : null));

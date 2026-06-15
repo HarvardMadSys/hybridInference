@@ -213,6 +213,21 @@ describe("ttftSparkline", () => {
     expect(points).toHaveLength(3);
   });
 
+  it("picks the metric from the latest successful probe, not stale history", () => {
+    // A model id that switched chat → embedding: old rows carry a TTFT, the
+    // recent successful probes don't. The card must follow the latest probe.
+    const html = ttftSparkline([row(40), row(60), row(null), row(null)]);
+    expect(html).toContain("Latency trend");
+    expect(html).not.toContain("TTFT trend");
+  });
+
+  it("ignores trailing failures when choosing the metric", () => {
+    // Latest rows are failures (null ttft); the latest *successful* probe is a
+    // chat probe with a TTFT, so the card stays on the TTFT trend.
+    const html = ttftSparkline([row(40), row(60), row(null, false), row(null, false)]);
+    expect(html).toContain("TTFT trend");
+  });
+
   it("excludes failed probes from the latency-trend fallback", () => {
     // ok=false probes carry a time-to-error, not a real serving latency.
     const html = ttftSparkline([row(null), row(null, false), row(null)]);
