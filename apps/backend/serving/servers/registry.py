@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 from serving.adapters import (
     AnthropicAdapter,
     ClaudeAdapter,
+    CodingIdentityAdapter,
     GeminiAdapter,
-    KimiCodingAdapter,
     ModelConfig,
     OpenAICompatAdapter,
     OpenRouterAdapter,
@@ -175,13 +175,14 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
     if kind == "deepseek":
         cfg = {**cfg, "provider_profile": "deepseek"}
-    # ZAI routes through OpenAICompatAdapter with a non-/v1 chat path.
+    # ZAI is the Z.AI GLM coding plan: a non-/v1 chat path, and (like the Kimi
+    # coding plan) gated on a coding-tool identity, so it uses CodingIdentityAdapter.
     elif kind == "zai":
         cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
     # Kimi (Moonshot) routes through OpenAICompatAdapter; both the Kimi Code
     # coding-plan endpoint and the pay-per-token Moonshot API are OpenAI-compatible.
     # ``kimi_coding`` shares the usage profile but uses the dedicated
-    # KimiCodingAdapter (coding-tool User-Agent + leading OpenCode system message).
+    # CodingIdentityAdapter (coding-tool User-Agent + leading OpenCode system message).
     elif kind in ("kimi", "kimi_coding"):
         cfg = {**cfg, "provider_profile": "kimi"}
     elif kind == "minimax":
@@ -190,6 +191,12 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         cfg = {**cfg, "include_usage_in_stream": True}
 
     model_cfg = ModelConfig(**cfg)
+
+    # Coding-plan providers (Kimi coding plan, Z.AI GLM coding plan) gate access
+    # on a coding-tool identity; CodingIdentityAdapter injects the User-Agent and
+    # leading OpenCode system message (subject to the runtime toggle).
+    if kind in ("kimi_coding", "zai"):
+        return CodingIdentityAdapter(model_cfg)
 
     # All OpenAI-compatible services use the same adapter
     if kind in (
@@ -201,7 +208,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "cliproxy",
         "openai_compat",
         "deepseek",
-        "zai",
         "kimi",
         "minimax",
     ):
@@ -209,9 +215,6 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
     if kind == "openrouter":
         return OpenRouterAdapter(model_cfg)
-
-    if kind == "kimi_coding":
-        return KimiCodingAdapter(model_cfg)
 
     if kind == "claude":
         return ClaudeAdapter(model_cfg)
