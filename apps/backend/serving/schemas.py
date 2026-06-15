@@ -7,7 +7,7 @@ with upstream providers while validating required fields and ranges.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -191,8 +191,11 @@ class EmbeddingData(BaseModel):  # type: ignore[no-any-unimported]
 
     object: Literal["embedding"] = "embedding"
     index: int
-    # list[float] for default float format, str for base64 encoding_format
-    embedding: list[float] | str
+    # list[float] for default float format, str for base64 encoding_format.
+    # allow_inf_nan=False rejects NaN/inf: Pydantic permits them by default,
+    # but Starlette's JSON serialization (allow_nan=False) would 500 on them
+    # after the handler has already logged a billable 200.
+    embedding: list[Annotated[float, Field(allow_inf_nan=False)]] | str
 
 
 class EmbeddingUsage(BaseModel):  # type: ignore[no-any-unimported]

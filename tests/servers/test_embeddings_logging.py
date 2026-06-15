@@ -260,3 +260,31 @@ async def test_malformed_response_logged_as_error_not_billable_200():
     assert "invalid embedding response" in log_data["error"]
     # And the paid quota counter is untouched.
     assert op_store.increments == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+async def test_non_finite_embedding_not_billable_200(bad_value):
+    """Non-finite floats (which Starlette can't serialize) must be rejected
+    before recording a billable 200 / incrementing quota, not after.
+    """
+    adapter = _FakeAdapter(
+        response={
+            "object": "list",
+            "model": "emb-model",
+            "data": [{"object": "embedding", "index": 0, "embedding": [bad_value, 0.2]}],
+            "usage": {"prompt_tokens": 1000, "total_tokens": 1000},
+        },
+        pricing=_PAID_PRICING,
+    )
+    logger = _CapturingLogger()
+    op_store = _CapturingOpStore()
+    app = _build_app(adapter, logger, op_store)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 500
+
+    assert len(logger.calls) == 1
+    _, log_data = logger.calls[0]
+    assert log_data["status_code"] == 500
+    assert op_store.increments == []
