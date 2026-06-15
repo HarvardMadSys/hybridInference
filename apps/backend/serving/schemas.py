@@ -201,8 +201,11 @@ class EmbeddingData(BaseModel):  # type: ignore[no-any-unimported]
 class EmbeddingUsage(BaseModel):  # type: ignore[no-any-unimported]
     """Token usage for an embedding request."""
 
-    prompt_tokens: int
-    total_tokens: int
+    # ge=0: token counts can never be negative. A broken upstream reporting
+    # negatives would otherwise be logged/analyzed as a successful paid request
+    # while calculate_cost clamps the cost to zero (no quota increment).
+    prompt_tokens: int = Field(ge=0)
+    total_tokens: int = Field(ge=0)
 
 
 class EmbeddingResponse(BaseModel):  # type: ignore[no-any-unimported]
