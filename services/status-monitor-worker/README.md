@@ -50,6 +50,17 @@ working without JavaScript).
 
 ## Deploy
 
+CI deploys this Worker automatically: `.github/workflows/deploy-status-monitor.yml`
+runs `npm test` and `wrangler deploy` whenever a change under
+`services/status-monitor-worker/**` lands on `dev` (or via manual
+**workflow_dispatch**). It needs a single repository secret,
+`CLOUDFLARE_API_TOKEN` (a Cloudflare API token with Workers Scripts edit +
+D1 access); the account is pinned via `account_id` in `wrangler.toml`. The
+workflow does not run D1 migrations — apply schema changes once, manually
+(step 2 below), before they ship.
+
+To deploy by hand (first-time setup or out-of-band):
+
 ```bash
 cd services/status-monitor-worker
 npm install

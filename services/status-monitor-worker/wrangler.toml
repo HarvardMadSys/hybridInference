@@ -1,6 +1,10 @@
 name = "status-monitor"
 main = "src/index.ts"
 compatibility_date = "2025-06-01"
+# Account that owns the Worker. Not a secret (it appears in dashboard URLs);
+# pinning it lets `wrangler deploy` run non-interactively in CI with only the
+# CLOUDFLARE_API_TOKEN secret.
+account_id = "d04cebbc3b75c45caec3e4fdb4ee451a"
 
 # Probe every model every 5 minutes.
 [triggers]

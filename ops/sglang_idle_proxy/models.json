@@ -6,7 +6,8 @@
         "served_name": "Qwen/Qwen3.6-35B-A3B-FP8",
         "max_model_len": 135168,
         "mem_fraction": "0.80",
-        "tool_call_parser": "qwen3_coder"
+        "tool_call_parser": "qwen3_coder",
+        "colocate_group": "primary"
     },
     "BAAI/bge-m3": {
         "container": "bge-m3-sglang",
@@ -16,9 +17,10 @@
         "hf_ignore_patterns": ["onnx/*", "imgs/*", "*.jpg"],
         "served_name": "BAAI/bge-m3",
         "max_model_len": 8192,
-        "mem_fraction": "0.12",
+        "mem_fraction": "0.08",
         "is_embedding": true,
         "attention_backend": "torch_native",
-        "disable_radix_cache": true
+        "disable_radix_cache": true,
+        "colocate_group": "primary"
     }
 }

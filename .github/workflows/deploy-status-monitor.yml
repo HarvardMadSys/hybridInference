@@ -1,0 +1,62 @@
+name: Deploy Status Monitor
+
+# Builds, tests, and deploys the Cloudflare status-monitor Worker
+# (services/status-monitor-worker) whenever its source lands on dev. The Worker
+# probes the staging gateway, which also deploys from dev, so dev is the source
+# of truth for it. Runs on manual dispatch too.
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'services/status-monitor-worker/**'
+      - '.github/workflows/deploy-status-monitor.yml'
+  workflow_dispatch:
+
+# Never let two deploys of the same Worker overlap.
+concurrency:
+  group: status-monitor-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy status-monitor Worker
+    runs-on: self-hosted
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: services/status-monitor-worker
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Require Cloudflare API token
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error title=Missing secret::CLOUDFLARE_API_TOKEN is not configured for this repository. Add a Cloudflare API token with Workers Scripts edit + D1 access."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run deploy

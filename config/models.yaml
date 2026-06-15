@@ -138,6 +138,13 @@ models:
         provider_model_id: "/n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2"
         # api_keys:
         #   - ${LOCAL_API_KEY}
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.24
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "glm-5.1"
 
   - id: glm-5.2
     name: GLM-5.2
@@ -168,6 +175,13 @@ models:
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
+        provider_model_id: "glm-5.2"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.24
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5.2"
 
   - id: glm-5-turbo
@@ -249,14 +263,14 @@ models:
         provider_model_id: "minimax-m2.5"
       # Chutes fallback
       - kind: chutes
-        weight: 0.24
+        weight: 0.00
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
       # Featherless fallback
       - kind: featherless
-        weight: 0.64
+        weight: 0.00
         base_url: ${FEATHERLESS_BASE_URL}
         api_keys:
           - ${FEATHERLESS_API_KEY}
@@ -457,7 +471,7 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
-    aliases: ["Kimi-K2.7-Code", "kimi-for-coding", "kimi-k2.7"]
+    aliases: ["Kimi-K2.7-Code", "kimi-k2.7"]
     pricing:
       prompt: "0.8"
       completion: "2.5"
@@ -472,6 +486,13 @@ models:
         api_keys:
           - ${KIMI_CODING_API_KEY}
         provider_model_id: "kimi-for-coding"
+      # Ollama Cloud fallback
+      - kind: ollama
+        weight: 0.24
+        base_url: ${OLLAMA_BASE_URL}
+        api_keys:
+          - ${OLLAMA_API_KEY}
+        provider_model_id: "kimi-k2.7-code"
 
   - id: qwen3.6-35b
     name: Qwen3.6 35B (no concurrency limit currently)
@@ -502,6 +523,13 @@ models:
         extra_body:
           chat_template_kwargs:
             enable_thinking: false
+      # # Ollama Cloud fallback
+      # - kind: ollama
+      #   weight: 0.24
+      #   base_url: ${OLLAMA_BASE_URL}
+      #   api_keys:
+      #     - ${OLLAMA_API_KEY}
+      #   provider_model_id: "qwen-3.6:35b"
 
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
