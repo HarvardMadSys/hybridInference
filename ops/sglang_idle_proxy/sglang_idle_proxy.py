@@ -66,6 +66,13 @@ values so the group sums to roughly 0.9 or less.
 Set ``"is_embedding": true`` on a model to launch sglang in encode-only mode
 (adds ``--is-embedding``); such models serve ``/v1/embeddings`` instead of chat.
 
+Set ``"engine": "vllm"`` to serve a model with vLLM (``vllm/vllm-openai``)
+instead of sglang (the default). vLLM listens on container port 8000 rather
+than sglang's 8001, but callers, the health check, and the proxy all reach the
+backend through the host ``backend_port``, so the switch is transparent. The
+sglang-only knobs (``mtp``, ``mamba``, ``attention_backend``, …) are ignored
+for vLLM backends; see ``_vllm_run_cmd`` for the vLLM-specific options.
+
 Set ``"mtp": true`` on a generative model that ships native Multi-Token
 Prediction layers (Qwen3.6 MoE, DeepSeek V3, …) to enable speculative decoding
 via sglang's ``NEXTN`` algorithm. The defaults (1 step, eagle-topk 1, 2 draft
@@ -344,6 +351,69 @@ class BackendManager:
             check=False,
             capture_output=True,
         )
+        engine = str(self.config.get("engine", "sglang")).lower()
+        cmd = self._vllm_run_cmd(gpu) if engine == "vllm" else self._sglang_run_cmd(gpu)
+        log.info("Running: %s", " ".join(cmd))
+        subprocess.run(cmd, check=True, capture_output=True)
+
+    def _vllm_run_cmd(self, gpu: str) -> list[str]:
+        """Build the ``docker run`` command for a vLLM backend.
+
+        vLLM serves the OpenAI-compatible API on container port 8000 (sglang
+        uses 8001); the health check and proxy address the backend through the
+        host ``backend_port``, so the internal-port difference is transparent.
+        FP8 KV cache (overridable via ``kv_cache_dtype``) matches the model's
+        FP8 weights and the throughput benchmark that motivated vLLM here.
+        """
+        cmd = [
+            "sudo",
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            self.container,
+            "--gpus",
+            f"device={gpu}",
+            "--shm-size",
+            "16g",
+            "-p",
+            f"{self.backend_port}:8000",
+            "-v",
+            f"{self.config['model_dir']}:/model:ro",
+            "vllm/vllm-openai:latest",
+            "--model",
+            "/model",
+            "--served-model-name",
+            self.config.get("served_name", self.model_name),
+            "--port",
+            "8000",
+            "--max-model-len",
+            str(self.config.get("max_model_len", 131072)),
+            "--gpu-memory-utilization",
+            str(self.config.get("mem_fraction", "0.90")),
+            "--tensor-parallel-size",
+            "1",
+            "--kv-cache-dtype",
+            str(self.config.get("kv_cache_dtype", "fp8")),
+        ]
+        if self.config.get("is_embedding"):
+            cmd += ["--task", "embed"]
+        else:
+            # Reasoning models emit a thinking block; the parser splits it into
+            # message.reasoning_content so it does not leak into content (and is
+            # excluded from tool-call arguments).
+            rp = self.config.get("reasoning_parser")
+            if rp:
+                cmd += ["--reasoning-parser", str(rp)]
+            # vLLM names some tool-call parsers differently from sglang; allow a
+            # vLLM-specific override, falling back to the shared parser name.
+            tcp = self.config.get("vllm_tool_call_parser", self.config.get("tool_call_parser"))
+            if tcp:
+                cmd += ["--enable-auto-tool-choice", "--tool-call-parser", str(tcp)]
+        return cmd
+
+    def _sglang_run_cmd(self, gpu: str) -> list[str]:
+        """Build the ``docker run`` command for an sglang backend."""
         cmd = [
             "sudo",
             "docker",
@@ -392,6 +462,11 @@ class BackendManager:
             tcp = self.config.get("tool_call_parser")
             if tcp:
                 cmd += ["--tool-call-parser", tcp]
+            # Split the model's thinking block into reasoning_content (see the
+            # matching note in _vllm_run_cmd).
+            rp = self.config.get("reasoning_parser")
+            if rp:
+                cmd += ["--reasoning-parser", str(rp)]
             # Multi-Token Prediction (MTP) speculative decoding. Models that ship
             # native MTP layers (e.g. Qwen3.6 MoE, DeepSeek V3) use sglang's
             # NEXTN algorithm with the in-checkpoint MTP module, so no separate
@@ -418,8 +493,7 @@ class BackendManager:
                         "--mamba-scheduler-strategy",
                         str(self.config.get("mamba_scheduler_strategy", "extra_buffer")),
                     ]
-        log.info("Running: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True, capture_output=True)
+        return cmd
 
     def _ensure_model_dir(self) -> None:
         model_dir = Path(self.config["model_dir"])

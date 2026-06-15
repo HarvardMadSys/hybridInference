@@ -115,9 +115,10 @@ Models are defined in `sglang_idle_proxy/models.json`:
 | Field | Description |
 |---|---|
 | `container` | Docker container name |
+| `engine` | serving engine: `sglang` (default) or `vllm` |
 | `gpu_index` | GPU device index (omit to auto-pick) |
 | `colocate_group` | optional label; models sharing a value run on the same auto-picked GPU |
-| `backend_port` | Host port mapped to the container |
+| `backend_port` | Host port mapped to the container (→ sglang `8001` / vLLM `8000` internally) |
 | `model_dir` | Host path to model weights |
 | `hf_repo` | optional Hugging Face repository downloaded into `model_dir` when absent |
 | `hf_revision` | optional Hugging Face branch, tag, or commit |
@@ -136,6 +137,13 @@ Models are defined in `sglang_idle_proxy/models.json`:
 | `speculative_num_draft_tokens` | optional `--speculative-num-draft-tokens` (default `2`) |
 | `mamba` | `true` → hybrid Mamba/linear-attention model (Qwen3.5/3.6 MoE); with `mtp` adds `--mamba-scheduler-strategy extra_buffer` and exports `SGLANG_ENABLE_SPEC_V2=1` so spec decoding works with radix cache |
 | `mamba_scheduler_strategy` | optional override for `--mamba-scheduler-strategy` (default `extra_buffer`) |
+
+**vLLM-only fields** (`engine: vllm`). `served_name`, `model_dir`, `max_model_len`, and `mem_fraction` map to the vLLM equivalents (`--served-model-name`, `--model`, `--max-model-len`, `--gpu-memory-utilization`); the sglang-only knobs above (`mtp`, `mamba`, `attention_backend`, …) are ignored.
+
+| Field | Description |
+|---|---|
+| `kv_cache_dtype` | `--kv-cache-dtype` (default `fp8`, matching FP8 weights) |
+| `vllm_tool_call_parser` | `--tool-call-parser` override when vLLM's parser name differs from sglang's; falls back to `tool_call_parser`. vLLM also gets `--enable-auto-tool-choice` automatically |
 
 To add a new model, append an entry to `models.json` and restart the proxy.
 
