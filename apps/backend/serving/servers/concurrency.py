@@ -23,7 +23,7 @@ from serving.observability.metrics import (
     USER_CONCURRENCY_IN_FLIGHT,
     USER_CONCURRENCY_REJECTED_TOTAL,
 )
-from serving.observability.rejection_log import log_rejection
+from serving.observability.rejection_log import extract_prompt_from_body, log_rejection
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -275,6 +275,19 @@ async def enforce_user_concurrency(
                 "route": request.url.path,
             },
         )
+        # Best-effort prompt capture for the rejection log. Only read the body
+        # if it was already parsed and cached (Starlette stores it on
+        # ``request._json`` after ``await request.json()`` — which the exemption
+        # check above does for POSTs with a resolver/router). Never trigger a
+        # fresh body read here: forcing the server to await the full body of a
+        # request it is rejecting would be a slowloris/DoS foothold.
+        rejected_prompt: list[dict[str, Any]] | str = ""
+        cached_json = getattr(request, "_json", None)
+        if cached_json is not None:
+            try:
+                rejected_prompt = extract_prompt_from_body(cached_json)
+            except Exception:
+                rejected_prompt = ""
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
@@ -282,6 +295,7 @@ async def enforce_user_concurrency(
                 error_code="concurrency_limit_exceeded",
                 reason=f"limit={limit} role={role_label}",
                 user=user,
+                prompt=rejected_prompt,
             )
         )
         raise HTTPException(

@@ -29,12 +29,33 @@ INFERENCE_PATH_PREFIXES: tuple[str, ...] = (
     "/v1/completions",
     "/v1/embeddings",
     "/completion",
+    # The Anthropic Messages handler is registered at both aliases, so both
+    # must be recognized or rejections on the root route are dropped silently.
+    "/v1/messages",
     "/anthropic/v1/messages",
 )
 
 
 def _is_inference_path(path: str) -> bool:
     return any(path.startswith(prefix) for prefix in INFERENCE_PATH_PREFIXES)
+
+
+def extract_prompt_from_body(body: Any) -> list[dict[str, Any]] | str:
+    """Best-effort pull of the prompt content from a parsed request body.
+
+    Handles the three inference shapes the gateway accepts: chat/messages
+    (``messages``, used by both OpenAI chat completions and Anthropic
+    Messages), embeddings (``input``), and legacy completions (``prompt``).
+    Returns ``""`` for anything unrecognized so callers can pass the result
+    straight through to ``log_request`` without branching.
+    """
+    if not isinstance(body, dict):
+        return ""
+    for key in ("messages", "input", "prompt"):
+        value = body.get(key)
+        if value:
+            return value
+    return ""
 
 
 async def log_rejection(
@@ -45,6 +66,7 @@ async def log_rejection(
     reason: str,
     user: dict[str, Any] | None,
     model_id: str = "",
+    prompt: list[dict[str, Any]] | str = "",
     log_store: BaseLogStore | None = None,
     runtime_settings: RuntimeSettings | None = None,
 ) -> None:
@@ -58,7 +80,9 @@ async def log_rejection(
     ``error_code`` is a short machine-readable identifier (e.g.
     ``"concurrency_limit_exceeded"``); ``reason`` is a brief human-readable
     detail; ``user`` is the verified user dict or ``None`` for pre-auth
-    rejections.
+    rejections. ``prompt`` is the original request prompt/messages; it is
+    persisted only when the store's content-retention policy
+    (``store_full_content``) allows, exactly as on the success path.
     """
     if log_store is None or runtime_settings is None:
         services = getattr(getattr(request.app, "state", None), "services", None)
@@ -123,7 +147,7 @@ async def log_rejection(
             request_id=request_id,
             model_id=model_id,
             provider="",
-            prompt="",
+            prompt=prompt,
             response=None,
             usage=None,
             latency_ms=0,
