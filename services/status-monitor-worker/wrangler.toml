@@ -25,7 +25,7 @@ MAX_CONCURRENCY = "3"
 # Marks requests synthetic so the gateway excludes them from logs/metrics/cost.
 PROBE_HEADER = "synthetic"
 # Probe history retention (days). Older rows are pruned each cron cycle.
-RETENTION_DAYS = "7"
+RETENTION_DAYS = "1024"
 # Absolute per-probe deadline (ms); aborts a stalled stream that keeps sending
 # SSE keepalives so one bad model can't wedge the cycle.
 PROBE_DEADLINE_MS = "60000"
