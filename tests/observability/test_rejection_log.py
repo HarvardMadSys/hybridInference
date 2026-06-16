@@ -8,6 +8,7 @@ import pytest
 
 from serving.observability.rejection_log import (
     INFERENCE_PATH_PREFIXES,
+    extract_prompt_from_body,
     log_rejection,
 )
 
@@ -115,6 +116,44 @@ async def test_toggle_on_writes_row(fake_log_store, runtime_on):
     assert md["user_id"] == "u1"
     # Chat rejections are not tagged as embeddings.
     assert "request_type" not in md
+
+
+@pytest.mark.asyncio
+async def test_prompt_is_passed_through(fake_log_store, runtime_on):
+    """The prompt the caller supplies reaches log_request, so rejected
+    requests log the prompt consistently with the success path (the store
+    still gates persistence on store_full_content).
+    """
+    messages = [{"role": "user", "content": "hi"}]
+    await log_rejection(
+        log_store=fake_log_store,
+        runtime_settings=runtime_on,
+        request=_fake_request("/v1/chat/completions"),
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="limit=1 role=free",
+        user={"user_id": "u1", "role": "free"},
+        model_id="gpt-4",
+        prompt=messages,
+    )
+    kwargs = fake_log_store.log_request.await_args.kwargs
+    assert kwargs["prompt"] == messages
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"messages": [{"role": "user", "content": "hi"}]}, [{"role": "user", "content": "hi"}]),
+        ({"input": "embed me"}, "embed me"),
+        ({"prompt": "legacy completion"}, "legacy completion"),
+        ({"model": "gpt-4"}, ""),
+        ({"messages": []}, ""),
+        ("not a dict", ""),
+        (None, ""),
+    ],
+)
+def test_extract_prompt_from_body(body, expected):
+    assert extract_prompt_from_body(body) == expected
 
 
 @pytest.mark.asyncio

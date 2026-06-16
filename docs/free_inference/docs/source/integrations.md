@@ -81,10 +81,12 @@ If you are choosing one default setup path, use Kilo Code. It works directly wit
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's official CLI coding agent. FreeInference provides an Anthropic-compatible endpoint so Claude Code works without an Anthropic API key.
 
+For the full walkthrough — model selection, verification, and troubleshooting — see the dedicated [Claude Code guide](claude-code.md).
+
 ### Quick Setup (macOS / Linux)
 
 ```bash
-ANTHROPIC_API_KEY="your-key-here" bash setup_claude_code.sh
+FREEINFERENCE_API_KEY="your-key-here" bash setup_claude_code.sh
 ```
 
 > **Security note:** Always review remote shell scripts before executing them. You can also clone this repository and run `ops/setup/setup_claude_code.sh` from your local checkout instead of fetching it over the network.
@@ -96,7 +98,7 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://freeinference.org/",
+    "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
     "ANTHROPIC_AUTH_TOKEN": "<your-freeinference-api-key>",
     "API_TIMEOUT_MS": "600000"
   }

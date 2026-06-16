@@ -23,7 +23,7 @@ from serving.observability.metrics import (
     USER_CONCURRENCY_IN_FLIGHT,
     USER_CONCURRENCY_REJECTED_TOTAL,
 )
-from serving.observability.rejection_log import log_rejection
+from serving.observability.rejection_log import extract_prompt_from_body, log_rejection
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -275,6 +275,16 @@ async def enforce_user_concurrency(
                 "route": request.url.path,
             },
         )
+        # Best-effort prompt capture for the rejection log. FastAPI caches the
+        # parsed body (the exemption check above already read it for POSTs), so
+        # this re-read is cheap and never consumes the stream. Parsing must not
+        # break the gate: any failure leaves prompt empty.
+        rejected_prompt: list[dict[str, Any]] | str = ""
+        if request.method == "POST":
+            try:
+                rejected_prompt = extract_prompt_from_body(await request.json())
+            except Exception:
+                rejected_prompt = ""
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
@@ -282,6 +292,7 @@ async def enforce_user_concurrency(
                 error_code="concurrency_limit_exceeded",
                 reason=f"limit={limit} role={role_label}",
                 user=user,
+                prompt=rejected_prompt,
             )
         )
         raise HTTPException(

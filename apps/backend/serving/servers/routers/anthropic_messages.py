@@ -529,6 +529,7 @@ async def anthropic_messages(
                     "role": user_ctx.get("role"),
                 },
                 model_id=model_id,
+                prompt=body.get("messages") or "",
             )
         )
         return _anthropic_error(exc.status_code, str(exc.detail))
