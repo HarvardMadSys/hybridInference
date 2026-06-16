@@ -105,7 +105,6 @@ Code at one with `ANTHROPIC_MODEL`:
 |-------|----------|
 | `glm-5.1` | Balanced default for everyday coding |
 | `glm-5-turbo` | Faster edit loops and background tasks |
-| `glm-4.7` | Long-context, bilingual work |
 | `minimax-m2.5` | Ultra-long context and image input |
 
 Claude Code also runs a lightweight model for background tasks — set
