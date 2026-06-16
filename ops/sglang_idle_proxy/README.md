@@ -21,7 +21,7 @@ Client → spark2:8001 ──SSH tunnel──→ GPU box :8001 (proxy)
 3. If an `hf_repo` model is not installed, the first request downloads it from Hugging Face.
 4. It picks the configured/least-used GPU and launches the sglang container.
 5. It waits for the container's `/v1/models` health endpoint, then proxies all traffic.
-6. After **20 minutes** with no incoming requests for a model, that container is stopped.
+6. After **24 minutes** with no incoming requests for a model, that container is stopped.
 7. The proxy keeps listening — the next request re-starts the container automatically.
 8. `GET /v1/models` returns a static list of all configured models (no backend needed).
 
@@ -152,7 +152,7 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 | Variable | Default | Description |
 |---|---|---|
 | `LISTEN_PORT` | `8001` | Port the proxy binds to |
-| `IDLE_TIMEOUT` | `1200` | Seconds of inactivity before stopping a container (20 min) |
+| `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `600` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
 | `MODELS_CONFIG` | `models.json` | Path to the models config JSON |

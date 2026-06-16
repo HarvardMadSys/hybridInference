@@ -22,7 +22,7 @@ Usage:
 Environment variables
 ---------------------
 LISTEN_PORT    : Port the proxy binds to                  (default 8001)
-IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1200 = 20 min)
+IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1440 = 24 min)
 HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 600)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
 MODELS_CONFIG  : Path to a JSON config file               (see below)
@@ -110,7 +110,7 @@ logging.basicConfig(
 log = logging.getLogger("sglang_proxy")
 
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
-IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1200"))
+IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "600"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 # Accept LOCAL_API_KEY as the canonical local upstream key, with FREEINFERENCE_API_KEY

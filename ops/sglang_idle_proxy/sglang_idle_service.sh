@@ -10,7 +10,7 @@
 #   • Listens on LISTEN_PORT (default 8001) — always open.
 #   • Lazily starts the sglang Docker container on the first request.
 #     (Backend binds to BACKEND_PORT=18001 internally, proxy forwards :8001 → :18001.)
-#   • Stops the container after IDLE_TIMEOUT seconds of no traffic (default 1200 = 20 min).
+#   • Stops the container after IDLE_TIMEOUT seconds of no traffic (default 1440 = 24 min).
 #
 # Override any env var before calling, e.g.:
 #   LISTEN_PORT=9000 IDLE_TIMEOUT=600 ./sglang_idle_proxy/sglang_idle_service.sh start

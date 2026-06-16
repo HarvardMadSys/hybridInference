@@ -15,7 +15,7 @@ Restart=on-failure
 RestartSec=10s
 
 Environment=LISTEN_PORT=8002
-Environment=IDLE_TIMEOUT=1200
+Environment=IDLE_TIMEOUT=1440
 Environment=HEALTH_TIMEOUT=900
 Environment=HEALTH_INTERVAL=10
 

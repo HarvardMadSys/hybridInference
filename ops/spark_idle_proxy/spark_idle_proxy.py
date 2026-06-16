@@ -15,7 +15,7 @@ Usage:
 Environment variables
 ---------------------
 LISTEN_PORT    : Port the proxy binds to                  (default 8002)
-IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1200 = 20 min)
+IDLE_TIMEOUT   : Seconds of inactivity before stopping    (default 1440 = 24 min)
 HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 900)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
 MODELS_CONFIG  : Path to a JSON config file               (see models.json)
@@ -50,7 +50,7 @@ logging.basicConfig(
 log = logging.getLogger("spark_proxy")
 
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8002"))
-IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1200"))
+IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
 HEALTH_TIMEOUT = float(os.environ.get("HEALTH_TIMEOUT", "900"))
 HEALTH_INTERVAL = float(os.environ.get("HEALTH_INTERVAL", "10"))
 LOCAL_API_KEY = os.environ.get("LOCAL_API_KEY", "freeinference_api").strip()

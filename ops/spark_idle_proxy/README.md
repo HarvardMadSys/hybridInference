@@ -19,7 +19,7 @@ Client → spark2:8002 ──SSH tunnel──→ DGX Spark :8002 (proxy)
 3. If weights are missing, the first request downloads them from Hugging Face.
 4. It launches a vLLM container (`vllm/vllm-openai:cu130-nightly` by default).
 5. It waits for the container's `/v1/models` health endpoint, then proxies all traffic.
-6. After **20 minutes** with no incoming requests for a model, that container is stopped.
+6. After **24 minutes** with no incoming requests for a model, that container is stopped.
 7. `GET /v1/models` returns a static list of all configured models (no backend needed).
 
 ## Quick start
@@ -110,7 +110,7 @@ Models are defined in `spark_idle_proxy/models.json`:
 | Variable | Default | Description |
 |---|---|---|
 | `LISTEN_PORT` | `8002` | Port the proxy binds to |
-| `IDLE_TIMEOUT` | `1200` | Seconds of inactivity before stopping a container |
+| `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `900` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
 | `MODELS_CONFIG` | `models.json` | Path to the models config JSON |
