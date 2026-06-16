@@ -214,29 +214,48 @@ function toRow(r: RawRow): ProbeRow {
 }
 
 /**
+ * Resolves the active model list for a snapshot.
+ *
+ * The fast path is the single `meta.model_ids` row that {@link reconcileModels}
+ * writes each cycle, read with an O(1) keyed lookup so per-request cost is bound
+ * to model count, not table size. (A `SELECT DISTINCT model_id` instead scans the
+ * whole covering index, which D1 bills as rows_read ~ models × probes/day ×
+ * RETENTION_DAYS.)
+ *
+ * A *written* list — including an empty `[]` for a legitimately empty catalog —
+ * is authoritative. Only when the key is **absent or corrupt** (first deploy
+ * against an existing DB, or a stretch of only-failed cycles that returned before
+ * reconcileModels could write it) do we fall back to a one-off DISTINCT scan, so
+ * existing history still renders instead of a blank dashboard. That scan is
+ * bounded by table size but transient: the next successful cycle writes the keyed
+ * list and reverts reads to O(1).
+ */
+async function readModelIds(db: D1Database): Promise<string[]> {
+  const row = await db
+    .prepare(`SELECT value FROM meta WHERE key = 'model_ids'`)
+    .first<{ value: string }>();
+  if (row?.value != null) {
+    try {
+      const parsed = JSON.parse(row.value);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((id): id is string => typeof id === "string");
+      }
+    } catch {
+      // Corrupt value: fall through to the backfill scan.
+    }
+  }
+  const scan = await db
+    .prepare(`SELECT DISTINCT model_id FROM probe_results ORDER BY model_id ASC`)
+    .all<{ model_id: string }>();
+  return (scan.results ?? []).map((r) => r.model_id);
+}
+
+/**
  * Builds the dashboard snapshot: the most recent {@link HISTORY_LIMIT} rows per
  * model, with the latest result, a sparkline window, and an uptime ratio.
  */
 export async function getSnapshot(db: D1Database): Promise<Snapshot> {
-  // Read the active model list from a single keyed meta row (written each cycle
-  // by reconcileModels). This keeps per-request cost bounded by model count, not
-  // table size — a DISTINCT over probe_results scans the whole covering index and
-  // D1 bills every entry as rows_read (~models × probes/day × RETENTION_DAYS).
-  // Absent/corrupt value → empty list; the next successful cycle rewrites it.
-  const modelIdsRow = await db
-    .prepare(`SELECT value FROM meta WHERE key = 'model_ids'`)
-    .first<{ value: string }>();
-  let modelIds: string[] = [];
-  if (modelIdsRow?.value) {
-    try {
-      const parsed = JSON.parse(modelIdsRow.value);
-      if (Array.isArray(parsed)) {
-        modelIds = parsed.filter((id): id is string => typeof id === "string");
-      }
-    } catch {
-      modelIds = [];
-    }
-  }
+  const modelIds = await readModelIds(db);
 
   const byModel = new Map<string, ProbeRow[]>();
   if (modelIds.length > 0) {
