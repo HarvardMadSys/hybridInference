@@ -27,17 +27,20 @@ async def test_count_recent_failures_query():
     # Verify the constant-level predicate text.
     assert "status_code >= 500" in FAILED_REQUEST_COUNT_SQL
     assert "error IS NOT NULL" in FAILED_REQUEST_COUNT_SQL
-    # "Model not found" (404 client errors) must be excluded so they never alert.
-    assert "NOT ILIKE '%not found%'" in FAILED_REQUEST_COUNT_SQL
+    # Gateway "model not found" (404 client errors) must be excluded so they never alert.
+    assert "Model ''%'' not found" in FAILED_REQUEST_COUNT_SQL
     # Verify the call was parameterized: SQL string + bind arg, not interpolated.
     pool.fetchval.assert_awaited_once_with(FAILED_REQUEST_COUNT_SQL, 5)
 
 
-def test_both_queries_exclude_model_not_found():
-    """Count and breakdown queries must both exclude 'model not found' errors.
+def test_both_queries_exclude_gateway_model_not_found():
+    """Count and breakdown queries must both exclude gateway 'model not found' rows.
 
-    Two persisted forms exist: the handler human message ``Model 'x' not found``
-    and the rejection-log machine code ``model_not_found``. Both must be filtered.
+    Three persisted forms exist — the completions handler message
+    ``Model '<id>' not found``, the embeddings handler message
+    ``Embedding model '<id>' not found``, and the rejection-log code
+    ``model_not_found``. The match is anchored so an upstream provider 404
+    (whose error text contains ``Not Found``) still alerts.
     """
     from serving.admin.failed_request_alerter import (
         FAILED_REQUEST_BREAKDOWN_SQL,
@@ -46,8 +49,12 @@ def test_both_queries_exclude_model_not_found():
 
     for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL):
         # The exclusion lives on the error branch so genuine 5xx failures still count.
-        assert "NOT ILIKE '%not found%'" in sql
-        assert "NOT ILIKE '%model_not_found%'" in sql
+        assert "Model ''%'' not found" in sql
+        assert "Embedding model ''%'' not found" in sql
+        assert "error <> 'model_not_found'" in sql
+        # Must NOT use the broad substring form that would also drop upstream
+        # provider 404s (e.g. "404, message='Not Found', url=...").
+        assert "ILIKE '%not found%'" not in sql
 
 
 @pytest.mark.asyncio

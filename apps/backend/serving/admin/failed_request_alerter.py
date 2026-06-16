@@ -37,17 +37,24 @@ logger = get_logger(__name__)
 #
 # Client errors (4xx) intentionally excluded — alert is for service-side
 # failures. The ``error IS NOT NULL`` branch would otherwise re-admit 4xx rows
-# that log an error message. "Model not found" responses (404) are user-driven
-# — a request for an unknown or unauthorized model — not an incident, so they
-# are excluded here and never reach Slack. Two distinct forms are persisted:
-# the handler paths log the human message ``Model 'x' not found`` (completions,
-# embeddings, anthropic HTTPException detail), while the rejection-log path
-# (``/anthropic/v1/messages`` with ``log_rejected_requests`` on) stores the
-# machine code ``model_not_found``. Both are matched below.
+# that log an error message. Gateway-generated "model not found" responses (404)
+# are user-driven — a request for an unknown or unauthorized model — not an
+# incident, so they are excluded here and never reach Slack. Three exact forms
+# are persisted:
+#   - ``Model '<id>' not found``           (completions handler synthetic log)
+#   - ``Embedding model '<id>' not found`` (embeddings handler)
+#   - ``model_not_found``                  (rejection-log code for
+#                                           /anthropic/v1/messages)
+# The match is anchored (no leading ``%``) so it only drops these gateway rows.
+# An *upstream* provider 404 is logged via format_exception_for_db as the full
+# exception text (e.g. ``404, message='Not Found', url=...``); that is a genuine
+# service-side failure and must still alert, so a broad ``%not found%`` would be
+# wrong — it would silence provider/config regressions.
 FAILURE_PREDICATE_SQL = (
     "(status_code >= 500 OR (error IS NOT NULL "
-    "AND error NOT ILIKE '%not found%' "
-    "AND error NOT ILIKE '%model_not_found%'))"
+    "AND error NOT ILIKE 'Model ''%'' not found' "
+    "AND error NOT ILIKE 'Embedding model ''%'' not found' "
+    "AND error <> 'model_not_found'))"
 )
 
 # Module-level SQL so tests can introspect the predicate text.
