@@ -22,6 +22,46 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROXY_SCRIPT="${SCRIPT_DIR}/spark_idle_proxy.py"
 MODELS_JSON="${SCRIPT_DIR}/models.json"
 
+_kill_pid() {
+  local pid="$1"
+  [[ -z "$pid" ]] && return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.2
+  done
+  kill -9 "$pid" 2>/dev/null || true
+}
+
+_kill_orphan_tunnels() {
+  local line pid cmd
+  while read -r line; do
+    [[ -z "$line" ]] && continue
+    pid="${line%% *}"
+    cmd="${line#* }"
+    if [[ "$cmd" == *"ssh -N"* && "$cmd" == *"-R"*":${LISTEN_PORT}:localhost:${LISTEN_PORT}"* ]]; then
+      if kill -0 "$pid" 2>/dev/null; then
+        echo "Stopping SSH tunnel (PID ${pid}) …"
+        _kill_pid "$pid"
+      fi
+    fi
+  done < <(pgrep -af 'ssh -N' 2>/dev/null || true)
+}
+
+_kill_port_listener() {
+  local pid
+  while read -r pid; do
+    [[ -z "$pid" ]] && continue
+    if ! kill -0 "$pid" 2>/dev/null; then
+      continue
+    fi
+    echo "Stopping listener on :${LISTEN_PORT} (PID ${pid}) …"
+    _kill_pid "$pid"
+  done < <(ss -tlnp "sport = :${LISTEN_PORT}" 2>/dev/null \
+    | rg -o 'pid=[0-9]+' | sed 's/pid=//' | sort -u || true)
+}
+
 cmd="${1:-}"
 
 case "$cmd" in
@@ -68,15 +108,18 @@ case "$cmd" in
       if [[ ${#TUNNEL_PIDS[@]} -gt 0 ]]; then
         printf "%s\n" "${TUNNEL_PIDS[@]}" > "$TUNNEL_PID_FILE"
       fi
-      [[ $TUNNEL_EXIT -ne 0 ]] && exit 1
+      if [[ ${#TUNNEL_PIDS[@]} -eq 0 ]]; then
+        exit 1
+      fi
     fi
     ;;
   stop)
+    _kill_orphan_tunnels
     if [[ -f "$TUNNEL_PID_FILE" ]]; then
       echo "Stopping tunnels …"
       while read -r tpid; do
         [[ -z "$tpid" ]] && continue
-        kill -0 "$tpid" 2>/dev/null && kill "$tpid" 2>/dev/null || true
+        kill -0 "$tpid" 2>/dev/null && _kill_pid "$tpid" || true
       done < "$TUNNEL_PID_FILE"
       rm -f "$TUNNEL_PID_FILE"
     fi
@@ -84,7 +127,8 @@ case "$cmd" in
       PID=$(cat "$PID_FILE")
       if kill -0 "$PID" 2>/dev/null; then
         echo "Stopping proxy (PID ${PID}) …"
-        kill "$PID"
+        _kill_pid "$PID"
+        _kill_port_listener
         if [[ -f "$MODELS_JSON" ]]; then
           for ctr in $(python3 -c "import json; [print(v['container']) for v in json.load(open('$MODELS_JSON')).values()]"); do
             sudo docker rm -f "$ctr" >/dev/null 2>&1 || true
@@ -93,10 +137,12 @@ case "$cmd" in
         echo "Proxy stopped."
       else
         echo "Proxy not running (stale PID file)."
+        _kill_port_listener
       fi
       rm -f "$PID_FILE"
     else
       echo "No PID file found — proxy not running."
+      _kill_port_listener
       if [[ -f "$MODELS_JSON" ]]; then
         for ctr in $(python3 -c "import json; [print(v['container']) for v in json.load(open('$MODELS_JSON')).values()]"); do
           sudo docker rm -f "$ctr" >/dev/null 2>&1 || true
