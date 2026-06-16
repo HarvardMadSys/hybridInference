@@ -37,12 +37,17 @@ logger = get_logger(__name__)
 #
 # Client errors (4xx) intentionally excluded — alert is for service-side
 # failures. The ``error IS NOT NULL`` branch would otherwise re-admit 4xx rows
-# that log an error message. "Model not found" responses (404, logged with an
-# ``error`` like ``Model 'x' not found``) are user-driven — a request for an
-# unknown or unauthorized model — not an incident, so they are excluded here
-# and never reach Slack.
+# that log an error message. "Model not found" responses (404) are user-driven
+# — a request for an unknown or unauthorized model — not an incident, so they
+# are excluded here and never reach Slack. Two distinct forms are persisted:
+# the handler paths log the human message ``Model 'x' not found`` (completions,
+# embeddings, anthropic HTTPException detail), while the rejection-log path
+# (``/anthropic/v1/messages`` with ``log_rejected_requests`` on) stores the
+# machine code ``model_not_found``. Both are matched below.
 FAILURE_PREDICATE_SQL = (
-    "(status_code >= 500 OR (error IS NOT NULL AND error NOT ILIKE '%not found%'))"
+    "(status_code >= 500 OR (error IS NOT NULL "
+    "AND error NOT ILIKE '%not found%' "
+    "AND error NOT ILIKE '%model_not_found%'))"
 )
 
 # Module-level SQL so tests can introspect the predicate text.
@@ -54,8 +59,9 @@ FAILED_REQUEST_COUNT_SQL = (
 )
 
 # Returns top status codes, providers, models, and a sample error message for
-# the same failure window. $1 = window_minutes (int).
-FAILED_REQUEST_BREAKDOWN_SQL = """
+# the same failure window. $1 = window_minutes (int). Shares FAILURE_PREDICATE_SQL
+# with the count query so the two never drift.
+FAILED_REQUEST_BREAKDOWN_SQL = f"""
 SELECT
     string_agg(DISTINCT status_code::text, ', ' ORDER BY status_code::text) FILTER (WHERE status_code IS NOT NULL) AS status_codes,
     string_agg(DISTINCT provider, ', ' ORDER BY provider) FILTER (WHERE provider IS NOT NULL) AS providers,
@@ -63,7 +69,7 @@ SELECT
     (array_agg(error ORDER BY timestamp DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_error
 FROM api_logs
 WHERE timestamp > NOW() - make_interval(mins => $1)
-AND (status_code >= 500 OR (error IS NOT NULL AND error NOT ILIKE '%not found%'))
+AND {FAILURE_PREDICATE_SQL}
 """
 
 

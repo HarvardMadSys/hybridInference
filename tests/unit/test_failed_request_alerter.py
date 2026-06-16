@@ -34,15 +34,20 @@ async def test_count_recent_failures_query():
 
 
 def test_both_queries_exclude_model_not_found():
-    """Count and breakdown queries must both exclude 'model not found' errors."""
+    """Count and breakdown queries must both exclude 'model not found' errors.
+
+    Two persisted forms exist: the handler human message ``Model 'x' not found``
+    and the rejection-log machine code ``model_not_found``. Both must be filtered.
+    """
     from serving.admin.failed_request_alerter import (
         FAILED_REQUEST_BREAKDOWN_SQL,
         FAILED_REQUEST_COUNT_SQL,
     )
 
-    # The exclusion lives on the error branch so genuine 5xx failures still count.
-    assert "NOT ILIKE '%not found%'" in FAILED_REQUEST_COUNT_SQL
-    assert "NOT ILIKE '%not found%'" in FAILED_REQUEST_BREAKDOWN_SQL
+    for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL):
+        # The exclusion lives on the error branch so genuine 5xx failures still count.
+        assert "NOT ILIKE '%not found%'" in sql
+        assert "NOT ILIKE '%model_not_found%'" in sql
 
 
 @pytest.mark.asyncio
