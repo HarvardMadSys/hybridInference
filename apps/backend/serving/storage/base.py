@@ -990,6 +990,18 @@ class LogStore(ABC):
     ) -> list[Row]:
         """Fetch aggregated hourly stats from api_stats_hourly."""
 
+    # -- admin: bulk delete --------------------------------------------------
+
+    @abstractmethod
+    async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
+        """Hard-delete error requests logged within the last *hours* hours.
+
+        An "error" row matches the same predicate the admin Recent Requests
+        "errors only" filter uses: ``error IS NOT NULL`` OR a status code that
+        is missing or outside the 2xx/3xx success range. Returns the number of
+        deleted rows.
+        """
+
     # -- admin: hard-delete user-owned rows ---------------------------------
 
     @abstractmethod

@@ -701,6 +701,32 @@ class PostgresLogStore(LogStore):
             )
         return [dict(r) for r in rows]
 
+    # -- admin: bulk delete --------------------------------------------------
+
+    async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
+        """Hard-delete error requests from ``api_logs`` in the last *hours*.
+
+        The error predicate mirrors the admin Recent Requests "errors only"
+        filter (``admin_list_recent_requests``) so this clears exactly the
+        rows that filter surfaces. Returns the deleted row count parsed from
+        the asyncpg command tag.
+        """
+        hours = max(1, hours)
+        async with self.pool.acquire() as conn:
+            status = await conn.execute(
+                """
+                DELETE FROM api_logs
+                WHERE timestamp >= NOW() - make_interval(hours => $1::int)
+                  AND (error IS NOT NULL OR status_code IS NULL
+                       OR status_code < 200 OR status_code >= 400)
+                """,
+                hours,
+            )
+        try:
+            return int(status.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
+
     # -- admin: hard-delete user-owned rows ---------------------------------
 
     async def hard_delete_user_data(self, user_id: str) -> dict[str, int]:

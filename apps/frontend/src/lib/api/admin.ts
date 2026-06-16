@@ -478,6 +478,21 @@ export async function getRecentRequestContent(
   return jsonOrThrow<AdminRecentRequestContentResponse>(resp);
 }
 
+export interface ClearErrorRequestsResponse {
+  deleted_count: number;
+  hours: number;
+  message: string;
+}
+
+export async function clearErrorRequests(hours = 1): Promise<ClearErrorRequestsResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/recent-requests/clear-errors?hours=${hours}`,
+    { method: 'POST' },
+  );
+  return jsonOrThrow<ClearErrorRequestsResponse>(resp);
+}
+
 // ========================================
 // Analytics
 // ========================================
