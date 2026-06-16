@@ -27,8 +27,22 @@ async def test_count_recent_failures_query():
     # Verify the constant-level predicate text.
     assert "status_code >= 500" in FAILED_REQUEST_COUNT_SQL
     assert "error IS NOT NULL" in FAILED_REQUEST_COUNT_SQL
+    # "Model not found" (404 client errors) must be excluded so they never alert.
+    assert "NOT ILIKE '%not found%'" in FAILED_REQUEST_COUNT_SQL
     # Verify the call was parameterized: SQL string + bind arg, not interpolated.
     pool.fetchval.assert_awaited_once_with(FAILED_REQUEST_COUNT_SQL, 5)
+
+
+def test_both_queries_exclude_model_not_found():
+    """Count and breakdown queries must both exclude 'model not found' errors."""
+    from serving.admin.failed_request_alerter import (
+        FAILED_REQUEST_BREAKDOWN_SQL,
+        FAILED_REQUEST_COUNT_SQL,
+    )
+
+    # The exclusion lives on the error branch so genuine 5xx failures still count.
+    assert "NOT ILIKE '%not found%'" in FAILED_REQUEST_COUNT_SQL
+    assert "NOT ILIKE '%not found%'" in FAILED_REQUEST_BREAKDOWN_SQL
 
 
 @pytest.mark.asyncio

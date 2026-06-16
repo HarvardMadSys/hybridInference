@@ -33,13 +33,24 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+# Predicate shared by the count and breakdown queries.
+#
+# Client errors (4xx) intentionally excluded — alert is for service-side
+# failures. The ``error IS NOT NULL`` branch would otherwise re-admit 4xx rows
+# that log an error message. "Model not found" responses (404, logged with an
+# ``error`` like ``Model 'x' not found``) are user-driven — a request for an
+# unknown or unauthorized model — not an incident, so they are excluded here
+# and never reach Slack.
+FAILURE_PREDICATE_SQL = (
+    "(status_code >= 500 OR (error IS NOT NULL AND error NOT ILIKE '%not found%'))"
+)
+
 # Module-level SQL so tests can introspect the predicate text.
-# Client errors (4xx) intentionally excluded — alert is for service-side failures.
 # Parameterized: $1 = window_minutes (int). Avoids string interpolation, allows plan caching.
 FAILED_REQUEST_COUNT_SQL = (
     "SELECT COUNT(*) FROM api_logs "
     "WHERE timestamp > NOW() - make_interval(mins => $1) "
-    "AND (status_code >= 500 OR error IS NOT NULL)"
+    f"AND {FAILURE_PREDICATE_SQL}"
 )
 
 # Returns top status codes, providers, models, and a sample error message for
@@ -52,7 +63,7 @@ SELECT
     (array_agg(error ORDER BY timestamp DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_error
 FROM api_logs
 WHERE timestamp > NOW() - make_interval(mins => $1)
-AND (status_code >= 500 OR error IS NOT NULL)
+AND (status_code >= 500 OR (error IS NOT NULL AND error NOT ILIKE '%not found%'))
 """
 
 
