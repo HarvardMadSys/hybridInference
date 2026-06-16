@@ -485,11 +485,9 @@ export interface ClearErrorRequestsResponse {
 }
 
 export async function clearErrorRequests(hours = 1): Promise<ClearErrorRequestsResponse> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/admin/recent-requests/clear-errors?hours=${hours}`,
-    { method: 'POST' },
-  );
+  const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests/clear-errors?hours=${hours}`, {
+    method: 'POST',
+  });
   return jsonOrThrow<ClearErrorRequestsResponse>(resp);
 }
 

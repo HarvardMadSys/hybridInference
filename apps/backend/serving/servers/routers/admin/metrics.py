@@ -35,6 +35,7 @@ from serving.servers.routers.admin._common import (
     _round_or_none,
 )
 from serving.storage.utils import coerce_json_object
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
@@ -753,7 +754,7 @@ async def admin_get_recent_request_content(
 async def admin_clear_error_requests(
     request: Request,
     hours: int = 1,
-    admin_id: str = Depends(verify_admin_access),
+    _admin_id: str = Depends(verify_admin_access),
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
 ) -> AdminClearErrorRequestsResponse:
@@ -774,7 +775,7 @@ async def admin_clear_error_requests(
     if op_store is not None:
         await log_admin_action(
             op_store,
-            admin_id,
+            get_client_ip(request),
             "clear_error_requests",
             None,
             {"hours": hours, "deleted_count": deleted_count},
