@@ -629,3 +629,16 @@ def test_vllm_generation_keeps_kv_cache_dtype(monkeypatch: Any, tmp_path: Path) 
 
     assert cmd[cmd.index("--kv-cache-dtype") + 1] == "fp8"
     assert "--runner" not in cmd
+
+
+def test_health_endpoint_returns_200_without_api_key(monkeypatch: Any, tmp_path: Path) -> None:
+    # The routing HealthMonitor probes GET /health with no API key and expects
+    # 200; a 401 there marks every local model unhealthy.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        status, headers, body = _request(f"http://127.0.0.1:{proxy_port}/health")
+
+    assert status == 200
+    assert headers["Content-Type"] == "application/json"
+    assert json.loads(body) == {"status": "ok"}

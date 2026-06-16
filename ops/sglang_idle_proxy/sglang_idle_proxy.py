@@ -779,6 +779,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._handle_models_list()
             return
 
+        # The routing layer's HealthMonitor probes the origin root at GET
+        # /health with no API key and expects 200 (see apps/backend/routing/
+        # health.py). The proxy lazily starts backends on demand, so liveness of
+        # the proxy itself means the deployment is available — a backend that is
+        # idle-stopped is not "down". Answer 200 here without auth; otherwise the
+        # health check 401s and the gateway marks every local model unhealthy.
+        if self.path == "/health" and self.command == "GET":
+            self._handle_health()
+            return
+
         if not self._check_api_key():
             return
 
@@ -808,6 +818,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         self._forward_with_body(backend, body)
+
+    def _handle_health(self) -> None:
+        """Return 200 while the proxy is alive (unauthenticated liveness probe).
+
+        Reports the proxy's own liveness, not any backend's, because backends
+        start on demand — an idle-stopped backend is healthy, just not loaded.
+        """
+        payload = _json.dumps({"status": "ok"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def _handle_models_list(self) -> None:
         """Return a /v1/models response derived from live backend state.
