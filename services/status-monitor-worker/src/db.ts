@@ -80,15 +80,27 @@ export async function prune(db: D1Database, retentionDays: number): Promise<void
  * wipes the dashboard during an outage.)
  */
 export async function reconcileModels(db: D1Database, activeIds: string[]): Promise<void> {
+  // Persist the active model list in a single meta row so getSnapshot can read it
+  // with an O(1) keyed lookup. Deriving it from probe_results (e.g. SELECT
+  // DISTINCT model_id) instead scans the whole covering index, which D1 bills as
+  // rows_read proportional to retained history (~models × probes/day ×
+  // RETENTION_DAYS) — reviving the full-scan cost this module caps history reads
+  // to avoid. Written here because a successful cycle's active set is exactly
+  // what the dashboard should show.
+  const sortedIds = [...activeIds].sort((a, b) => a.localeCompare(b));
+  const setModelIds = db
+    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES ('model_ids', ?)`)
+    .bind(JSON.stringify(sortedIds));
+
   if (activeIds.length === 0) {
-    await db.prepare(`DELETE FROM probe_results`).run();
+    await db.batch([db.prepare(`DELETE FROM probe_results`), setModelIds]);
     return;
   }
   const placeholders = activeIds.map(() => "?").join(",");
-  await db
-    .prepare(`DELETE FROM probe_results WHERE model_id NOT IN (${placeholders})`)
-    .bind(...activeIds)
-    .run();
+  await db.batch([
+    db.prepare(`DELETE FROM probe_results WHERE model_id NOT IN (${placeholders})`).bind(...activeIds),
+    setModelIds,
+  ]);
 }
 
 /**
@@ -206,21 +218,30 @@ function toRow(r: RawRow): ProbeRow {
  * model, with the latest result, a sparkline window, and an uptime ratio.
  */
 export async function getSnapshot(db: D1Database): Promise<Snapshot> {
-  // Two-step, index-driven read so cost is bounded by model count, not table
-  // size. A single `ROW_NUMBER() OVER (PARTITION BY model_id ...)` window can't
-  // stop at HISTORY_LIMIT per partition, so it materializes the whole table —
-  // which scales with RETENTION_DAYS and eventually blows D1 row-scan / Worker
-  // CPU limits. Instead: (1) list the distinct models (index-only scan of
-  // idx_probe_results_model_id), then (2) fetch each model's newest
-  // HISTORY_LIMIT rows via that same (model_id, id DESC) index — at most
-  // HISTORY_LIMIT rows read per model regardless of retention.
-  const modelRows = await db
-    .prepare(`SELECT DISTINCT model_id FROM probe_results ORDER BY model_id ASC`)
-    .all<{ model_id: string }>();
-  const modelIds = (modelRows.results ?? []).map((r) => r.model_id);
+  // Read the active model list from a single keyed meta row (written each cycle
+  // by reconcileModels). This keeps per-request cost bounded by model count, not
+  // table size — a DISTINCT over probe_results scans the whole covering index and
+  // D1 bills every entry as rows_read (~models × probes/day × RETENTION_DAYS).
+  // Absent/corrupt value → empty list; the next successful cycle rewrites it.
+  const modelIdsRow = await db
+    .prepare(`SELECT value FROM meta WHERE key = 'model_ids'`)
+    .first<{ value: string }>();
+  let modelIds: string[] = [];
+  if (modelIdsRow?.value) {
+    try {
+      const parsed = JSON.parse(modelIdsRow.value);
+      if (Array.isArray(parsed)) {
+        modelIds = parsed.filter((id): id is string => typeof id === "string");
+      }
+    } catch {
+      modelIds = [];
+    }
+  }
 
   const byModel = new Map<string, ProbeRow[]>();
   if (modelIds.length > 0) {
+    // Fetch each model's newest HISTORY_LIMIT rows via the (model_id, id DESC)
+    // index — at most HISTORY_LIMIT rows read per model regardless of retention.
     const stmt = db.prepare(
       `SELECT model_id, ok, latency_ms, ttft_ms, completion_tokens, throughput_tps, error, checked_at
        FROM probe_results
@@ -230,10 +251,14 @@ export async function getSnapshot(db: D1Database): Promise<Snapshot> {
     );
     const batched = await db.batch<RawRow>(modelIds.map((id) => stmt.bind(id, HISTORY_LIMIT)));
     for (let i = 0; i < modelIds.length; i++) {
+      const rows = batched[i].results ?? [];
+      // A model can be listed but have no rows — pruned or reconciled away
+      // between the list read and this batch, or before its first probe landed.
+      // Skip it so `latest` (history[last]) is never undefined downstream.
+      if (rows.length === 0) continue;
       // Rows come back newest-first; reverse to oldest→newest so `latest` is the
       // last element and the sparkline tail is the most recent window.
-      const list = (batched[i].results ?? []).map(toRow).reverse();
-      byModel.set(modelIds[i], list);
+      byModel.set(modelIds[i], rows.map(toRow).reverse());
     }
   }
 
