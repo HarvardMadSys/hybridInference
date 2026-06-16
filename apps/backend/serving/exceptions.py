@@ -189,10 +189,21 @@ _PROVIDER_NAME_RE = re.compile(
     r"(?i)\b(?:" + "|".join(re.escape(t) for t in _PROVIDER_NAME_TOKENS) + r")\b"
 )
 _SECRET_RE = re.compile(
-    r'(?i)("?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|authorization)"?'
+    r'(?i)("?(?:api[ _-]?key|access[ _-]?token|refresh[ _-]?token|secret|token|authorization)"?'
     r'\s*[:=]\s*)("?)[^"\s,}]+("?)'
 )
 _BEARER_RE = re.compile(r"(?i)bearer\s+[a-z0-9._~+/=-]+")
+# Provider API-key token shapes, redacted by value regardless of the surrounding
+# phrasing. Upstream 401 bodies commonly echo the key without an ``api_key=``
+# separator, e.g. OpenAI's ``Incorrect API key provided: sk-...`` — which the
+# assignment-based _SECRET_RE above does not catch.
+_API_KEY_TOKEN_RE = re.compile(
+    # OpenAI / Anthropic / DeepSeek / OpenRouter (sk-…, sk-ant-…, sk-proj-…),
+    # Groq (gsk_…), xAI (xai-…), Stripe-style restricted keys (rk_…).
+    r"(?i)\b(?:sk|gsk|xai|rk)[-_][a-z0-9._-]{6,}"
+    # Google / Gemini API keys (AIza…).
+    r"|\bAIza[0-9A-Za-z_-]{10,}"
+)
 
 # Upstream error string shapes we know how to unwrap into a bare message.
 _UPSTREAM_BODY_MARKER = "upstream_body="
@@ -267,6 +278,7 @@ def scrub_provider_identity(text: str) -> str:
     text = _HOSTNAME_RE.sub("", text)
     text = _PROVIDER_NAME_RE.sub("", text)
     text = _SECRET_RE.sub(r"\1\2[REDACTED]\3", text)
+    text = _API_KEY_TOKEN_RE.sub("[REDACTED]", text)
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
     # Tidy up artefacts left behind by the removals above.
     text = re.sub(r"\s+([.,:;])", r"\1", text)
@@ -343,3 +355,44 @@ def scrub_error_for_user(
     if request_id:
         return f"{base} (request_id: {request_id})"
     return base
+
+
+def operator_safe_error(exc: BaseException | None, *, max_len: int = 500) -> str | None:
+    """Return operator-facing error text with secrets and provider URLs removed.
+
+    Intended for internal operator surfaces such as Slack alerts. Unlike
+    :func:`scrub_error_for_user`, this keeps the raw error text for *any*
+    exception (not just recognized upstream API errors) so alerts stay
+    actionable, but it still runs the provider-identity scrubber so secrets
+    can never leak.
+
+    The leak this guards against: ``aiohttp.ClientResponseError`` renders the
+    request URL in ``str(exc)``, and some adapters embed the API key in the
+    URL (e.g. Gemini's ``?key=<api_key>``). We therefore prefer the safe
+    extraction path (``error_body`` / aiohttp ``message``) over ``str(exc)``
+    and scrub URLs/secrets from whatever we surface.
+
+    Returns ``None`` when there is no usable text after scrubbing.
+    """
+    if exc is None:
+        return None
+    raw = _upstream_error_raw(exc)
+    if not raw:
+        # Non-upstream exception (timeout, connection error, ValueError, ...).
+        # str() can raise on a malformed exception, so guard it.
+        try:
+            raw = str(exc)
+        except Exception:
+            raw = exc.__class__.__name__
+    # Bound before scrubbing: error_body can hold a full upstream response body
+    # (e.g. a large HTML 5xx page), and running every regex substitution over
+    # it on each failed attempt is wasted work since only ``max_len`` chars are
+    # ever surfaced. A margin above ``max_len`` keeps scrubbing context intact.
+    if len(raw) > max_len * 4:
+        raw = raw[: max_len * 4]
+    cleaned = scrub_provider_identity(raw)
+    if not cleaned:
+        return None
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 1].rstrip() + "…"
+    return cleaned
