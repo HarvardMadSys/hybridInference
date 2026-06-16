@@ -206,25 +206,35 @@ function toRow(r: RawRow): ProbeRow {
  * model, with the latest result, a sparkline window, and an uptime ratio.
  */
 export async function getSnapshot(db: D1Database): Promise<Snapshot> {
-  // Window function keeps the newest HISTORY_LIMIT rows per model.
-  const result = await db
-    .prepare(
-      `SELECT model_id, ok, latency_ms, ttft_ms, completion_tokens, throughput_tps, error, checked_at
-       FROM (
-         SELECT *, ROW_NUMBER() OVER (PARTITION BY model_id ORDER BY id DESC) AS rn
-         FROM probe_results
-       )
-       WHERE rn <= ?
-       ORDER BY model_id ASC, id ASC`,
-    )
-    .bind(HISTORY_LIMIT)
-    .all<RawRow>();
+  // Two-step, index-driven read so cost is bounded by model count, not table
+  // size. A single `ROW_NUMBER() OVER (PARTITION BY model_id ...)` window can't
+  // stop at HISTORY_LIMIT per partition, so it materializes the whole table —
+  // which scales with RETENTION_DAYS and eventually blows D1 row-scan / Worker
+  // CPU limits. Instead: (1) list the distinct models (index-only scan of
+  // idx_probe_results_model_id), then (2) fetch each model's newest
+  // HISTORY_LIMIT rows via that same (model_id, id DESC) index — at most
+  // HISTORY_LIMIT rows read per model regardless of retention.
+  const modelRows = await db
+    .prepare(`SELECT DISTINCT model_id FROM probe_results ORDER BY model_id ASC`)
+    .all<{ model_id: string }>();
+  const modelIds = (modelRows.results ?? []).map((r) => r.model_id);
 
   const byModel = new Map<string, ProbeRow[]>();
-  for (const raw of result.results ?? []) {
-    const list = byModel.get(raw.model_id) ?? [];
-    list.push(toRow(raw));
-    byModel.set(raw.model_id, list);
+  if (modelIds.length > 0) {
+    const stmt = db.prepare(
+      `SELECT model_id, ok, latency_ms, ttft_ms, completion_tokens, throughput_tps, error, checked_at
+       FROM probe_results
+       WHERE model_id = ?
+       ORDER BY id DESC
+       LIMIT ?`,
+    );
+    const batched = await db.batch<RawRow>(modelIds.map((id) => stmt.bind(id, HISTORY_LIMIT)));
+    for (let i = 0; i < modelIds.length; i++) {
+      // Rows come back newest-first; reverse to oldest→newest so `latest` is the
+      // last element and the sparkline tail is the most recent window.
+      const list = (batched[i].results ?? []).map(toRow).reverse();
+      byModel.set(modelIds[i], list);
+    }
   }
 
   const models: ModelStatus[] = [];
