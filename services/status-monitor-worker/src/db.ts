@@ -159,9 +159,9 @@ export async function setCycleStatus(db: D1Database, status: CycleStatus): Promi
   ]);
 }
 
-// A cycle older than this (≈3 missed 5-minute crons) is treated as stale, so a
+// A cycle older than this (≈3 missed 20-minute crons) is treated as stale, so a
 // stopped/undeployed cron or a never-run monitor doesn't show stale green.
-const CYCLE_FRESHNESS_MS = 15 * 60 * 1000;
+const CYCLE_FRESHNESS_MS = 60 * 60 * 1000;
 
 async function getCycleStatus(db: D1Database): Promise<CycleStatus> {
   const result = await db.prepare(`SELECT key, value FROM meta`).all<{ key: string; value: string }>();
