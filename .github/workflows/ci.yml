@@ -71,6 +71,12 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+          # Disable the post-job `uv cache prune --ci`. Multiple jobs run
+          # concurrently on the same self-hosted runner and share one
+          # UV_CACHE_DIR; one job's prune deletes the `.tmp*` extraction dirs
+          # another job's `uv sync` is mid-write into, causing intermittent
+          # "Failed to extract archive ... No such file or directory" failures.
+          prune-cache: false
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
@@ -183,6 +189,12 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
+          # Disable the post-job `uv cache prune --ci`. Multiple jobs run
+          # concurrently on the same self-hosted runner and share one
+          # UV_CACHE_DIR; one job's prune deletes the `.tmp*` extraction dirs
+          # another job's `uv sync` is mid-write into, causing intermittent
+          # "Failed to extract archive ... No such file or directory" failures.
+          prune-cache: false
 
       - name: Set up Python
         run: uv python install ${{ env.PYTHON_VERSION }}
