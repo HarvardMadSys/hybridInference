@@ -29,6 +29,9 @@ INFERENCE_PATH_PREFIXES: tuple[str, ...] = (
     "/v1/completions",
     "/v1/embeddings",
     "/completion",
+    # The Anthropic Messages handler is registered at both aliases, so both
+    # must be recognized or rejections on the root route are dropped silently.
+    "/v1/messages",
     "/anthropic/v1/messages",
 )
 
