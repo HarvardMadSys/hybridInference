@@ -389,8 +389,11 @@ class BackendManager:
         vLLM serves the OpenAI-compatible API on container port 8000 (sglang
         uses 8001); the health check and proxy address the backend through the
         host ``backend_port``, so the internal-port difference is transparent.
-        FP8 KV cache (overridable via ``kv_cache_dtype``) matches the model's
-        FP8 weights and the throughput benchmark that motivated vLLM here.
+
+        Generation models get an FP8 KV cache (overridable via ``kv_cache_dtype``)
+        to match FP8 weights and the throughput benchmark that motivated vLLM
+        here. Embedding models run vLLM's pooling runner, which has no KV cache,
+        so ``--kv-cache-dtype`` and the generation parsers are omitted for them.
         """
         cmd = [
             "sudo",
@@ -420,12 +423,14 @@ class BackendManager:
             str(self.config.get("mem_fraction", "0.90")),
             "--tensor-parallel-size",
             "1",
-            "--kv-cache-dtype",
-            str(self.config.get("kv_cache_dtype", "fp8")),
         ]
         if self.config.get("is_embedding"):
-            cmd += ["--task", "embed"]
+            # vLLM >= 0.20 selects the embedding runner with --runner pooling
+            # (the older --task embed was removed). Pooling models keep no KV
+            # cache, so --kv-cache-dtype must not be passed.
+            cmd += ["--runner", "pooling"]
         else:
+            cmd += ["--kv-cache-dtype", str(self.config.get("kv_cache_dtype", "fp8"))]
             # Reasoning models emit a thinking block; the parser splits it into
             # message.reasoning_content so it does not leak into content (and is
             # excluded from tool-call arguments).

@@ -578,3 +578,54 @@ def test_models_endpoint_reports_dead_ready_backend_as_not_loaded(
         _, _, body = _request(f"http://127.0.0.1:{proxy_port}/v1/models")
 
     assert json.loads(body)["data"][0]["status"] == "not_loaded"
+
+
+def test_vllm_embedding_uses_pooling_runner_without_kv_cache(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "bge-m3-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18012,
+            "model_dir": "/tmp/bge-m3",
+            "served_name": MODEL_NAME,
+            "max_model_len": 8192,
+            "mem_fraction": "0.10",
+            "is_embedding": True,
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    # Pooling runner selects the embedding path (vLLM >= 0.20); the removed
+    # --task embed and the inapplicable KV-cache flag must not be present.
+    assert cmd[cmd.index("--runner") + 1] == "pooling"
+    assert "--task" not in cmd
+    assert "--kv-cache-dtype" not in cmd
+
+
+def test_vllm_generation_keeps_kv_cache_dtype(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "qwen-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18001,
+            "model_dir": "/tmp/qwen",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.80",
+            "kv_cache_dtype": "fp8",
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    assert cmd[cmd.index("--kv-cache-dtype") + 1] == "fp8"
+    assert "--runner" not in cmd
