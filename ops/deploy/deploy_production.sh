@@ -49,7 +49,17 @@ main() {
   git fetch --prune origin "$TARGET_BRANCH"
 
   if [[ -n "$DEPLOY_SHA" ]]; then
-    target_sha="$(git rev-parse "${DEPLOY_SHA}^{commit}")"
+    # Only origin/${TARGET_BRANCH} was fetched above, so a SHA from any other
+    # branch (e.g. a 'dev'-only commit dispatched against the wrong branch)
+    # won't exist in this repo. Guard rev-parse so that case fails with a
+    # clear message instead of a raw "unknown revision" git error (exit 128).
+    if ! target_sha="$(git rev-parse --verify --quiet "${DEPLOY_SHA}^{commit}")"; then
+      log "Refusing to deploy ${DEPLOY_SHA}; it is not on origin/${TARGET_BRANCH}."
+      log "Production only deploys commits promoted to '${TARGET_BRANCH}'. If you"
+      log "dispatched Deploy Production against another branch (e.g. 'dev'), re-run"
+      log "it against '${TARGET_BRANCH}', or use Deploy Staging to deploy 'dev'."
+      exit 1
+    fi
     if ! git merge-base --is-ancestor "$target_sha" "origin/${TARGET_BRANCH}"; then
       log "Refusing to deploy ${target_sha}; it is not on origin/${TARGET_BRANCH}."
       exit 1
