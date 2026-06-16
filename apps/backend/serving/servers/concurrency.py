@@ -275,14 +275,17 @@ async def enforce_user_concurrency(
                 "route": request.url.path,
             },
         )
-        # Best-effort prompt capture for the rejection log. FastAPI caches the
-        # parsed body (the exemption check above already read it for POSTs), so
-        # this re-read is cheap and never consumes the stream. Parsing must not
-        # break the gate: any failure leaves prompt empty.
+        # Best-effort prompt capture for the rejection log. Only read the body
+        # if it was already parsed and cached (Starlette stores it on
+        # ``request._json`` after ``await request.json()`` — which the exemption
+        # check above does for POSTs with a resolver/router). Never trigger a
+        # fresh body read here: forcing the server to await the full body of a
+        # request it is rejecting would be a slowloris/DoS foothold.
         rejected_prompt: list[dict[str, Any]] | str = ""
-        if request.method == "POST":
+        cached_json = getattr(request, "_json", None)
+        if cached_json is not None:
             try:
-                rejected_prompt = extract_prompt_from_body(await request.json())
+                rejected_prompt = extract_prompt_from_body(cached_json)
             except Exception:
                 rejected_prompt = ""
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
