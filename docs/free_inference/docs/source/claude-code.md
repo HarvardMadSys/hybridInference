@@ -45,7 +45,7 @@ The script prompts for your API key. To run it non-interactively, supply the
 key through the `FREEINFERENCE_API_KEY` environment variable:
 
 ```bash
-FREEINFERENCE_API_KEY="hyi-your-key-here" bash setup_claude_code.sh
+FREEINFERENCE_API_KEY="hyi-your-api-key" bash setup_claude_code.sh
 ```
 
 > **Security note:** Always review remote shell scripts before executing them.
@@ -63,7 +63,7 @@ rather than overwriting it.
 {
   "env": {
     "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
-    "ANTHROPIC_AUTH_TOKEN": "hyi-your-key-here",
+    "ANTHROPIC_AUTH_TOKEN": "hyi-your-api-key",
     "API_TIMEOUT_MS": "600000"
   }
 }
@@ -106,7 +106,7 @@ current list at any time:
 
 ```bash
 curl https://freeinference.org/v1/models \
-  -H "Authorization: Bearer hyi-your-key-here"
+  -H "Authorization: Bearer hyi-your-api-key"
 ```
 
 See the [Available Models](models.md) page for the full catalog and the
@@ -121,7 +121,7 @@ key in the `x-api-key` header; `Authorization: Bearer` is also accepted.
 ```bash
 curl -X POST https://freeinference.org/anthropic/v1/messages \
   -H "Content-Type: application/json" \
-  -H "x-api-key: hyi-your-key-here" \
+  -H "x-api-key: hyi-your-api-key" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "claude-sonnet-4.6",
