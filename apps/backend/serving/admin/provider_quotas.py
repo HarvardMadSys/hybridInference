@@ -1055,13 +1055,19 @@ def _parse_kimi_usage(payload: Any) -> list[ProviderQuotaUsage]:
         return []
 
     body = payload
-    if not (isinstance(payload.get("usage"), dict) or isinstance(payload.get("limits"), list)):
+    if not (
+        isinstance(payload.get("usage"), dict)
+        or isinstance(payload.get("limits"), list)
+        or isinstance(payload.get("usages"), list)
+    ):
         for envelope_key in ("data", "result"):
             inner = payload.get(envelope_key)
             if isinstance(inner, list):
                 return _parse_kimi_limits(inner)
             if isinstance(inner, dict) and (
-                isinstance(inner.get("usage"), dict) or isinstance(inner.get("limits"), list)
+                isinstance(inner.get("usage"), dict)
+                or isinstance(inner.get("limits"), list)
+                or isinstance(inner.get("usages"), list)
             ):
                 body = inner
                 break

@@ -1234,6 +1234,21 @@ class TestFetchKimi:
         assert results[0].usages[0].used == 750.0  # limit - remaining
         assert results[0].usages[0].limit == 1000.0
 
+    @pytest.mark.asyncio
+    async def test_parses_data_envelope_wrapping_usages_key(self, monkeypatch):
+        # An envelope whose inner object uses the plural ``usages`` array
+        # (the alias accepted alongside ``limits``) must still be unwrapped.
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = {"data": {"usages": [{"detail": {"limit": 1000, "remaining": 250}}]}}
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert results[0].usages[0].used == 750.0  # limit - remaining
+        assert results[0].usages[0].limit == 1000.0
+
 
 class TestFetchOllama:
     @pytest.mark.asyncio
