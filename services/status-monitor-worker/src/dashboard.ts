@@ -421,11 +421,22 @@ function clientScript(refreshMs: number, cycleMs: number): string {
 `;
 }
 
+/** Formats a refresh interval (seconds) as a human-readable cadence. */
+function refreshLabel(seconds: number): string {
+  if (seconds % 60 === 0) {
+    const minutes = seconds / 60;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  return `${seconds}s`;
+}
+
 /** Renders the full auto-refreshing status dashboard HTML page. */
 export function renderDashboard(
   snapshot: Snapshot,
   gatewayHost?: string,
-  refreshSeconds = 30,
+  // Probes run on a 20-minute cron, so refresh the page on the same cadence —
+  // a tighter interval just reloads identical data.
+  refreshSeconds = 1200,
 ): string {
   const target = gatewayHost ? ` · monitoring <strong>${esc(gatewayHost)}</strong>` : "";
   const cards = snapshot.models.length
@@ -461,7 +472,7 @@ export function renderDashboard(
   </div>
   <div class="grid">${cards}</div>
   <div id="zoom" role="presentation"></div>
-  <footer>Auto-refreshes every ${refreshSeconds}s · <a href="api/status">JSON</a></footer>
+  <footer>Auto-refreshes every ${refreshLabel(refreshSeconds)} · <a href="api/status">JSON</a></footer>
   <script id="model-data" type="application/json">${dataJson}</script>
   <script>${clientScript(refreshSeconds * 1000, PROBE_INTERVAL_MS)}</script>
 </body>
