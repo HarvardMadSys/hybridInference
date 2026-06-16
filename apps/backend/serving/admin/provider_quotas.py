@@ -168,11 +168,22 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
 
 
 def _as_float(value: Any) -> float | None:
-    """Convert a JSON number to float while rejecting bool and non-finite values."""
+    """Convert a JSON number to float while rejecting bool and non-finite values.
+
+    Numeric strings (e.g. ``"1200"``) are also accepted: some providers — notably
+    Kimi's ``/usages`` endpoint — return quota figures as strings rather than
+    JSON numbers. Blank/non-numeric strings and ``inf``/``nan`` yield ``None``.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, int | float):
         converted = float(value)
+        return converted if math.isfinite(converted) else None
+    if isinstance(value, str):
+        try:
+            converted = float(value.strip())
+        except ValueError:
+            return None
         return converted if math.isfinite(converted) else None
     return None
 
@@ -1018,20 +1029,56 @@ def _kimi_usage_row(data: dict[str, Any], default_label: str) -> ProviderQuotaUs
     )
 
 
-def _parse_kimi_usage(payload: dict[str, Any]) -> list[ProviderQuotaUsage]:
+def _parse_kimi_limits(limits: list[Any]) -> list[ProviderQuotaUsage]:
+    """Parse a Kimi ``limits``/``usages`` array into quota usages.
+
+    Each item may nest its figures under ``detail`` and its period under
+    ``window``; bare items are parsed directly.
+    """
+    usages: list[ProviderQuotaUsage] = []
+    for idx, item in enumerate(limits):
+        if not isinstance(item, dict):
+            continue
+        detail = item.get("detail")
+        detail = detail if isinstance(detail, dict) else item
+        window = item.get("window")
+        window = window if isinstance(window, dict) else {}
+        label = _kimi_limit_label(item, detail, window, idx)
+        row = _kimi_usage_row(detail, label)
+        if row is not None:
+            usages.append(row)
+    return usages
+
+
+def _parse_kimi_usage(payload: Any) -> list[ProviderQuotaUsage]:
     """Parse the Kimi ``/usages`` payload into a list of usages.
 
     The body has an optional ``usage`` summary plus a ``limits`` array; each
     limit may nest its figures under ``detail`` and its period under ``window``.
-    Some deployments wrap the body in a ``data``/``result`` envelope, so we
-    descend into that when the figures are not present at the top level.
+    The plural ``/usages`` endpoint can also return a bare array of limit
+    objects, and some deployments wrap the body in a ``data``/``result``
+    envelope (object *or* array), so we unwrap those before parsing.
     """
+    # A bare array of limit/usage objects — the gateway's plural list response.
+    if isinstance(payload, list):
+        return _parse_kimi_limits(payload)
+    if not isinstance(payload, dict):
+        return []
+
     body = payload
-    if not (isinstance(payload.get("usage"), dict) or isinstance(payload.get("limits"), list)):
+    if not (
+        isinstance(payload.get("usage"), dict)
+        or isinstance(payload.get("limits"), list)
+        or isinstance(payload.get("usages"), list)
+    ):
         for envelope_key in ("data", "result"):
             inner = payload.get(envelope_key)
+            if isinstance(inner, list):
+                return _parse_kimi_limits(inner)
             if isinstance(inner, dict) and (
-                isinstance(inner.get("usage"), dict) or isinstance(inner.get("limits"), list)
+                isinstance(inner.get("usage"), dict)
+                or isinstance(inner.get("limits"), list)
+                or isinstance(inner.get("usages"), list)
             ):
                 body = inner
                 break
@@ -1049,17 +1096,7 @@ def _parse_kimi_usage(payload: dict[str, Any]) -> list[ProviderQuotaUsage]:
     if not isinstance(limits, list):
         limits = body.get("usages")
     if isinstance(limits, list):
-        for idx, item in enumerate(limits):
-            if not isinstance(item, dict):
-                continue
-            detail = item.get("detail")
-            detail = detail if isinstance(detail, dict) else item
-            window = item.get("window")
-            window = window if isinstance(window, dict) else {}
-            label = _kimi_limit_label(item, detail, window, idx)
-            row = _kimi_usage_row(detail, label)
-            if row is not None:
-                usages.append(row)
+        usages.extend(_parse_kimi_limits(limits))
 
     return usages
 
@@ -1102,15 +1139,19 @@ async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
         logger.exception("fetch_kimi: unexpected error")
         return _err("kimi", "Kimi", key, "unexpected")
 
-    if not isinstance(data, dict):
+    if not isinstance(data, dict | list):
         return _err("kimi", "Kimi", key, "parse_error")
     usages = _parse_kimi_usage(data)
     if not usages:
-        # Log the payload shape (keys only, no values) so an unexpected schema
-        # can be diagnosed from server logs without leaking quota figures.
+        # Log the payload shape (structure only, no values) so an unexpected
+        # schema can be diagnosed from server logs without leaking quota figures.
+        if isinstance(data, dict):
+            shape: Any = sorted(data.keys())
+        else:
+            shape = f"list[{len(data)}]"
         logger.warning(
             "fetch_kimi: no usages parsed",
-            extra={"event": "kimi_quota_parse_empty", "payload_keys": sorted(data.keys())},
+            extra={"event": "kimi_quota_parse_empty", "payload_keys": shape},
         )
         return _err("kimi", "Kimi", key, "parse_error")
 
