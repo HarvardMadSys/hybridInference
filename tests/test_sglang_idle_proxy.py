@@ -485,3 +485,96 @@ def test_streaming_chat_returns_warmup_sse_while_backend_starts(
     assert b"data: [DONE]" in body
     assert backend.touched.is_set()
     assert backend.ensure_running_called.wait(timeout=2)
+
+
+def test_mark_stopped_only_resets_a_ready_backend(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+
+    with backend._lock:
+        backend._state = "ready"
+        backend._current_gpu = "0"
+    backend.mark_stopped()
+    assert backend.state == "stopped"
+    assert backend._current_gpu is None
+
+    # A restart already in flight (state "starting") must not be knocked back to
+    # "stopped" by another thread racing on the same dead backend.
+    with backend._lock:
+        backend._state = "starting"
+    backend.mark_stopped()
+    assert backend.state == "starting"
+
+
+def test_ensure_running_adopts_healthy_running_container(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+
+    monkeypatch.setattr(backend, "_container_running", lambda: True)
+    monkeypatch.setattr(backend, "_backend_healthy", lambda: True)
+    monkeypatch.setattr(backend, "_running_container_gpu", lambda: "3")
+    monkeypatch.setattr(backend, "_wait_healthy", lambda: None)
+    start = Mock()
+    monkeypatch.setattr(backend, "_start_container", start)
+
+    backend.ensure_running()
+
+    # The already-running container is adopted, not torn down and reloaded.
+    start.assert_not_called()
+    assert backend.state == "ready"
+    assert backend._current_gpu == "3"
+
+
+def test_dead_ready_backend_self_heals_and_retries(monkeypatch: Any, tmp_path: Path) -> None:
+    RecordingBackendHandler.requests = []
+
+    with _serve(RecordingBackendHandler) as backend_port:
+        proxy = _load_proxy(monkeypatch, tmp_path, backend_port=backend_port)
+        backend = proxy._backends[MODEL_NAME]
+        with backend._lock:
+            backend._state = "ready"
+
+        # First forward attempt fails as if the backend port were dead; the
+        # retry (after the restart) goes through to the live backend.
+        real_urlopen = proxy.urlopen
+        calls = {"n": 0}
+
+        def flaky_urlopen(req: Any, *a: Any, **k: Any) -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise proxy.URLError("connection refused")
+            return real_urlopen(req, *a, **k)
+
+        monkeypatch.setattr(proxy, "urlopen", flaky_urlopen)
+        monkeypatch.setattr(backend, "alive", lambda: False)
+        ensure = Mock()
+        monkeypatch.setattr(backend, "ensure_running", ensure)
+
+        with _serve(proxy.ProxyHandler) as proxy_port:
+            status, _, body = _request(
+                f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+                method="POST",
+                headers={"Authorization": "Bearer manual-secret"},
+                body={"model": MODEL_NAME, "messages": [{"role": "user", "content": "ping"}]},
+            )
+
+    assert status == 200
+    assert json.loads(body) == {"ok": True, "proxied_path": "/v1/chat/completions"}
+    ensure.assert_called_once()
+    assert calls["n"] == 2  # failed once, restarted, retried once
+
+
+def test_models_endpoint_reports_dead_ready_backend_as_not_loaded(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    with backend._lock:
+        backend._state = "ready"
+    # The proxy still believes it is ready, but the container is gone.
+    monkeypatch.setattr(backend, "_container_running", lambda: False)
+
+    with _serve(proxy.ProxyHandler) as proxy_port:
+        _, _, body = _request(f"http://127.0.0.1:{proxy_port}/v1/models")
+
+    assert json.loads(body)["data"][0]["status"] == "not_loaded"

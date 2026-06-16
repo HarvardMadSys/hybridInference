@@ -229,6 +229,25 @@ class BackendManager:
         with self._lock:
             self._last_activity = time.monotonic()
 
+    def alive(self) -> bool:
+        """Return True if the backend container is currently running."""
+        return self._container_running()
+
+    def mark_stopped(self) -> None:
+        """Reset a ``ready`` backend to ``stopped`` so it relaunches on use.
+
+        Called when the proxy discovers a backend died outside its control
+        (crash, OOM, the sglang scheduler exiting on an internal error). Only
+        a ``ready`` → ``stopped`` transition is performed so that concurrent
+        callers racing on the same dead backend do not knock an in-flight
+        restart (state ``starting``) back to ``stopped``.
+        """
+        with self._lock:
+            if self._state == "ready":
+                self._state = "stopped"
+                self._current_gpu = None
+                self._ready_event.clear()
+
     def ensure_running(self) -> None:
         """Start the container if needed and block until it is healthy."""
         should_start = False
@@ -246,8 +265,16 @@ class BackendManager:
 
         if should_start:
             try:
-                log.info("[%s] Starting container %s …", self.model_name, self.container)
-                self._start_container()
+                if self._adopt_running_container():
+                    log.info(
+                        "[%s] Adopted already-running container %s (gpu=%s).",
+                        self.model_name,
+                        self.container,
+                        self._current_gpu,
+                    )
+                else:
+                    log.info("[%s] Starting container %s …", self.model_name, self.container)
+                    self._start_container()
                 self._wait_healthy()
                 with self._lock:
                     self._state = "ready"
@@ -579,6 +606,57 @@ class BackendManager:
         # no longer running.
         return result.returncode == 0 and result.stdout.strip() == "true"
 
+    def _adopt_running_container(self) -> bool:
+        """Adopt an already-running, healthy container instead of reloading it.
+
+        The proxy loses its in-memory state when it restarts, but the backend
+        containers keep running. Without adoption the next request would
+        ``docker rm -f`` a perfectly healthy backend and pay the multi-minute
+        model reload. Returns True if the existing container was adopted.
+        """
+        if self._container_running() and self._backend_healthy():
+            self._current_gpu = self._running_container_gpu()
+            return True
+        return False
+
+    def _backend_healthy(self) -> bool:
+        """Return True if the backend answers ``/v1/models`` right now.
+
+        A single-shot probe (unlike ``_wait_healthy``, which polls until a
+        deadline). Used to decide whether an already-running container can be
+        adopted instead of reloaded.
+        """
+        url = f"http://localhost:{self.backend_port}/v1/models"
+        try:
+            req = Request(url, method="GET")
+            with urlopen(req, timeout=5) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def _running_container_gpu(self) -> str | None:
+        """Return the GPU device id assigned to the running container, if any.
+
+        Read back from the container's ``--gpus device=N`` request so an
+        adopted backend keeps the right device for colocation/GPU-exclusion
+        bookkeeping.
+        """
+        result = subprocess.run(
+            [
+                "sudo",
+                "docker",
+                "inspect",
+                "-f",
+                "{{range .HostConfig.DeviceRequests}}{{range .DeviceIDs}}{{.}}{{end}}{{end}}",
+                self.container,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        gpu = result.stdout.strip()
+        return gpu or None
+
     def _container_logs_tail(self, lines: int = 20) -> str:
         """Return the last ``lines`` of the container log for error reporting."""
         result = subprocess.run(
@@ -727,13 +805,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self._forward_with_body(backend, body)
 
     def _handle_models_list(self) -> None:
-        """Return a static /v1/models response from config (no backend needed)."""
+        """Return a /v1/models response derived from live backend state.
+
+        A model is reported ``loaded`` only when the proxy considers it ready
+        *and* its container is actually running, so a backend that died outside
+        the proxy's control is not advertised as available.
+        """
         models = [
             {
                 "id": name,
                 "object": "model",
                 "owned_by": "sglang",
-                "status": "loaded" if mgr.state == "ready" else "not_loaded",
+                "status": "loaded" if (mgr.state == "ready" and mgr.alive()) else "not_loaded",
             }
             for name, mgr in _backends.items()
         ]
@@ -775,7 +858,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         threading.Thread(target=_warm_up, daemon=True).start()
 
-    def _forward_with_body(self, backend: BackendManager, body: bytes) -> None:
+    def _forward_with_body(
+        self, backend: BackendManager, body: bytes, allow_restart: bool = True
+    ) -> None:
         target = f"http://localhost:{backend.backend_port}{self.path}"
         headers = {k: v for k, v in self.headers.items() if k.lower() != "host"}
         req = Request(target, data=body if body else None, headers=headers, method=self.command)
@@ -793,6 +878,28 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 else:
                     self.wfile.write(resp.read())
         except URLError as exc:
+            # A connection error here means the backend port is dead. A backend
+            # can die outside the proxy's control (crash, OOM, the sglang
+            # scheduler exiting on an internal error) while the proxy still
+            # believes it is "ready" — so it would 502 forever. Reconcile: if
+            # the container really is gone, reset state, relaunch, and retry the
+            # request once. urlopen fails before any client bytes are written,
+            # so a single retry is safe (no partially-sent response).
+            if allow_restart and not backend.alive():
+                log.warning(
+                    "[%s] Backend unreachable (%s) and container is not running; "
+                    "restarting and retrying once.",
+                    backend.model_name,
+                    exc,
+                )
+                backend.mark_stopped()
+                try:
+                    backend.ensure_running()
+                except RuntimeError as start_exc:
+                    self.send_error(502, str(start_exc))
+                    return
+                self._forward_with_body(backend, body, allow_restart=False)
+                return
             self.send_error(502, f"Backend error: {exc}")
         except Exception as exc:
             self.send_error(500, str(exc))
