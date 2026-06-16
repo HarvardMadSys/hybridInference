@@ -47,7 +47,7 @@ if [[ -n "$DEPLOY_SHA" ]]; then
   # Only origin/${TARGET_BRANCH} was fetched above, so a SHA from any other
   # branch won't exist in this repo. Guard rev-parse so that case fails with a
   # clear message instead of a raw "unknown revision" git error (exit 128).
-  if ! target_sha="$(git rev-parse --verify --quiet "${DEPLOY_SHA}^{commit}")"; then
+  if ! target_sha="$(git rev-parse --verify --quiet --end-of-options "${DEPLOY_SHA}^{commit}")"; then
     log "Refusing to deploy ${DEPLOY_SHA}; it is not on origin/${TARGET_BRANCH}."
     log "Staging only deploys commits on '${TARGET_BRANCH}'. If you dispatched"
     log "Deploy Staging against another branch, re-run it against '${TARGET_BRANCH}'."

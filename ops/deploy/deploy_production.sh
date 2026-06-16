@@ -53,7 +53,7 @@ main() {
     # branch (e.g. a 'dev'-only commit dispatched against the wrong branch)
     # won't exist in this repo. Guard rev-parse so that case fails with a
     # clear message instead of a raw "unknown revision" git error (exit 128).
-    if ! target_sha="$(git rev-parse --verify --quiet "${DEPLOY_SHA}^{commit}")"; then
+    if ! target_sha="$(git rev-parse --verify --quiet --end-of-options "${DEPLOY_SHA}^{commit}")"; then
       log "Refusing to deploy ${DEPLOY_SHA}; it is not on origin/${TARGET_BRANCH}."
       log "Production only deploys commits promoted to '${TARGET_BRANCH}'. If you"
       log "dispatched Deploy Production against another branch (e.g. 'dev'), re-run"
