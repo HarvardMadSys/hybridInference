@@ -162,7 +162,7 @@ function json(body: unknown, status = 200): Response {
 }
 
 export default {
-  /** Cron Trigger: probe every model every 5 minutes. */
+  /** Cron Trigger: probe every model every 20 minutes. */
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runProbeCycle(env));
   },

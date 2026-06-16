@@ -137,8 +137,8 @@ describe("renderDashboard", () => {
 
   it("buckets probes by the fixed cron cadence to detect skipped cycles", () => {
     const html = renderDashboard(SNAPSHOT);
-    // 5-minute cron interval in ms; charts floor each timestamp by this.
-    expect(html).toContain("var CYCLE_MS = 300000;");
+    // 20-minute cron interval in ms; charts floor each timestamp by this.
+    expect(html).toContain("var CYCLE_MS = 1200000;");
   });
 
   it("uses a noscript fallback for auto-refresh so the zoom view is not interrupted", () => {

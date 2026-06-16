@@ -1,8 +1,8 @@
 import type { ProbeRow, Snapshot } from "./db";
 
-// Probe cadence — must match the cron schedule in wrangler.toml (`*/5` = 5 min).
+// Probe cadence — must match the cron schedule in wrangler.toml (`*/20` = 20 min).
 // Charts bucket each probe into its cron cycle by this interval to detect gaps.
-const PROBE_INTERVAL_MS = 5 * 60 * 1000;
+const PROBE_INTERVAL_MS = 20 * 60 * 1000;
 
 const STYLE = `
 :root { color-scheme: light dark; }
@@ -421,7 +421,7 @@ export function renderDashboard(
 </head>
 <body>
   <h1>FreeInference Model Status</h1>
-  <div class="sub">Each model is probed with a synthetic request every 5 minutes (Cloudflare cron)${target}. Click a model to zoom in on its latency and throughput history.</div>
+  <div class="sub">Each model is probed with a synthetic request every 20 minutes (Cloudflare cron)${target}. Click a model to zoom in on its latency and throughput history.</div>
   ${banner}
   <div class="summary">
     <span class="pill ok">${snapshot.healthy} up</span>

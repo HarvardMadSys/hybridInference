@@ -1,11 +1,11 @@
 # status-monitor-worker
 
 A Cloudflare Worker version of the status monitor. A **Cron Trigger** probes
-every FreeInference model every 5 minutes, stores results in **D1**, and the
+every FreeInference model every 20 minutes, stores results in **D1**, and the
 Worker serves a live dashboard plus JSON endpoints.
 
 ```text
-Cron (*/5)  ─►  scheduled()  ─►  GET ${GATEWAY}/models (role-filtered)
+Cron (*/20)  ─►  scheduled()  ─►  GET ${GATEWAY}/models (role-filtered)
                                       │
                                       ▼  probe each (chat / embeddings, X-Probe: synthetic)
                                    D1 (probe_results)
@@ -83,7 +83,7 @@ Trigger a probe cycle without waiting for cron:
 
 ```bash
 npx wrangler dev          # then, in another shell:
-curl "http://localhost:8787/__scheduled?cron=*/5+*+*+*+*"
+curl "http://localhost:8787/__scheduled?cron=*/20+*+*+*+*"
 ```
 
 ## Test / typecheck

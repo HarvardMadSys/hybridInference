@@ -6,9 +6,9 @@ compatibility_date = "2025-06-01"
 # CLOUDFLARE_API_TOKEN secret.
 account_id = "d04cebbc3b75c45caec3e4fdb4ee451a"
 
-# Probe every model every 5 minutes.
+# Probe every model every 20 minutes.
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/20 * * * *"]
 
 [vars]
 # Gateway the probes go through (no trailing slash). The Worker discovers its
