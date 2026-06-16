@@ -55,10 +55,11 @@ key through the `FREEINFERENCE_API_KEY` environment variable:
 FREEINFERENCE_API_KEY="hyi-your-api-key" bash setup_claude_code.sh
 ```
 
-The script sets the base URL and auth token. After it finishes, add an
-`ANTHROPIC_MODEL` (and `ANTHROPIC_SMALL_FAST_MODEL`) pointing at a public model
-as shown in [Manual setup](#manual-setup) below, so Claude Code targets a model
-your key can actually reach.
+The script configures the base URL, auth token, and a public default model
+(`glm-5.1`, with `glm-5-turbo` for background tasks), then runs a connectivity
+check. To use a different model, override `FREEINFERENCE_MODEL` (and
+`FREEINFERENCE_SMALL_FAST_MODEL`) in the environment before running it, or edit
+`ANTHROPIC_MODEL` afterwards as shown in [Manual setup](#manual-setup).
 
 > **Security note:** Always review remote shell scripts before executing them.
 > You can also clone the repository and run

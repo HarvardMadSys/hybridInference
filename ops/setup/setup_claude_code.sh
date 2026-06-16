@@ -20,6 +20,10 @@ set -euo pipefail
 
 # ── Configurable defaults ────────────────────────────────────────
 FREEINFERENCE_BASE_URL="https://freeinference.org/anthropic"
+# Claude Code's built-in Anthropic model defaults are not part of the public
+# catalog, so we pin public models. Override via env if you have access to others.
+FREEINFERENCE_MODEL="${FREEINFERENCE_MODEL:-glm-5.1}"
+FREEINFERENCE_SMALL_FAST_MODEL="${FREEINFERENCE_SMALL_FAST_MODEL:-glm-5-turbo}"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
 API_TIMEOUT_MS="600000"
 TEST_ENDPOINT="https://freeinference.org/anthropic/v1/messages"
@@ -74,6 +78,8 @@ if command -v python3 &>/dev/null; then
     export _FI_BASE_URL="$FREEINFERENCE_BASE_URL"
     export _FI_API_KEY="$API_KEY"
     export _FI_TIMEOUT="$API_TIMEOUT_MS"
+    export _FI_MODEL="$FREEINFERENCE_MODEL"
+    export _FI_SMALL_MODEL="$FREEINFERENCE_SMALL_FAST_MODEL"
     python3 << 'PYEOF'
 import json, os, sys
 
@@ -81,6 +87,8 @@ settings_path = os.path.expanduser("~/.claude/settings.json")
 new_env = {
     "ANTHROPIC_BASE_URL": os.environ.get("_FI_BASE_URL", ""),
     "ANTHROPIC_AUTH_TOKEN": os.environ.get("_FI_API_KEY", ""),
+    "ANTHROPIC_MODEL": os.environ.get("_FI_MODEL", ""),
+    "ANTHROPIC_SMALL_FAST_MODEL": os.environ.get("_FI_SMALL_MODEL", ""),
     "API_TIMEOUT_MS": os.environ.get("_FI_TIMEOUT", ""),
 }
 
@@ -114,8 +122,10 @@ elif command -v jq &>/dev/null; then
     echo "$EXISTING" | jq \
         --arg base "$FREEINFERENCE_BASE_URL" \
         --arg key "$API_KEY" \
+        --arg model "$FREEINFERENCE_MODEL" \
+        --arg smallmodel "$FREEINFERENCE_SMALL_FAST_MODEL" \
         --arg timeout "$API_TIMEOUT_MS" \
-        '.env = (.env // {} | . * {"ANTHROPIC_BASE_URL": $base, "ANTHROPIC_AUTH_TOKEN": $key, "API_TIMEOUT_MS": $timeout})' \
+        '.env = (.env // {} | . * {"ANTHROPIC_BASE_URL": $base, "ANTHROPIC_AUTH_TOKEN": $key, "ANTHROPIC_MODEL": $model, "ANTHROPIC_SMALL_FAST_MODEL": $smallmodel, "API_TIMEOUT_MS": $timeout})' \
         > "$SETTINGS_FILE"
 
 else
@@ -127,6 +137,8 @@ else
   "env": {
     "ANTHROPIC_BASE_URL": "${FREEINFERENCE_BASE_URL}",
     "ANTHROPIC_AUTH_TOKEN": "${API_KEY}",
+    "ANTHROPIC_MODEL": "${FREEINFERENCE_MODEL}",
+    "ANTHROPIC_SMALL_FAST_MODEL": "${FREEINFERENCE_SMALL_FAST_MODEL}",
     "API_TIMEOUT_MS": "${API_TIMEOUT_MS}"
   }
 }
@@ -143,7 +155,7 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
     -X POST "$TEST_ENDPOINT" \
     -H "Content-Type: application/json" \
     -H "x-api-key: ${API_KEY}" \
-    -d '{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+    -d "{\"model\":\"${FREEINFERENCE_MODEL}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}" \
     --connect-timeout 10 \
     --max-time 30 \
     2>/dev/null || echo "000")
@@ -165,9 +177,11 @@ fi
 # ── 5. Done ──────────────────────────────────────────────────────
 printf "\n${GREEN}${BOLD}All set!${NC}\n\n"
 info "Run ${BOLD}claude${NC} in any project directory to start coding."
-info "Available models through FreeInference:"
-printf "    • ${BOLD}claude-sonnet-4.6${NC}  (default)\n"
-printf "    • ${BOLD}claude-opus-4.6${NC}\n"
+info "Configured model: ${BOLD}${FREEINFERENCE_MODEL}${NC} (small/fast: ${BOLD}${FREEINFERENCE_SMALL_FAST_MODEL}${NC})"
+info "Other public models you can set via ANTHROPIC_MODEL:"
+printf "    • ${BOLD}glm-5.1${NC}  (default)\n"
+printf "    • ${BOLD}glm-5-turbo${NC}, ${BOLD}glm-4.7${NC}, ${BOLD}minimax-m2.5${NC}\n"
+printf "    See https://freeinference.org/v1/models for the full list.\n"
 printf "\n"
 info "To change settings later, edit: ${SETTINGS_FILE}"
 info "To uninstall, remove the env block from that file.\n"
