@@ -587,6 +587,14 @@ class AdminRecentRequestContentResponse(BaseModel):
     reasoning_content: str | None = None
 
 
+class AdminClearErrorRequestsResponse(BaseModel):
+    """Result of clearing recent error requests from api_logs."""
+
+    deleted_count: int
+    hours: int
+    message: str
+
+
 # ── Analytics Dashboard ──────────────────────────────────────────────────────
 
 

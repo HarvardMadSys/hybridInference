@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import {
   AdminRecentRequestItem,
   AdminRequestMetricsWindow,
+  clearErrorRequests,
   exportRequests,
   getRecentRequestContent,
   getRequestMetrics,
@@ -603,6 +604,7 @@ export function RequestsTab() {
   const [exportEndDate, setExportEndDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [exportIncludeContent, setExportIncludeContent] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  const [clearingErrors, setClearingErrors] = useState(false);
 
   const loadRequests = useCallback(async () => {
     setReqLoading(true);
@@ -634,6 +636,27 @@ export function RequestsTab() {
       setReqMetricsLoading(false);
     }
   }, []);
+
+  const handleClearErrors = useCallback(async () => {
+    if (
+      !window.confirm(
+        'Permanently delete all error requests from the past hour? This cannot be undone.',
+      )
+    ) {
+      return;
+    }
+    setClearingErrors(true);
+    try {
+      const result = await clearErrorRequests(1);
+      toast.success(result.message);
+      loadRequests();
+      loadRequestMetrics();
+    } catch (e) {
+      toast.error(getErrorMessage(e));
+    } finally {
+      setClearingErrors(false);
+    }
+  }, [loadRequests, loadRequestMetrics]);
 
   useEffect(() => {
     loadRequests();
@@ -771,8 +794,16 @@ export function RequestsTab() {
         <span className="text-[12px] text-gray-400 tabular-nums">{reqTotal} entries</span>
         <button
           type="button"
+          onClick={handleClearErrors}
+          disabled={clearingErrors}
+          className="ml-auto rounded-lg border border-red-200 bg-white px-3 py-2 text-[13px] text-red-600 hover:bg-red-50 disabled:opacity-50"
+        >
+          {clearingErrors ? 'Clearing…' : 'Clear last hour errors'}
+        </button>
+        <button
+          type="button"
           onClick={() => setShowExportPanel((v) => !v)}
-          className="ml-auto rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
         >
           Export JSONL
         </button>
