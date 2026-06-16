@@ -1222,6 +1222,33 @@ class TestFetchKimi:
         assert results[0].usages[1].used == 300.0
 
     @pytest.mark.asyncio
+    async def test_parses_string_valued_numbers_in_array(self, monkeypatch):
+        # Kimi's /usages commonly returns quota figures as numeric strings;
+        # they must coerce to floats rather than parsing as empty.
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = [
+            {
+                "name": "Weekly limit",
+                "detail": {"limit": "10000", "remaining": "4000"},
+            },
+            {
+                "detail": {"limit": "1200", "used": "300"},
+                "window": {"duration": 300, "timeUnit": "MINUTE"},
+            },
+        ]
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert results[0].usages[0].used == 6000.0  # limit - remaining
+        assert results[0].usages[0].limit == 10000.0
+        assert results[0].usages[1].label == "5h limit"
+        assert results[0].usages[1].used == 300.0
+        assert results[0].usages[1].limit == 1200.0
+
+    @pytest.mark.asyncio
     async def test_parses_data_envelope_wrapping_list(self, monkeypatch):
         monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
         payload = {"data": [{"detail": {"limit": 1000, "remaining": 250}}]}

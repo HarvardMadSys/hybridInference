@@ -168,11 +168,22 @@ def _parse_epoch_ms(value: Any) -> datetime | None:
 
 
 def _as_float(value: Any) -> float | None:
-    """Convert a JSON number to float while rejecting bool and non-finite values."""
+    """Convert a JSON number to float while rejecting bool and non-finite values.
+
+    Numeric strings (e.g. ``"1200"``) are also accepted: some providers — notably
+    Kimi's ``/usages`` endpoint — return quota figures as strings rather than
+    JSON numbers. Blank/non-numeric strings and ``inf``/``nan`` yield ``None``.
+    """
     if isinstance(value, bool):
         return None
     if isinstance(value, int | float):
         converted = float(value)
+        return converted if math.isfinite(converted) else None
+    if isinstance(value, str):
+        try:
+            converted = float(value.strip())
+        except ValueError:
+            return None
         return converted if math.isfinite(converted) else None
     return None
 
