@@ -131,6 +131,22 @@ export function ProviderRoutesTab() {
     return provider?.key_provider ?? form.upstreamProvider;
   }, [form.upstreamProvider, providerOptions]);
 
+  const providerSelectOptions = useMemo(() => {
+    if (!form.upstreamProvider || optionFor(providerOptions, form.upstreamProvider)) {
+      return providerOptions;
+    }
+    return [
+      ...providerOptions,
+      {
+        provider: form.upstreamProvider,
+        label: form.upstreamProvider,
+        kind: form.upstreamProvider,
+        key_provider: form.upstreamProvider,
+        default_base_url: form.baseUrl,
+      },
+    ];
+  }, [form.baseUrl, form.upstreamProvider, providerOptions]);
+
   const loadKeys = useCallback(async (provider: string) => {
     if (!provider) {
       setKeyOptions([]);
@@ -153,12 +169,16 @@ export function ProviderRoutesTab() {
     void loadKeys(keyProvider);
   }, [editingRoute, keyProvider, loadKeys]);
 
-  const replaceRoute = useCallback((updated: ProviderRoute) => {
+  const updateRoute = useCallback((updated: ProviderRoute) => {
     setRoutes((current) =>
       current.map((route) => (routeKey(route) === routeKey(updated) ? updated : route)),
     );
-    setEditingRoute(updated);
   }, []);
+
+  const replaceRoute = useCallback((updated: ProviderRoute) => {
+    updateRoute(updated);
+    setEditingRoute(updated);
+  }, [updateRoute]);
 
   const onUpstreamProviderChange = (upstreamProvider: string) => {
     const selected = optionFor(providerOptions, upstreamProvider);
@@ -209,7 +229,10 @@ export function ProviderRoutesTab() {
     setRestoringKey(key);
     try {
       const updated = await deleteProviderRoute(route.model_id, route.route_id);
-      replaceRoute(updated);
+      updateRoute(updated);
+      setEditingRoute((current) =>
+        current && routeKey(current) === key ? null : current,
+      );
       toast.success('Restored YAML route');
     } catch (err) {
       toast.error(`Restore failed: ${getErrorMessage(err)}`);
@@ -400,7 +423,7 @@ export function ProviderRoutesTab() {
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                 required
               >
-                {providerOptions.map((option) => (
+                {providerSelectOptions.map((option) => (
                   <option key={option.provider} value={option.provider}>
                     {option.label}
                   </option>

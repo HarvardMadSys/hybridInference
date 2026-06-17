@@ -273,5 +273,32 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => {
       expect(screen.getAllByText('Default featherless pool').length).toBeGreaterThan(0);
     });
+    expect(screen.queryByText('Edit provider route')).not.toBeInTheDocument();
+  });
+
+  it('keeps the current override provider selectable when it is not a default option', async () => {
+    const zaiRoute = {
+      ...route,
+      upstream_provider: 'zai',
+      key_provider: 'zai',
+      base_url: 'https://api.z.ai/api/paas/v4',
+      provider_model_id: 'glm-4.5',
+      source: 'override' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      routes: [zaiRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'zai', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+
+    expect(screen.getByLabelText('Override provider')).toHaveValue('zai');
+    expect(screen.getByRole('option', { name: 'zai' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('zai');
+    });
   });
 });
