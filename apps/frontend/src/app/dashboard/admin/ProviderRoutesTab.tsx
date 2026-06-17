@@ -80,6 +80,28 @@ function optionFor(providerOptions: ProviderRouteOption[], provider: string) {
   return providerOptions.find((option) => option.provider === provider);
 }
 
+function optionSupportsRouteType(option: ProviderRouteOption, routeType: ProviderRouteType) {
+  if (option.provider === 'chutes') return routeType === 'quota';
+  if (option.provider === 'featherless') return routeType === 'concurrency';
+  if (['deepinfra', 'openrouter', 'parasail'].includes(option.provider)) {
+    return routeType === 'on_demand';
+  }
+  return routeType === 'on_demand';
+}
+
+function createProviderOptionsFor(
+  providerOptions: ProviderRouteOption[],
+  routeType: ProviderRouteType,
+  routes: ProviderRoute[] = [],
+) {
+  const usedProviders = new Set(
+    routes.filter((route) => route.route_type === routeType).map((route) => route.provider),
+  );
+  return providerOptions.filter(
+    (option) => optionSupportsRouteType(option, routeType) && !usedProviders.has(option.provider),
+  );
+}
+
 export function ProviderRoutesTab() {
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
   const [providerOptions, setProviderOptions] = useState<ProviderRouteOption[]>([]);
@@ -198,6 +220,11 @@ export function ProviderRoutesTab() {
     return provider?.key_provider ?? createForm.upstreamProvider;
   }, [createForm.upstreamProvider, providerOptions]);
 
+  const createProviderOptions = useMemo(
+    () => createProviderOptionsFor(providerOptions, createForm.routeType, selectedRoutes),
+    [createForm.routeType, providerOptions, selectedRoutes],
+  );
+
   const providerSelectOptions = useMemo(() => {
     if (!form.upstreamProvider || optionFor(providerOptions, form.upstreamProvider)) {
       return providerOptions;
@@ -258,6 +285,27 @@ export function ProviderRoutesTab() {
     void loadCreateKeys(createKeyProvider);
   }, [addingRoute, createKeyProvider, loadCreateKeys]);
 
+  useEffect(() => {
+    if (!addingRoute) return;
+    if (createProviderOptions.length === 0) {
+      setCreateForm((current) => ({
+        ...current,
+        upstreamProvider: '',
+        baseUrl: '',
+        apiKeyId: '',
+      }));
+      return;
+    }
+    if (optionFor(createProviderOptions, createForm.upstreamProvider)) return;
+    const nextProvider = createProviderOptions[0];
+    setCreateForm((current) => ({
+      ...current,
+      upstreamProvider: nextProvider.provider,
+      baseUrl: nextProvider.default_base_url,
+      apiKeyId: '',
+    }));
+  }, [addingRoute, createForm.upstreamProvider, createProviderOptions]);
+
   const updateRoute = useCallback((updated: ProviderRoute) => {
     setRoutes((current) =>
       current.map((route) => (routeKey(route) === routeKey(updated) ? updated : route)),
@@ -291,7 +339,11 @@ export function ProviderRoutesTab() {
   };
 
   const openAddForm = () => {
-    const firstProvider = providerOptions[0];
+    const firstProvider = createProviderOptionsFor(
+      providerOptions,
+      emptyCreateForm.routeType,
+      selectedRoutes,
+    )[0];
     setCreateForm({
       ...emptyCreateForm,
       upstreamProvider: firstProvider?.provider ?? '',
@@ -303,11 +355,22 @@ export function ProviderRoutesTab() {
   };
 
   const onCreateProviderChange = (upstreamProvider: string) => {
-    const selected = optionFor(providerOptions, upstreamProvider);
+    const selected = optionFor(createProviderOptions, upstreamProvider);
     setCreateForm((current) => ({
       ...current,
       upstreamProvider,
       baseUrl: selected?.default_base_url || current.baseUrl,
+      apiKeyId: '',
+    }));
+  };
+
+  const onCreateRouteTypeChange = (routeType: ProviderRouteType) => {
+    const nextProvider = createProviderOptionsFor(providerOptions, routeType, selectedRoutes)[0];
+    setCreateForm((current) => ({
+      ...current,
+      routeType,
+      upstreamProvider: nextProvider?.provider ?? '',
+      baseUrl: nextProvider?.default_base_url ?? '',
       apiKeyId: '',
     }));
   };
@@ -632,10 +695,7 @@ export function ProviderRoutesTab() {
                 id="new-route-type"
                 value={createForm.routeType}
                 onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    routeType: event.target.value as ProviderRouteType,
-                  }))
+                  onCreateRouteTypeChange(event.target.value as ProviderRouteType)
                 }
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
               >
@@ -658,7 +718,10 @@ export function ProviderRoutesTab() {
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                 required
               >
-                {providerOptions.map((option) => (
+                {createProviderOptions.length === 0 && (
+                  <option value="">No providers available</option>
+                )}
+                {createProviderOptions.map((option) => (
                   <option key={option.provider} value={option.provider}>
                     {option.label}
                   </option>

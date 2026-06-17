@@ -114,6 +114,14 @@ PROVIDER_MODEL_IDS: dict[str, dict[str, str]] = {
     },
 }
 
+PROVIDER_CREATE_ROUTE_TYPES: dict[str, set[str]] = {
+    "chutes": {"quota"},
+    "featherless": {"concurrency"},
+    "deepinfra": {"on_demand"},
+    "openrouter": {"on_demand"},
+    "parasail": {"on_demand"},
+}
+
 
 @dataclass
 class PreparedRouteUpdate:
@@ -605,6 +613,17 @@ def _validate_positive_weight(weight: float) -> float:
     return value
 
 
+def _validate_create_route_type_for_provider(route_type: str, upstream_provider: str) -> None:
+    allowed = PROVIDER_CREATE_ROUTE_TYPES.get(upstream_provider)
+    if allowed is None or route_type in allowed:
+        return
+    allowed_text = ", ".join(sorted(allowed))
+    raise HTTPException(
+        status_code=422,
+        detail=f"{upstream_provider} can only be added as {allowed_text}",
+    )
+
+
 def _ensure_route_id_available(entries: list[tuple[object, float, str]], route_id: str) -> None:
     for adapter, _weight, endpoint_id in entries:
         if _route_id_for_entry(adapter, endpoint_id) == route_id:
@@ -654,6 +673,7 @@ async def _prepare_route_candidate(
         )
 
     target = _target_for_provider(upstream_provider)
+    _validate_create_route_type_for_provider(route_type, upstream_provider)
     cleaned_base_url = _validate_base_url(base_url)
     provider_model_id = provider_model_id.strip()
     if not provider_model_id:

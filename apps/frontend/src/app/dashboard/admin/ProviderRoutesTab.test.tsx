@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderRoutesTab } from './ProviderRoutesTab';
@@ -353,6 +353,64 @@ describe('ProviderRoutesTab', () => {
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('filters add-provider choices by route type', async () => {
+    const deepinfraRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
+      route_type: 'on_demand',
+      provider: 'deepinfra',
+      upstream_provider: 'deepinfra',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: [
+        {
+          provider: 'chutes',
+          label: 'Chutes',
+          kind: 'chutes',
+          key_provider: 'chutes',
+          default_base_url: 'https://llm.chutes.ai/v1',
+        },
+        {
+          provider: 'deepinfra',
+          label: 'DeepInfra via OpenRouter',
+          kind: 'openrouter[deepinfra]',
+          key_provider: 'openrouter',
+          default_base_url: 'https://openrouter.ai/api/v1',
+        },
+        ...providerOptions,
+      ],
+      routes: [route, deepinfraRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+
+    const providerSelect = screen.getByLabelText('Provider');
+    expect(providerSelect).toHaveValue('parasail');
+    expect(within(providerSelect).queryByRole('option', { name: 'Chutes' })).not.toBeInTheDocument();
+    expect(
+      within(providerSelect).queryByRole('option', { name: 'Featherless' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(providerSelect).queryByRole('option', { name: 'DeepInfra via OpenRouter' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(providerSelect).getByRole('option', { name: 'Parasail via OpenRouter' }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+
+    expect(providerSelect).toHaveValue('chutes');
+    expect(within(providerSelect).getByRole('option', { name: 'Chutes' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://llm.chutes.ai/v1');
   });
 
   it('deletes a runtime provider route', async () => {

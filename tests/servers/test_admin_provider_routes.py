@@ -609,33 +609,26 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
 
 
 @pytest.mark.asyncio
-async def test_post_provider_route_candidate_adds_local_quota_route(admin_client):
-    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
-    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+async def test_post_provider_route_candidate_rejects_route_type_provider_mismatch(admin_client):
+    client, op_store, _route_executor, fake_routewise, verify_mock = admin_client
 
     response = await client.post(
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
-            "route_type": "quota",
-            "upstream_provider": "parasail",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key_id": "db-openrouter",
-            "provider_model_id": "minimax/minimax-m2.5",
-            "quota_limit": 6000,
+            "route_type": "on_demand",
+            "upstream_provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
             "weight": 1,
         },
         headers=AUTH,
     )
 
-    assert response.status_code == 200
-    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
-    assert runtime_adapter.config.provider_type == "quota"
-    assert runtime_adapter.config.quota == {"limit": 6000}
-    assert runtime_adapter.config.quota_pool == (
-        "minimax-fast:openrouter[parasail]-api:runtime-quota"
-    )
-    assert runtime_adapter.config.route_metadata["local_quota_fallback"] is True
-    assert response.json()["quota_limit"] == 6000
+    assert response.status_code == 422
+    assert response.json()["detail"] == "chutes can only be added as quota"
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
 
 
 @pytest.mark.asyncio
