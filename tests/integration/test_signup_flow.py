@@ -117,7 +117,7 @@ class TestSignupAllowlist:
 
         sent_to: list[str] = []
 
-        def _capture(to_email, user_email, user_name, user_id):
+        def _capture(to_email, user_email, user_name, user_id, use_case=None):
             sent_to.append(to_email)
             return True
 
