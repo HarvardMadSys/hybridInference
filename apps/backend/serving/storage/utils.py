@@ -35,7 +35,10 @@ def conversation_shape(
     messages, and ``num_tool_calls`` sums ``tool_calls`` across messages.
 
     Returns ``(None, None, None)`` when ``prompt`` is not a chat-style messages
-    list (e.g. a raw completion string or an embedding input).
+    list — e.g. a raw completion string, or an embedding input such as a list
+    of strings/token-id arrays. Only dict-shaped (message-like) elements are
+    counted, and a list with none of them is treated as non-chat so the admin
+    UI shows ``—`` rather than a misleading zero-turn conversation.
     """
     if not isinstance(prompt, list):
         return None, None, None
@@ -51,6 +54,8 @@ def conversation_shape(
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list):
             num_tool_calls += len(tool_calls)
+    if num_turns == 0:
+        return None, None, None
     return num_turns, num_user_turns, num_tool_calls
 
 
