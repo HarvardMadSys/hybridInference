@@ -56,6 +56,7 @@ export function UseCases(): JSX.Element {
                       className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-700 transition-colors duration-200 hover:border-crimson hover:text-crimson"
                     >
                       {app.name}
+                      <span className="sr-only"> (opens in a new tab)</span>
                     </a>
                   ) : (
                     <span className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-700">
