@@ -1178,6 +1178,10 @@ export interface CreateProviderRoutePayload {
   weight: number;
 }
 
+export interface VerifyProviderRouteResponse {
+  ok: boolean;
+}
+
 export async function listProviderRoutes(modelId?: string): Promise<ListProviderRoutesResponse> {
   const path = modelId
     ? `/admin/routing/provider-routes/${encodeURIComponent(modelId)}`
@@ -1235,6 +1239,31 @@ export async function updateProviderRoute(
   return jsonOrThrow<ProviderRoute>(resp);
 }
 
+export async function verifyProviderRoute(
+  modelId: string,
+  routeId: string,
+  payload: UpdateProviderRoutePayload,
+): Promise<VerifyProviderRouteResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-verifications/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream_provider: payload.upstream_provider,
+        openrouter_provider: payload.openrouter_provider ?? null,
+        openrouter_sort: payload.openrouter_sort ?? null,
+        base_url: payload.base_url,
+        api_key_id: payload.api_key_id ?? null,
+        provider_model_id: payload.provider_model_id ?? null,
+        quota_limit: payload.quota_limit ?? null,
+      }),
+    },
+  );
+  return jsonOrThrow<VerifyProviderRouteResponse>(resp);
+}
+
 export async function createProviderRouteCandidate(
   modelId: string,
   payload: CreateProviderRoutePayload,
@@ -1249,6 +1278,22 @@ export async function createProviderRouteCandidate(
     },
   );
   return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function verifyProviderRouteCandidate(
+  modelId: string,
+  payload: CreateProviderRoutePayload,
+): Promise<VerifyProviderRouteResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-candidate-verifications/${encodeURIComponent(modelId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<VerifyProviderRouteResponse>(resp);
 }
 
 export async function deleteProviderRoute(

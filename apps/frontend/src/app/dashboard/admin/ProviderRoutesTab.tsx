@@ -18,6 +18,8 @@ import {
   listProviderRoutes,
   updateProviderRoute,
   updateProviderRouteStrategy,
+  verifyProviderRoute,
+  verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -292,6 +294,10 @@ function resolvedOpenRouterProvider(selectedProvider: string, customProvider: st
   return selectedProvider || null;
 }
 
+function formSignature(value: unknown) {
+  return JSON.stringify(value);
+}
+
 function customOpenRouterProviderValid(selectedProvider: string, customProvider: string) {
   if (selectedProvider !== OPENROUTER_PROVIDER_CUSTOM) return true;
   return OPENROUTER_PROVIDER_SLUG_RE.test(customProvider.trim());
@@ -381,6 +387,10 @@ export function ProviderRoutesTab() {
   const [createKeysLoading, setCreateKeysLoading] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [creatingRoute, setCreatingRoute] = useState(false);
+  const [verifyingKey, setVerifyingKey] = useState<string | null>(null);
+  const [verifyingCreateRoute, setVerifyingCreateRoute] = useState(false);
+  const [verifiedEditSignature, setVerifiedEditSignature] = useState<string | null>(null);
+  const [verifiedCreateSignature, setVerifiedCreateSignature] = useState<string | null>(null);
   const [restoringKey, setRestoringKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [savingStrategy, setSavingStrategy] = useState(false);
@@ -489,6 +499,93 @@ export function ProviderRoutesTab() {
     createQuotaValid &&
     createConcurrencyValid &&
     createWeightValid;
+  const editFormValid =
+    Boolean(editingRoute) &&
+    Boolean(form.upstreamProvider) &&
+    Boolean(form.baseUrl.trim()) &&
+    Boolean(form.providerModelId.trim()) &&
+    formOpenRouterProviderValid &&
+    quotaLimitValid;
+  const editRoutePayload = useMemo(
+    () =>
+      editingRoute
+        ? {
+          upstream_provider: form.upstreamProvider,
+          openrouter_provider:
+              form.upstreamProvider === 'openrouter' ? selectedOpenRouterProvider : null,
+          openrouter_sort: openRouterSortForPayload(
+            form.upstreamProvider,
+            form.openRouterProvider,
+            form.openRouterSort,
+          ),
+          base_url: form.baseUrl.trim(),
+          api_key_id: form.apiKeyId || null,
+          provider_model_id: form.providerModelId.trim(),
+          quota_limit: editsLocalQuota ? parsedQuotaLimit : null,
+        }
+        : null,
+    [
+      editingRoute,
+      editsLocalQuota,
+      form.apiKeyId,
+      form.baseUrl,
+      form.openRouterProvider,
+      form.openRouterSort,
+      form.providerModelId,
+      form.upstreamProvider,
+      parsedQuotaLimit,
+      selectedOpenRouterProvider,
+    ],
+  );
+  const createRoutePayload = useMemo(
+    () => ({
+      route_type: createForm.routeType,
+      upstream_provider: createForm.upstreamProvider,
+      openrouter_provider:
+        createForm.upstreamProvider === 'openrouter' ? selectedCreateOpenRouterProvider : null,
+      openrouter_sort: openRouterSortForPayload(
+        createForm.upstreamProvider,
+        createForm.openRouterProvider,
+        createForm.openRouterSort,
+      ),
+      base_url: createForm.baseUrl.trim(),
+      api_key_id: createForm.apiKeyId || null,
+      provider_model_id: createForm.providerModelId.trim(),
+      quota_limit: createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
+      concurrency_limit:
+        createForm.routeType === 'concurrency' ? parsedCreateConcurrencyLimit : null,
+      weight: parsedCreateWeight,
+    }),
+    [
+      createForm.apiKeyId,
+      createForm.baseUrl,
+      createForm.openRouterProvider,
+      createForm.openRouterSort,
+      createForm.providerModelId,
+      createForm.routeType,
+      createForm.upstreamProvider,
+      parsedCreateConcurrencyLimit,
+      parsedCreateQuotaLimit,
+      parsedCreateWeight,
+      selectedCreateOpenRouterProvider,
+    ],
+  );
+  const editVerificationSignature =
+    editingRoute && editRoutePayload
+      ? formSignature({
+        model_id: editingRoute.model_id,
+        route_id: editingRoute.route_id,
+        payload: editRoutePayload,
+      })
+      : null;
+  const createVerificationSignature = formSignature({
+    model_id: selectedModel,
+    payload: createRoutePayload,
+  });
+  const editRouteVerified =
+    Boolean(editVerificationSignature) &&
+    verifiedEditSignature === editVerificationSignature;
+  const createRouteVerified = verifiedCreateSignature === createVerificationSignature;
 
   useEffect(() => {
     if (!editingRoute) {
@@ -748,6 +845,7 @@ export function ProviderRoutesTab() {
         : '',
     });
     setCreateKeyOptions([]);
+    setVerifiedCreateSignature(null);
     setAddingRoute(true);
     setEditingRoute(null);
   };
@@ -802,33 +900,15 @@ export function ProviderRoutesTab() {
 
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (
-      !editingRoute ||
-      !form.upstreamProvider ||
-      !form.baseUrl.trim() ||
-      !form.providerModelId.trim() ||
-      !formOpenRouterProviderValid ||
-      !quotaLimitValid
-    ) {
-      return;
-    }
+    if (!editingRoute || !editRoutePayload || !editFormValid) return;
     const key = routeKey(editingRoute);
     setSavingKey(key);
     try {
-      const updated = await updateProviderRoute(editingRoute.model_id, editingRoute.route_id, {
-        upstream_provider: form.upstreamProvider,
-        openrouter_provider:
-          form.upstreamProvider === 'openrouter' ? selectedOpenRouterProvider : null,
-        openrouter_sort: openRouterSortForPayload(
-          form.upstreamProvider,
-          form.openRouterProvider,
-          form.openRouterSort,
-        ),
-        base_url: form.baseUrl.trim(),
-        api_key_id: form.apiKeyId || null,
-        provider_model_id: form.providerModelId.trim(),
-        quota_limit: editsLocalQuota ? parsedQuotaLimit : null,
-      });
+      const updated = await updateProviderRoute(
+        editingRoute.model_id,
+        editingRoute.route_id,
+        editRoutePayload,
+      );
       replaceRoute(updated);
       toast.success('Provider route updated');
     } catch (err) {
@@ -838,39 +918,51 @@ export function ProviderRoutesTab() {
     }
   };
 
+  const onVerify = async () => {
+    if (!editingRoute || !editRoutePayload || !editFormValid || !editVerificationSignature) return;
+    const key = routeKey(editingRoute);
+    setVerifyingKey(key);
+    try {
+      await verifyProviderRoute(editingRoute.model_id, editingRoute.route_id, editRoutePayload);
+      setVerifiedEditSignature(editVerificationSignature);
+      toast.success('Provider route verified');
+    } catch (err) {
+      setVerifiedEditSignature(null);
+      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+    } finally {
+      setVerifyingKey(null);
+    }
+  };
+
   const onCreateSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!createFormValid) return;
     setCreatingRoute(true);
     try {
-      const created = await createProviderRouteCandidate(selectedModel, {
-        route_type: createForm.routeType,
-        upstream_provider: createForm.upstreamProvider,
-        openrouter_provider:
-          createForm.upstreamProvider === 'openrouter'
-            ? selectedCreateOpenRouterProvider
-            : null,
-        openrouter_sort: openRouterSortForPayload(
-          createForm.upstreamProvider,
-          createForm.openRouterProvider,
-          createForm.openRouterSort,
-        ),
-        base_url: createForm.baseUrl.trim(),
-        api_key_id: createForm.apiKeyId || null,
-        provider_model_id: createForm.providerModelId.trim(),
-        quota_limit:
-          createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
-        concurrency_limit:
-          createForm.routeType === 'concurrency' ? parsedCreateConcurrencyLimit : null,
-        weight: parsedCreateWeight,
-      });
+      const created = await createProviderRouteCandidate(selectedModel, createRoutePayload);
       setRoutes((current) => [...current, created]);
       setAddingRoute(false);
+      setVerifiedCreateSignature(null);
       toast.success('Provider route added');
     } catch (err) {
       toast.error(`Add failed: ${getErrorMessage(err)}`);
     } finally {
       setCreatingRoute(false);
+    }
+  };
+
+  const onCreateVerify = async () => {
+    if (!createFormValid) return;
+    setVerifyingCreateRoute(true);
+    try {
+      await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
+      setVerifiedCreateSignature(createVerificationSignature);
+      toast.success('Provider route verified');
+    } catch (err) {
+      setVerifiedCreateSignature(null);
+      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+    } finally {
+      setVerifyingCreateRoute(false);
     }
   };
 
@@ -1056,7 +1148,7 @@ export function ProviderRoutesTab() {
                     )}
                     {targetUpstreamProvider === 'openrouter' && !targetOpenRouterProvider && (
                       <div className="mt-1 text-[11px] leading-5 text-gray-500">
-                        OpenRouter policy:{' '}
+                        OpenRouter routing:{' '}
                         {route.openrouter_sort ? `Sort by ${route.openrouter_sort}` : 'Auto'}
                       </div>
                     )}
@@ -1397,13 +1489,25 @@ export function ProviderRoutesTab() {
             </div>
           </div>
 
-          <div className="mt-4 flex justify-end">
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onCreateVerify}
+              disabled={verifyingCreateRoute || creatingRoute || !createFormValid}
+              className={
+                createRouteVerified
+                  ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
+                  : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+              }
+            >
+              {verifyingCreateRoute ? 'Verifying…' : createRouteVerified ? 'Verified' : 'Verify'}
+            </button>
             <button
               type="submit"
               disabled={creatingRoute || !createFormValid}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {creatingRoute ? 'Verifying…' : 'Verify & Add'}
+              {creatingRoute ? 'Adding…' : 'Add'}
             </button>
           </div>
         </form>
@@ -1594,20 +1698,33 @@ export function ProviderRoutesTab() {
             </div>
           )}
 
-          <div className="mt-4 flex justify-end">
+          <div className="mt-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onVerify}
+              disabled={
+                verifyingKey === routeKey(editingRoute) ||
+                savingKey === routeKey(editingRoute) ||
+                !editFormValid
+              }
+              className={
+                editRouteVerified
+                  ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
+                  : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+              }
+            >
+              {verifyingKey === routeKey(editingRoute)
+                ? 'Verifying…'
+                : editRouteVerified
+                  ? 'Verified'
+                  : 'Verify'}
+            </button>
             <button
               type="submit"
-              disabled={
-                savingKey === routeKey(editingRoute) ||
-                !form.upstreamProvider ||
-                !form.baseUrl.trim() ||
-                !form.providerModelId.trim() ||
-                !formOpenRouterProviderValid ||
-                !quotaLimitValid
-              }
+              disabled={savingKey === routeKey(editingRoute) || !editFormValid}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {savingKey === routeKey(editingRoute) ? 'Verifying…' : 'Verify & Apply'}
+              {savingKey === routeKey(editingRoute) ? 'Applying…' : 'Apply'}
             </button>
           </div>
         </form>

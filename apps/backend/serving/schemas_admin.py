@@ -900,6 +900,12 @@ class UpdateProviderRouteRequest(BaseModel):
     quota_limit: int | None = Field(None, ge=1)
 
 
+class VerifyProviderRouteResponse(BaseModel):
+    """Response payload for a provider route verification dry run."""
+
+    ok: bool = True
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -979,6 +985,7 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
     "UsersSummaryResponse",
+    "VerifyProviderRouteResponse",
 ]
 
 

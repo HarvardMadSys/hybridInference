@@ -14,6 +14,8 @@ vi.mock('@/lib/api/admin', () => ({
   listProviderRoutes: vi.fn(),
   updateProviderRoute: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
+  verifyProviderRoute: vi.fn(),
+  verifyProviderRouteCandidate: vi.fn(),
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -32,6 +34,8 @@ import {
   listProviderRoutes,
   updateProviderRoute,
   updateProviderRouteStrategy,
+  verifyProviderRoute,
+  verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 
 const providerOptions = [
@@ -102,6 +106,8 @@ describe('ProviderRoutesTab', () => {
       provider_model_id: 'minimax/minimax-m2.5',
       providers: discoveredOpenRouterProviderOptions,
     });
+    vi.mocked(verifyProviderRoute).mockResolvedValue({ ok: true });
+    vi.mocked(verifyProviderRouteCandidate).mockResolvedValue({ ok: true });
   });
 
   it('renders routewise provider candidates without weight columns', async () => {
@@ -184,7 +190,7 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://openrouter.ai/api/v1');
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & Apply' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
     await waitFor(() => {
       expect(updateProviderRoute).toHaveBeenCalledWith(
@@ -202,6 +208,66 @@ describe('ProviderRoutesTab', () => {
       );
     });
     expect(screen.getByLabelText('OpenRouter routing')).toHaveValue('provider:parasail');
+  });
+
+  it('verifies provider route target without applying it', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({
+      provider: 'openrouter',
+      keys: [
+        {
+          id: 'key-1',
+          provider: 'openrouter',
+          key_prefix: 'sk-or...1234',
+          label: 'staging',
+          source: 'db',
+          status: 'active',
+          created_at: null,
+        },
+      ],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Override provider'), {
+      target: { value: 'openrouter' },
+    });
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:parasail' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'minimax/minimax-m2.5' },
+    });
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await waitFor(() => {
+      expect(verifyProviderRoute).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        {
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
+          openrouter_sort: null,
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+        },
+      );
+    });
+    expect(updateProviderRoute).not.toHaveBeenCalled();
+    expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass(
+      'bg-emerald-600',
+    );
   });
 
   it('submits local daily quota for quota provider overrides', async () => {
@@ -257,7 +323,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Local daily quota'), {
       target: { value: '8000' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & Apply' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
     await waitFor(() => {
       expect(updateProviderRoute).toHaveBeenCalledWith(
@@ -396,7 +462,7 @@ describe('ProviderRoutesTab', () => {
     });
 
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & Add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
       expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
@@ -413,6 +479,45 @@ describe('ProviderRoutesTab', () => {
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('verifies a runtime provider route without adding it', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'minimax/minimax-m2.5' },
+    });
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'sort:throughput' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await waitFor(() => {
+      expect(verifyProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
+        route_type: 'on_demand',
+        upstream_provider: 'openrouter',
+        openrouter_provider: null,
+        openrouter_sort: 'throughput',
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: null,
+        provider_model_id: 'minimax/minimax-m2.5',
+        quota_limit: null,
+        concurrency_limit: null,
+        weight: 1,
+      });
+    });
+    expect(createProviderRouteCandidate).not.toHaveBeenCalled();
+    expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass(
+      'bg-emerald-600',
+    );
   });
 
   it('adds a runtime OpenRouter route with a custom provider slug', async () => {
@@ -477,7 +582,7 @@ describe('ProviderRoutesTab', () => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & Add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
       expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
@@ -526,7 +631,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
       target: { value: 'sort:throughput' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & Add' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
       expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {

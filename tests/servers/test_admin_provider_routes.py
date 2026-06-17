@@ -436,6 +436,34 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
 
 
 @pytest.mark.asyncio
+async def test_verify_provider_route_update_does_not_apply(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    response = await client.post(
+        "/admin/routing/provider-route-verifications/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 8000,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    verify_mock.assert_awaited_once()
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert current_adapter.config.provider == "chutes"
+    assert current_adapter.config.quota == {"limit": 5000}
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_put_provider_route_verify_failure_does_not_apply(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
@@ -674,6 +702,33 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "parasail"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidate-verifications/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 2.5,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    verify_mock.assert_awaited_once()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
 
 
 @pytest.mark.asyncio

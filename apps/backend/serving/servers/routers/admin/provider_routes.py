@@ -29,6 +29,7 @@ from serving.schemas_admin import (
     ProviderRouteOption,
     UpdateProviderRouteRequest,
     UpdateProviderRouteStrategyRequest,
+    VerifyProviderRouteResponse,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, get_services, verify_admin_access
@@ -173,6 +174,19 @@ class PreparedRouteCandidate:
     quota_limit: int | None
     concurrency_limit: int | None
     weight: float
+
+
+@dataclass
+class PreparedRouteUpdateContext:
+    model_id: str
+    route_id: str
+    route: Any
+    old_adapter: Any
+    old_weight: float
+    old_endpoint_id: str
+    old_upstream_provider: str
+    route_provider: str
+    update: PreparedRouteUpdate
 
 
 def _mask(api_key: str) -> str:
@@ -1193,6 +1207,91 @@ async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCand
         raise HTTPException(status_code=400, detail=_verification_error_detail(exc)) from exc
 
 
+async def _prepare_candidate_from_payload(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    payload: CreateProviderRouteRequest,
+) -> PreparedRouteCandidate:
+    upstream_provider = _target_provider_from_request(
+        payload.upstream_provider,
+        payload.openrouter_provider,
+    )
+    openrouter_sort = _openrouter_sort_from_request(
+        payload.upstream_provider,
+        payload.openrouter_sort,
+    )
+    return await _prepare_route_candidate(
+        services,
+        op_store,
+        model_id=model_id,
+        route_type=payload.route_type,
+        upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
+        base_url=payload.base_url,
+        api_key_id=payload.api_key_id,
+        provider_model_id=payload.provider_model_id,
+        quota_limit=payload.quota_limit,
+        concurrency_limit=payload.concurrency_limit,
+        weight=payload.weight,
+    )
+
+
+async def _prepare_update_context_from_payload(
+    services,
+    op_store,
+    *,
+    model_route_path: str,
+    payload: UpdateProviderRouteRequest,
+) -> PreparedRouteUpdateContext:
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    old_entries = _raw_route_entries(route)
+    old_adapter, old_weight, old_endpoint_id = old_entries[
+        _route_index_for_id(old_entries, route_id)
+    ]
+    old_upstream_provider = _upstream_provider(old_adapter)
+    route_provider = _route_provider(old_adapter)
+    raw_upstream_provider = payload.upstream_provider or payload.provider
+    if not raw_upstream_provider:
+        raise HTTPException(status_code=422, detail="upstream_provider must not be blank")
+    upstream_provider = _target_provider_from_request(
+        raw_upstream_provider,
+        payload.openrouter_provider,
+    )
+    openrouter_sort = _openrouter_sort_from_request(
+        raw_upstream_provider,
+        payload.openrouter_sort,
+    )
+    provider_model_id = payload.provider_model_id.strip() if payload.provider_model_id else None
+    if payload.provider_model_id is not None and not provider_model_id:
+        raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
+
+    update = await _prepare_route_update(
+        services,
+        op_store,
+        model_id=model_id,
+        route_id=route_id,
+        upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
+        base_url=payload.base_url,
+        api_key_id=payload.api_key_id,
+        provider_model_id_override=provider_model_id,
+        quota_limit_override=payload.quota_limit,
+    )
+    return PreparedRouteUpdateContext(
+        model_id=model_id,
+        route_id=route_id,
+        route=route,
+        old_adapter=old_adapter,
+        old_weight=float(old_weight),
+        old_endpoint_id=old_endpoint_id,
+        old_upstream_provider=old_upstream_provider,
+        route_provider=route_provider,
+        update=update,
+    )
+
+
 def _rebuild_routewise_routers(services) -> None:
     registry = getattr(services, "model_router_registry", None)
     if registry is None:
@@ -1473,27 +1572,11 @@ async def create_provider_route_candidate(
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
-    upstream_provider = _target_provider_from_request(
-        payload.upstream_provider,
-        payload.openrouter_provider,
-    )
-    openrouter_sort = _openrouter_sort_from_request(
-        payload.upstream_provider,
-        payload.openrouter_sort,
-    )
-    candidate = await _prepare_route_candidate(
+    candidate = await _prepare_candidate_from_payload(
         services,
         op_store,
         model_id=model_id,
-        route_type=payload.route_type,
-        upstream_provider=upstream_provider,
-        openrouter_sort=openrouter_sort,
-        base_url=payload.base_url,
-        api_key_id=payload.api_key_id,
-        provider_model_id=payload.provider_model_id,
-        quota_limit=payload.quota_limit,
-        concurrency_limit=payload.concurrency_limit,
-        weight=payload.weight,
+        payload=payload,
     )
     await _verify_provider_route(candidate)
     await op_store.upsert_provider_route_candidate(
@@ -1544,6 +1627,31 @@ async def create_provider_route_candidate(
     )
 
 
+@router.post(
+    "/routing/provider-route-candidate-verifications/{model_id:path}",
+    response_model=VerifyProviderRouteResponse,
+)
+async def verify_provider_route_candidate(
+    model_id: str,
+    payload: CreateProviderRouteRequest,
+    _admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> VerifyProviderRouteResponse:
+    """Verify a runtime provider route candidate without persisting it."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    candidate = await _prepare_candidate_from_payload(
+        services,
+        op_store,
+        model_id=model_id,
+        payload=payload,
+    )
+    await _verify_provider_route(candidate)
+    return VerifyProviderRouteResponse(ok=True)
+
+
 @router.put("/routing/provider-routes/{model_route_path:path}", response_model=ProviderRouteItem)
 async def update_provider_route(
     model_route_path: str,
@@ -1556,38 +1664,15 @@ async def update_provider_route(
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
-    model_id, route_id, route = _split_model_route_path(services, model_route_path)
-    old_entries = _raw_route_entries(route)
-    old_adapter, old_weight, old_endpoint_id = old_entries[_route_index_for_id(old_entries, route_id)]
-    old_upstream_provider = _upstream_provider(old_adapter)
-    route_provider = _route_provider(old_adapter)
-    raw_upstream_provider = payload.upstream_provider or payload.provider
-    if not raw_upstream_provider:
-        raise HTTPException(status_code=422, detail="upstream_provider must not be blank")
-    upstream_provider = _target_provider_from_request(
-        raw_upstream_provider,
-        payload.openrouter_provider,
-    )
-    openrouter_sort = _openrouter_sort_from_request(
-        raw_upstream_provider,
-        payload.openrouter_sort,
-    )
-    provider_model_id = payload.provider_model_id.strip() if payload.provider_model_id else None
-    if payload.provider_model_id is not None and not provider_model_id:
-        raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
-
-    update = await _prepare_route_update(
+    context = await _prepare_update_context_from_payload(
         services,
         op_store,
-        model_id=model_id,
-        route_id=route_id,
-        upstream_provider=upstream_provider,
-        openrouter_sort=openrouter_sort,
-        base_url=payload.base_url,
-        api_key_id=payload.api_key_id,
-        provider_model_id_override=provider_model_id,
-        quota_limit_override=payload.quota_limit,
+        model_route_path=model_route_path,
+        payload=payload,
     )
+    model_id = context.model_id
+    route_id = context.route_id
+    update = context.update
     await _verify_provider_route(update)
     await op_store.upsert_provider_route_config(
         model_id,
@@ -1610,9 +1695,9 @@ async def update_provider_route(
         {
             "model_id": model_id,
             "route_id": route_id,
-            "route_provider": route_provider,
-            "old_upstream_provider": old_upstream_provider,
-            "old_endpoint_id": old_endpoint_id,
+            "route_provider": context.route_provider,
+            "old_upstream_provider": context.old_upstream_provider,
+            "old_endpoint_id": context.old_endpoint_id,
             "new_upstream_provider": update.upstream_provider,
             "openrouter_sort": update.openrouter_sort,
             "new_endpoint_id": update.endpoint_id,
@@ -1629,10 +1714,35 @@ async def update_provider_route(
         strategy=_strategy_for_model(services, model_id),
         route_id=route_id,
         adapter=update.adapter,
-        yaml_weight=float(old_weight),
+        yaml_weight=context.old_weight,
         endpoint_id=update.endpoint_id,
         override_row=_rows_by_route_id(override_rows).get(route_id),
     )
+
+
+@router.post(
+    "/routing/provider-route-verifications/{model_route_path:path}",
+    response_model=VerifyProviderRouteResponse,
+)
+async def verify_provider_route_update(
+    model_route_path: str,
+    payload: UpdateProviderRouteRequest,
+    _admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> VerifyProviderRouteResponse:
+    """Verify a provider route update without persisting or installing it."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    context = await _prepare_update_context_from_payload(
+        services,
+        op_store,
+        model_route_path=model_route_path,
+        payload=payload,
+    )
+    await _verify_provider_route(context.update)
+    return VerifyProviderRouteResponse(ok=True)
 
 
 @router.delete("/routing/provider-routes/{model_route_path:path}", response_model=ProviderRouteItem)
