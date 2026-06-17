@@ -12,7 +12,7 @@ interface UseCase {
 const USE_CASES: UseCase[] = [
   {
     title: 'Coding agents',
-    body: 'Power autonomous and assisted coding workflows with frontier models behind an OpenAI-compatible API.',
+    body: 'Power autonomous and assisted coding workflows with frontier models via OpenAI- or Anthropic-compatible endpoints.',
     apps: [
       { name: 'Claude Code', href: 'https://claude.com/claude-code' },
       { name: 'Kilo', href: 'https://kilocode.ai' },
