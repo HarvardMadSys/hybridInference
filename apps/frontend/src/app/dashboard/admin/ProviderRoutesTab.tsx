@@ -62,6 +62,9 @@ const emptyCreateForm: CreateRouteForm = {
 
 const OPENROUTER_PROVIDER_AUTO = '';
 const OPENROUTER_PROVIDER_CUSTOM = '__custom__';
+const OPENROUTER_ROUTING_AUTO = 'auto';
+const OPENROUTER_ROUTING_SORT_PREFIX = 'sort:';
+const OPENROUTER_ROUTING_PROVIDER_PREFIX = 'provider:';
 const OPENROUTER_AUTO_OPTION: OpenRouterProviderOption = {
   provider: OPENROUTER_PROVIDER_AUTO,
   label: 'Auto',
@@ -71,11 +74,13 @@ const OPENROUTER_CUSTOM_OPTION: OpenRouterProviderOption = {
   label: 'Custom...',
 };
 const OPENROUTER_PROVIDER_SLUG_RE = /^[A-Za-z0-9_.-]+$/;
-const OPENROUTER_SORT_OPTIONS: Array<{ value: '' | OpenRouterSortPolicy; label: string }> = [
-  { value: '', label: 'Auto' },
-  { value: 'price', label: 'Sort by price' },
-  { value: 'throughput', label: 'Sort by throughput' },
-  { value: 'latency', label: 'Sort by latency' },
+const OPENROUTER_SORT_ROUTING_OPTIONS: Array<{
+  value: `${typeof OPENROUTER_ROUTING_SORT_PREFIX}${OpenRouterSortPolicy}`;
+  label: string;
+}> = [
+  { value: 'sort:price', label: 'Sort by price' },
+  { value: 'sort:throughput', label: 'Sort by throughput' },
+  { value: 'sort:latency', label: 'Sort by latency' },
 ];
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
@@ -243,6 +248,40 @@ function withCustomOpenRouterOption(options: OpenRouterProviderOption[]) {
   return options.some((option) => option.provider === OPENROUTER_PROVIDER_CUSTOM)
     ? options
     : [...options, OPENROUTER_CUSTOM_OPTION];
+}
+
+function openRouterRoutingValue(selectedProvider: string, sort: string) {
+  if (selectedProvider) return `${OPENROUTER_ROUTING_PROVIDER_PREFIX}${selectedProvider}`;
+  if (sort) return `${OPENROUTER_ROUTING_SORT_PREFIX}${sort}`;
+  return OPENROUTER_ROUTING_AUTO;
+}
+
+function openRouterProviderFromRoutingValue(value: string) {
+  return value.startsWith(OPENROUTER_ROUTING_PROVIDER_PREFIX)
+    ? value.slice(OPENROUTER_ROUTING_PROVIDER_PREFIX.length)
+    : OPENROUTER_PROVIDER_AUTO;
+}
+
+function openRouterSortFromRoutingValue(value: string) {
+  return value.startsWith(OPENROUTER_ROUTING_SORT_PREFIX)
+    ? value.slice(OPENROUTER_ROUTING_SORT_PREFIX.length)
+    : '';
+}
+
+function openRouterRoutingOptions(options: OpenRouterProviderOption[]) {
+  return [
+    { value: OPENROUTER_ROUTING_AUTO, label: 'Auto' },
+    ...OPENROUTER_SORT_ROUTING_OPTIONS,
+    ...options
+      .filter((option) => option.provider !== OPENROUTER_PROVIDER_AUTO)
+      .map((option) => ({
+        value: `${OPENROUTER_ROUTING_PROVIDER_PREFIX}${option.provider}`,
+        label:
+          option.provider === OPENROUTER_PROVIDER_CUSTOM
+            ? 'Custom provider...'
+            : `Provider: ${option.label}`,
+      })),
+  ];
 }
 
 function resolvedOpenRouterProvider(selectedProvider: string, customProvider: string) {
@@ -500,6 +539,14 @@ export function ProviderRoutesTab() {
   const createOpenRouterSelectOptions = useMemo(
     () => withCustomOpenRouterOption(createOpenRouterProviderOptions),
     [createOpenRouterProviderOptions],
+  );
+  const createOpenRouterRoutingOptions = useMemo(
+    () => openRouterRoutingOptions(createOpenRouterSelectOptions),
+    [createOpenRouterSelectOptions],
+  );
+  const editOpenRouterRoutingOptions = useMemo(
+    () => openRouterRoutingOptions(editOpenRouterSelectOptions),
+    [editOpenRouterSelectOptions],
   );
 
   const createProviderOptions = useMemo(
@@ -1101,7 +1148,7 @@ export function ProviderRoutesTab() {
             </button>
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-type">
                 Route type
@@ -1173,34 +1220,6 @@ export function ProviderRoutesTab() {
                 ))}
               </select>
             </div>
-            {createForm.upstreamProvider === 'openrouter' && (
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-route-openrouter-sort"
-                >
-                  OpenRouter policy
-                </label>
-                <select
-                  id="new-route-openrouter-sort"
-                  value={createForm.openRouterSort}
-                  onChange={(event) =>
-                    setCreateForm((current) => ({
-                      ...current,
-                      openRouterSort: event.target.value,
-                    }))
-                  }
-                  disabled={createForm.openRouterProvider !== OPENROUTER_PROVIDER_AUTO}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-                >
-                  {OPENROUTER_SORT_OPTIONS.map((option) => (
-                    <option key={option.value || 'default'} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
 
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -1248,32 +1267,37 @@ export function ProviderRoutesTab() {
                 <div className="flex items-center gap-1.5">
                   <label
                     className="text-[12px] font-medium text-gray-500"
-                    htmlFor="new-route-openrouter-provider"
+                    htmlFor="new-route-openrouter-routing"
                   >
-                    OpenRouter provider
+                    OpenRouter routing
                   </label>
                   {openRouterProvidersLoading && (
                     <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
                   )}
                 </div>
                 <select
-                  id="new-route-openrouter-provider"
-                  value={createForm.openRouterProvider}
+                  id="new-route-openrouter-routing"
+                  value={openRouterRoutingValue(
+                    createForm.openRouterProvider,
+                    createForm.openRouterSort,
+                  )}
                   onChange={(event) => {
-                    const openRouterProvider = event.target.value;
+                    const routingValue = event.target.value;
+                    const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
                     setCreateForm((current) => ({
                       ...current,
                       openRouterProvider,
-                      openRouterSort:
-                        openRouterProvider === OPENROUTER_PROVIDER_AUTO
-                          ? current.openRouterSort
+                      openRouterSort: openRouterSortFromRoutingValue(routingValue),
+                      customOpenRouterProvider:
+                        openRouterProvider === OPENROUTER_PROVIDER_CUSTOM
+                          ? current.customOpenRouterProvider
                           : '',
                     }));
                   }}
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                 >
-                  {createOpenRouterSelectOptions.map((option) => (
-                    <option key={option.provider || 'auto'} value={option.provider}>
+                  {createOpenRouterRoutingOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
                   ))}
@@ -1444,34 +1468,6 @@ export function ProviderRoutesTab() {
                 ))}
               </select>
             </div>
-            {form.upstreamProvider === 'openrouter' && (
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="route-openrouter-sort"
-                >
-                  OpenRouter policy
-                </label>
-                <select
-                  id="route-openrouter-sort"
-                  value={form.openRouterSort}
-                  onChange={(event) =>
-                    setForm((current) => ({
-                      ...current,
-                      openRouterSort: event.target.value,
-                    }))
-                  }
-                  disabled={form.openRouterProvider !== OPENROUTER_PROVIDER_AUTO}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-                >
-                  {OPENROUTER_SORT_OPTIONS.map((option) => (
-                    <option key={option.value || 'default'} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
           </div>
 
           <div className="mt-3">
@@ -1515,32 +1511,34 @@ export function ProviderRoutesTab() {
                 <div className="flex items-center gap-1.5">
                   <label
                     className="text-[12px] font-medium text-gray-500"
-                    htmlFor="route-openrouter-provider"
+                    htmlFor="route-openrouter-routing"
                   >
-                    OpenRouter provider
+                    OpenRouter routing
                   </label>
                   {openRouterProvidersLoading && (
                     <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
                   )}
                 </div>
                 <select
-                  id="route-openrouter-provider"
-                  value={form.openRouterProvider}
+                  id="route-openrouter-routing"
+                  value={openRouterRoutingValue(form.openRouterProvider, form.openRouterSort)}
                   onChange={(event) => {
-                    const openRouterProvider = event.target.value;
+                    const routingValue = event.target.value;
+                    const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
                     setForm((current) => ({
                       ...current,
                       openRouterProvider,
-                      openRouterSort:
-                        openRouterProvider === OPENROUTER_PROVIDER_AUTO
-                          ? current.openRouterSort
+                      openRouterSort: openRouterSortFromRoutingValue(routingValue),
+                      customOpenRouterProvider:
+                        openRouterProvider === OPENROUTER_PROVIDER_CUSTOM
+                          ? current.customOpenRouterProvider
                           : '',
                     }));
                   }}
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                 >
-                  {editOpenRouterSelectOptions.map((option) => (
-                    <option key={option.provider || 'auto'} value={option.provider}>
+                  {editOpenRouterRoutingOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
                       {option.label}
                     </option>
                   ))}

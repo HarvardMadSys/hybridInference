@@ -171,8 +171,8 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Override provider'), {
       target: { value: 'openrouter' },
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
-      target: { value: 'parasail' },
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:parasail' },
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
@@ -201,7 +201,7 @@ describe('ProviderRoutesTab', () => {
         },
       );
     });
-    expect(await screen.findByText('Parasail')).toBeInTheDocument();
+    expect(screen.getByLabelText('OpenRouter routing')).toHaveValue('provider:parasail');
   });
 
   it('submits local daily quota for quota provider overrides', async () => {
@@ -248,8 +248,8 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Override provider'), {
       target: { value: 'openrouter' },
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
-      target: { value: 'parasail' },
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:parasail' },
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
@@ -382,13 +382,13 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => {
       expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('minimax/minimax-m2.5');
     });
-    const openRouterSelect = screen.getByLabelText('OpenRouter provider');
+    const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
-      expect(within(openRouterSelect).getByRole('option', { name: 'Inceptron' }))
+      expect(within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }))
         .toBeInTheDocument();
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
-      target: { value: 'inceptron' },
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:inceptron' },
     });
 
     await waitFor(() => {
@@ -466,8 +466,8 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
-      target: { value: '__custom__' },
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:__custom__' },
     });
     fireEvent.change(screen.getByLabelText('Custom OpenRouter provider'), {
       target: { value: 'novita' },
@@ -523,8 +523,8 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter policy'), {
-      target: { value: 'throughput' },
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'sort:throughput' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Verify & Add' }));
 
@@ -599,14 +599,14 @@ describe('ProviderRoutesTab', () => {
     ).not.toBeInTheDocument();
     expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
 
-    const openRouterSelect = screen.getByLabelText('OpenRouter provider');
+    const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
-      expect(within(openRouterSelect).queryByRole('option', { name: 'DeepInfra' }))
+      expect(within(openRouterSelect).queryByRole('option', { name: 'Provider: DeepInfra' }))
         .not.toBeInTheDocument();
     });
-    expect(within(openRouterSelect).getByRole('option', { name: 'Inceptron' }))
+    expect(within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }))
       .toBeInTheDocument();
-    expect(within(openRouterSelect).getByRole('option', { name: 'Chutes' }))
+    expect(within(openRouterSelect).getByRole('option', { name: 'Provider: Chutes' }))
       .toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
