@@ -39,6 +39,12 @@ myst_enable_extensions = [
     "tasklist",  # Task lists
 ]
 
+# Generate implicit anchors for headings (h1-h3) so in-page links such as
+# ``[Manual setup](#manual-setup)`` resolve. Without this, MyST emits
+# ``xref_missing`` warnings that fail the Cloudflare Pages build (Sphinx runs
+# with warnings treated as errors).
+myst_heading_anchors = 3
+
 # Intersphinx mapping - link to Python docs for better references
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
