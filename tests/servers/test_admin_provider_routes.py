@@ -407,6 +407,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
         "minimax-fast",
         "minimax-fast:chutes-api",
         "parasail",
+        None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
         "minimax/minimax-m2.5",
@@ -656,6 +657,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
         "minimax-fast:openrouter[parasail]-api",
         "on_demand",
         "parasail",
+        None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
         "minimax/minimax-m2.5",
@@ -671,6 +673,65 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "parasail"
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_sort": "throughput",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["route_id"] == "minimax-fast:openrouter-api"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] is None
+    assert payload["openrouter_sort"] == "throughput"
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter-api",
+        "on_demand",
+        "openrouter",
+        "throughput",
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        None,
+        1.0,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.provider == "openrouter"
+    assert runtime_adapter.config.openrouter_sort == "throughput"
+    assert runtime_adapter.config.openrouter_pinned_provider is None
+    assert runtime_adapter.config.route_metadata["openrouter_sort"] == "throughput"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 

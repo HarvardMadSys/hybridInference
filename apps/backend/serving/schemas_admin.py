@@ -833,6 +833,7 @@ class ProviderRouteItem(BaseModel):
     provider: str
     upstream_provider: str
     openrouter_provider: str | None = None
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
     key_provider: str
     base_url: str
     api_key_id: str | None = None
@@ -877,6 +878,7 @@ class CreateProviderRouteRequest(BaseModel):
     route_type: Literal["quota", "concurrency", "on_demand"]
     upstream_provider: str = Field(..., min_length=1, max_length=64)
     openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
     base_url: str = Field(..., min_length=1, max_length=2048)
     api_key_id: str | None = Field(None, min_length=1, max_length=128)
     provider_model_id: str = Field(..., min_length=1, max_length=512)
@@ -891,6 +893,7 @@ class UpdateProviderRouteRequest(BaseModel):
     provider: str | None = Field(None, min_length=1, max_length=64)
     upstream_provider: str | None = Field(None, min_length=1, max_length=64)
     openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
     base_url: str = Field(..., min_length=1, max_length=2048)
     api_key_id: str | None = Field(None, min_length=1, max_length=128)
     provider_model_id: str | None = Field(None, min_length=1, max_length=512)

@@ -517,6 +517,7 @@ class PostgresOperationalStore(OperationalStore):
                 model_id TEXT NOT NULL,
                 route_id TEXT NOT NULL,
                 provider TEXT NOT NULL,
+                openrouter_sort TEXT,
                 base_url TEXT NOT NULL,
                 api_key_id TEXT,
                 provider_model_id TEXT NOT NULL,
@@ -533,6 +534,9 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS quota_limit INTEGER"
         )
+        await conn.execute(
+            "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS openrouter_sort TEXT"
+        )
 
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS provider_route_candidates (
@@ -540,6 +544,7 @@ class PostgresOperationalStore(OperationalStore):
                 route_id TEXT NOT NULL,
                 route_type TEXT NOT NULL,
                 provider TEXT NOT NULL,
+                openrouter_sort TEXT,
                 base_url TEXT NOT NULL,
                 api_key_id TEXT,
                 provider_model_id TEXT NOT NULL,
@@ -554,6 +559,9 @@ class PostgresOperationalStore(OperationalStore):
         """)
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_prcand_model ON provider_route_candidates(model_id)"
+        )
+        await conn.execute(
+            "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS openrouter_sort TEXT"
         )
 
         # --- provider_api_keys ---
@@ -2062,7 +2070,7 @@ class PostgresOperationalStore(OperationalStore):
         """Return provider route override rows for one model ordered by route_id."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT model_id, route_id, provider, base_url, api_key_id, "
+                "SELECT model_id, route_id, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, created_at, updated_at, updated_by "
                 "FROM provider_route_configs WHERE model_id = $1 ORDER BY route_id",
                 model_id,
@@ -2073,7 +2081,7 @@ class PostgresOperationalStore(OperationalStore):
         """Return all provider route override rows ordered by model_id and route_id."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT model_id, route_id, provider, base_url, api_key_id, "
+                "SELECT model_id, route_id, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, created_at, updated_at, updated_by "
                 "FROM provider_route_configs ORDER BY model_id, route_id"
             )
@@ -2084,6 +2092,7 @@ class PostgresOperationalStore(OperationalStore):
         model_id: str,
         route_id: str,
         provider: str,
+        openrouter_sort: str | None,
         base_url: str,
         api_key_id: str | None,
         provider_model_id: str,
@@ -2094,11 +2103,12 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO provider_route_configs "
-                "(model_id, route_id, provider, base_url, api_key_id, provider_model_id, "
-                "quota_limit, created_at, updated_at, updated_by) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8) "
+                "(model_id, route_id, provider, openrouter_sort, base_url, api_key_id, "
+                "provider_model_id, quota_limit, created_at, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), $9) "
                 "ON CONFLICT (model_id, route_id) DO UPDATE SET "
                 "provider = EXCLUDED.provider, "
+                "openrouter_sort = EXCLUDED.openrouter_sort, "
                 "base_url = EXCLUDED.base_url, "
                 "api_key_id = EXCLUDED.api_key_id, "
                 "provider_model_id = EXCLUDED.provider_model_id, "
@@ -2108,6 +2118,7 @@ class PostgresOperationalStore(OperationalStore):
                 model_id,
                 route_id,
                 provider,
+                openrouter_sort,
                 base_url,
                 api_key_id,
                 provider_model_id,
@@ -2129,7 +2140,7 @@ class PostgresOperationalStore(OperationalStore):
         """Return runtime provider route candidate rows for one model."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT model_id, route_id, route_type, provider, base_url, api_key_id, "
+                "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
                 "updated_at, updated_by "
                 "FROM provider_route_candidates WHERE model_id = $1 ORDER BY route_id",
@@ -2141,7 +2152,7 @@ class PostgresOperationalStore(OperationalStore):
         """Return all runtime provider route candidate rows ordered by model and route."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT model_id, route_id, route_type, provider, base_url, api_key_id, "
+                "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
                 "updated_at, updated_by "
                 "FROM provider_route_candidates ORDER BY model_id, route_id"
@@ -2154,6 +2165,7 @@ class PostgresOperationalStore(OperationalStore):
         route_id: str,
         route_type: str,
         provider: str,
+        openrouter_sort: str | None,
         base_url: str,
         api_key_id: str | None,
         provider_model_id: str,
@@ -2166,13 +2178,14 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO provider_route_candidates "
-                "(model_id, route_id, route_type, provider, base_url, api_key_id, "
+                "(model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
                 "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
                 "updated_at, updated_by) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW(), $11) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW(), $12) "
                 "ON CONFLICT (model_id, route_id) DO UPDATE SET "
                 "route_type = EXCLUDED.route_type, "
                 "provider = EXCLUDED.provider, "
+                "openrouter_sort = EXCLUDED.openrouter_sort, "
                 "base_url = EXCLUDED.base_url, "
                 "api_key_id = EXCLUDED.api_key_id, "
                 "provider_model_id = EXCLUDED.provider_model_id, "
@@ -2185,6 +2198,7 @@ class PostgresOperationalStore(OperationalStore):
                 route_id,
                 route_type,
                 provider,
+                openrouter_sort,
                 base_url,
                 api_key_id,
                 provider_model_id,

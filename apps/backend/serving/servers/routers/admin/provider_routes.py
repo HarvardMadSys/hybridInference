@@ -45,6 +45,7 @@ BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
 OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+OPENROUTER_SORT_POLICIES = {"price", "throughput", "latency"}
 OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[
     str, tuple[float, list[OpenRouterProviderOption]]
 ] = {}
@@ -148,6 +149,7 @@ class PreparedRouteUpdate:
     adapter: Any
     endpoint_id: str
     upstream_provider: str
+    openrouter_sort: str | None
     key_provider: str
     base_url: str
     api_key_id: str | None
@@ -162,6 +164,7 @@ class PreparedRouteCandidate:
     adapter: Any
     endpoint_id: str
     upstream_provider: str
+    openrouter_sort: str | None
     key_provider: str
     base_url: str
     api_key_id: str | None
@@ -353,6 +356,24 @@ def _target_provider_from_request(
     return pin
 
 
+def _openrouter_sort_from_request(
+    upstream_provider: str,
+    openrouter_sort: str | None,
+) -> str | None:
+    sort = openrouter_sort.strip() if openrouter_sort else None
+    if not sort:
+        return None
+    if upstream_provider != "openrouter":
+        raise HTTPException(
+            status_code=422,
+            detail="openrouter_sort is only valid when upstream_provider is openrouter",
+        )
+    if sort not in OPENROUTER_SORT_POLICIES:
+        allowed = ", ".join(sorted(OPENROUTER_SORT_POLICIES))
+        raise HTTPException(status_code=422, detail=f"openrouter_sort must be one of: {allowed}")
+    return sort
+
+
 def _provider_option_for_target(target: ProviderTarget) -> ProviderRouteOption:
     return ProviderRouteOption(
         provider=target.provider,
@@ -477,6 +498,15 @@ def _upstream_provider(adapter) -> str:
     if pinned:
         return str(pinned)
     return str(adapter.config.provider)
+
+
+def _openrouter_sort(adapter) -> str | None:
+    raw = getattr(adapter.config, "openrouter_sort", None)
+    if raw:
+        return str(raw)
+    route_metadata = getattr(adapter.config, "route_metadata", None) or {}
+    raw = route_metadata.get("openrouter_sort")
+    return str(raw) if raw else None
 
 
 def _route_provider(adapter) -> str:
@@ -730,6 +760,7 @@ def _preserve_route_semantics(
     route_metadata["route_id"] = route_id
     route_metadata["route_provider"] = _route_provider(current_adapter)
     route_metadata["upstream_provider"] = upstream_provider
+    route_metadata["openrouter_sort"] = cfg.get("openrouter_sort")
 
     provider_type = _route_type(current_adapter)
     cfg["provider_type"] = provider_type
@@ -801,6 +832,7 @@ async def _prepare_route_candidate(
     model_id: str,
     route_type: str,
     upstream_provider: str,
+    openrouter_sort: str | None,
     base_url: str,
     api_key_id: str | None,
     provider_model_id: str,
@@ -830,6 +862,10 @@ async def _prepare_route_candidate(
 
     target = _target_for_provider(upstream_provider)
     _validate_create_route_type_for_provider(route_type, upstream_provider)
+    openrouter_sort = _openrouter_sort_from_request(
+        _primary_provider_for_target(target),
+        openrouter_sort,
+    )
     cleaned_base_url = _validate_base_url(base_url)
     provider_model_id = provider_model_id.strip()
     if not provider_model_id:
@@ -857,6 +893,7 @@ async def _prepare_route_candidate(
             "api_key": api_key,
             "api_keys": api_keys,
             "provider_model_id": provider_model_id,
+            "openrouter_sort": openrouter_sort,
             "endpoint_id": candidate_route_id,
             "provider_type": route_type,
             "quota_pool": None,
@@ -869,6 +906,7 @@ async def _prepare_route_candidate(
                 "route_provider": upstream_provider,
                 "upstream_provider": upstream_provider,
                 "provider_type": route_type,
+                "openrouter_sort": openrouter_sort,
                 "runtime_candidate": True,
             },
         }
@@ -894,6 +932,7 @@ async def _prepare_route_candidate(
         adapter=adapter,
         endpoint_id=_get_endpoint_id(adapter),
         upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
         key_provider=target.key_provider,
         base_url=cleaned_base_url,
         api_key_id=api_key_id,
@@ -912,6 +951,7 @@ async def _prepare_route_update(
     model_id: str,
     route_id: str,
     upstream_provider: str,
+    openrouter_sort: str | None,
     base_url: str,
     api_key_id: str | None,
     provider_model_id_override: str | None = None,
@@ -936,6 +976,10 @@ async def _prepare_route_update(
                 detail="quota_limit is only supported when using an override provider",
             )
     target = _target_for_provider(upstream_provider)
+    openrouter_sort = _openrouter_sort_from_request(
+        _primary_provider_for_target(target),
+        openrouter_sort,
+    )
     cleaned_base_url = _validate_base_url(base_url)
 
     api_key, api_keys = await _resolve_key_material(
@@ -952,6 +996,7 @@ async def _prepare_route_update(
     cfg["api_key"] = api_key
     cfg["api_keys"] = api_keys
     cfg["provider_model_id"] = provider_model_id
+    cfg["openrouter_sort"] = openrouter_sort
     cfg["endpoint_id"] = _make_provider_id(model_id, target.kind, cleaned_base_url)
     if quota_limit_override is not None:
         quota = dict(cfg.get("quota") or {})
@@ -976,6 +1021,7 @@ async def _prepare_route_update(
         adapter=adapter,
         endpoint_id=_get_endpoint_id(adapter),
         upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
         key_provider=target.key_provider,
         base_url=cleaned_base_url,
         api_key_id=api_key_id,
@@ -1200,6 +1246,11 @@ async def _route_row(
     route_provider = _primary_provider_for_target(route_target)
     upstream_provider = _primary_provider_for_target(target)
     openrouter_provider = _openrouter_pin_for_target(target)
+    openrouter_sort = (
+        str(override_row["openrouter_sort"])
+        if override_row and override_row.get("openrouter_sort") is not None
+        else _openrouter_sort(adapter)
+    )
     api_key_id = (
         str(override_row["api_key_id"])
         if override_row and override_row.get("api_key_id") is not None
@@ -1225,6 +1276,7 @@ async def _route_row(
         provider=route_provider,
         upstream_provider=upstream_provider,
         openrouter_provider=openrouter_provider,
+        openrouter_sort=openrouter_sort,
         key_provider=target.key_provider,
         base_url=base_url,
         api_key_id=api_key_id,
@@ -1425,12 +1477,17 @@ async def create_provider_route_candidate(
         payload.upstream_provider,
         payload.openrouter_provider,
     )
+    openrouter_sort = _openrouter_sort_from_request(
+        payload.upstream_provider,
+        payload.openrouter_sort,
+    )
     candidate = await _prepare_route_candidate(
         services,
         op_store,
         model_id=model_id,
         route_type=payload.route_type,
         upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
         base_url=payload.base_url,
         api_key_id=payload.api_key_id,
         provider_model_id=payload.provider_model_id,
@@ -1444,6 +1501,7 @@ async def create_provider_route_candidate(
         candidate.route_id,
         candidate.route_type,
         candidate.upstream_provider,
+        candidate.openrouter_sort,
         candidate.base_url,
         candidate.api_key_id,
         candidate.provider_model_id,
@@ -1464,6 +1522,7 @@ async def create_provider_route_candidate(
             "route_id": candidate.route_id,
             "route_type": candidate.route_type,
             "upstream_provider": candidate.upstream_provider,
+            "openrouter_sort": candidate.openrouter_sort,
             "endpoint_id": candidate.endpoint_id,
             "api_key_id": candidate.api_key_id,
             "quota_limit": candidate.quota_limit,
@@ -1509,6 +1568,10 @@ async def update_provider_route(
         raw_upstream_provider,
         payload.openrouter_provider,
     )
+    openrouter_sort = _openrouter_sort_from_request(
+        raw_upstream_provider,
+        payload.openrouter_sort,
+    )
     provider_model_id = payload.provider_model_id.strip() if payload.provider_model_id else None
     if payload.provider_model_id is not None and not provider_model_id:
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
@@ -1519,6 +1582,7 @@ async def update_provider_route(
         model_id=model_id,
         route_id=route_id,
         upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
         base_url=payload.base_url,
         api_key_id=payload.api_key_id,
         provider_model_id_override=provider_model_id,
@@ -1529,6 +1593,7 @@ async def update_provider_route(
         model_id,
         route_id,
         update.upstream_provider,
+        update.openrouter_sort,
         update.base_url,
         update.api_key_id,
         update.provider_model_id,
@@ -1549,6 +1614,7 @@ async def update_provider_route(
             "old_upstream_provider": old_upstream_provider,
             "old_endpoint_id": old_endpoint_id,
             "new_upstream_provider": update.upstream_provider,
+            "openrouter_sort": update.openrouter_sort,
             "new_endpoint_id": update.endpoint_id,
             "api_key_id": update.api_key_id,
             "quota_limit": payload.quota_limit,
@@ -1698,6 +1764,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> None:
                 route_id=route_id,
                 route_type=str(row["route_type"]),
                 upstream_provider=str(row["provider"]),
+                openrouter_sort=row.get("openrouter_sort"),
                 base_url=str(row["base_url"]),
                 api_key_id=row.get("api_key_id"),
                 provider_model_id=str(row["provider_model_id"]),
@@ -1728,6 +1795,7 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                 model_id=model_id,
                 route_id=route_id,
                 upstream_provider=str(row["provider"]),
+                openrouter_sort=row.get("openrouter_sort"),
                 base_url=str(row["base_url"]),
                 api_key_id=row.get("api_key_id"),
                 provider_model_id_override=str(row["provider_model_id"]),

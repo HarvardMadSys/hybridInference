@@ -1114,6 +1114,8 @@ export interface OpenRouterProviderOption {
   label: string;
 }
 
+export type OpenRouterSortPolicy = 'price' | 'throughput' | 'latency';
+
 export interface ProviderRoute {
   model_id: string;
   strategy: string;
@@ -1122,6 +1124,7 @@ export interface ProviderRoute {
   provider: string;
   upstream_provider: string;
   openrouter_provider?: string | null;
+  openrouter_sort?: OpenRouterSortPolicy | null;
   key_provider: string;
   base_url: string;
   api_key_id: string | null;
@@ -1152,6 +1155,7 @@ export interface ListOpenRouterProviderOptionsResponse {
 export interface UpdateProviderRoutePayload {
   upstream_provider: string;
   openrouter_provider?: string | null;
+  openrouter_sort?: OpenRouterSortPolicy | null;
   base_url: string;
   api_key_id?: string | null;
   provider_model_id?: string | null;
@@ -1165,6 +1169,7 @@ export interface CreateProviderRoutePayload {
   route_type: ProviderRouteType;
   upstream_provider: string;
   openrouter_provider?: string | null;
+  openrouter_sort?: OpenRouterSortPolicy | null;
   base_url: string;
   api_key_id?: string | null;
   provider_model_id: string;
@@ -1219,6 +1224,7 @@ export async function updateProviderRoute(
       body: JSON.stringify({
         upstream_provider: payload.upstream_provider,
         openrouter_provider: payload.openrouter_provider ?? null,
+        openrouter_sort: payload.openrouter_sort ?? null,
         base_url: payload.base_url,
         api_key_id: payload.api_key_id ?? null,
         provider_model_id: payload.provider_model_id ?? null,
