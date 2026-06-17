@@ -83,7 +83,9 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
             Signup reason
           </div>
-          <p className="mt-1 whitespace-pre-wrap text-[13px] text-gray-700">{u.signup_reason}</p>
+          <p className="mt-1 whitespace-pre-wrap break-words text-[13px] text-gray-700">
+            {u.signup_reason}
+          </p>
         </div>
       )}
 
