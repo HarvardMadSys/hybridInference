@@ -88,8 +88,6 @@ async def test_failed_request_rate_fires_on_threshold(monkeypatch):
     cfg.rules.fivexx_rate.enabled = False
     cfg.rules.p95_latency_per_provider.enabled = False
     cfg.rules.auth_failure_spike.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
-
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
         handler=handler,
@@ -135,8 +133,6 @@ async def test_failed_request_rate_ignores_401(monkeypatch):
     cfg.rules.fivexx_rate.enabled = False
     cfg.rules.p95_latency_per_provider.enabled = False
     cfg.rules.auth_failure_spike.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
-
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
         handler=handler,
@@ -179,8 +175,6 @@ async def test_fivexx_rate_fires_on_threshold(monkeypatch):
     cfg.rules.failed_request_rate.enabled = False
     cfg.rules.p95_latency_per_provider.enabled = False
     cfg.rules.auth_failure_spike.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
-
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
         handler=handler,
@@ -224,8 +218,6 @@ async def test_p95_latency_per_provider_fires(monkeypatch):
     cfg.rules.failed_request_rate.enabled = False
     cfg.rules.fivexx_rate.enabled = False
     cfg.rules.auth_failure_spike.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
-
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
         handler=handler,
@@ -267,8 +259,6 @@ async def test_p95_latency_skips_records_without_provider(monkeypatch):
     cfg.rules.failed_request_rate.enabled = False
     cfg.rules.fivexx_rate.enabled = False
     cfg.rules.auth_failure_spike.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
-
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
         handler=handler,
@@ -307,8 +297,6 @@ async def test_p95_latency_per_provider_override(monkeypatch):
     cfg.rules.failed_request_rate.enabled = False
     cfg.rules.fivexx_rate.enabled = False
     cfg.rules.auth_failure_spike.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
-
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
         handler=handler,
@@ -348,8 +336,6 @@ async def test_auth_failure_spike_fires(monkeypatch):
     cfg.rules.failed_request_rate.enabled = False
     cfg.rules.fivexx_rate.enabled = False
     cfg.rules.p95_latency_per_provider.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
-
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
         handler=handler,
@@ -379,20 +365,19 @@ async def test_auth_failure_spike_fires(monkeypatch):
             await engine.stop()
 
 
-async def test_concurrency_exhausted_fires(monkeypatch):
+async def test_concurrency_rejected_never_alerts(monkeypatch):
+    """A user exhausting its quota/concurrency must never page Slack.
+
+    Even a large spike of ``concurrency_rejected`` events (which would have
+    tripped the removed ``concurrency_exhausted`` rule) must produce zero
+    Slack alerts: per-user 429 rate limiting is expected, not a service fault.
+    """
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     from serving.observability.alerts import reset_dedupe_state
 
     reset_dedupe_state()
 
     cfg = AlertConfig()
-    cfg.rules.concurrency_exhausted.window_sec = 300
-    cfg.rules.concurrency_exhausted.threshold_count = 100
-    cfg.rules.concurrency_exhausted.cooldown_sec = 1
-    cfg.rules.failed_request_rate.enabled = False
-    cfg.rules.fivexx_rate.enabled = False
-    cfg.rules.p95_latency_per_provider.enabled = False
-    cfg.rules.auth_failure_spike.enabled = False
 
     handler = AlertingLogHandler(maxsize=1000)
     engine = AlertEngine(
@@ -417,8 +402,16 @@ async def test_concurrency_exhausted_fires(monkeypatch):
                         role="free",
                     )
                 )
-            await _drain_until(handler, mock_alert)
-            assert mock_alert.await_count >= 1
+            # Wait for the engine to drain every queued record, then assert the
+            # queue really is empty so a still-backlogged queue can't make the
+            # "no alerts" check pass spuriously.
+            for _ in range(100):
+                if handler.queue.empty():
+                    break
+                await asyncio.sleep(0.01)
+            assert handler.queue.empty(), "Queue was not fully drained"
+            await asyncio.sleep(0.05)
+            assert mock_alert.await_count == 0
         finally:
             await engine.stop()
 

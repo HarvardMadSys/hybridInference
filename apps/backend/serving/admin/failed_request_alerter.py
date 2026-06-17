@@ -50,11 +50,19 @@ logger = get_logger(__name__)
 # exception text (e.g. ``404, message='Not Found', url=...``); that is a genuine
 # service-side failure and must still alert, so a broad ``%not found%`` would be
 # wrong — it would silence provider/config regressions.
+#
+# Per-user quota/concurrency rejections (``quota_exceeded`` /
+# ``concurrency_limit_exceeded``, persisted by rejection_log.log_rejection as
+# 429s with a non-null ``error``) are expected user-facing rate limiting, not a
+# service fault, so they are excluded here and never page Slack. The exclusions
+# live on the error branch, so a genuine 5xx still counts via ``status_code >= 500``.
 FAILURE_PREDICATE_SQL = (
     "(status_code >= 500 OR (error IS NOT NULL "
     "AND error NOT ILIKE 'Model ''%'' not found' "
     "AND error NOT ILIKE 'Embedding model ''%'' not found' "
-    "AND error <> 'model_not_found'))"
+    "AND error <> 'model_not_found' "
+    "AND error <> 'quota_exceeded' "
+    "AND error <> 'concurrency_limit_exceeded'))"
 )
 
 # Module-level SQL so tests can introspect the predicate text.

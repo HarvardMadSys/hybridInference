@@ -31,7 +31,6 @@ async def test_full_chain_logs_to_slack(monkeypatch):
     cfg.rules.fivexx_rate.enabled = False
     cfg.rules.p95_latency_per_provider.enabled = False
     cfg.rules.auth_failure_spike.enabled = False
-    cfg.rules.concurrency_exhausted.enabled = False
 
     engine = AlertEngine(
         handler=handler,
