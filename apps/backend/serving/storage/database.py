@@ -14,7 +14,12 @@ from typing import Any
 
 import asyncpg
 
-from serving.storage.utils import calculate_cost, json_safe, strip_null_bytes
+from serving.storage.utils import (
+    calculate_cost,
+    conversation_shape,
+    json_safe,
+    strip_null_bytes,
+)
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
@@ -105,7 +110,12 @@ class DatabaseLogger:
                     user_id TEXT,
                     session_id TEXT,
                     metadata JSONB,
-                    tools JSONB
+                    tools JSONB,
+
+                    -- Conversation shape (derived from prompt at log time)
+                    num_turns INTEGER,
+                    num_user_turns INTEGER,
+                    num_tool_calls INTEGER
                 )
             """)
 
@@ -206,6 +216,21 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS request_payload JSONB
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS num_turns INTEGER
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS num_user_turns INTEGER
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS num_tool_calls INTEGER
             """)
 
             # Aggregated stats table
@@ -908,6 +933,10 @@ class DatabaseLogger:
 
         # Calculate cost based on usage and pricing
         cost_usd = calculate_cost(usage, pricing)
+        # Conversation shape is derived metadata (like token counts), so it is
+        # always recorded — independent of full-content storage — letting the
+        # admin list query read cheap integer columns instead of the payload.
+        num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
 
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -920,7 +949,8 @@ class DatabaseLogger:
                     cache_read_tokens, cache_write_tokens, cost_usd,
                     prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
-                    tools, upstream_cost_usd
+                    tools, upstream_cost_usd,
+                    num_turns, num_user_turns, num_tool_calls
                 )
                 VALUES (
                     $1, $2, $3,
@@ -930,7 +960,8 @@ class DatabaseLogger:
                     $15, $16, $17,
                     $18, $19, $20::jsonb,
                     $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb, $27
+                    $26::jsonb, $27,
+                    $28, $29, $30
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -967,6 +998,10 @@ class DatabaseLogger:
                 json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
                 json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
                 upstream_cost_usd,
+                # Conversation shape
+                num_turns,
+                num_user_turns,
+                num_tool_calls,
             )
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:

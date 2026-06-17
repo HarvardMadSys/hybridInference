@@ -24,6 +24,41 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+def conversation_shape(
+    prompt: list[dict[str, Any]] | str | None,
+) -> tuple[int | None, int | None, int | None]:
+    """Derive ``(num_turns, num_user_turns, num_tool_calls)`` from a prompt.
+
+    Computed once at log time so the admin list query can read three cheap
+    integer columns instead of de-TOASTing the full request payload per row.
+    ``num_turns`` counts all messages, ``num_user_turns`` counts user-role
+    messages, and ``num_tool_calls`` sums ``tool_calls`` across messages.
+
+    Returns ``(None, None, None)`` when ``prompt`` is not a chat-style messages
+    list — e.g. a raw completion string, or an embedding input such as a list
+    of strings/token-id arrays. Only dict-shaped (message-like) elements are
+    counted, and a list with none of them is treated as non-chat so the admin
+    UI shows ``—`` rather than a misleading zero-turn conversation.
+    """
+    if not isinstance(prompt, list):
+        return None, None, None
+    num_turns = 0
+    num_user_turns = 0
+    num_tool_calls = 0
+    for message in prompt:
+        if not isinstance(message, dict):
+            continue
+        num_turns += 1
+        if message.get("role") == "user":
+            num_user_turns += 1
+        tool_calls = message.get("tool_calls")
+        if isinstance(tool_calls, list):
+            num_tool_calls += len(tool_calls)
+    if num_turns == 0:
+        return None, None, None
+    return num_turns, num_user_turns, num_tool_calls
+
+
 def strip_null_bytes(value: Any) -> Any:
     """Recursively remove PostgreSQL-incompatible null bytes from strings."""
     if isinstance(value, str):

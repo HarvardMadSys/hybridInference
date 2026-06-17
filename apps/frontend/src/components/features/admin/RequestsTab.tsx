@@ -927,6 +927,12 @@ export function RequestsTab() {
                   <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                     Tokens
                   </th>
+                  <th
+                    className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500"
+                    title="Conversation turns: total messages, user turns, and tool calls"
+                  >
+                    Turns
+                  </th>
                   <th className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                     Cost
                   </th>
@@ -1065,6 +1071,26 @@ export function RequestsTab() {
                           )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
+                          {req.num_turns != null ? (
+                            <>
+                              <span title="Total messages in the conversation">
+                                {req.num_turns.toLocaleString()}
+                              </span>
+                              <span
+                                className="ml-1.5 text-[10px] text-gray-400"
+                                title={`${(req.num_user_turns ?? 0).toLocaleString()} user turns · ${(
+                                  req.num_tool_calls ?? 0
+                                ).toLocaleString()} tool calls`}
+                              >
+                                {(req.num_user_turns ?? 0).toLocaleString()}u ·{' '}
+                                {(req.num_tool_calls ?? 0).toLocaleString()}t
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-gray-300">—</span>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
                           {req.cost_usd != null
                             ? req.cost_usd < 0.01
                               ? `$${req.cost_usd.toFixed(4)}`
@@ -1079,7 +1105,7 @@ export function RequestsTab() {
                       </tr>
                       {isExpanded && (
                         <tr className="border-b border-gray-100 bg-gray-50/40">
-                          <td colSpan={9} className="px-4 py-3">
+                          <td colSpan={10} className="px-4 py-3">
                             <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-[11px] sm:grid-cols-4">
                               <div>
                                 <span className="text-gray-500">Request ID:</span>{' '}
@@ -1105,6 +1131,28 @@ export function RequestsTab() {
                                 <span className="text-gray-500">Stream:</span>{' '}
                                 <span className="text-gray-700">
                                   {req.stream != null ? (req.stream ? 'Yes' : 'No') : '—'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500">Turns:</span>{' '}
+                                <span className="text-gray-700">
+                                  {req.num_turns != null ? req.num_turns.toLocaleString() : '—'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500">User turns:</span>{' '}
+                                <span className="text-gray-700">
+                                  {req.num_user_turns != null
+                                    ? req.num_user_turns.toLocaleString()
+                                    : '—'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-gray-500">Tool calls:</span>{' '}
+                                <span className="text-gray-700">
+                                  {req.num_tool_calls != null
+                                    ? req.num_tool_calls.toLocaleString()
+                                    : '—'}
                                 </span>
                               </div>
                               {routewiseDecision && (

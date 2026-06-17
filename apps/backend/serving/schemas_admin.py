@@ -568,6 +568,13 @@ class AdminRecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+    # Conversation shape derived from the stored request payload's messages
+    # array. None when the payload is absent (e.g. legacy rows) or not a chat
+    # request. num_turns counts all messages; num_user_turns counts user-role
+    # messages; num_tool_calls sums tool_calls across assistant messages.
+    num_turns: int | None = None
+    num_user_turns: int | None = None
+    num_tool_calls: int | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):

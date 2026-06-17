@@ -659,7 +659,8 @@ async def admin_list_recent_requests(
                 l.metadata->>'session_id' AS session_id,
                 l.metadata->>'surface' AS request_surface,
                 l.metadata->>'request_type' AS request_type,
-                l.metadata->'routewise' AS routewise
+                l.metadata->'routewise' AS routewise,
+                l.num_turns, l.num_user_turns, l.num_tool_calls
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
@@ -707,6 +708,9 @@ async def admin_list_recent_requests(
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
             request_type=row.get("request_type"),
+            num_turns=row.get("num_turns"),
+            num_user_turns=row.get("num_user_turns"),
+            num_tool_calls=row.get("num_tool_calls"),
         )
         for row in rows
     ]
