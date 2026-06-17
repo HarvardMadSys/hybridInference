@@ -16,14 +16,6 @@ const FEATURES: Feature[] = [
     title: 'Frontier models',
     body: 'GLM, Minimax, Qwen, and Kimi models — all behind a single unified API.',
   },
-  {
-    title: 'Streaming and tool calls',
-    body: 'Server-sent streaming, tool calls, and structured output supported end-to-end.',
-  },
-  {
-    title: 'Live usage and keys',
-    body: 'Track token usage, manage API keys, and monitor quotas from your dashboard.',
-  },
 ];
 
 export function Features(): JSX.Element {
