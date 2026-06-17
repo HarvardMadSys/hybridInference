@@ -11,9 +11,9 @@ export function Hero(): JSX.Element {
     <section className="relative w-full overflow-hidden rounded-3xl border border-gray-100 bg-gradient-to-br from-white via-gray-50 to-red-50/40 px-6 py-24 text-center shadow-subtle">
       {/* Decorative background accents */}
       <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="animate-float-slow absolute -left-24 -top-24 h-72 w-72 rounded-full bg-crimson/10 blur-3xl" />
+        <div className="animate-float-slow absolute -left-24 -top-24 h-72 w-72 transform-gpu rounded-full bg-crimson/10 blur-3xl" />
         <div
-          className="animate-float-slow absolute -bottom-32 -right-16 h-80 w-80 rounded-full bg-red-200/40 blur-3xl"
+          className="animate-float-slow absolute -bottom-32 -right-16 h-80 w-80 transform-gpu rounded-full bg-red-200/40 blur-3xl"
           style={{ animationDelay: '-7s' }}
         />
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(165,28,48,0.06),_transparent_55%)]" />

@@ -35,7 +35,7 @@ export function CodeExample(): JSX.Element {
         </p>
       </div>
 
-      <div className="relative mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 shadow-card ring-1 ring-black/5">
+      <div className="relative mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 shadow-card ring-1 ring-white/5">
         <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
           <div className="flex items-center gap-3">
             <span className="flex items-center gap-1.5" aria-hidden>
