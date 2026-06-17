@@ -141,6 +141,51 @@ class TestSignupAllowlist:
         assert sent_to == ["admin@trusted-corp.io"]
 
     @pytest.mark.asyncio
+    async def test_admin_notify_disabled_suppresses_email(
+        self,
+        auth_app_client: AsyncClient,
+        auth_app_services,
+        clean_auth_tables,
+        monkeypatch,
+    ):
+        """signup_admin_notify_enabled=false stops the new-registration email."""
+        op_store = auth_app_services.operational_store
+        await _add_domain(op_store, "trusted-corp.io", is_wildcard=False)
+        invalidate_allowlist_cache()
+
+        from serving.servers.routers import auth_routes as auth_routes_mod
+
+        monkeypatch.setattr(auth_routes_mod.settings, "admin_emails", "admin@trusted-corp.io")
+
+        # Persist the toggle as disabled and clear the cached value so the
+        # signup handler reads the fresh setting.
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        await op_store.set_setting("signup_admin_notify_enabled", "false", "bool", None)
+        get_runtime_settings_instance().invalidate_key("signup_admin_notify_enabled")
+
+        sent_to: list[str] = []
+
+        def _capture(to_email, user_email, user_name, user_id, use_case=None):
+            sent_to.append(to_email)
+            return True
+
+        with (
+            patch(
+                "serving.servers.routers.auth_routes.send_new_registration_admin_email",
+                side_effect=_capture,
+            ),
+            patch("serving.servers.routers.auth_routes.is_email_enabled", return_value=True),
+        ):
+            signup_data = create_signup_request(email="dan@outside-vendor.net")
+            response = await auth_app_client.post("/auth/signup", json=signup_data)
+            assert response.status_code == 201
+
+        # Still pending approval, but no admin notification email was sent.
+        assert await _user_status(op_store, "dan@outside-vendor.net") == "pending_approval"
+        assert sent_to == []
+
+    @pytest.mark.asyncio
     async def test_pending_user_persists_signup_reason(
         self,
         auth_app_client: AsyncClient,
