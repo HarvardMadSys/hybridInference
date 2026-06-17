@@ -22,6 +22,7 @@ export interface AdminUser {
   approval_note: string | null;
   reviewed_at: string | null;
   reviewed_by: string | null;
+  signup_reason: string | null;
   created_at: string;
   last_login_at: string | null;
   has_key: boolean;
@@ -427,6 +428,11 @@ export interface AdminRecentRequestItem {
   // "embedding" for /v1/embeddings traffic; null/undefined implies a
   // chat/completion request.
   request_type?: string | null;
+  // Conversation shape derived from the stored request payload's messages
+  // array. null when the payload is absent or not a chat request.
+  num_turns?: number | null;
+  num_user_turns?: number | null;
+  num_tool_calls?: number | null;
 }
 
 export interface AdminRouteWiseDecision {
@@ -476,6 +482,19 @@ export async function getRecentRequestContent(
     `/admin/recent-requests/${encodeURIComponent(requestId)}/content`,
   );
   return jsonOrThrow<AdminRecentRequestContentResponse>(resp);
+}
+
+export interface ClearErrorRequestsResponse {
+  deleted_count: number;
+  hours: number;
+  message: string;
+}
+
+export async function clearErrorRequests(hours = 1): Promise<ClearErrorRequestsResponse> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests/clear-errors?hours=${hours}`, {
+    method: 'POST',
+  });
+  return jsonOrThrow<ClearErrorRequestsResponse>(resp);
 }
 
 // ========================================

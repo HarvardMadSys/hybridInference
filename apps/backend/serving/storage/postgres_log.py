@@ -7,7 +7,12 @@ import json
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
-from serving.storage.utils import calculate_cost, json_safe, strip_null_bytes
+from serving.storage.utils import (
+    calculate_cost,
+    conversation_shape,
+    json_safe,
+    strip_null_bytes,
+)
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
 
@@ -86,7 +91,10 @@ class PostgresLogStore(LogStore):
                     cache_read_tokens INTEGER,
                     cache_write_tokens INTEGER,
                     cost_usd DECIMAL(12, 8),
-                    upstream_cost_usd DECIMAL(12, 8)
+                    upstream_cost_usd DECIMAL(12, 8),
+                    num_turns INTEGER,
+                    num_user_turns INTEGER,
+                    num_tool_calls INTEGER
                 )
             """)
 
@@ -119,6 +127,9 @@ class PostgresLogStore(LogStore):
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS request_payload JSONB",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_turns INTEGER",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_user_turns INTEGER",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_tool_calls INTEGER",
             ]:
                 await conn.execute(col_ddl)
 
@@ -233,6 +244,10 @@ class PostgresLogStore(LogStore):
             request_payload_str = None
 
         cost_usd = calculate_cost(usage, pricing)
+        # Conversation shape is derived metadata (like token counts), so it is
+        # always recorded — independent of full-content storage — letting the
+        # admin list query read cheap integer columns instead of the payload.
+        num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
 
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -245,7 +260,8 @@ class PostgresLogStore(LogStore):
                     cache_read_tokens, cache_write_tokens, cost_usd,
                     prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
-                    tools, upstream_cost_usd
+                    tools, upstream_cost_usd,
+                    num_turns, num_user_turns, num_tool_calls
                 )
                 VALUES (
                     $1, $2, $3,
@@ -255,7 +271,8 @@ class PostgresLogStore(LogStore):
                     $15, $16, $17,
                     $18, $19, $20::jsonb,
                     $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb, $27
+                    $26::jsonb, $27,
+                    $28, $29, $30
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -286,6 +303,9 @@ class PostgresLogStore(LogStore):
                 json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
                 json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
                 upstream_cost_usd,
+                num_turns,
+                num_user_turns,
+                num_tool_calls,
             )
 
     # -- usage / cost queries ------------------------------------------------
@@ -700,6 +720,32 @@ class PostgresLogStore(LogStore):
                 provider,
             )
         return [dict(r) for r in rows]
+
+    # -- admin: bulk delete --------------------------------------------------
+
+    async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
+        """Hard-delete error requests from ``api_logs`` in the last *hours*.
+
+        The error predicate mirrors the admin Recent Requests "errors only"
+        filter (``admin_list_recent_requests``) so this clears exactly the
+        rows that filter surfaces. Returns the deleted row count parsed from
+        the asyncpg command tag.
+        """
+        hours = max(1, hours)
+        async with self.pool.acquire() as conn:
+            status = await conn.execute(
+                """
+                DELETE FROM api_logs
+                WHERE timestamp >= NOW() - make_interval(hours => $1::int)
+                  AND (error IS NOT NULL OR status_code IS NULL
+                       OR status_code < 200 OR status_code >= 400)
+                """,
+                hours,
+            )
+        try:
+            return int(status.rsplit(" ", 1)[-1])
+        except (ValueError, IndexError):
+            return 0
 
     # -- admin: hard-delete user-owned rows ---------------------------------
 

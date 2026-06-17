@@ -1688,6 +1688,15 @@ async def image_gate_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI
     )
     router.register_route("vision-model", [(DummyAdapter(vision_cfg), 1.0)])
 
+    audio_cfg = ModelConfig(
+        id="audio-model",
+        name="Audio Model",
+        provider="minimax",
+        base_url="http://minimax.test",
+        input_modalities=["text", "audio"],
+    )
+    router.register_route("audio-model", [(DummyAdapter(audio_cfg), 1.0)])
+
     app = FastAPI(title="Image Gate Test App")
     app.state.services = AppServices(
         router=router,
@@ -1747,6 +1756,77 @@ async def test_image_accepted_for_vision_model(image_gate_client: AsyncClient):
         },
     )
     assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_audio_rejected_for_text_only_model(image_gate_client: AsyncClient):
+    """Sending input_audio to a text-only model returns 400."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Transcribe this"},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": "QUJD", "format": "wav"},
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
+    assert "does not support audio" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_audio_accepted_for_audio_model(image_gate_client: AsyncClient):
+    """Sending input_audio to an audio-capable model succeeds."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "audio-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Transcribe this"},
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": "QUJD", "format": "wav"},
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_image_rejected_for_audio_only_model(image_gate_client: AsyncClient):
+    """An audio-capable model still rejects image content it can't handle."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "audio-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://x/img.png"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
+    assert "does not support image" in resp.json()["error"]["message"]
 
 
 @pytest.mark.asyncio

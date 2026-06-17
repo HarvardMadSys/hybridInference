@@ -127,8 +127,13 @@ class OperationalStore(ABC):
         user_name: str | None = None,
         email_verified: bool = False,
         status: str = "active",
+        signup_reason: str | None = None,
     ) -> None:
-        """Insert a new user row."""
+        """Insert a new user row.
+
+        ``signup_reason`` captures the free-text use case the user submitted at
+        registration; surfaced in the admin user list to aid manual approval.
+        """
 
     @abstractmethod
     async def update_user_fields(
@@ -1046,6 +1051,18 @@ class LogStore(ABC):
         hours: int = 24,
     ) -> list[Row]:
         """Fetch aggregated hourly stats from api_stats_hourly."""
+
+    # -- admin: bulk delete --------------------------------------------------
+
+    @abstractmethod
+    async def delete_recent_error_requests(self, *, hours: int = 1) -> int:
+        """Hard-delete error requests logged within the last *hours* hours.
+
+        An "error" row matches the same predicate the admin Recent Requests
+        "errors only" filter uses: ``error IS NOT NULL`` OR a status code that
+        is missing or outside the 2xx/3xx success range. Returns the number of
+        deleted rows.
+        """
 
     # -- admin: hard-delete user-owned rows ---------------------------------
 

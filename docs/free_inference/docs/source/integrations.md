@@ -81,10 +81,12 @@ If you are choosing one default setup path, use Kilo Code. It works directly wit
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is Anthropic's official CLI coding agent. FreeInference provides an Anthropic-compatible endpoint so Claude Code works without an Anthropic API key.
 
+For the full walkthrough — model selection, verification, and troubleshooting — see the dedicated [Claude Code guide](claude-code.md).
+
 ### Quick Setup (macOS / Linux)
 
 ```bash
-ANTHROPIC_API_KEY="your-key-here" bash setup_claude_code.sh
+FREEINFERENCE_API_KEY="your-key-here" bash setup_claude_code.sh
 ```
 
 > **Security note:** Always review remote shell scripts before executing them. You can also clone this repository and run `ops/setup/setup_claude_code.sh` from your local checkout instead of fetching it over the network.
@@ -96,12 +98,18 @@ Edit `~/.claude/settings.json` (on Windows: `%USERPROFILE%\.claude\settings.json
 ```json
 {
   "env": {
-    "ANTHROPIC_BASE_URL": "https://freeinference.org/",
+    "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
     "ANTHROPIC_AUTH_TOKEN": "<your-freeinference-api-key>",
+    "ANTHROPIC_MODEL": "glm-5.1",
+    "ANTHROPIC_SMALL_FAST_MODEL": "glm-5-turbo",
     "API_TIMEOUT_MS": "600000"
   }
 }
 ```
+
+Set `ANTHROPIC_MODEL` to a public FreeInference model — Claude Code's built-in
+Anthropic model defaults are not in the public catalog and return a `404`. See
+the [Claude Code guide](claude-code.md) for details.
 
 ---
 
@@ -424,7 +432,7 @@ If you get "model not found" errors:
 | Error | Cause | Fix |
 |-------|-------|-----|
 | 401 Authentication error | Bad API key | Check `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json` |
-| 404 Model not found | Wrong model ID | Don't override `ANTHROPIC_DEFAULT_*_MODEL` — Claude Code uses correct IDs by default |
+| 404 Model not found | Model not in the public catalog (e.g. an unset Claude default) | Set `ANTHROPIC_MODEL` to a public model from `https://freeinference.org/v1/models` (e.g. `glm-5.1`) |
 | 429 Rate limited | Too many requests | Wait a minute and retry |
 | 503 Accounts unavailable | Subscription pool exhausted | Wait a minute and retry |
 | Connection timeout | Network issue | Check connectivity to `freeinference.org` |

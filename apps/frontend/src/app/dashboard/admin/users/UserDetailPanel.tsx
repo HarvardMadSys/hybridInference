@@ -71,6 +71,24 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
 
   return (
     <div className="space-y-4 rounded-xl border border-gray-200 bg-gray-50 p-5">
+      {/* Signup reason — surfaced prominently for users awaiting approval */}
+      {u.signup_reason && (
+        <div
+          className={`rounded-lg border p-3 ${
+            u.status === 'pending_approval'
+              ? 'border-indigo-200 bg-indigo-50'
+              : 'border-gray-200 bg-white'
+          }`}
+        >
+          <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
+            Signup reason
+          </div>
+          <p className="mt-1 whitespace-pre-wrap break-words text-[13px] text-gray-700">
+            {u.signup_reason}
+          </p>
+        </div>
+      )}
+
       {/* Stats */}
       <div className="grid grid-cols-4 gap-3 text-[13px]">
         <div>

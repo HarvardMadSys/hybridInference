@@ -98,9 +98,6 @@ class Rules(BaseModel):
     fivexx_rate: RateRule = Field(default_factory=lambda: RateRule(threshold_pct=2.0))
     p95_latency_per_provider: LatencyRule = Field(default_factory=LatencyRule)
     auth_failure_spike: CountRule = Field(default_factory=CountRule)
-    concurrency_exhausted: CountRule = Field(
-        default_factory=lambda: CountRule(window_sec=300, threshold_count=100, cooldown_sec=1800)
-    )
     pending_decisions_leak: PendingDecisionsLeakConfig = Field(
         default_factory=PendingDecisionsLeakConfig
     )

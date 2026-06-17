@@ -23,11 +23,9 @@ rules:
     window_sec: 60
     threshold_count: 50
     cooldown_sec: 600
-  concurrency_exhausted:
-    enabled: true
-    window_sec: 300
-    threshold_count: 100
-    cooldown_sec: 1800
+  # No concurrency_exhausted rule: a user exhausting their per-user quota or
+  # concurrency limit is expected user-facing rate limiting (429), not a service
+  # fault, so it must never page Slack.
   tracked_task_failure_rate:
     enabled: true
     window_sec: 300       # 5 min

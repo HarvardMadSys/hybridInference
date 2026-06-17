@@ -33,18 +33,50 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+# Predicate shared by the count and breakdown queries.
+#
+# Client errors (4xx) intentionally excluded — alert is for service-side
+# failures. The ``error IS NOT NULL`` branch would otherwise re-admit 4xx rows
+# that log an error message. Gateway-generated "model not found" responses (404)
+# are user-driven — a request for an unknown or unauthorized model — not an
+# incident, so they are excluded here and never reach Slack. Three exact forms
+# are persisted:
+#   - ``Model '<id>' not found``           (completions handler synthetic log)
+#   - ``Embedding model '<id>' not found`` (embeddings handler)
+#   - ``model_not_found``                  (rejection-log code for
+#                                           /anthropic/v1/messages)
+# The match is anchored (no leading ``%``) so it only drops these gateway rows.
+# An *upstream* provider 404 is logged via format_exception_for_db as the full
+# exception text (e.g. ``404, message='Not Found', url=...``); that is a genuine
+# service-side failure and must still alert, so a broad ``%not found%`` would be
+# wrong — it would silence provider/config regressions.
+#
+# Per-user quota/concurrency rejections (``quota_exceeded`` /
+# ``concurrency_limit_exceeded``, persisted by rejection_log.log_rejection as
+# 429s with a non-null ``error``) are expected user-facing rate limiting, not a
+# service fault, so they are excluded here and never page Slack. The exclusions
+# live on the error branch, so a genuine 5xx still counts via ``status_code >= 500``.
+FAILURE_PREDICATE_SQL = (
+    "(status_code >= 500 OR (error IS NOT NULL "
+    "AND error NOT ILIKE 'Model ''%'' not found' "
+    "AND error NOT ILIKE 'Embedding model ''%'' not found' "
+    "AND error <> 'model_not_found' "
+    "AND error <> 'quota_exceeded' "
+    "AND error <> 'concurrency_limit_exceeded'))"
+)
+
 # Module-level SQL so tests can introspect the predicate text.
-# Client errors (4xx) intentionally excluded — alert is for service-side failures.
 # Parameterized: $1 = window_minutes (int). Avoids string interpolation, allows plan caching.
 FAILED_REQUEST_COUNT_SQL = (
     "SELECT COUNT(*) FROM api_logs "
     "WHERE timestamp > NOW() - make_interval(mins => $1) "
-    "AND (status_code >= 500 OR error IS NOT NULL)"
+    f"AND {FAILURE_PREDICATE_SQL}"
 )
 
 # Returns top status codes, providers, models, and a sample error message for
-# the same failure window. $1 = window_minutes (int).
-FAILED_REQUEST_BREAKDOWN_SQL = """
+# the same failure window. $1 = window_minutes (int). Shares FAILURE_PREDICATE_SQL
+# with the count query so the two never drift.
+FAILED_REQUEST_BREAKDOWN_SQL = f"""
 SELECT
     string_agg(DISTINCT status_code::text, ', ' ORDER BY status_code::text) FILTER (WHERE status_code IS NOT NULL) AS status_codes,
     string_agg(DISTINCT provider, ', ' ORDER BY provider) FILTER (WHERE provider IS NOT NULL) AS providers,
@@ -52,7 +84,7 @@ SELECT
     (array_agg(error ORDER BY timestamp DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_error
 FROM api_logs
 WHERE timestamp > NOW() - make_interval(mins => $1)
-AND (status_code >= 500 OR error IS NOT NULL)
+AND {FAILURE_PREDICATE_SQL}
 """
 
 

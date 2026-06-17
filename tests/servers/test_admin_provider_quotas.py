@@ -1193,6 +1193,89 @@ class TestFetchKimi:
         assert results[0].usages[0].used == 750.0  # limit - remaining
         assert results[0].usages[0].limit == 1000.0
 
+    @pytest.mark.asyncio
+    async def test_parses_top_level_list(self, monkeypatch):
+        # The plural ``/usages`` endpoint can return a bare array of limit
+        # objects rather than an object — a clean 200 that previously parsed
+        # as empty and surfaced as "parse_error" on the dashboard.
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = [
+            {
+                "name": "Weekly limit",
+                "detail": {"limit": 10000, "remaining": 4000},
+            },
+            {
+                "detail": {"limit": 1200, "used": 300},
+                "window": {"duration": 300, "timeUnit": "MINUTE"},
+            },
+        ]
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert len(results[0].usages) == 2
+        assert results[0].usages[0].label == "Weekly limit"
+        assert results[0].usages[0].used == 6000.0  # limit - remaining
+        assert results[0].usages[1].label == "5h limit"
+        assert results[0].usages[1].used == 300.0
+
+    @pytest.mark.asyncio
+    async def test_parses_string_valued_numbers_in_array(self, monkeypatch):
+        # Kimi's /usages commonly returns quota figures as numeric strings;
+        # they must coerce to floats rather than parsing as empty.
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = [
+            {
+                "name": "Weekly limit",
+                "detail": {"limit": "10000", "remaining": "4000"},
+            },
+            {
+                "detail": {"limit": "1200", "used": "300"},
+                "window": {"duration": 300, "timeUnit": "MINUTE"},
+            },
+        ]
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert results[0].usages[0].used == 6000.0  # limit - remaining
+        assert results[0].usages[0].limit == 10000.0
+        assert results[0].usages[1].label == "5h limit"
+        assert results[0].usages[1].used == 300.0
+        assert results[0].usages[1].limit == 1200.0
+
+    @pytest.mark.asyncio
+    async def test_parses_data_envelope_wrapping_list(self, monkeypatch):
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = {"data": [{"detail": {"limit": 1000, "remaining": 250}}]}
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert results[0].usages[0].used == 750.0  # limit - remaining
+        assert results[0].usages[0].limit == 1000.0
+
+    @pytest.mark.asyncio
+    async def test_parses_data_envelope_wrapping_usages_key(self, monkeypatch):
+        # An envelope whose inner object uses the plural ``usages`` array
+        # (the alias accepted alongside ``limits``) must still be unwrapped.
+        monkeypatch.setenv("KIMI_CODING_API_KEY", "kimi_abc1234567890xyz9")
+        payload = {"data": {"usages": [{"detail": {"limit": 1000, "remaining": 250}}]}}
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ):
+            results = await fetch_kimi()
+        assert results[0].ok is True
+        assert results[0].usages[0].used == 750.0  # limit - remaining
+        assert results[0].usages[0].limit == 1000.0
+
 
 class TestFetchOllama:
     @pytest.mark.asyncio

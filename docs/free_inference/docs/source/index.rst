@@ -11,6 +11,7 @@ Quick Links
 
 * :doc:`quickstart` - Get started in 5 minutes
 * :doc:`integrations` - Configure with Kilo Code, Cursor, Roo Code, and other coding agents
+* :doc:`claude-code` - Use Claude Code with FreeInference's Anthropic-compatible endpoint
 * :doc:`models` - View available models
 * :doc:`api_headers` - API headers reference
 
@@ -21,6 +22,7 @@ Quick Links
 
    quickstart
    integrations
+   claude-code
    models
    api_headers
 

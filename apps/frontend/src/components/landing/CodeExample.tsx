@@ -26,7 +26,8 @@ export function CodeExample(): JSX.Element {
   return (
     <section className="w-full py-16">
       <div className="mx-auto max-w-3xl text-center">
-        <h2 className="font-serif text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
+        <p className="text-sm font-semibold uppercase tracking-wider text-crimson">Quickstart</p>
+        <h2 className="mt-2 font-serif text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
           One <code className="font-mono text-crimson">curl</code> away
         </h2>
         <p className="mt-3 text-base text-gray-600">
@@ -34,9 +35,16 @@ export function CodeExample(): JSX.Element {
         </p>
       </div>
 
-      <div className="relative mt-8 overflow-hidden rounded-xl bg-gray-900 shadow-card">
-        <div className="flex items-center justify-between border-b border-gray-800 px-4 py-2">
-          <span className="font-mono text-xs uppercase tracking-wider text-gray-400">bash</span>
+      <div className="relative mx-auto mt-10 max-w-3xl overflow-hidden rounded-2xl border border-gray-800 bg-gray-900 shadow-card ring-1 ring-white/5">
+        <div className="flex items-center justify-between border-b border-gray-800 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1.5" aria-hidden>
+              <span className="h-3 w-3 rounded-full bg-red-400/80" />
+              <span className="h-3 w-3 rounded-full bg-yellow-400/80" />
+              <span className="h-3 w-3 rounded-full bg-green-400/80" />
+            </span>
+            <span className="font-mono text-xs uppercase tracking-wider text-gray-400">bash</span>
+          </div>
           <button
             type="button"
             onClick={handleCopy}

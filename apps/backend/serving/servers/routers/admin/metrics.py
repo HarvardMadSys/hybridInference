@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.schemas_admin import (
+    AdminClearErrorRequestsResponse,
     AdminMetricDistribution,
     AdminPerformanceMetricsResponse,
     AdminPerformanceMetricsWindow,
@@ -22,8 +23,11 @@ from serving.schemas_admin import (
     AdminTtftScatterPoint,
     AdminTtftScatterResponse,
 )
+from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_db_logger,
+    get_log_store,
+    get_operational_store,
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import (
@@ -31,6 +35,7 @@ from serving.servers.routers.admin._common import (
     _round_or_none,
 )
 from serving.storage.utils import coerce_json_object
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
@@ -654,7 +659,8 @@ async def admin_list_recent_requests(
                 l.metadata->>'session_id' AS session_id,
                 l.metadata->>'surface' AS request_surface,
                 l.metadata->>'request_type' AS request_type,
-                l.metadata->'routewise' AS routewise
+                l.metadata->'routewise' AS routewise,
+                l.num_turns, l.num_user_turns, l.num_tool_calls
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
@@ -702,6 +708,9 @@ async def admin_list_recent_requests(
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
             request_type=row.get("request_type"),
+            num_turns=row.get("num_turns"),
+            num_user_turns=row.get("num_user_turns"),
+            num_tool_calls=row.get("num_tool_calls"),
         )
         for row in rows
     ]
@@ -742,6 +751,44 @@ async def admin_get_recent_request_content(
         prompt=row["prompt"],
         response=row["response"],
         reasoning_content=extract_reasoning_content(row["response"]),
+    )
+
+
+@router.post("/recent-requests/clear-errors", response_model=AdminClearErrorRequestsResponse)
+async def admin_clear_error_requests(
+    request: Request,
+    hours: int = 1,
+    _admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+    op_store=Depends(get_operational_store),
+) -> AdminClearErrorRequestsResponse:
+    """Hard-delete error requests logged within the last *hours* hours.
+
+    Clears exactly the rows surfaced by the Recent Requests "errors only"
+    filter (``error`` set, or a missing / non-2xx-3xx status code). Defaults
+    to the past hour. The action is recorded in the admin audit log.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if log_store is None:
+        raise HTTPException(500, "Database not configured")
+
+    hours = max(1, min(hours, 24))
+    deleted_count = await log_store.delete_recent_error_requests(hours=hours)
+
+    if op_store is not None:
+        await log_admin_action(
+            op_store,
+            get_client_ip(request),
+            "clear_error_requests",
+            None,
+            {"hours": hours, "deleted_count": deleted_count},
+        )
+
+    return AdminClearErrorRequestsResponse(
+        deleted_count=deleted_count,
+        hours=hours,
+        message=f"Cleared {deleted_count} error request(s) from the past {hours}h.",
     )
 
 

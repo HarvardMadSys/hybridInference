@@ -589,6 +589,16 @@ WARMUP_THINKING_SSE_DONE = (
 class ProxyHandler(BaseHTTPRequestHandler):
     """Forwards requests to the correct vLLM backend based on model name."""
 
+    def _send_plain_error(self, code: int, message: str) -> None:
+        """Return an HTTP error without breaking on multiline messages."""
+        summary = message.splitlines()[0][:120]
+        body = message.encode("utf-8", errors="replace")
+        self.send_response(code, summary)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _check_api_key(self) -> bool:
         if not LOCAL_API_KEY:
             return True
@@ -635,7 +645,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             try:
                 backend.ensure_running()
             except Exception as exc:
-                self.send_error(502, str(exc))
+                self._send_plain_error(502, str(exc))
                 return
             self._forward_with_body(backend, body)
             return
@@ -728,9 +738,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(exc.read())
         except URLError as exc:
-            self.send_error(502, f"Backend error: {exc}")
+            self._send_plain_error(502, f"Backend error: {exc}")
         except Exception as exc:
-            self.send_error(500, str(exc))
+            self._send_plain_error(500, str(exc))
         finally:
             backend.end_request()
 

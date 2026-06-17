@@ -298,56 +298,6 @@ class AuthFailureSpikeRule:
         )
 
 
-class ConcurrencyExhaustedRule:
-    """Rule 5: concurrency-exhausted count over a sliding window."""
-
-    name = "concurrency_exhausted"
-
-    def __init__(self, cfg: CountRule) -> None:
-        self._cfg = cfg
-        self._window = _SlidingWindow(cfg.window_sec)
-
-    async def on_record(self, record: logging.LogRecord) -> None:
-        """Track concurrency-rejected events and alert when the in-window count exceeds threshold."""
-        if not self._cfg.enabled:
-            return
-        if getattr(record, "event", None) != "concurrency_rejected":
-            return
-        now = time.time()
-        self._window.add(
-            now,
-            {
-                "user_id": getattr(record, "user_id", None),
-                "role": getattr(record, "role", None),
-            },
-        )
-        items = self._window.items(now)
-        if len(items) <= self._cfg.threshold_count:
-            return
-        user_counts: collections.Counter[str] = collections.Counter(
-            it["user_id"] for it in items if it["user_id"]
-        )
-        role_counts: collections.Counter[str] = collections.Counter(
-            it["role"] for it in items if it["role"]
-        )
-        await alert_slack(
-            AlertSeverity.WARN,
-            "Concurrency exhausted spike",
-            {
-                "count": len(items),
-                "window_sec": self._cfg.window_sec,
-                "top_users": (
-                    ", ".join(f"{u} ({c})" for u, c in user_counts.most_common(3)) or "n/a"
-                ),
-                "top_roles": (
-                    ", ".join(f"{r} ({c})" for r, c in role_counts.most_common(3)) or "n/a"
-                ),
-            },
-            dedupe_key="concurrency_exhausted",
-            cooldown_sec=self._cfg.cooldown_sec,
-        )
-
-
 class PendingDecisionsLeakRule:
     """Alert when RouteWise pending-decision evictions exceed a threshold.
 
@@ -566,7 +516,9 @@ class AlertEngine:
         self._rules.append(FivexxRateRule(self._config.rules.fivexx_rate))
         self._rules.append(P95LatencyRule(self._config.rules.p95_latency_per_provider))
         self._rules.append(AuthFailureSpikeRule(self._config.rules.auth_failure_spike))
-        self._rules.append(ConcurrencyExhaustedRule(self._config.rules.concurrency_exhausted))
+        # No concurrency-exhausted rule: a user exhausting their per-user quota
+        # or concurrency limit is expected user-facing rate limiting (429), not a
+        # service fault, so it must never page Slack.
         self._rules.append(PendingDecisionsLeakRule(self._config.rules.pending_decisions_leak))
         self._rules.append(TrackedTaskFailureRateRule(self._config.rules.tracked_task_failure_rate))
 

@@ -171,6 +171,8 @@ class UserListItem(BaseModel):
     approval_note: str | None = None
     reviewed_at: datetime | None = None
     reviewed_by: str | None = None
+    # Free-text use case submitted at signup; helps admins review pending users.
+    signup_reason: str | None = None
     created_at: datetime
     last_login_at: datetime | None = None
     # API key info (populated via LEFT JOIN)
@@ -568,6 +570,13 @@ class AdminRecentRequestItem(BaseModel):
     # "embedding" for /v1/embeddings traffic; None (legacy) implies a
     # chat/completion request.
     request_type: str | None = None
+    # Conversation shape derived from the stored request payload's messages
+    # array. None when the payload is absent (e.g. legacy rows) or not a chat
+    # request. num_turns counts all messages; num_user_turns counts user-role
+    # messages; num_tool_calls sums tool_calls across assistant messages.
+    num_turns: int | None = None
+    num_user_turns: int | None = None
+    num_tool_calls: int | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):
@@ -585,6 +594,14 @@ class AdminRecentRequestContentResponse(BaseModel):
     prompt: str | None = None
     response: str | None = None
     reasoning_content: str | None = None
+
+
+class AdminClearErrorRequestsResponse(BaseModel):
+    """Result of clearing recent error requests from api_logs."""
+
+    deleted_count: int
+    hours: int
+    message: str
 
 
 # ── Analytics Dashboard ──────────────────────────────────────────────────────
