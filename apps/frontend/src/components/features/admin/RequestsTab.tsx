@@ -536,6 +536,22 @@ function SearchInput({
   onChange: (value: string) => void;
   placeholder: string;
 }) {
+  // Keep the input responsive while debouncing the parent state update (and the
+  // resulting listRecentRequests call) until typing pauses. The first effect
+  // syncs external changes (e.g. the "filter by user" row action) back into the
+  // local value.
+  const [localValue, setLocalValue] = useState(value);
+
+  useEffect(() => {
+    setLocalValue(value);
+  }, [value]);
+
+  useEffect(() => {
+    if (localValue === value) return;
+    const timer = setTimeout(() => onChange(localValue), 300);
+    return () => clearTimeout(timer);
+  }, [localValue, value, onChange]);
+
   return (
     <div className="relative flex-1 min-w-[160px]">
       <svg
@@ -554,9 +570,10 @@ function SearchInput({
       </svg>
       <input
         type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+        value={localValue}
+        onChange={(e) => setLocalValue(e.target.value)}
         placeholder={placeholder}
+        aria-label={placeholder}
         className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-[13px] placeholder:text-gray-400 transition-shadow focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
       />
     </div>
