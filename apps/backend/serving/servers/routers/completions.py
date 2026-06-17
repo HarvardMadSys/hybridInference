@@ -88,9 +88,15 @@ def _find_unsupported_modality(
     supported = set(model_modalities or [])
     for msg in messages:
         content = msg.get("content")
-        if not isinstance(content, list):
+        # `content` may be a list of blocks (multimodal) or a single block
+        # mapping; a bare dict must not bypass the modality gate.
+        if isinstance(content, dict):
+            blocks: list[Any] = [content]
+        elif isinstance(content, list):
+            blocks = content
+        else:
             continue
-        for block in content:
+        for block in blocks:
             if not isinstance(block, dict):
                 continue
             required = _CONTENT_BLOCK_MODALITY.get(block.get("type"))
@@ -635,7 +641,11 @@ async def chat_completions(
     # This check is placed before routing so both streaming and non-streaming
     # paths get a clean 400 instead of silently stripping image/audio blocks.
     route_config = router_exec.routes.get(model)
-    model_modalities = route_config.adapters[0][0].config.input_modalities if route_config else []
+    model_modalities = (
+        route_config.adapters[0][0].config.input_modalities
+        if route_config and route_config.adapters
+        else []
+    )
     unsupported_modality = _find_unsupported_modality(messages, model_modalities)
     if unsupported_modality:
         error_message = f"Model '{model}' does not support {unsupported_modality} input"

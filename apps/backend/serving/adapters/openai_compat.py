@@ -41,6 +41,11 @@ logger = get_logger(__name__)
 
 def _normalize_text_content(content: Any) -> Any:
     """Normalize structured content blocks into plain text when needed."""
+    # A bare block mapping (not wrapped in a list) is still valid per the
+    # permissive `content: Any` schema; treat it as a one-element block list so
+    # text-only models receive a flattened string instead of a raw dict.
+    if isinstance(content, dict):
+        content = [content]
     if not isinstance(content, list):
         return content
 

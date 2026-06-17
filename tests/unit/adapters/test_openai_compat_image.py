@@ -62,6 +62,20 @@ def test_normalize_text_content_empty_result():
     assert result == ""
 
 
+def test_normalize_text_content_single_dict_block_flattened():
+    """A bare dict block (not wrapped in a list) is flattened to its text."""
+    result = _normalize_text_content({"type": "text", "text": "Hello"})
+    assert result == "Hello"
+
+
+def test_normalize_text_content_single_image_dict_dropped():
+    """A bare image dict block flattens to empty text (no 'text' field)."""
+    result = _normalize_text_content(
+        {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}}
+    )
+    assert result == ""
+
+
 # --- _clean_message with image handling ---
 
 
