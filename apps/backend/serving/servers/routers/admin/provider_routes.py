@@ -30,6 +30,7 @@ from serving.utils.logging import get_logger
 router = APIRouter(prefix="/admin")
 logger = get_logger(__name__)
 VERIFY_TIMEOUT_SEC = 20.0
+BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
 
 
 @dataclass(frozen=True)
@@ -153,20 +154,27 @@ def _raw_route_entries(route) -> list[tuple[object, float, str]]:
     ]
 
 
-def _route_id(index: int) -> str:
-    return f"route-{index}"
+def _route_id_for_entry(adapter, endpoint_id: str) -> str:
+    route_metadata = getattr(adapter.config, "route_metadata", None) or {}
+    route_id = route_metadata.get("route_id")
+    return str(route_id or endpoint_id)
 
 
-def _route_index(route_id: str) -> int:
-    if not route_id.startswith("route-"):
+def _baseline_route_entries(route) -> list[tuple[object, float, str]]:
+    baseline = getattr(route, BASELINE_ENTRIES_ATTR, None)
+    if baseline is None:
+        baseline = list(_raw_route_entries(route))
+        setattr(route, BASELINE_ENTRIES_ATTR, baseline)
+    return list(baseline)
+
+
+def _route_index_for_id(entries: list[tuple[object, float, str]], route_id: str) -> int:
+    if not route_id:
         raise HTTPException(status_code=400, detail="unknown route id")
-    try:
-        index = int(route_id.removeprefix("route-"))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="unknown route id") from exc
-    if index < 0:
-        raise HTTPException(status_code=400, detail="unknown route id")
-    return index
+    for index, (adapter, _weight, endpoint_id) in enumerate(entries):
+        if _route_id_for_entry(adapter, endpoint_id) == route_id:
+            return index
+    raise HTTPException(status_code=400, detail="unknown route id")
 
 
 def _validate_canonical_route(services, model_id: str):
@@ -182,7 +190,8 @@ def _split_model_route_path(services, model_route_path: str) -> tuple[str, str, 
         prefix = f"{model_id}/"
         if _is_canonical_model(model_id, route) and model_route_path.startswith(prefix):
             route_id = model_route_path[len(prefix) :]
-            _route_index(route_id)
+            if not route_id:
+                raise HTTPException(status_code=400, detail="unknown route id")
             return model_id, route_id, route
     raise HTTPException(status_code=404, detail="Unknown model")
 
@@ -440,8 +449,10 @@ def _preserve_route_semantics(
     *,
     current_adapter,
     upstream_provider: str,
+    route_id: str,
 ) -> None:
     route_metadata = dict(cfg.get("route_metadata") or {})
+    route_metadata["route_id"] = route_id
     route_metadata["route_provider"] = _route_provider(current_adapter)
     route_metadata["upstream_provider"] = upstream_provider
 
@@ -474,10 +485,8 @@ async def _prepare_route_update(
     quota_limit_override: int | None = None,
 ) -> PreparedRouteUpdate:
     route = _validate_canonical_route(services, model_id)
-    index = _route_index(route_id)
     entries = _raw_route_entries(route)
-    if index >= len(entries):
-        raise HTTPException(status_code=400, detail="unknown route id")
+    index = _route_index_for_id(entries, route_id)
 
     current_adapter, _raw_weight, _old_endpoint_id = entries[index]
     route_type = _route_type(current_adapter)
@@ -522,6 +531,7 @@ async def _prepare_route_update(
         cfg,
         current_adapter=current_adapter,
         upstream_provider=upstream_provider,
+        route_id=route_id,
     )
 
     adapter = _make_adapter(target.kind, cfg)
@@ -542,6 +552,7 @@ async def _prepare_route_update(
 
 
 def _install_route_update(services, update: PreparedRouteUpdate) -> None:
+    _baseline_route_entries(update.route)
     entries = _raw_route_entries(update.route)
     if update.route_index >= len(entries):
         raise HTTPException(status_code=400, detail="unknown route id")
@@ -570,6 +581,40 @@ def _install_route_update(services, update: PreparedRouteUpdate) -> None:
         dynamic_keys.register_adapter_for_provider(update.key_provider, update.adapter)
 
     _rebuild_routewise_routers(services)
+
+
+def _install_route_restore(services, route, route_id: str) -> tuple[object, float, str]:
+    baseline_entries = _baseline_route_entries(route)
+    current_entries = _raw_route_entries(route)
+    current_index = _route_index_for_id(current_entries, route_id)
+    baseline_index = _route_index_for_id(baseline_entries, route_id)
+    baseline_adapter, baseline_weight, baseline_endpoint_id = baseline_entries[baseline_index]
+    current_entries[current_index] = (
+        baseline_adapter,
+        float(baseline_weight),
+        baseline_endpoint_id,
+    )
+
+    total_weight = sum(float(weight) for _adapter, weight, _endpoint_id in current_entries)
+    if total_weight <= 0:
+        raise HTTPException(status_code=400, detail="cannot zero all routes for model")
+
+    def _mutate() -> None:
+        route.raw_adapters = current_entries
+        route.adapters = [
+            (adapter, float(weight) / total_weight)
+            for adapter, weight, _endpoint_id in current_entries
+        ]
+
+    lock = getattr(services.router, "_lock", None)
+    if lock is not None:
+        with lock:
+            _mutate()
+    else:
+        _mutate()
+
+    _rebuild_routewise_routers(services)
+    return baseline_adapter, float(baseline_weight), baseline_endpoint_id
 
 
 def _truncate(value: str, limit: int = 500) -> str:
@@ -701,8 +746,8 @@ async def _build_routes_for_model(
 ) -> list[ProviderRouteItem]:
     strategy = _strategy_for_model(services, model_id)
     rows: list[ProviderRouteItem] = []
-    for index, (adapter, yaml_weight, endpoint_id) in enumerate(_raw_route_entries(route)):
-        route_id = _route_id(index)
+    for adapter, yaml_weight, endpoint_id in _raw_route_entries(route):
+        route_id = _route_id_for_entry(adapter, endpoint_id)
         rows.append(
             await _route_row(
                 services,
@@ -798,7 +843,7 @@ async def update_provider_route(
 
     model_id, route_id, route = _split_model_route_path(services, model_route_path)
     old_entries = _raw_route_entries(route)
-    old_adapter, old_weight, old_endpoint_id = old_entries[_route_index(route_id)]
+    old_adapter, old_weight, old_endpoint_id = old_entries[_route_index_for_id(old_entries, route_id)]
     old_upstream_provider = _upstream_provider(old_adapter)
     route_provider = _route_provider(old_adapter)
     upstream_provider = payload.upstream_provider or payload.provider
@@ -861,6 +906,60 @@ async def update_provider_route(
         yaml_weight=float(old_weight),
         endpoint_id=update.endpoint_id,
         override_row=_rows_by_route_id(override_rows).get(route_id),
+    )
+
+
+@router.delete("/routing/provider-routes/{model_route_path:path}", response_model=ProviderRouteItem)
+async def delete_provider_route_override(
+    model_route_path: str,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Remove a runtime provider route override and restore the YAML route."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    old_entries = _raw_route_entries(route)
+    old_adapter, _old_weight, old_endpoint_id = old_entries[
+        _route_index_for_id(old_entries, route_id)
+    ]
+    deleted = await op_store.delete_provider_route_config(model_id, route_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Provider route override not found")
+
+    restored_adapter, restored_weight, restored_endpoint_id = _install_route_restore(
+        services,
+        route,
+        route_id,
+    )
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "routing.provider_routes.delete",
+        None,
+        {
+            "model_id": model_id,
+            "route_id": route_id,
+            "old_upstream_provider": _upstream_provider(old_adapter),
+            "old_endpoint_id": old_endpoint_id,
+            "restored_upstream_provider": _upstream_provider(restored_adapter),
+            "restored_endpoint_id": restored_endpoint_id,
+        },
+    )
+
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=route_id,
+        adapter=restored_adapter,
+        yaml_weight=restored_weight,
+        endpoint_id=restored_endpoint_id,
+        override_row=None,
     )
 
 

@@ -2093,6 +2093,16 @@ class PostgresOperationalStore(OperationalStore):
                 updated_by,
             )
 
+    async def delete_provider_route_config(self, model_id: str, route_id: str) -> bool:
+        """Delete a runtime provider route override row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_route_configs WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
     # -- cost counters -------------------------------------------------------
 
     async def increment_user_cost(

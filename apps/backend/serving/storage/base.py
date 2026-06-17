@@ -789,6 +789,10 @@ class OperationalStore(ABC):
     ) -> None:
         """Upsert a runtime provider route override row."""
 
+    @abstractmethod
+    async def delete_provider_route_config(self, model_id: str, route_id: str) -> bool:
+        """Delete a provider route override row. Returns True if removed."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

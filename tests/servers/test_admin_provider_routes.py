@@ -14,6 +14,7 @@ from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin.provider_routes import apply_persisted_provider_route_configs
 from serving.storage.base import ProviderKeyRow
 
 AUTH = {"Authorization": "Bearer test-admin"}
@@ -79,6 +80,7 @@ async def admin_client(monkeypatch):
     op_store.list_provider_route_configs_for_model = AsyncMock(return_value=[])
     op_store.list_all_provider_route_configs = AsyncMock(return_value=[])
     op_store.upsert_provider_route_config = AsyncMock()
+    op_store.delete_provider_route_config = AsyncMock(return_value=True)
     op_store.get_provider_key_full = AsyncMock(return_value=None)
     op_store.list_provider_keys = AsyncMock(return_value=[])
     op_store.list_provider_keys_full = AsyncMock(return_value=[])
@@ -174,7 +176,11 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
         "parasail",
     }
     routes = payload["routes"]
-    assert [row["route_id"] for row in routes] == ["route-0", "route-1", "route-2"]
+    assert [row["route_id"] for row in routes] == [
+        "minimax-fast:chutes-api",
+        "minimax-fast:featherless-api",
+        "minimax-fast:openrouter[deepinfra]-api",
+    ]
     assert routes[0]["provider"] == "chutes"
     assert routes[0]["upstream_provider"] == "chutes"
     assert routes[0]["quota_limit"] == 5000
@@ -205,7 +211,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     op_store.list_provider_route_configs_for_model.return_value = [
         {
             "model_id": "minimax-fast",
-            "route_id": "route-0",
+            "route_id": "minimax-fast:chutes-api",
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
@@ -217,7 +223,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     ]
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/route-0",
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
         json={
             "upstream_provider": "openrouter",
             "base_url": "openrouter.ai/api/v1",
@@ -238,7 +244,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     verify_mock.assert_awaited_once()
     op_store.upsert_provider_route_config.assert_awaited_once_with(
         "minimax-fast",
-        "route-0",
+        "minimax-fast:chutes-api",
         "openrouter",
         "https://openrouter.ai/api/v1",
         "db-openrouter",
@@ -274,7 +280,7 @@ async def test_put_provider_route_verify_failure_does_not_apply(admin_client):
     verify_mock.side_effect = HTTPException(status_code=400, detail="Provider verification failed")
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/route-1",
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
         json={
             "upstream_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
@@ -298,7 +304,7 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
 
     response = await client.put(
-        "/admin/routing/provider-routes/minimax-fast/route-1",
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
         json={
             "upstream_provider": "parasail",
             "base_url": "http://localhost:8000/v1",
@@ -314,4 +320,92 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
     op_store.upsert_provider_route_config.assert_not_awaited()
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
     assert current_adapter.config.provider == "featherless"
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delete_provider_route_restores_yaml_baseline(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:featherless-api",
+            "provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    put_response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        json={
+            "upstream_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+        },
+        headers=AUTH,
+    )
+    assert put_response.status_code == 200
+    assert route_executor.routes["minimax-fast"].raw_adapters[1][0].config.provider == "openrouter"
+
+    op_store.list_provider_route_configs_for_model.return_value = []
+    delete_response = await client.delete(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        headers=AUTH,
+    )
+
+    assert delete_response.status_code == 200
+    payload = delete_response.json()
+    assert payload["route_id"] == "minimax-fast:featherless-api"
+    assert payload["source"] == "yaml"
+    assert payload["upstream_provider"] == "featherless"
+    restored_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    assert restored_adapter.config.provider == "featherless"
+    assert restored_adapter.config.base_url == "https://api.featherless.ai/v1"
+    op_store.delete_provider_route_config.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:featherless-api",
+    )
+    verify_mock.assert_awaited_once()
+    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_apply_persisted_provider_route_config_skips_stale_positional_route_id(
+    admin_client,
+):
+    _client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_all_provider_route_configs.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "route-0",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 8000,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=MagicMock(),
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_provider_route_configs(services, op_store)
+
+    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert current_adapter.config.provider == "chutes"
     fake_routewise._rebuild_from_fixed_router.assert_not_called()

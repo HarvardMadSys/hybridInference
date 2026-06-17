@@ -58,3 +58,8 @@ def test_provider_route_config_signatures():
         "quota_limit",
         "updated_by",
     ]
+    assert list(inspect.signature(OperationalStore.delete_provider_route_config).parameters) == [
+        "self",
+        "model_id",
+        "route_id",
+    ]
