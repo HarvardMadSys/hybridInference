@@ -659,7 +659,27 @@ async def admin_list_recent_requests(
                 l.metadata->>'session_id' AS session_id,
                 l.metadata->>'surface' AS request_surface,
                 l.metadata->>'request_type' AS request_type,
-                l.metadata->'routewise' AS routewise
+                l.metadata->'routewise' AS routewise,
+                CASE
+                    WHEN jsonb_typeof(l.request_payload->'messages') = 'array'
+                    THEN jsonb_array_length(l.request_payload->'messages')
+                END AS num_turns,
+                CASE
+                    WHEN jsonb_typeof(l.request_payload->'messages') = 'array'
+                    THEN (
+                        SELECT count(*)::int
+                        FROM jsonb_array_elements(l.request_payload->'messages') AS m
+                        WHERE m->>'role' = 'user'
+                    )
+                END AS num_user_turns,
+                CASE
+                    WHEN jsonb_typeof(l.request_payload->'messages') = 'array'
+                    THEN (
+                        SELECT coalesce(sum(jsonb_array_length(m->'tool_calls')), 0)::int
+                        FROM jsonb_array_elements(l.request_payload->'messages') AS m
+                        WHERE jsonb_typeof(m->'tool_calls') = 'array'
+                    )
+                END AS num_tool_calls
             FROM api_logs l
             LEFT JOIN users u ON u.id = l.user_id
             {where_sql}
@@ -707,6 +727,9 @@ async def admin_list_recent_requests(
             error=row["error"],
             routewise=coerce_json_object(row.get("routewise")),
             request_type=row.get("request_type"),
+            num_turns=row.get("num_turns"),
+            num_user_turns=row.get("num_user_turns"),
+            num_tool_calls=row.get("num_tool_calls"),
         )
         for row in rows
     ]

@@ -427,6 +427,11 @@ export interface AdminRecentRequestItem {
   // "embedding" for /v1/embeddings traffic; null/undefined implies a
   // chat/completion request.
   request_type?: string | null;
+  // Conversation shape derived from the stored request payload's messages
+  // array. null when the payload is absent or not a chat request.
+  num_turns?: number | null;
+  num_user_turns?: number | null;
+  num_tool_calls?: number | null;
 }
 
 export interface AdminRouteWiseDecision {
