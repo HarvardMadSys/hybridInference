@@ -38,7 +38,7 @@ function keyLabel(route: ProviderRoute) {
 }
 
 function sourceLabel(route: ProviderRoute) {
-  return route.source === 'override' ? 'Override active' : 'YAML';
+  return route.source === 'override' ? 'Override active' : 'Config default';
 }
 
 function routeLimitLabel(route: ProviderRoute, isRoutewise: boolean) {
@@ -243,7 +243,7 @@ export function ProviderRoutesTab() {
       setEditingRoute((current) =>
         current && routeKey(current) === key ? null : current,
       );
-      toast.success('Restored YAML route');
+      toast.success('Restored config route');
     } catch (err) {
       toast.error(`Restore failed: ${getErrorMessage(err)}`);
     } finally {
@@ -415,7 +415,7 @@ export function ProviderRoutesTab() {
                         disabled={restoringKey === key}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
                       >
-                        {restoringKey === key ? 'Restoring…' : 'Restore YAML'}
+                        {restoringKey === key ? 'Restoring…' : 'Restore config'}
                       </button>
                     )}
                     <button

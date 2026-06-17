@@ -238,7 +238,7 @@ describe('ProviderRoutesTab', () => {
     });
   });
 
-  it('restores an override to the YAML route', async () => {
+  it('restores an override to the config route', async () => {
     const overrideRoute = {
       ...route,
       upstream_provider: 'parasail',
@@ -264,7 +264,7 @@ describe('ProviderRoutesTab', () => {
 
     render(<ProviderRoutesTab />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Restore YAML' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore config' }));
 
     await waitFor(() => {
       expect(deleteProviderRoute).toHaveBeenCalledWith(
