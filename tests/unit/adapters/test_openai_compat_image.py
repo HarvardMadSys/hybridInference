@@ -108,6 +108,43 @@ class TestCleanMessageNoImageSupport:
         assert len(result["content"]) == 2
 
 
+class TestCleanMessageAudioSupport:
+    """Audio-capable models forward structured content untouched."""
+
+    def test_clean_message_with_audio_support_passes_through(self):
+        adapter = _make_adapter(input_modalities=["text", "audio"])
+        message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Transcribe this"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "QUJD", "format": "wav"},
+                },
+            ],
+        }
+        result = adapter._clean_message(message)
+        assert isinstance(result["content"], list)
+        assert len(result["content"]) == 2
+
+    def test_clean_message_text_only_strips_audio(self):
+        adapter = _make_adapter(input_modalities=["text"])
+        message = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Transcribe this"},
+                {
+                    "type": "input_audio",
+                    "input_audio": {"data": "QUJD", "format": "wav"},
+                },
+            ],
+        }
+        result = adapter._clean_message(message)
+        # Audio block has no 'text' key, so it is dropped to plain text.
+        assert isinstance(result["content"], str)
+        assert result["content"] == "Transcribe this"
+
+
 class TestZaiModelsDoNotSupportImage:
     """All ZAI route models use input_modalities=['text'] — no images.
 

@@ -165,9 +165,19 @@ class OpenAICompatAdapter(BaseAdapter):
         return f"data: {json.dumps(chunk_copy)}\n\n"
 
     def _clean_message(self, message: dict[str, Any]) -> dict[str, Any]:
-        """Remove None values and normalize text content for API compatibility."""
+        """Remove None values and normalize text content for API compatibility.
+
+        Structured content (lists of text/image/audio blocks) is forwarded
+        verbatim when the model declares any non-text input modality. For
+        text-only models the blocks are flattened to a plain string so that
+        upstreams which only accept string content don't 400. Block types the
+        model cannot handle are rejected earlier by the router pre-flight, so
+        anything reaching here is safe to pass through.
+        """
         cleaned = {k: v for k, v in message.items() if v is not None}
-        if "image" not in (self.config.input_modalities or []) and "content" in cleaned:
+        modalities = self.config.input_modalities or ["text"]
+        supports_structured_content = any(m != "text" for m in modalities)
+        if not supports_structured_content and "content" in cleaned:
             cleaned["content"] = _normalize_text_content(cleaned["content"])
         return cleaned
 
