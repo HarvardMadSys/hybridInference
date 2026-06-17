@@ -63,6 +63,47 @@ logger = get_logger(__name__)
 router = APIRouter()
 _background_tasks: set[asyncio.Task[Any]] = set()
 
+# Maps a multimodal content block "type" to the input modality it requires.
+# Used by the router pre-flight to reject media a model can't accept before
+# any provider call (so streaming and non-streaming both get a clean 400
+# instead of silently dropping the media downstream).
+_CONTENT_BLOCK_MODALITY = {
+    "image_url": "image",
+    "image": "image",
+    "input_image": "image",
+    "input_audio": "audio",
+    "audio": "audio",
+}
+
+
+def _find_unsupported_modality(
+    messages: list[dict[str, Any]], model_modalities: list[str] | None
+) -> str | None:
+    """Return the first input modality a message requires but the model lacks.
+
+    Scans structured ``content`` blocks across messages. Returns the modality
+    name (e.g. ``"image"`` or ``"audio"``) of the first block whose modality is
+    not in ``model_modalities``, or ``None`` when every block is supported.
+    """
+    supported = set(model_modalities or [])
+    for msg in messages:
+        content = msg.get("content")
+        # `content` may be a list of blocks (multimodal) or a single block
+        # mapping; a bare dict must not bypass the modality gate.
+        if isinstance(content, dict):
+            blocks: list[Any] = [content]
+        elif isinstance(content, list):
+            blocks = content
+        else:
+            continue
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            required = _CONTENT_BLOCK_MODALITY.get(block.get("type"))
+            if required and required not in supported:
+                return required
+    return None
+
 
 async def _should_force_chat_completions_streaming(
     runtime_settings: RuntimeSettings | None,
@@ -596,42 +637,39 @@ async def chat_completions(
         config = getattr(adapter, "config", None)
         return getattr(config, "provider", None)
 
-    # Pre-flight: reject image content when the model does not support it.
+    # Pre-flight: reject media content when the model does not support it.
     # This check is placed before routing so both streaming and non-streaming
-    # paths get a clean 400 instead of silently stripping image blocks.
+    # paths get a clean 400 instead of silently stripping image/audio blocks.
     route_config = router_exec.routes.get(model)
-    model_modalities = route_config.adapters[0][0].config.input_modalities if route_config else []
-    if "image" not in (model_modalities or []):
-        for msg in messages:
-            content = msg.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "image_url":
-                    record_model_request("400", "router")
-                    if log_store and not suppress_synthetic_logging:
-                        completions_logger.schedule_log(
-                            request_id,
-                            {
-                                "request_id": request_id,
-                                "model_id": model,
-                                "provider": "router",
-                                "prompt": messages,
-                                "response": None,
-                                "usage": None,
-                                "latency_ms": int((time.time() - start_time) * 1000),
-                                "status_code": 400,
-                                "error": f"Model '{model}' does not support image input",
-                                "params": early_params,
-                                "metadata": metadata,
-                                "pricing": None,
-                                "request_payload": body,
-                            },
-                        )
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Model '{model}' does not support image input",
-                    )
+    model_modalities = (
+        route_config.adapters[0][0].config.input_modalities
+        if route_config and route_config.adapters
+        else []
+    )
+    unsupported_modality = _find_unsupported_modality(messages, model_modalities)
+    if unsupported_modality:
+        error_message = f"Model '{model}' does not support {unsupported_modality} input"
+        record_model_request("400", "router")
+        if log_store and not suppress_synthetic_logging:
+            completions_logger.schedule_log(
+                request_id,
+                {
+                    "request_id": request_id,
+                    "model_id": model,
+                    "provider": "router",
+                    "prompt": messages,
+                    "response": None,
+                    "usage": None,
+                    "latency_ms": int((time.time() - start_time) * 1000),
+                    "status_code": 400,
+                    "error": error_message,
+                    "params": early_params,
+                    "metadata": metadata,
+                    "pricing": None,
+                    "request_payload": body,
+                },
+            )
+        raise HTTPException(status_code=400, detail=error_message)
 
     # Pre-flight: validate pin_provider before routing.  For streaming this is
     # critical (HTTP 200 is already committed once StreamingResponse starts),

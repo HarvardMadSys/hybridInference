@@ -87,11 +87,73 @@ def estimate_text_tokens(text: str) -> int:
     return _count_with_tiktoken(text)
 
 
+# Coarse per-modality fallback estimates for multimodal content blocks.
+#
+# Real image/audio token costs are provider-specific and arrive in the upstream
+# ``usage`` payload; these constants only matter when we have to estimate
+# locally (rate-limit pre-checks, RouteWise size hints, and usage fallbacks
+# when a provider omits ``usage``). The critical point is to NEVER feed a
+# base64 data URL / audio blob through the text tokenizer: a single inline
+# image can be hundreds of kilobytes, which would otherwise be counted as tens
+# of thousands of phantom text tokens and corrupt quota/cost accounting.
+IMAGE_TOKEN_ESTIMATE = 85  # matches OpenAI's low-detail image base cost
+AUDIO_TOKEN_ESTIMATE = 200  # coarse placeholder; precise counts come from upstream
+
+
+def _estimate_block_tokens(block: Any) -> int:
+    """Estimate tokens for a single content block within a message.
+
+    Handles OpenAI-style structured blocks (``{"type": "text"|"image_url"|
+    "input_audio", ...}``) as well as bare strings. Non-text blocks contribute
+    a flat per-modality estimate rather than the size of their (often base64)
+    payload.
+    """
+    if isinstance(block, str):
+        return estimate_text_tokens(block)
+    if not isinstance(block, dict):
+        return 0
+
+    block_type = block.get("type")
+    # Text blocks: {"type": "text", "text": ...}; some clients omit the type.
+    if block_type == "text" or (block_type is None and "text" in block):
+        text = block.get("text")
+        return estimate_text_tokens(text) if isinstance(text, str) else 0
+    if block_type in ("image_url", "image", "input_image"):
+        return IMAGE_TOKEN_ESTIMATE
+    if block_type in ("input_audio", "audio"):
+        return AUDIO_TOKEN_ESTIMATE
+
+    # Unknown block: count any embedded text, but never the raw payload/blob.
+    text = block.get("text")
+    return estimate_text_tokens(text) if isinstance(text, str) else 0
+
+
+def _estimate_content_tokens(content: Any) -> int:
+    """Estimate tokens for a message ``content`` field of any shape.
+
+    ``content`` may be a plain string (OpenAI text style), a list of structured
+    blocks (multimodal style), a single block mapping, or ``None``.
+    """
+    if content is None:
+        return 0
+    if isinstance(content, str):
+        return estimate_text_tokens(content)
+    if isinstance(content, list):
+        return sum(_estimate_block_tokens(block) for block in content)
+    if isinstance(content, dict):
+        return _estimate_block_tokens(content)
+    return estimate_text_tokens(str(content))
+
+
 def estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
     """Estimate token count for an OpenAI-style messages list.
 
     Each message contributes role + content tokens plus a small overhead to
     approximate protocol framing costs. This mirrors common counting approaches.
+
+    Multimodal content (a list of text/image/audio blocks) is handled
+    structurally: text blocks are tokenized while image/audio blocks add a flat
+    per-modality estimate, so inline base64 payloads never inflate the count.
 
     Args:
       messages: Chat messages with ``role`` and ``content`` fields.
@@ -108,9 +170,8 @@ def estimate_prompt_tokens(messages: list[dict[str, Any]]) -> int:
     total = 0
     for m in messages:
         role = str(m.get("role", ""))
-        content = str(m.get("content", ""))
         total += estimate_text_tokens(role)
-        total += estimate_text_tokens(content)
+        total += _estimate_content_tokens(m.get("content"))
         total += overhead_per_message
 
     total += overhead_end
