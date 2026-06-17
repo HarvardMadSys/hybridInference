@@ -2,12 +2,14 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import {
   applyRoleQuota,
   clearRouteWeight,
+  listProviderRoutes,
   listRouteWeights,
   listRoutewiseSettings,
   updateUser,
   listModelVisibility,
   previewRoleQuotaApply,
   setRouteWeight,
+  updateProviderRoute,
   updateRoutewiseSetting,
   updateModelVisibility,
 } from '../admin';
@@ -262,6 +264,119 @@ describe('route weight client', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routing/weights/gpt-4o-mini/gpt-4o-mini%3Aremote');
     expect(init.method).toBe('DELETE');
+  });
+});
+
+describe('provider route client', () => {
+  it('listProviderRoutes hits model provider routes endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          provider_options: [
+            {
+              provider: 'parasail',
+              label: 'Parasail via OpenRouter',
+              kind: 'openrouter[parasail]',
+              key_provider: 'openrouter',
+              default_base_url: 'https://openrouter.ai/api/v1',
+            },
+          ],
+          routes: [
+            {
+              model_id: 'minimax-fast',
+              strategy: 'routewise',
+              route_id: 'route-1',
+              route_type: 'concurrency',
+              provider: 'featherless',
+              upstream_provider: 'featherless',
+              key_provider: 'featherless',
+              base_url: 'https://api.featherless.ai/v1',
+              api_key_id: null,
+              api_key: {
+                id: null,
+                provider: 'featherless',
+                label: 'Provider default',
+                key_prefix: null,
+                source: 'default',
+              },
+              provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+              quota_limit: null,
+              endpoint_id: 'minimax-fast:featherless-api',
+              yaml_weight: 1,
+              effective_weight: 1,
+              source: 'yaml',
+              updated_at: null,
+              updated_by: null,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listProviderRoutes('minimax-fast');
+
+    expect(out.routes[0].route_id).toBe('route-1');
+    expect(out.provider_options[0].provider).toBe('parasail');
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast');
+  });
+
+  it('updateProviderRoute PUTs provider target body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          route_id: 'route-1',
+          route_type: 'concurrency',
+          provider: 'featherless',
+          upstream_provider: 'parasail',
+          key_provider: 'openrouter',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          api_key: {
+            id: 'key-1',
+            provider: 'openrouter',
+            label: 'staging',
+            key_prefix: 'sk-or...1234',
+            source: 'db',
+          },
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+          endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+          yaml_weight: 1,
+          effective_weight: 1,
+          source: 'override',
+          updated_at: null,
+          updated_by: '127.0.0.1',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await updateProviderRoute('minimax-fast', 'route-1', {
+      upstream_provider: 'parasail',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: 8000,
+    });
+
+    expect(out.provider).toBe('featherless');
+    expect(out.upstream_provider).toBe('parasail');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast/route-1');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual({
+      upstream_provider: 'parasail',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: 8000,
+    });
   });
 });
 

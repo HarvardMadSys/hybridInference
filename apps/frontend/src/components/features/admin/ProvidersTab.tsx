@@ -6,12 +6,14 @@ import { ProviderQuotaResult, getProviderQuotas } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { PerformanceTab } from '@/components/features/admin/PerformanceTab';
 import { ProviderKeysTab } from '@/app/dashboard/admin/ProviderKeysTab';
+import { ProviderRoutesTab } from '@/app/dashboard/admin/ProviderRoutesTab';
 
-type SubTab = 'quotas' | 'keys' | 'performance';
+type SubTab = 'quotas' | 'keys' | 'routes' | 'performance';
 
 const SUB_TABS: { key: SubTab; label: string }[] = [
   { key: 'quotas', label: 'Quotas' },
   { key: 'keys', label: 'Keys' },
+  { key: 'routes', label: 'Routes' },
   { key: 'performance', label: 'Performance' },
 ];
 
@@ -192,6 +194,8 @@ export function ProvidersTab() {
         <QuotasSection />
       ) : active === 'keys' ? (
         <ProviderKeysTab />
+      ) : active === 'routes' ? (
+        <ProviderRoutesTab />
       ) : (
         <PerformanceTab />
       )}

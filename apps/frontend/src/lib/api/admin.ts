@@ -1087,6 +1087,96 @@ export async function updateRoutewiseSetting(
 }
 
 // ========================================
+// Provider Routes (admin-managed runtime route targets)
+// ========================================
+
+export type ProviderRouteKeySource = 'default' | 'db' | 'env' | 'missing';
+export type ProviderRouteSource = 'yaml' | 'override';
+
+export interface ProviderRouteApiKeyRef {
+  id: string | null;
+  provider: string;
+  label: string | null;
+  key_prefix: string | null;
+  source: ProviderRouteKeySource;
+}
+
+export interface ProviderRouteOption {
+  provider: string;
+  label: string;
+  kind: string;
+  key_provider: string;
+  default_base_url: string;
+}
+
+export interface ProviderRoute {
+  model_id: string;
+  strategy: string;
+  route_id: string;
+  route_type: string;
+  provider: string;
+  upstream_provider: string;
+  key_provider: string;
+  base_url: string;
+  api_key_id: string | null;
+  api_key: ProviderRouteApiKeyRef;
+  provider_model_id: string | null;
+  quota_limit: number | null;
+  endpoint_id: string;
+  yaml_weight: number;
+  effective_weight: number;
+  source: ProviderRouteSource;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export interface ListProviderRoutesResponse {
+  model_id?: string;
+  strategy?: string;
+  provider_options: ProviderRouteOption[];
+  routes: ProviderRoute[];
+}
+
+export interface UpdateProviderRoutePayload {
+  upstream_provider: string;
+  base_url: string;
+  api_key_id?: string | null;
+  provider_model_id?: string | null;
+  quota_limit?: number | null;
+}
+
+export async function listProviderRoutes(modelId?: string): Promise<ListProviderRoutesResponse> {
+  const path = modelId
+    ? `/admin/routing/provider-routes/${encodeURIComponent(modelId)}`
+    : '/admin/routing/provider-routes';
+  const resp = await fetchWithAuth(API_BASE, path);
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+export async function updateProviderRoute(
+  modelId: string,
+  routeId: string,
+  payload: UpdateProviderRoutePayload,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-routes/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream_provider: payload.upstream_provider,
+        base_url: payload.base_url,
+        api_key_id: payload.api_key_id ?? null,
+        provider_model_id: payload.provider_model_id ?? null,
+        quota_limit: payload.quota_limit ?? null,
+      }),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+// ========================================
 // Provider API Keys (admin-managed runtime credentials)
 // ========================================
 
