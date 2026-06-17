@@ -171,6 +171,8 @@ class UserListItem(BaseModel):
     approval_note: str | None = None
     reviewed_at: datetime | None = None
     reviewed_by: str | None = None
+    # Free-text use case submitted at signup; helps admins review pending users.
+    signup_reason: str | None = None
     created_at: datetime
     last_login_at: datetime | None = None
     # API key info (populated via LEFT JOIN)

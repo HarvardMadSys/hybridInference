@@ -293,6 +293,7 @@ export function UserTable(props: UserTableProps) {
                 approval_note: u.approval_note,
                 reviewed_at: u.reviewed_at,
                 reviewed_by: u.reviewed_by,
+                signup_reason: u.signup_reason,
                 created_at: u.created_at,
                 last_login_at: u.last_login_at,
                 has_key: u.has_key,

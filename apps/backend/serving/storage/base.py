@@ -127,8 +127,13 @@ class OperationalStore(ABC):
         user_name: str | None = None,
         email_verified: bool = False,
         status: str = "active",
+        signup_reason: str | None = None,
     ) -> None:
-        """Insert a new user row."""
+        """Insert a new user row.
+
+        ``signup_reason`` captures the free-text use case the user submitted at
+        registration; surfaced in the admin user list to aid manual approval.
+        """
 
     @abstractmethod
     async def update_user_fields(

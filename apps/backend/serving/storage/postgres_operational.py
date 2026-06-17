@@ -98,6 +98,7 @@ class PostgresOperationalStore(OperationalStore):
                 approval_note TEXT,
                 reviewed_at TIMESTAMPTZ,
                 reviewed_by TEXT,
+                signup_reason TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 last_login_at TIMESTAMPTZ,
                 max_concurrent_requests INT DEFAULT NULL
@@ -121,6 +122,7 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS approval_note TEXT")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ")
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reviewed_by TEXT")
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS signup_reason TEXT")
         await conn.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
             "preferences JSONB NOT NULL DEFAULT '{}'::jsonb"
@@ -563,7 +565,8 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests "
+                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
+                "signup_reason "
                 "FROM users WHERE id = $1",
                 user_id,
             )
@@ -574,7 +577,8 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
-                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests "
+                "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
+                "signup_reason "
                 "FROM users WHERE email = $1",
                 email.lower(),
             )
@@ -589,18 +593,21 @@ class PostgresOperationalStore(OperationalStore):
         user_name: str | None = None,
         email_verified: bool = False,
         status: str = "active",
+        signup_reason: str | None = None,
     ) -> None:
         """Insert a new user row."""
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, user_name, "
-                "email_verified, status) VALUES ($1, $2, $3, $4, $5, $6)",
+                "email_verified, status, signup_reason) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 user_id,
                 email.lower(),
                 password_hash,
                 user_name,
                 email_verified,
                 status,
+                signup_reason,
             )
 
     async def update_user_fields(self, user_id: str, **fields: Any) -> None:
@@ -1011,6 +1018,7 @@ class PostgresOperationalStore(OperationalStore):
                 f"filtered_users AS ("
                 f"  SELECT u.id, u.email, u.user_name, u.role, u.status, "
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
+                f"  u.signup_reason, "
                 f"  u.created_at, u.last_login_at, "
                 f"  k.key_prefix, k.status AS key_status "
                 f"  FROM users u "

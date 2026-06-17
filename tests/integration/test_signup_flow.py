@@ -141,6 +141,29 @@ class TestSignupAllowlist:
         assert sent_to == ["admin@trusted-corp.io"]
 
     @pytest.mark.asyncio
+    async def test_pending_user_persists_signup_reason(
+        self,
+        auth_app_client: AsyncClient,
+        auth_app_services,
+        clean_auth_tables,
+        mock_email_service,
+    ):
+        """The submitted use case is stored so admins can review pending users."""
+        op_store = auth_app_services.operational_store
+        await _add_domain(op_store, "trusted-corp.io", is_wildcard=False)
+        invalidate_allowlist_cache()
+
+        reason = "Research project on retrieval-augmented generation."
+        signup_data = create_signup_request(email="erin@outside-vendor.net", use_case=reason)
+        response = await auth_app_client.post("/auth/signup", json=signup_data)
+        assert response.status_code == 201
+
+        user = await op_store.get_user_by_email("erin@outside-vendor.net")
+        assert user is not None
+        assert user["status"] == "pending_approval"
+        assert user["signup_reason"] == reason
+
+    @pytest.mark.asyncio
     async def test_signup_notify_emails_overrides_admin_emails(
         self,
         auth_app_client: AsyncClient,

@@ -130,6 +130,7 @@ def _user_row(
         "approval_note": None,
         "reviewed_at": None,
         "reviewed_by": None,
+        "signup_reason": None,
         "created_at": _NOW,
         "last_login_at": None,
         "key_prefix": "hyi-abc",
@@ -612,6 +613,7 @@ def _user_row_with_usage(
     usage_alltime: Decimal = Decimal("0"),
     key_prefix: str | None = "hyi-abc",
     last_login_at: datetime | None = None,
+    signup_reason: str | None = None,
 ) -> dict[str, Any]:
     """User row with optional CTE usage columns."""
     return {
@@ -624,6 +626,7 @@ def _user_row_with_usage(
         "approval_note": None,
         "reviewed_at": None,
         "reviewed_by": None,
+        "signup_reason": signup_reason,
         "created_at": _NOW,
         "last_login_at": last_login_at,
         "key_prefix": key_prefix,
@@ -657,6 +660,26 @@ async def test_sort_by_default_no_cte(admin_client):
     assert response.status_code == 200
     data = response.json()
     assert len(data["users"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_signup_reason_surfaced_in_list(admin_client):
+    """The signup reason is returned so admins can review pending users."""
+    client, op_store, _log_store, _log = admin_client
+
+    sc = {**_EMPTY_SC, "all": 1, "pending_approval": 1}
+    reason = "Building a course assistant for CS50."
+    op_store.list_users.return_value = (
+        1,
+        [_user_row_with_usage(status="pending_approval", signup_reason=reason)],
+        sc,
+    )
+
+    response = await client.get("/admin/users", headers=AUTH)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["users"][0]["signup_reason"] == reason
 
 
 @pytest.mark.asyncio

@@ -338,6 +338,7 @@ class CachedOperationalStore(OperationalStore):
         user_name: str | None = None,
         email_verified: bool = False,
         status: str = "active",
+        signup_reason: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.create_user(
@@ -347,6 +348,7 @@ class CachedOperationalStore(OperationalStore):
             user_name=user_name,
             email_verified=email_verified,
             status=status,
+            signup_reason=signup_reason,
         )
 
     async def get_user_counts_by_status(self) -> dict[str, int]:
