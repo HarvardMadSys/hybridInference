@@ -41,6 +41,7 @@ def _make_model_config(
     concurrency: dict[str, object] | None = None,
     quota_pool: str | None = None,
     concurrency_pool: str | None = None,
+    route_metadata: dict[str, object] | None = None,
 ) -> MagicMock:
     """Create a mock ModelConfig.
 
@@ -77,6 +78,7 @@ def _make_model_config(
     )
     cfg.quota_pool = quota_pool
     cfg.concurrency_pool = concurrency_pool
+    cfg.route_metadata = route_metadata or {}
     return cfg
 
 
@@ -92,6 +94,7 @@ def _make_adapter(
     concurrency: dict[str, object] | None = None,
     quota_pool: str | None = None,
     concurrency_pool: str | None = None,
+    route_metadata: dict[str, object] | None = None,
 ) -> MagicMock:
     """Create a mock adapter with a mock ModelConfig."""
     adapter = MagicMock()
@@ -107,6 +110,7 @@ def _make_adapter(
         concurrency=concurrency,
         quota_pool=quota_pool,
         concurrency_pool=concurrency_pool,
+        route_metadata=route_metadata,
     )
     return adapter
 
@@ -452,6 +456,51 @@ class TestRouteWiseRouterScaffold:
         assert router._quota_sources() == [
             QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
         ]
+
+    def test_upstream_override_quota_uses_local_limit_fallback(self):
+        """Upstream-overridden S_Q uses quota.limit as local request-count state."""
+        source = {
+            "provider": "chutes",
+            "usage_label": "Daily requests",
+            "unit": "requests",
+        }
+        quota_adapter = _make_adapter(
+            provider_type="quota",
+            quota_source=source,
+            quota={"limit": 5000},
+            endpoint_id="test-model:quota-provider",
+            route_metadata={
+                "route_provider": "chutes",
+                "upstream_provider": "openrouter",
+                "provider_type": "quota",
+            },
+        )
+        api_adapter = _make_adapter(
+            provider_type="on_demand",
+            prompt_price="3.0",
+            completion_price="15.0",
+            endpoint_id="test-model:api-provider",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        selected = router._select_adapter(
+            "test-model",
+            {"prompt_tokens": 1000, "request_id": "req-local-fallback"},
+        )
+
+        assert selected is quota_adapter
+        assert router._quota_sources() == []
+        source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
+        snapshot = router.quota_snapshots.get(source_obj)
+        assert snapshot is not None
+        assert snapshot.limit == 5000
+        assert snapshot.remaining == 4999
+        decision = router._pending_decisions["req-local-fallback"]
+        assert decision["quota_remaining"] == 4999
 
     @pytest.mark.asyncio
     async def test_quota_source_snapshot_enables_quota_candidate(self):

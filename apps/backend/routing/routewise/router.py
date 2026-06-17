@@ -233,6 +233,7 @@ class RouteWiseRouter(BaseRouter):
         self.quota_pools: dict[str, QuotaPool] = {}
         self.concurrency_pools: dict[str, ConcurrencyManager] = {}
         self._endpoint_concurrency_pool: dict[str, str] = {}
+        self._local_quota_fallback_sources: set[QuotaSource] = set()
         self.prefix_cache = PrefixCacheCoordinator(
             enabled=self.config.prefix_cache_cost_adjustment_enabled,
         )
@@ -491,9 +492,10 @@ class RouteWiseRouter(BaseRouter):
         shared pool id naturally shares the provider's global accounting.
         Concurrency counters are router-scoped.
         """
-        quota_specs: dict[str, tuple[QuotaPolicy, QuotaSource | None, str]] = {}
+        quota_specs: dict[str, tuple[QuotaPolicy, QuotaSource | None, str, bool]] = {}
         concurrency_specs: dict[str, tuple[ConcurrencyPolicy, str]] = {}
         self._endpoint_concurrency_pool = {}
+        local_quota_fallbacks: dict[QuotaSource, int] = {}
         for candidates in self.route_candidates.values():
             for candidate in candidates:
                 if (
@@ -503,6 +505,7 @@ class RouteWiseRouter(BaseRouter):
                 ):
                     prior = quota_specs.get(candidate.quota_pool)
                     spec = (candidate.quota_policy, candidate.quota_source)
+                    uses_local_fallback = self._uses_local_quota_fallback(candidate)
                     if prior is not None and (prior[0], prior[1]) != spec:
                         raise ValueError(
                             f"RouteWise quota_pool {candidate.quota_pool!r} is declared "
@@ -510,7 +513,15 @@ class RouteWiseRouter(BaseRouter):
                             f"{candidate.endpoint_id!r}; routes sharing a pool must "
                             "declare identical quota blocks."
                         )
-                    quota_specs[candidate.quota_pool] = (*spec, candidate.endpoint_id)
+                    quota_specs[candidate.quota_pool] = (
+                        *spec,
+                        candidate.endpoint_id,
+                        bool(uses_local_fallback or (prior[3] if prior is not None else False)),
+                    )
+                    if uses_local_fallback and candidate.quota_source is not None:
+                        local_quota_fallbacks[candidate.quota_source] = (
+                            candidate.quota_policy.limit
+                        )
                 elif (
                     candidate.provider_type is ProviderType.CONCURRENCY
                     and candidate.concurrency_pool is not None
@@ -533,11 +544,13 @@ class RouteWiseRouter(BaseRouter):
                     )
 
         quota_pools: dict[str, QuotaPool] = {}
-        for pool_id, (policy, source, endpoint) in quota_specs.items():
+        for pool_id, (policy, source, endpoint, uses_local_fallback) in quota_specs.items():
             if source is None:  # pragma: no cover - enforced in candidates.py
                 raise ValueError(
                     f"RouteWise quota_pool {pool_id!r} ({endpoint!r}) has no quota_source"
                 )
+            if uses_local_fallback:
+                local_quota_fallbacks[source] = policy.limit
             # Snapshot pools are stateless wrappers (truth lives in the
             # store), so they are always rebuilt against the current store.
             quota_pools[pool_id] = QuotaPool(
@@ -546,6 +559,8 @@ class RouteWiseRouter(BaseRouter):
                 policy=policy,
             )
         self.quota_pools = quota_pools
+        self._local_quota_fallback_sources = set(local_quota_fallbacks)
+        self.quota_snapshots.configure_local_fallbacks(local_quota_fallbacks)
 
         concurrency_pools: dict[str, ConcurrencyManager] = {}
         for pool_id, (policy, _endpoint) in concurrency_specs.items():
@@ -555,6 +570,20 @@ class RouteWiseRouter(BaseRouter):
             else:
                 concurrency_pools[pool_id] = ConcurrencyManager(policy.limit)
         self.concurrency_pools = concurrency_pools
+
+    @staticmethod
+    def _uses_local_quota_fallback(candidate: RouteProviderCandidate) -> bool:
+        """Whether a quota route should use configured quota.limit as local state."""
+        metadata = getattr(candidate.adapter.config, "route_metadata", None)
+        if not isinstance(metadata, dict):
+            return False
+        route_provider = metadata.get("route_provider")
+        upstream_provider = metadata.get("upstream_provider")
+        return bool(
+            route_provider
+            and upstream_provider
+            and str(route_provider) != str(upstream_provider)
+        )
 
     def _canonical_model_id(self, model_id: str) -> str:
         route_cfg = getattr(self.fixed_router, "routes", {}).get(model_id)
@@ -670,6 +699,7 @@ class RouteWiseRouter(BaseRouter):
                 if (
                     candidate.provider_type is ProviderType.QUOTA
                     and candidate.quota_source is not None
+                    and candidate.quota_source not in self._local_quota_fallback_sources
                 ):
                     sources[candidate.quota_source] = candidate.quota_source
         return list(sources.values())

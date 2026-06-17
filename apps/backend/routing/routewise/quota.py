@@ -1,12 +1,11 @@
 """Provider-reported quota accounting for RouteWise S_Q routing.
 
-Every quota provider must expose a queryable usage API: the route declares a
-``quota_source`` and the provider-reported usage is the truth source for the
-pool. There is deliberately no locally-accounted fallback — counting an
-externally enforced quota in-process means guessing the provider's reset
-semantics (fixed window? rolling? session-anchored?), and a wrong guess
-either strands quota or overruns it. Providers without a usage API should be
-modeled as on-demand instead.
+Every normal quota provider must expose a queryable usage API: the route
+declares a ``quota_source`` and the provider-reported usage is the truth source
+for the pool. The one exception is an explicit admin upstream override used for
+staging mimic traffic: when a quota route is pointed at a different upstream,
+RouteWise can opt that source into a process-local daily request-count fallback
+using the configured ``quota.limit``.
 
 RouteWise request routing is synchronous, so provider quota APIs are never
 called on the request path. The pieces fit together as:
@@ -33,7 +32,7 @@ import asyncio
 import threading
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from serving.admin.provider_quotas import fetch_chutes, fetch_minimax
@@ -45,6 +44,17 @@ if TYPE_CHECKING:
 
 QuotaFetcher = Callable[[], Awaitable[list[ProviderQuotaResult]]]
 logger = get_logger(__name__)
+
+
+def _local_now() -> datetime:
+    """Return the server-local aware time."""
+    return datetime.now().astimezone()
+
+
+def _next_local_midnight(now: datetime) -> datetime:
+    """Return the next server-local daily reset boundary."""
+    local_now = now.astimezone()
+    return local_now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,11 +97,13 @@ class ProviderQuotaSnapshotStore:
         self._fetchers = fetchers or {"chutes": fetch_chutes, "minimax": fetch_minimax}
         self._snapshots: dict[QuotaSource, ProviderQuotaSnapshot] = {}
         self._local_increments: dict[QuotaSource, int] = {}
+        self._local_fallback_sources: set[QuotaSource] = set()
         self._lock = threading.Lock()
 
     def get(self, source: QuotaSource) -> ProviderQuotaSnapshot | None:
         """Return the effective snapshot for a quota source, if available."""
         with self._lock:
+            self._reset_expired_local_fallbacks_locked(_local_now())
             snapshot = self._snapshots.get(source)
             if snapshot is None:
                 return None
@@ -112,6 +124,7 @@ class ProviderQuotaSnapshotStore:
         has no per-request consume scale).
         """
         with self._lock:
+            self._reset_expired_local_fallbacks_locked(_local_now())
             snapshot = self._snapshots.get(source)
             if snapshot is None:
                 return False
@@ -124,7 +137,13 @@ class ProviderQuotaSnapshotStore:
 
     async def refresh_once(self, sources: Iterable[QuotaSource]) -> None:
         """Refresh snapshots for the requested quota sources."""
-        unique_sources = {source for source in sources if source.provider in self._fetchers}
+        with self._lock:
+            local_fallback_sources = set(self._local_fallback_sources)
+        unique_sources = {
+            source
+            for source in sources
+            if source.provider in self._fetchers and source not in local_fallback_sources
+        }
         if not unique_sources:
             return
 
@@ -186,6 +205,65 @@ class ProviderQuotaSnapshotStore:
             for source, snapshot in updates.items():
                 self._snapshots[source] = snapshot
                 self._local_increments[source] = 0
+
+    def _reset_expired_local_fallbacks_locked(self, now: datetime) -> None:
+        for source in list(self._local_fallback_sources):
+            snapshot = self._snapshots.get(source)
+            if snapshot is None or snapshot.reset_at is None or snapshot.reset_at > now:
+                continue
+            self._snapshots[source] = ProviderQuotaSnapshot(
+                source=source,
+                used=0.0,
+                limit=snapshot.limit,
+                reset_at=_next_local_midnight(now),
+                fetched_at=now,
+            )
+            self._local_increments[source] = 0
+
+    def configure_local_fallbacks(self, limits: dict[QuotaSource, int]) -> None:
+        """Use process-local request-count snapshots for selected sources.
+
+        This is intentionally opt-in for admin upstream overrides. A quota
+        route may send traffic to a different upstream while preserving its
+        RouteWise S_Q semantics; in that case there is no provider quota API
+        to refresh, so the configured ``quota.limit`` becomes the local daily
+        cap. The local window resets at the server's local midnight.
+        """
+        now = _local_now()
+        with self._lock:
+            self._reset_expired_local_fallbacks_locked(now)
+            desired_sources = set(limits)
+            for source in self._local_fallback_sources - desired_sources:
+                self._local_fallback_sources.remove(source)
+                self._snapshots.pop(source, None)
+                self._local_increments.pop(source, None)
+
+            for source, limit in limits.items():
+                current = self._snapshots.get(source)
+                local_increment = (
+                    self._local_increments.get(source, 0)
+                    if source in self._local_fallback_sources and current is not None
+                    else 0
+                )
+                if (
+                    source in self._local_fallback_sources
+                    and current is not None
+                    and abs(current.limit - float(limit)) < 1
+                ):
+                    continue
+                self._local_fallback_sources.add(source)
+                self._snapshots[source] = ProviderQuotaSnapshot(
+                    source=source,
+                    used=0.0,
+                    limit=float(limit),
+                    reset_at=(
+                        current.reset_at
+                        if current is not None and current.reset_at is not None
+                        else _next_local_midnight(now)
+                    ),
+                    fetched_at=now,
+                )
+                self._local_increments[source] = local_increment
 
 
 class QuotaPool:
