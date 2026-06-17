@@ -276,8 +276,6 @@ describe('UserTable disabled models editing', () => {
     fireEvent.click(screen.getByText('user@example.com'));
 
     expect(await screen.findByText('Signup reason')).toBeInTheDocument();
-    expect(
-      screen.getByText('Building a course assistant for CS50.'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Building a course assistant for CS50.')).toBeInTheDocument();
   });
 });
