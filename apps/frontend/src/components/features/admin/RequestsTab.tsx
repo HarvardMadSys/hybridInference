@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useId, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
   AdminRecentRequestItem,
@@ -656,24 +656,36 @@ export function RequestsTab() {
   const [exportLoading, setExportLoading] = useState(false);
   const [clearingErrors, setClearingErrors] = useState(false);
 
-  const loadRequests = useCallback(async () => {
-    setReqLoading(true);
-    try {
-      const d = await listRecentRequests(
-        REQ_PAGE_SIZE,
-        reqOffset,
-        debouncedUserFilter || undefined,
-        debouncedModelFilter || undefined,
-        reqErrorsOnly,
-      );
-      setReqEntries(d.requests);
-      setReqTotal(d.total);
-    } catch (e) {
-      toast.error(getErrorMessage(e));
-    } finally {
-      setReqLoading(false);
-    }
-  }, [reqOffset, debouncedUserFilter, debouncedModelFilter, reqErrorsOnly]);
+  // Monotonic id for list fetches so an out-of-order response (e.g. a slow
+  // request issued under an older filter) can't overwrite a newer one.
+  const reqSeqRef = useRef(0);
+
+  // Callers pass the filters to fetch with: the debounce effect passes the
+  // debounced values, while manual actions (Refresh, Clear errors) pass the
+  // raw visible filters so they always reflect what the admin sees.
+  const loadRequests = useCallback(
+    async (userFilter: string, modelFilter: string) => {
+      const seq = ++reqSeqRef.current;
+      setReqLoading(true);
+      try {
+        const d = await listRecentRequests(
+          REQ_PAGE_SIZE,
+          reqOffset,
+          userFilter || undefined,
+          modelFilter || undefined,
+          reqErrorsOnly,
+        );
+        if (seq !== reqSeqRef.current) return;
+        setReqEntries(d.requests);
+        setReqTotal(d.total);
+      } catch (e) {
+        if (seq === reqSeqRef.current) toast.error(getErrorMessage(e));
+      } finally {
+        if (seq === reqSeqRef.current) setReqLoading(false);
+      }
+    },
+    [reqOffset, reqErrorsOnly],
+  );
 
   // Debounce text-filter changes into the values that drive the fetch. Offset
   // and "errors only" changes are applied immediately (they don't go through
@@ -716,18 +728,18 @@ export function RequestsTab() {
     try {
       const result = await clearErrorRequests(1);
       toast.success(result.message);
-      loadRequests();
+      loadRequests(reqUserFilter, reqModelFilter);
       loadRequestMetrics();
     } catch (e) {
       toast.error(getErrorMessage(e));
     } finally {
       setClearingErrors(false);
     }
-  }, [loadRequests, loadRequestMetrics]);
+  }, [loadRequests, loadRequestMetrics, reqUserFilter, reqModelFilter]);
 
   useEffect(() => {
-    loadRequests();
-  }, [loadRequests]);
+    loadRequests(debouncedUserFilter, debouncedModelFilter);
+  }, [loadRequests, debouncedUserFilter, debouncedModelFilter]);
 
   useEffect(() => {
     loadRequestMetrics();
@@ -802,7 +814,7 @@ export function RequestsTab() {
               type="button"
               onClick={() => {
                 loadRequestMetrics();
-                loadRequests();
+                loadRequests(reqUserFilter, reqModelFilter);
               }}
               disabled={reqMetricsLoading || reqLoading}
               className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
