@@ -20,6 +20,7 @@ from serving.schemas_admin import (
     CreateProviderRouteRequest,
     ListAllProviderRoutesResponse,
     ListProviderRoutesResponse,
+    OpenRouterProviderOption,
     ProviderRouteApiKeyRef,
     ProviderRouteItem,
     ProviderRouteOption,
@@ -95,6 +96,12 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
         key_provider="openrouter",
         default_base_url="https://openrouter.ai/api/v1",
     ),
+}
+
+SELECTABLE_PROVIDER_TARGETS = {"chutes", "featherless", "openrouter"}
+OPENROUTER_PROVIDER_LABELS = {
+    "deepinfra": "DeepInfra",
+    "parasail": "Parasail",
 }
 
 PROVIDER_MODEL_IDS: dict[str, dict[str, str]] = {
@@ -292,16 +299,57 @@ def _target_for_provider(provider: str) -> ProviderTarget:
     )
 
 
+def _openrouter_pin_for_target(target: ProviderTarget) -> str | None:
+    base_kind, pinned = parse_openrouter_kind(target.kind)
+    if base_kind != "openrouter":
+        return None
+    return pinned
+
+
+def _primary_provider_for_target(target: ProviderTarget) -> str:
+    base_kind, _pinned = parse_openrouter_kind(target.kind)
+    if base_kind == "openrouter":
+        return "openrouter"
+    return target.provider
+
+
+def _target_provider_from_request(
+    upstream_provider: str,
+    openrouter_provider: str | None,
+) -> str:
+    provider = upstream_provider.strip()
+    pin = openrouter_provider.strip() if openrouter_provider else None
+    if not provider:
+        raise HTTPException(status_code=422, detail="upstream_provider must not be blank")
+    if pin is None:
+        return provider
+    if provider != "openrouter":
+        raise HTTPException(
+            status_code=422,
+            detail="openrouter_provider is only valid when upstream_provider is openrouter",
+        )
+    if pin in {"auto", "default", "none"}:
+        return "openrouter"
+    if pin not in OPENROUTER_PROVIDER_LABELS:
+        raise HTTPException(status_code=400, detail=f"Unknown OpenRouter provider {pin!r}")
+    return pin
+
+
+def _provider_option_for_target(target: ProviderTarget) -> ProviderRouteOption:
+    return ProviderRouteOption(
+        provider=target.provider,
+        label=target.label,
+        kind=target.kind,
+        key_provider=target.key_provider,
+        default_base_url=target.default_base_url,
+    )
+
+
 def _provider_options() -> list[ProviderRouteOption]:
     options = [
-        ProviderRouteOption(
-            provider=target.provider,
-            label=target.label,
-            kind=target.kind,
-            key_provider=target.key_provider,
-            default_base_url=target.default_base_url,
-        )
+        _provider_option_for_target(target)
         for target in PROVIDER_TARGETS.values()
+        if target.provider in SELECTABLE_PROVIDER_TARGETS
     ]
     for provider in sorted(set(dynamic_keys.get_known_providers()) - set(PROVIDER_TARGETS)):
         options.append(
@@ -314,6 +362,13 @@ def _provider_options() -> list[ProviderRouteOption]:
             )
         )
     return options
+
+
+def _openrouter_provider_options() -> list[OpenRouterProviderOption]:
+    return [
+        OpenRouterProviderOption(provider=provider, label=label)
+        for provider, label in OPENROUTER_PROVIDER_LABELS.items()
+    ]
 
 
 def _upstream_provider(adapter) -> str:
@@ -1035,11 +1090,15 @@ async def _route_row(
     endpoint_id: str,
     override_row: dict[str, Any] | None,
 ) -> ProviderRouteItem:
-    route_provider = _route_provider(adapter)
-    upstream_provider = (
+    raw_route_provider = _route_provider(adapter)
+    raw_upstream_provider = (
         str(override_row["provider"]) if override_row else _upstream_provider(adapter)
     )
-    target = _target_for_provider(upstream_provider)
+    route_target = _target_for_provider(raw_route_provider)
+    target = _target_for_provider(raw_upstream_provider)
+    route_provider = _primary_provider_for_target(route_target)
+    upstream_provider = _primary_provider_for_target(target)
+    openrouter_provider = _openrouter_pin_for_target(target)
     api_key_id = (
         str(override_row["api_key_id"])
         if override_row and override_row.get("api_key_id") is not None
@@ -1064,6 +1123,7 @@ async def _route_row(
         route_type=_route_type(adapter),
         provider=route_provider,
         upstream_provider=upstream_provider,
+        openrouter_provider=openrouter_provider,
         key_provider=target.key_provider,
         base_url=base_url,
         api_key_id=api_key_id,
@@ -1129,6 +1189,7 @@ async def list_provider_routes(
         model_id=model_id,
         strategy=strategy,
         provider_options=_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(),
         routes=await _build_routes_for_model(
             services,
             op_store,
@@ -1169,7 +1230,11 @@ async def list_all_provider_routes(
                 overrides=overrides_by_model.get(model_id, {}),
             )
         )
-    return ListAllProviderRoutesResponse(provider_options=_provider_options(), routes=all_rows)
+    return ListAllProviderRoutesResponse(
+        provider_options=_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(),
+        routes=all_rows,
+    )
 
 
 @router.patch(
@@ -1215,6 +1280,7 @@ async def update_provider_route_strategy(
         model_id=canonical_model_id,
         strategy=_strategy_for_model(services, canonical_model_id),
         provider_options=_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(),
         routes=await _build_routes_for_model(
             services,
             op_store,
@@ -1237,12 +1303,16 @@ async def create_provider_route_candidate(
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
+    upstream_provider = _target_provider_from_request(
+        payload.upstream_provider,
+        payload.openrouter_provider,
+    )
     candidate = await _prepare_route_candidate(
         services,
         op_store,
         model_id=model_id,
         route_type=payload.route_type,
-        upstream_provider=payload.upstream_provider,
+        upstream_provider=upstream_provider,
         base_url=payload.base_url,
         api_key_id=payload.api_key_id,
         provider_model_id=payload.provider_model_id,
@@ -1314,9 +1384,13 @@ async def update_provider_route(
     old_adapter, old_weight, old_endpoint_id = old_entries[_route_index_for_id(old_entries, route_id)]
     old_upstream_provider = _upstream_provider(old_adapter)
     route_provider = _route_provider(old_adapter)
-    upstream_provider = payload.upstream_provider or payload.provider
-    if not upstream_provider:
+    raw_upstream_provider = payload.upstream_provider or payload.provider
+    if not raw_upstream_provider:
         raise HTTPException(status_code=422, detail="upstream_provider must not be blank")
+    upstream_provider = _target_provider_from_request(
+        raw_upstream_provider,
+        payload.openrouter_provider,
+    )
     provider_model_id = payload.provider_model_id.strip() if payload.provider_model_id else None
     if payload.provider_model_id is not None and not provider_model_id:
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
@@ -1481,6 +1555,7 @@ async def delete_provider_route_candidate(
         model_id=model_id,
         strategy=_strategy_for_model(services, model_id),
         provider_options=_provider_options(),
+        openrouter_provider_options=_openrouter_provider_options(),
         routes=await _build_routes_for_model(
             services,
             op_store,

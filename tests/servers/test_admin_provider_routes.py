@@ -208,6 +208,10 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert {option["provider"] for option in payload["provider_options"]} >= {
         "chutes",
         "featherless",
+        "openrouter",
+    }
+    assert {option["provider"] for option in payload["openrouter_provider_options"]} >= {
+        "deepinfra",
         "parasail",
     }
     routes = payload["routes"]
@@ -222,8 +226,9 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert routes[1]["provider"] == "featherless"
     assert routes[1]["upstream_provider"] == "featherless"
     assert routes[1]["quota_limit"] is None
-    assert routes[2]["provider"] == "deepinfra"
-    assert routes[2]["upstream_provider"] == "deepinfra"
+    assert routes[2]["provider"] == "openrouter"
+    assert routes[2]["upstream_provider"] == "openrouter"
+    assert routes[2]["openrouter_provider"] == "deepinfra"
     assert all(row["strategy"] == "routewise" for row in routes)
 
 
@@ -309,7 +314,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
         {
             "model_id": "minimax-fast",
             "route_id": "minimax-fast:chutes-api",
-            "provider": "openrouter",
+            "provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
             "provider_model_id": "minimax/minimax-m2.5",
@@ -323,6 +328,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
         "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
         json={
             "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
             "base_url": "openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
             "provider_model_id": "minimax/minimax-m2.5",
@@ -334,6 +340,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert response.status_code == 200
     assert response.json()["provider"] == "chutes"
     assert response.json()["upstream_provider"] == "openrouter"
+    assert response.json()["openrouter_provider"] == "parasail"
     assert response.json()["route_type"] == "quota"
     assert response.json()["provider_model_id"] == "minimax/minimax-m2.5"
     assert response.json()["quota_limit"] == 8000
@@ -342,7 +349,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     op_store.upsert_provider_route_config.assert_awaited_once_with(
         "minimax-fast",
         "minimax-fast:chutes-api",
-        "openrouter",
+        "parasail",
         "https://openrouter.ai/api/v1",
         "db-openrouter",
         "minimax/minimax-m2.5",
@@ -352,12 +359,12 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
 
     updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert updated_adapter.config.provider == "openrouter"
-    assert updated_adapter.config.openrouter_pinned_provider is None
+    assert updated_adapter.config.openrouter_pinned_provider == "parasail"
     assert updated_adapter.config.base_url == "https://openrouter.ai/api/v1"
     assert updated_adapter.config.provider_type == "quota"
     assert updated_adapter.config.route_metadata["provider_type"] == "quota"
     assert updated_adapter.config.route_metadata["route_provider"] == "chutes"
-    assert updated_adapter.config.route_metadata["upstream_provider"] == "openrouter"
+    assert updated_adapter.config.route_metadata["upstream_provider"] == "parasail"
     assert updated_adapter.config.quota_pool == "chutes-minimax-fast-daily"
     assert updated_adapter.config.quota_source == {
         "provider": "chutes",
@@ -569,7 +576,8 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
             "route_type": "on_demand",
-            "upstream_provider": "parasail",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
             "provider_model_id": "minimax/minimax-m2.5",
@@ -583,7 +591,8 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert payload["source"] == "runtime"
     assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
     assert payload["route_type"] == "on_demand"
-    assert payload["upstream_provider"] == "parasail"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] == "parasail"
     assert payload["effective_weight"] == 2.5
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
         "minimax-fast",
@@ -640,7 +649,8 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
         "/admin/routing/provider-route-candidates/minimax-fast",
         json={
             "route_type": "on_demand",
-            "upstream_provider": "parasail",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
             "base_url": "https://openrouter.ai/api/v1",
             "api_key_id": "db-openrouter",
             "provider_model_id": "minimax/minimax-m2.5",

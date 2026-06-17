@@ -1109,6 +1109,11 @@ export interface ProviderRouteOption {
   default_base_url: string;
 }
 
+export interface OpenRouterProviderOption {
+  provider: string;
+  label: string;
+}
+
 export interface ProviderRoute {
   model_id: string;
   strategy: string;
@@ -1116,6 +1121,7 @@ export interface ProviderRoute {
   route_type: string;
   provider: string;
   upstream_provider: string;
+  openrouter_provider?: string | null;
   key_provider: string;
   base_url: string;
   api_key_id: string | null;
@@ -1134,11 +1140,13 @@ export interface ListProviderRoutesResponse {
   model_id?: string;
   strategy?: string;
   provider_options: ProviderRouteOption[];
+  openrouter_provider_options?: OpenRouterProviderOption[];
   routes: ProviderRoute[];
 }
 
 export interface UpdateProviderRoutePayload {
   upstream_provider: string;
+  openrouter_provider?: string | null;
   base_url: string;
   api_key_id?: string | null;
   provider_model_id?: string | null;
@@ -1151,6 +1159,7 @@ export type ProviderRouteType = 'quota' | 'concurrency' | 'on_demand';
 export interface CreateProviderRoutePayload {
   route_type: ProviderRouteType;
   upstream_provider: string;
+  openrouter_provider?: string | null;
   base_url: string;
   api_key_id?: string | null;
   provider_model_id: string;
@@ -1196,6 +1205,7 @@ export async function updateProviderRoute(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         upstream_provider: payload.upstream_provider,
+        openrouter_provider: payload.openrouter_provider ?? null,
         base_url: payload.base_url,
         api_key_id: payload.api_key_id ?? null,
         provider_model_id: payload.provider_model_id ?? null,

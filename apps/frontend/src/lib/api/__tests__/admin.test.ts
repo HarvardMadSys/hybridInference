@@ -280,13 +280,14 @@ describe('provider route client', () => {
           strategy: 'routewise',
           provider_options: [
             {
-              provider: 'parasail',
-              label: 'Parasail via OpenRouter',
-              kind: 'openrouter[parasail]',
+              provider: 'openrouter',
+              label: 'OpenRouter',
+              kind: 'openrouter',
               key_provider: 'openrouter',
               default_base_url: 'https://openrouter.ai/api/v1',
             },
           ],
+          openrouter_provider_options: [{ provider: 'parasail', label: 'Parasail' }],
           routes: [
             {
               model_id: 'minimax-fast',
@@ -323,7 +324,8 @@ describe('provider route client', () => {
     const out = await listProviderRoutes('minimax-fast');
 
     expect(out.routes[0].route_id).toBe('minimax-fast:featherless-api');
-    expect(out.provider_options[0].provider).toBe('parasail');
+    expect(out.provider_options[0].provider).toBe('openrouter');
+    expect(out.openrouter_provider_options?.[0].provider).toBe('parasail');
     const [url] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast');
   });
@@ -337,7 +339,8 @@ describe('provider route client', () => {
           route_id: 'minimax-fast:featherless-api',
           route_type: 'concurrency',
           provider: 'featherless',
-          upstream_provider: 'parasail',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
           key_provider: 'openrouter',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_id: 'key-1',
@@ -362,7 +365,8 @@ describe('provider route client', () => {
     );
 
     const out = await updateProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
-      upstream_provider: 'parasail',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
@@ -370,14 +374,16 @@ describe('provider route client', () => {
     });
 
     expect(out.provider).toBe('featherless');
-    expect(out.upstream_provider).toBe('parasail');
+    expect(out.upstream_provider).toBe('openrouter');
+    expect(out.openrouter_provider).toBe('parasail');
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
       '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
     );
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body as string)).toEqual({
-      upstream_provider: 'parasail',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
@@ -436,8 +442,9 @@ describe('provider route client', () => {
           strategy: 'routewise',
           route_id: 'minimax-fast:openrouter[parasail]-api',
           route_type: 'on_demand',
-          provider: 'parasail',
-          upstream_provider: 'parasail',
+          provider: 'openrouter',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
           key_provider: 'openrouter',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_id: 'key-1',
@@ -463,7 +470,8 @@ describe('provider route client', () => {
 
     const out = await createProviderRouteCandidate('minimax-fast', {
       route_type: 'on_demand',
-      upstream_provider: 'parasail',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
@@ -478,7 +486,8 @@ describe('provider route client', () => {
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({
       route_type: 'on_demand',
-      upstream_provider: 'parasail',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',

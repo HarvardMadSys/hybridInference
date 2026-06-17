@@ -809,6 +809,13 @@ class ProviderRouteOption(BaseModel):
     default_base_url: str
 
 
+class OpenRouterProviderOption(BaseModel):
+    """OpenRouter backend provider pin available for OpenRouter targets."""
+
+    provider: str
+    label: str
+
+
 class ProviderRouteItem(BaseModel):
     """Runtime provider target for one model route candidate."""
 
@@ -818,6 +825,7 @@ class ProviderRouteItem(BaseModel):
     route_type: str
     provider: str
     upstream_provider: str
+    openrouter_provider: str | None = None
     key_provider: str
     base_url: str
     api_key_id: str | None = None
@@ -838,6 +846,7 @@ class ListProviderRoutesResponse(BaseModel):
     model_id: str
     strategy: str
     provider_options: list[ProviderRouteOption]
+    openrouter_provider_options: list[OpenRouterProviderOption] = Field(default_factory=list)
     routes: list[ProviderRouteItem]
 
 
@@ -845,6 +854,7 @@ class ListAllProviderRoutesResponse(BaseModel):
     """Response payload for listing provider routes across canonical models."""
 
     provider_options: list[ProviderRouteOption]
+    openrouter_provider_options: list[OpenRouterProviderOption] = Field(default_factory=list)
     routes: list[ProviderRouteItem]
 
 
@@ -859,6 +869,7 @@ class CreateProviderRouteRequest(BaseModel):
 
     route_type: Literal["quota", "concurrency", "on_demand"]
     upstream_provider: str = Field(..., min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
     base_url: str = Field(..., min_length=1, max_length=2048)
     api_key_id: str | None = Field(None, min_length=1, max_length=128)
     provider_model_id: str = Field(..., min_length=1, max_length=512)
@@ -872,6 +883,7 @@ class UpdateProviderRouteRequest(BaseModel):
 
     provider: str | None = Field(None, min_length=1, max_length=64)
     upstream_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
     base_url: str = Field(..., min_length=1, max_length=2048)
     api_key_id: str | None = Field(None, min_length=1, max_length=128)
     provider_model_id: str | None = Field(None, min_length=1, max_length=512)
@@ -923,6 +935,7 @@ __all__ = [
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
     "ModelVisibilityItem",
+    "OpenRouterProviderOption",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
     "ProviderRouteApiKeyRef",

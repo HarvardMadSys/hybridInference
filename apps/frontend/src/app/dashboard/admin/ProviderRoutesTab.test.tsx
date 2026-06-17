@@ -41,12 +41,17 @@ const providerOptions = [
     default_base_url: 'https://api.featherless.ai/v1',
   },
   {
-    provider: 'parasail',
-    label: 'Parasail via OpenRouter',
-    kind: 'openrouter[parasail]',
+    provider: 'openrouter',
+    label: 'OpenRouter',
+    kind: 'openrouter',
     key_provider: 'openrouter',
     default_base_url: 'https://openrouter.ai/api/v1',
   },
+];
+
+const openRouterProviderOptions = [
+  { provider: 'deepinfra', label: 'DeepInfra' },
+  { provider: 'parasail', label: 'Parasail' },
 ];
 
 const route = {
@@ -88,6 +93,7 @@ describe('ProviderRoutesTab', () => {
   it('renders routewise provider candidates without weight columns', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [route],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
@@ -95,7 +101,7 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     expect(await screen.findByText('minimax-fast')).toBeInTheDocument();
-    expect(screen.getByText('featherless')).toBeInTheDocument();
+    expect(screen.getByText('Featherless')).toBeInTheDocument();
     expect(screen.getByText('Default featherless pool')).toBeInTheDocument();
     expect(screen.queryByText('Effective')).not.toBeInTheDocument();
   });
@@ -103,6 +109,7 @@ describe('ProviderRoutesTab', () => {
   it('updates provider route target', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [route],
     });
     vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) => ({
@@ -125,7 +132,8 @@ describe('ProviderRoutesTab', () => {
     vi.mocked(updateProviderRoute).mockResolvedValue({
       ...route,
       provider: 'featherless',
-      upstream_provider: 'parasail',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
@@ -147,6 +155,9 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     fireEvent.change(screen.getByLabelText('Override provider'), {
+      target: { value: 'openrouter' },
+    });
+    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
       target: { value: 'parasail' },
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
@@ -166,7 +177,8 @@ describe('ProviderRoutesTab', () => {
         'minimax-fast',
         'minimax-fast:featherless-api',
         {
-          upstream_provider: 'parasail',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_id: 'key-1',
           provider_model_id: 'minimax/minimax-m2.5',
@@ -174,7 +186,7 @@ describe('ProviderRoutesTab', () => {
         },
       );
     });
-    expect(await screen.findByText('parasail')).toBeInTheDocument();
+    expect(await screen.findByText('Parasail')).toBeInTheDocument();
   });
 
   it('submits local daily quota for quota provider overrides', async () => {
@@ -200,12 +212,14 @@ describe('ProviderRoutesTab', () => {
         },
         ...providerOptions,
       ],
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [quotaRoute],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
     vi.mocked(updateProviderRoute).mockResolvedValue({
       ...quotaRoute,
-      upstream_provider: 'parasail',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
       provider_model_id: 'minimax/minimax-m2.5',
@@ -217,6 +231,9 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
     fireEvent.change(screen.getByLabelText('Override provider'), {
+      target: { value: 'openrouter' },
+    });
+    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
       target: { value: 'parasail' },
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
@@ -232,7 +249,8 @@ describe('ProviderRoutesTab', () => {
         'minimax-fast',
         'minimax-fast:chutes-api',
         {
-          upstream_provider: 'parasail',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
           base_url: 'https://openrouter.ai/api/v1',
           api_key_id: null,
           provider_model_id: 'minimax/minimax-m2.5',
@@ -245,7 +263,8 @@ describe('ProviderRoutesTab', () => {
   it('restores an override to the config route', async () => {
     const overrideRoute = {
       ...route,
-      upstream_provider: 'parasail',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
@@ -261,6 +280,7 @@ describe('ProviderRoutesTab', () => {
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [overrideRoute],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
@@ -285,6 +305,7 @@ describe('ProviderRoutesTab', () => {
   it('adds a runtime provider route', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [route],
     });
     vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) => ({
@@ -308,8 +329,9 @@ describe('ProviderRoutesTab', () => {
       ...route,
       route_id: 'minimax-fast:openrouter[parasail]-api',
       route_type: 'on_demand',
-      provider: 'parasail',
-      upstream_provider: 'parasail',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
@@ -328,7 +350,10 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'parasail' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openrouter' } });
+    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
+      target: { value: 'parasail' },
+    });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
@@ -343,7 +368,8 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => {
       expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'on_demand',
-        upstream_provider: 'parasail',
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'parasail',
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: 'key-1',
         provider_model_id: 'minimax/minimax-m2.5',
@@ -360,8 +386,9 @@ describe('ProviderRoutesTab', () => {
       ...route,
       route_id: 'minimax-fast:openrouter[deepinfra]-api',
       route_type: 'on_demand',
-      provider: 'deepinfra',
-      upstream_provider: 'deepinfra',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'deepinfra',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
       provider_model_id: 'minimax/minimax-m2.5',
@@ -385,6 +412,7 @@ describe('ProviderRoutesTab', () => {
         },
         ...providerOptions,
       ],
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [route, deepinfraRoute],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
@@ -394,17 +422,21 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
     const providerSelect = screen.getByLabelText('Provider');
-    expect(providerSelect).toHaveValue('parasail');
+    expect(providerSelect).toHaveValue('openrouter');
     expect(within(providerSelect).queryByRole('option', { name: 'Chutes' })).not.toBeInTheDocument();
     expect(
       within(providerSelect).queryByRole('option', { name: 'Featherless' }),
     ).not.toBeInTheDocument();
     expect(
-      within(providerSelect).queryByRole('option', { name: 'DeepInfra via OpenRouter' }),
+      within(providerSelect).queryByRole('option', { name: 'DeepInfra' }),
     ).not.toBeInTheDocument();
-    expect(
-      within(providerSelect).getByRole('option', { name: 'Parasail via OpenRouter' }),
-    ).toBeInTheDocument();
+    expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
+
+    const openRouterSelect = screen.getByLabelText('OpenRouter provider');
+    expect(within(openRouterSelect).queryByRole('option', { name: 'DeepInfra' }))
+      .not.toBeInTheDocument();
+    expect(within(openRouterSelect).getByRole('option', { name: 'Parasail' }))
+      .toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
 
@@ -418,8 +450,9 @@ describe('ProviderRoutesTab', () => {
       ...route,
       route_id: 'minimax-fast:openrouter[parasail]-api',
       route_type: 'on_demand',
-      provider: 'parasail',
-      upstream_provider: 'parasail',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
       provider_model_id: 'minimax/minimax-m2.5',
@@ -428,6 +461,7 @@ describe('ProviderRoutesTab', () => {
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [route, runtimeRoute],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
@@ -435,6 +469,7 @@ describe('ProviderRoutesTab', () => {
       model_id: 'minimax-fast',
       strategy: 'routewise',
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [route],
     });
 
@@ -464,6 +499,7 @@ describe('ProviderRoutesTab', () => {
     };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [zaiRoute],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'zai', keys: [] });
@@ -482,6 +518,7 @@ describe('ProviderRoutesTab', () => {
   it('updates the selected model routing policy', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [route],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
@@ -489,6 +526,7 @@ describe('ProviderRoutesTab', () => {
       model_id: 'minimax-fast',
       strategy: 'fixed',
       provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
       routes: [{ ...route, strategy: 'fixed' }],
     });
 
