@@ -402,11 +402,14 @@ async def test_concurrency_rejected_never_alerts(monkeypatch):
                         role="free",
                     )
                 )
-            # Wait for the engine to drain every queued record.
+            # Wait for the engine to drain every queued record, then assert the
+            # queue really is empty so a still-backlogged queue can't make the
+            # "no alerts" check pass spuriously.
             for _ in range(100):
                 if handler.queue.empty():
                     break
                 await asyncio.sleep(0.01)
+            assert handler.queue.empty(), "Queue was not fully drained"
             await asyncio.sleep(0.05)
             assert mock_alert.await_count == 0
         finally:
