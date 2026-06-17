@@ -175,7 +175,7 @@ async def signup(
     # whose domain is on the allowlist (exact or wildcard suffix) auto-
     # approve; everyone else lands in pending_approval.
     require_verification = settings.signup_require_email_verification
-    notify_admins_of_signup = True
+    notify_admins_of_signup = settings.signup_admin_notify_enabled
     try:
         from serving.config.runtime_settings import get_runtime_settings_instance
 
