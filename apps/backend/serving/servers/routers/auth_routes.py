@@ -199,6 +199,7 @@ async def signup(
         user_name=body.user_name,
         email_verified=False,
         status=initial_status,
+        signup_reason=body.use_case or None,
     )
 
     # Send verification email only when verification is required and SMTP is configured.

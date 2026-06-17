@@ -24,6 +24,7 @@ const baseUser: UserRow = {
   approval_note: null,
   reviewed_at: null,
   reviewed_by: null,
+  signup_reason: null,
   created_at: '2024-01-01T00:00:00Z',
   last_login_at: null,
   has_key: true,
@@ -237,5 +238,46 @@ describe('UserTable disabled models editing', () => {
       const patch = call[1] as { disabled_models?: string[] };
       expect(patch.disabled_models ?? []).not.toContain('deepseek-v4-flash');
     }
+  });
+
+  it('shows the signup reason for a pending user when expanded', async () => {
+    const pendingUser: UserRow = {
+      ...baseUser,
+      status: 'pending_approval',
+      has_key: false,
+      signup_reason: 'Building a course assistant for CS50.',
+    };
+    vi.mocked(getUserDetail).mockResolvedValue({
+      id: 'user-1',
+      email: 'user@example.com',
+      user_name: 'User',
+      role: 'free',
+      status: 'pending_approval',
+      email_verified: true,
+      created_at: '2024-01-01T00:00:00Z',
+      last_login_at: null,
+      has_key: false,
+      key_prefix: null,
+      quota_daily_usd: null,
+      quota_monthly_usd: null,
+      usage_today_usd: 0,
+      usage_today_requests: 0,
+      usage_month_usd: 0,
+      usage_month_requests: 0,
+      models_used: [],
+      disabled_models: [],
+      last_request_at: null,
+      max_concurrent_requests: null,
+    });
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+
+    renderTable(pendingUser);
+
+    fireEvent.click(screen.getByText('user@example.com'));
+
+    expect(await screen.findByText('Signup reason')).toBeInTheDocument();
+    expect(
+      screen.getByText('Building a course assistant for CS50.'),
+    ).toBeInTheDocument();
   });
 });

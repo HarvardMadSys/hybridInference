@@ -135,6 +135,7 @@ async def list_users(
                 approval_note=row.get("approval_note"),
                 reviewed_at=row.get("reviewed_at"),
                 reviewed_by=row.get("reviewed_by"),
+                signup_reason=row.get("signup_reason"),
                 created_at=row["created_at"],
                 last_login_at=row.get("last_login_at"),
                 has_key=row.get("key_prefix") is not None,
