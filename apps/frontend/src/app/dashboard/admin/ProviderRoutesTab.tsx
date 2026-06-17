@@ -87,9 +87,29 @@ function formatWeight(value: number) {
 }
 
 function keyLabel(route: ProviderRoute) {
-  if (route.api_key.source === 'default') return `Default ${route.api_key.provider} pool`;
+  if (route.api_key.source === 'default') return `Configured default ${route.api_key.provider} key`;
   const label = route.api_key.label ? `${route.api_key.label} · ` : '';
   return `${label}${route.api_key.key_prefix ?? route.api_key.source}`;
+}
+
+function defaultKeyOptionLabel(provider: string) {
+  return provider ? `Configured default ${provider} key` : 'No provider selected';
+}
+
+function noProviderOptionLabel(routeType: ProviderRouteType) {
+  if (routeType === 'quota') return 'No quota providers available';
+  if (routeType === 'concurrency') return 'No concurrency providers available';
+  return 'No providers available';
+}
+
+function noProviderHelpText(routeType: ProviderRouteType) {
+  if (routeType === 'quota') {
+    return 'This model already has every configured quota provider.';
+  }
+  if (routeType === 'concurrency') {
+    return 'This model already has every configured concurrency provider.';
+  }
+  return 'There are no configured providers left for this route type.';
 }
 
 function sourceLabel(route: ProviderRoute) {
@@ -1114,7 +1134,7 @@ export function ProviderRoutesTab() {
                 required
               >
                 {createProviderOptions.length === 0 && (
-                  <option value="">No providers available</option>
+                  <option value="">{noProviderOptionLabel(createForm.routeType)}</option>
                 )}
                 {createProviderOptions.map((option) => (
                   <option key={option.provider} value={option.provider}>
@@ -1122,6 +1142,11 @@ export function ProviderRoutesTab() {
                   </option>
                 ))}
               </select>
+              {createProviderOptions.length === 0 && (
+                <p className="mt-1 text-[11px] leading-5 text-gray-400">
+                  {noProviderHelpText(createForm.routeType)}
+                </p>
+              )}
             </div>
             <div>
               <label
@@ -1139,7 +1164,7 @@ export function ProviderRoutesTab() {
                 disabled={createKeysLoading}
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
               >
-                <option value="">Default {createKeyProvider} pool</option>
+                <option value="">{defaultKeyOptionLabel(createKeyProvider)}</option>
                 {createKeyOptions.map((key) => (
                   <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
                     {key.label ? `${key.label} · ` : ''}
@@ -1410,7 +1435,7 @@ export function ProviderRoutesTab() {
                 disabled={keysLoading}
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
               >
-                <option value="">Default {keyProvider} pool</option>
+                <option value="">{defaultKeyOptionLabel(keyProvider)}</option>
                 {keyOptions.map((key) => (
                   <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
                     {key.label ? `${key.label} · ` : ''}

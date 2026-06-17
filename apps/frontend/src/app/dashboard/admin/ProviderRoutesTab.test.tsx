@@ -116,7 +116,7 @@ describe('ProviderRoutesTab', () => {
 
     expect(await screen.findByText('minimax-fast')).toBeInTheDocument();
     expect(screen.getByText('Featherless')).toBeInTheDocument();
-    expect(screen.getByText('Default featherless pool')).toBeInTheDocument();
+    expect(screen.getByText('Configured default featherless key')).toBeInTheDocument();
     expect(screen.queryByText('Effective')).not.toBeInTheDocument();
   });
 
@@ -313,7 +313,7 @@ describe('ProviderRoutesTab', () => {
       );
     });
     await waitFor(() => {
-      expect(screen.getAllByText('Default featherless pool').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('Configured default featherless key').length).toBeGreaterThan(0);
     });
     expect(screen.queryByText('Edit provider route')).not.toBeInTheDocument();
   });
@@ -614,6 +614,54 @@ describe('ProviderRoutesTab', () => {
     expect(providerSelect).toHaveValue('chutes');
     expect(within(providerSelect).getByRole('option', { name: 'Chutes' })).toBeInTheDocument();
     expect(screen.getByLabelText('Base URL')).toHaveValue('https://llm.chutes.ai/v1');
+  });
+
+  it('explains when no quota provider can be added', async () => {
+    const quotaRoute = {
+      ...route,
+      route_id: 'minimax-fast:chutes-api',
+      route_type: 'quota',
+      provider: 'chutes',
+      upstream_provider: 'chutes',
+      key_provider: 'chutes',
+      base_url: 'https://llm.chutes.ai/v1',
+      provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
+      quota_limit: 5000,
+      endpoint_id: 'minimax-fast:chutes-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: [
+        {
+          provider: 'chutes',
+          label: 'Chutes',
+          kind: 'chutes',
+          key_provider: 'chutes',
+          default_base_url: 'https://llm.chutes.ai/v1',
+        },
+        ...providerOptions,
+      ],
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, quotaRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+
+    const providerSelect = screen.getByLabelText('Provider');
+    expect(providerSelect).toHaveValue('');
+    expect(
+      within(providerSelect).getByRole('option', { name: 'No quota providers available' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('This model already has every configured quota provider.'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('API key')).toHaveValue('');
+    expect(within(screen.getByLabelText('API key')).getByRole('option', {
+      name: 'No provider selected',
+    })).toBeInTheDocument();
   });
 
   it('deletes a runtime provider route', async () => {
