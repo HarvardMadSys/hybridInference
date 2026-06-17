@@ -157,12 +157,13 @@ class TestSignupAllowlist:
 
         monkeypatch.setattr(auth_routes_mod.settings, "admin_emails", "admin@trusted-corp.io")
 
-        # Persist the toggle as disabled and clear the cached value so the
-        # signup handler reads the fresh setting.
-        from serving.config.runtime_settings import get_runtime_settings_instance
-
-        await op_store.set_setting("signup_admin_notify_enabled", "false", "bool", None)
-        get_runtime_settings_instance().invalidate_key("signup_admin_notify_enabled")
+        # Disable the admin-notify toggle via the Settings fallback. The runtime
+        # settings singleton is reset to None between tests (tests/conftest.py)
+        # and auth_app_services never initializes it, so signup() falls back to
+        # settings.signup_admin_notify_enabled. monkeypatch keeps the override
+        # scoped to this test (auto-restored on teardown) and — unlike writing a
+        # site_settings row — cannot leak into later signup-flow tests.
+        monkeypatch.setattr(auth_routes_mod.settings, "signup_admin_notify_enabled", False)
 
         sent_to: list[str] = []
 
