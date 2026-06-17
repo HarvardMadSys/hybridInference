@@ -13,6 +13,7 @@ import {
   deleteProviderRoute,
   deleteProviderRouteCandidate,
   listProviderKeys,
+  listOpenRouterProviderOptions,
   listProviderRoutes,
   updateProviderRoute,
   updateProviderRouteStrategy,
@@ -185,6 +186,24 @@ function openRouterProviderLabel(
   return options.find((option) => option.provider === provider)?.label ?? provider;
 }
 
+function ensureOpenRouterProviderOption(
+  options: OpenRouterProviderOption[],
+  provider: string,
+) {
+  if (!provider || options.some((option) => option.provider === provider)) return options;
+  return [...options, { provider, label: provider }];
+}
+
+function defaultProviderModelIdFor(provider: string, routes: ProviderRoute[]) {
+  const matchingRoute = routes.find(
+    (route) =>
+      routePrimaryUpstreamProvider(route) === provider &&
+      typeof route.provider_model_id === 'string' &&
+      route.provider_model_id.trim(),
+  );
+  return matchingRoute?.provider_model_id ?? '';
+}
+
 function openRouterProviderOptionsForCreate(
   allOptions: OpenRouterProviderOption[],
   routeType: ProviderRouteType,
@@ -228,6 +247,7 @@ export function ProviderRoutesTab() {
   const [openRouterProviderOptions, setOpenRouterProviderOptions] = useState<
     OpenRouterProviderOption[]
   >([]);
+  const [openRouterProvidersLoading, setOpenRouterProvidersLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(false);
   const [editingRoute, setEditingRoute] = useState<ProviderRoute | null>(null);
@@ -287,6 +307,16 @@ export function ProviderRoutesTab() {
     () => openRouterProviderOptionsFor(providerOptions, openRouterProviderOptions),
     [openRouterProviderOptions, providerOptions],
   );
+  const editOpenRouterSelectOptions = useMemo(
+    () => ensureOpenRouterProviderOption(openRouterSelectOptions, form.openRouterProvider),
+    [form.openRouterProvider, openRouterSelectOptions],
+  );
+  const activeOpenRouterProviderModelId =
+    addingRoute && createForm.upstreamProvider === 'openrouter'
+      ? createForm.providerModelId.trim()
+      : editingRoute && form.upstreamProvider === 'openrouter'
+        ? form.providerModelId.trim()
+        : '';
   const strategy = selectedRoutes[0]?.strategy ?? 'fixed';
   const isRoutewise = strategy === 'routewise';
   const editsLocalQuota =
@@ -440,6 +470,29 @@ export function ProviderRoutesTab() {
   }, [addingRoute, createKeyProvider, loadCreateKeys]);
 
   useEffect(() => {
+    if (!activeOpenRouterProviderModelId.includes('/')) return undefined;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      setOpenRouterProvidersLoading(true);
+      void listOpenRouterProviderOptions(activeOpenRouterProviderModelId)
+        .then((resp) => {
+          if (cancelled) return;
+          setOpenRouterProviderOptions(resp.providers);
+        })
+        .catch(() => {
+          // Keep the fallback options returned by the route list endpoint.
+        })
+        .finally(() => {
+          if (!cancelled) setOpenRouterProvidersLoading(false);
+        });
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [activeOpenRouterProviderModelId]);
+
+  useEffect(() => {
     if (!addingRoute) return;
     if (createProviderOptions.length === 0) {
       setCreateForm((current) => ({
@@ -500,9 +553,10 @@ export function ProviderRoutesTab() {
       baseUrl: selected?.default_base_url || current.baseUrl,
       apiKeyId: '',
       providerModelId:
-        upstreamProvider === editingRoute?.upstream_provider
+        editingRoute && upstreamProvider === routePrimaryUpstreamProvider(editingRoute)
           ? (editingRoute.provider_model_id ?? current.providerModelId)
-          : '',
+          : defaultProviderModelIdFor(upstreamProvider, selectedRoutes) ||
+            current.providerModelId,
       quotaLimit: current.quotaLimit,
     }));
   };
@@ -528,6 +582,9 @@ export function ProviderRoutesTab() {
       upstreamProvider: firstProvider?.provider ?? '',
       openRouterProvider: nextOpenRouterProvider,
       baseUrl: firstProvider?.default_base_url ?? '',
+      providerModelId: firstProvider
+        ? defaultProviderModelIdFor(firstProvider.provider, selectedRoutes)
+        : '',
     });
     setCreateKeyOptions([]);
     setAddingRoute(true);
@@ -545,6 +602,9 @@ export function ProviderRoutesTab() {
           : OPENROUTER_PROVIDER_AUTO,
       baseUrl: selected?.default_base_url || current.baseUrl,
       apiKeyId: '',
+      providerModelId:
+        defaultProviderModelIdFor(upstreamProvider, selectedRoutes) ||
+        current.providerModelId,
     }));
   };
 
@@ -570,6 +630,9 @@ export function ProviderRoutesTab() {
           : OPENROUTER_PROVIDER_AUTO,
       baseUrl: nextProvider?.default_base_url ?? '',
       apiKeyId: '',
+      providerModelId: nextProvider
+        ? defaultProviderModelIdFor(nextProvider.provider, selectedRoutes)
+        : current.providerModelId,
     }));
   };
 
@@ -924,12 +987,17 @@ export function ProviderRoutesTab() {
             </div>
             {createForm.upstreamProvider === 'openrouter' && (
               <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-route-openrouter-provider"
-                >
-                  OpenRouter provider
-                </label>
+                <div className="flex items-center gap-1.5">
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="new-route-openrouter-provider"
+                  >
+                    OpenRouter provider
+                  </label>
+                  {openRouterProvidersLoading && (
+                    <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
+                  )}
+                </div>
                 <select
                   id="new-route-openrouter-provider"
                   value={createForm.openRouterProvider}
@@ -1157,12 +1225,17 @@ export function ProviderRoutesTab() {
             </div>
             {form.upstreamProvider === 'openrouter' && (
               <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="route-openrouter-provider"
-                >
-                  OpenRouter provider
-                </label>
+                <div className="flex items-center gap-1.5">
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="route-openrouter-provider"
+                  >
+                    OpenRouter provider
+                  </label>
+                  {openRouterProvidersLoading && (
+                    <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
+                  )}
+                </div>
                 <select
                   id="route-openrouter-provider"
                   value={form.openRouterProvider}
@@ -1174,7 +1247,7 @@ export function ProviderRoutesTab() {
                   }
                   className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                 >
-                  {openRouterSelectOptions.map((option) => (
+                  {editOpenRouterSelectOptions.map((option) => (
                     <option key={option.provider || 'auto'} value={option.provider}>
                       {option.label}
                     </option>

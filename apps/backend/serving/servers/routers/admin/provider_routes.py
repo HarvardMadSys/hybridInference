@@ -6,19 +6,22 @@ import asyncio
 import ipaddress
 import math
 import os
+import re
 import socket
+import time
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from routing.routers import _get_endpoint_id
 from serving.adapters import ModelConfig, dynamic_keys
 from serving.schemas_admin import (
     CreateProviderRouteRequest,
     ListAllProviderRoutesResponse,
+    ListOpenRouterProviderOptionsResponse,
     ListProviderRoutesResponse,
     OpenRouterProviderOption,
     ProviderRouteApiKeyRef,
@@ -35,9 +38,16 @@ from serving.utils.logging import get_logger
 router = APIRouter(prefix="/admin")
 logger = get_logger(__name__)
 VERIFY_TIMEOUT_SEC = 20.0
+OPENROUTER_ENDPOINT_DISCOVERY_TIMEOUT_SEC = 8.0
+OPENROUTER_ENDPOINT_DISCOVERY_CACHE_TTL_SEC = 300.0
+OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
 BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
+OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[
+    str, tuple[float, list[OpenRouterProviderOption]]
+] = {}
 
 
 @dataclass(frozen=True)
@@ -80,21 +90,21 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
         label="OpenRouter",
         kind="openrouter",
         key_provider="openrouter",
-        default_base_url="https://openrouter.ai/api/v1",
+        default_base_url=OPENROUTER_API_BASE_URL,
     ),
     "deepinfra": ProviderTarget(
         provider="deepinfra",
         label="DeepInfra via OpenRouter",
         kind="openrouter[deepinfra]",
         key_provider="openrouter",
-        default_base_url="https://openrouter.ai/api/v1",
+        default_base_url=OPENROUTER_API_BASE_URL,
     ),
     "parasail": ProviderTarget(
         provider="parasail",
         label="Parasail via OpenRouter",
         kind="openrouter[parasail]",
         key_provider="openrouter",
-        default_base_url="https://openrouter.ai/api/v1",
+        default_base_url=OPENROUTER_API_BASE_URL,
     ),
 }
 
@@ -293,6 +303,14 @@ def _target_for_provider(provider: str) -> ProviderTarget:
             key_provider=provider,
             default_base_url="",
         )
+    if OPENROUTER_PROVIDER_RE.fullmatch(provider):
+        return ProviderTarget(
+            provider=provider,
+            label=OPENROUTER_PROVIDER_LABELS.get(provider, provider),
+            kind=f"openrouter[{provider}]",
+            key_provider="openrouter",
+            default_base_url=OPENROUTER_API_BASE_URL,
+        )
     raise HTTPException(
         status_code=400,
         detail=f"Unknown provider {provider!r}. Valid providers: {sorted(PROVIDER_TARGETS)}",
@@ -330,8 +348,8 @@ def _target_provider_from_request(
         )
     if pin in {"auto", "default", "none"}:
         return "openrouter"
-    if pin not in OPENROUTER_PROVIDER_LABELS:
-        raise HTTPException(status_code=400, detail=f"Unknown OpenRouter provider {pin!r}")
+    if not OPENROUTER_PROVIDER_RE.fullmatch(pin):
+        raise HTTPException(status_code=422, detail="openrouter_provider has invalid characters")
     return pin
 
 
@@ -369,6 +387,89 @@ def _openrouter_provider_options() -> list[OpenRouterProviderOption]:
         OpenRouterProviderOption(provider=provider, label=label)
         for provider, label in OPENROUTER_PROVIDER_LABELS.items()
     ]
+
+
+def _openrouter_endpoint_provider_slug(endpoint: dict[str, Any]) -> str | None:
+    tag = endpoint.get("tag")
+    if isinstance(tag, str) and tag.strip():
+        slug = tag.strip().split("/", 1)[0].lower()
+        if OPENROUTER_PROVIDER_RE.fullmatch(slug):
+            return slug
+
+    provider_name = endpoint.get("provider_name")
+    if isinstance(provider_name, str) and provider_name.strip():
+        slug = re.sub(r"[^a-z0-9_.-]+", "-", provider_name.strip().lower()).strip("-")
+        if slug and OPENROUTER_PROVIDER_RE.fullmatch(slug):
+            return slug
+    return None
+
+
+def _parse_openrouter_provider_options(payload: dict[str, Any]) -> list[OpenRouterProviderOption]:
+    data = payload.get("data")
+    endpoints = data.get("endpoints") if isinstance(data, dict) else None
+    if not isinstance(endpoints, list):
+        return []
+
+    providers: list[OpenRouterProviderOption] = []
+    seen: set[str] = set()
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        slug = _openrouter_endpoint_provider_slug(endpoint)
+        if not slug or slug in seen:
+            continue
+        provider_name = endpoint.get("provider_name")
+        label = str(provider_name).strip() if provider_name else OPENROUTER_PROVIDER_LABELS.get(slug)
+        providers.append(OpenRouterProviderOption(provider=slug, label=label or slug))
+        seen.add(slug)
+    return providers
+
+
+async def _fetch_openrouter_provider_options(
+    provider_model_id: str,
+) -> list[OpenRouterProviderOption]:
+    model_id = provider_model_id.strip()
+    if not model_id:
+        raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
+
+    now = time.monotonic()
+    cached = OPENROUTER_ENDPOINT_DISCOVERY_CACHE.get(model_id)
+    if cached and now - cached[0] < OPENROUTER_ENDPOINT_DISCOVERY_CACHE_TTL_SEC:
+        return cached[1]
+
+    encoded_model_id = quote(model_id, safe="/")
+    url = f"{OPENROUTER_API_BASE_URL}/models/{encoded_model_id}/endpoints"
+    timeout = aiohttp.ClientTimeout(total=OPENROUTER_ENDPOINT_DISCOVERY_TIMEOUT_SEC)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
+            url,
+            headers={
+                "HTTP-Referer": "https://freeinference.org",
+                "X-Title": "FreeInference",
+            },
+        ) as response:
+            if response.status >= 400:
+                body = await response.text()
+                detail = _truncate(body or response.reason or "", 300)
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "OpenRouter provider discovery failed with HTTP "
+                        f"{response.status}: {detail}"
+                    ),
+                )
+            payload = await response.json(content_type=None)
+    except HTTPException:
+        raise
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"OpenRouter provider discovery failed: {_truncate(str(exc) or type(exc).__name__)}",
+        ) from exc
+
+    providers = _parse_openrouter_provider_options(payload)
+    OPENROUTER_ENDPOINT_DISCOVERY_CACHE[model_id] = (now, providers)
+    return providers
 
 
 def _upstream_provider(adapter) -> str:
@@ -1234,6 +1335,23 @@ async def list_all_provider_routes(
         provider_options=_provider_options(),
         openrouter_provider_options=_openrouter_provider_options(),
         routes=all_rows,
+    )
+
+
+@router.get(
+    "/routing/openrouter-providers",
+    response_model=ListOpenRouterProviderOptionsResponse,
+)
+async def list_openrouter_provider_options(
+    provider_model_id: str = Query(..., min_length=1, max_length=512),
+    _admin_id: str = Depends(verify_admin_access),
+) -> ListOpenRouterProviderOptionsResponse:
+    """List OpenRouter backend providers available for one OpenRouter model slug."""
+    model_id = provider_model_id.strip()
+    providers = await _fetch_openrouter_provider_options(model_id)
+    return ListOpenRouterProviderOptionsResponse(
+        provider_model_id=model_id,
+        providers=providers,
     )
 
 

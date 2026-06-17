@@ -9,6 +9,7 @@ vi.mock('@/lib/api/admin', () => ({
   createProviderRouteCandidate: vi.fn(),
   deleteProviderRoute: vi.fn(),
   deleteProviderRouteCandidate: vi.fn(),
+  listOpenRouterProviderOptions: vi.fn(),
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
   updateProviderRoute: vi.fn(),
@@ -26,6 +27,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  listOpenRouterProviderOptions,
   listProviderKeys,
   listProviderRoutes,
   updateProviderRoute,
@@ -51,6 +53,14 @@ const providerOptions = [
 
 const openRouterProviderOptions = [
   { provider: 'deepinfra', label: 'DeepInfra' },
+  { provider: 'parasail', label: 'Parasail' },
+];
+
+const discoveredOpenRouterProviderOptions = [
+  { provider: 'inceptron', label: 'Inceptron' },
+  { provider: 'akashml', label: 'AkashML' },
+  { provider: 'deepinfra', label: 'DeepInfra' },
+  { provider: 'chutes', label: 'Chutes' },
   { provider: 'parasail', label: 'Parasail' },
 ];
 
@@ -88,6 +98,10 @@ describe('ProviderRoutesTab', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listOpenRouterProviderOptions).mockResolvedValue({
+      provider_model_id: 'minimax/minimax-m2.5',
+      providers: discoveredOpenRouterProviderOptions,
+    });
   });
 
   it('renders routewise provider candidates without weight columns', async () => {
@@ -303,10 +317,22 @@ describe('ProviderRoutesTab', () => {
   });
 
   it('adds a runtime provider route', async () => {
+    const deepinfraRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'deepinfra',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
+    };
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
-      routes: [route],
+      routes: [route, deepinfraRoute],
     });
     vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) => ({
       provider: provider ?? null,
@@ -327,11 +353,11 @@ describe('ProviderRoutesTab', () => {
     }));
     vi.mocked(createProviderRouteCandidate).mockResolvedValue({
       ...route,
-      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_id: 'minimax-fast:openrouter[inceptron]-api',
       route_type: 'on_demand',
       provider: 'openrouter',
       upstream_provider: 'openrouter',
-      openrouter_provider: 'parasail',
+      openrouter_provider: 'inceptron',
       key_provider: 'openrouter',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
@@ -343,19 +369,24 @@ describe('ProviderRoutesTab', () => {
         source: 'db',
       },
       provider_model_id: 'minimax/minimax-m2.5',
-      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      endpoint_id: 'minimax-fast:openrouter[inceptron]-api',
       source: 'runtime',
     });
 
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
-    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openrouter' } });
-    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
-      target: { value: 'parasail' },
+
+    await waitFor(() => {
+      expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('minimax/minimax-m2.5');
     });
-    fireEvent.change(screen.getByLabelText('Provider model ID'), {
-      target: { value: 'minimax/minimax-m2.5' },
+    const openRouterSelect = screen.getByLabelText('OpenRouter provider');
+    await waitFor(() => {
+      expect(within(openRouterSelect).getByRole('option', { name: 'Inceptron' }))
+        .toBeInTheDocument();
+    });
+    fireEvent.change(screen.getByLabelText('OpenRouter provider'), {
+      target: { value: 'inceptron' },
     });
 
     await waitFor(() => {
@@ -369,7 +400,7 @@ describe('ProviderRoutesTab', () => {
       expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
-        openrouter_provider: 'parasail',
+        openrouter_provider: 'inceptron',
         base_url: 'https://openrouter.ai/api/v1',
         api_key_id: 'key-1',
         provider_model_id: 'minimax/minimax-m2.5',
@@ -421,6 +452,10 @@ describe('ProviderRoutesTab', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
+    await waitFor(() => {
+      expect(listOpenRouterProviderOptions).toHaveBeenCalledWith('minimax/minimax-m2.5');
+    });
+
     const providerSelect = screen.getByLabelText('Provider');
     expect(providerSelect).toHaveValue('openrouter');
     expect(within(providerSelect).queryByRole('option', { name: 'Chutes' })).not.toBeInTheDocument();
@@ -433,9 +468,13 @@ describe('ProviderRoutesTab', () => {
     expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
 
     const openRouterSelect = screen.getByLabelText('OpenRouter provider');
-    expect(within(openRouterSelect).queryByRole('option', { name: 'DeepInfra' }))
-      .not.toBeInTheDocument();
-    expect(within(openRouterSelect).getByRole('option', { name: 'Parasail' }))
+    await waitFor(() => {
+      expect(within(openRouterSelect).queryByRole('option', { name: 'DeepInfra' }))
+        .not.toBeInTheDocument();
+    });
+    expect(within(openRouterSelect).getByRole('option', { name: 'Inceptron' }))
+      .toBeInTheDocument();
+    expect(within(openRouterSelect).getByRole('option', { name: 'Chutes' }))
       .toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });

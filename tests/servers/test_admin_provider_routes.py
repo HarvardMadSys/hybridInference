@@ -232,6 +232,63 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert all(row["strategy"] == "routewise" for row in routes)
 
 
+def test_parse_openrouter_provider_options_from_endpoints():
+    options = provider_routes._parse_openrouter_provider_options(
+        {
+            "data": {
+                "endpoints": [
+                    {"provider_name": "Inceptron", "tag": "inceptron/fp8"},
+                    {"provider_name": "AkashML", "tag": "akashml/fp8"},
+                    {"provider_name": "DeepInfra", "tag": "deepinfra/fp8"},
+                    {"provider_name": "DeepInfra duplicate", "tag": "deepinfra/bf16"},
+                    {"provider_name": "Chutes", "tag": "chutes/fp8"},
+                ]
+            }
+        }
+    )
+
+    assert [(option.provider, option.label) for option in options] == [
+        ("inceptron", "Inceptron"),
+        ("akashml", "AkashML"),
+        ("deepinfra", "DeepInfra"),
+        ("chutes", "Chutes"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_openrouter_provider_options_discovers_model_endpoints(
+    admin_client,
+    monkeypatch,
+):
+    client, _op_store, _router, _fake_routewise, _verify_mock = admin_client
+
+    async def fake_fetch(model_id: str):
+        assert model_id == "minimax/minimax-m2.5"
+        return [
+            provider_routes.OpenRouterProviderOption(
+                provider="inceptron",
+                label="Inceptron",
+            ),
+            provider_routes.OpenRouterProviderOption(
+                provider="chutes",
+                label="Chutes",
+            ),
+        ]
+
+    monkeypatch.setattr(provider_routes, "_fetch_openrouter_provider_options", fake_fetch)
+
+    response = await client.get(
+        "/admin/routing/openrouter-providers",
+        params={"provider_model_id": " minimax/minimax-m2.5 "},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider_model_id"] == "minimax/minimax-m2.5"
+    assert [option["provider"] for option in payload["providers"]] == ["inceptron", "chutes"]
+
+
 @pytest.mark.asyncio
 async def test_patch_provider_route_strategy_updates_model_router(admin_client):
     client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client

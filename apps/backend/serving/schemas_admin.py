@@ -816,6 +816,13 @@ class OpenRouterProviderOption(BaseModel):
     label: str
 
 
+class ListOpenRouterProviderOptionsResponse(BaseModel):
+    """Response payload for OpenRouter backend providers available for one model."""
+
+    provider_model_id: str
+    providers: list[OpenRouterProviderOption]
+
+
 class ProviderRouteItem(BaseModel):
     """Runtime provider target for one model route candidate."""
 
@@ -928,6 +935,7 @@ __all__ = [
     "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
+    "ListOpenRouterProviderOptionsResponse",
     "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
     "ListRoutewiseSettingsResponse",

@@ -5,6 +5,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  listOpenRouterProviderOptions,
   listProviderRoutes,
   listRouteWeights,
   listRoutewiseSettings,
@@ -328,6 +329,32 @@ describe('provider route client', () => {
     expect(out.openrouter_provider_options?.[0].provider).toBe('parasail');
     const [url] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast');
+  });
+
+  it('listOpenRouterProviderOptions hits model endpoint discovery', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          provider_model_id: 'minimax/minimax-m2.5',
+          providers: [
+            { provider: 'inceptron', label: 'Inceptron' },
+            { provider: 'chutes', label: 'Chutes' },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listOpenRouterProviderOptions('minimax/minimax-m2.5');
+
+    expect(out.providers.map((provider) => provider.provider)).toEqual([
+      'inceptron',
+      'chutes',
+    ]);
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/openrouter-providers?provider_model_id=minimax%2Fminimax-m2.5',
+    );
   });
 
   it('updateProviderRoute PUTs provider target body', async () => {

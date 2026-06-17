@@ -1144,6 +1144,11 @@ export interface ListProviderRoutesResponse {
   routes: ProviderRoute[];
 }
 
+export interface ListOpenRouterProviderOptionsResponse {
+  provider_model_id: string;
+  providers: OpenRouterProviderOption[];
+}
+
 export interface UpdateProviderRoutePayload {
   upstream_provider: string;
   openrouter_provider?: string | null;
@@ -1174,6 +1179,14 @@ export async function listProviderRoutes(modelId?: string): Promise<ListProvider
     : '/admin/routing/provider-routes';
   const resp = await fetchWithAuth(API_BASE, path);
   return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+export async function listOpenRouterProviderOptions(
+  providerModelId: string,
+): Promise<ListOpenRouterProviderOptionsResponse> {
+  const params = new URLSearchParams({ provider_model_id: providerModelId });
+  const resp = await fetchWithAuth(API_BASE, `/admin/routing/openrouter-providers?${params}`);
+  return jsonOrThrow<ListOpenRouterProviderOptionsResponse>(resp);
 }
 
 export async function updateProviderRouteStrategy(
