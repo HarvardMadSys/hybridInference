@@ -33,13 +33,6 @@ class TestRouteWiseConfigDefaults:
         with pytest.raises(ValueError, match="Unsupported latency_hedge_mode"):
             RouteWiseConfig(latency_hedge_mode="economic")
 
-    def test_canary_defaults(self):
-        """Canary fields have safe defaults when section absent."""
-        cfg = RouteWiseConfig()
-        assert cfg.canary_enabled is False
-        assert cfg.canary_enabled_models is None
-        assert cfg.canary_traffic_fraction == 1.0
-
     def test_resource_fields_are_gone(self):
         """Resource limits are route-level config, not RouteWiseConfig fields."""
         cfg = RouteWiseConfig()

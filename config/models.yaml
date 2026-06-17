@@ -356,9 +356,6 @@ models:
       # latency_min_samples: 10
       # latency_unprofiled_ttft_ms: 5000.0
       # prefix_cache_cost_adjustment_enabled: false
-      # canary_enabled: false
-      # canary_enabled_models: null        # null = all routewise models
-      # canary_traffic_fraction: 1.0
     # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:
       prompt: "0.3"
