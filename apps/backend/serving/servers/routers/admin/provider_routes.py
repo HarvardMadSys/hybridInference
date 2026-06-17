@@ -309,6 +309,21 @@ def _split_model_route_path(services, model_route_path: str) -> tuple[str, str, 
 
 
 def _target_for_provider(provider: str) -> ProviderTarget:
+    base_kind, pinned = parse_openrouter_kind(provider)
+    if base_kind == "openrouter" and pinned:
+        if not OPENROUTER_PROVIDER_RE.fullmatch(pinned):
+            raise HTTPException(
+                status_code=422,
+                detail="openrouter_provider has invalid characters",
+            )
+        return ProviderTarget(
+            provider=provider,
+            label=OPENROUTER_PROVIDER_LABELS.get(pinned, pinned),
+            kind=f"openrouter[{pinned}]",
+            key_provider="openrouter",
+            default_base_url=OPENROUTER_API_BASE_URL,
+        )
+
     if provider in PROVIDER_TARGETS:
         return PROVIDER_TARGETS[provider]
     known = dynamic_keys.get_known_providers()
@@ -353,7 +368,7 @@ def _target_provider_from_request(
     openrouter_provider: str | None,
 ) -> str:
     provider = upstream_provider.strip()
-    pin = openrouter_provider.strip() if openrouter_provider else None
+    pin = openrouter_provider.strip().lower() if openrouter_provider else None
     if not provider:
         raise HTTPException(status_code=422, detail="upstream_provider must not be blank")
     if pin is None:
@@ -367,7 +382,7 @@ def _target_provider_from_request(
         return "openrouter"
     if not OPENROUTER_PROVIDER_RE.fullmatch(pin):
         raise HTTPException(status_code=422, detail="openrouter_provider has invalid characters")
-    return pin
+    return f"openrouter[{pin}]"
 
 
 def _openrouter_sort_from_request(
@@ -815,13 +830,15 @@ def _validate_positive_weight(weight: float) -> float:
 
 
 def _validate_create_route_type_for_provider(route_type: str, upstream_provider: str) -> None:
-    allowed = PROVIDER_CREATE_ROUTE_TYPES.get(upstream_provider)
+    target = _target_for_provider(upstream_provider)
+    provider = _primary_provider_for_target(target)
+    allowed = PROVIDER_CREATE_ROUTE_TYPES.get(provider)
     if allowed is None or route_type in allowed:
         return
     allowed_text = ", ".join(sorted(allowed))
     raise HTTPException(
         status_code=422,
-        detail=f"{upstream_provider} can only be added as {allowed_text}",
+        detail=f"{provider} can only be added as {allowed_text}",
     )
 
 

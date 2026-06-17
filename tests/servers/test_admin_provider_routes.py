@@ -406,7 +406,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     op_store.upsert_provider_route_config.assert_awaited_once_with(
         "minimax-fast",
         "minimax-fast:chutes-api",
-        "parasail",
+        "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
@@ -422,7 +422,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert updated_adapter.config.provider_type == "quota"
     assert updated_adapter.config.route_metadata["provider_type"] == "quota"
     assert updated_adapter.config.route_metadata["route_provider"] == "chutes"
-    assert updated_adapter.config.route_metadata["upstream_provider"] == "parasail"
+    assert updated_adapter.config.route_metadata["upstream_provider"] == "openrouter[parasail]"
     assert updated_adapter.config.quota_pool == "chutes-minimax-fast-daily"
     assert updated_adapter.config.quota_source == {
         "provider": "chutes",
@@ -432,6 +432,68 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert updated_adapter.config.quota == {"limit": 8000}
     assert updated_adapter.config.api_key == "openrouter-db-key-1234567890"
     assert updated_adapter.config.api_keys is None
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_put_provider_route_allows_openrouter_pin_matching_route_provider(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = (
+        "openrouter",
+        "openrouter-db-key-1234567890",
+    )
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:chutes-api",
+            "provider": "openrouter[chutes]",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 5000,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "Chutes",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 5000,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "chutes"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] == "chutes"
+    assert payload["quota_limit"] == 5000
+    op_store.upsert_provider_route_config.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:chutes-api",
+        "openrouter[chutes]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        5000,
+        "127.0.0.1",
+    )
+
+    updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated_adapter.config.provider == "openrouter"
+    assert updated_adapter.config.openrouter_pinned_provider == "chutes"
+    assert updated_adapter.config.route_metadata["route_provider"] == "chutes"
+    assert updated_adapter.config.route_metadata["upstream_provider"] == "openrouter[chutes]"
+    assert updated_adapter.config.quota == {"limit": 5000}
+    verify_mock.assert_awaited_once()
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
@@ -684,7 +746,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
         "minimax-fast",
         "minimax-fast:openrouter[parasail]-api",
         "on_demand",
-        "parasail",
+        "openrouter[parasail]",
         None,
         "https://openrouter.ai/api/v1",
         "db-openrouter",
@@ -700,7 +762,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
-    assert runtime_adapter.config.route_metadata["route_provider"] == "parasail"
+    assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
