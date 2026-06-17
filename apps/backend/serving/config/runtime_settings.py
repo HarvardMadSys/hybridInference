@@ -38,6 +38,15 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "default": True,
         "description": "Require email verification for new signups",
     },
+    "signup_admin_notify_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": (
+            "Email the configured recipients (SIGNUP_NOTIFY_EMAILS, else "
+            "ADMIN_EMAILS) when a new user registers and needs approval. "
+            "Disable to stop sending new-user approval notification emails."
+        ),
+    },
     "log_full_payload": {
         "type": "bool",
         "default": False,

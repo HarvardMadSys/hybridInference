@@ -117,7 +117,7 @@ class TestSignupAllowlist:
 
         sent_to: list[str] = []
 
-        def _capture(to_email, user_email, user_name, user_id):
+        def _capture(to_email, user_email, user_name, user_id, use_case=None):
             sent_to.append(to_email)
             return True
 
@@ -139,6 +139,52 @@ class TestSignupAllowlist:
         # play (httpx test client awaits them after response). So sent_to
         # should contain the admin email.
         assert sent_to == ["admin@trusted-corp.io"]
+
+    @pytest.mark.asyncio
+    async def test_admin_notify_disabled_suppresses_email(
+        self,
+        auth_app_client: AsyncClient,
+        auth_app_services,
+        clean_auth_tables,
+        monkeypatch,
+    ):
+        """signup_admin_notify_enabled=false stops the new-registration email."""
+        op_store = auth_app_services.operational_store
+        await _add_domain(op_store, "trusted-corp.io", is_wildcard=False)
+        invalidate_allowlist_cache()
+
+        from serving.servers.routers import auth_routes as auth_routes_mod
+
+        monkeypatch.setattr(auth_routes_mod.settings, "admin_emails", "admin@trusted-corp.io")
+
+        # Disable the admin-notify toggle via the Settings fallback. The runtime
+        # settings singleton is reset to None between tests (tests/conftest.py)
+        # and auth_app_services never initializes it, so signup() falls back to
+        # settings.signup_admin_notify_enabled. monkeypatch keeps the override
+        # scoped to this test (auto-restored on teardown) and — unlike writing a
+        # site_settings row — cannot leak into later signup-flow tests.
+        monkeypatch.setattr(auth_routes_mod.settings, "signup_admin_notify_enabled", False)
+
+        sent_to: list[str] = []
+
+        def _capture(to_email, user_email, user_name, user_id, use_case=None):
+            sent_to.append(to_email)
+            return True
+
+        with (
+            patch(
+                "serving.servers.routers.auth_routes.send_new_registration_admin_email",
+                side_effect=_capture,
+            ),
+            patch("serving.servers.routers.auth_routes.is_email_enabled", return_value=True),
+        ):
+            signup_data = create_signup_request(email="dan@outside-vendor.net")
+            response = await auth_app_client.post("/auth/signup", json=signup_data)
+            assert response.status_code == 201
+
+        # Still pending approval, but no admin notification email was sent.
+        assert await _user_status(op_store, "dan@outside-vendor.net") == "pending_approval"
+        assert sent_to == []
 
     @pytest.mark.asyncio
     async def test_pending_user_persists_signup_reason(
