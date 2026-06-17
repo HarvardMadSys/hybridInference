@@ -1145,11 +1145,29 @@ export interface UpdateProviderRoutePayload {
   quota_limit?: number | null;
 }
 
+export type ProviderRouteStrategy = 'fixed' | 'routewise';
+
 export async function listProviderRoutes(modelId?: string): Promise<ListProviderRoutesResponse> {
   const path = modelId
     ? `/admin/routing/provider-routes/${encodeURIComponent(modelId)}`
     : '/admin/routing/provider-routes';
   const resp = await fetchWithAuth(API_BASE, path);
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+export async function updateProviderRouteStrategy(
+  modelId: string,
+  strategy: ProviderRouteStrategy,
+): Promise<ListProviderRoutesResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-strategies/${encodeURIComponent(modelId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy }),
+    },
+  );
   return jsonOrThrow<ListProviderRoutesResponse>(resp);
 }
 

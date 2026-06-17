@@ -11,6 +11,7 @@ import {
   previewRoleQuotaApply,
   setRouteWeight,
   updateProviderRoute,
+  updateProviderRouteStrategy,
   updateRoutewiseSetting,
   updateModelVisibility,
 } from '../admin';
@@ -423,6 +424,55 @@ describe('provider route client', () => {
       '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
     );
     expect(init.method).toBe('DELETE');
+  });
+
+  it('updateProviderRouteStrategy PATCHes model route strategy', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'fixed',
+          provider_options: [],
+          routes: [
+            {
+              model_id: 'minimax-fast',
+              strategy: 'fixed',
+              route_id: 'minimax-fast:featherless-api',
+              route_type: 'concurrency',
+              provider: 'featherless',
+              upstream_provider: 'featherless',
+              key_provider: 'featherless',
+              base_url: 'https://api.featherless.ai/v1',
+              api_key_id: null,
+              api_key: {
+                id: null,
+                provider: 'featherless',
+                label: 'Provider default',
+                key_prefix: null,
+                source: 'default',
+              },
+              provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+              quota_limit: null,
+              endpoint_id: 'minimax-fast:featherless-api',
+              yaml_weight: 1,
+              effective_weight: 1,
+              source: 'yaml',
+              updated_at: null,
+              updated_by: null,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await updateProviderRouteStrategy('minimax-fast', 'fixed');
+
+    expect(out.strategy).toBe('fixed');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-route-strategies/minimax-fast');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ strategy: 'fixed' });
   });
 });
 

@@ -10,6 +10,7 @@ vi.mock('@/lib/api/admin', () => ({
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
   updateProviderRoute: vi.fn(),
+  updateProviderRouteStrategy: vi.fn(),
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -24,6 +25,7 @@ import {
   listProviderKeys,
   listProviderRoutes,
   updateProviderRoute,
+  updateProviderRouteStrategy,
 } from '@/lib/api/admin';
 
 const providerOptions = [
@@ -300,5 +302,31 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('zai');
     });
+  });
+
+  it('updates the selected model routing policy', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
+    vi.mocked(updateProviderRouteStrategy).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'fixed',
+      provider_options: providerOptions,
+      routes: [{ ...route, strategy: 'fixed' }],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    const select = await screen.findByLabelText('Routing policy');
+    expect(select).toHaveValue('routewise');
+
+    fireEvent.change(select, { target: { value: 'fixed' } });
+
+    await waitFor(() => {
+      expect(updateProviderRouteStrategy).toHaveBeenCalledWith('minimax-fast', 'fixed');
+    });
+    expect(screen.getByLabelText('Routing policy')).toHaveValue('fixed');
   });
 });

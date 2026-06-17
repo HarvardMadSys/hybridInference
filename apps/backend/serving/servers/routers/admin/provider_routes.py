@@ -22,6 +22,7 @@ from serving.schemas_admin import (
     ProviderRouteItem,
     ProviderRouteOption,
     UpdateProviderRouteRequest,
+    UpdateProviderRouteStrategyRequest,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, get_services, verify_admin_access
@@ -32,6 +33,8 @@ router = APIRouter(prefix="/admin")
 logger = get_logger(__name__)
 VERIFY_TIMEOUT_SEC = 20.0
 BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
+MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
+MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,42 @@ def _strategy_for_model(services, model_id: str) -> str:
     if registry is None:
         return "fixed"
     return registry.get_router_name(model_id)
+
+
+def _model_strategy_setting_key(model_id: str) -> str:
+    return f"{MODEL_ROUTER_STRATEGY_SETTING_PREFIX}{model_id}"
+
+
+def _model_id_from_strategy_setting_key(key: str) -> str | None:
+    if not key.startswith(MODEL_ROUTER_STRATEGY_SETTING_PREFIX):
+        return None
+    model_id = key[len(MODEL_ROUTER_STRATEGY_SETTING_PREFIX) :]
+    return model_id or None
+
+
+def _validate_model_router_strategy(services, model_id: str, strategy: str) -> tuple[str, Any]:
+    if strategy not in MODEL_ROUTER_STRATEGIES:
+        raise HTTPException(status_code=422, detail="strategy must be fixed or routewise")
+    registry = getattr(services, "model_router_registry", None)
+    if registry is None:
+        raise HTTPException(status_code=500, detail="Model router registry not configured")
+    route = _validate_canonical_route(services, model_id)
+    canonical_model_id = route.adapters[0][0].config.id
+    validate = getattr(registry, "validate_router_strategy", None)
+    if validate is not None:
+        validate(canonical_model_id, strategy)
+    return canonical_model_id, route
+
+
+def _apply_model_router_strategy(services, model_id: str, strategy: str) -> None:
+    canonical_model_id, _route = _validate_model_router_strategy(services, model_id, strategy)
+    registry = getattr(services, "model_router_registry", None)
+    if registry is None:
+        raise HTTPException(status_code=500, detail="Model router registry not configured")
+    setter = getattr(registry, "set_router_override", None)
+    if setter is None:
+        raise HTTPException(status_code=500, detail="Model router registry cannot be updated")
+    setter(canonical_model_id, strategy)
 
 
 def _is_canonical_model(model_id: str, route) -> bool:
@@ -871,6 +910,59 @@ async def list_all_provider_routes(
     return ListAllProviderRoutesResponse(provider_options=_provider_options(), routes=all_rows)
 
 
+@router.patch(
+    "/routing/provider-route-strategies/{model_id:path}",
+    response_model=ListProviderRoutesResponse,
+)
+async def update_provider_route_strategy(
+    model_id: str,
+    payload: UpdateProviderRouteStrategyRequest,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ListProviderRoutesResponse:
+    """Persist and hot-apply the router strategy for one canonical model."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    canonical_model_id, route = _validate_model_router_strategy(
+        services,
+        model_id,
+        payload.strategy,
+    )
+    await op_store.set_setting(
+        _model_strategy_setting_key(canonical_model_id),
+        payload.strategy,
+        "string",
+        admin_id,
+    )
+    _apply_model_router_strategy(services, canonical_model_id, payload.strategy)
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "routing.provider_routes.strategy.update",
+        None,
+        {
+            "model_id": canonical_model_id,
+            "strategy": payload.strategy,
+        },
+    )
+
+    override_rows = await op_store.list_provider_route_configs_for_model(canonical_model_id)
+    return ListProviderRoutesResponse(
+        model_id=canonical_model_id,
+        strategy=_strategy_for_model(services, canonical_model_id),
+        provider_options=_provider_options(),
+        routes=await _build_routes_for_model(
+            services,
+            op_store,
+            model_id=canonical_model_id,
+            route=route,
+            overrides=_rows_by_route_id(override_rows),
+        ),
+    )
+
+
 @router.put("/routing/provider-routes/{model_route_path:path}", response_model=ProviderRouteItem)
 async def update_provider_route(
     model_route_path: str,
@@ -1042,3 +1134,23 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                         route_id,
                         cleanup_exc,
                     )
+
+
+async def apply_persisted_model_router_strategy_overrides(services, op_store) -> None:
+    """Apply persisted per-model router strategy overrides at boot."""
+    rows = await op_store.list_settings()
+    for row in rows:
+        key = str(row["key"])
+        model_id = _model_id_from_strategy_setting_key(key)
+        if model_id is None:
+            continue
+        strategy = str(row["value"])
+        try:
+            _apply_model_router_strategy(services, model_id, strategy)
+        except Exception as exc:
+            logger.warning(
+                "Failed to apply model router strategy override for model=%s strategy=%s: %s",
+                model_id,
+                strategy,
+                exc,
+            )

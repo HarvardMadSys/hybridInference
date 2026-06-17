@@ -517,6 +517,7 @@ async def initialize() -> AppServices:
             logger.warning(f"Failed to apply DB-backed provider keys at boot: {exc}")
         try:
             from serving.servers.routers.admin.provider_routes import (
+                apply_persisted_model_router_strategy_overrides,
                 apply_persisted_provider_route_configs,
             )
 
@@ -524,6 +525,10 @@ async def initialize() -> AppServices:
                 router=router,
                 operational_store=operational_store,
                 model_router_registry=model_router_registry,
+            )
+            await apply_persisted_model_router_strategy_overrides(
+                provider_route_services,
+                operational_store,
             )
             await apply_persisted_provider_route_configs(
                 provider_route_services,

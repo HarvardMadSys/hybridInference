@@ -81,6 +81,8 @@ async def admin_client(monkeypatch):
     op_store = MagicMock()
     op_store.list_provider_route_configs_for_model = AsyncMock(return_value=[])
     op_store.list_all_provider_route_configs = AsyncMock(return_value=[])
+    op_store.list_settings = AsyncMock(return_value=[])
+    op_store.set_setting = AsyncMock()
     op_store.upsert_provider_route_config = AsyncMock()
     op_store.delete_provider_route_config = AsyncMock(return_value=True)
     op_store.get_provider_key_full = AsyncMock(return_value=None)
@@ -131,7 +133,18 @@ async def admin_client(monkeypatch):
     fake_routewise = MagicMock()
     fake_routewise._rebuild_from_fixed_router = MagicMock()
     registry = MagicMock()
-    registry.get_router_name.return_value = "routewise"
+    strategy_state = {"minimax-fast": "routewise"}
+    registry.get_router_name.side_effect = lambda model_id: strategy_state.get(
+        model_id,
+        "routewise",
+    )
+    registry.validate_router_strategy = MagicMock()
+    registry.set_router_override = MagicMock(
+        side_effect=lambda model_id, strategy: strategy_state.__setitem__(
+            model_id,
+            strategy,
+        )
+    )
     registry.cached_routers.return_value = [fake_routewise]
 
     app = FastAPI()
@@ -205,6 +218,68 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert routes[2]["provider"] == "deepinfra"
     assert routes[2]["upstream_provider"] == "deepinfra"
     assert all(row["strategy"] == "routewise" for row in routes)
+
+
+@pytest.mark.asyncio
+async def test_patch_provider_route_strategy_updates_model_router(admin_client):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+
+    response = await client.patch(
+        "/admin/routing/provider-route-strategies/minimax-fast",
+        json={"strategy": "fixed"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_id"] == "minimax-fast"
+    assert payload["strategy"] == "fixed"
+    assert {row["strategy"] for row in payload["routes"]} == {"fixed"}
+    op_store.set_setting.assert_awaited_once_with(
+        "model_router_strategy:minimax-fast",
+        "fixed",
+        "string",
+        "127.0.0.1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_persisted_model_router_strategy_overrides(admin_client):
+    from serving.servers.routers.admin.provider_routes import (
+        apply_persisted_model_router_strategy_overrides,
+    )
+
+    _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.list_settings.return_value = [
+        {
+            "key": "model_router_strategy:minimax-fast",
+            "value": "fixed",
+            "value_type": "string",
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        },
+        {
+            "key": "routewise_latency_min_samples",
+            "value": "12",
+            "value_type": "int",
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        },
+    ]
+    registry = MagicMock()
+    registry.validate_router_strategy = MagicMock()
+    registry.set_router_override = MagicMock()
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=registry,
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_model_router_strategy_overrides(services, op_store)
+
+    registry.set_router_override.assert_called_once_with("minimax-fast", "fixed")
 
 
 @pytest.mark.asyncio

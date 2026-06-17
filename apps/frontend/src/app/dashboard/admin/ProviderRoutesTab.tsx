@@ -5,11 +5,13 @@ import toast from 'react-hot-toast';
 import {
   ProviderApiKeyItem,
   ProviderRoute,
+  ProviderRouteStrategy,
   ProviderRouteOption,
   deleteProviderRoute,
   listProviderKeys,
   listProviderRoutes,
   updateProviderRoute,
+  updateProviderRouteStrategy,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -68,6 +70,7 @@ export function ProviderRoutesTab() {
   const [keysLoading, setKeysLoading] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [savingStrategy, setSavingStrategy] = useState(false);
 
   const loadRoutes = useCallback(async () => {
     setLoading(true);
@@ -180,6 +183,13 @@ export function ProviderRoutesTab() {
     setEditingRoute(updated);
   }, [updateRoute]);
 
+  const replaceModelRoutes = useCallback((modelId: string, updated: ProviderRoute[]) => {
+    setRoutes((current) => [
+      ...current.filter((route) => route.model_id !== modelId),
+      ...updated,
+    ]);
+  }, []);
+
   const onUpstreamProviderChange = (upstreamProvider: string) => {
     const selected = optionFor(providerOptions, upstreamProvider);
     setForm((current) => ({
@@ -241,6 +251,21 @@ export function ProviderRoutesTab() {
     }
   };
 
+  const onStrategyChange = async (nextStrategy: ProviderRouteStrategy) => {
+    if (!selectedModel || nextStrategy === strategy) return;
+    setSavingStrategy(true);
+    try {
+      const updated = await updateProviderRouteStrategy(selectedModel, nextStrategy);
+      replaceModelRoutes(updated.model_id ?? selectedModel, updated.routes);
+      setEditingRoute(null);
+      toast.success('Routing policy updated');
+    } catch (err) {
+      toast.error(`Policy update failed: ${getErrorMessage(err)}`);
+    } finally {
+      setSavingStrategy(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -269,9 +294,24 @@ export function ProviderRoutesTab() {
           {loading && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}
-          <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[12px] font-medium text-gray-700">
-            {strategy}
-          </span>
+          <label className="sr-only" htmlFor="provider-route-strategy">
+            Routing policy
+          </label>
+          <select
+            id="provider-route-strategy"
+            value={strategy}
+            onChange={(event) =>
+              void onStrategyChange(event.target.value as ProviderRouteStrategy)
+            }
+            disabled={!selectedModel || loading || savingStrategy}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-700 focus:border-gray-400 focus:outline-none disabled:opacity-50"
+          >
+            <option value="routewise">routewise</option>
+            <option value="fixed">fixed</option>
+          </select>
+          {savingStrategy && (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          )}
           <button
             type="button"
             onClick={() => loadRoutes()}

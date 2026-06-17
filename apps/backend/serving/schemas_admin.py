@@ -848,6 +848,12 @@ class ListAllProviderRoutesResponse(BaseModel):
     routes: list[ProviderRouteItem]
 
 
+class UpdateProviderRouteStrategyRequest(BaseModel):
+    """Request payload for updating one model's router strategy."""
+
+    strategy: Literal["fixed", "routewise"]
+
+
 class UpdateProviderRouteRequest(BaseModel):
     """Request payload for updating one provider route target."""
 
@@ -903,11 +909,11 @@ __all__ = [
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
     "ModelVisibilityItem",
+    "ProviderQuotaResult",
+    "ProviderQuotaUsage",
     "ProviderRouteApiKeyRef",
     "ProviderRouteItem",
     "ProviderRouteOption",
-    "ProviderQuotaResult",
-    "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
     "RejectUserRequest",
     "RejectUserResponse",
@@ -925,6 +931,7 @@ __all__ = [
     "UpdateAPIKeyResponse",
     "UpdateModelVisibilityRequest",
     "UpdateProviderRouteRequest",
+    "UpdateProviderRouteStrategyRequest",
     "UpdateRouteWeightRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",
