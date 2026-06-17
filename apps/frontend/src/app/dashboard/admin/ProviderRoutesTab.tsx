@@ -332,8 +332,8 @@ export function ProviderRoutesTab() {
           <p className="text-[13px] text-gray-400">No provider routes available.</p>
         </div>
       ) : (
-        <div className="rounded-lg border border-gray-200 bg-white text-[13px]">
-          <div className="hidden grid-cols-[minmax(200px,1.1fr)_minmax(300px,1.7fr)_minmax(150px,.8fr)_minmax(105px,.55fr)_minmax(110px,.55fr)_auto] gap-4 rounded-t-lg bg-gray-50 px-4 py-2 text-[12px] font-semibold uppercase tracking-wide text-gray-500 lg:grid">
+        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white text-[13px]">
+          <div className="hidden grid-cols-[minmax(145px,1.05fr)_minmax(210px,1.65fr)_minmax(125px,.9fr)_minmax(64px,.45fr)_minmax(104px,.6fr)_minmax(56px,max-content)] gap-3 rounded-t-lg bg-gray-50 px-4 py-2 text-[12px] font-semibold uppercase tracking-wide text-gray-500 lg:grid">
             <div>Candidate</div>
             <div>Target</div>
             <div>API key</div>
@@ -348,7 +348,7 @@ export function ProviderRoutesTab() {
               return (
                 <div
                   key={key}
-                  className={`grid gap-4 px-4 py-4 lg:grid-cols-[minmax(200px,1.1fr)_minmax(300px,1.7fr)_minmax(150px,.8fr)_minmax(105px,.55fr)_minmax(110px,.55fr)_auto] ${
+                  className={`grid gap-3 px-4 py-4 lg:grid-cols-[minmax(145px,1.05fr)_minmax(210px,1.65fr)_minmax(125px,.9fr)_minmax(64px,.45fr)_minmax(104px,.6fr)_minmax(56px,max-content)] ${
                     isEditing ? 'bg-gray-50' : 'bg-white'
                   }`}
                 >
@@ -407,7 +407,7 @@ export function ProviderRoutesTab() {
                       {sourceLabel(route)}
                     </span>
                   </div>
-                  <div className="flex flex-wrap items-start justify-end gap-1">
+                  <div className="flex flex-wrap items-start justify-end gap-1 justify-self-end">
                     {route.source === 'override' && (
                       <button
                         type="button"
