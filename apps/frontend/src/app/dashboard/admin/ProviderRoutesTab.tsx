@@ -72,10 +72,10 @@ const OPENROUTER_CUSTOM_OPTION: OpenRouterProviderOption = {
 };
 const OPENROUTER_PROVIDER_SLUG_RE = /^[A-Za-z0-9_.-]+$/;
 const OPENROUTER_SORT_OPTIONS: Array<{ value: '' | OpenRouterSortPolicy; label: string }> = [
-  { value: '', label: 'Default' },
-  { value: 'price', label: 'Price' },
-  { value: 'throughput', label: 'Throughput' },
-  { value: 'latency', label: 'Latency' },
+  { value: '', label: 'Auto' },
+  { value: 'price', label: 'Sort by price' },
+  { value: 'throughput', label: 'Sort by throughput' },
+  { value: 'latency', label: 'Sort by latency' },
 ];
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
@@ -989,7 +989,8 @@ export function ProviderRoutesTab() {
                     )}
                     {targetUpstreamProvider === 'openrouter' && !targetOpenRouterProvider && (
                       <div className="mt-1 text-[11px] leading-5 text-gray-500">
-                        OpenRouter policy: {route.openrouter_sort ?? 'Default'}
+                        OpenRouter policy:{' '}
+                        {route.openrouter_sort ? `Sort by ${route.openrouter_sort}` : 'Auto'}
                       </div>
                     )}
                     <div className="mt-1 break-all text-[11px] leading-5 text-gray-400">
