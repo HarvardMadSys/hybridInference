@@ -16,7 +16,10 @@ from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
 from serving.servers.routers.admin import provider_routes
-from serving.servers.routers.admin.provider_routes import apply_persisted_provider_route_configs
+from serving.servers.routers.admin.provider_routes import (
+    apply_persisted_provider_route_candidates,
+    apply_persisted_provider_route_configs,
+)
 from serving.storage.base import ProviderKeyRow
 
 AUTH = {"Authorization": "Bearer test-admin"}
@@ -81,10 +84,14 @@ async def admin_client(monkeypatch):
     op_store = MagicMock()
     op_store.list_provider_route_configs_for_model = AsyncMock(return_value=[])
     op_store.list_all_provider_route_configs = AsyncMock(return_value=[])
+    op_store.list_provider_route_candidates_for_model = AsyncMock(return_value=[])
+    op_store.list_all_provider_route_candidates = AsyncMock(return_value=[])
     op_store.list_settings = AsyncMock(return_value=[])
     op_store.set_setting = AsyncMock()
     op_store.upsert_provider_route_config = AsyncMock()
     op_store.delete_provider_route_config = AsyncMock(return_value=True)
+    op_store.upsert_provider_route_candidate = AsyncMock()
+    op_store.delete_provider_route_candidate = AsyncMock(return_value=True)
     op_store.get_provider_key_full = AsyncMock(return_value=None)
     op_store.list_provider_keys = AsyncMock(return_value=[])
     op_store.list_provider_keys_full = AsyncMock(return_value=[])
@@ -541,6 +548,194 @@ async def test_delete_provider_route_restores_yaml_baseline(admin_client):
     )
     verify_mock.assert_awaited_once()
     assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 2.5,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source"] == "runtime"
+    assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
+    assert payload["route_type"] == "on_demand"
+    assert payload["upstream_provider"] == "parasail"
+    assert payload["effective_weight"] == 2.5
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+        "on_demand",
+        "parasail",
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        None,
+        2.5,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.provider == "openrouter"
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    assert runtime_adapter.config.route_metadata["route_provider"] == "parasail"
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_adds_local_quota_route(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "quota",
+            "upstream_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 6000,
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.provider_type == "quota"
+    assert runtime_adapter.config.quota == {"limit": 6000}
+    assert runtime_adapter.config.quota_pool == (
+        "minimax-fast:openrouter[parasail]-api:runtime-quota"
+    )
+    assert runtime_adapter.config.route_metadata["local_quota_fallback"] is True
+    assert response.json()["quota_limit"] == 6000
+
+
+@pytest.mark.asyncio
+async def test_delete_provider_route_candidate_removes_runtime_route(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    create_response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+    assert create_response.status_code == 200
+    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 4
+
+    response = await client.delete(
+        "/admin/routing/provider-route-candidates/minimax-fast/"
+        "minimax-fast:openrouter[parasail]-api",
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [row["route_id"] for row in payload["routes"]] == [
+        "minimax-fast:chutes-api",
+        "minimax-fast:featherless-api",
+        "minimax-fast:openrouter[deepinfra]-api",
+    ]
+    op_store.delete_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+    )
+    op_store.delete_provider_route_config.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+    )
+    assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
+    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_provider_route_candidate_rejects_config_route(admin_client):
+    client, op_store, _route_executor, fake_routewise, _verify_mock = admin_client
+
+    response = await client.delete(
+        "/admin/routing/provider-route-candidates/minimax-fast/minimax-fast:featherless-api",
+        headers=AUTH,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Only runtime-added provider routes can be deleted"
+    op_store.delete_provider_route_candidate.assert_not_awaited()
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_persisted_provider_route_candidates(admin_client):
+    _client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_all_provider_route_candidates.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:openrouter[parasail]-api",
+            "route_type": "on_demand",
+            "provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 1.5,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+    registry = MagicMock()
+    registry.cached_routers.return_value = [fake_routewise]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=registry,
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_provider_route_candidates(services, op_store)
+
+    runtime_adapter, raw_weight, endpoint_id = route_executor.routes["minimax-fast"].raw_adapters[-1]
+    assert endpoint_id == "minimax-fast:openrouter[parasail]-api"
+    assert raw_weight == 1.5
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
 @pytest.mark.asyncio

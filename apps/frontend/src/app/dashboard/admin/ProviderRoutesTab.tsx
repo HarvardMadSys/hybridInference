@@ -6,8 +6,11 @@ import {
   ProviderApiKeyItem,
   ProviderRoute,
   ProviderRouteStrategy,
+  ProviderRouteType,
   ProviderRouteOption,
+  createProviderRouteCandidate,
   deleteProviderRoute,
+  deleteProviderRouteCandidate,
   listProviderKeys,
   listProviderRoutes,
   updateProviderRoute,
@@ -21,6 +24,28 @@ type RouteForm = {
   apiKeyId: string;
   providerModelId: string;
   quotaLimit: string;
+};
+
+type CreateRouteForm = {
+  routeType: ProviderRouteType;
+  upstreamProvider: string;
+  baseUrl: string;
+  apiKeyId: string;
+  providerModelId: string;
+  quotaLimit: string;
+  concurrencyLimit: string;
+  weight: string;
+};
+
+const emptyCreateForm: CreateRouteForm = {
+  routeType: 'on_demand',
+  upstreamProvider: '',
+  baseUrl: '',
+  apiKeyId: '',
+  providerModelId: '',
+  quotaLimit: '5000',
+  concurrencyLimit: '1',
+  weight: '1',
 };
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
@@ -38,7 +63,9 @@ function keyLabel(route: ProviderRoute) {
 }
 
 function sourceLabel(route: ProviderRoute) {
-  return route.source === 'override' ? 'Override active' : 'Config default';
+  if (route.source === 'override') return 'Override active';
+  if (route.source === 'runtime') return 'Runtime added';
+  return 'Config default';
 }
 
 function routeLimitLabel(route: ProviderRoute, isRoutewise: boolean) {
@@ -59,6 +86,7 @@ export function ProviderRoutesTab() {
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(false);
   const [editingRoute, setEditingRoute] = useState<ProviderRoute | null>(null);
+  const [addingRoute, setAddingRoute] = useState(false);
   const [form, setForm] = useState<RouteForm>({
     upstreamProvider: '',
     baseUrl: '',
@@ -66,10 +94,15 @@ export function ProviderRoutesTab() {
     providerModelId: '',
     quotaLimit: '',
   });
+  const [createForm, setCreateForm] = useState<CreateRouteForm>(emptyCreateForm);
   const [keyOptions, setKeyOptions] = useState<ProviderApiKeyItem[]>([]);
+  const [createKeyOptions, setCreateKeyOptions] = useState<ProviderApiKeyItem[]>([]);
   const [keysLoading, setKeysLoading] = useState(false);
+  const [createKeysLoading, setCreateKeysLoading] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [creatingRoute, setCreatingRoute] = useState(false);
   const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [savingStrategy, setSavingStrategy] = useState(false);
 
   const loadRoutes = useCallback(async () => {
@@ -107,6 +140,32 @@ export function ProviderRoutesTab() {
   const quotaLimitValid =
     !editsLocalQuota ||
     (parsedQuotaLimit !== null && Number.isInteger(parsedQuotaLimit) && parsedQuotaLimit > 0);
+  const parsedCreateQuotaLimit =
+    createForm.routeType === 'quota' ? Number.parseInt(createForm.quotaLimit, 10) : null;
+  const parsedCreateConcurrencyLimit =
+    createForm.routeType === 'concurrency'
+      ? Number.parseInt(createForm.concurrencyLimit, 10)
+      : null;
+  const parsedCreateWeight = Number.parseFloat(createForm.weight);
+  const createQuotaValid =
+    createForm.routeType !== 'quota' ||
+    (parsedCreateQuotaLimit !== null &&
+      Number.isInteger(parsedCreateQuotaLimit) &&
+      parsedCreateQuotaLimit > 0);
+  const createConcurrencyValid =
+    createForm.routeType !== 'concurrency' ||
+    (parsedCreateConcurrencyLimit !== null &&
+      Number.isInteger(parsedCreateConcurrencyLimit) &&
+      parsedCreateConcurrencyLimit > 0);
+  const createWeightValid = Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0;
+  const createFormValid =
+    Boolean(selectedModel) &&
+    Boolean(createForm.upstreamProvider) &&
+    Boolean(createForm.baseUrl.trim()) &&
+    Boolean(createForm.providerModelId.trim()) &&
+    createQuotaValid &&
+    createConcurrencyValid &&
+    createWeightValid;
 
   useEffect(() => {
     if (!editingRoute) {
@@ -133,6 +192,11 @@ export function ProviderRoutesTab() {
     const provider = optionFor(providerOptions, form.upstreamProvider);
     return provider?.key_provider ?? form.upstreamProvider;
   }, [form.upstreamProvider, providerOptions]);
+
+  const createKeyProvider = useMemo(() => {
+    const provider = optionFor(providerOptions, createForm.upstreamProvider);
+    return provider?.key_provider ?? createForm.upstreamProvider;
+  }, [createForm.upstreamProvider, providerOptions]);
 
   const providerSelectOptions = useMemo(() => {
     if (!form.upstreamProvider || optionFor(providerOptions, form.upstreamProvider)) {
@@ -167,10 +231,32 @@ export function ProviderRoutesTab() {
     }
   }, []);
 
+  const loadCreateKeys = useCallback(async (provider: string) => {
+    if (!provider) {
+      setCreateKeyOptions([]);
+      return;
+    }
+    setCreateKeysLoading(true);
+    try {
+      const resp = await listProviderKeys(provider);
+      setCreateKeyOptions(resp.keys.filter((key) => key.id));
+    } catch (err) {
+      setCreateKeyOptions([]);
+      toast.error(`Failed to load provider keys: ${getErrorMessage(err)}`);
+    } finally {
+      setCreateKeysLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!editingRoute || !keyProvider) return;
     void loadKeys(keyProvider);
   }, [editingRoute, keyProvider, loadKeys]);
+
+  useEffect(() => {
+    if (!addingRoute || !createKeyProvider) return;
+    void loadCreateKeys(createKeyProvider);
+  }, [addingRoute, createKeyProvider, loadCreateKeys]);
 
   const updateRoute = useCallback((updated: ProviderRoute) => {
     setRoutes((current) =>
@@ -204,6 +290,28 @@ export function ProviderRoutesTab() {
     }));
   };
 
+  const openAddForm = () => {
+    const firstProvider = providerOptions[0];
+    setCreateForm({
+      ...emptyCreateForm,
+      upstreamProvider: firstProvider?.provider ?? '',
+      baseUrl: firstProvider?.default_base_url ?? '',
+    });
+    setCreateKeyOptions([]);
+    setAddingRoute(true);
+    setEditingRoute(null);
+  };
+
+  const onCreateProviderChange = (upstreamProvider: string) => {
+    const selected = optionFor(providerOptions, upstreamProvider);
+    setCreateForm((current) => ({
+      ...current,
+      upstreamProvider,
+      baseUrl: selected?.default_base_url || current.baseUrl,
+      apiKeyId: '',
+    }));
+  };
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (
@@ -234,6 +342,33 @@ export function ProviderRoutesTab() {
     }
   };
 
+  const onCreateSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!createFormValid) return;
+    setCreatingRoute(true);
+    try {
+      const created = await createProviderRouteCandidate(selectedModel, {
+        route_type: createForm.routeType,
+        upstream_provider: createForm.upstreamProvider,
+        base_url: createForm.baseUrl.trim(),
+        api_key_id: createForm.apiKeyId || null,
+        provider_model_id: createForm.providerModelId.trim(),
+        quota_limit:
+          createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
+        concurrency_limit:
+          createForm.routeType === 'concurrency' ? parsedCreateConcurrencyLimit : null,
+        weight: parsedCreateWeight,
+      });
+      setRoutes((current) => [...current, created]);
+      setAddingRoute(false);
+      toast.success('Provider route added');
+    } catch (err) {
+      toast.error(`Add failed: ${getErrorMessage(err)}`);
+    } finally {
+      setCreatingRoute(false);
+    }
+  };
+
   const onRestoreYaml = async (route: ProviderRoute) => {
     const key = routeKey(route);
     setRestoringKey(key);
@@ -248,6 +383,23 @@ export function ProviderRoutesTab() {
       toast.error(`Restore failed: ${getErrorMessage(err)}`);
     } finally {
       setRestoringKey(null);
+    }
+  };
+
+  const onDeleteRuntimeRoute = async (route: ProviderRoute) => {
+    const key = routeKey(route);
+    setDeletingKey(key);
+    try {
+      const updated = await deleteProviderRouteCandidate(route.model_id, route.route_id);
+      replaceModelRoutes(updated.model_id ?? route.model_id, updated.routes);
+      setEditingRoute((current) =>
+        current && routeKey(current) === key ? null : current,
+      );
+      toast.success('Provider route deleted');
+    } catch (err) {
+      toast.error(`Delete failed: ${getErrorMessage(err)}`);
+    } finally {
+      setDeletingKey(null);
     }
   };
 
@@ -279,6 +431,7 @@ export function ProviderRoutesTab() {
             onChange={(event) => {
               setSelectedModel(event.target.value);
               setEditingRoute(null);
+              setAddingRoute(false);
             }}
             className="mt-1 w-full min-w-[240px] max-w-sm rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
           >
@@ -312,6 +465,14 @@ export function ProviderRoutesTab() {
           {savingStrategy && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}
+          <button
+            type="button"
+            onClick={openAddForm}
+            disabled={!selectedModel || loading || providerOptions.length === 0}
+            className="rounded-lg border border-gray-900 bg-gray-900 px-3 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Add provider
+          </button>
           <button
             type="button"
             onClick={() => loadRoutes()}
@@ -401,7 +562,9 @@ export function ProviderRoutesTab() {
                       className={
                         route.source === 'override'
                           ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
-                          : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                          : route.source === 'runtime'
+                            ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
+                            : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
                       }
                     >
                       {sourceLabel(route)}
@@ -418,19 +581,233 @@ export function ProviderRoutesTab() {
                         {restoringKey === key ? 'Restoring…' : 'Restore config'}
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => setEditingRoute(route)}
-                      className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
-                    >
-                      Edit
-                    </button>
+                    {route.source === 'runtime' ? (
+                      <button
+                        type="button"
+                        onClick={() => void onDeleteRuntimeRoute(route)}
+                        disabled={deletingKey === key}
+                        className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        {deletingKey === key ? 'Deleting…' : 'Delete'}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setEditingRoute(route)}
+                        className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                      >
+                        Edit
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
           </div>
         </div>
+      )}
+
+      {addingRoute && (
+        <form onSubmit={onCreateSubmit} className="rounded-lg border border-gray-200 bg-white p-4">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-[14px] font-semibold text-gray-900">Add provider route</h3>
+              <p className="mt-1 font-mono text-[12px] text-gray-400">{selectedModel}</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAddingRoute(false)}
+              className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100"
+            >
+              Close
+            </button>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div>
+              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-type">
+                Route type
+              </label>
+              <select
+                id="new-route-type"
+                value={createForm.routeType}
+                onChange={(event) =>
+                  setCreateForm((current) => ({
+                    ...current,
+                    routeType: event.target.value as ProviderRouteType,
+                  }))
+                }
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+              >
+                <option value="on_demand">on_demand</option>
+                <option value="quota">quota</option>
+                <option value="concurrency">concurrency</option>
+              </select>
+            </div>
+            <div>
+              <label
+                className="text-[12px] font-medium text-gray-500"
+                htmlFor="new-route-provider"
+              >
+                Provider
+              </label>
+              <select
+                id="new-route-provider"
+                value={createForm.upstreamProvider}
+                onChange={(event) => onCreateProviderChange(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                required
+              >
+                {providerOptions.map((option) => (
+                  <option key={option.provider} value={option.provider}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                className="text-[12px] font-medium text-gray-500"
+                htmlFor="new-route-api-key"
+              >
+                API key
+              </label>
+              <select
+                id="new-route-api-key"
+                value={createForm.apiKeyId}
+                onChange={(event) =>
+                  setCreateForm((current) => ({ ...current, apiKeyId: event.target.value }))
+                }
+                disabled={createKeysLoading}
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
+              >
+                <option value="">Default {createKeyProvider} pool</option>
+                {createKeyOptions.map((key) => (
+                  <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
+                    {key.label ? `${key.label} · ` : ''}
+                    {key.key_prefix} ({key.source})
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-url">
+                Base URL
+              </label>
+              <input
+                id="new-route-url"
+                type="url"
+                value={createForm.baseUrl}
+                onChange={(event) =>
+                  setCreateForm((current) => ({ ...current, baseUrl: event.target.value }))
+                }
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                required
+              />
+            </div>
+            <div>
+              <label
+                className="text-[12px] font-medium text-gray-500"
+                htmlFor="new-route-model-id"
+              >
+                Provider model ID
+              </label>
+              <input
+                id="new-route-model-id"
+                type="text"
+                value={createForm.providerModelId}
+                onChange={(event) =>
+                  setCreateForm((current) => ({
+                    ...current,
+                    providerModelId: event.target.value,
+                  }))
+                }
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            {createForm.routeType === 'quota' && (
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-route-quota"
+                >
+                  Local daily quota
+                </label>
+                <input
+                  id="new-route-quota"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={createForm.quotaLimit}
+                  onChange={(event) =>
+                    setCreateForm((current) => ({ ...current, quotaLimit: event.target.value }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                  required
+                />
+              </div>
+            )}
+            {createForm.routeType === 'concurrency' && (
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-route-concurrency"
+                >
+                  Concurrency limit
+                </label>
+                <input
+                  id="new-route-concurrency"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={createForm.concurrencyLimit}
+                  onChange={(event) =>
+                    setCreateForm((current) => ({
+                      ...current,
+                      concurrencyLimit: event.target.value,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                  required
+                />
+              </div>
+            )}
+            <div>
+              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-weight">
+                Fixed weight
+              </label>
+              <input
+                id="new-route-weight"
+                type="number"
+                min={0.001}
+                step={0.001}
+                value={createForm.weight}
+                onChange={(event) =>
+                  setCreateForm((current) => ({ ...current, weight: event.target.value }))
+                }
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                required
+              />
+            </div>
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <button
+              type="submit"
+              disabled={creatingRoute || !createFormValid}
+              className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {creatingRoute ? 'Verifying…' : 'Verify & Add'}
+            </button>
+          </div>
+        </form>
       )}
 
       {editingRoute && (

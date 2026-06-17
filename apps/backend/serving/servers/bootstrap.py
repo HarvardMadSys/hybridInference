@@ -518,6 +518,7 @@ async def initialize() -> AppServices:
         try:
             from serving.servers.routers.admin.provider_routes import (
                 apply_persisted_model_router_strategy_overrides,
+                apply_persisted_provider_route_candidates,
                 apply_persisted_provider_route_configs,
             )
 
@@ -527,6 +528,10 @@ async def initialize() -> AppServices:
                 model_router_registry=model_router_registry,
             )
             await apply_persisted_model_router_strategy_overrides(
+                provider_route_services,
+                operational_store,
+            )
+            await apply_persisted_provider_route_candidates(
                 provider_route_services,
                 operational_store,
             )

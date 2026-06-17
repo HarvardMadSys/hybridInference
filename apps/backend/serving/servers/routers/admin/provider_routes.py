@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import math
 import os
 import socket
 from dataclasses import asdict, dataclass, fields, is_dataclass
@@ -16,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from routing.routers import _get_endpoint_id
 from serving.adapters import ModelConfig, dynamic_keys
 from serving.schemas_admin import (
+    CreateProviderRouteRequest,
     ListAllProviderRoutesResponse,
     ListProviderRoutesResponse,
     ProviderRouteApiKeyRef,
@@ -126,6 +128,23 @@ class PreparedRouteUpdate:
     api_key_id: str | None
     provider_model_id: str
     quota_limit: int | None
+
+
+@dataclass
+class PreparedRouteCandidate:
+    route: Any
+    route_id: str
+    adapter: Any
+    endpoint_id: str
+    upstream_provider: str
+    key_provider: str
+    base_url: str
+    api_key_id: str | None
+    provider_model_id: str
+    route_type: str
+    quota_limit: int | None
+    concurrency_limit: int | None
+    weight: float
 
 
 def _mask(api_key: str) -> str:
@@ -266,7 +285,7 @@ def _target_for_provider(provider: str) -> ProviderTarget:
 
 
 def _provider_options() -> list[ProviderRouteOption]:
-    return [
+    options = [
         ProviderRouteOption(
             provider=target.provider,
             label=target.label,
@@ -276,6 +295,17 @@ def _provider_options() -> list[ProviderRouteOption]:
         )
         for target in PROVIDER_TARGETS.values()
     ]
+    for provider in sorted(set(dynamic_keys.get_known_providers()) - set(PROVIDER_TARGETS)):
+        options.append(
+            ProviderRouteOption(
+                provider=provider,
+                label=provider,
+                kind=provider,
+                key_provider=provider,
+                default_base_url="",
+            )
+        )
+    return options
 
 
 def _upstream_provider(adapter) -> str:
@@ -553,6 +583,152 @@ def _quota_limit_for_adapter(adapter) -> int | None:
     return int(raw_limit) if raw_limit is not None else None
 
 
+def _is_runtime_candidate(adapter) -> bool:
+    route_metadata = getattr(adapter.config, "route_metadata", None)
+    return isinstance(route_metadata, dict) and route_metadata.get("runtime_candidate") is True
+
+
+def _concurrency_limit_for_adapter(adapter) -> int | None:
+    if _route_type(adapter) != "concurrency":
+        return None
+    concurrency = getattr(adapter.config, "concurrency", None)
+    if not isinstance(concurrency, dict):
+        return None
+    raw_limit = concurrency.get("limit")
+    return int(raw_limit) if raw_limit is not None else None
+
+
+def _validate_positive_weight(weight: float) -> float:
+    value = float(weight)
+    if not math.isfinite(value) or value <= 0:
+        raise HTTPException(status_code=422, detail="weight must be a positive finite number")
+    return value
+
+
+def _ensure_route_id_available(entries: list[tuple[object, float, str]], route_id: str) -> None:
+    for adapter, _weight, endpoint_id in entries:
+        if _route_id_for_entry(adapter, endpoint_id) == route_id:
+            raise HTTPException(status_code=409, detail="provider route already exists")
+
+
+def _runtime_quota_pool(_model_id: str, route_id: str) -> str:
+    return f"{route_id}:runtime-quota"
+
+
+def _runtime_concurrency_pool(_model_id: str, route_id: str) -> str:
+    return f"{route_id}:runtime-concurrency"
+
+
+async def _prepare_route_candidate(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    route_type: str,
+    upstream_provider: str,
+    base_url: str,
+    api_key_id: str | None,
+    provider_model_id: str,
+    quota_limit: int | None,
+    concurrency_limit: int | None,
+    weight: float,
+    route_id: str | None = None,
+) -> PreparedRouteCandidate:
+    route = _validate_canonical_route(services, model_id)
+    entries = _raw_route_entries(route)
+    if route_type not in {"quota", "concurrency", "on_demand"}:
+        raise HTTPException(status_code=422, detail="unknown route_type")
+    if route_type == "quota" and quota_limit is None:
+        raise HTTPException(status_code=422, detail="quota_limit is required for quota routes")
+    if route_type != "quota" and quota_limit is not None:
+        raise HTTPException(status_code=422, detail="quota_limit is only valid for quota routes")
+    if route_type == "concurrency" and concurrency_limit is None:
+        raise HTTPException(
+            status_code=422,
+            detail="concurrency_limit is required for concurrency routes",
+        )
+    if route_type != "concurrency" and concurrency_limit is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="concurrency_limit is only valid for concurrency routes",
+        )
+
+    target = _target_for_provider(upstream_provider)
+    cleaned_base_url = _validate_base_url(base_url)
+    provider_model_id = provider_model_id.strip()
+    if not provider_model_id:
+        raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
+    raw_weight = _validate_positive_weight(weight)
+
+    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
+    _ensure_route_id_available(entries, candidate_route_id)
+
+    api_key, api_keys = await _resolve_key_material(
+        op_store,
+        key_provider=target.key_provider,
+        api_key_id=api_key_id,
+    )
+
+    template_adapter = entries[0][0]
+    cfg = _config_to_dict(template_adapter.config)
+    cfg.update(
+        {
+            "id": model_id,
+            "name": model_id,
+            "provider": provider_for_cfg,
+            "base_url": cleaned_base_url,
+            "api_key": api_key,
+            "api_keys": api_keys,
+            "provider_model_id": provider_model_id,
+            "endpoint_id": candidate_route_id,
+            "provider_type": route_type,
+            "quota_pool": None,
+            "quota_source": None,
+            "quota": None,
+            "concurrency_pool": None,
+            "concurrency": None,
+            "route_metadata": {
+                "route_id": candidate_route_id,
+                "route_provider": upstream_provider,
+                "upstream_provider": upstream_provider,
+                "provider_type": route_type,
+                "runtime_candidate": True,
+            },
+        }
+    )
+    if route_type == "quota":
+        quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
+        cfg["quota_pool"] = quota_pool
+        cfg["quota_source"] = {
+            "provider": "local",
+            "usage_label": f"routewise:{quota_pool}",
+            "unit": "requests",
+        }
+        cfg["quota"] = {"limit": quota_limit}
+        cfg["route_metadata"]["local_quota_fallback"] = True
+    elif route_type == "concurrency":
+        cfg["concurrency_pool"] = _runtime_concurrency_pool(model_id, candidate_route_id)
+        cfg["concurrency"] = {"limit": concurrency_limit}
+
+    adapter = _make_adapter(target.kind, cfg)
+    return PreparedRouteCandidate(
+        route=route,
+        route_id=candidate_route_id,
+        adapter=adapter,
+        endpoint_id=_get_endpoint_id(adapter),
+        upstream_provider=upstream_provider,
+        key_provider=target.key_provider,
+        base_url=cleaned_base_url,
+        api_key_id=api_key_id,
+        provider_model_id=provider_model_id,
+        route_type=route_type,
+        quota_limit=_quota_limit_for_adapter(adapter),
+        concurrency_limit=_concurrency_limit_for_adapter(adapter),
+        weight=raw_weight,
+    )
+
+
 async def _prepare_route_update(
     services,
     op_store,
@@ -698,6 +874,71 @@ def _install_route_restore(services, route, route_id: str) -> tuple[object, floa
     return baseline_adapter, float(baseline_weight), baseline_endpoint_id
 
 
+def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> None:
+    _baseline_route_entries(candidate.route)
+    entries = _raw_route_entries(candidate.route)
+    _ensure_route_id_available(entries, candidate.route_id)
+    entries.append((candidate.adapter, candidate.weight, candidate.endpoint_id))
+
+    total_weight = sum(float(weight) for _adapter, weight, _endpoint_id in entries)
+    if total_weight <= 0:
+        raise HTTPException(status_code=400, detail="cannot zero all routes for model")
+
+    def _mutate() -> None:
+        candidate.route.raw_adapters = entries
+        candidate.route.adapters = [
+            (adapter, float(weight) / total_weight) for adapter, weight, _endpoint_id in entries
+        ]
+
+    lock = getattr(services.router, "_lock", None)
+    if lock is not None:
+        with lock:
+            _mutate()
+    else:
+        _mutate()
+
+    dynamic_keys.register_known_provider(candidate.key_provider)
+    if getattr(candidate.adapter, "_key_pool", None) is not None:
+        dynamic_keys.register_adapter_for_provider(candidate.key_provider, candidate.adapter)
+
+    _rebuild_routewise_routers(services)
+
+
+def _install_route_candidate_delete(services, route, route_id: str) -> tuple[object, float, str]:
+    current_entries = _raw_route_entries(route)
+    current_index = _route_index_for_id(current_entries, route_id)
+    adapter, raw_weight, endpoint_id = current_entries[current_index]
+    if not _is_runtime_candidate(adapter):
+        raise HTTPException(
+            status_code=400,
+            detail="Only runtime-added provider routes can be deleted",
+        )
+    next_entries = current_entries[:current_index] + current_entries[current_index + 1 :]
+    if not next_entries:
+        raise HTTPException(status_code=400, detail="cannot delete the last route for model")
+
+    total_weight = sum(float(weight) for _adapter, weight, _endpoint_id in next_entries)
+    if total_weight <= 0:
+        raise HTTPException(status_code=400, detail="cannot zero all routes for model")
+
+    def _mutate() -> None:
+        route.raw_adapters = next_entries
+        route.adapters = [
+            (entry_adapter, float(weight) / total_weight)
+            for entry_adapter, weight, _endpoint_id in next_entries
+        ]
+
+    lock = getattr(services.router, "_lock", None)
+    if lock is not None:
+        with lock:
+            _mutate()
+    else:
+        _mutate()
+
+    _rebuild_routewise_routers(services)
+    return adapter, float(raw_weight), endpoint_id
+
+
 def _truncate(value: str, limit: int = 500) -> str:
     value = value.strip()
     if len(value) <= limit:
@@ -715,7 +956,7 @@ def _verification_error_detail(exc: BaseException) -> str:
     return f"Provider verification failed: {_truncate(str(exc) or type(exc).__name__)}"
 
 
-async def _verify_provider_route(update: PreparedRouteUpdate) -> None:
+async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCandidate) -> None:
     """Send a minimal upstream request before accepting a route target change."""
     try:
         await asyncio.wait_for(
@@ -795,6 +1036,7 @@ async def _route_row(
         if override_row and override_row.get("provider_model_id") is not None
         else getattr(adapter.config, "provider_model_id", None)
     )
+    source = "override" if override_row else ("runtime" if _is_runtime_candidate(adapter) else "yaml")
     return ProviderRouteItem(
         model_id=model_id,
         strategy=strategy,
@@ -811,7 +1053,7 @@ async def _route_row(
         endpoint_id=endpoint_id,
         yaml_weight=float(yaml_weight),
         effective_weight=_effective_weight(services, model_id, float(yaml_weight), endpoint_id),
-        source="override" if override_row else "yaml",
+        source=source,
         updated_at=override_row.get("updated_at") if override_row else None,
         updated_by=override_row.get("updated_by") if override_row else None,
     )
@@ -963,6 +1205,78 @@ async def update_provider_route_strategy(
     )
 
 
+@router.post("/routing/provider-route-candidates/{model_id:path}", response_model=ProviderRouteItem)
+async def create_provider_route_candidate(
+    model_id: str,
+    payload: CreateProviderRouteRequest,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Add a DB-backed runtime provider route candidate for one model."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    candidate = await _prepare_route_candidate(
+        services,
+        op_store,
+        model_id=model_id,
+        route_type=payload.route_type,
+        upstream_provider=payload.upstream_provider,
+        base_url=payload.base_url,
+        api_key_id=payload.api_key_id,
+        provider_model_id=payload.provider_model_id,
+        quota_limit=payload.quota_limit,
+        concurrency_limit=payload.concurrency_limit,
+        weight=payload.weight,
+    )
+    await _verify_provider_route(candidate)
+    await op_store.upsert_provider_route_candidate(
+        model_id,
+        candidate.route_id,
+        candidate.route_type,
+        candidate.upstream_provider,
+        candidate.base_url,
+        candidate.api_key_id,
+        candidate.provider_model_id,
+        candidate.quota_limit,
+        candidate.concurrency_limit,
+        candidate.weight,
+        admin_id,
+    )
+    _install_route_candidate(services, candidate)
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "routing.provider_routes.candidate.create",
+        None,
+        {
+            "model_id": model_id,
+            "route_id": candidate.route_id,
+            "route_type": candidate.route_type,
+            "upstream_provider": candidate.upstream_provider,
+            "endpoint_id": candidate.endpoint_id,
+            "api_key_id": candidate.api_key_id,
+            "quota_limit": candidate.quota_limit,
+            "concurrency_limit": candidate.concurrency_limit,
+            "weight": candidate.weight,
+        },
+    )
+
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=candidate.route_id,
+        adapter=candidate.adapter,
+        yaml_weight=candidate.weight,
+        endpoint_id=candidate.endpoint_id,
+        override_row=None,
+    )
+
+
 @router.put("/routing/provider-routes/{model_route_path:path}", response_model=ProviderRouteItem)
 async def update_provider_route(
     model_route_path: str,
@@ -1095,6 +1409,97 @@ async def delete_provider_route_override(
         endpoint_id=restored_endpoint_id,
         override_row=None,
     )
+
+
+@router.delete(
+    "/routing/provider-route-candidates/{model_route_path:path}",
+    response_model=ListProviderRoutesResponse,
+)
+async def delete_provider_route_candidate(
+    model_route_path: str,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ListProviderRoutesResponse:
+    """Delete a DB-backed runtime provider route candidate."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    current_entries = _raw_route_entries(route)
+    current_adapter = current_entries[_route_index_for_id(current_entries, route_id)][0]
+    if not _is_runtime_candidate(current_adapter):
+        raise HTTPException(
+            status_code=400,
+            detail="Only runtime-added provider routes can be deleted",
+        )
+    deleted = await op_store.delete_provider_route_candidate(model_id, route_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Provider route candidate not found")
+    await op_store.delete_provider_route_config(model_id, route_id)
+    deleted_adapter, _raw_weight, deleted_endpoint_id = _install_route_candidate_delete(
+        services,
+        route,
+        route_id,
+    )
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "routing.provider_routes.candidate.delete",
+        None,
+        {
+            "model_id": model_id,
+            "route_id": route_id,
+            "upstream_provider": _upstream_provider(deleted_adapter),
+            "endpoint_id": deleted_endpoint_id,
+        },
+    )
+
+    override_rows = await op_store.list_provider_route_configs_for_model(model_id)
+    return ListProviderRoutesResponse(
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        provider_options=_provider_options(),
+        routes=await _build_routes_for_model(
+            services,
+            op_store,
+            model_id=model_id,
+            route=route,
+            overrides=_rows_by_route_id(override_rows),
+        ),
+    )
+
+
+async def apply_persisted_provider_route_candidates(services, op_store) -> None:
+    """Apply persisted runtime provider route candidates to the in-process router."""
+    rows = await op_store.list_all_provider_route_candidates()
+    for row in rows:
+        model_id = str(row["model_id"])
+        route_id = str(row["route_id"])
+        try:
+            candidate = await _prepare_route_candidate(
+                services,
+                op_store,
+                model_id=model_id,
+                route_id=route_id,
+                route_type=str(row["route_type"]),
+                upstream_provider=str(row["provider"]),
+                base_url=str(row["base_url"]),
+                api_key_id=row.get("api_key_id"),
+                provider_model_id=str(row["provider_model_id"]),
+                quota_limit=row.get("quota_limit"),
+                concurrency_limit=row.get("concurrency_limit"),
+                weight=float(row["weight"]),
+            )
+            _install_route_candidate(services, candidate)
+        except Exception as exc:
+            logger.warning(
+                "Failed to apply provider route candidate for model=%s route_id=%s: %s",
+                model_id,
+                route_id,
+                exc,
+            )
 
 
 async def apply_persisted_provider_route_configs(services, op_store) -> None:

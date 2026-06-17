@@ -827,7 +827,7 @@ class ProviderRouteItem(BaseModel):
     endpoint_id: str
     yaml_weight: float
     effective_weight: float
-    source: Literal["yaml", "override"]
+    source: Literal["yaml", "override", "runtime"]
     updated_at: datetime | None = None
     updated_by: str | None = None
 
@@ -852,6 +852,19 @@ class UpdateProviderRouteStrategyRequest(BaseModel):
     """Request payload for updating one model's router strategy."""
 
     strategy: Literal["fixed", "routewise"]
+
+
+class CreateProviderRouteRequest(BaseModel):
+    """Request payload for adding one runtime provider route candidate."""
+
+    route_type: Literal["quota", "concurrency", "on_demand"]
+    upstream_provider: str = Field(..., min_length=1, max_length=64)
+    base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str = Field(..., min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+    concurrency_limit: int | None = Field(None, ge=1)
+    weight: float = Field(1.0, gt=0)
 
 
 class UpdateProviderRouteRequest(BaseModel):
@@ -893,6 +906,7 @@ __all__ = [
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
+    "CreateProviderRouteRequest",
     "DeleteUserRequest",
     "DeleteUserResponse",
     "HardDeleteUserRequest",

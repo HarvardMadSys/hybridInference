@@ -2,7 +2,9 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import {
   applyRoleQuota,
   clearRouteWeight,
+  createProviderRouteCandidate,
   deleteProviderRoute,
+  deleteProviderRouteCandidate,
   listProviderRoutes,
   listRouteWeights,
   listRoutewiseSettings,
@@ -422,6 +424,92 @@ describe('provider route client', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
       '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
+    );
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('createProviderRouteCandidate POSTs runtime provider route payload', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          route_id: 'minimax-fast:openrouter[parasail]-api',
+          route_type: 'on_demand',
+          provider: 'parasail',
+          upstream_provider: 'parasail',
+          key_provider: 'openrouter',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          api_key: {
+            id: 'key-1',
+            provider: 'openrouter',
+            label: 'staging',
+            key_prefix: 'sk-or...1234',
+            source: 'db',
+          },
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+          endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+          yaml_weight: 1,
+          effective_weight: 1,
+          source: 'runtime',
+          updated_at: null,
+          updated_by: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await createProviderRouteCandidate('minimax-fast', {
+      route_type: 'on_demand',
+      upstream_provider: 'parasail',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+
+    expect(out.source).toBe('runtime');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-route-candidates/minimax-fast');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      route_type: 'on_demand',
+      upstream_provider: 'parasail',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+  });
+
+  it('deleteProviderRouteCandidate DELETEs runtime provider route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          provider_options: [],
+          routes: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await deleteProviderRouteCandidate(
+      'minimax-fast',
+      'minimax-fast:openrouter[parasail]-api',
+    );
+
+    expect(out.routes).toEqual([]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/provider-route-candidates/minimax-fast/minimax-fast%3Aopenrouter%5Bparasail%5D-api',
     );
     expect(init.method).toBe('DELETE');
   });

@@ -793,6 +793,35 @@ class OperationalStore(ABC):
     async def delete_provider_route_config(self, model_id: str, route_id: str) -> bool:
         """Delete a provider route override row. Returns True if removed."""
 
+    @abstractmethod
+    async def list_provider_route_candidates_for_model(self, model_id: str) -> list[Row]:
+        """Return DB-backed runtime provider route candidates for one model."""
+
+    @abstractmethod
+    async def list_all_provider_route_candidates(self) -> list[Row]:
+        """Return all DB-backed runtime provider route candidates."""
+
+    @abstractmethod
+    async def upsert_provider_route_candidate(
+        self,
+        model_id: str,
+        route_id: str,
+        route_type: str,
+        provider: str,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        concurrency_limit: int | None,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a DB-backed runtime provider route candidate."""
+
+    @abstractmethod
+    async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
+        """Delete a runtime provider route candidate row. Returns True if removed."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

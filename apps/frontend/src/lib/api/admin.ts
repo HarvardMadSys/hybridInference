@@ -1091,7 +1091,7 @@ export async function updateRoutewiseSetting(
 // ========================================
 
 export type ProviderRouteKeySource = 'default' | 'db' | 'env' | 'missing';
-export type ProviderRouteSource = 'yaml' | 'override';
+export type ProviderRouteSource = 'yaml' | 'override' | 'runtime';
 
 export interface ProviderRouteApiKeyRef {
   id: string | null;
@@ -1146,6 +1146,18 @@ export interface UpdateProviderRoutePayload {
 }
 
 export type ProviderRouteStrategy = 'fixed' | 'routewise';
+export type ProviderRouteType = 'quota' | 'concurrency' | 'on_demand';
+
+export interface CreateProviderRoutePayload {
+  route_type: ProviderRouteType;
+  upstream_provider: string;
+  base_url: string;
+  api_key_id?: string | null;
+  provider_model_id: string;
+  quota_limit?: number | null;
+  concurrency_limit?: number | null;
+  weight: number;
+}
 
 export async function listProviderRoutes(modelId?: string): Promise<ListProviderRoutesResponse> {
   const path = modelId
@@ -1194,6 +1206,22 @@ export async function updateProviderRoute(
   return jsonOrThrow<ProviderRoute>(resp);
 }
 
+export async function createProviderRouteCandidate(
+  modelId: string,
+  payload: CreateProviderRoutePayload,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-candidates/${encodeURIComponent(modelId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
 export async function deleteProviderRoute(
   modelId: string,
   routeId: string,
@@ -1206,6 +1234,20 @@ export async function deleteProviderRoute(
     },
   );
   return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function deleteProviderRouteCandidate(
+  modelId: string,
+  routeId: string,
+): Promise<ListProviderRoutesResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-candidates/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
 }
 
 // ========================================

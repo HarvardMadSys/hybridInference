@@ -577,6 +577,8 @@ class RouteWiseRouter(BaseRouter):
         metadata = getattr(candidate.adapter.config, "route_metadata", None)
         if not isinstance(metadata, dict):
             return False
+        if metadata.get("local_quota_fallback") is True:
+            return True
         route_provider = metadata.get("route_provider")
         upstream_provider = metadata.get("upstream_provider")
         return bool(

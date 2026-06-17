@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderRoutesTab } from './ProviderRoutesTab';
 
 vi.mock('@/lib/api/admin', () => ({
+  createProviderRouteCandidate: vi.fn(),
   deleteProviderRoute: vi.fn(),
+  deleteProviderRouteCandidate: vi.fn(),
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
   updateProviderRoute: vi.fn(),
@@ -21,7 +23,9 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 import {
+  createProviderRouteCandidate,
   deleteProviderRoute,
+  deleteProviderRouteCandidate,
   listProviderKeys,
   listProviderRoutes,
   updateProviderRoute,
@@ -276,6 +280,119 @@ describe('ProviderRoutesTab', () => {
       expect(screen.getAllByText('Default featherless pool').length).toBeGreaterThan(0);
     });
     expect(screen.queryByText('Edit provider route')).not.toBeInTheDocument();
+  });
+
+  it('adds a runtime provider route', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) => ({
+      provider: provider ?? null,
+      keys:
+        provider === 'openrouter'
+          ? [
+            {
+              id: 'key-1',
+              provider: 'openrouter',
+              key_prefix: 'sk-or...1234',
+              label: 'staging',
+              source: 'db',
+              status: 'active',
+              created_at: null,
+            },
+          ]
+          : [],
+    }));
+    vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'on_demand',
+      provider: 'parasail',
+      upstream_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db',
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      source: 'runtime',
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'parasail' } });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'minimax/minimax-m2.5' },
+    });
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify & Add' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
+        route_type: 'on_demand',
+        upstream_provider: 'parasail',
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        quota_limit: null,
+        concurrency_limit: null,
+        weight: 1,
+      });
+    });
+    expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('deletes a runtime provider route', async () => {
+    const runtimeRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'on_demand',
+      provider: 'parasail',
+      upstream_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      source: 'runtime' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      routes: [route, runtimeRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+    vi.mocked(deleteProviderRouteCandidate).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'routewise',
+      provider_options: providerOptions,
+      routes: [route],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(deleteProviderRouteCandidate).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:openrouter[parasail]-api',
+      );
+    });
+    await waitFor(() => {
+      expect(screen.queryByText('Runtime added')).not.toBeInTheDocument();
+    });
   });
 
   it('keeps the current override provider selectable when it is not a default option', async () => {
