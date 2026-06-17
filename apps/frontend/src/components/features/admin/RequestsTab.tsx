@@ -530,28 +530,17 @@ function formatTokens(n: number): string {
 function SearchInput({
   value,
   onChange,
+  onSubmit,
   placeholder,
 }: {
   value: string;
   onChange: (value: string) => void;
+  onSubmit?: () => void;
   placeholder: string;
 }) {
-  // Keep the input responsive while debouncing the parent state update (and the
-  // resulting listRecentRequests call) until typing pauses. The first effect
-  // syncs external changes (e.g. the "filter by user" row action) back into the
-  // local value.
-  const [localValue, setLocalValue] = useState(value);
-
-  useEffect(() => {
-    setLocalValue(value);
-  }, [value]);
-
-  useEffect(() => {
-    if (localValue === value) return;
-    const timer = setTimeout(() => onChange(localValue), 300);
-    return () => clearTimeout(timer);
-  }, [localValue, value, onChange]);
-
+  // Controlled and synchronous: the parent filter state always reflects what the
+  // input shows, so actions like Refresh/Export never read a stale value. The
+  // per-keystroke fetch is debounced in the parent instead (see loadRequests).
   return (
     <div className="relative flex-1 min-w-[160px]">
       <svg
@@ -570,8 +559,11 @@ function SearchInput({
       </svg>
       <input
         type="text"
-        value={localValue}
-        onChange={(e) => setLocalValue(e.target.value)}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onSubmit?.();
+        }}
         placeholder={placeholder}
         aria-label={placeholder}
         className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-[13px] placeholder:text-gray-400 transition-shadow focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
@@ -634,6 +626,11 @@ export function RequestsTab() {
   const [reqOffset, setReqOffset] = useState(0);
   const [reqUserFilter, setReqUserFilter] = useState('');
   const [reqModelFilter, setReqModelFilter] = useState('');
+  // Debounced copies of the text filters drive the fetch, so typing doesn't fire
+  // a request per keystroke. The raw values above stay synchronous for the
+  // inputs and for actions (Refresh/Export) that must read the current filters.
+  const [debouncedUserFilter, setDebouncedUserFilter] = useState('');
+  const [debouncedModelFilter, setDebouncedModelFilter] = useState('');
   const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
   const [reqContentCache, setReqContentCache] = useState<
@@ -665,8 +662,8 @@ export function RequestsTab() {
       const d = await listRecentRequests(
         REQ_PAGE_SIZE,
         reqOffset,
-        reqUserFilter || undefined,
-        reqModelFilter || undefined,
+        debouncedUserFilter || undefined,
+        debouncedModelFilter || undefined,
         reqErrorsOnly,
       );
       setReqEntries(d.requests);
@@ -676,7 +673,24 @@ export function RequestsTab() {
     } finally {
       setReqLoading(false);
     }
-  }, [reqOffset, reqUserFilter, reqModelFilter, reqErrorsOnly]);
+  }, [reqOffset, debouncedUserFilter, debouncedModelFilter, reqErrorsOnly]);
+
+  // Debounce text-filter changes into the values that drive the fetch. Offset
+  // and "errors only" changes are applied immediately (they don't go through
+  // here), so pagination stays snappy.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedUserFilter(reqUserFilter);
+      setDebouncedModelFilter(reqModelFilter);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [reqUserFilter, reqModelFilter]);
+
+  // Flush the debounce so pressing Enter searches immediately.
+  const flushFilterSearch = useCallback(() => {
+    setDebouncedUserFilter(reqUserFilter);
+    setDebouncedModelFilter(reqModelFilter);
+  }, [reqUserFilter, reqModelFilter]);
 
   const loadRequestMetrics = useCallback(async () => {
     setReqMetricsLoading(true);
@@ -818,6 +832,7 @@ export function RequestsTab() {
             setReqUserFilter(value);
             setReqOffset(0);
           }}
+          onSubmit={flushFilterSearch}
           placeholder="Filter by user ID…"
         />
         <SearchInput
@@ -826,6 +841,7 @@ export function RequestsTab() {
             setReqModelFilter(value);
             setReqOffset(0);
           }}
+          onSubmit={flushFilterSearch}
           placeholder="Filter by model…"
         />
         <label className="flex cursor-pointer select-none items-center gap-1.5 text-[13px] text-gray-600">
