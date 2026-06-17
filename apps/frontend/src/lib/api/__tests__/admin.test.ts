@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import {
   applyRoleQuota,
   clearRouteWeight,
+  deleteProviderRoute,
   listProviderRoutes,
   listRouteWeights,
   listRoutewiseSettings,
@@ -287,7 +288,7 @@ describe('provider route client', () => {
             {
               model_id: 'minimax-fast',
               strategy: 'routewise',
-              route_id: 'route-1',
+              route_id: 'minimax-fast:featherless-api',
               route_type: 'concurrency',
               provider: 'featherless',
               upstream_provider: 'featherless',
@@ -318,7 +319,7 @@ describe('provider route client', () => {
 
     const out = await listProviderRoutes('minimax-fast');
 
-    expect(out.routes[0].route_id).toBe('route-1');
+    expect(out.routes[0].route_id).toBe('minimax-fast:featherless-api');
     expect(out.provider_options[0].provider).toBe('parasail');
     const [url] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast');
@@ -330,7 +331,7 @@ describe('provider route client', () => {
         JSON.stringify({
           model_id: 'minimax-fast',
           strategy: 'routewise',
-          route_id: 'route-1',
+          route_id: 'minimax-fast:featherless-api',
           route_type: 'concurrency',
           provider: 'featherless',
           upstream_provider: 'parasail',
@@ -357,7 +358,7 @@ describe('provider route client', () => {
       ),
     );
 
-    const out = await updateProviderRoute('minimax-fast', 'route-1', {
+    const out = await updateProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
       upstream_provider: 'parasail',
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
@@ -368,7 +369,9 @@ describe('provider route client', () => {
     expect(out.provider).toBe('featherless');
     expect(out.upstream_provider).toBe('parasail');
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast/route-1');
+    expect(String(url)).toContain(
+      '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
+    );
     expect(init.method).toBe('PUT');
     expect(JSON.parse(init.body as string)).toEqual({
       upstream_provider: 'parasail',
@@ -377,6 +380,49 @@ describe('provider route client', () => {
       provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: 8000,
     });
+  });
+
+  it('deleteProviderRoute DELETEs provider route override', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          route_id: 'minimax-fast:featherless-api',
+          route_type: 'concurrency',
+          provider: 'featherless',
+          upstream_provider: 'featherless',
+          key_provider: 'featherless',
+          base_url: 'https://api.featherless.ai/v1',
+          api_key_id: null,
+          api_key: {
+            id: null,
+            provider: 'featherless',
+            label: 'Provider default',
+            key_prefix: null,
+            source: 'default',
+          },
+          provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+          quota_limit: null,
+          endpoint_id: 'minimax-fast:featherless-api',
+          yaml_weight: 1,
+          effective_weight: 1,
+          source: 'yaml',
+          updated_at: null,
+          updated_by: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await deleteProviderRoute('minimax-fast', 'minimax-fast:featherless-api');
+
+    expect(out.source).toBe('yaml');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
+    );
+    expect(init.method).toBe('DELETE');
   });
 });
 

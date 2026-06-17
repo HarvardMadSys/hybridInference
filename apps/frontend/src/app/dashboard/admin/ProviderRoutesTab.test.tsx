@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderRoutesTab } from './ProviderRoutesTab';
 
 vi.mock('@/lib/api/admin', () => ({
+  deleteProviderRoute: vi.fn(),
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
   updateProviderRoute: vi.fn(),
@@ -18,7 +19,12 @@ vi.mock('react-hot-toast', () => ({
   },
 }));
 
-import { listProviderKeys, listProviderRoutes, updateProviderRoute } from '@/lib/api/admin';
+import {
+  deleteProviderRoute,
+  listProviderKeys,
+  listProviderRoutes,
+  updateProviderRoute,
+} from '@/lib/api/admin';
 
 const providerOptions = [
   {
@@ -40,7 +46,7 @@ const providerOptions = [
 const route = {
   model_id: 'minimax-fast',
   strategy: 'routewise',
-  route_id: 'route-1',
+  route_id: 'minimax-fast:featherless-api',
   route_type: 'concurrency',
   provider: 'featherless',
   upstream_provider: 'featherless',
@@ -83,7 +89,7 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     expect(await screen.findByText('minimax-fast')).toBeInTheDocument();
-    expect(screen.getAllByText('featherless')).toHaveLength(2);
+    expect(screen.getByText('featherless')).toBeInTheDocument();
     expect(screen.getByText('Default featherless pool')).toBeInTheDocument();
     expect(screen.queryByText('Effective')).not.toBeInTheDocument();
   });
@@ -150,13 +156,17 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Verify & Apply' }));
 
     await waitFor(() => {
-      expect(updateProviderRoute).toHaveBeenCalledWith('minimax-fast', 'route-1', {
-        upstream_provider: 'parasail',
-        base_url: 'https://openrouter.ai/api/v1',
-        api_key_id: 'key-1',
-        provider_model_id: 'minimax/minimax-m2.5',
-        quota_limit: null,
-      });
+      expect(updateProviderRoute).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        {
+          upstream_provider: 'parasail',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+        },
+      );
     });
     expect(await screen.findByText('parasail')).toBeInTheDocument();
   });
@@ -164,7 +174,7 @@ describe('ProviderRoutesTab', () => {
   it('submits local daily quota for quota provider overrides', async () => {
     const quotaRoute = {
       ...route,
-      route_id: 'route-0',
+      route_id: 'minimax-fast:chutes-api',
       route_type: 'quota',
       provider: 'chutes',
       upstream_provider: 'chutes',
@@ -212,13 +222,56 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Verify & Apply' }));
 
     await waitFor(() => {
-      expect(updateProviderRoute).toHaveBeenCalledWith('minimax-fast', 'route-0', {
-        upstream_provider: 'parasail',
-        base_url: 'https://openrouter.ai/api/v1',
-        api_key_id: null,
-        provider_model_id: 'minimax/minimax-m2.5',
-        quota_limit: 8000,
-      });
+      expect(updateProviderRoute).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:chutes-api',
+        {
+          upstream_provider: 'parasail',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: null,
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: 8000,
+        },
+      );
+    });
+  });
+
+  it('restores an override to the YAML route', async () => {
+    const overrideRoute = {
+      ...route,
+      upstream_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db' as const,
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      source: 'override' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      routes: [overrideRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+    vi.mocked(deleteProviderRoute).mockResolvedValue(route);
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Restore YAML' }));
+
+    await waitFor(() => {
+      expect(deleteProviderRoute).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getAllByText('Default featherless pool').length).toBeGreaterThan(0);
     });
   });
 });

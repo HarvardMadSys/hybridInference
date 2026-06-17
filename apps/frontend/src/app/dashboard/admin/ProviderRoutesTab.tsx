@@ -6,6 +6,7 @@ import {
   ProviderApiKeyItem,
   ProviderRoute,
   ProviderRouteOption,
+  deleteProviderRoute,
   listProviderKeys,
   listProviderRoutes,
   updateProviderRoute,
@@ -38,6 +39,14 @@ function sourceLabel(route: ProviderRoute) {
   return route.source === 'override' ? 'Override active' : 'YAML';
 }
 
+function routeLimitLabel(route: ProviderRoute, isRoutewise: boolean) {
+  if (route.quota_limit) return route.quota_limit.toLocaleString();
+  if (!isRoutewise) {
+    return `${formatWeight(route.effective_weight)} / ${formatWeight(route.yaml_weight)}`;
+  }
+  return '—';
+}
+
 function optionFor(providerOptions: ProviderRouteOption[], provider: string) {
   return providerOptions.find((option) => option.provider === provider);
 }
@@ -58,6 +67,7 @@ export function ProviderRoutesTab() {
   const [keyOptions, setKeyOptions] = useState<ProviderApiKeyItem[]>([]);
   const [keysLoading, setKeysLoading] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [restoringKey, setRestoringKey] = useState<string | null>(null);
 
   const loadRoutes = useCallback(async () => {
     setLoading(true);
@@ -194,6 +204,20 @@ export function ProviderRoutesTab() {
     }
   };
 
+  const onRestoreYaml = async (route: ProviderRoute) => {
+    const key = routeKey(route);
+    setRestoringKey(key);
+    try {
+      const updated = await deleteProviderRoute(route.model_id, route.route_id);
+      replaceRoute(updated);
+      toast.success('Restored YAML route');
+    } catch (err) {
+      toast.error(`Restore failed: ${getErrorMessage(err)}`);
+    } finally {
+      setRestoringKey(null);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -245,85 +269,104 @@ export function ProviderRoutesTab() {
           <p className="text-[13px] text-gray-400">No provider routes available.</p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
-          <table className="min-w-full text-[13px]">
-            <thead className="bg-gray-50 text-left text-[12px] uppercase tracking-wide text-gray-500">
-              <tr>
-                <th className="px-3 py-2">Candidate</th>
-                <th className="px-3 py-2">Route provider</th>
-                <th className="px-3 py-2">Override provider</th>
-                <th className="px-3 py-2">API key</th>
-                <th className="px-3 py-2">Provider model ID</th>
-                <th className="px-3 py-2">Daily quota</th>
-                {!isRoutewise && <th className="px-3 py-2">YAML</th>}
-                {!isRoutewise && <th className="px-3 py-2">Effective</th>}
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {selectedRoutes.map((route) => {
-                const key = routeKey(route);
-                const isEditing = editingRoute ? routeKey(editingRoute) === key : false;
-                return (
-                  <tr key={key} className={isEditing ? 'bg-gray-50' : 'bg-white'}>
-                    <td className="px-3 py-2 text-gray-900">
-                      <div className="font-medium">{route.route_type}</div>
-                      <div className="mt-1 max-w-[280px] truncate font-mono text-[11px] text-gray-400">
-                        {route.endpoint_id}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-gray-700">
-                      <div className="font-medium">{route.provider}</div>
-                    </td>
-                    <td className="px-3 py-2 text-gray-700">
-                      <div className="font-medium">{route.upstream_provider}</div>
-                      <div className="mt-1 max-w-[260px] truncate text-[11px] text-gray-400">
-                        {route.base_url}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-gray-600">{keyLabel(route)}</td>
-                    <td className="px-3 py-2 font-mono text-[12px] text-gray-600">
+        <div className="rounded-lg border border-gray-200 bg-white text-[13px]">
+          <div className="hidden grid-cols-[minmax(200px,1.1fr)_minmax(300px,1.7fr)_minmax(150px,.8fr)_minmax(105px,.55fr)_minmax(110px,.55fr)_auto] gap-4 rounded-t-lg bg-gray-50 px-4 py-2 text-[12px] font-semibold uppercase tracking-wide text-gray-500 lg:grid">
+            <div>Candidate</div>
+            <div>Target</div>
+            <div>API key</div>
+            <div>{isRoutewise ? 'Quota' : 'Weight'}</div>
+            <div>Status</div>
+            <div className="text-right">Actions</div>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {selectedRoutes.map((route) => {
+              const key = routeKey(route);
+              const isEditing = editingRoute ? routeKey(editingRoute) === key : false;
+              return (
+                <div
+                  key={key}
+                  className={`grid gap-4 px-4 py-4 lg:grid-cols-[minmax(200px,1.1fr)_minmax(300px,1.7fr)_minmax(150px,.8fr)_minmax(105px,.55fr)_minmax(110px,.55fr)_auto] ${
+                    isEditing ? 'bg-gray-50' : 'bg-white'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
+                      Candidate
+                    </div>
+                    <div className="font-medium text-gray-900">{route.route_type}</div>
+                    <div className="mt-1 break-all font-mono text-[11px] leading-5 text-gray-400">
+                      {route.endpoint_id}
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
+                      Target
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium text-gray-800">
+                      <span>{route.provider}</span>
+                      {route.provider !== route.upstream_provider && (
+                        <>
+                          <span className="text-gray-300">→</span>
+                          <span>{route.upstream_provider}</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="mt-1 break-all text-[11px] leading-5 text-gray-400">
+                      {route.base_url}
+                    </div>
+                    <div className="mt-1 break-all font-mono text-[12px] leading-5 text-gray-600">
                       {route.provider_model_id ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 text-gray-600">
-                      {route.quota_limit ? route.quota_limit.toLocaleString() : '—'}
-                    </td>
-                    {!isRoutewise && (
-                      <td className="px-3 py-2 text-gray-600">
-                        {formatWeight(route.yaml_weight)}
-                      </td>
-                    )}
-                    {!isRoutewise && (
-                      <td className="px-3 py-2 text-gray-900">
-                        {formatWeight(route.effective_weight)}
-                      </td>
-                    )}
-                    <td className="px-3 py-2">
-                      <span
-                        className={
-                          route.source === 'override'
-                            ? 'rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
-                            : 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
-                        }
-                      >
-                        {sourceLabel(route)}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-right">
+                    </div>
+                  </div>
+                  <div className="min-w-0 text-gray-600">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
+                      API key
+                    </div>
+                    <div className="break-words leading-5">{keyLabel(route)}</div>
+                  </div>
+                  <div className="text-gray-600">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
+                      {isRoutewise ? 'Quota' : 'Weight'}
+                    </div>
+                    <div>{routeLimitLabel(route, isRoutewise)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
+                      Status
+                    </div>
+                    <span
+                      className={
+                        route.source === 'override'
+                          ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
+                          : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                      }
+                    >
+                      {sourceLabel(route)}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-start justify-end gap-1">
+                    {route.source === 'override' && (
                       <button
                         type="button"
-                        onClick={() => setEditingRoute(route)}
-                        className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                        onClick={() => void onRestoreYaml(route)}
+                        disabled={restoringKey === key}
+                        className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
                       >
-                        Edit
+                        {restoringKey === key ? 'Restoring…' : 'Restore YAML'}
                       </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setEditingRoute(route)}
+                      className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 

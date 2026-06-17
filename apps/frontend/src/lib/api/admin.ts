@@ -1176,6 +1176,20 @@ export async function updateProviderRoute(
   return jsonOrThrow<ProviderRoute>(resp);
 }
 
+export async function deleteProviderRoute(
+  modelId: string,
+  routeId: string,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-routes/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
 // ========================================
 // Provider API Keys (admin-managed runtime credentials)
 // ========================================
