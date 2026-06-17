@@ -454,6 +454,9 @@ export function ProviderRoutesTab() {
         : '';
   const strategy = selectedRoutes[0]?.strategy ?? 'fixed';
   const isRoutewise = strategy === 'routewise';
+  const showCreateWeight = !isRoutewise;
+  const showCreateLimits =
+    createForm.routeType === 'quota' || createForm.routeType === 'concurrency' || showCreateWeight;
   const editsLocalQuota =
     editingRoute?.route_type === 'quota' &&
     (form.upstreamProvider !== routePrimaryProvider(editingRoute) ||
@@ -481,7 +484,8 @@ export function ProviderRoutesTab() {
     (parsedCreateConcurrencyLimit !== null &&
       Number.isInteger(parsedCreateConcurrencyLimit) &&
       parsedCreateConcurrencyLimit > 0);
-  const createWeightValid = Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0;
+  const createWeightValid =
+    isRoutewise || (Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0);
   const formOpenRouterProviderValid = customOpenRouterProviderValid(
     form.openRouterProvider,
     form.customOpenRouterProvider,
@@ -554,7 +558,7 @@ export function ProviderRoutesTab() {
       quota_limit: createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
       concurrency_limit:
         createForm.routeType === 'concurrency' ? parsedCreateConcurrencyLimit : null,
-      weight: parsedCreateWeight,
+      weight: isRoutewise ? 1 : parsedCreateWeight,
     }),
     [
       createForm.apiKeyId,
@@ -568,6 +572,7 @@ export function ProviderRoutesTab() {
       parsedCreateQuotaLimit,
       parsedCreateWeight,
       selectedCreateOpenRouterProvider,
+      isRoutewise,
     ],
   );
   const editVerificationSignature =
@@ -1422,72 +1427,79 @@ export function ProviderRoutesTab() {
             </div>
           )}
 
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            {createForm.routeType === 'quota' && (
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-route-quota"
-                >
-                  Local daily quota
-                </label>
-                <input
-                  id="new-route-quota"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={createForm.quotaLimit}
-                  onChange={(event) =>
-                    setCreateForm((current) => ({ ...current, quotaLimit: event.target.value }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                  required
-                />
-              </div>
-            )}
-            {createForm.routeType === 'concurrency' && (
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-route-concurrency"
-                >
-                  Concurrency limit
-                </label>
-                <input
-                  id="new-route-concurrency"
-                  type="number"
-                  min={1}
-                  step={1}
-                  value={createForm.concurrencyLimit}
-                  onChange={(event) =>
-                    setCreateForm((current) => ({
-                      ...current,
-                      concurrencyLimit: event.target.value,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                  required
-                />
-              </div>
-            )}
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-weight">
-                Fixed weight
-              </label>
-              <input
-                id="new-route-weight"
-                type="number"
-                min={0.001}
-                step={0.001}
-                value={createForm.weight}
-                onChange={(event) =>
-                  setCreateForm((current) => ({ ...current, weight: event.target.value }))
-                }
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                required
-              />
+          {showCreateLimits && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              {createForm.routeType === 'quota' && (
+                <div>
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="new-route-quota"
+                  >
+                    Local daily quota
+                  </label>
+                  <input
+                    id="new-route-quota"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={createForm.quotaLimit}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({ ...current, quotaLimit: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    required
+                  />
+                </div>
+              )}
+              {createForm.routeType === 'concurrency' && (
+                <div>
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="new-route-concurrency"
+                  >
+                    Concurrency limit
+                  </label>
+                  <input
+                    id="new-route-concurrency"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={createForm.concurrencyLimit}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({
+                        ...current,
+                        concurrencyLimit: event.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    required
+                  />
+                </div>
+              )}
+              {showCreateWeight && (
+                <div>
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="new-route-weight"
+                  >
+                    Fixed weight
+                  </label>
+                  <input
+                    id="new-route-weight"
+                    type="number"
+                    min={0.001}
+                    step={0.001}
+                    value={createForm.weight}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({ ...current, weight: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    required
+                  />
+                </div>
+              )}
             </div>
-          </div>
+          )}
 
           <div className="mt-4 flex justify-end gap-2">
             <button

@@ -126,6 +126,38 @@ describe('ProviderRoutesTab', () => {
     expect(screen.queryByText('Effective')).not.toBeInTheDocument();
   });
 
+  it('hides fixed weight when adding a routewise provider route', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+
+    expect(screen.getByLabelText('Routing policy')).toHaveValue('routewise');
+    expect(screen.queryByLabelText('Fixed weight')).not.toBeInTheDocument();
+  });
+
+  it('shows fixed weight when adding a fixed provider route', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, strategy: 'fixed' }],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+
+    expect(screen.getByLabelText('Routing policy')).toHaveValue('fixed');
+    expect(screen.getByLabelText('Fixed weight')).toHaveValue(1);
+  });
+
   it('updates provider route target', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
