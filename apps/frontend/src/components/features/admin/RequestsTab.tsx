@@ -527,6 +527,42 @@ function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
+function SearchInput({
+  value,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder: string;
+}) {
+  return (
+    <div className="relative flex-1 min-w-[160px]">
+      <svg
+        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+        strokeWidth={2}
+        aria-hidden="true"
+      >
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          d="m21 21-4.35-4.35M17 11a6 6 0 1 1-12 0 6 6 0 0 1 12 0Z"
+        />
+      </svg>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-[13px] placeholder:text-gray-400 transition-shadow focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
+      />
+    </div>
+  );
+}
+
 function RequestMetricsCard({ metric }: { metric: AdminRequestMetricsWindow }) {
   const maxRequests = Math.max(...metric.buckets.map((bucket) => bucket.request_count), 1);
 
@@ -758,28 +794,24 @@ export function RequestsTab() {
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3">
-        <input
-          type="text"
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+        <SearchInput
           value={reqUserFilter}
-          onChange={(e) => {
-            setReqUserFilter(e.target.value);
+          onChange={(value) => {
+            setReqUserFilter(value);
             setReqOffset(0);
           }}
-          placeholder="Filter by user ID..."
-          className="flex-1 min-w-[160px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+          placeholder="Filter by user ID…"
         />
-        <input
-          type="text"
+        <SearchInput
           value={reqModelFilter}
-          onChange={(e) => {
-            setReqModelFilter(e.target.value);
+          onChange={(value) => {
+            setReqModelFilter(value);
             setReqOffset(0);
           }}
-          placeholder="Filter by model..."
-          className="flex-1 min-w-[160px] rounded-lg border border-gray-200 bg-white px-4 py-2 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+          placeholder="Filter by model…"
         />
-        <label className="flex items-center gap-1.5 text-[13px] text-gray-600 cursor-pointer select-none">
+        <label className="flex cursor-pointer select-none items-center gap-1.5 text-[13px] text-gray-600">
           <input
             type="checkbox"
             checked={reqErrorsOnly}
@@ -787,23 +819,25 @@ export function RequestsTab() {
               setReqErrorsOnly(e.target.checked);
               setReqOffset(0);
             }}
-            className="rounded border-gray-300"
+            className="rounded border-gray-300 text-gray-900 focus:ring-gray-400"
           />
           Errors only
         </label>
-        <span className="text-[12px] text-gray-400 tabular-nums">{reqTotal} entries</span>
+        <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
+          {reqTotal.toLocaleString()} entries
+        </span>
         <button
           type="button"
           onClick={handleClearErrors}
           disabled={clearingErrors}
-          className="ml-auto rounded-lg border border-red-200 bg-white px-3 py-2 text-[13px] text-red-600 hover:bg-red-50 disabled:opacity-50"
+          className="ml-auto rounded-lg border border-red-200 bg-white px-3 py-2 text-[13px] font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
         >
           {clearingErrors ? 'Clearing…' : 'Clear last hour errors'}
         </button>
         <button
           type="button"
           onClick={() => setShowExportPanel((v) => !v)}
-          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50"
+          className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-600 transition-colors hover:bg-gray-50"
         >
           Export JSONL
         </button>
@@ -892,19 +926,39 @@ export function RequestsTab() {
       )}
 
       {/* Table */}
-      <div className="mt-4">
+      <div className="mt-4 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
         {reqLoading ? (
-          <div className="flex justify-center py-24">
-            <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          <div className="flex flex-col items-center justify-center gap-3 py-24">
+            <span className="h-6 w-6 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+            <p className="text-[12px] text-gray-400">Loading requests…</p>
           </div>
         ) : reqEntries.length === 0 ? (
-          <div className="py-24 text-center">
-            <p className="text-[13px] text-gray-400">No requests found.</p>
+          <div className="flex flex-col items-center justify-center gap-2 py-24 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-50 ring-1 ring-inset ring-gray-100">
+              <svg
+                className="h-6 w-6 text-gray-300"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M2.25 13.5h3.86a2.25 2.25 0 0 1 2.012 1.244l.256.512a2.25 2.25 0 0 0 2.013 1.244h3.218a2.25 2.25 0 0 0 2.013-1.244l.256-.512a2.25 2.25 0 0 1 2.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 0 0-2.15-1.588H6.911a2.25 2.25 0 0 0-2.15 1.588L2.35 13.177a2.25 2.25 0 0 0-.1.661Z"
+                />
+              </svg>
+            </div>
+            <p className="text-[13px] font-medium text-gray-600">No requests found</p>
+            <p className="text-[12px] text-gray-400">
+              Try adjusting your filters or the lookback window.
+            </p>
           </div>
         ) : (
-          <div className="-mx-1">
+          <div className="overflow-x-auto">
             <table className="min-w-full">
-              <thead className="bg-gray-50">
+              <thead className="bg-gray-50/80">
                 <tr className="border-b border-gray-200">
                   <th className="py-2 pl-4 pr-3 text-left text-[11px] font-medium uppercase tracking-wider text-gray-500">
                     Model
@@ -1072,20 +1126,28 @@ export function RequestsTab() {
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px] tabular-nums text-gray-600">
                           {req.num_turns != null ? (
-                            <>
-                              <span title="Total messages in the conversation">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className="font-medium text-gray-700"
+                                title="Total messages in the conversation"
+                              >
                                 {req.num_turns.toLocaleString()}
                               </span>
                               <span
-                                className="ml-1.5 text-[10px] text-gray-400"
-                                title={`${(req.num_user_turns ?? 0).toLocaleString()} user turns · ${(
-                                  req.num_tool_calls ?? 0
-                                ).toLocaleString()} tool calls`}
+                                className="inline-flex items-center rounded-md bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-inset ring-sky-600/15"
+                                title={`${(req.num_user_turns ?? 0).toLocaleString()} user turns`}
                               >
-                                {(req.num_user_turns ?? 0).toLocaleString()}u ·{' '}
-                                {(req.num_tool_calls ?? 0).toLocaleString()}t
+                                {(req.num_user_turns ?? 0).toLocaleString()}u
                               </span>
-                            </>
+                              {(req.num_tool_calls ?? 0) > 0 && (
+                                <span
+                                  className="inline-flex items-center rounded-md bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/15"
+                                  title={`${(req.num_tool_calls ?? 0).toLocaleString()} tool calls`}
+                                >
+                                  {(req.num_tool_calls ?? 0).toLocaleString()}t
+                                </span>
+                              )}
+                            </div>
                           ) : (
                             <span className="text-gray-300">—</span>
                           )}
@@ -1233,7 +1295,7 @@ export function RequestsTab() {
 
         {/* Pagination */}
         {reqTotal > REQ_PAGE_SIZE && (
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 border-t border-gray-100 bg-gray-50/40 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
             <span className="text-[12px] text-gray-400 tabular-nums text-center sm:text-left">
               {reqOffset + 1}&ndash;{Math.min(reqOffset + REQ_PAGE_SIZE, reqTotal)} of {reqTotal}
               <span className="ml-2 text-gray-300">
