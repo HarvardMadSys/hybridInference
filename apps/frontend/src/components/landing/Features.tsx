@@ -14,7 +14,7 @@ const FEATURES: Feature[] = [
   },
   {
     title: 'Frontier models',
-    body: 'GLM, Minimax, Qwen, Kimi, and Anthropic models — all behind a single unified API.',
+    body: 'GLM, Minimax, Qwen, and Kimi models — all behind a single unified API.',
   },
   {
     title: 'Streaming and tool calls',
