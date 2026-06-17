@@ -789,6 +789,76 @@ class UpdateRouteWeightRequest(BaseModel):
     weight: float
 
 
+class ProviderRouteApiKeyRef(BaseModel):
+    """Masked API key reference used by provider route overrides."""
+
+    id: str | None = None
+    provider: str
+    label: str | None = None
+    key_prefix: str | None = None
+    source: Literal["default", "db", "env", "missing"]
+
+
+class ProviderRouteOption(BaseModel):
+    """Provider target available for route override selection."""
+
+    provider: str
+    label: str
+    kind: str
+    key_provider: str
+    default_base_url: str
+
+
+class ProviderRouteItem(BaseModel):
+    """Runtime provider target for one model route candidate."""
+
+    model_id: str
+    strategy: str
+    route_id: str
+    route_type: str
+    provider: str
+    upstream_provider: str
+    key_provider: str
+    base_url: str
+    api_key_id: str | None = None
+    api_key: ProviderRouteApiKeyRef
+    provider_model_id: str | None = None
+    quota_limit: int | None = Field(None, ge=1)
+    endpoint_id: str
+    yaml_weight: float
+    effective_weight: float
+    source: Literal["yaml", "override"]
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+
+
+class ListProviderRoutesResponse(BaseModel):
+    """Response payload for listing provider routes for one model."""
+
+    model_id: str
+    strategy: str
+    provider_options: list[ProviderRouteOption]
+    routes: list[ProviderRouteItem]
+
+
+class ListAllProviderRoutesResponse(BaseModel):
+    """Response payload for listing provider routes across canonical models."""
+
+    provider_options: list[ProviderRouteOption]
+    routes: list[ProviderRouteItem]
+
+
+class UpdateProviderRouteRequest(BaseModel):
+    """Request payload for updating one provider route target."""
+
+    provider: str | None = Field(None, min_length=1, max_length=64)
+    upstream_provider: str | None = Field(None, min_length=1, max_length=64)
+    base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str | None = Field(None, min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -822,15 +892,20 @@ __all__ = [
     "HardDeleteUserRequest",
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
+    "ListAllProviderRoutesResponse",
     "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
+    "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
     "ListRoutewiseSettingsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
     "ModelVisibilityItem",
+    "ProviderRouteApiKeyRef",
+    "ProviderRouteItem",
+    "ProviderRouteOption",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
     "RegenerateAPIKeyResponse",
@@ -849,6 +924,7 @@ __all__ = [
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateModelVisibilityRequest",
+    "UpdateProviderRouteRequest",
     "UpdateRouteWeightRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",

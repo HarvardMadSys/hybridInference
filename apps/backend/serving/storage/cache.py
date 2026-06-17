@@ -723,6 +723,37 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_weight_override(model_id, endpoint_id)
 
+    async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_route_configs_for_model(model_id)
+
+    async def list_all_provider_route_configs(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_provider_route_configs()
+
+    async def upsert_provider_route_config(
+        self,
+        model_id: str,
+        route_id: str,
+        provider: str,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.upsert_provider_route_config(
+            model_id,
+            route_id,
+            provider,
+            base_url,
+            api_key_id,
+            provider_model_id,
+            quota_limit,
+            updated_by,
+        )
+
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(

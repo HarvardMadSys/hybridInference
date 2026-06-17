@@ -512,6 +512,28 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_pwo_model ON provider_weight_overrides(model_id)"
         )
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_route_configs (
+                model_id TEXT NOT NULL,
+                route_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                api_key_id TEXT,
+                provider_model_id TEXT NOT NULL,
+                quota_limit INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT,
+                PRIMARY KEY (model_id, route_id)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_prc_model ON provider_route_configs(model_id)"
+        )
+        await conn.execute(
+            "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS quota_limit INTEGER"
+        )
+
         # --- provider_api_keys ---
         # Runtime-managed upstream provider credentials added by admins
         # through the dashboard. Augments env-var-sourced keys at boot.
@@ -2013,6 +2035,63 @@ class PostgresOperationalStore(OperationalStore):
                 endpoint_id,
             )
         return _parse_command_tag_count(tag) > 0
+
+    async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
+        """Return provider route override rows for one model ordered by route_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, provider, base_url, api_key_id, "
+                "provider_model_id, quota_limit, created_at, updated_at, updated_by "
+                "FROM provider_route_configs WHERE model_id = $1 ORDER BY route_id",
+                model_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_all_provider_route_configs(self) -> list[Row]:
+        """Return all provider route override rows ordered by model_id and route_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, provider, base_url, api_key_id, "
+                "provider_model_id, quota_limit, created_at, updated_at, updated_by "
+                "FROM provider_route_configs ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_provider_route_config(
+        self,
+        model_id: str,
+        route_id: str,
+        provider: str,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a runtime provider route override row."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_route_configs "
+                "(model_id, route_id, provider, base_url, api_key_id, provider_model_id, "
+                "quota_limit, created_at, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8) "
+                "ON CONFLICT (model_id, route_id) DO UPDATE SET "
+                "provider = EXCLUDED.provider, "
+                "base_url = EXCLUDED.base_url, "
+                "api_key_id = EXCLUDED.api_key_id, "
+                "provider_model_id = EXCLUDED.provider_model_id, "
+                "quota_limit = EXCLUDED.quota_limit, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                route_id,
+                provider,
+                base_url,
+                api_key_id,
+                provider_model_id,
+                quota_limit,
+                updated_by,
+            )
 
     # -- cost counters -------------------------------------------------------
 

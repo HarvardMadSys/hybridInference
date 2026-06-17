@@ -767,6 +767,28 @@ class OperationalStore(ABC):
     async def delete_weight_override(self, model_id: str, endpoint_id: str) -> bool:
         """Delete a provider weight override row. Returns True if removed."""
 
+    @abstractmethod
+    async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
+        """Return provider route override rows for one model ordered by route_id."""
+
+    @abstractmethod
+    async def list_all_provider_route_configs(self) -> list[Row]:
+        """Return all provider route override rows ordered by model_id and route_id."""
+
+    @abstractmethod
+    async def upsert_provider_route_config(
+        self,
+        model_id: str,
+        route_id: str,
+        provider: str,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a runtime provider route override row."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

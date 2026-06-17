@@ -35,3 +35,26 @@ def test_weight_override_signatures():
         "model_id",
         "endpoint_id",
     ]
+
+
+def test_provider_route_config_signatures():
+    assert list(
+        inspect.signature(OperationalStore.list_provider_route_configs_for_model).parameters
+    ) == [
+        "self",
+        "model_id",
+    ]
+    assert list(inspect.signature(OperationalStore.list_all_provider_route_configs).parameters) == [
+        "self"
+    ]
+    assert list(inspect.signature(OperationalStore.upsert_provider_route_config).parameters) == [
+        "self",
+        "model_id",
+        "route_id",
+        "provider",
+        "base_url",
+        "api_key_id",
+        "provider_model_id",
+        "quota_limit",
+        "updated_by",
+    ]

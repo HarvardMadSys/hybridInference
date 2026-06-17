@@ -515,6 +515,22 @@ async def initialize() -> AppServices:
             await apply_db_keys_at_boot(operational_store)
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider keys at boot: {exc}")
+        try:
+            from serving.servers.routers.admin.provider_routes import (
+                apply_persisted_provider_route_configs,
+            )
+
+            provider_route_services = AppServices(
+                router=router,
+                operational_store=operational_store,
+                model_router_registry=model_router_registry,
+            )
+            await apply_persisted_provider_route_configs(
+                provider_route_services,
+                operational_store,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to apply DB-backed provider route configs at boot: {exc}")
 
     # Runtime settings (DB-backed feature flags with TTL cache)
     runtime_settings = None
