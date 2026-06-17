@@ -349,10 +349,7 @@ describe('provider route client', () => {
 
     const out = await listOpenRouterProviderOptions('minimax/minimax-m2.5');
 
-    expect(out.providers.map((provider) => provider.provider)).toEqual([
-      'inceptron',
-      'chutes',
-    ]);
+    expect(out.providers.map((provider) => provider.provider)).toEqual(['inceptron', 'chutes']);
     const [url] = fetchMock.mock.calls[0];
     expect(String(url)).toContain(
       '/admin/routing/openrouter-providers?provider_model_id=minimax%2Fminimax-m2.5',

@@ -582,9 +582,7 @@ class RouteWiseRouter(BaseRouter):
         route_provider = metadata.get("route_provider")
         upstream_provider = metadata.get("upstream_provider")
         return bool(
-            route_provider
-            and upstream_provider
-            and str(route_provider) != str(upstream_provider)
+            route_provider and upstream_provider and str(route_provider) != str(upstream_provider)
         )
 
     @staticmethod

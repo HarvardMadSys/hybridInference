@@ -37,6 +37,7 @@ import {
   verifyProviderRoute,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
+import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
 
 const providerOptions = [
   {
@@ -59,6 +60,22 @@ const openRouterProviderOptions = [
   { provider: 'deepinfra', label: 'DeepInfra' },
   { provider: 'parasail', label: 'Parasail' },
 ];
+
+const providerKeysResponse = (provider?: string): ListProviderApiKeysResponse => {
+  const keys: ListProviderApiKeysResponse['keys'] = [];
+  if (provider === 'openrouter') {
+    keys.push({
+      id: 'key-1',
+      provider: 'openrouter',
+      key_prefix: 'sk-or...1234',
+      label: 'staging',
+      source: 'db',
+      status: 'active',
+      created_at: null,
+    });
+  }
+  return { provider: provider ?? null, keys };
+};
 
 const discoveredOpenRouterProviderOptions = [
   { provider: 'inceptron', label: 'Inceptron' },
@@ -164,23 +181,9 @@ describe('ProviderRoutesTab', () => {
       openrouter_provider_options: openRouterProviderOptions,
       routes: [route],
     });
-    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) => ({
-      provider: provider ?? null,
-      keys:
-        provider === 'openrouter'
-          ? [
-            {
-              id: 'key-1',
-              provider: 'openrouter',
-              key_prefix: 'sk-or...1234',
-              label: 'staging',
-              source: 'db',
-              status: 'active',
-              created_at: null,
-            },
-          ]
-          : [],
-    }));
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
     vi.mocked(updateProviderRoute).mockResolvedValue({
       ...route,
       provider: 'featherless',
@@ -297,9 +300,7 @@ describe('ProviderRoutesTab', () => {
       );
     });
     expect(updateProviderRoute).not.toHaveBeenCalled();
-    expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass(
-      'bg-emerald-600',
-    );
+    expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
   });
 
   it('submits local daily quota for quota provider overrides', async () => {
@@ -358,19 +359,15 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
 
     await waitFor(() => {
-      expect(updateProviderRoute).toHaveBeenCalledWith(
-        'minimax-fast',
-        'minimax-fast:chutes-api',
-        {
-          upstream_provider: 'openrouter',
-          openrouter_provider: 'parasail',
-          openrouter_sort: null,
-          base_url: 'https://openrouter.ai/api/v1',
-          api_key_id: null,
-          provider_model_id: 'minimax/minimax-m2.5',
-          quota_limit: 8000,
-        },
-      );
+      expect(updateProviderRoute).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:chutes-api', {
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'parasail',
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: null,
+        provider_model_id: 'minimax/minimax-m2.5',
+        quota_limit: 8000,
+      });
     });
   });
 
@@ -434,23 +431,9 @@ describe('ProviderRoutesTab', () => {
       openrouter_provider_options: openRouterProviderOptions,
       routes: [route, deepinfraRoute],
     });
-    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) => ({
-      provider: provider ?? null,
-      keys:
-        provider === 'openrouter'
-          ? [
-            {
-              id: 'key-1',
-              provider: 'openrouter',
-              key_prefix: 'sk-or...1234',
-              label: 'staging',
-              source: 'db',
-              status: 'active',
-              created_at: null,
-            },
-          ]
-          : [],
-    }));
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
     vi.mocked(createProviderRouteCandidate).mockResolvedValue({
       ...route,
       route_id: 'minimax-fast:openrouter[inceptron]-api',
@@ -482,8 +465,9 @@ describe('ProviderRoutesTab', () => {
     });
     const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
-      expect(within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }))
-        .toBeInTheDocument();
+      expect(
+        within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }),
+      ).toBeInTheDocument();
     });
     fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
       target: { value: 'provider:inceptron' },
@@ -547,9 +531,7 @@ describe('ProviderRoutesTab', () => {
       });
     });
     expect(createProviderRouteCandidate).not.toHaveBeenCalled();
-    expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass(
-      'bg-emerald-600',
-    );
+    expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
   });
 
   it('adds a runtime OpenRouter route with a custom provider slug', async () => {
@@ -727,7 +709,9 @@ describe('ProviderRoutesTab', () => {
 
     const providerSelect = screen.getByLabelText('Provider');
     expect(providerSelect).toHaveValue('openrouter');
-    expect(within(providerSelect).queryByRole('option', { name: 'Chutes' })).not.toBeInTheDocument();
+    expect(
+      within(providerSelect).queryByRole('option', { name: 'Chutes' }),
+    ).not.toBeInTheDocument();
     expect(
       within(providerSelect).queryByRole('option', { name: 'Featherless' }),
     ).not.toBeInTheDocument();
@@ -738,13 +722,16 @@ describe('ProviderRoutesTab', () => {
 
     const openRouterSelect = screen.getByLabelText('OpenRouter routing');
     await waitFor(() => {
-      expect(within(openRouterSelect).queryByRole('option', { name: 'Provider: DeepInfra' }))
-        .not.toBeInTheDocument();
+      expect(
+        within(openRouterSelect).queryByRole('option', { name: 'Provider: DeepInfra' }),
+      ).not.toBeInTheDocument();
     });
-    expect(within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }))
-      .toBeInTheDocument();
-    expect(within(openRouterSelect).getByRole('option', { name: 'Provider: Chutes' }))
-      .toBeInTheDocument();
+    expect(
+      within(openRouterSelect).getByRole('option', { name: 'Provider: Inceptron' }),
+    ).toBeInTheDocument();
+    expect(
+      within(openRouterSelect).getByRole('option', { name: 'Provider: Chutes' }),
+    ).toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
 
@@ -796,9 +783,11 @@ describe('ProviderRoutesTab', () => {
       screen.getByText('This model already has every configured quota provider.'),
     ).toBeInTheDocument();
     expect(screen.getByLabelText('API key')).toHaveValue('');
-    expect(within(screen.getByLabelText('API key')).getByRole('option', {
-      name: 'No provider selected',
-    })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText('API key')).getByRole('option', {
+        name: 'No provider selected',
+      }),
+    ).toBeInTheDocument();
   });
 
   it('deletes a runtime provider route', async () => {

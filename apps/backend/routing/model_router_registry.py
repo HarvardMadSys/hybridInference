@@ -124,7 +124,9 @@ class ModelRouterRegistry:
         name, _params = self._router_spec(canonical_model_id, cfg)
         return name
 
-    def _router_spec(self, canonical_model_id: str, cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _router_spec(
+        self, canonical_model_id: str, cfg: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
         configured_name = str(cfg.get("router") or self._default)
         override_name = self._router_overrides.get(canonical_model_id)
         name = override_name or configured_name

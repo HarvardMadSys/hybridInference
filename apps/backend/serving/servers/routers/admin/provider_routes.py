@@ -47,13 +47,13 @@ MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
 OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 OPENROUTER_SORT_POLICIES = {"price", "throughput", "latency"}
-OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[
-    str, tuple[float, list[OpenRouterProviderOption]]
-] = {}
+OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[str, tuple[float, list[OpenRouterProviderOption]]] = {}
 
 
 @dataclass(frozen=True)
 class ProviderTarget:
+    """Static metadata for an admin-selectable provider target."""
+
     provider: str
     label: str
     kind: str
@@ -144,6 +144,8 @@ PROVIDER_CREATE_ROUTE_TYPES: dict[str, set[str]] = {
 
 @dataclass
 class PreparedRouteUpdate:
+    """Prepared replacement for an existing provider route target."""
+
     route: Any
     route_id: str
     route_index: int
@@ -160,6 +162,8 @@ class PreparedRouteUpdate:
 
 @dataclass
 class PreparedRouteCandidate:
+    """Prepared runtime provider route candidate ready to install."""
+
     route: Any
     route_id: str
     adapter: Any
@@ -178,6 +182,8 @@ class PreparedRouteCandidate:
 
 @dataclass
 class PreparedRouteUpdateContext:
+    """Original route state plus the prepared replacement update."""
+
     model_id: str
     route_id: str
     route: Any
@@ -469,7 +475,9 @@ def _parse_openrouter_provider_options(payload: dict[str, Any]) -> list[OpenRout
         if not slug or slug in seen:
             continue
         provider_name = endpoint.get("provider_name")
-        label = str(provider_name).strip() if provider_name else OPENROUTER_PROVIDER_LABELS.get(slug)
+        label = (
+            str(provider_name).strip() if provider_name else OPENROUTER_PROVIDER_LABELS.get(slug)
+        )
         providers.append(OpenRouterProviderOption(provider=slug, label=label or slug))
         seen.add(slug)
     return providers
@@ -491,13 +499,16 @@ async def _fetch_openrouter_provider_options(
     url = f"{OPENROUTER_API_BASE_URL}/models/{encoded_model_id}/endpoints"
     timeout = aiohttp.ClientTimeout(total=OPENROUTER_ENDPOINT_DISCOVERY_TIMEOUT_SEC)
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session, session.get(
-            url,
-            headers={
-                "HTTP-Referer": "https://freeinference.org",
-                "X-Title": "FreeInference",
-            },
-        ) as response:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(
+                url,
+                headers={
+                    "HTTP-Referer": "https://freeinference.org",
+                    "X-Title": "FreeInference",
+                },
+            ) as response,
+        ):
             if response.status >= 400:
                 body = await response.text()
                 detail = _truncate(body or response.reason or "", 300)
@@ -1320,7 +1331,12 @@ def _rebuild_routewise_routers(services) -> None:
         seen.add(id(router_obj))
         rebuild = getattr(router_obj, "_rebuild_from_fixed_router", None)
         if rebuild is not None:
-            rebuild()
+            commit_lock = getattr(router_obj, "_route_commit_lock", None)
+            if commit_lock is not None:
+                with commit_lock:
+                    rebuild()
+            else:
+                rebuild()
 
 
 def _effective_weight(services, model_id: str, raw_weight: float, endpoint_id: str) -> float:
@@ -1383,7 +1399,9 @@ async def _route_row(
         if override_row and override_row.get("provider_model_id") is not None
         else getattr(adapter.config, "provider_model_id", None)
     )
-    source = "override" if override_row else ("runtime" if _is_runtime_candidate(adapter) else "yaml")
+    source = (
+        "override" if override_row else ("runtime" if _is_runtime_candidate(adapter) else "yaml")
+    )
     return ProviderRouteItem(
         model_id=model_id,
         strategy=strategy,

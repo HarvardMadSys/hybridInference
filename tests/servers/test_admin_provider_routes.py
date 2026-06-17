@@ -968,7 +968,9 @@ async def test_apply_persisted_provider_route_candidates(admin_client):
 
     await apply_persisted_provider_route_candidates(services, op_store)
 
-    runtime_adapter, raw_weight, endpoint_id = route_executor.routes["minimax-fast"].raw_adapters[-1]
+    runtime_adapter, raw_weight, endpoint_id = route_executor.routes["minimax-fast"].raw_adapters[
+        -1
+    ]
     assert endpoint_id == "minimax-fast:openrouter[parasail]-api"
     assert raw_weight == 1.5
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"

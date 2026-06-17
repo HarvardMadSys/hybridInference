@@ -225,17 +225,11 @@ function providerLabel(providerOptions: ProviderRouteOption[], provider: string)
   return optionFor(providerOptions, provider)?.label ?? provider;
 }
 
-function openRouterProviderLabel(
-  options: OpenRouterProviderOption[],
-  provider: string,
-) {
+function openRouterProviderLabel(options: OpenRouterProviderOption[], provider: string) {
   return options.find((option) => option.provider === provider)?.label ?? provider;
 }
 
-function ensureOpenRouterProviderOption(
-  options: OpenRouterProviderOption[],
-  provider: string,
-) {
+function ensureOpenRouterProviderOption(options: OpenRouterProviderOption[], provider: string) {
   if (
     !provider ||
     provider === OPENROUTER_PROVIDER_CUSTOM ||
@@ -510,37 +504,36 @@ export function ProviderRoutesTab() {
     Boolean(form.providerModelId.trim()) &&
     formOpenRouterProviderValid &&
     quotaLimitValid;
-  const editRoutePayload = useMemo(
-    () =>
-      editingRoute
-        ? {
-          upstream_provider: form.upstreamProvider,
-          openrouter_provider:
-              form.upstreamProvider === 'openrouter' ? selectedOpenRouterProvider : null,
-          openrouter_sort: openRouterSortForPayload(
-            form.upstreamProvider,
-            form.openRouterProvider,
-            form.openRouterSort,
-          ),
-          base_url: form.baseUrl.trim(),
-          api_key_id: form.apiKeyId || null,
-          provider_model_id: form.providerModelId.trim(),
-          quota_limit: editsLocalQuota ? parsedQuotaLimit : null,
-        }
-        : null,
-    [
-      editingRoute,
-      editsLocalQuota,
-      form.apiKeyId,
-      form.baseUrl,
-      form.openRouterProvider,
-      form.openRouterSort,
-      form.providerModelId,
-      form.upstreamProvider,
-      parsedQuotaLimit,
-      selectedOpenRouterProvider,
-    ],
-  );
+  const editRoutePayload = useMemo(() => {
+    if (!editingRoute) {
+      return null;
+    }
+    return {
+      upstream_provider: form.upstreamProvider,
+      openrouter_provider:
+        form.upstreamProvider === 'openrouter' ? selectedOpenRouterProvider : null,
+      openrouter_sort: openRouterSortForPayload(
+        form.upstreamProvider,
+        form.openRouterProvider,
+        form.openRouterSort,
+      ),
+      base_url: form.baseUrl.trim(),
+      api_key_id: form.apiKeyId || null,
+      provider_model_id: form.providerModelId.trim(),
+      quota_limit: editsLocalQuota ? parsedQuotaLimit : null,
+    };
+  }, [
+    editingRoute,
+    editsLocalQuota,
+    form.apiKeyId,
+    form.baseUrl,
+    form.openRouterProvider,
+    form.openRouterSort,
+    form.providerModelId,
+    form.upstreamProvider,
+    parsedQuotaLimit,
+    selectedOpenRouterProvider,
+  ]);
   const createRoutePayload = useMemo(
     () => ({
       route_type: createForm.routeType,
@@ -575,21 +568,22 @@ export function ProviderRoutesTab() {
       isRoutewise,
     ],
   );
-  const editVerificationSignature =
-    editingRoute && editRoutePayload
-      ? formSignature({
-        model_id: editingRoute.model_id,
-        route_id: editingRoute.route_id,
-        payload: editRoutePayload,
-      })
-      : null;
+  const editVerificationSignature = (() => {
+    if (!editingRoute || !editRoutePayload) {
+      return null;
+    }
+    return formSignature({
+      model_id: editingRoute.model_id,
+      route_id: editingRoute.route_id,
+      payload: editRoutePayload,
+    });
+  })();
   const createVerificationSignature = formSignature({
     model_id: selectedModel,
     payload: createRoutePayload,
   });
   const editRouteVerified =
-    Boolean(editVerificationSignature) &&
-    verifiedEditSignature === editVerificationSignature;
+    Boolean(editVerificationSignature) && verifiedEditSignature === editVerificationSignature;
   const createRouteVerified = verifiedCreateSignature === createVerificationSignature;
 
   useEffect(() => {
@@ -652,12 +646,7 @@ export function ProviderRoutesTab() {
   );
 
   const createProviderOptions = useMemo(
-    () =>
-      createProviderOptionsFor(
-        providerSelectBaseOptions,
-        createForm.routeType,
-        selectedRoutes,
-      ),
+    () => createProviderOptionsFor(providerSelectBaseOptions, createForm.routeType, selectedRoutes),
     [createForm.routeType, providerSelectBaseOptions, selectedRoutes],
   );
 
@@ -785,16 +774,16 @@ export function ProviderRoutesTab() {
     );
   }, []);
 
-  const replaceRoute = useCallback((updated: ProviderRoute) => {
-    updateRoute(updated);
-    setEditingRoute(updated);
-  }, [updateRoute]);
+  const replaceRoute = useCallback(
+    (updated: ProviderRoute) => {
+      updateRoute(updated);
+      setEditingRoute(updated);
+    },
+    [updateRoute],
+  );
 
   const replaceModelRoutes = useCallback((modelId: string, updated: ProviderRoute[]) => {
-    setRoutes((current) => [
-      ...current.filter((route) => route.model_id !== modelId),
-      ...updated,
-    ]);
+    setRoutes((current) => [...current.filter((route) => route.model_id !== modelId), ...updated]);
   }, []);
 
   const onUpstreamProviderChange = (upstreamProvider: string) => {
@@ -817,8 +806,7 @@ export function ProviderRoutesTab() {
       providerModelId:
         editingRoute && upstreamProvider === routePrimaryUpstreamProvider(editingRoute)
           ? (editingRoute.provider_model_id ?? current.providerModelId)
-          : defaultProviderModelIdFor(upstreamProvider, selectedRoutes) ||
-            current.providerModelId,
+          : defaultProviderModelIdFor(upstreamProvider, selectedRoutes) || current.providerModelId,
       quotaLimit: current.quotaLimit,
     }));
   };
@@ -869,8 +857,7 @@ export function ProviderRoutesTab() {
       baseUrl: selected?.default_base_url || current.baseUrl,
       apiKeyId: '',
       providerModelId:
-        defaultProviderModelIdFor(upstreamProvider, selectedRoutes) ||
-        current.providerModelId,
+        defaultProviderModelIdFor(upstreamProvider, selectedRoutes) || current.providerModelId,
     }));
   };
 
@@ -977,9 +964,7 @@ export function ProviderRoutesTab() {
     try {
       const updated = await deleteProviderRoute(route.model_id, route.route_id);
       updateRoute(updated);
-      setEditingRoute((current) =>
-        current && routeKey(current) === key ? null : current,
-      );
+      setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
       toast.success('Restored config route');
     } catch (err) {
       toast.error(`Restore failed: ${getErrorMessage(err)}`);
@@ -994,9 +979,7 @@ export function ProviderRoutesTab() {
     try {
       const updated = await deleteProviderRouteCandidate(route.model_id, route.route_id);
       replaceModelRoutes(updated.model_id ?? route.model_id, updated.routes);
-      setEditingRoute((current) =>
-        current && routeKey(current) === key ? null : current,
-      );
+      setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
       toast.success('Provider route deleted');
     } catch (err) {
       toast.error(`Delete failed: ${getErrorMessage(err)}`);
@@ -1055,9 +1038,7 @@ export function ProviderRoutesTab() {
           <select
             id="provider-route-strategy"
             value={strategy}
-            onChange={(event) =>
-              void onStrategyChange(event.target.value as ProviderRouteStrategy)
-            }
+            onChange={(event) => void onStrategyChange(event.target.value as ProviderRouteStrategy)}
             disabled={!selectedModel || loading || savingStrategy}
             className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-700 focus:border-gray-400 focus:outline-none disabled:opacity-50"
           >
@@ -1145,10 +1126,7 @@ export function ProviderRoutesTab() {
                     {targetUpstreamProvider === 'openrouter' && targetOpenRouterProvider && (
                       <div className="mt-1 text-[11px] leading-5 text-gray-500">
                         OpenRouter provider:{' '}
-                        {openRouterProviderLabel(
-                          openRouterSelectOptions,
-                          targetOpenRouterProvider,
-                        )}
+                        {openRouterProviderLabel(openRouterSelectOptions, targetOpenRouterProvider)}
                       </div>
                     )}
                     {targetUpstreamProvider === 'openrouter' && !targetOpenRouterProvider && (
@@ -1264,10 +1242,7 @@ export function ProviderRoutesTab() {
               </select>
             </div>
             <div>
-              <label
-                className="text-[12px] font-medium text-gray-500"
-                htmlFor="new-route-provider"
-              >
+              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-provider">
                 Provider
               </label>
               <select
@@ -1293,10 +1268,7 @@ export function ProviderRoutesTab() {
               )}
             </div>
             <div>
-              <label
-                className="text-[12px] font-medium text-gray-500"
-                htmlFor="new-route-api-key"
-              >
+              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-api-key">
                 API key
               </label>
               <select
@@ -1336,10 +1308,7 @@ export function ProviderRoutesTab() {
               />
             </div>
             <div>
-              <label
-                className="text-[12px] font-medium text-gray-500"
-                htmlFor="new-route-model-id"
-              >
+              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-model-id">
                 Provider model ID
               </label>
               <input
@@ -1689,10 +1658,7 @@ export function ProviderRoutesTab() {
 
           {editsLocalQuota && (
             <div className="mt-3">
-              <label
-                className="text-[12px] font-medium text-gray-500"
-                htmlFor="route-quota-limit"
-              >
+              <label className="text-[12px] font-medium text-gray-500" htmlFor="route-quota-limit">
                 Local daily quota
               </label>
               <input
