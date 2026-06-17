@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useId, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
   AdminRecentRequestItem,
@@ -530,12 +530,17 @@ function formatTokens(n: number): string {
 function SearchInput({
   value,
   onChange,
+  onSubmit,
   placeholder,
 }: {
   value: string;
   onChange: (value: string) => void;
+  onSubmit?: () => void;
   placeholder: string;
 }) {
+  // Controlled and synchronous: the parent filter state always reflects what the
+  // input shows, so actions like Refresh/Export never read a stale value. The
+  // per-keystroke fetch is debounced in the parent instead (see loadRequests).
   return (
     <div className="relative flex-1 min-w-[160px]">
       <svg
@@ -556,7 +561,11 @@ function SearchInput({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onSubmit?.();
+        }}
         placeholder={placeholder}
+        aria-label={placeholder}
         className="w-full rounded-lg border border-gray-200 bg-white py-2 pl-9 pr-3 text-[13px] placeholder:text-gray-400 transition-shadow focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
       />
     </div>
@@ -617,6 +626,11 @@ export function RequestsTab() {
   const [reqOffset, setReqOffset] = useState(0);
   const [reqUserFilter, setReqUserFilter] = useState('');
   const [reqModelFilter, setReqModelFilter] = useState('');
+  // Debounced copies of the text filters drive the fetch, so typing doesn't fire
+  // a request per keystroke. The raw values above stay synchronous for the
+  // inputs and for actions (Refresh/Export) that must read the current filters.
+  const [debouncedUserFilter, setDebouncedUserFilter] = useState('');
+  const [debouncedModelFilter, setDebouncedModelFilter] = useState('');
   const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
   const [reqContentCache, setReqContentCache] = useState<
@@ -642,24 +656,53 @@ export function RequestsTab() {
   const [exportLoading, setExportLoading] = useState(false);
   const [clearingErrors, setClearingErrors] = useState(false);
 
-  const loadRequests = useCallback(async () => {
-    setReqLoading(true);
-    try {
-      const d = await listRecentRequests(
-        REQ_PAGE_SIZE,
-        reqOffset,
-        reqUserFilter || undefined,
-        reqModelFilter || undefined,
-        reqErrorsOnly,
-      );
-      setReqEntries(d.requests);
-      setReqTotal(d.total);
-    } catch (e) {
-      toast.error(getErrorMessage(e));
-    } finally {
-      setReqLoading(false);
-    }
-  }, [reqOffset, reqUserFilter, reqModelFilter, reqErrorsOnly]);
+  // Monotonic id for list fetches so an out-of-order response (e.g. a slow
+  // request issued under an older filter) can't overwrite a newer one.
+  const reqSeqRef = useRef(0);
+
+  // Callers pass the filters to fetch with: the debounce effect passes the
+  // debounced values, while manual actions (Refresh, Clear errors) pass the
+  // raw visible filters so they always reflect what the admin sees.
+  const loadRequests = useCallback(
+    async (userFilter: string, modelFilter: string) => {
+      const seq = ++reqSeqRef.current;
+      setReqLoading(true);
+      try {
+        const d = await listRecentRequests(
+          REQ_PAGE_SIZE,
+          reqOffset,
+          userFilter || undefined,
+          modelFilter || undefined,
+          reqErrorsOnly,
+        );
+        if (seq !== reqSeqRef.current) return;
+        setReqEntries(d.requests);
+        setReqTotal(d.total);
+      } catch (e) {
+        if (seq === reqSeqRef.current) toast.error(getErrorMessage(e));
+      } finally {
+        if (seq === reqSeqRef.current) setReqLoading(false);
+      }
+    },
+    [reqOffset, reqErrorsOnly],
+  );
+
+  // Debounce text-filter changes into the values that drive the fetch. Offset
+  // and "errors only" changes are applied immediately (they don't go through
+  // here), so pagination stays snappy.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedUserFilter(reqUserFilter);
+      setDebouncedModelFilter(reqModelFilter);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [reqUserFilter, reqModelFilter]);
+
+  // Flush the debounce so pressing Enter searches immediately.
+  const flushFilterSearch = useCallback(() => {
+    setDebouncedUserFilter(reqUserFilter);
+    setDebouncedModelFilter(reqModelFilter);
+  }, [reqUserFilter, reqModelFilter]);
 
   const loadRequestMetrics = useCallback(async () => {
     setReqMetricsLoading(true);
@@ -685,18 +728,18 @@ export function RequestsTab() {
     try {
       const result = await clearErrorRequests(1);
       toast.success(result.message);
-      loadRequests();
+      loadRequests(reqUserFilter, reqModelFilter);
       loadRequestMetrics();
     } catch (e) {
       toast.error(getErrorMessage(e));
     } finally {
       setClearingErrors(false);
     }
-  }, [loadRequests, loadRequestMetrics]);
+  }, [loadRequests, loadRequestMetrics, reqUserFilter, reqModelFilter]);
 
   useEffect(() => {
-    loadRequests();
-  }, [loadRequests]);
+    loadRequests(debouncedUserFilter, debouncedModelFilter);
+  }, [loadRequests, debouncedUserFilter, debouncedModelFilter]);
 
   useEffect(() => {
     loadRequestMetrics();
@@ -771,7 +814,7 @@ export function RequestsTab() {
               type="button"
               onClick={() => {
                 loadRequestMetrics();
-                loadRequests();
+                loadRequests(reqUserFilter, reqModelFilter);
               }}
               disabled={reqMetricsLoading || reqLoading}
               className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
@@ -801,6 +844,7 @@ export function RequestsTab() {
             setReqUserFilter(value);
             setReqOffset(0);
           }}
+          onSubmit={flushFilterSearch}
           placeholder="Filter by user ID…"
         />
         <SearchInput
@@ -809,6 +853,7 @@ export function RequestsTab() {
             setReqModelFilter(value);
             setReqOffset(0);
           }}
+          onSubmit={flushFilterSearch}
           placeholder="Filter by model…"
         />
         <label className="flex cursor-pointer select-none items-center gap-1.5 text-[13px] text-gray-600">
