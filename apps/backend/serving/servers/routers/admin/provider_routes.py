@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import os
+import socket
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -171,9 +172,20 @@ def _baseline_route_entries(route) -> list[tuple[object, float, str]]:
 def _route_index_for_id(entries: list[tuple[object, float, str]], route_id: str) -> int:
     if not route_id:
         raise HTTPException(status_code=400, detail="unknown route id")
+    matches: list[int] = []
     for index, (adapter, _weight, endpoint_id) in enumerate(entries):
         if _route_id_for_entry(adapter, endpoint_id) == route_id:
-            return index
+            matches.append(index)
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"duplicate provider route id {route_id!r}; set unique endpoint_id values "
+                "before editing this route"
+            ),
+        )
+    if matches:
+        return matches[0]
     raise HTTPException(status_code=400, detail="unknown route id")
 
 
@@ -275,18 +287,48 @@ def _validate_base_url(base_url: str) -> str:
     try:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
+        try:
+            resolved = socket.getaddrinfo(
+                hostname,
+                parsed.port,
+                type=socket.SOCK_STREAM,
+            )
+        except socket.gaierror as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="base_url host could not be resolved",
+            ) from exc
+
+        for result in resolved:
+            address = result[4][0]
+            try:
+                resolved_ip = ipaddress.ip_address(address)
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail="base_url host resolved to an invalid address",
+                ) from None
+            if _base_url_ip_blocked(resolved_ip):
+                raise HTTPException(
+                    status_code=422,
+                    detail="base_url host is not allowed",
+                ) from None
         return cleaned
 
-    if (
+    if _base_url_ip_blocked(ip):
+        raise HTTPException(status_code=422, detail="base_url host is not allowed")
+    return cleaned
+
+
+def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return (
         ip.is_loopback
         or ip.is_private
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_reserved
         or ip.is_unspecified
-    ):
-        raise HTTPException(status_code=422, detail="base_url host is not allowed")
-    return cleaned
+    )
 
 
 def _config_to_dict(config: Any) -> dict[str, Any]:
@@ -989,3 +1031,14 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                 route_id,
                 exc,
             )
+            if route_id.startswith("route-"):
+                try:
+                    await op_store.delete_provider_route_config(model_id, route_id)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Failed to clean up stale provider route config for model=%s "
+                        "route_id=%s: %s",
+                        model_id,
+                        route_id,
+                        cleanup_exc,
+                    )

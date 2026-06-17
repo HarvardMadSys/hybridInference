@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -14,6 +15,7 @@ from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin import provider_routes
 from serving.servers.routers.admin.provider_routes import apply_persisted_provider_route_configs
 from serving.storage.base import ProviderKeyRow
 
@@ -152,6 +154,19 @@ async def admin_client(monkeypatch):
     monkeypatch.setattr(
         "serving.servers.routers.admin.provider_routes._verify_provider_route",
         verify_mock,
+    )
+    monkeypatch.setattr(
+        provider_routes.socket,
+        "getaddrinfo",
+        lambda _host, port, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("93.184.216.34", port or 443),
+            )
+        ],
     )
 
     transport = ASGITransport(app=app)
@@ -324,6 +339,83 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_put_provider_route_rejects_private_dns_base_url(admin_client, monkeypatch):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    monkeypatch.setattr(
+        provider_routes.socket,
+        "getaddrinfo",
+        lambda _host, port, **_kwargs: [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("10.0.0.5", port or 443),
+            )
+        ],
+    )
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        json={
+            "upstream_provider": "parasail",
+            "base_url": "https://evil.example/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "base_url host is not allowed"
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    assert current_adapter.config.provider == "featherless"
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_put_provider_route_rejects_duplicate_route_id(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    duplicate = _compat_adapter(
+        provider="chutes",
+        endpoint_id="minimax-fast:chutes-api",
+        base_url="https://llm2.chutes.ai/v1",
+        provider_model_id="MiniMaxAI/MiniMax-M2.5-TEE",
+        provider_type="quota",
+        quota_pool="chutes-minimax-fast-daily-duplicate",
+        quota_source={
+            "provider": "chutes",
+            "usage_label": "Daily requests duplicate",
+            "unit": "requests",
+        },
+        quota={"limit": 5000},
+    )
+    route = route_executor.routes["minimax-fast"]
+    route.raw_adapters.append((duplicate, 1.0, "minimax-fast:chutes-api"))
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409
+    assert "duplicate provider route id" in response.json()["detail"]
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_delete_provider_route_restores_yaml_baseline(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
@@ -409,3 +501,4 @@ async def test_apply_persisted_provider_route_config_skips_stale_positional_rout
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert current_adapter.config.provider == "chutes"
     fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", "route-0")
