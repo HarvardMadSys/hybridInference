@@ -233,7 +233,7 @@ class RouteWiseRouter(BaseRouter):
         self.quota_pools: dict[str, QuotaPool] = {}
         self.concurrency_pools: dict[str, ConcurrencyManager] = {}
         self._endpoint_concurrency_pool: dict[str, str] = {}
-        self._local_quota_fallback_sources: set[QuotaSource] = set()
+        self._local_quota_fallback_pools: set[str] = set()
         self.prefix_cache = PrefixCacheCoordinator(
             enabled=self.config.prefix_cache_cost_adjustment_enabled,
         )
@@ -496,6 +496,7 @@ class RouteWiseRouter(BaseRouter):
         concurrency_specs: dict[str, tuple[ConcurrencyPolicy, str]] = {}
         self._endpoint_concurrency_pool = {}
         local_quota_fallbacks: dict[QuotaSource, int] = {}
+        local_quota_fallback_pools: set[str] = set()
         for candidates in self.route_candidates.values():
             for candidate in candidates:
                 if (
@@ -518,10 +519,6 @@ class RouteWiseRouter(BaseRouter):
                         candidate.endpoint_id,
                         bool(uses_local_fallback or (prior[3] if prior is not None else False)),
                     )
-                    if uses_local_fallback and candidate.quota_source is not None:
-                        local_quota_fallbacks[candidate.quota_source] = (
-                            candidate.quota_policy.limit
-                        )
                 elif (
                     candidate.provider_type is ProviderType.CONCURRENCY
                     and candidate.concurrency_pool is not None
@@ -549,17 +546,20 @@ class RouteWiseRouter(BaseRouter):
                 raise ValueError(
                     f"RouteWise quota_pool {pool_id!r} ({endpoint!r}) has no quota_source"
                 )
+            pool_source = source
             if uses_local_fallback:
-                local_quota_fallbacks[source] = policy.limit
+                pool_source = self._local_quota_source(pool_id)
+                local_quota_fallbacks[pool_source] = policy.limit
+                local_quota_fallback_pools.add(pool_id)
             # Snapshot pools are stateless wrappers (truth lives in the
             # store), so they are always rebuilt against the current store.
             quota_pools[pool_id] = QuotaPool(
                 self.quota_snapshots,
-                source,
+                pool_source,
                 policy=policy,
             )
         self.quota_pools = quota_pools
-        self._local_quota_fallback_sources = set(local_quota_fallbacks)
+        self._local_quota_fallback_pools = local_quota_fallback_pools
         self.quota_snapshots.configure_local_fallbacks(local_quota_fallbacks)
 
         concurrency_pools: dict[str, ConcurrencyManager] = {}
@@ -583,6 +583,14 @@ class RouteWiseRouter(BaseRouter):
             route_provider
             and upstream_provider
             and str(route_provider) != str(upstream_provider)
+        )
+
+    @staticmethod
+    def _local_quota_source(pool_id: str) -> QuotaSource:
+        return QuotaSource(
+            provider="local",
+            usage_label=f"routewise:{pool_id}",
+            unit="requests",
         )
 
     def _canonical_model_id(self, model_id: str) -> str:
@@ -699,7 +707,7 @@ class RouteWiseRouter(BaseRouter):
                 if (
                     candidate.provider_type is ProviderType.QUOTA
                     and candidate.quota_source is not None
-                    and candidate.quota_source not in self._local_quota_fallback_sources
+                    and candidate.quota_pool not in self._local_quota_fallback_pools
                 ):
                     sources[candidate.quota_source] = candidate.quota_source
         return list(sources.values())

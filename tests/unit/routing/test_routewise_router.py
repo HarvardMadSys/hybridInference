@@ -495,12 +495,62 @@ class TestRouteWiseRouterScaffold:
         assert selected is quota_adapter
         assert router._quota_sources() == []
         source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
-        snapshot = router.quota_snapshots.get(source_obj)
+        assert router.quota_snapshots.get(source_obj) is None
+        pool_id = next(iter(router.quota_pools))
+        pool = _quota_pool(router)
+        assert pool.source == QuotaSource(
+            provider="local",
+            usage_label=f"routewise:{pool_id}",
+            unit="requests",
+        )
+        snapshot = router.quota_snapshots.get(pool.source)
         assert snapshot is not None
         assert snapshot.limit == 5000
         assert snapshot.remaining == 4999
         decision = router._pending_decisions["req-local-fallback"]
         assert decision["quota_remaining"] == 4999
+
+    def test_upstream_override_quota_fallback_does_not_mask_shared_source(self):
+        """A local fallback pool must not suppress real refresh for another pool."""
+        source = {
+            "provider": "chutes",
+            "usage_label": "Daily requests",
+            "unit": "requests",
+        }
+        override_adapter = _make_adapter(
+            provider_type="quota",
+            quota_source=source,
+            quota={"limit": 5000},
+            quota_pool="override-pool",
+            endpoint_id="test-model:override-quota",
+            route_metadata={
+                "route_provider": "chutes",
+                "upstream_provider": "openrouter",
+                "provider_type": "quota",
+            },
+        )
+        normal_adapter = _make_adapter(
+            model_id="other-model",
+            provider_type="quota",
+            quota_source=source,
+            quota={"limit": 5000},
+            quota_pool="normal-pool",
+            endpoint_id="other-model:normal-quota",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(override_adapter, 1.0)])
+        fr.add("other-model", [(normal_adapter, 1.0)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
+
+        assert router.quota_pools["override-pool"].source == QuotaSource(
+            provider="local",
+            usage_label="routewise:override-pool",
+            unit="requests",
+        )
+        assert router.quota_pools["normal-pool"].source == source_obj
+        assert router._quota_sources() == [source_obj]
 
     @pytest.mark.asyncio
     async def test_quota_source_snapshot_enables_quota_candidate(self):
