@@ -28,6 +28,7 @@ from .routers import (
     models,
     playground,
     qdrant_proxy,
+    site_updates,
     user_routes,
 )
 
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(embeddings.router)
     app.include_router(anthropic_messages.router)
     app.include_router(qdrant_proxy.router)
+    app.include_router(site_updates.router)
     app.include_router(compat.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)

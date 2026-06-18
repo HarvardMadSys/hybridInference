@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # _pro, _internal, _admin) are the source of truth at signup.
     signup_default_daily_quota_usd: float = 100.00
     signup_require_email_verification: bool = True
+    # Email the configured recipients when a new user registers and needs
+    # approval. Set SIGNUP_ADMIN_NOTIFY_ENABLED=false to suppress these.
+    signup_admin_notify_enabled: bool = True
 
     # Rate limiting
     signup_rate_limit_per_hour: int = 5

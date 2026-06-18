@@ -1172,3 +1172,69 @@ export async function disableProviderEnvKey(
   });
   return jsonOrThrow<DisableProviderEnvKeyResponse>(resp);
 }
+
+// ========================================
+// Site Updates (homepage announcements / banner)
+// ========================================
+
+export type SiteUpdatePlacement = 'feed' | 'banner';
+
+export interface SiteUpdateItem {
+  id: string;
+  title: string;
+  body: string;
+  placement: SiteUpdatePlacement;
+  published: boolean;
+  link_url: string | null;
+  link_label: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ListSiteUpdatesResponse {
+  total: number;
+  updates: SiteUpdateItem[];
+}
+
+export interface SiteUpdateInput {
+  title: string;
+  body: string;
+  placement: SiteUpdatePlacement;
+  published: boolean;
+  link_url: string | null;
+  link_label: string | null;
+}
+
+export async function listSiteUpdates(): Promise<ListSiteUpdatesResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/site-updates');
+  return jsonOrThrow<ListSiteUpdatesResponse>(resp);
+}
+
+export async function createSiteUpdate(input: SiteUpdateInput): Promise<SiteUpdateItem> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/site-updates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<SiteUpdateItem>(resp);
+}
+
+export async function updateSiteUpdate(
+  id: string,
+  patch: Partial<SiteUpdateInput>,
+): Promise<SiteUpdateItem> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/site-updates/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow<SiteUpdateItem>(resp);
+}
+
+export async function deleteSiteUpdate(id: string): Promise<void> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/site-updates/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  await jsonOrThrow<{ message: string }>(resp);
+}

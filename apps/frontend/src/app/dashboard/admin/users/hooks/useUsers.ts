@@ -6,9 +6,14 @@ import type { FilterState } from '../types';
 
 const THIRTY_S = 30 * 1000;
 
+// Shared prefix for every paginated users-list cache entry. Invalidating this
+// key (rather than refetching a single observer) refreshes all cached pages
+// after a mutation, since each page/filter combination is its own entry.
+export const USERS_LIST_QUERY_KEY = ['admin', 'users', 'list'] as const;
+
 export function useUsers(state: FilterState, limit = 100, offset = 0) {
   return useQuery({
-    queryKey: ['admin', 'users', 'list', state, limit, offset],
+    queryKey: [...USERS_LIST_QUERY_KEY, state, limit, offset],
     queryFn: () =>
       listUsers({
         status: state.status ?? undefined,
