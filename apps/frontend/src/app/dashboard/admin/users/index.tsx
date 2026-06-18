@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -18,7 +19,7 @@ import { SavedViews } from './SavedViews';
 import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
 import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
-import { useUsers } from './hooks/useUsers';
+import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
 import { useBulkCostHistory } from './hooks/useUserCostHistory';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
 import { getViewById } from './lib/views';
@@ -92,7 +93,17 @@ export default function UsersTab() {
   }, [pageSize]);
 
   // Data
+  const queryClient = useQueryClient();
   const usersQuery = useUsers(filterState, pageSize, page * pageSize);
+
+  // Refresh after a mutation. Each visited page/filter is its own cache entry,
+  // and a mutation can shift totals/ordering across all of them, so invalidate
+  // the whole list family rather than refetching only the active offset (which
+  // would leave other cached pages stale within the hook's staleTime window).
+  const refreshUsers = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: USERS_LIST_QUERY_KEY }),
+    [queryClient],
+  );
 
   // Surface query errors via toast (non-fatal — table also shows inline error)
   useEffect(() => {
@@ -152,7 +163,7 @@ export default function UsersTab() {
         const user = users.find((u) => u.id === id);
         await approveUser(id);
         toast.success(`Approved ${user?.email ?? id}`);
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
@@ -162,7 +173,7 @@ export default function UsersTab() {
         const user = users.find((u) => u.id === id);
         await rejectUser(id, reason);
         toast.success(`Rejected ${user?.email ?? id}`);
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
@@ -171,7 +182,7 @@ export default function UsersTab() {
       try {
         await updateUser(id, patch);
         toast.success('Saved');
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
@@ -180,7 +191,7 @@ export default function UsersTab() {
       try {
         await updateUser(id, { status: 'suspended' });
         toast.success('Suspended');
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
@@ -190,7 +201,7 @@ export default function UsersTab() {
         const user = users.find((u) => u.id === id);
         await resumeUser(id);
         toast.success(`Resumed ${user?.email ?? id}`);
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
@@ -200,7 +211,7 @@ export default function UsersTab() {
         const user = users.find((u) => u.id === id);
         await deleteUser(id, reason);
         toast.success(`Deleted ${user?.email ?? id}`);
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
@@ -210,7 +221,7 @@ export default function UsersTab() {
         const user = users.find((u) => u.id === id);
         await hardDeleteUser(id, reason || undefined);
         toast.success(`Permanently deleted ${user?.email ?? id}`);
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
@@ -219,7 +230,7 @@ export default function UsersTab() {
       try {
         const r = await regenerateApiKeyAdmin(id);
         setNewKey(r.api_key);
-        usersQuery.refetch();
+        refreshUsers();
       } catch (e) {
         toast.error(getErrorMessage(e));
       }
