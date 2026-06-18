@@ -30,9 +30,9 @@ class UsageInfo:
     # to api_logs.upstream_cost_usd for ops/billing reconciliation.
     upstream_cost_usd: float | None = None
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert usage info to OpenAI-compatible dict format."""
-        result = {
+        result: dict[str, Any] = {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "total_tokens": self.total_tokens,
@@ -46,6 +46,9 @@ class UsageInfo:
         if self.cache_read_reported or self.cache_read_tokens > 0:
             result["cache_read_tokens"] = self.cache_read_tokens
             result["cached_tokens"] = self.cache_read_tokens
+            # Also surface the OpenAI-standard nested shape so SDK clients that
+            # read usage.prompt_tokens_details.cached_tokens see the cache hit.
+            result["prompt_tokens_details"] = {"cached_tokens": self.cache_read_tokens}
         if self.cache_write_tokens > 0:
             result["cache_write_tokens"] = self.cache_write_tokens
         return result

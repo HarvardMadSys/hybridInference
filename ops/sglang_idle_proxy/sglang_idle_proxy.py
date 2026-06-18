@@ -491,6 +491,9 @@ class BackendManager:
             if self.config.get("disable_radix_cache"):
                 cmd += ["--disable-radix-cache"]
         else:
+            # Without this flag sglang omits prompt_tokens_details.cached_tokens
+            # from the usage block, so prefix-cache hits never surface to clients.
+            cmd += ["--enable-cache-report"]
             tcp = self.config.get("tool_call_parser")
             if tcp:
                 cmd += ["--tool-call-parser", tcp]
