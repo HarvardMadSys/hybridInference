@@ -130,6 +130,38 @@ def test_required_route_missing_base_url_skips_model_when_continue_on_missing_en
 
 
 @pytest.mark.unit
+def test_top_level_env_base_url_unset_skips_default_route(tmp_path, monkeypatch):
+    """A top-level env-backed base_url (no explicit ``route:`` list) that
+    resolves blank must not register a dead ``<model>:unknown-api`` route.
+
+    Regression for the default/inherited-route path: ``top_cfg["base_url"]`` used
+    to be expanded before the route loop, so the empty-base_url guard never saw
+    the original ``${VAR}`` template for the synthesized single route.
+    """
+    yaml_text = (
+        "models:\n"
+        "  - id: top-level-test\n"
+        "    name: Top Level Test\n"
+        "    provider: vllm\n"
+        "    base_url: ${MISSING_BASE_URL}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.delenv("MISSING_BASE_URL", raising=False)
+
+    # A required (non-optional) blank base_url fails loudly.
+    exe = RouteExecutor()
+    with pytest.raises(registry.MissingEnvBackedKeyError):
+        registry.register_from_models_yaml(exe, Path(p))
+
+    # Production bootstrap (continue_on_missing_env=True) skips the model instead.
+    exe2 = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe2, Path(p), continue_on_missing_env=True)
+    assert count == 0
+    assert "top-level-test" not in exe2.routes
+
+
+@pytest.mark.unit
 def test_register_from_models_yaml_merges_route_extra_body(tmp_path):
     yaml_text = (
         "models:\n"

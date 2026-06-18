@@ -298,8 +298,13 @@ def register_from_models_yaml(
                     "extra_body",
                 )
             }
-            if top_cfg.get("base_url"):
-                top_cfg["base_url"] = expand_env(top_cfg["base_url"])  # type: ignore
+            # NOTE: top-level base_url is intentionally NOT expanded here. It is
+            # expanded per-route in the loop below (raw_base_url -> base_url) so
+            # the empty-base_url guard can still see the original ${VAR} template
+            # when a route inherits the top-level value or the default single
+            # route is synthesized. Expanding it in place would erase the
+            # template and let an unset env-backed top-level base_url slip
+            # through as a dead "<model>:unknown-api" endpoint.
             if top_cfg.get("api_key"):
                 top_cfg["api_key"] = expand_env(top_cfg["api_key"])  # type: ignore
             if top_cfg.get("provider_model_id"):
