@@ -260,6 +260,9 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m3"
+        # Ollama serving not verified for image/video; keep text-only so media
+        # is dispatched only to the MiniMax primary route.
+        input_modalities: ["text"]
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
@@ -271,12 +274,16 @@ models:
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "minimax-m3"
+        # Canary fallback proxies back to the gateway; keep text-only so media
+        # stays on the verified MiniMax primary route.
+        input_modalities: ["text"]
 
   - id: minimax-fast
     name: MiniMax Fast
     provider: minimax
     quantization: "bf16"
-    input_modalities: ["text", "image"]
+    # Routes to MiniMax-M2.5, which is text-only upstream; do not advertise image.
+    input_modalities: ["text"]
     output_modalities: ["text"]
     context_length: 204800
     max_output_length: 131072
@@ -423,12 +430,17 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "kimi-k2.7-code"
+        # Ollama serving not verified for image/video; keep text-only so media
+        # is dispatched only to the Kimi coding primary route.
+        input_modalities: ["text"]
       - kind: chutes
         weight: 0.01
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "moonshotai/Kimi-K2.6-TEE"
+        # Chutes fallback is not verified for image/video.
+        input_modalities: ["text"]
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
@@ -440,13 +452,17 @@ models:
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "kimi-k2.7-code"
+        # Canary fallback proxies back to the gateway; keep text-only so media
+        # stays on the verified Kimi coding primary route.
+        input_modalities: ["text"]
 
 
   - id: kimi-k2.7-code-highspeed
     name: Kimi K2.7 Code (only support coding agents)
     provider: kimi
     quantization: "fp8"
-    input_modalities: ["text"]
+    # kimi-for-coding-highspeed exposes the same image/video input capabilities.
+    input_modalities: ["text", "image", "video"]
     output_modalities: ["text"]
     context_length: 262144
     max_output_length: 131072
@@ -472,7 +488,7 @@ models:
     name: Kimi K3 (only support coding agents)
     provider: kimi
     quantization: "fp8"
-    input_modalities: ["text", "image"]
+    input_modalities: ["text", "image", "video"]
     output_modalities: ["text"]
     context_length: 262144
     max_output_length: 131072
@@ -501,6 +517,8 @@ models:
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "kimi-k3"
+        # Keep media on the verified Kimi coding endpoint.
+        input_modalities: ["text"]
 
   - id: qwen3.6-35b
     name: Qwen3.6 35B (high speed)
@@ -544,6 +562,9 @@ models:
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "qwen3.6-35b"
+        # Canary fallback proxies to a separate deployment; keep text-only so
+        # image/video stays on the verified local SGLang primary route.
+        input_modalities: ["text"]
 
   # Served on DGX Spark by ops/spark_idle_proxy (vLLM + NVFP4 kernels).
   # Discrete diffusion LLM (Gemma4 backbone); replaced gpt-oss-20b on Spark.

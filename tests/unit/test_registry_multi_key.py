@@ -20,6 +20,42 @@ def _write_yaml(tmp_path: Path, body: str) -> Path:
     return path
 
 
+def test_route_level_input_modalities_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRIMARY_KEY", "k1")
+    monkeypatch.setenv("FALLBACK_KEY", "k2")
+
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: vmodel
+            name: vmodel
+            provider: openai_compat
+            base_url: https://primary.example.com
+            input_modalities: ["text", "image", "video"]
+            route:
+              - kind: openai_compat
+                weight: 1.0
+                base_url: https://primary.example.com
+                api_key: ${PRIMARY_KEY}
+              - kind: ollama
+                weight: 0.5
+                base_url: https://fallback.example.com
+                api_key: ${FALLBACK_KEY}
+                input_modalities: ["text"]
+        """,
+    )
+
+    router = RouteExecutor()
+    register_from_models_yaml(router, yaml_path)
+
+    adapters = router.routes["vmodel"].adapters
+    assert len(adapters) == 2
+    # Primary inherits the model-level union; the fallback override narrows it.
+    assert set(adapters[0][0].config.input_modalities) == {"text", "image", "video"}
+    assert adapters[1][0].config.input_modalities == ["text"]
+
+
 def test_api_keys_list_is_loaded(tmp_path, monkeypatch):
     monkeypatch.setenv("ZAI_API_KEY_1", "key-one")
     monkeypatch.setenv("ZAI_API_KEY_2", "key-two")

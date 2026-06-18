@@ -18,6 +18,7 @@ class RoutingRequestOptions:
     """Router-owned request controls that must not reach provider adapters."""
 
     pin_provider: str | None = None
+    required_modalities: frozenset[str] = frozenset()
 
 
 @runtime_checkable

@@ -137,6 +137,30 @@ def _find_unsupported_modality(
     return None
 
 
+def _required_modalities(messages: list[dict[str, Any]]) -> frozenset[str]:
+    """Return the set of non-text input modalities the messages require.
+
+    Passed to the router so media is dispatched only to routes that declare the
+    modality, never to a text-only fallback of an otherwise-capable model.
+    """
+    required: set[str] = set()
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, dict):
+            blocks: list[Any] = [content]
+        elif isinstance(content, list):
+            blocks = content
+        else:
+            continue
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            modality = _CONTENT_BLOCK_MODALITY.get(block.get("type"))
+            if modality and modality != "text":
+                required.add(modality)
+    return frozenset(required)
+
+
 async def _should_force_chat_completions_streaming(
     runtime_settings: RuntimeSettings | None,
     requested_stream: bool,
@@ -754,12 +778,15 @@ async def chat_completions(
     # This check is placed before routing so both streaming and non-streaming
     # paths get a clean 400 instead of silently stripping image/audio blocks.
     route_config = router_exec.routes.get(model)
-    model_modalities = (
-        route_config.adapters[0][0].config.input_modalities
-        if route_config and route_config.adapters
-        else []
-    )
-    unsupported_modality = _find_unsupported_modality(messages, model_modalities)
+    # A model "supports" a modality if ANY of its routes declares it (the union
+    # across routes). The modality-aware router then dispatches media only to
+    # the routes that actually accept it, so this 400 fires only when no route
+    # can handle the modality at all.
+    supported_modalities: set[str] = set()
+    if route_config and route_config.adapters:
+        for _route_adapter, _ in route_config.adapters:
+            supported_modalities.update(_route_adapter.config.input_modalities or ["text"])
+    unsupported_modality = _find_unsupported_modality(messages, sorted(supported_modalities))
     if unsupported_modality:
         error_message = f"Model '{model}' does not support {unsupported_modality} input"
         if log_store and not suppress_synthetic_logging:
@@ -783,6 +810,11 @@ async def chat_completions(
             )
         raise HTTPException(status_code=400, detail=error_message)
 
+    # Non-text modalities this request needs; passed to the active router so it
+    # dispatches media only to routes that declare the modality (a capable
+    # model may have text-only fallbacks that must not receive the media).
+    required_modalities = _required_modalities(messages)
+
     # Pre-flight: validate pin_provider before routing.  For streaming this is
     # critical (HTTP 200 is already committed once StreamingResponse starts),
     # but we check unconditionally so non-stream also gets a clean 400.
@@ -804,9 +836,16 @@ async def chat_completions(
     # Per-model routing strategy via ModelRouterRegistry. Pinned requests still
     # bypass RouteWise, but both selected routers now share one execution call
     # contract below.
-    routing_options = RoutingRequestOptions(pin_provider=pin_provider) if pin_provider else None
+    routing_options = (
+        RoutingRequestOptions(
+            pin_provider=pin_provider,
+            required_modalities=required_modalities,
+        )
+        if pin_provider or required_modalities
+        else None
+    )
     active_router = router_exec
-    if model_router_registry is not None and routing_options is None:
+    if model_router_registry is not None and pin_provider is None:
         active_router = model_router_registry.get_router(model)
 
     # Thread the external request id into params so the router correlates its
@@ -815,10 +854,8 @@ async def chat_completions(
     params["request_id"] = request_id
     router_params = dict(params)
     if routing_options is not None:
-        # Only pinned requests need the new keyword today, and the registry has
-        # already routed those to FixedRouter. This keeps one-release custom
-        # strategies that accept only **params from forwarding an empty options
-        # object to their provider adapter.
+        # Keep router-owned controls out of provider adapter kwargs. Empty
+        # options are still omitted for one-release custom-router compatibility.
         router_params["routing_options"] = routing_options
 
     # Streaming path
