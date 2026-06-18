@@ -146,6 +146,9 @@ class ModelConfig:
     # Set automatically by parse_openrouter_kind() when the YAML uses
     # `kind: openrouter[<slug>]`. None for bare `kind: openrouter`.
     openrouter_pinned_provider: str | None = None
+    # Optional OpenRouter provider sorting policy for bare OpenRouter routes.
+    # Values accepted by OpenRouter: "price", "throughput", or "latency".
+    openrouter_sort: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize never-None collection fields seeded with an explicit None.

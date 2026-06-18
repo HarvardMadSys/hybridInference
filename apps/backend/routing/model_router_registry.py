@@ -46,6 +46,7 @@ class ModelRouterRegistry:
         self._default = default_router_name
         self._cache: dict[str, BaseRouter] = {}
         self._alias_to_model = dict(alias_to_model or {})
+        self._router_overrides: dict[str, str] = {}
         # The shared FixedRouter is bound after construction (see
         # bind_fixed_router); RouteWise needs it for classification, and
         # the "fixed" strategy returns this exact instance so models with
@@ -80,8 +81,7 @@ class ModelRouterRegistry:
             self._cache[model_id] = cached
             return cached
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
-        name = cfg.get("router") or self._default
-        params = cfg.get("router_params") or {}
+        name, params = self._router_spec(canonical_model_id, cfg)
         logger.info(
             "router_initialized",
             extra={
@@ -118,10 +118,53 @@ class ModelRouterRegistry:
         return router
 
     def get_router_name(self, model_id: str) -> str:
-        """Return the configured strategy name for ``model_id``."""
+        """Return the active strategy name for ``model_id``."""
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
+        name, _params = self._router_spec(canonical_model_id, cfg)
+        return name
+
+    def get_configured_router_name(self, model_id: str) -> str:
+        """Return the YAML/default strategy name, ignoring runtime overrides."""
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         return str(cfg.get("router") or self._default)
+
+    def _router_spec(
+        self, canonical_model_id: str, cfg: dict[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        configured_name = str(cfg.get("router") or self._default)
+        override_name = self._router_overrides.get(canonical_model_id)
+        name = override_name or configured_name
+        # Router params belong to the configured router. When an admin
+        # temporarily switches strategies, do not pass fixed-only params into
+        # RouteWise or vice versa.
+        params = (cfg.get("router_params") or {}) if name == configured_name else {}
+        return str(name), dict(params)
+
+    def validate_router_strategy(self, model_id: str, strategy: str) -> None:
+        """Validate that ``strategy`` can be constructed for ``model_id``."""
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
+        configured_name = str(cfg.get("router") or self._default)
+        params = (cfg.get("router_params") or {}) if strategy == configured_name else {}
+        build_router(strategy, params)
+
+    def set_router_override(self, model_id: str, strategy: str) -> None:
+        """Override a model's router strategy at runtime and clear cached routers."""
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        self.validate_router_strategy(canonical_model_id, strategy)
+        self._router_overrides[canonical_model_id] = strategy
+        self._cache.pop(canonical_model_id, None)
+        self._cache.pop(model_id, None)
+        for alias, target in self._alias_to_model.items():
+            if target == canonical_model_id:
+                self._cache.pop(alias, None)
+
+    def get_router_override(self, model_id: str) -> str | None:
+        """Return the runtime router override, if present."""
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        return self._router_overrides.get(canonical_model_id)
 
     def registered_models(self) -> dict[str, str]:
         """Return ``{model_id: router_class_name}`` for every cached entry."""

@@ -431,6 +431,37 @@ class TestBootstrapInitialization:
         ):
             await bootstrap.initialize()
 
+    @pytest.mark.asyncio
+    async def test_failed_runtime_router_override_resets_to_configured_strategy(self):
+        """A stale DB-backed strategy override should not brick startup."""
+        managed_router = SimpleNamespace(
+            _model_router_override_id="m",
+            _model_router_fallback_strategy="fixed",
+        )
+        managed_routers = [managed_router]
+        fallback_router = object()
+        registry = MagicMock()
+        registry.get_router.return_value = fallback_router
+        op_store = AsyncMock()
+
+        reset = await bootstrap._reset_failed_runtime_router_override(
+            managed_router=managed_router,
+            model_router_registry=registry,
+            managed_routers=managed_routers,
+            operational_store=op_store,
+        )
+
+        assert reset is True
+        registry.set_router_override.assert_called_once_with("m", "fixed")
+        registry.get_router.assert_called_once_with("m")
+        op_store.set_setting.assert_awaited_once_with(
+            "model_router_strategy:m",
+            "fixed",
+            "string",
+            "bootstrap",
+        )
+        assert managed_routers == []
+
 
 class TestBootstrapShutdown:
     """Test bootstrap shutdown functionality."""

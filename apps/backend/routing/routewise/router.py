@@ -29,6 +29,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+import aiohttp
 from routewise.core import (
     HEDGE_SUCCESS_TARGET,
     BackupCandidate,
@@ -45,7 +46,18 @@ if TYPE_CHECKING:
 
     from .config import RouteWiseConfig
 
-from routing.routers import BaseRouter, RoutingObservation
+from routing.routers import (
+    BaseRouter,
+    RoutingObservation,
+    _failed_attempt,
+    _get_endpoint_id,
+    _routing_chunk,
+)
+from serving.exceptions import operator_safe_error
+from serving.observability.metrics import (
+    API_FALLBACKS,
+    normalize_provider_label,
+)
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
@@ -90,6 +102,18 @@ _PENDING_DECISIONS_MAX: int = 50_000
 PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
 RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
 _PREFIX_CACHE_PENDING_MAX: int = 10_000
+_EXCLUDED_ENDPOINTS_CONTEXT_KEY = "_routewise_excluded_endpoint_ids"
+_RETRYABLE_ROUTEWISE_STATUS_CODES = frozenset({408, 429})
+_AIOHTTP_RETRYABLE_ERRORS = tuple(
+    cls
+    for cls in (
+        getattr(aiohttp, "ClientConnectionError", None),
+        getattr(aiohttp, "ServerConnectionError", None),
+        getattr(aiohttp, "ServerDisconnectedError", None),
+        getattr(aiohttp, "ClientError", None),
+    )
+    if isinstance(cls, type)
+)
 _WORKER_COUNT_ENV_KEYS = (
     "WEB_CONCURRENCY",
     "UVICORN_WORKERS",
@@ -165,6 +189,52 @@ def _dedupe_failed_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, An
     return result
 
 
+def _int_status(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _exception_status_code(exc: BaseException) -> int | None:
+    direct = _int_status(getattr(exc, "status_code", None))
+    if direct is not None:
+        return direct
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = _int_status(getattr(response, "status_code", None))
+        if status_code is not None:
+            return status_code
+        status = _int_status(getattr(response, "status", None))
+        if status is not None:
+            return status
+
+    status = _int_status(getattr(exc, "status", None))
+    if status is not None:
+        return status
+
+    return _int_status(getattr(exc, "code", None))
+
+
+def _is_routewise_retryable_error(exc: BaseException) -> bool:
+    """Return whether RouteWise should re-solve after this provider failure."""
+    status = _exception_status_code(exc)
+    if status is not None:
+        return status in _RETRYABLE_ROUTEWISE_STATUS_CODES or 500 <= status <= 599
+    return isinstance(
+        exc,
+        (
+            *_AIOHTTP_RETRYABLE_ERRORS,
+            asyncio.TimeoutError,
+            ConnectionError,
+            TimeoutError,
+        ),
+    )
+
+
 def _configured_worker_count() -> int | None:
     """Best-effort detection for common ASGI worker-count environment vars."""
     for key in _WORKER_COUNT_ENV_KEYS:
@@ -233,6 +303,7 @@ class RouteWiseRouter(BaseRouter):
         self.quota_pools: dict[str, QuotaPool] = {}
         self.concurrency_pools: dict[str, ConcurrencyManager] = {}
         self._endpoint_concurrency_pool: dict[str, str] = {}
+        self._local_quota_fallback_pools: set[str] = set()
         self.prefix_cache = PrefixCacheCoordinator(
             enabled=self.config.prefix_cache_cost_adjustment_enabled,
         )
@@ -267,6 +338,7 @@ class RouteWiseRouter(BaseRouter):
     def apply_runtime_overrides(
         self,
         *,
+        budget_alpha: float | None = None,
         latency_slo_sec: float | None = None,
         latency_min_samples: int | None = None,
     ) -> None:
@@ -275,6 +347,8 @@ class RouteWiseRouter(BaseRouter):
         Only algorithm knobs are runtime-overridable; resource limits are
         route-level configuration (``quota:`` / ``concurrency:`` blocks).
         """
+        if budget_alpha is not None:
+            self.config.budget_alpha = budget_alpha
         if latency_slo_sec is not None:
             self.config.latency_slo_sec = latency_slo_sec
         if latency_min_samples is not None:
@@ -374,6 +448,37 @@ class RouteWiseRouter(BaseRouter):
         that reclaims an abandoned streaming generator's metadata).
         """
         now = time.time()
+        prior = self._pending_decisions.get(request_id)
+        if isinstance(prior, dict):
+            initial_endpoint = prior.get("initial_selected_endpoint") or prior.get(
+                "selected_endpoint"
+            )
+            if initial_endpoint is not None:
+                metadata["initial_selected_endpoint"] = initial_endpoint
+            initial_type = prior.get("initial_selected_provider_type") or prior.get(
+                "selected_provider_type"
+            )
+            if initial_type is not None:
+                metadata["initial_selected_provider_type"] = initial_type
+
+            failed_attempts = prior.get("failed_attempts")
+            if isinstance(failed_attempts, list) and failed_attempts:
+                current_failed = metadata.get("failed_attempts")
+                metadata["failed_attempts"] = _dedupe_failed_attempts(
+                    [
+                        *failed_attempts,
+                        *(current_failed if isinstance(current_failed, list) else []),
+                    ]
+                )
+            for key in (
+                "fallback_policy",
+                "fallback_attempts",
+                "fallback_excluded_endpoints",
+                "is_streaming",
+            ):
+                if key in prior:
+                    metadata[key] = prior[key]
+
         self._pending_decisions[request_id] = metadata
         while len(self._pending_decisions) > _PENDING_DECISIONS_MAX:
             oldest = next(iter(self._pending_decisions))
@@ -393,6 +498,40 @@ class RouteWiseRouter(BaseRouter):
                     "reason": "size_cap",
                 },
             )
+
+    def _record_routewise_fallback_attempt(
+        self,
+        request_id: str | None,
+        attempt: dict[str, Any],
+        *,
+        fallback_policy: str,
+    ) -> None:
+        """Attach a failed attempt to pending RouteWise metadata."""
+        if not request_id:
+            return
+        meta = self._pending_decisions.get(request_id)
+        if not isinstance(meta, dict):
+            return
+
+        meta.setdefault("initial_selected_endpoint", meta.get("selected_endpoint"))
+        meta.setdefault("initial_selected_provider_type", meta.get("selected_provider_type"))
+        existing = meta.get("failed_attempts")
+        attempts = _dedupe_failed_attempts(
+            [
+                *(existing if isinstance(existing, list) else []),
+                attempt,
+            ]
+        )
+        meta["failed_attempts"] = attempts
+        meta["fallback_policy"] = fallback_policy
+        meta["fallback_attempts"] = len(attempts)
+        excluded = {
+            item for item in meta.get("fallback_excluded_endpoints", []) if isinstance(item, str)
+        }
+        endpoint = attempt.get("endpoint_id")
+        if isinstance(endpoint, str) and endpoint:
+            excluded.add(endpoint)
+        meta["fallback_excluded_endpoints"] = sorted(excluded)
 
     async def _sweep_pending_decisions_once(self) -> int:
         now = time.time()
@@ -491,9 +630,11 @@ class RouteWiseRouter(BaseRouter):
         shared pool id naturally shares the provider's global accounting.
         Concurrency counters are router-scoped.
         """
-        quota_specs: dict[str, tuple[QuotaPolicy, QuotaSource | None, str]] = {}
+        quota_specs: dict[str, tuple[QuotaPolicy, QuotaSource | None, str, bool]] = {}
         concurrency_specs: dict[str, tuple[ConcurrencyPolicy, str]] = {}
         self._endpoint_concurrency_pool = {}
+        local_quota_fallbacks: dict[QuotaSource, int] = {}
+        local_quota_fallback_pools: set[str] = set()
         for candidates in self.route_candidates.values():
             for candidate in candidates:
                 if (
@@ -503,6 +644,7 @@ class RouteWiseRouter(BaseRouter):
                 ):
                     prior = quota_specs.get(candidate.quota_pool)
                     spec = (candidate.quota_policy, candidate.quota_source)
+                    uses_local_fallback = self._uses_local_quota_fallback(candidate)
                     if prior is not None and (prior[0], prior[1]) != spec:
                         raise ValueError(
                             f"RouteWise quota_pool {candidate.quota_pool!r} is declared "
@@ -510,7 +652,11 @@ class RouteWiseRouter(BaseRouter):
                             f"{candidate.endpoint_id!r}; routes sharing a pool must "
                             "declare identical quota blocks."
                         )
-                    quota_specs[candidate.quota_pool] = (*spec, candidate.endpoint_id)
+                    quota_specs[candidate.quota_pool] = (
+                        *spec,
+                        candidate.endpoint_id,
+                        bool(uses_local_fallback or (prior[3] if prior is not None else False)),
+                    )
                 elif (
                     candidate.provider_type is ProviderType.CONCURRENCY
                     and candidate.concurrency_pool is not None
@@ -533,19 +679,26 @@ class RouteWiseRouter(BaseRouter):
                     )
 
         quota_pools: dict[str, QuotaPool] = {}
-        for pool_id, (policy, source, endpoint) in quota_specs.items():
+        for pool_id, (policy, source, endpoint, uses_local_fallback) in quota_specs.items():
             if source is None:  # pragma: no cover - enforced in candidates.py
                 raise ValueError(
                     f"RouteWise quota_pool {pool_id!r} ({endpoint!r}) has no quota_source"
                 )
+            pool_source = source
+            if uses_local_fallback:
+                pool_source = self._local_quota_source(pool_id)
+                local_quota_fallbacks[pool_source] = policy.limit
+                local_quota_fallback_pools.add(pool_id)
             # Snapshot pools are stateless wrappers (truth lives in the
             # store), so they are always rebuilt against the current store.
             quota_pools[pool_id] = QuotaPool(
                 self.quota_snapshots,
-                source,
+                pool_source,
                 policy=policy,
             )
         self.quota_pools = quota_pools
+        self._local_quota_fallback_pools = local_quota_fallback_pools
+        self.quota_snapshots.configure_local_fallbacks(local_quota_fallbacks)
 
         concurrency_pools: dict[str, ConcurrencyManager] = {}
         for pool_id, (policy, _endpoint) in concurrency_specs.items():
@@ -555,6 +708,28 @@ class RouteWiseRouter(BaseRouter):
             else:
                 concurrency_pools[pool_id] = ConcurrencyManager(policy.limit)
         self.concurrency_pools = concurrency_pools
+
+    @staticmethod
+    def _uses_local_quota_fallback(candidate: RouteProviderCandidate) -> bool:
+        """Whether a quota route should use configured quota.limit as local state."""
+        metadata = getattr(candidate.adapter.config, "route_metadata", None)
+        if not isinstance(metadata, dict):
+            return False
+        if metadata.get("local_quota_fallback") is True:
+            return True
+        route_provider = metadata.get("route_provider")
+        upstream_provider = metadata.get("upstream_provider")
+        return bool(
+            route_provider and upstream_provider and str(route_provider) != str(upstream_provider)
+        )
+
+    @staticmethod
+    def _local_quota_source(pool_id: str) -> QuotaSource:
+        return QuotaSource(
+            provider="local",
+            usage_label=f"routewise:{pool_id}",
+            unit="requests",
+        )
 
     def _canonical_model_id(self, model_id: str) -> str:
         route_cfg = getattr(self.fixed_router, "routes", {}).get(model_id)
@@ -670,6 +845,7 @@ class RouteWiseRouter(BaseRouter):
                 if (
                     candidate.provider_type is ProviderType.QUOTA
                     and candidate.quota_source is not None
+                    and candidate.quota_pool not in self._local_quota_fallback_pools
                 ):
                     sources[candidate.quota_source] = candidate.quota_source
         return list(sources.values())
@@ -1077,6 +1253,27 @@ class RouteWiseRouter(BaseRouter):
         if pool is not None:
             pool.release()
 
+    def _rollback_selected_quota_attempt(
+        self,
+        request_id: str | None,
+        endpoint_id: str | None,
+    ) -> None:
+        if not request_id:
+            return
+        meta = self._pending_decisions.get(request_id)
+        if not isinstance(meta, dict) or meta.get("selected_provider_type") != "quota":
+            return
+        if endpoint_id and meta.get("selected_endpoint") != endpoint_id:
+            return
+        quota_pool_id = meta.get("quota_pool")
+        if not isinstance(quota_pool_id, str):
+            return
+        pool = self.quota_pools.get(quota_pool_id)
+        if pool is None or not pool.refund():
+            return
+        meta["quota_remaining"] = pool.remaining
+        meta["quota_used_fraction"] = pool.used_fraction
+
     def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
         return ProviderReservation(router=self, candidate=candidate)
 
@@ -1166,6 +1363,13 @@ class RouteWiseRouter(BaseRouter):
             "is_streaming": False,
             "selected_provider_type": selected.provider_type,
             "selected_endpoint": selected.endpoint_id,
+            "initial_selected_provider_type": selected.provider_type,
+            "initial_selected_endpoint": selected.endpoint_id,
+            "final_endpoint": selected.endpoint_id,
+            "final_provider_type": selected.provider_type,
+            "fallback_policy": None,
+            "fallback_attempts": 0,
+            "fallback_excluded_endpoints": [],
             "selected_effective_cost_usd": selected.effective_cost_usd,
             "selected_mean_ttft_sec": selected.mean_ttft_sec,
             "selected_lp_weight": selected_weight,
@@ -1490,6 +1694,47 @@ class RouteWiseRouter(BaseRouter):
         """Record a provider failure emitted by HedgedAdapter."""
         self._on_failure(provider, reason=reason)
 
+    @staticmethod
+    def _ensure_response_routing(
+        response: dict[str, Any],
+        adapter: BaseAdapter,
+        *,
+        failed_attempts: list[dict[str, Any]],
+    ) -> None:
+        """Ensure a non-stream response has routing metadata for the winning adapter."""
+        if "_routing" not in response:
+            response["_routing"] = {
+                "provider": adapter.config.provider,
+                "base_url": adapter.config.base_url,
+            }
+        routing = response["_routing"]
+        if not isinstance(routing, dict):
+            routing = {}
+            response["_routing"] = routing
+        routing.setdefault("provider", adapter.config.provider)
+        routing.setdefault("base_url", adapter.config.base_url)
+        routing.setdefault("endpoint_id", getattr(adapter.config, "endpoint_id", None))
+        if failed_attempts:
+            routing["fallback"] = True
+            routing["fallback_policy"] = "routewise_resolve"
+            routing["failed_attempts"] = _dedupe_failed_attempts(failed_attempts)
+
+    @staticmethod
+    def _record_fallback_metric(
+        failed_attempts: list[dict[str, Any]],
+        winner: BaseAdapter,
+    ) -> None:
+        if not failed_attempts:
+            return
+        first = failed_attempts[0]
+        source = first.get("endpoint_id") or first.get("provider") or "unknown"
+        reason = first.get("error_type") or "error"
+        API_FALLBACKS.labels(
+            from_provider=normalize_provider_label(str(source)),
+            to_provider=normalize_provider_label(_get_endpoint_id(winner)),
+            reason=str(reason),
+        ).inc()
+
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
         model_id = self._canonical_model_id(model_id)
         if model_id not in self.classified:
@@ -1517,6 +1762,17 @@ class RouteWiseRouter(BaseRouter):
             now=now,
             context=context,
         )
+        excluded_endpoint_ids = {
+            str(endpoint_id)
+            for endpoint_id in context.get(_EXCLUDED_ENDPOINTS_CONTEXT_KEY, ())
+            if endpoint_id
+        }
+        if excluded_endpoint_ids:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if candidate.endpoint_id not in excluded_endpoint_ids
+            ]
         if not candidates:
             return None
 
@@ -1666,13 +1922,8 @@ class RouteWiseRouter(BaseRouter):
         model_id: str,
         failed_adapter: BaseAdapter,
     ) -> list[BaseAdapter]:
-        model_id = self._canonical_model_id(model_id)
-        entries = self.classified.get(model_id, [])
-        return [
-            a
-            for a, _w, provider_type in entries
-            if a is not failed_adapter and provider_type is ProviderType.ON_DEMAND
-        ]
+        del model_id, failed_adapter
+        return []
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Update output predictor, latency profile, and L/U envelope."""
@@ -1910,6 +2161,13 @@ class RouteWiseRouter(BaseRouter):
 
     @staticmethod
     def _attach_decision_info(routing: dict[str, Any], decision_info: dict[str, Any]) -> None:
+        final_endpoint = routing.get("endpoint_id")
+        if isinstance(final_endpoint, str) and final_endpoint:
+            decision_info["final_endpoint"] = final_endpoint
+        final_provider = routing.get("provider")
+        if isinstance(final_provider, str) and final_provider:
+            decision_info["final_provider"] = final_provider
+        decision_info.setdefault("final_provider_type", decision_info.get("selected_provider_type"))
         routing["routewise"] = decision_info
         failed_attempts = decision_info.get("failed_attempts")
         if not isinstance(failed_attempts, list) or not failed_attempts:
@@ -1929,22 +2187,80 @@ class RouteWiseRouter(BaseRouter):
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
+        context = {
+            "messages": messages,
+            "params": params,
+            "request_id": request_id,
+        }
+        excluded: set[str] = set()
+        failed_attempts: list[dict[str, Any]] = []
+        last_attempted: BaseAdapter | None = None
+        last_error: BaseException | None = None
 
         try:
-            try:
-                resp = await super().chat_completion(model_id, messages, **params)
-            except BaseException as e:
-                decision_info = self._pending_decisions.pop(request_id, None)
-                if decision_info:
-                    exc_routing = getattr(e, "_routing", None)
-                    if isinstance(exc_routing, dict):
-                        self._attach_decision_info(exc_routing, decision_info)
-                raise
+            while True:
+                if excluded:
+                    context[_EXCLUDED_ENDPOINTS_CONTEXT_KEY] = tuple(sorted(excluded))
+                primary = self._select_adapter(model_id, context)
+                if not primary:
+                    if last_error is not None:
+                        raise last_error
+                    raise ValueError(f"No route configured for model {model_id}")
 
+                last_attempted = primary
+                try:
+                    resp = await self._execute_adapter(primary, model_id, messages, **params)
+                    self._ensure_response_routing(
+                        resp,
+                        primary,
+                        failed_attempts=failed_attempts,
+                    )
+                    if failed_attempts:
+                        self._record_fallback_metric(failed_attempts, primary)
+                    decision_info = self._pending_decisions.pop(request_id, None)
+                    if decision_info and isinstance(resp, dict) and "_routing" in resp:
+                        self._attach_decision_info(resp["_routing"], decision_info)
+                    return resp
+                except Exception as exc:
+                    last_error = exc
+                    endpoint_id = _get_endpoint_id(primary)
+                    self._on_failure(
+                        endpoint_id,
+                        reason=exc.__class__.__name__,
+                        detail=operator_safe_error(exc),
+                    )
+                    attempt = _failed_attempt(primary, exc)
+                    failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
+                    self._rollback_selected_quota_attempt(request_id, endpoint_id)
+                    if not _is_routewise_retryable_error(exc):
+                        raise
+                    self._record_routewise_fallback_attempt(
+                        request_id,
+                        attempt,
+                        fallback_policy="routewise_resolve",
+                    )
+                    excluded.add(endpoint_id)
+                    continue
+        except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)
-            if decision_info and isinstance(resp, dict) and "_routing" in resp:
-                self._attach_decision_info(resp["_routing"], decision_info)
-            return resp
+            routing = getattr(exc, "_routing", None)
+            if not isinstance(routing, dict):
+                adapter = last_attempted
+                routing = {
+                    "provider": adapter.config.provider if adapter is not None else "router",
+                    "base_url": adapter.config.base_url if adapter is not None else "",
+                    "endpoint_id": (
+                        getattr(adapter.config, "endpoint_id", None)
+                        if adapter is not None
+                        else None
+                    ),
+                }
+                exc._routing = routing  # type: ignore[attr-defined]
+            if failed_attempts:
+                routing.setdefault("failed_attempts", failed_attempts)
+            if decision_info:
+                self._attach_decision_info(routing, decision_info)
+            raise
         finally:
             self._release_pending_primary_reservation(request_id)
 
@@ -1955,37 +2271,111 @@ class RouteWiseRouter(BaseRouter):
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
-
+        context = {
+            "messages": messages,
+            "params": params,
+            "request_id": request_id,
+        }
+        excluded: set[str] = set()
+        failed_attempts: list[dict[str, Any]] = []
+        last_attempted: BaseAdapter | None = None
+        last_error: BaseException | None = None
+        chunks_yielded = False
         done_chunk: str | None = None
+
         try:
-            try:
-                async for chunk in super().stream_chat_completion(model_id, messages, **params):
+            while True:
+                if excluded:
+                    context[_EXCLUDED_ENDPOINTS_CONTEXT_KEY] = tuple(sorted(excluded))
+                primary = self._select_adapter(model_id, context)
+                if not primary:
+                    if last_error is not None:
+                        raise last_error
+                    raise ValueError(f"No route configured for model {model_id}")
+
+                last_attempted = primary
+                try:
+                    yield _routing_chunk(
+                        primary,
+                        fallback=bool(failed_attempts),
+                        failed_attempts=failed_attempts,
+                    )
                     if request_id in self._pending_decisions:
                         self._pending_decisions[request_id]["is_streaming"] = True
-                    if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
-                        done_chunk = chunk
-                        continue
-                    yield chunk
-            except BaseException as e:
-                decision_info = self._pending_decisions.pop(request_id, None)
-                if decision_info:
-                    exc_routing = getattr(e, "_routing", None)
-                    if isinstance(exc_routing, dict):
-                        self._attach_decision_info(exc_routing, decision_info)
-                raise
+                    async for chunk in self._execute_stream_adapter(
+                        primary,
+                        model_id,
+                        messages,
+                        **params,
+                    ):
+                        if request_id in self._pending_decisions:
+                            self._pending_decisions[request_id]["is_streaming"] = True
+                        if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
+                            done_chunk = chunk
+                            continue
+                        yield chunk
+                        chunks_yielded = True
 
+                    if failed_attempts:
+                        self._record_fallback_metric(failed_attempts, primary)
+                    decision_info = self._pending_decisions.pop(request_id, None)
+                    if decision_info:
+                        decision_info["is_streaming"] = True
+                        routing: dict[str, Any] = {}
+                        if failed_attempts:
+                            routing["fallback"] = True
+                            routing["fallback_policy"] = "routewise_resolve"
+                            routing["failed_attempts"] = failed_attempts
+                        self._attach_decision_info(routing, decision_info)
+                        routing_chunk = {
+                            "choices": [],
+                            "_routing": routing,
+                        }
+                        yield f"data: {json.dumps(routing_chunk)}\n\n"
+
+                    if done_chunk:
+                        yield done_chunk
+                    return
+                except Exception as exc:
+                    last_error = exc
+                    endpoint_id = _get_endpoint_id(primary)
+                    self._on_failure(
+                        endpoint_id,
+                        reason="stream_exception",
+                        detail=operator_safe_error(exc),
+                    )
+                    attempt = _failed_attempt(primary, exc)
+                    failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
+                    if not chunks_yielded:
+                        self._rollback_selected_quota_attempt(request_id, endpoint_id)
+                    if chunks_yielded or not _is_routewise_retryable_error(exc):
+                        raise
+                    self._record_routewise_fallback_attempt(
+                        request_id,
+                        attempt,
+                        fallback_policy="routewise_resolve",
+                    )
+                    excluded.add(endpoint_id)
+                    continue
+        except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)
-            if decision_info:
-                decision_info["is_streaming"] = True
-                routing: dict[str, Any] = {}
-                self._attach_decision_info(routing, decision_info)
-                routing_chunk = {
-                    "choices": [],
-                    "_routing": routing,
+            routing = getattr(exc, "_routing", None)
+            if not isinstance(routing, dict):
+                adapter = last_attempted
+                routing = {
+                    "provider": adapter.config.provider if adapter is not None else "router",
+                    "base_url": adapter.config.base_url if adapter is not None else "",
+                    "endpoint_id": (
+                        getattr(adapter.config, "endpoint_id", None)
+                        if adapter is not None
+                        else None
+                    ),
                 }
-                yield f"data: {json.dumps(routing_chunk)}\n\n"
-
-            if done_chunk:
-                yield done_chunk
+                exc._routing = routing  # type: ignore[attr-defined]
+            if failed_attempts:
+                routing.setdefault("failed_attempts", failed_attempts)
+            if decision_info:
+                self._attach_decision_info(routing, decision_info)
+            raise
         finally:
             self._release_pending_primary_reservation(request_id)

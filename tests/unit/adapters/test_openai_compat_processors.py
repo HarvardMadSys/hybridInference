@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from serving.adapters.base import ModelConfig
+from serving.adapters.key_pool import KeyPoolExhausted
 from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.adapters.processors import (
     DefaultProcessor,
@@ -43,6 +44,7 @@ def _make_adapter(
     chat_path: str | None = None,
     supported_params: list[str] | None = None,
     extra_body: dict | None = None,
+    api_keys: list[str] | None = None,
     include_usage_in_stream: bool = False,
 ) -> OpenAICompatAdapter:
     config = ModelConfig(
@@ -56,11 +58,39 @@ def _make_adapter(
         chat_path=chat_path,
         supported_params=supported_params or ["temperature", "top_p", "max_tokens"],
         extra_body=extra_body or {},
+        api_keys=api_keys,
         include_usage_in_stream=include_usage_in_stream,
     )
     adapter = OpenAICompatAdapter(config)
     adapter.http = MagicMock()
     return adapter
+
+
+@pytest.mark.asyncio
+async def test_post_with_pool_raises_clear_error_when_pool_empty():
+    adapter = _make_adapter(processor="default", api_keys=["sk-one"])
+    assert adapter._key_pool is not None
+    adapter._key_pool.remove_key("sk-one")
+
+    with pytest.raises(KeyPoolExhausted, match="No active API keys"):
+        await adapter._post_with_pool(
+            "http://mock.local/v1/chat/completions",
+            {"model": "glm-4.7-flash"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_stream_with_pool_raises_clear_error_when_pool_empty():
+    adapter = _make_adapter(processor="default", api_keys=["sk-one"])
+    assert adapter._key_pool is not None
+    adapter._key_pool.remove_key("sk-one")
+
+    with pytest.raises(KeyPoolExhausted, match="No active API keys"):
+        async for _ in adapter._open_stream_with_pool(
+            "http://mock.local/v1/chat/completions",
+            {"model": "glm-4.7-flash"},
+        ):
+            pass
 
 
 @pytest.mark.asyncio

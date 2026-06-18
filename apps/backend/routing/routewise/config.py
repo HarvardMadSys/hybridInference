@@ -86,11 +86,6 @@ class RouteWiseConfig:
     # available in the cache scope.
     prefix_cache_cost_adjustment_enabled: bool = False
 
-    # Canary rollout controls
-    canary_enabled: bool = False
-    canary_enabled_models: list[str] | None = None  # None = all routewise models
-    canary_traffic_fraction: float = 1.0  # 0.0-1.0
-
     def __post_init__(self) -> None:
         if self.latency_hedge_mode not in VALID_LATENCY_HEDGE_MODES:
             allowed = ", ".join(sorted(VALID_LATENCY_HEDGE_MODES))

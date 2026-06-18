@@ -76,6 +76,23 @@ async def test_list_settings(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_list_settings_excludes_routewise_keys(admin_client):
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(return_value=None)
+
+    response = await client.get(
+        "/admin/settings",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    keys = {item["key"] for item in response.json()["settings"]}
+    assert "routewise_budget_alpha" not in keys
+    assert "routewise_latency_slo_sec" not in keys
+    assert "routewise_latency_min_samples" not in keys
+
+
+@pytest.mark.asyncio
 async def test_update_bool_setting(admin_client):
     client, op_store, log_action = admin_client
     op_store.get_setting.return_value = None

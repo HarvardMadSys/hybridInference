@@ -25,6 +25,8 @@ class OpenRouterAdapter(OpenAICompatAdapter):
     - ``provider: {order: [<slug>], allow_fallbacks: false}`` when the route
       uses the bracket form ``kind: openrouter[<slug>]`` (config field
       ``openrouter_pinned_provider``).
+    - ``provider: {sort: <policy>}`` for bare OpenRouter routes with
+      ``openrouter_sort`` set to ``price``, ``throughput``, or ``latency``.
 
     Threads ``upstream_cost_usd`` from the response usage block into the
     internal ``_routing`` metadata block:
@@ -46,6 +48,8 @@ class OpenRouterAdapter(OpenAICompatAdapter):
         pin = getattr(self.config, "openrouter_pinned_provider", None)
         if pin:
             payload["provider"] = {"order": [pin], "allow_fallbacks": False}
+        elif sort := getattr(self.config, "openrouter_sort", None):
+            payload["provider"] = {"sort": sort}
         if stream:
             existing = dict(payload.get("stream_options") or {})
             existing["include_usage"] = True

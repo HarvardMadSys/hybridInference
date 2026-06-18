@@ -145,6 +145,16 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "Default daily USD spend quota seeded onto an admin user's active API key at signup."
         ),
     },
+    "routewise_budget_alpha": {
+        "type": "float",
+        "default": 0.75,
+        "min": 0.0,
+        "max": 1.0,
+        "description": (
+            "RouteWise LP cost budget interpolation: 0 favors cheapest feasible routes, "
+            "1 allows the full effective-cost range."
+        ),
+    },
     "routewise_latency_slo_sec": {
         "type": "float",
         "default": 3.0,

@@ -29,6 +29,12 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 _ADAPTER_COUNTER = itertools.count()
 
 
+class _StatusError(RuntimeError):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _make_model_config(
     model_id: str = "test-model",
     provider: str = "openai_compat",
@@ -41,6 +47,7 @@ def _make_model_config(
     concurrency: dict[str, object] | None = None,
     quota_pool: str | None = None,
     concurrency_pool: str | None = None,
+    route_metadata: dict[str, object] | None = None,
 ) -> MagicMock:
     """Create a mock ModelConfig.
 
@@ -77,6 +84,7 @@ def _make_model_config(
     )
     cfg.quota_pool = quota_pool
     cfg.concurrency_pool = concurrency_pool
+    cfg.route_metadata = route_metadata or {}
     return cfg
 
 
@@ -92,6 +100,7 @@ def _make_adapter(
     concurrency: dict[str, object] | None = None,
     quota_pool: str | None = None,
     concurrency_pool: str | None = None,
+    route_metadata: dict[str, object] | None = None,
 ) -> MagicMock:
     """Create a mock adapter with a mock ModelConfig."""
     adapter = MagicMock()
@@ -107,6 +116,7 @@ def _make_adapter(
         concurrency=concurrency,
         quota_pool=quota_pool,
         concurrency_pool=concurrency_pool,
+        route_metadata=route_metadata,
     )
     return adapter
 
@@ -384,8 +394,8 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_adapter("test-model", {"prompt_tokens": 10000})
         assert selected is provider_a
 
-    def test_fallback_excludes_failed(self):
-        """Fallback list excludes the adapter that just failed."""
+    def test_generic_fallback_disabled(self):
+        """RouteWise owns fallback via policy re-solve, not BaseRouter fallback lists."""
         a1 = _make_adapter(provider="provider_a")
         a2 = _make_adapter(provider="provider_b")
 
@@ -394,8 +404,7 @@ class TestRouteWiseRouterScaffold:
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         fallbacks = router._get_fallback_adapters("test-model", a1)
-        assert a1 not in fallbacks
-        assert a2 in fallbacks
+        assert fallbacks == []
 
     def test_fallback_empty_for_unknown_model(self):
         """Fallback returns empty list for an unregistered model."""
@@ -452,6 +461,101 @@ class TestRouteWiseRouterScaffold:
         assert router._quota_sources() == [
             QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
         ]
+
+    def test_upstream_override_quota_uses_local_limit_fallback(self):
+        """Upstream-overridden S_Q uses quota.limit as local request-count state."""
+        source = {
+            "provider": "chutes",
+            "usage_label": "Daily requests",
+            "unit": "requests",
+        }
+        quota_adapter = _make_adapter(
+            provider_type="quota",
+            quota_source=source,
+            quota={"limit": 5000},
+            endpoint_id="test-model:quota-provider",
+            route_metadata={
+                "route_provider": "chutes",
+                "upstream_provider": "openrouter",
+                "provider_type": "quota",
+            },
+        )
+        api_adapter = _make_adapter(
+            provider_type="on_demand",
+            prompt_price="3.0",
+            completion_price="15.0",
+            endpoint_id="test-model:api-provider",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        selected = router._select_adapter(
+            "test-model",
+            {"prompt_tokens": 1000, "request_id": "req-local-fallback"},
+        )
+
+        assert selected is quota_adapter
+        assert router._quota_sources() == []
+        source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
+        assert router.quota_snapshots.get(source_obj) is None
+        pool_id = next(iter(router.quota_pools))
+        pool = _quota_pool(router)
+        assert pool.source == QuotaSource(
+            provider="local",
+            usage_label=f"routewise:{pool_id}",
+            unit="requests",
+        )
+        snapshot = router.quota_snapshots.get(pool.source)
+        assert snapshot is not None
+        assert snapshot.limit == 5000
+        assert snapshot.remaining == 4999
+        decision = router._pending_decisions["req-local-fallback"]
+        assert decision["quota_remaining"] == 4999
+
+    def test_upstream_override_quota_fallback_does_not_mask_shared_source(self):
+        """A local fallback pool must not suppress real refresh for another pool."""
+        source = {
+            "provider": "chutes",
+            "usage_label": "Daily requests",
+            "unit": "requests",
+        }
+        override_adapter = _make_adapter(
+            provider_type="quota",
+            quota_source=source,
+            quota={"limit": 5000},
+            quota_pool="override-pool",
+            endpoint_id="test-model:override-quota",
+            route_metadata={
+                "route_provider": "chutes",
+                "upstream_provider": "openrouter",
+                "provider_type": "quota",
+            },
+        )
+        normal_adapter = _make_adapter(
+            model_id="other-model",
+            provider_type="quota",
+            quota_source=source,
+            quota={"limit": 5000},
+            quota_pool="normal-pool",
+            endpoint_id="other-model:normal-quota",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(override_adapter, 1.0)])
+        fr.add("other-model", [(normal_adapter, 1.0)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
+
+        assert router.quota_pools["override-pool"].source == QuotaSource(
+            provider="local",
+            usage_label="routewise:override-pool",
+            unit="requests",
+        )
+        assert router.quota_pools["normal-pool"].source == source_obj
+        assert router._quota_sources() == [source_obj]
 
     @pytest.mark.asyncio
     async def test_quota_source_snapshot_enables_quota_candidate(self):
@@ -581,12 +685,8 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_adapter("test-model", {})
         assert selected is conc
 
-    def test_fallback_excludes_concurrency(self):
-        """Fallback never includes S_C adapters (regardless of feature flag).
-
-        S_C is excluded from fallback because the BaseRouter fallback path
-        bypasses _select_adapter -- no concurrency slot accounting would occur.
-        """
+    def test_generic_fallback_does_not_expose_concurrency(self):
+        """BaseRouter fallback is disabled; RouteWise re-solve accounts for S_C slots."""
         api = _make_adapter(provider_type="on_demand")
         conc = _make_adapter(provider_type="concurrency")
 
@@ -594,15 +694,10 @@ class TestRouteWiseRouterScaffold:
         fr.add("test-model", [(api, 0.5), (conc, 0.5)])
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        assert conc not in router._get_fallback_adapters("test-model", api)
+        assert router._get_fallback_adapters("test-model", api) == []
 
-    def test_fallback_only_includes_api_adapters(self):
-        """Fallback only returns S_A adapters, never S_Q or S_C.
-
-        The BaseRouter fallback path bypasses _select_adapter entirely,
-        so no PD decision or quota/concurrency accounting is performed.
-        Only S_A is safe for fallback.
-        """
+    def test_generic_fallback_returns_empty_for_all_route_types(self):
+        """No generic fallback adapters are exposed for RouteWise routes."""
         quota = _make_adapter(provider_type="quota")
         conc = _make_adapter(provider_type="concurrency")
         api_a = _make_adapter(provider_type="on_demand", provider="provider_a")
@@ -623,16 +718,11 @@ class TestRouteWiseRouterScaffold:
 
         # S_A failed -> only other S_A in fallback.
         fallbacks = router._get_fallback_adapters("test-model", api_a)
-        assert quota not in fallbacks
-        assert conc not in fallbacks
-        assert api_b in fallbacks
+        assert fallbacks == []
 
         # S_Q failed -> only S_A adapters in fallback.
         fallbacks = router._get_fallback_adapters("test-model", quota)
-        assert quota not in fallbacks
-        assert conc not in fallbacks
-        assert api_a in fallbacks
-        assert api_b in fallbacks
+        assert fallbacks == []
 
 
 # ---------------------------------------------------------------------------
@@ -2038,6 +2128,103 @@ class TestRouteWiseDecisionMetadata:
         assert "req-merge-test" not in router._pending_decisions
 
     @pytest.mark.asyncio
+    async def test_chat_completion_re_solves_routewise_after_provider_failure(self):
+        """A failed RouteWise selection retries by re-solving, not generic on-demand fallback."""
+        quota = _make_adapter(
+            provider_type="quota",
+            endpoint_id="test-model:quota-provider",
+            quota={"limit": 10_000},
+        )
+        conc = _make_adapter(
+            provider_type="concurrency",
+            endpoint_id="test-model:conc-provider",
+            concurrency={"limit": 1},
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:quota-provider") or by_id["test-model:conc-provider"]
+
+        router._sample_solution = _choose  # type: ignore[method-assign]
+        quota.chat_completion = AsyncMock(side_effect=_StatusError(429, "quota 429"))
+        conc.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "fallback ok"}}]}
+        )
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-policy-fallback",
+        )
+
+        assert resp["_routing"]["endpoint_id"] == "test-model:conc-provider"
+        assert resp["_routing"]["fallback"] is True
+        assert resp["_routing"]["fallback_policy"] == "routewise_resolve"
+        assert quota.chat_completion.await_count == 1
+        assert conc.chat_completion.await_count == 1
+
+        rw = resp["_routing"]["routewise"]
+        assert rw["initial_selected_endpoint"] == "test-model:quota-provider"
+        assert rw["selected_endpoint"] == "test-model:conc-provider"
+        assert rw["final_endpoint"] == "test-model:conc-provider"
+        assert rw["fallback_policy"] == "routewise_resolve"
+        assert rw["fallback_attempts"] == 1
+        assert rw["failed_attempts"][0]["endpoint_id"] == "test-model:quota-provider"
+        assert _quota_pool(router).remaining == 10000
+        assert _conc_pool(router).active == 0
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_does_not_resolve_after_nonretryable_error(self):
+        """Non-transient provider errors surface directly and refund S_Q attempts."""
+        quota = _make_adapter(
+            provider_type="quota",
+            endpoint_id="test-model:quota-provider",
+            quota={"limit": 10_000},
+        )
+        conc = _make_adapter(
+            provider_type="concurrency",
+            endpoint_id="test-model:conc-provider",
+            concurrency={"limit": 1},
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:quota-provider") or by_id["test-model:conc-provider"]
+
+        router._sample_solution = _choose  # type: ignore[method-assign]
+        quota.chat_completion = AsyncMock(side_effect=_StatusError(400, "bad request"))
+        conc.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "should not run"}}]}
+        )
+
+        with pytest.raises(_StatusError, match="bad request") as exc_info:
+            await router.chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-nonretryable",
+            )
+
+        assert quota.chat_completion.await_count == 1
+        assert conc.chat_completion.await_count == 0
+        assert _quota_pool(router).remaining == 10000
+
+        routing = getattr(exc_info.value, "_routing", None)
+        assert routing is not None
+        assert "routewise" in routing
+        assert routing["routewise"]["fallback_attempts"] == 0
+        assert routing["routewise"]["fallback_policy"] is None
+
+    @pytest.mark.asyncio
     async def test_stream_injects_routewise_chunk(self):
         """stream_chat_completion() injects a routewise chunk before [DONE]."""
         router, quota, api = _make_router_with_quota_and_api()
@@ -2121,6 +2308,52 @@ class TestRouteWiseDecisionMetadata:
 
         assert any("partial" in chunk for chunk in chunks)
         assert not any("backup" in chunk for chunk in chunks)
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_resolve_after_nonretryable_error(self):
+        """Pre-content stream 4xx errors surface directly instead of re-solving."""
+        primary = _make_adapter(
+            provider="primary",
+            provider_type="on_demand",
+            endpoint_id="test-model:primary",
+        )
+        backup = _make_adapter(
+            provider="backup",
+            provider_type="on_demand",
+            endpoint_id="test-model:backup",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        async def _primary_stream(*args, **kwargs):
+            raise _StatusError(400, "bad stream request")
+            yield
+
+        async def _backup_stream(*args, **kwargs):
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:primary") or by_id["test-model:backup"]
+
+        primary.stream_chat_completion = _primary_stream
+        backup.stream_chat_completion = _backup_stream
+        router._sample_solution = _choose  # type: ignore[method-assign]
+
+        with pytest.raises(_StatusError, match="bad stream request") as exc_info:
+            async for _ in router.stream_chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-stream-nonretryable",
+            ):
+                pass
+
+        routing = getattr(exc_info.value, "_routing", None)
+        assert routing is not None
+        assert routing["routewise"]["fallback_attempts"] == 0
+        assert routing["routewise"]["fallback_policy"] is None
 
     @pytest.mark.asyncio
     async def test_pending_decisions_cleaned_on_error(self):
