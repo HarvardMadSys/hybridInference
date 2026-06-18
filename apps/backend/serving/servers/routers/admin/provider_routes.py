@@ -1502,9 +1502,7 @@ async def _route_row(
     effective_override = None if _is_runtime_candidate(adapter) else override_row
     raw_route_provider = _route_provider(adapter)
     raw_upstream_provider = (
-        str(effective_override["provider"])
-        if effective_override
-        else _upstream_provider(adapter)
+        str(effective_override["provider"]) if effective_override else _upstream_provider(adapter)
     )
     route_target = _target_for_provider(raw_route_provider)
     target = _target_for_provider(raw_upstream_provider)
@@ -1527,9 +1525,7 @@ async def _route_row(
         api_key_id=api_key_id,
     )
     base_url = (
-        str(effective_override["base_url"])
-        if effective_override
-        else str(adapter.config.base_url)
+        str(effective_override["base_url"]) if effective_override else str(adapter.config.base_url)
     )
     provider_model_id = (
         str(effective_override["provider_model_id"])
@@ -1537,7 +1533,9 @@ async def _route_row(
         else getattr(adapter.config, "provider_model_id", None)
     )
     source = (
-        "runtime" if _is_runtime_candidate(adapter) else ("override" if effective_override else "yaml")
+        "runtime"
+        if _is_runtime_candidate(adapter)
+        else ("override" if effective_override else "yaml")
     )
     return ProviderRouteItem(
         model_id=model_id,

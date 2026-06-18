@@ -30,7 +30,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
-
 from routewise.core import (
     HEDGE_SUCCESS_TARGET,
     BackupCandidate,
