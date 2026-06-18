@@ -75,7 +75,7 @@ Models are defined in `spark_idle_proxy/models.json`:
         "serve_hf_repo": true,
         "served_name": "openai/gpt-oss-20b",
         "docker_image": "nvcr.io/nvidia/vllm:26.01-py3",
-        "max_model_len": 16384,
+        "max_model_len": 65536,
         "gpu_memory_utilization": 0.64,
         "max_num_seqs": 1,
         "trust_remote_code": true,

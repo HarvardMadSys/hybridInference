@@ -1,4 +1,4 @@
-# sglang-idle-proxy
+# local-deployment-proxy
 
 A lightweight reverse proxy that lazily starts and stops sglang Docker containers for multiple models. The proxy port stays open permanently; GPU-heavy containers are only running when there is active traffic. The least-used GPU is auto-selected.
 
@@ -30,27 +30,27 @@ Client → spark2:8001 ──SSH tunnel──→ GPU box :8001 (proxy)
 ### Foreground (Ctrl-C to quit)
 
 ```bash
-python sglang_idle_proxy/sglang_idle_proxy.py
+python local_deployment_proxy/local_deployment_proxy.py
 ```
 
 ### Background daemon
 
 ```bash
 # Local only
-./sglang_idle_proxy/sglang_idle_service.sh start
+./local_deployment_proxy/local_deployment_service.sh start
 
 # With SSH reverse tunnel to a public LLM router
-SSH_HOST='spark2|internal.freeinference.org' REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
+SSH_HOST='spark2|internal.freeinference.org' REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
 
 # With API key auth
-LOCAL_API_KEY='your-secret-key' ./sglang_idle_proxy/sglang_idle_service.sh start
+LOCAL_API_KEY='your-secret-key' ./local_deployment_proxy/local_deployment_service.sh start
 
 # Check / stop
-./sglang_idle_proxy/sglang_idle_service.sh status
-./sglang_idle_proxy/sglang_idle_service.sh stop    # stops proxy + tunnel + all containers
+./local_deployment_proxy/local_deployment_service.sh status
+./local_deployment_proxy/local_deployment_service.sh stop    # stops proxy + tunnel + all containers
 ```
 
-Logs are written to `/tmp/sglang_idle_proxy_8001.log`.
+Logs are written to `/tmp/local_deployment_proxy_8001.log`.
 
 ## Usage with OpenAI-compatible clients
 
@@ -85,7 +85,7 @@ When a model's backend is not running and a request comes in:
 
 ## Model configuration
 
-Models are defined in `sglang_idle_proxy/models.json`:
+Models are defined in `local_deployment_proxy/models.json`:
 
 ```json
 {
@@ -192,7 +192,7 @@ GLM-4.7-Flash has ~2x higher prefill throughput than Qwen3.6-35B across all prom
 ## Tests
 
 ```bash
-python -m pytest tests/test_sglang_idle_proxy.py -v
+python -m pytest tests/test_local_deployment_proxy.py -v
 ```
 
 Tests use mock HTTP backends and mock Docker commands — no GPU required.

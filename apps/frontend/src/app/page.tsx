@@ -1,9 +1,20 @@
-import { CodeExample, Features, Hero, HowItWorks, Sponsors, UseCases } from '@/components/landing';
+import {
+  CodeExample,
+  Features,
+  Hero,
+  HowItWorks,
+  Sponsors,
+  Updates,
+  UpdatesBanner,
+  UseCases,
+} from '@/components/landing';
 
 export default function HomePage(): JSX.Element {
   return (
     <div className="flex w-full flex-col gap-4">
+      <UpdatesBanner />
       <Hero />
+      <Updates />
       <Features />
       <UseCases />
       <HowItWorks />

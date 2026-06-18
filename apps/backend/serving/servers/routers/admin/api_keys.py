@@ -14,7 +14,6 @@ from serving.schemas_admin import (
     CreateAPIKeyRequest,
     CreateAPIKeyResponse,
     ListAPIKeysResponse,
-    RegenerateAPIKeyResponse,
     RevokeAPIKeyResponse,
     UpdateAPIKeyRequest,
     UpdateAPIKeyResponse,
@@ -62,7 +61,7 @@ async def create_api_key(
         raise HTTPException(
             status_code=409,
             detail=f"User '{payload.user_id}' already has an active API key. "
-            "Revoke it first or use /regenerate endpoint.",
+            "Revoke it first, then create a new one.",
         )
 
     plaintext_key = generate_api_key()
@@ -312,51 +311,3 @@ async def revoke_api_key(
     await log_admin_action(op_store, admin_id, action_type, user_id, {"hard_delete": hard_delete})
 
     return RevokeAPIKeyResponse(user_id=user_id, action=response_action, message=message)
-
-
-@router.post("/api-keys/{user_id}/regenerate", response_model=RegenerateAPIKeyResponse)
-async def regenerate_api_key(
-    request: Request,
-    user_id: str,
-    admin_id: str = Depends(verify_admin_access),
-    op_store=Depends(get_operational_store),
-) -> RegenerateAPIKeyResponse:
-    """Regenerate API key for a user (e.g., after suspected compromise).
-
-    This atomically:
-    1. Generates a new key
-    2. Updates the database
-    3. Returns the new plaintext key ONLY ONCE
-
-    The old key is immediately invalidated.
-
-    Requires: Authorization: Bearer {ADMIN_TOKEN}
-    """
-    if not op_store:
-        raise HTTPException(500, "Database not configured")
-
-    new_plaintext_key = generate_api_key()
-    new_key_hash = hash_api_key(new_plaintext_key)
-    new_key_prefix = new_plaintext_key[:12]
-
-    try:
-        old_key_prefix = await op_store.regenerate_key(
-            user_id, new_key_hash=new_key_hash, new_key_prefix=new_key_prefix
-        )
-    except ValueError:
-        raise HTTPException(404, f"User '{user_id}' not found") from None
-
-    await log_admin_action(
-        op_store,
-        admin_id,
-        "regenerate_key",
-        user_id,
-        {"old_key_prefix": old_key_prefix, "new_key_prefix": new_key_prefix},
-    )
-
-    return RegenerateAPIKeyResponse(
-        api_key=new_plaintext_key,
-        user_id=user_id,
-        key_prefix=new_key_prefix,
-        old_key_prefix=old_key_prefix,
-    )

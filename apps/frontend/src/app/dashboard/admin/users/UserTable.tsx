@@ -21,7 +21,6 @@ interface UserTableProps {
   onResume: (userId: string) => Promise<void>;
   onDelete: (userId: string, reason: string) => Promise<void>;
   onHardDelete: (userId: string, reason: string) => Promise<void>;
-  onRegenerateKey: (userId: string) => Promise<void>;
 }
 
 interface ConfirmAction {
@@ -166,7 +165,7 @@ export function UserTable(props: UserTableProps) {
   // Reject modal state — replaces window.prompt (UX consistency + a11y).
   const [rejectTarget, setRejectTarget] = useState<UserRowType | null>(null);
   const [rejectReason, setRejectReason] = useState('');
-  // Generic confirm modal — replaces window.confirm for suspend/regen-key
+  // Generic confirm modal — replaces window.confirm for suspend
   // so the same custom-modal pattern is used everywhere in this table.
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
 
@@ -321,22 +320,6 @@ export function UserTable(props: UserTableProps) {
                       setRejectTarget(u);
                       setRejectReason('');
                     }}
-                    onRegenerateKey={() => {
-                      setConfirmAction({
-                        title: 'Regenerate API key?',
-                        body: `Regenerate the API key for ${u.email}? The old key will stop working immediately.`,
-                        confirmLabel: 'Regenerate',
-                        confirmTone: 'danger',
-                        onConfirm: async () => {
-                          setBusy(u.id);
-                          try {
-                            await props.onRegenerateKey(u.id);
-                          } finally {
-                            setBusy(null);
-                          }
-                        },
-                      });
-                    }}
                   />
                   {isExpanded && (
                     <tr>
@@ -475,7 +458,7 @@ export function UserTable(props: UserTableProps) {
         </div>
       )}
 
-      {/* Generic confirm modal — replaces window.confirm for suspend/regen-key. */}
+      {/* Generic confirm modal — replaces window.confirm for suspend. */}
       {confirmAction && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div

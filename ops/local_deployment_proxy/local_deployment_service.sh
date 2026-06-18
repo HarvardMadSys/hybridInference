@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# benchmark/sglang_idle_service.sh — start/stop the sglang idle proxy daemon.
+# ops/local_deployment_proxy/local_deployment_service.sh — start/stop the local deployment proxy daemon.
 #
 # Usage:
-#   ./sglang_idle_proxy/sglang_idle_service.sh start   # launch proxy in background
-#   ./sglang_idle_proxy/sglang_idle_service.sh stop    # kill proxy + stop container
-#   ./sglang_idle_proxy/sglang_idle_service.sh status  # check if proxy is running
+#   ./local_deployment_proxy/local_deployment_service.sh start   # launch proxy in background
+#   ./local_deployment_proxy/local_deployment_service.sh stop    # kill proxy + stop container
+#   ./local_deployment_proxy/local_deployment_service.sh status  # check if proxy is running
 #
 # The proxy itself is a thin Python HTTP server that:
 #   • Listens on LISTEN_PORT (default 8001) — always open.
@@ -13,14 +13,14 @@
 #   • Stops the container after IDLE_TIMEOUT seconds of no traffic (default 1440 = 24 min).
 #
 # Override any env var before calling, e.g.:
-#   LISTEN_PORT=9000 IDLE_TIMEOUT=600 ./sglang_idle_proxy/sglang_idle_service.sh start
+#   LISTEN_PORT=9000 IDLE_TIMEOUT=600 ./local_deployment_proxy/local_deployment_service.sh start
 #
 # SSH reverse tunnel (expose to public LLM routers):
-#   SSH_HOST=router.example.com REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
+#   SSH_HOST=router.example.com REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
 # This forwards router.example.com:REMOTE_PORT → localhost:LISTEN_PORT.
 #
 # Multiple hosts (pipe-separated):
-#   SSH_HOST="r1.example.com|r2.example.com" REMOTE_PORT=8001 ./sglang_idle_proxy/sglang_idle_service.sh start
+#   SSH_HOST="r1.example.com|r2.example.com" REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
 # This opens two tunnels: r1.example.com:8001 → localhost and r2.example.com:8001 → localhost.
 #
 # Remote bind address (default 0.0.0.0 — bind all interfaces on remote so Docker
@@ -29,7 +29,7 @@
 # Override to "localhost" to restore default loopback-only behavior, or pin to a
 # specific bridge IP, e.g. REMOTE_BIND=172.17.0.1.
 #   REMOTE_BIND=172.17.0.1 SSH_HOST=router.example.com REMOTE_PORT=8001 \
-#       ./sglang_idle_proxy/sglang_idle_service.sh start
+#       ./local_deployment_proxy/local_deployment_service.sh start
 
 set -euo pipefail
 
@@ -37,11 +37,11 @@ LISTEN_PORT="${LISTEN_PORT:-8001}"
 REMOTE_PORT="${REMOTE_PORT:-}"
 REMOTE_BIND="${REMOTE_BIND:-0.0.0.0}"
 SSH_HOST="${SSH_HOST:-}"
-PID_FILE="/tmp/sglang_idle_proxy_${LISTEN_PORT}.pid"
-TUNNEL_PID_FILE="/tmp/sglang_idle_proxy_tunnel_${LISTEN_PORT}.pid"
-LOG_FILE="/tmp/sglang_idle_proxy_${LISTEN_PORT}.log"
+PID_FILE="/tmp/local_deployment_proxy_${LISTEN_PORT}.pid"
+TUNNEL_PID_FILE="/tmp/local_deployment_proxy_tunnel_${LISTEN_PORT}.pid"
+LOG_FILE="/tmp/local_deployment_proxy_${LISTEN_PORT}.log"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROXY_SCRIPT="${SCRIPT_DIR}/sglang_idle_proxy.py"
+PROXY_SCRIPT="${SCRIPT_DIR}/local_deployment_proxy.py"
 MODELS_JSON="${SCRIPT_DIR}/models.json"
 
 cmd="${1:-}"
@@ -52,7 +52,7 @@ case "$cmd" in
       echo "Proxy already running (PID $(cat "$PID_FILE"))."
       exit 0
     fi
-    echo "Starting sglang idle proxy on :${LISTEN_PORT} …"
+    echo "Starting local deployment proxy on :${LISTEN_PORT} …"
     echo "  Log: ${LOG_FILE}"
     nohup python3 "$PROXY_SCRIPT" >"$LOG_FILE" 2>&1 &
     echo $! > "$PID_FILE"

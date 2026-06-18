@@ -138,19 +138,6 @@ class RevokeAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     message: str
 
 
-class RegenerateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
-    """Response payload for successful key regeneration."""
-
-    api_key: str = Field(..., description="New plaintext API key (shown only once)")
-    user_id: str
-    key_prefix: str
-    old_key_prefix: str
-    warning: str = Field(
-        default="⚠️ Old key is now revoked. Save this new key immediately.",
-        description="Security warning",
-    )
-
-
 # ========================================
 # User Registration Management Schemas
 # ========================================
@@ -975,7 +962,6 @@ __all__ = [
     "ProviderRouteApiKeyRef",
     "ProviderRouteItem",
     "ProviderRouteOption",
-    "RegenerateAPIKeyResponse",
     "RejectUserRequest",
     "RejectUserResponse",
     "ResumeUserRequest",
@@ -1264,3 +1250,115 @@ class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimporte
     id: str
     provider: str
     pools_updated: int
+
+
+# ============================================================
+# Site Updates (homepage announcements / banner)
+# ============================================================
+
+# Where an update renders on the public homepage. ``feed`` entries appear in
+# the chronological "Updates" section; ``banner`` entries surface as the single
+# dismissible notice at the top of the page (only the newest published one).
+SiteUpdatePlacement = Literal["feed", "banner"]
+
+
+def _validate_link_url(v: str | None) -> str | None:
+    """Restrict ``link_url`` to http(s) so it is safe to render as an href.
+
+    The homepage renders ``link_url`` directly inside ``<a href=...>`` on a
+    public, unauthenticated page, bypassing react-markdown's URL sanitization.
+    Enforcing the scheme here blocks stored-XSS vectors such as
+    ``javascript:`` and ``data:`` regardless of which client renders the value.
+    Empty/whitespace-only strings normalize to ``None``.
+    """
+    if v is None:
+        return None
+    cleaned = v.strip()
+    if not cleaned:
+        return None
+    if not (cleaned.lower().startswith("http://") or cleaned.lower().startswith("https://")):
+        raise ValueError("link_url must start with http:// or https://")
+    return cleaned
+
+
+class SiteUpdateItem(BaseModel):  # type: ignore[no-any-unimported]
+    """A single site update as returned by the admin endpoints."""
+
+    id: str
+    title: str
+    body: str
+    placement: SiteUpdatePlacement
+    published: bool
+    link_url: str | None
+    link_label: str | None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ListSiteUpdatesResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``GET /admin/site-updates``."""
+
+    total: int
+    updates: list[SiteUpdateItem]
+
+
+class CreateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request payload for ``POST /admin/site-updates``."""
+
+    title: str = Field(..., min_length=1, max_length=200)
+    body: str = Field("", description="Markdown body rendered on the homepage")
+    placement: SiteUpdatePlacement = "feed"
+    published: bool = True
+    link_url: str | None = Field(None, max_length=2000)
+    link_label: str | None = Field(None, max_length=80)
+
+    @field_validator("link_url")
+    @classmethod
+    def _check_link_url(cls, v: str | None) -> str | None:
+        return _validate_link_url(v)
+
+
+class UpdateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request payload for ``PATCH /admin/site-updates/{id}`` (all optional)."""
+
+    title: str | None = Field(None, min_length=1, max_length=200)
+    body: str | None = None
+    placement: SiteUpdatePlacement | None = None
+    published: bool | None = None
+    link_url: str | None = Field(None, max_length=2000)
+    link_label: str | None = Field(None, max_length=80)
+
+    # NOT NULL columns: reject an explicit ``null`` (only runs when the field is
+    # present in the payload, so omitting it for a partial update is still fine).
+    # Without this, ``{"body": null}`` would pass validation and then violate the
+    # NOT NULL constraint at write time (500 instead of 422).
+    @field_validator("title", "body", "placement", "published")
+    @classmethod
+    def _reject_null(cls, v: Any) -> Any:
+        if v is None:
+            raise ValueError("value cannot be null")
+        return v
+
+    @field_validator("link_url")
+    @classmethod
+    def _check_link_url(cls, v: str | None) -> str | None:
+        return _validate_link_url(v)
+
+
+class PublicSiteUpdate(BaseModel):  # type: ignore[no-any-unimported]
+    """A published update as exposed on the public homepage endpoint."""
+
+    id: str
+    title: str
+    body: str
+    link_url: str | None
+    link_label: str | None
+    created_at: datetime
+
+
+class PublicSiteUpdatesResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for the public ``GET /site-updates`` endpoint."""
+
+    banner: PublicSiteUpdate | None
+    updates: list[PublicSiteUpdate]

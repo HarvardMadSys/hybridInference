@@ -76,8 +76,8 @@ def _load_proxy(monkeypatch: Any, tmp_path: Path, *, backend_port: int = 18080) 
     monkeypatch.setenv("HEALTH_TIMEOUT", "0.2")
     monkeypatch.setenv("HEALTH_INTERVAL", "0.01")
 
-    sys.modules.pop("ops.sglang_idle_proxy.sglang_idle_proxy", None)
-    return importlib.import_module("ops.sglang_idle_proxy.sglang_idle_proxy")
+    sys.modules.pop("ops.local_deployment_proxy.local_deployment_proxy", None)
+    return importlib.import_module("ops.local_deployment_proxy.local_deployment_proxy")
 
 
 class RecordingBackendHandler(BaseHTTPRequestHandler):
@@ -628,6 +628,39 @@ def test_vllm_generation_keeps_kv_cache_dtype(monkeypatch: Any, tmp_path: Path) 
     cmd = backend._vllm_run_cmd("0")
 
     assert cmd[cmd.index("--kv-cache-dtype") + 1] == "fp8"
+    assert "--runner" not in cmd
+    # Caching flags are added regardless of KV-cache dtype (fp8 makes them a
+    # no-op for hits, but the launch must not silently drop them).
+    assert "--enable-prefix-caching" in cmd
+    assert "--enable-prompt-tokens-details" in cmd
+
+
+def test_vllm_generation_default_enables_prefix_cache_reporting(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Without an explicit kv_cache_dtype, a generation model uses the default
+    (bf16) KV cache and enables prefix caching + cached_tokens reporting."""
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "qwen-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18001,
+            "model_dir": "/tmp/qwen",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.80",
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    assert "--enable-prefix-caching" in cmd
+    assert "--enable-prompt-tokens-details" in cmd
+    # No explicit opt-in → no fp8 KV cache (which would zero out cache hits).
+    assert "--kv-cache-dtype" not in cmd
     assert "--runner" not in cmd
 
 

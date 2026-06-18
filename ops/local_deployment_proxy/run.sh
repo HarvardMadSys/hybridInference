@@ -1,7 +1,7 @@
-# SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 ./sglang_idle_service.sh start
+# SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 ./local_deployment_service.sh start
 
-SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 ./sglang_idle_service.sh stop
-SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 ./sglang_idle_service.sh start
+SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 ./local_deployment_service.sh stop
+SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 ./local_deployment_service.sh start
 
 curl http://127.0.0.1:8001/v1/embeddings \
   -H "Authorization: Bearer freeinference_api" \

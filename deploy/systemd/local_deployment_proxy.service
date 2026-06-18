@@ -1,5 +1,5 @@
 [Unit]
-Description=sglang idle proxy — lazy start/stop of GPU model containers
+Description=local deployment proxy — lazy start/stop of GPU model containers
 Wants=network-online.target
 After=network-online.target docker.service
 Requires=docker.service
@@ -8,8 +8,8 @@ Requires=docker.service
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/srv/hybridInference/ops/sglang_idle_proxy
-ExecStart=/srv/hybridInference/.venv/bin/python3 /srv/hybridInference/ops/sglang_idle_proxy/sglang_idle_proxy.py
+WorkingDirectory=/srv/hybridInference/ops/local_deployment_proxy
+ExecStart=/srv/hybridInference/.venv/bin/python3 /srv/hybridInference/ops/local_deployment_proxy/local_deployment_proxy.py
 
 Restart=on-failure
 RestartSec=10s
@@ -21,7 +21,7 @@ Environment=HEALTH_INTERVAL=10
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=sglang-idle-proxy
+SyslogIdentifier=local-deployment-proxy
 
 [Install]
 WantedBy=multi-user.target

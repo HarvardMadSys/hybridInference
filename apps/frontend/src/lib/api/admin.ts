@@ -153,21 +153,6 @@ export async function rejectUser(userId: string, reason: string): Promise<Approv
 }
 
 // ========================================
-// API Key Management
-// ========================================
-
-export async function regenerateApiKeyAdmin(
-  userId: string,
-): Promise<{ api_key: string; key_prefix: string }> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/admin/api-keys/${encodeURIComponent(userId)}/regenerate`,
-    { method: 'POST' },
-  );
-  return jsonOrThrow<{ api_key: string; key_prefix: string }>(resp);
-}
-
-// ========================================
 // User Detail & Edit
 // ========================================
 
@@ -1424,4 +1409,70 @@ export async function disableProviderEnvKey(
     body: JSON.stringify({ provider, env_key_id: envKeyId }),
   });
   return jsonOrThrow<DisableProviderEnvKeyResponse>(resp);
+}
+
+// ========================================
+// Site Updates (homepage announcements / banner)
+// ========================================
+
+export type SiteUpdatePlacement = 'feed' | 'banner';
+
+export interface SiteUpdateItem {
+  id: string;
+  title: string;
+  body: string;
+  placement: SiteUpdatePlacement;
+  published: boolean;
+  link_url: string | null;
+  link_label: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ListSiteUpdatesResponse {
+  total: number;
+  updates: SiteUpdateItem[];
+}
+
+export interface SiteUpdateInput {
+  title: string;
+  body: string;
+  placement: SiteUpdatePlacement;
+  published: boolean;
+  link_url: string | null;
+  link_label: string | null;
+}
+
+export async function listSiteUpdates(): Promise<ListSiteUpdatesResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/site-updates');
+  return jsonOrThrow<ListSiteUpdatesResponse>(resp);
+}
+
+export async function createSiteUpdate(input: SiteUpdateInput): Promise<SiteUpdateItem> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/site-updates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  return jsonOrThrow<SiteUpdateItem>(resp);
+}
+
+export async function updateSiteUpdate(
+  id: string,
+  patch: Partial<SiteUpdateInput>,
+): Promise<SiteUpdateItem> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/site-updates/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow<SiteUpdateItem>(resp);
+}
+
+export async function deleteSiteUpdate(id: string): Promise<void> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/site-updates/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  await jsonOrThrow<{ message: string }>(resp);
 }

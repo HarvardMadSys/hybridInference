@@ -28,6 +28,8 @@ vi.mock('@/components/landing', () => ({
   HowItWorks: () => <section aria-label="how it works" />,
   UseCases: () => <section aria-label="use cases" />,
   Sponsors: () => <section aria-label="sponsors" />,
+  Updates: () => <section aria-label="updates" />,
+  UpdatesBanner: () => <section aria-label="updates banner" />,
 }));
 
 vi.mock('@/components/features/dashboard/DashboardView', () => ({

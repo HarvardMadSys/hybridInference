@@ -13,10 +13,23 @@ const nextConfig = {
       { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
       { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
       { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
-      { source: '/internal/verify-grafana', destination: `${BACKEND_INTERNAL_URL}/internal/verify-grafana` },
-      { source: '/internal/verify-admin', destination: `${BACKEND_INTERNAL_URL}/internal/verify-admin` },
-      { source: '/internal/playground/:path*', destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*` },
+      {
+        source: '/internal/verify-grafana',
+        destination: `${BACKEND_INTERNAL_URL}/internal/verify-grafana`,
+      },
+      {
+        source: '/internal/verify-admin',
+        destination: `${BACKEND_INTERNAL_URL}/internal/verify-admin`,
+      },
+      {
+        source: '/internal/playground/:path*',
+        destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*`,
+      },
       { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
+      // Public homepage updates. Nginx routes unmatched paths to the frontend,
+      // so this rewrite forwards the request on to FastAPI (same pattern as
+      // /health). Without it the static frontend would 404 the fetch in prod.
+      { source: '/site-updates', destination: `${BACKEND_INTERNAL_URL}/site-updates` },
     ];
   },
 };

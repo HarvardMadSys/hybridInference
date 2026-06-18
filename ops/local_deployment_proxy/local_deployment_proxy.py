@@ -11,13 +11,13 @@ stays alive so callers always see an open port.
 
 Usage:
     # Foreground (Ctrl-C to quit):
-    python sglang_idle_proxy/sglang_idle_proxy.py
+    python local_deployment_proxy/local_deployment_proxy.py
 
     # Background:
-    nohup python sglang_idle_proxy/sglang_idle_proxy.py &
+    nohup python local_deployment_proxy/local_deployment_proxy.py &
 
     # Custom settings via environment:
-    LISTEN_PORT=9000 IDLE_TIMEOUT=600 python sglang_idle_proxy/sglang_idle_proxy.py
+    LISTEN_PORT=9000 IDLE_TIMEOUT=600 python local_deployment_proxy/local_deployment_proxy.py
 
 Environment variables
 ---------------------
@@ -107,7 +107,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("sglang_proxy")
+log = logging.getLogger("local_deployment_proxy")
 
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
@@ -390,10 +390,14 @@ class BackendManager:
         uses 8001); the health check and proxy address the backend through the
         host ``backend_port``, so the internal-port difference is transparent.
 
-        Generation models get an FP8 KV cache (overridable via ``kv_cache_dtype``)
-        to match FP8 weights and the throughput benchmark that motivated vLLM
-        here. Embedding models run vLLM's pooling runner, which has no KV cache,
-        so ``--kv-cache-dtype`` and the generation parsers are omitted for them.
+        Generation models enable prefix caching and prompt-token detail
+        reporting so repeated prefixes are reused and surfaced to clients as
+        ``usage.prompt_tokens_details.cached_tokens``. They use vLLM's default
+        (bf16) KV cache: an FP8 KV cache (``--kv-cache-dtype fp8``) silently
+        disables prefix-cache *hits* in vLLM 0.20, so it is opt-in only via
+        ``kv_cache_dtype`` and trades away cache reporting. Embedding models run
+        vLLM's pooling runner, which has no KV cache, so ``--kv-cache-dtype`` and
+        the generation parsers are omitted for them.
         """
         cmd = [
             "sudo",
@@ -430,7 +434,15 @@ class BackendManager:
             # cache, so --kv-cache-dtype must not be passed.
             cmd += ["--runner", "pooling"]
         else:
-            cmd += ["--kv-cache-dtype", str(self.config.get("kv_cache_dtype", "fp8"))]
+            # Reuse repeated prefixes (system prompts, few-shot blocks) and report
+            # the hits as usage.prompt_tokens_details.cached_tokens. Both flags are
+            # required: --enable-prompt-tokens-details alone reports nothing, and an
+            # FP8 KV cache yields zero prefix-cache hits (so cached_tokens stays 0).
+            cmd += ["--enable-prefix-caching", "--enable-prompt-tokens-details"]
+            # Opt-in FP8 KV cache only; defaulting to it would disable cache hits.
+            kv_dtype = self.config.get("kv_cache_dtype")
+            if kv_dtype:
+                cmd += ["--kv-cache-dtype", str(kv_dtype)]
             # Reasoning models emit a thinking block; the parser splits it into
             # message.reasoning_content so it does not leak into content (and is
             # excluded from tool-call arguments).
@@ -491,6 +503,9 @@ class BackendManager:
             if self.config.get("disable_radix_cache"):
                 cmd += ["--disable-radix-cache"]
         else:
+            # Without this flag sglang omits prompt_tokens_details.cached_tokens
+            # from the usage block, so prefix-cache hits never surface to clients.
+            cmd += ["--enable-cache-report"]
             tcp = self.config.get("tool_call_parser")
             if tcp:
                 cmd += ["--tool-call-parser", tcp]
@@ -969,7 +984,7 @@ def main() -> None:
     """Start the proxy HTTP server and serve until interrupted."""
     models = list(_backends.keys())
     log.info(
-        "sglang idle proxy listening on :%d  (%d models: %s)  (idle timeout %ds)",
+        "local deployment proxy listening on :%d  (%d models: %s)  (idle timeout %ds)",
         LISTEN_PORT,
         len(models),
         ", ".join(models) if models else "none",

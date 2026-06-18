@@ -175,11 +175,13 @@ async def signup(
     # whose domain is on the allowlist (exact or wildcard suffix) auto-
     # approve; everyone else lands in pending_approval.
     require_verification = settings.signup_require_email_verification
+    notify_admins_of_signup = settings.signup_admin_notify_enabled
     try:
         from serving.config.runtime_settings import get_runtime_settings_instance
 
         rs = get_runtime_settings_instance()
         require_verification = await rs.get_bool("signup_require_email_verification")
+        notify_admins_of_signup = await rs.get_bool("signup_admin_notify_enabled")
     except (RuntimeError, KeyError):
         pass
     if await allowlist_is_empty(op_store) or await is_domain_allowed(body.email, op_store):
@@ -218,7 +220,8 @@ async def signup(
     # Notify configured recipients of a new registration when approval is
     # required. Recipients come from SIGNUP_NOTIFY_EMAILS when set, otherwise
     # ADMIN_EMAILS, so they may be a subset of admins or a shared inbox.
-    if require_approval and is_email_enabled():
+    # Admins can suppress these via the signup_admin_notify_enabled toggle.
+    if require_approval and notify_admins_of_signup and is_email_enabled():
         for notify_email in get_signup_notify_emails():
             background_tasks.add_task(
                 send_new_registration_admin_email,
