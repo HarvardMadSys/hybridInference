@@ -9,7 +9,6 @@
         "mem_fraction": "0.80",
         "tool_call_parser": "qwen3_coder",
         "reasoning_parser": "qwen3",
-        "kv_cache_dtype": "fp8",
         "colocate_group": "primary"
     },
     "BAAI/bge-m3": {

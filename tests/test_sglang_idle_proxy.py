@@ -629,6 +629,39 @@ def test_vllm_generation_keeps_kv_cache_dtype(monkeypatch: Any, tmp_path: Path) 
 
     assert cmd[cmd.index("--kv-cache-dtype") + 1] == "fp8"
     assert "--runner" not in cmd
+    # Caching flags are added regardless of KV-cache dtype (fp8 makes them a
+    # no-op for hits, but the launch must not silently drop them).
+    assert "--enable-prefix-caching" in cmd
+    assert "--enable-prompt-tokens-details" in cmd
+
+
+def test_vllm_generation_default_enables_prefix_cache_reporting(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    """Without an explicit kv_cache_dtype, a generation model uses the default
+    (bf16) KV cache and enables prefix caching + cached_tokens reporting."""
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "qwen-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18001,
+            "model_dir": "/tmp/qwen",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.80",
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    assert "--enable-prefix-caching" in cmd
+    assert "--enable-prompt-tokens-details" in cmd
+    # No explicit opt-in → no fp8 KV cache (which would zero out cache hits).
+    assert "--kv-cache-dtype" not in cmd
+    assert "--runner" not in cmd
 
 
 def test_health_endpoint_returns_200_without_api_key(monkeypatch: Any, tmp_path: Path) -> None:
