@@ -6,12 +6,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderRoutesTab } from './ProviderRoutesTab';
 
 vi.mock('@/lib/api/admin', () => ({
+  clearRouteWeight: vi.fn(),
   createProviderRouteCandidate: vi.fn(),
   deleteProviderRoute: vi.fn(),
   deleteProviderRouteCandidate: vi.fn(),
   listOpenRouterProviderOptions: vi.fn(),
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
+  listRouteWeights: vi.fn(),
+  listRoutewiseSettings: vi.fn(),
+  setRouteWeight: vi.fn(),
+  updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
   verifyProviderRoute: vi.fn(),
@@ -26,12 +31,15 @@ vi.mock('react-hot-toast', () => ({
 }));
 
 import {
+  clearRouteWeight,
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
   listOpenRouterProviderOptions,
   listProviderKeys,
   listProviderRoutes,
+  listRouteWeights,
+  setRouteWeight,
   updateProviderRoute,
   updateProviderRouteStrategy,
   verifyProviderRoute,
@@ -119,6 +127,18 @@ describe('ProviderRoutesTab', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: route.model_id,
+        strategy: route.strategy,
+        endpoint_id: route.endpoint_id,
+        provider: route.provider,
+        base_url: route.base_url,
+        yaml_weight: route.yaml_weight,
+        override_weight: null,
+        effective_weight: route.effective_weight,
+      },
+    ]);
     vi.mocked(listOpenRouterProviderOptions).mockResolvedValue({
       provider_model_id: 'minimax/minimax-m2.5',
       providers: discoveredOpenRouterProviderOptions,
@@ -173,6 +193,77 @@ describe('ProviderRoutesTab', () => {
 
     expect(screen.getByLabelText('Routing policy')).toHaveValue('fixed');
     expect(screen.getByLabelText('Fixed weight')).toHaveValue(1);
+  });
+
+  it('edits fixed route weights inline', async () => {
+    const fixedRoute = { ...route, strategy: 'fixed' };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [fixedRoute],
+    });
+    vi.mocked(listRouteWeights).mockResolvedValue([
+      {
+        model_id: 'minimax-fast',
+        strategy: 'fixed',
+        endpoint_id: 'minimax-fast:featherless-api',
+        provider: 'featherless',
+        base_url: 'https://api.featherless.ai/v1',
+        yaml_weight: 1,
+        override_weight: null,
+        effective_weight: 1,
+      },
+    ]);
+    vi.mocked(setRouteWeight).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'fixed',
+      endpoint_id: 'minimax-fast:featherless-api',
+      provider: 'featherless',
+      base_url: 'https://api.featherless.ai/v1',
+      yaml_weight: 1,
+      override_weight: 3,
+      effective_weight: 3,
+    });
+    vi.mocked(clearRouteWeight).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'fixed',
+      endpoint_id: 'minimax-fast:featherless-api',
+      provider: 'featherless',
+      base_url: 'https://api.featherless.ai/v1',
+      yaml_weight: 1,
+      override_weight: null,
+      effective_weight: 1,
+    });
+
+    render(<ProviderRoutesTab />);
+
+    const input = await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api');
+    expect(input).toHaveValue(1);
+    fireEvent.change(input, { target: { value: '3' } });
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Save minimax-fast:featherless-api weight' }),
+    );
+
+    await waitFor(() => {
+      expect(setRouteWeight).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        3,
+      );
+    });
+    expect(
+      await screen.findByLabelText('Runtime weight for minimax-fast:featherless-api'),
+    ).toHaveValue(3);
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Clear minimax-fast:featherless-api weight override',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(clearRouteWeight).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:featherless-api');
+    });
   });
 
   it('updates provider route target', async () => {
