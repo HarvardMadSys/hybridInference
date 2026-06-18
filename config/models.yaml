@@ -371,7 +371,8 @@ models:
     name: MiniMax Fast
     provider: minimax
     quantization: "bf16"
-    input_modalities: ["text", "image"]
+    # Routes to MiniMax-M2.5, which is text-only upstream; do not advertise image.
+    input_modalities: ["text"]
     output_modalities: ["text"]
     context_length: 204800
     max_output_length: 131072
@@ -474,7 +475,8 @@ models:
     name: MiniMax M2.7
     provider: minimax
     quantization: "bf16"
-    input_modalities: ["text", "image"]
+    # MiniMax-M2.7 is text-only upstream (no image/audio/video); do not advertise image.
+    input_modalities: ["text"]
     output_modalities: ["text"]
     context_length: 204800
     max_output_length: 131072
