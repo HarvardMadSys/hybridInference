@@ -58,7 +58,7 @@ class ModelRegistrationInfo:
 
 
 class MissingEnvBackedKeyError(ValueError):
-    """Raised when an env-backed api_key/api_keys entry resolves blank."""
+    """Raised when an env-backed route value (api_key/api_keys/base_url) resolves blank."""
 
 
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
@@ -319,13 +319,42 @@ def register_from_models_yaml(
             dynamic_key_providers: set[str] = set()
             for r in routes:
                 kind = r.get("kind") or top_cfg.get("provider")
-                base_url = expand_env(r.get("base_url") or top_cfg.get("base_url"))
+                raw_base_url = r.get("base_url") or top_cfg.get("base_url")
+                base_url = expand_env(raw_base_url)
                 weight = float(r.get("weight", 1.0))
                 # Optional routes (e.g. a staging canary) degrade gracefully:
                 # when their env-backed key resolves blank we skip just this
                 # route, keeping the rest of the model, instead of dropping the
                 # whole model via the model-level MissingEnvBackedKeyError catch.
                 route_optional = bool(r.get("optional", False))
+
+                # An env-backed base_url that resolves to unset/empty/host-less
+                # cannot produce a working endpoint: _make_provider_id collapses
+                # it to "<model>:unknown-api" and _build_url yields a host-less
+                # "/v1/chat/completions", so every request stream-fails and trips
+                # the circuit breaker. Treat it like a missing key — skip an
+                # optional route, otherwise fail loudly — instead of silently
+                # registering a dead provider.
+                if isinstance(raw_base_url, str) and raw_base_url.startswith("${"):
+                    from urllib.parse import urlparse
+
+                    expanded_base = (base_url or "").strip()
+                    if not expanded_base or urlparse(expanded_base).hostname is None:
+                        if route_optional:
+                            logger.warning(
+                                "Skipping optional route (kind=%s) for model %s: "
+                                "base_url resolved to unset/empty/host-less after "
+                                "env expansion (template: %s)",
+                                kind,
+                                top_cfg.get("id"),
+                                raw_base_url,
+                            )
+                            continue
+                        raise MissingEnvBackedKeyError(
+                            f"base_url for {top_cfg.get('id')!r} resolved to "
+                            f"unset/empty/host-less after env expansion "
+                            f"(template: {raw_base_url!r})"
+                        )
 
                 raw_api_keys = r.get("api_keys")
                 raw_api_key = r.get("api_key") or top_cfg.get("api_key")
