@@ -1,60 +1,18 @@
 'use client';
 
+// Shared rendering for admin request/response payloads (prompt, response,
+// reasoning). Renders OpenAI chat-completions shapes and the Anthropic
+// Messages shape used by Claude Code, including `tool_use` / `tool_result`
+// content blocks. Imported by RequestsTab and unit-tested directly.
+
 import { Fragment, useState } from 'react';
-import type { AdminRecentRequestItem } from '@/lib/api/admin';
 
-type ParseResult = { ok: true; value: unknown } | { ok: false };
-
-type ToolCall = {
-  id?: unknown;
-  type?: unknown;
-  function?: { name?: unknown; arguments?: unknown };
-};
-
-type ChatMessage = {
-  role: string;
-  content: unknown;
-  reasoning_content?: unknown;
-  reasoning?: unknown;
-  refusal?: unknown;
-  tool_calls?: unknown;
-  tool_call_id?: unknown;
-  name?: unknown;
-};
-
-type AnthropicMessageResponse = Record<string, unknown> & {
-  type: 'message';
-  role: string;
-  content: unknown;
-};
-
-type ChatChoice = { message: ChatMessage; finish_reason?: unknown; index?: unknown };
-
-export type AdminRecentRequestContentState = {
-  prompt: string | null;
-  response: string | null;
-  reasoning_content: string | null;
-  loading: boolean;
-  error?: string;
-};
-
-function relTime(s: string | null): string {
-  if (!s) return 'Never';
-  const ms = Date.now() - new Date(s).getTime();
-  const m = Math.floor(ms / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function previewText(value: string, maxChars: number = 280): string {
+export function previewText(value: string, maxChars: number = 280): string {
   if (value.length <= maxChars) return value;
   return `${value.slice(0, maxChars)}...`;
 }
+
+export type ParseResult = { ok: true; value: unknown } | { ok: false };
 
 function tryParseJson(value: string): ParseResult {
   try {
@@ -67,6 +25,23 @@ function tryParseJson(value: string): ParseResult {
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
+
+type ToolCall = {
+  id?: unknown;
+  type?: unknown;
+  function?: { name?: unknown; arguments?: unknown };
+};
+
+export type ChatMessage = {
+  role: string;
+  content: unknown;
+  reasoning_content?: unknown;
+  reasoning?: unknown;
+  refusal?: unknown;
+  tool_calls?: unknown;
+  tool_call_id?: unknown;
+  name?: unknown;
+};
 
 function isChatMessage(v: unknown): v is ChatMessage {
   return (
@@ -108,7 +83,36 @@ function toolCallArgs(tc: ToolCall): string {
   return JSON.stringify(args, null, 2);
 }
 
-function flattenContent(content: unknown): string {
+type AnthropicToolUse = { id?: unknown; name?: unknown; input?: unknown };
+type AnthropicToolResult = { tool_use_id?: unknown; content?: unknown; is_error?: unknown };
+
+function contentBlocks(content: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter(isRecord);
+}
+
+function getToolUseBlocks(message: ChatMessage): AnthropicToolUse[] {
+  return contentBlocks(message.content).filter((b) => b.type === 'tool_use');
+}
+
+function getToolResultBlocks(message: ChatMessage): AnthropicToolResult[] {
+  return contentBlocks(message.content).filter((b) => b.type === 'tool_result');
+}
+
+function toolUseName(tu: AnthropicToolUse): string {
+  return typeof tu.name === 'string' ? tu.name : '';
+}
+
+function jsonPretty(value: unknown): string {
+  if (typeof value === 'string') {
+    const parsed = tryParseJson(value);
+    return parsed.ok ? JSON.stringify(parsed.value, null, 2) : value;
+  }
+  if (value == null) return '';
+  return JSON.stringify(value, null, 2);
+}
+
+function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
     return content
@@ -116,6 +120,28 @@ function flattenContent(content: unknown): string {
         if (typeof part === 'string') return part;
         if (isRecord(part)) {
           if (part.type === 'text' && typeof part.text === 'string') return part.text;
+          return JSON.stringify(part, null, 2);
+        }
+        return '';
+      })
+      .filter((s) => s.length > 0)
+      .join('\n');
+  }
+  if (content == null) return '';
+  return JSON.stringify(content, null, 2);
+}
+
+export function flattenContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (isRecord(part)) {
+          if (part.type === 'text' && typeof part.text === 'string') return part.text;
+          // tool_use / tool_result blocks are rendered separately with full
+          // detail (name, input, result), so skip them in the text flatten.
+          if (part.type === 'tool_use' || part.type === 'tool_result') return '';
           if (typeof part.type === 'string') return `[${part.type}]`;
         }
         return '';
@@ -137,6 +163,12 @@ function isChatMessageArray(v: unknown): v is ChatMessage[] {
   return Array.isArray(v) && v.every(isChatMessage);
 }
 
+type AnthropicMessageResponse = Record<string, unknown> & {
+  type: 'message';
+  role: string;
+  content: unknown;
+};
+
 function isAnthropicMessageResponse(v: unknown): v is AnthropicMessageResponse {
   if (!isRecord(v)) return false;
   if (v.type !== 'message') return false;
@@ -145,6 +177,8 @@ function isAnthropicMessageResponse(v: unknown): v is AnthropicMessageResponse {
   const c = v.content;
   return typeof c === 'string' || Array.isArray(c);
 }
+
+type ChatChoice = { message: ChatMessage; finish_reason?: unknown; index?: unknown };
 
 function isChatChoice(v: unknown): v is ChatChoice {
   return isRecord(v) && isChatMessage(v.message);
@@ -189,11 +223,23 @@ function MetaList({ data, skip }: { data: Record<string, unknown>; skip: Readonl
   );
 }
 
-function MessageBlock({ message }: { message: ChatMessage }) {
+function messageRefusal(m: ChatMessage): string {
+  return typeof m.refusal === 'string' ? m.refusal : '';
+}
+
+function messageReasoning(m: ChatMessage): string {
+  if (typeof m.reasoning_content === 'string') return m.reasoning_content;
+  if (typeof m.reasoning === 'string') return m.reasoning;
+  return '';
+}
+
+export function MessageBlock({ message }: { message: ChatMessage }) {
   const text = flattenContent(message.content);
   const reasoning = messageReasoning(message);
   const refusal = messageRefusal(message);
   const toolCalls = getToolCalls(message);
+  const toolUseBlocks = getToolUseBlocks(message);
+  const toolResultBlocks = getToolResultBlocks(message);
   const toolCallId = typeof message.tool_call_id === 'string' ? message.tool_call_id : '';
   const toolName = typeof message.name === 'string' ? message.name : '';
   const showToolMeta = message.role === 'tool' && (toolCallId || toolName);
@@ -202,6 +248,8 @@ function MessageBlock({ message }: { message: ChatMessage }) {
     reasoning.length > 0 ||
     refusal.length > 0 ||
     toolCalls.length > 0 ||
+    toolUseBlocks.length > 0 ||
+    toolResultBlocks.length > 0 ||
     showToolMeta;
   return (
     <div className="rounded-md border border-gray-200 bg-white px-2 py-1.5">
@@ -281,12 +329,77 @@ function MessageBlock({ message }: { message: ChatMessage }) {
           })}
         </div>
       )}
+      {toolUseBlocks.length > 0 && (
+        <div className="mt-1 space-y-1">
+          {toolUseBlocks.map((tu, i) => {
+            const name = toolUseName(tu);
+            const id = typeof tu.id === 'string' ? tu.id : '';
+            const input = jsonPretty(tu.input);
+            return (
+              <div
+                key={id || `${i}-${name}`}
+                className="rounded-md border border-gray-200 bg-white px-2 py-1"
+              >
+                <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[10px]">
+                  <span className="font-medium uppercase tracking-wide text-gray-500">
+                    tool_use
+                  </span>
+                  {name && <span className="font-mono text-gray-700">{name}</span>}
+                  {id && <span className="font-mono text-gray-400">{id}</span>}
+                </div>
+                {input.length > 0 && (
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
+                    {input}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {toolResultBlocks.length > 0 && (
+        <div className="mt-1 space-y-1">
+          {toolResultBlocks.map((tr, i) => {
+            const id = typeof tr.tool_use_id === 'string' ? tr.tool_use_id : '';
+            const isError = tr.is_error === true;
+            const out = toolResultText(tr.content);
+            return (
+              <div
+                key={id || `${i}`}
+                className={`rounded-md border bg-white px-2 py-1 ${
+                  isError ? 'border-red-200' : 'border-gray-200'
+                }`}
+              >
+                <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[10px]">
+                  <span
+                    className={`font-medium uppercase tracking-wide ${
+                      isError ? 'text-red-600' : 'text-gray-500'
+                    }`}
+                  >
+                    tool_result{isError ? ' (error)' : ''}
+                  </span>
+                  {id && <span className="font-mono text-gray-400">{id}</span>}
+                </div>
+                {out.length > 0 && (
+                  <pre
+                    className={`overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] ${
+                      isError ? 'text-red-700' : 'text-gray-700'
+                    }`}
+                  >
+                    {out}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {!rendered && <div className="text-[11px] italic text-gray-400">(no content)</div>}
     </div>
   );
 }
 
-function JsonChatView({ data }: { data: unknown }) {
+export function JsonChatView({ data }: { data: unknown }) {
   if (isChatMessageArray(data)) {
     return (
       <div className="mt-1 rounded-md border border-gray-200 bg-white px-3 py-2">
@@ -342,19 +455,21 @@ function JsonChatView({ data }: { data: unknown }) {
 
 function toolCallsPreview(message: ChatMessage): string {
   const calls = getToolCalls(message);
-  if (calls.length === 0) return '';
-  const names = calls.map(toolCallName).filter((n) => n.length > 0);
+  const toolUses = getToolUseBlocks(message);
+  if (calls.length === 0 && toolUses.length === 0) return '';
+  const names = [...calls.map(toolCallName), ...toolUses.map(toolUseName)].filter(
+    (n) => n.length > 0,
+  );
   return names.length > 0 ? `[tool_calls: ${names.join(', ')}]` : '[tool_calls]';
 }
 
-function messageRefusal(m: ChatMessage): string {
-  return typeof m.refusal === 'string' ? m.refusal : '';
-}
-
-function messageReasoning(m: ChatMessage): string {
-  if (typeof m.reasoning_content === 'string') return m.reasoning_content;
-  if (typeof m.reasoning === 'string') return m.reasoning;
-  return '';
+function toolResultsPreview(message: ChatMessage): string {
+  const results = getToolResultBlocks(message);
+  if (results.length === 0) return '';
+  const ids = results
+    .map((tr) => (typeof tr.tool_use_id === 'string' ? tr.tool_use_id : ''))
+    .filter((id) => id.length > 0);
+  return ids.length > 0 ? `[tool_results: ${ids.join(', ')}]` : '[tool_results]';
 }
 
 function previewFromMessages(messages: ChatMessage[]): string | null {
@@ -363,6 +478,8 @@ function previewFromMessages(messages: ChatMessage[]): string | null {
     if (m.role === 'user') {
       const text = flattenContent(m.content);
       if (text) return previewText(text);
+      const tr = toolResultsPreview(m);
+      if (tr) return previewText(tr);
     }
   }
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -385,6 +502,8 @@ function previewFromMessages(messages: ChatMessage[]): string | null {
     if (text) return previewText(text);
     const tc = toolCallsPreview(last);
     if (tc) return previewText(tc);
+    const tr = toolResultsPreview(last);
+    if (tr) return previewText(tr);
     const refusal = messageRefusal(last);
     if (refusal) return previewText(`[refusal] ${refusal}`);
     const reasoning = messageReasoning(last);
@@ -393,7 +512,7 @@ function previewFromMessages(messages: ChatMessage[]): string | null {
   return null;
 }
 
-function computePreview(parsed: unknown, fallback: string): string {
+export function computePreview(parsed: unknown, fallback: string): string {
   if (isChatMessageArray(parsed)) {
     const p = previewFromMessages(parsed);
     if (p !== null) return p;
@@ -421,7 +540,7 @@ function computePreview(parsed: unknown, fallback: string): string {
   return previewText(fallback);
 }
 
-function FoldedText({ label, value }: { label: string; value?: string | null }) {
+export function FoldedText({ label, value }: { label: string; value?: string | null }) {
   const [open, setOpen] = useState(false);
   if (!value) {
     return (
@@ -440,9 +559,7 @@ function FoldedText({ label, value }: { label: string; value?: string | null }) 
       onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
     >
       <summary className="cursor-pointer list-none text-gray-500 flex items-center gap-2">
-        <span>
-          <span>{label}</span>:
-        </span>
+        <span>{label}:</span>
         <span className="text-gray-700 whitespace-pre-wrap break-words">{preview}</span>
         <span className="text-[10px] text-gray-400 group-open:hidden">(show more)</span>
         <span className="text-[10px] text-gray-400 hidden group-open:inline">(show less)</span>
@@ -456,108 +573,5 @@ function FoldedText({ label, value }: { label: string; value?: string | null }) 
           </pre>
         ))}
     </details>
-  );
-}
-
-function formatLatency(ms?: number | null): string {
-  if (ms == null) return '—';
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms)}ms`;
-}
-
-function formatCost(cost?: number | null): string {
-  if (cost == null) return '—';
-  if (cost < 0.0001) return '<$0.0001';
-  if (cost < 0.01) return `$${cost.toFixed(4)}`;
-  return `$${cost.toFixed(2)}`;
-}
-
-function formatTokens(n?: number | null): string {
-  if (n == null) return '—';
-  return Math.round(n).toLocaleString();
-}
-
-export function AdminRecentRequestDetailPanel({
-  req,
-  content,
-}: {
-  req: AdminRecentRequestItem;
-  content?: AdminRecentRequestContentState;
-}) {
-  const status = req.status_code != null ? String(req.status_code) : '—';
-  const stream = req.stream != null ? (req.stream ? 'Yes' : 'No') : '—';
-  const decode =
-    req.decode_throughput_tps != null ? `${req.decode_throughput_tps.toFixed(1)} tok/s` : '—';
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex flex-col gap-2 border-b border-gray-100 pb-3">
-        <div className="min-w-0">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
-            Request ID
-          </div>
-          <div className="mt-0.5 break-all font-mono text-[12px] text-gray-800">
-            {req.request_id}
-          </div>
-        </div>
-
-        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
-          <span className="font-medium text-gray-500">Identity:</span>{' '}
-          <span className="font-mono break-words">
-            model {req.model_id} / prov {req.provider} / status {status} / time{' '}
-            {relTime(req.timestamp)} / stream {stream} / cost {formatCost(req.cost_usd)}
-          </span>
-        </div>
-
-        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
-          <span className="font-medium text-gray-500">Performance:</span>{' '}
-          <span className="font-mono break-words">
-            lat {formatLatency(req.latency_ms)} / ttft {formatLatency(req.ttft_ms)} / decode{' '}
-            {decode}
-          </span>
-        </div>
-
-        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
-          <span className="font-medium text-gray-500">Tokens:</span>{' '}
-          <span className="font-mono break-words">
-            in/out {formatTokens(req.prompt_tokens)} / {formatTokens(req.completion_tokens)} |{' '}
-            reason/total {formatTokens(req.reasoning_tokens)} / {formatTokens(req.total_tokens)} |
-            cache r/w {formatTokens(req.cache_read_tokens)} / {formatTokens(req.cache_write_tokens)}
-          </span>
-        </div>
-
-        <div className="border-t border-gray-100 pt-2 text-[12px] text-gray-700">
-          <span className="font-medium text-gray-500">User/session:</span>{' '}
-          <span className="font-mono break-words">
-            user {req.user_name || '—'} / email {req.user_email || '—'} / uid {req.user_id || '—'} /
-            sess {req.session_id || '—'}
-            {req.user_ip ? ` / ip ${req.user_ip}` : ''}
-          </span>
-        </div>
-      </div>
-
-      <div className="mt-2 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5">
-        <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">
-          User agent
-        </div>
-        <div className="mt-0.5 break-words text-[12px] text-gray-700">{req.user_agent || '—'}</div>
-      </div>
-
-      <div className="mt-3 grid grid-cols-1 gap-2 text-[11px]">
-        {!content || content.loading ? (
-          <div className="text-gray-400">Loading prompt and response…</div>
-        ) : content.error ? (
-          <div className="text-red-600">Failed to load content: {content.error}</div>
-        ) : (
-          <>
-            <FoldedText label="Prompt" value={content.prompt} />
-            {content.reasoning_content && (
-              <FoldedText label="Reasoning" value={content.reasoning_content} />
-            )}
-            <FoldedText label="Response" value={content.response} />
-          </>
-        )}
-        {req.error && <div className="mt-1 text-red-600">Error: {req.error}</div>}
-      </div>
-    </div>
   );
 }
