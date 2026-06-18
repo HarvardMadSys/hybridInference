@@ -6,7 +6,7 @@ const CURL_EXAMPLE = `curl https://freeinference.org/v1/chat/completions \\
   -H "Authorization: Bearer $FREEINFERENCE_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "glm-4.7",
+    "model": "gpt-oss-20b",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'`;
 
