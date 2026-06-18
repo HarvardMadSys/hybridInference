@@ -32,6 +32,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.admin._common import (
     _build_histogram,
+    _escape_ilike_substring_term,
     _round_or_none,
 )
 from serving.storage.utils import coerce_json_object
@@ -121,11 +122,6 @@ derived AS (
 
 _DECODE_MIN_WINDOW_MS = 2000
 _DECODE_MIN_TOKENS = 8
-
-
-def _escape_ilike_substring_term(term: str) -> str:
-    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
-    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
 def _decode_throughput_tps(
