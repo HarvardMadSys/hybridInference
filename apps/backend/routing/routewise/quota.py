@@ -135,6 +135,19 @@ class ProviderQuotaSnapshotStore:
             self._local_increments[source] = local_increment + 1
             return True
 
+    def refund(self, source: QuotaSource) -> bool:
+        """Undo one optimistic local increment for a failed dispatch."""
+        with self._lock:
+            self._reset_expired_local_fallbacks_locked(_local_now())
+            local_increment = self._local_increments.get(source, 0)
+            if local_increment <= 0:
+                return False
+            if local_increment == 1:
+                self._local_increments.pop(source, None)
+            else:
+                self._local_increments[source] = local_increment - 1
+            return True
+
     async def refresh_once(self, sources: Iterable[QuotaSource]) -> None:
         """Refresh snapshots for the requested quota sources."""
         with self._lock:
@@ -315,6 +328,10 @@ class QuotaPool:
     def consume(self) -> bool:
         """Optimistically consume one slot against the snapshot store."""
         return self._store.consume(self.source)
+
+    def refund(self) -> bool:
+        """Refund one optimistic request slot after a failed dispatch."""
+        return self._store.refund(self.source)
 
     def _snapshot(self) -> ProviderQuotaSnapshot | None:
         snapshot = self._store.get(self.source)

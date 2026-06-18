@@ -29,6 +29,8 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+import aiohttp
+
 from routewise.core import (
     HEDGE_SUCCESS_TARGET,
     BackupCandidate,
@@ -102,6 +104,17 @@ PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
 RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
 _PREFIX_CACHE_PENDING_MAX: int = 10_000
 _EXCLUDED_ENDPOINTS_CONTEXT_KEY = "_routewise_excluded_endpoint_ids"
+_RETRYABLE_ROUTEWISE_STATUS_CODES = frozenset({408, 429})
+_AIOHTTP_RETRYABLE_ERRORS = tuple(
+    cls
+    for cls in (
+        getattr(aiohttp, "ClientConnectionError", None),
+        getattr(aiohttp, "ServerConnectionError", None),
+        getattr(aiohttp, "ServerDisconnectedError", None),
+        getattr(aiohttp, "ClientError", None),
+    )
+    if isinstance(cls, type)
+)
 _WORKER_COUNT_ENV_KEYS = (
     "WEB_CONCURRENCY",
     "UVICORN_WORKERS",
@@ -175,6 +188,52 @@ def _dedupe_failed_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, An
         seen.add(key)
         result.append(attempt)
     return result
+
+
+def _int_status(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _exception_status_code(exc: BaseException) -> int | None:
+    direct = _int_status(getattr(exc, "status_code", None))
+    if direct is not None:
+        return direct
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = _int_status(getattr(response, "status_code", None))
+        if status_code is not None:
+            return status_code
+        status = _int_status(getattr(response, "status", None))
+        if status is not None:
+            return status
+
+    status = _int_status(getattr(exc, "status", None))
+    if status is not None:
+        return status
+
+    return _int_status(getattr(exc, "code", None))
+
+
+def _is_routewise_retryable_error(exc: BaseException) -> bool:
+    """Return whether RouteWise should re-solve after this provider failure."""
+    status = _exception_status_code(exc)
+    if status is not None:
+        return status in _RETRYABLE_ROUTEWISE_STATUS_CODES or 500 <= status <= 599
+    return isinstance(
+        exc,
+        (
+            *_AIOHTTP_RETRYABLE_ERRORS,
+            asyncio.TimeoutError,
+            ConnectionError,
+            TimeoutError,
+        ),
+    )
 
 
 def _configured_worker_count() -> int | None:
@@ -1195,6 +1254,27 @@ class RouteWiseRouter(BaseRouter):
         if pool is not None:
             pool.release()
 
+    def _rollback_selected_quota_attempt(
+        self,
+        request_id: str | None,
+        endpoint_id: str | None,
+    ) -> None:
+        if not request_id:
+            return
+        meta = self._pending_decisions.get(request_id)
+        if not isinstance(meta, dict) or meta.get("selected_provider_type") != "quota":
+            return
+        if endpoint_id and meta.get("selected_endpoint") != endpoint_id:
+            return
+        quota_pool_id = meta.get("quota_pool")
+        if not isinstance(quota_pool_id, str):
+            return
+        pool = self.quota_pools.get(quota_pool_id)
+        if pool is None or not pool.refund():
+            return
+        meta["quota_remaining"] = pool.remaining
+        meta["quota_used_fraction"] = pool.used_fraction
+
     def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
         return ProviderReservation(router=self, candidate=candidate)
 
@@ -2144,19 +2224,23 @@ class RouteWiseRouter(BaseRouter):
                     return resp
                 except Exception as exc:
                     last_error = exc
+                    endpoint_id = _get_endpoint_id(primary)
                     self._on_failure(
-                        _get_endpoint_id(primary),
+                        endpoint_id,
                         reason=exc.__class__.__name__,
                         detail=operator_safe_error(exc),
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
+                    self._rollback_selected_quota_attempt(request_id, endpoint_id)
+                    if not _is_routewise_retryable_error(exc):
+                        raise
                     self._record_routewise_fallback_attempt(
                         request_id,
                         attempt,
                         fallback_policy="routewise_resolve",
                     )
-                    excluded.add(_get_endpoint_id(primary))
+                    excluded.add(endpoint_id)
                     continue
         except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)
@@ -2255,21 +2339,24 @@ class RouteWiseRouter(BaseRouter):
                     return
                 except Exception as exc:
                     last_error = exc
+                    endpoint_id = _get_endpoint_id(primary)
                     self._on_failure(
-                        _get_endpoint_id(primary),
+                        endpoint_id,
                         reason="stream_exception",
                         detail=operator_safe_error(exc),
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
+                    if not chunks_yielded:
+                        self._rollback_selected_quota_attempt(request_id, endpoint_id)
+                    if chunks_yielded or not _is_routewise_retryable_error(exc):
+                        raise
                     self._record_routewise_fallback_attempt(
                         request_id,
                         attempt,
                         fallback_policy="routewise_resolve",
                     )
-                    excluded.add(_get_endpoint_id(primary))
-                    if chunks_yielded:
-                        raise
+                    excluded.add(endpoint_id)
                     continue
         except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)

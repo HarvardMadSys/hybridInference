@@ -29,6 +29,12 @@ from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 _ADAPTER_COUNTER = itertools.count()
 
 
+class _StatusError(RuntimeError):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 def _make_model_config(
     model_id: str = "test-model",
     provider: str = "openai_compat",
@@ -2145,7 +2151,7 @@ class TestRouteWiseDecisionMetadata:
             return by_id.get("test-model:quota-provider") or by_id["test-model:conc-provider"]
 
         router._sample_solution = _choose  # type: ignore[method-assign]
-        quota.chat_completion = AsyncMock(side_effect=RuntimeError("quota 429"))
+        quota.chat_completion = AsyncMock(side_effect=_StatusError(429, "quota 429"))
         conc.chat_completion = AsyncMock(
             return_value={"choices": [{"message": {"content": "fallback ok"}}]}
         )
@@ -2169,8 +2175,54 @@ class TestRouteWiseDecisionMetadata:
         assert rw["fallback_policy"] == "routewise_resolve"
         assert rw["fallback_attempts"] == 1
         assert rw["failed_attempts"][0]["endpoint_id"] == "test-model:quota-provider"
-        assert _quota_pool(router).remaining == 9999
+        assert _quota_pool(router).remaining == 10000
         assert _conc_pool(router).active == 0
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_does_not_resolve_after_nonretryable_error(self):
+        """Non-transient provider errors surface directly and refund S_Q attempts."""
+        quota = _make_adapter(
+            provider_type="quota",
+            endpoint_id="test-model:quota-provider",
+            quota={"limit": 10_000},
+        )
+        conc = _make_adapter(
+            provider_type="concurrency",
+            endpoint_id="test-model:conc-provider",
+            concurrency={"limit": 1},
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:quota-provider") or by_id["test-model:conc-provider"]
+
+        router._sample_solution = _choose  # type: ignore[method-assign]
+        quota.chat_completion = AsyncMock(side_effect=_StatusError(400, "bad request"))
+        conc.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "should not run"}}]}
+        )
+
+        with pytest.raises(_StatusError, match="bad request") as exc_info:
+            await router.chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-nonretryable",
+            )
+
+        assert quota.chat_completion.await_count == 1
+        assert conc.chat_completion.await_count == 0
+        assert _quota_pool(router).remaining == 10000
+
+        routing = getattr(exc_info.value, "_routing", None)
+        assert routing is not None
+        assert "routewise" in routing
+        assert routing["routewise"]["fallback_attempts"] == 0
+        assert routing["routewise"]["fallback_policy"] is None
 
     @pytest.mark.asyncio
     async def test_stream_injects_routewise_chunk(self):
@@ -2256,6 +2308,52 @@ class TestRouteWiseDecisionMetadata:
 
         assert any("partial" in chunk for chunk in chunks)
         assert not any("backup" in chunk for chunk in chunks)
+
+    @pytest.mark.asyncio
+    async def test_stream_does_not_resolve_after_nonretryable_error(self):
+        """Pre-content stream 4xx errors surface directly instead of re-solving."""
+        primary = _make_adapter(
+            provider="primary",
+            provider_type="on_demand",
+            endpoint_id="test-model:primary",
+        )
+        backup = _make_adapter(
+            provider="backup",
+            provider_type="on_demand",
+            endpoint_id="test-model:backup",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        async def _primary_stream(*args, **kwargs):
+            raise _StatusError(400, "bad stream request")
+            yield
+
+        async def _backup_stream(*args, **kwargs):
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:primary") or by_id["test-model:backup"]
+
+        primary.stream_chat_completion = _primary_stream
+        backup.stream_chat_completion = _backup_stream
+        router._sample_solution = _choose  # type: ignore[method-assign]
+
+        with pytest.raises(_StatusError, match="bad stream request") as exc_info:
+            async for _ in router.stream_chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-stream-nonretryable",
+            ):
+                pass
+
+        routing = getattr(exc_info.value, "_routing", None)
+        assert routing is not None
+        assert routing["routewise"]["fallback_attempts"] == 0
+        assert routing["routewise"]["fallback_policy"] is None
 
     @pytest.mark.asyncio
     async def test_pending_decisions_cleaned_on_error(self):
