@@ -38,15 +38,27 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Idempotent on the synced commit: only release if this exact commit
-          # has no release yet. Gating on the commit (rather than on whether this
-          # run moved main) means a no-op re-run skips, while a re-run after a
-          # release that failed *after* the push still creates the missing one.
+          # Idempotent on the synced commit: skip only if an actual GitHub
+          # *release* already points at this commit. Gating on the commit (not on
+          # whether this run moved main) means a no-op re-run skips, while a
+          # re-run after a release that failed *after* the push still creates the
+          # missing one. We resolve each release's tag to its commit rather than
+          # using `git tag --points-at`, because a bare tag without a release
+          # (a failed or deleted release that left its tag) must NOT count as
+          # already released.
           target="${{ steps.sync.outputs.after }}"
           git fetch --tags --force origin >/dev/null 2>&1 || true
-          existing="$(git tag --points-at "${target}" || true)"
-          if [ -n "${existing}" ]; then
-            echo "Commit ${target} already released as: ${existing}; nothing to do."
+          released_tag=""
+          release_tags="$(gh release list --limit 200 --json tagName --jq '.[].tagName' || true)"
+          for rtag in ${release_tags}; do
+            rcommit="$(git rev-list -n 1 "refs/tags/${rtag}" 2>/dev/null || true)"
+            if [ "${rcommit}" = "${target}" ]; then
+              released_tag="${rtag}"
+              break
+            fi
+          done
+          if [ -n "${released_tag}" ]; then
+            echo "Commit ${target} already released as ${released_tag}; nothing to do."
             exit 0
           fi
 
