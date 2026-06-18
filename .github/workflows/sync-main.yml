@@ -28,25 +28,27 @@ jobs:
         run: |
           set -euo pipefail
           git checkout main
-          before="$(git rev-parse HEAD)"
           git merge --ff-only origin/dev
           git push origin main
-          after="$(git rev-parse HEAD)"
-          echo "before=${before}" >> "${GITHUB_OUTPUT}"
-          echo "after=${after}" >> "${GITHUB_OUTPUT}"
-          if [ "${before}" != "${after}" ]; then
-            echo "changed=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "changed=false" >> "${GITHUB_OUTPUT}"
-            echo "main already up to date with dev; skipping release."
-          fi
+          echo "after=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
 
       - name: Create release
-        if: ${{ steps.sync.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # Idempotent on the synced commit: only release if this exact commit
+          # has no release yet. Gating on the commit (rather than on whether this
+          # run moved main) means a no-op re-run skips, while a re-run after a
+          # release that failed *after* the push still creates the missing one.
+          target="${{ steps.sync.outputs.after }}"
+          git fetch --tags --force origin >/dev/null 2>&1 || true
+          existing="$(git tag --points-at "${target}" || true)"
+          if [ -n "${existing}" ]; then
+            echo "Commit ${target} already released as: ${existing}; nothing to do."
+            exit 0
+          fi
 
           # Date-based tag (YYYYMMDD), matching the existing release convention.
           # If a release already exists for today (e.g. a second sync the same
@@ -61,7 +63,6 @@ jobs:
 
           # Pin the release to this run's synced commit rather than `main`, so a
           # concurrent push advancing main can't make us tag the wrong commit.
-          target="${{ steps.sync.outputs.after }}"
           echo "Creating release ${tag} from ${target}"
           gh release create "${tag}" \
             --target "${target}" \
