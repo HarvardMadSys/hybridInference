@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import socket
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
+from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
@@ -24,6 +25,24 @@ from serving.storage.base import ProviderKeyRow
 
 AUTH = {"Authorization": "Bearer test-admin"}
 NOW = datetime(2026, 6, 16, tzinfo=timezone.utc)
+
+
+class _ManagedTestRouter:
+    def __init__(self) -> None:
+        self.started = 0
+        self.stopped = 0
+
+    async def start(self) -> None:
+        self.started += 1
+
+    async def stop(self) -> None:
+        self.stopped += 1
+
+
+class _FailingManagedTestRouter(_ManagedTestRouter):
+    async def start(self) -> None:
+        self.started += 1
+        raise EnvelopeNotCalibratedError("envelope not calibrated")
 
 
 def _compat_adapter(
@@ -92,6 +111,7 @@ async def admin_client(monkeypatch):
     op_store.delete_provider_route_config = AsyncMock(return_value=True)
     op_store.upsert_provider_route_candidate = AsyncMock()
     op_store.delete_provider_route_candidate = AsyncMock(return_value=True)
+    op_store.delete_provider_route_candidate_with_config = AsyncMock(return_value=True)
     op_store.get_provider_key_full = AsyncMock(return_value=None)
     op_store.list_provider_keys = AsyncMock(return_value=[])
     op_store.list_provider_keys_full = AsyncMock(return_value=[])
@@ -139,6 +159,8 @@ async def admin_client(monkeypatch):
 
     fake_routewise = MagicMock()
     fake_routewise._rebuild_from_fixed_router = MagicMock()
+    fake_routewise.start = AsyncMock()
+    fake_routewise.stop = AsyncMock()
     registry = MagicMock()
     strategy_state = {"minimax-fast": "routewise"}
     registry.get_router_name.side_effect = lambda model_id: strategy_state.get(
@@ -146,6 +168,7 @@ async def admin_client(monkeypatch):
         "routewise",
     )
     registry.validate_router_strategy = MagicMock()
+    registry.get_router = MagicMock(return_value=fake_routewise)
     registry.set_router_override = MagicMock(
         side_effect=lambda model_id, strategy: strategy_state.__setitem__(
             model_id,
@@ -255,6 +278,17 @@ def test_parse_openrouter_provider_options_from_endpoints():
     ]
 
 
+def test_openrouter_endpoints_url_preserves_model_slug_separator():
+    assert provider_routes._openrouter_endpoints_url("minimax/minimax-m2.5") == (
+        "https://openrouter.ai/api/v1/models/minimax/minimax-m2.5/endpoints"
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        provider_routes._openrouter_endpoints_url("../minimax")
+
+    assert exc_info.value.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_get_openrouter_provider_options_discovers_model_endpoints(
     admin_client,
@@ -313,6 +347,125 @@ async def test_patch_provider_route_strategy_updates_model_router(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_patch_provider_route_strategy_does_not_persist_when_apply_fails(
+    admin_client,
+    monkeypatch,
+):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+
+    async def fail_apply(*_args, **_kwargs) -> None:
+        raise HTTPException(status_code=409, detail="envelope not calibrated")
+
+    monkeypatch.setattr(provider_routes, "_apply_model_router_strategy", fail_apply)
+
+    response = await client.patch(
+        "/admin/routing/provider-route-strategies/minimax-fast",
+        json={"strategy": "routewise"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409
+    op_store.set_setting.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_model_router_strategy_starts_new_managed_router(admin_client):
+    _client, _op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    old_router = object()
+    new_router = _ManagedTestRouter()
+    registry = MagicMock()
+    registry.get_router_name.return_value = "fixed"
+    registry.validate_router_strategy = MagicMock()
+    registry.get_router = MagicMock(return_value=object())
+    registry.cached_routers.return_value = []
+    registry.set_router_override = MagicMock()
+    registry.get_router.side_effect = [old_router, new_router]
+    registry.cached_routers.return_value = [new_router]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=registry,
+        managed_routers=[],
+    )
+
+    await provider_routes._apply_model_router_strategy(
+        services,
+        "minimax-fast",
+        "routewise",
+    )
+
+    assert new_router.started == 1
+    assert services.managed_routers == [new_router]
+    registry.set_router_override.assert_called_once_with("minimax-fast", "routewise")
+
+
+@pytest.mark.asyncio
+async def test_apply_model_router_strategy_rolls_back_when_new_router_cannot_start(
+    admin_client,
+):
+    _client, _op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    old_router = _ManagedTestRouter()
+    new_router = _FailingManagedTestRouter()
+    registry = MagicMock()
+    registry.get_router_name.return_value = "fixed"
+    registry.get_configured_router_name.return_value = "fixed"
+    registry.validate_router_strategy = MagicMock()
+    registry.set_router_override = MagicMock()
+    registry.get_router.side_effect = [old_router, new_router, old_router]
+    registry.cached_routers.return_value = [new_router]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=registry,
+        managed_routers=[old_router],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await provider_routes._apply_model_router_strategy(
+            services,
+            "minimax-fast",
+            "routewise",
+        )
+
+    assert exc_info.value.status_code == 409
+    assert registry.set_router_override.call_args_list == [
+        call("minimax-fast", "routewise"),
+        call("minimax-fast", "fixed"),
+    ]
+    assert new_router.started == 1
+    assert old_router.stopped == 0
+    assert services.managed_routers == [old_router]
+
+
+@pytest.mark.asyncio
+async def test_apply_model_router_strategy_stops_removed_managed_router(admin_client):
+    _client, _op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    old_router = _ManagedTestRouter()
+    new_router = object()
+    registry = MagicMock()
+    registry.get_router_name.return_value = "routewise"
+    registry.validate_router_strategy = MagicMock()
+    registry.get_router = MagicMock(return_value=object())
+    registry.cached_routers.return_value = []
+    registry.set_router_override = MagicMock()
+    registry.get_router.side_effect = [old_router, new_router]
+    registry.cached_routers.return_value = [new_router]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=registry,
+        managed_routers=[old_router],
+    )
+
+    await provider_routes._apply_model_router_strategy(
+        services,
+        "minimax-fast",
+        "fixed",
+    )
+
+    assert old_router.stopped == 1
+    assert services.managed_routers == []
+    registry.set_router_override.assert_called_once_with("minimax-fast", "fixed")
+
+
+@pytest.mark.asyncio
 async def test_apply_persisted_model_router_strategy_overrides(admin_client):
     from serving.servers.routers.admin.provider_routes import (
         apply_persisted_model_router_strategy_overrides,
@@ -336,7 +489,10 @@ async def test_apply_persisted_model_router_strategy_overrides(admin_client):
         },
     ]
     registry = MagicMock()
+    registry.get_router_name.return_value = "routewise"
     registry.validate_router_strategy = MagicMock()
+    registry.get_router = MagicMock(return_value=object())
+    registry.cached_routers.return_value = []
     registry.set_router_override = MagicMock()
     services = AppServices(
         router=route_executor,
@@ -430,8 +586,13 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
         "unit": "requests",
     }
     assert updated_adapter.config.quota == {"limit": 8000}
-    assert updated_adapter.config.api_key == "openrouter-db-key-1234567890"
-    assert updated_adapter.config.api_keys is None
+    assert updated_adapter.config.api_key is None
+    assert updated_adapter.config.api_keys == ["openrouter-db-key-1234567890"]
+    assert updated_adapter._key_pool is not None
+    dynamic_keys.add_key_to_provider("openrouter", "openrouter-db-key-secondary")
+    assert updated_adapter._key_pool.snapshot_keys() == ["openrouter-db-key-1234567890"]
+    assert dynamic_keys.remove_key_from_provider("openrouter", "openrouter-db-key-1234567890") == 1
+    assert updated_adapter._key_pool.snapshot_keys() == []
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
@@ -794,6 +955,59 @@ async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_
 
 
 @pytest.mark.asyncio
+async def test_runtime_provider_route_candidate_cannot_be_overridden(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    create_response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+    assert create_response.status_code == 200
+    runtime_route_id = "minimax-fast:openrouter[parasail]-api"
+    assert (
+        route_executor.routes["minimax-fast"]
+        .raw_adapters[-1][0]
+        .config.route_metadata["runtime_candidate"]
+    )
+
+    update_response = await client.put(
+        f"/admin/routing/provider-routes/minimax-fast/{runtime_route_id}",
+        json={
+            "upstream_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+        },
+        headers=AUTH,
+    )
+    restore_response = await client.delete(
+        f"/admin/routing/provider-routes/minimax-fast/{runtime_route_id}",
+        headers=AUTH,
+    )
+
+    assert update_response.status_code == 400
+    assert update_response.json()["detail"] == "Runtime-added provider routes cannot be overridden"
+    assert restore_response.status_code == 400
+    assert (
+        restore_response.json()["detail"]
+        == "Runtime-added provider routes must be deleted as candidates"
+    )
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    op_store.delete_provider_route_config.assert_not_awaited()
+    assert fake_routewise._rebuild_from_fixed_router.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
@@ -909,14 +1123,12 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
         "minimax-fast:featherless-api",
         "minimax-fast:openrouter[deepinfra]-api",
     ]
-    op_store.delete_provider_route_candidate.assert_awaited_once_with(
+    op_store.delete_provider_route_candidate_with_config.assert_awaited_once_with(
         "minimax-fast",
         "minimax-fast:openrouter[parasail]-api",
     )
-    op_store.delete_provider_route_config.assert_awaited_once_with(
-        "minimax-fast",
-        "minimax-fast:openrouter[parasail]-api",
-    )
+    op_store.delete_provider_route_candidate.assert_not_awaited()
+    op_store.delete_provider_route_config.assert_not_awaited()
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
     assert fake_routewise._rebuild_from_fixed_router.call_count == 2
 
@@ -933,6 +1145,7 @@ async def test_delete_provider_route_candidate_rejects_config_route(admin_client
     assert response.status_code == 400
     assert response.json()["detail"] == "Only runtime-added provider routes can be deleted"
     op_store.delete_provider_route_candidate.assert_not_awaited()
+    op_store.delete_provider_route_candidate_with_config.assert_not_awaited()
     fake_routewise._rebuild_from_fixed_router.assert_not_called()
 
 

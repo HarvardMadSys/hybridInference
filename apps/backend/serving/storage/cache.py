@@ -805,6 +805,14 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_provider_route_candidate(model_id, route_id)
 
+    async def delete_provider_route_candidate_with_config(
+        self,
+        model_id: str,
+        route_id: str,
+    ) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_route_candidate_with_config(model_id, route_id)
+
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(

@@ -829,6 +829,14 @@ class OperationalStore(ABC):
     async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
         """Delete a runtime provider route candidate row. Returns True if removed."""
 
+    @abstractmethod
+    async def delete_provider_route_candidate_with_config(
+        self,
+        model_id: str,
+        route_id: str,
+    ) -> bool:
+        """Atomically delete a route candidate and any matching override row."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

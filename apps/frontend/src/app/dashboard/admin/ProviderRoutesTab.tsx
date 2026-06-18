@@ -359,6 +359,9 @@ export function ProviderRoutesTab() {
   const [openRouterProviderOptions, setOpenRouterProviderOptions] = useState<
     OpenRouterProviderOption[]
   >([]);
+  const [discoveredOpenRouterProviderOptions, setDiscoveredOpenRouterProviderOptions] = useState<
+    OpenRouterProviderOption[]
+  >([]);
   const [openRouterProvidersLoading, setOpenRouterProvidersLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState('');
   const [loading, setLoading] = useState(false);
@@ -385,7 +388,7 @@ export function ProviderRoutesTab() {
   const [verifyingCreateRoute, setVerifyingCreateRoute] = useState(false);
   const [verifiedEditSignature, setVerifiedEditSignature] = useState<string | null>(null);
   const [verifiedCreateSignature, setVerifiedCreateSignature] = useState<string | null>(null);
-  const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [savingStrategy, setSavingStrategy] = useState(false);
 
@@ -422,8 +425,14 @@ export function ProviderRoutesTab() {
     [providerOptions],
   );
   const openRouterSelectOptions = useMemo(
-    () => openRouterProviderOptionsFor(providerOptions, openRouterProviderOptions),
-    [openRouterProviderOptions, providerOptions],
+    () =>
+      openRouterProviderOptionsFor(
+        providerOptions,
+        discoveredOpenRouterProviderOptions.length > 0
+          ? discoveredOpenRouterProviderOptions
+          : openRouterProviderOptions,
+      ),
+    [discoveredOpenRouterProviderOptions, openRouterProviderOptions, providerOptions],
   );
   const editOpenRouterSelectOptions = useMemo(
     () =>
@@ -711,6 +720,7 @@ export function ProviderRoutesTab() {
   }, [addingRoute, createKeyProvider, loadCreateKeys]);
 
   useEffect(() => {
+    setDiscoveredOpenRouterProviderOptions([]);
     if (!activeOpenRouterProviderModelId.includes('/')) return undefined;
     let cancelled = false;
     const timeout = window.setTimeout(() => {
@@ -718,7 +728,7 @@ export function ProviderRoutesTab() {
       void listOpenRouterProviderOptions(activeOpenRouterProviderModelId)
         .then((resp) => {
           if (cancelled) return;
-          setOpenRouterProviderOptions(resp.providers);
+          setDiscoveredOpenRouterProviderOptions(resp.providers);
         })
         .catch(() => {
           // Keep the fallback options returned by the route list endpoint.
@@ -958,18 +968,18 @@ export function ProviderRoutesTab() {
     }
   };
 
-  const onRestoreYaml = async (route: ProviderRoute) => {
+  const onResetYaml = async (route: ProviderRoute) => {
     const key = routeKey(route);
-    setRestoringKey(key);
+    setResettingKey(key);
     try {
       const updated = await deleteProviderRoute(route.model_id, route.route_id);
       updateRoute(updated);
       setEditingRoute((current) => (current && routeKey(current) === key ? null : current));
-      toast.success('Restored config route');
+      toast.success('Reset route to config');
     } catch (err) {
-      toast.error(`Restore failed: ${getErrorMessage(err)}`);
+      toast.error(`Reset failed: ${getErrorMessage(err)}`);
     } finally {
-      setRestoringKey(null);
+      setResettingKey(null);
     }
   };
 
@@ -1174,11 +1184,11 @@ export function ProviderRoutesTab() {
                     {route.source === 'override' && (
                       <button
                         type="button"
-                        onClick={() => void onRestoreYaml(route)}
-                        disabled={restoringKey === key}
+                        onClick={() => void onResetYaml(route)}
+                        disabled={resettingKey === key}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
                       >
-                        {restoringKey === key ? 'Restoring…' : 'Restore config'}
+                        {resettingKey === key ? 'Resetting...' : 'Reset config'}
                       </button>
                     )}
                     {route.source === 'runtime' ? (

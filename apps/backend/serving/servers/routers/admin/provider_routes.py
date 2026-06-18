@@ -16,7 +16,8 @@ from urllib.parse import quote, urlparse
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from routing.routers import _get_endpoint_id
+from routing.routers import ManagedRouter, _get_endpoint_id
+from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.adapters import ModelConfig, dynamic_keys
 from serving.schemas_admin import (
     CreateProviderRouteRequest,
@@ -39,6 +40,7 @@ from serving.utils.logging import get_logger
 router = APIRouter(prefix="/admin")
 logger = get_logger(__name__)
 VERIFY_TIMEOUT_SEC = 20.0
+BASE_URL_DNS_TIMEOUT_SEC = 5.0
 OPENROUTER_ENDPOINT_DISCOVERY_TIMEOUT_SEC = 8.0
 OPENROUTER_ENDPOINT_DISCOVERY_CACHE_TTL_SEC = 300.0
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
@@ -46,8 +48,13 @@ BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
 OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+OPENROUTER_MODEL_ID_RE = re.compile(
+    r"^[A-Za-z0-9_.:-]*[A-Za-z0-9][A-Za-z0-9_.:-]*/"
+    r"[A-Za-z0-9_.:-]*[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+)
 OPENROUTER_SORT_POLICIES = {"price", "throughput", "latency"}
 OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[str, tuple[float, list[OpenRouterProviderOption]]] = {}
+CGNAT_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
 @dataclass(frozen=True)
@@ -212,6 +219,14 @@ def _strategy_for_model(services, model_id: str) -> str:
     return registry.get_router_name(model_id)
 
 
+def _configured_strategy_for_model(registry, model_id: str) -> str | None:
+    getter = getattr(registry, "get_configured_router_name", None)
+    if getter is None:
+        return None
+    strategy = getter(model_id)
+    return strategy if isinstance(strategy, str) else None
+
+
 def _model_strategy_setting_key(model_id: str) -> str:
     return f"{MODEL_ROUTER_STRATEGY_SETTING_PREFIX}{model_id}"
 
@@ -237,7 +252,54 @@ def _validate_model_router_strategy(services, model_id: str, strategy: str) -> t
     return canonical_model_id, route
 
 
-def _apply_model_router_strategy(services, model_id: str, strategy: str) -> None:
+def _managed_router_ids(services) -> set[int]:
+    return {id(router_obj) for router_obj in getattr(services, "managed_routers", [])}
+
+
+async def _sync_managed_router_lifecycle(
+    services,
+    *,
+    old_router,
+    new_router,
+    start_managed: bool,
+) -> None:
+    managed_routers = getattr(services, "managed_routers", None)
+    if managed_routers is None:
+        return
+
+    registry = getattr(services, "model_router_registry", None)
+    cached_router_ids = (
+        {id(router_obj) for router_obj in registry.cached_routers()}
+        if registry is not None and getattr(registry, "cached_routers", None) is not None
+        else set()
+    )
+
+    if isinstance(new_router, ManagedRouter) and id(new_router) not in _managed_router_ids(
+        services
+    ):
+        if start_managed:
+            await new_router.start()
+        managed_routers.append(new_router)
+
+    if (
+        isinstance(old_router, ManagedRouter)
+        and id(old_router) not in cached_router_ids
+        and id(old_router) in _managed_router_ids(services)
+    ):
+        if start_managed:
+            await old_router.stop()
+        managed_routers[:] = [
+            router_obj for router_obj in managed_routers if id(router_obj) != id(old_router)
+        ]
+
+
+async def _apply_model_router_strategy(
+    services,
+    model_id: str,
+    strategy: str,
+    *,
+    start_managed: bool = True,
+) -> None:
     canonical_model_id, _route = _validate_model_router_strategy(services, model_id, strategy)
     registry = getattr(services, "model_router_registry", None)
     if registry is None:
@@ -245,7 +307,27 @@ def _apply_model_router_strategy(services, model_id: str, strategy: str) -> None
     setter = getattr(registry, "set_router_override", None)
     if setter is None:
         raise HTTPException(status_code=500, detail="Model router registry cannot be updated")
+    old_strategy = registry.get_router_name(canonical_model_id)
+    old_router = registry.get_router(canonical_model_id)
     setter(canonical_model_id, strategy)
+    new_router = registry.get_router(canonical_model_id)
+    configured_strategy = _configured_strategy_for_model(registry, canonical_model_id)
+    if configured_strategy is not None and configured_strategy != strategy:
+        new_router._model_router_override_id = canonical_model_id
+        new_router._model_router_fallback_strategy = configured_strategy
+    try:
+        await _sync_managed_router_lifecycle(
+            services,
+            old_router=old_router,
+            new_router=new_router,
+            start_managed=start_managed,
+        )
+    except Exception as exc:
+        setter(canonical_model_id, old_strategy)
+        registry.get_router(canonical_model_id)
+        if isinstance(exc, EnvelopeNotCalibratedError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
 
 
 def _is_canonical_model(model_id: str, route) -> bool:
@@ -483,6 +565,16 @@ def _parse_openrouter_provider_options(payload: dict[str, Any]) -> list[OpenRout
     return providers
 
 
+def _openrouter_endpoints_url(model_id: str) -> str:
+    if not OPENROUTER_MODEL_ID_RE.fullmatch(model_id):
+        raise HTTPException(
+            status_code=422,
+            detail="provider_model_id must be an OpenRouter slug like provider/model",
+        )
+    encoded_model_id = "/".join(quote(segment, safe="") for segment in model_id.split("/"))
+    return f"{OPENROUTER_API_BASE_URL}/models/{encoded_model_id}/endpoints"
+
+
 async def _fetch_openrouter_provider_options(
     provider_model_id: str,
 ) -> list[OpenRouterProviderOption]:
@@ -495,8 +587,7 @@ async def _fetch_openrouter_provider_options(
     if cached and now - cached[0] < OPENROUTER_ENDPOINT_DISCOVERY_CACHE_TTL_SEC:
         return cached[1]
 
-    encoded_model_id = quote(model_id, safe="/")
-    url = f"{OPENROUTER_API_BASE_URL}/models/{encoded_model_id}/endpoints"
+    url = _openrouter_endpoints_url(model_id)
     timeout = aiohttp.ClientTimeout(total=OPENROUTER_ENDPOINT_DISCOVERY_TIMEOUT_SEC)
     try:
         async with (
@@ -566,7 +657,7 @@ def _route_type(adapter) -> str:
     )
 
 
-def _validate_base_url(base_url: str) -> str:
+async def _validate_base_url(base_url: str) -> str:
     cleaned = base_url.strip()
     if not cleaned:
         raise HTTPException(status_code=422, detail="base_url must not be blank")
@@ -591,11 +682,20 @@ def _validate_base_url(base_url: str) -> str:
         ip = ipaddress.ip_address(hostname)
     except ValueError:
         try:
-            resolved = socket.getaddrinfo(
-                hostname,
-                parsed.port,
-                type=socket.SOCK_STREAM,
+            resolved = await asyncio.wait_for(
+                asyncio.to_thread(
+                    socket.getaddrinfo,
+                    hostname,
+                    parsed.port,
+                    type=socket.SOCK_STREAM,
+                ),
+                timeout=BASE_URL_DNS_TIMEOUT_SEC,
             )
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="base_url host resolution timed out",
+            ) from exc
         except socket.gaierror as exc:
             raise HTTPException(
                 status_code=422,
@@ -627,6 +727,7 @@ def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
     return (
         ip.is_loopback
         or ip.is_private
+        or (ip.version == 4 and ip in CGNAT_IPV4_NETWORK)
         or ip.is_link_local
         or ip.is_multicast
         or ip.is_reserved
@@ -666,12 +767,15 @@ async def _resolve_key_material(
         for pool in dynamic_keys.get_pools_for_provider(key_provider):
             keys.extend(pool.snapshot_keys())
         try:
-            keys.extend(await op_store.list_provider_keys_full(key_provider))
+            db_keys = await op_store.list_provider_keys_full(key_provider)
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
                 detail=f"Failed to load provider keys for {key_provider}: {exc}",
             ) from exc
+        for key in db_keys:
+            dynamic_keys.mark_db_key_for_provider(key_provider, key)
+        keys.extend(db_keys)
         keys = _unique([key for key in keys if key.strip()])
         if not keys:
             raise HTTPException(
@@ -684,7 +788,7 @@ async def _resolve_key_material(
         for pool in dynamic_keys.get_pools_for_provider(key_provider):
             for raw in pool.snapshot_keys():
                 if _env_key_id(raw) == api_key_id:
-                    return raw, None
+                    return None, [raw]
         raise HTTPException(status_code=404, detail="Env provider key not found")
 
     row = await op_store.get_provider_key_full(api_key_id)
@@ -696,7 +800,8 @@ async def _resolve_key_material(
             status_code=400,
             detail=f"Provider key belongs to {row_provider!r}, expected {key_provider!r}",
         )
-    return raw_key, None
+    dynamic_keys.mark_db_key_for_provider(key_provider, raw_key)
+    return None, [raw_key]
 
 
 async def _api_key_ref(
@@ -823,6 +928,16 @@ def _is_runtime_candidate(adapter) -> bool:
     return isinstance(route_metadata, dict) and route_metadata.get("runtime_candidate") is True
 
 
+def _route_is_runtime_candidate(services, model_id: str, route_id: str) -> bool:
+    try:
+        route = _validate_canonical_route(services, model_id)
+        entries = _raw_route_entries(route)
+        adapter, _weight, _endpoint_id = entries[_route_index_for_id(entries, route_id)]
+    except Exception:
+        return False
+    return _is_runtime_candidate(adapter)
+
+
 def _concurrency_limit_for_adapter(adapter) -> int | None:
     if _route_type(adapter) != "concurrency":
         return None
@@ -908,7 +1023,7 @@ async def _prepare_route_candidate(
         _primary_provider_for_target(target),
         openrouter_sort,
     )
-    cleaned_base_url = _validate_base_url(base_url)
+    cleaned_base_url = await _validate_base_url(base_url)
     provider_model_id = provider_model_id.strip()
     if not provider_model_id:
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
@@ -1004,6 +1119,11 @@ async def _prepare_route_update(
     index = _route_index_for_id(entries, route_id)
 
     current_adapter, _raw_weight, _old_endpoint_id = entries[index]
+    if _is_runtime_candidate(current_adapter):
+        raise HTTPException(
+            status_code=400,
+            detail="Runtime-added provider routes cannot be overridden",
+        )
     route_type = _route_type(current_adapter)
     route_provider = _route_provider(current_adapter)
     if quota_limit_override is not None:
@@ -1022,7 +1142,7 @@ async def _prepare_route_update(
         _primary_provider_for_target(target),
         openrouter_sort,
     )
-    cleaned_base_url = _validate_base_url(base_url)
+    cleaned_base_url = await _validate_base_url(base_url)
 
     api_key, api_keys = await _resolve_key_material(
         op_store,
@@ -1099,7 +1219,11 @@ def _install_route_update(services, update: PreparedRouteUpdate) -> None:
 
     dynamic_keys.register_known_provider(update.key_provider)
     if getattr(update.adapter, "_key_pool", None) is not None:
-        dynamic_keys.register_adapter_for_provider(update.key_provider, update.adapter)
+        dynamic_keys.register_adapter_for_provider(
+            update.key_provider,
+            update.adapter,
+            allow_db_key_injection=update.api_key_id is None,
+        )
 
     _rebuild_routewise_routers(services)
 
@@ -1163,7 +1287,11 @@ def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> Non
 
     dynamic_keys.register_known_provider(candidate.key_provider)
     if getattr(candidate.adapter, "_key_pool", None) is not None:
-        dynamic_keys.register_adapter_for_provider(candidate.key_provider, candidate.adapter)
+        dynamic_keys.register_adapter_for_provider(
+            candidate.key_provider,
+            candidate.adapter,
+            allow_db_key_injection=candidate.api_key_id is None,
+        )
 
     _rebuild_routewise_routers(services)
 
@@ -1400,7 +1528,7 @@ async def _route_row(
         else getattr(adapter.config, "provider_model_id", None)
     )
     source = (
-        "override" if override_row else ("runtime" if _is_runtime_candidate(adapter) else "yaml")
+        "runtime" if _is_runtime_candidate(adapter) else ("override" if override_row else "yaml")
     )
     return ProviderRouteItem(
         model_id=model_id,
@@ -1561,13 +1689,13 @@ async def update_provider_route_strategy(
         model_id,
         payload.strategy,
     )
+    await _apply_model_router_strategy(services, canonical_model_id, payload.strategy)
     await op_store.set_setting(
         _model_strategy_setting_key(canonical_model_id),
         payload.strategy,
         "string",
         admin_id,
     )
-    _apply_model_router_strategy(services, canonical_model_id, payload.strategy)
     await log_admin_action(
         op_store,
         admin_id,
@@ -1796,6 +1924,11 @@ async def delete_provider_route_override(
     old_adapter, _old_weight, old_endpoint_id = old_entries[
         _route_index_for_id(old_entries, route_id)
     ]
+    if _is_runtime_candidate(old_adapter):
+        raise HTTPException(
+            status_code=400,
+            detail="Runtime-added provider routes must be deleted as candidates",
+        )
     deleted = await op_store.delete_provider_route_config(model_id, route_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Provider route override not found")
@@ -1856,10 +1989,9 @@ async def delete_provider_route_candidate(
             status_code=400,
             detail="Only runtime-added provider routes can be deleted",
         )
-    deleted = await op_store.delete_provider_route_candidate(model_id, route_id)
+    deleted = await op_store.delete_provider_route_candidate_with_config(model_id, route_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Provider route candidate not found")
-    await op_store.delete_provider_route_config(model_id, route_id)
     deleted_adapter, _raw_weight, deleted_endpoint_id = _install_route_candidate_delete(
         services,
         route,
@@ -1954,7 +2086,11 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                 route_id,
                 exc,
             )
-            if route_id.startswith("route-"):
+            if route_id.startswith("route-") or _route_is_runtime_candidate(
+                services,
+                model_id,
+                route_id,
+            ):
                 try:
                     await op_store.delete_provider_route_config(model_id, route_id)
                 except Exception as cleanup_exc:
@@ -1977,7 +2113,12 @@ async def apply_persisted_model_router_strategy_overrides(services, op_store) ->
             continue
         strategy = str(row["value"])
         try:
-            _apply_model_router_strategy(services, model_id, strategy)
+            await _apply_model_router_strategy(
+                services,
+                model_id,
+                strategy,
+                start_managed=False,
+            )
         except Exception as exc:
             logger.warning(
                 "Failed to apply model router strategy override for model=%s strategy=%s: %s",

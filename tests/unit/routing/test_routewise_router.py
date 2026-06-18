@@ -388,8 +388,8 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_adapter("test-model", {"prompt_tokens": 10000})
         assert selected is provider_a
 
-    def test_fallback_excludes_failed(self):
-        """Fallback list excludes the adapter that just failed."""
+    def test_generic_fallback_disabled(self):
+        """RouteWise owns fallback via policy re-solve, not BaseRouter fallback lists."""
         a1 = _make_adapter(provider="provider_a")
         a2 = _make_adapter(provider="provider_b")
 
@@ -398,8 +398,7 @@ class TestRouteWiseRouterScaffold:
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         fallbacks = router._get_fallback_adapters("test-model", a1)
-        assert a1 not in fallbacks
-        assert a2 in fallbacks
+        assert fallbacks == []
 
     def test_fallback_empty_for_unknown_model(self):
         """Fallback returns empty list for an unregistered model."""
@@ -680,12 +679,8 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_adapter("test-model", {})
         assert selected is conc
 
-    def test_fallback_excludes_concurrency(self):
-        """Fallback never includes S_C adapters (regardless of feature flag).
-
-        S_C is excluded from fallback because the BaseRouter fallback path
-        bypasses _select_adapter -- no concurrency slot accounting would occur.
-        """
+    def test_generic_fallback_does_not_expose_concurrency(self):
+        """BaseRouter fallback is disabled; RouteWise re-solve accounts for S_C slots."""
         api = _make_adapter(provider_type="on_demand")
         conc = _make_adapter(provider_type="concurrency")
 
@@ -693,15 +688,10 @@ class TestRouteWiseRouterScaffold:
         fr.add("test-model", [(api, 0.5), (conc, 0.5)])
 
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        assert conc not in router._get_fallback_adapters("test-model", api)
+        assert router._get_fallback_adapters("test-model", api) == []
 
-    def test_fallback_only_includes_api_adapters(self):
-        """Fallback only returns S_A adapters, never S_Q or S_C.
-
-        The BaseRouter fallback path bypasses _select_adapter entirely,
-        so no PD decision or quota/concurrency accounting is performed.
-        Only S_A is safe for fallback.
-        """
+    def test_generic_fallback_returns_empty_for_all_route_types(self):
+        """No generic fallback adapters are exposed for RouteWise routes."""
         quota = _make_adapter(provider_type="quota")
         conc = _make_adapter(provider_type="concurrency")
         api_a = _make_adapter(provider_type="on_demand", provider="provider_a")
@@ -722,16 +712,11 @@ class TestRouteWiseRouterScaffold:
 
         # S_A failed -> only other S_A in fallback.
         fallbacks = router._get_fallback_adapters("test-model", api_a)
-        assert quota not in fallbacks
-        assert conc not in fallbacks
-        assert api_b in fallbacks
+        assert fallbacks == []
 
         # S_Q failed -> only S_A adapters in fallback.
         fallbacks = router._get_fallback_adapters("test-model", quota)
-        assert quota not in fallbacks
-        assert conc not in fallbacks
-        assert api_a in fallbacks
-        assert api_b in fallbacks
+        assert fallbacks == []
 
 
 # ---------------------------------------------------------------------------
@@ -2135,6 +2120,57 @@ class TestRouteWiseDecisionMetadata:
         assert "v_t" in rw
         # _pending_decisions should be cleaned up
         assert "req-merge-test" not in router._pending_decisions
+
+    @pytest.mark.asyncio
+    async def test_chat_completion_re_solves_routewise_after_provider_failure(self):
+        """A failed RouteWise selection retries by re-solving, not generic on-demand fallback."""
+        quota = _make_adapter(
+            provider_type="quota",
+            endpoint_id="test-model:quota-provider",
+            quota={"limit": 10_000},
+        )
+        conc = _make_adapter(
+            provider_type="concurrency",
+            endpoint_id="test-model:conc-provider",
+            concurrency={"limit": 1},
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        _seed_quota_snapshots(router)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:quota-provider") or by_id["test-model:conc-provider"]
+
+        router._sample_solution = _choose  # type: ignore[method-assign]
+        quota.chat_completion = AsyncMock(side_effect=RuntimeError("quota 429"))
+        conc.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "fallback ok"}}]}
+        )
+
+        resp = await router.chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-policy-fallback",
+        )
+
+        assert resp["_routing"]["endpoint_id"] == "test-model:conc-provider"
+        assert resp["_routing"]["fallback"] is True
+        assert resp["_routing"]["fallback_policy"] == "routewise_resolve"
+        assert quota.chat_completion.await_count == 1
+        assert conc.chat_completion.await_count == 1
+
+        rw = resp["_routing"]["routewise"]
+        assert rw["initial_selected_endpoint"] == "test-model:quota-provider"
+        assert rw["selected_endpoint"] == "test-model:conc-provider"
+        assert rw["final_endpoint"] == "test-model:conc-provider"
+        assert rw["fallback_policy"] == "routewise_resolve"
+        assert rw["fallback_attempts"] == 1
+        assert rw["failed_attempts"][0]["endpoint_id"] == "test-model:quota-provider"
+        assert _quota_pool(router).remaining == 9999
+        assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
     async def test_stream_injects_routewise_chunk(self):

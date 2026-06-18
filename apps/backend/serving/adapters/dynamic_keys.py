@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _adapters_by_provider: dict[str, list] = {}
+_db_injection_disabled_adapter_ids: dict[str, set[int]] = {}
 _known_providers: set[str] = set()
 # Tracks raw key values that were injected from the DB (per provider).
 # Used by ``remove_key_from_provider`` to ensure we never tombstone an
@@ -33,12 +34,18 @@ def reset() -> None:
     """Clear the registry. Test helper — not used in production paths."""
     with _lock:
         _adapters_by_provider.clear()
+        _db_injection_disabled_adapter_ids.clear()
         _known_providers.clear()
         _db_injected_keys.clear()
         _disabled_env_key_hashes.clear()
 
 
-def register_adapter_for_provider(provider: str, adapter: object) -> None:
+def register_adapter_for_provider(
+    provider: str,
+    adapter: object,
+    *,
+    allow_db_key_injection: bool = True,
+) -> None:
     """Register an adapter under *provider* so its KeyPool can be located later.
 
     Adapters without a key pool (single-key configurations) may still be
@@ -48,6 +55,11 @@ def register_adapter_for_provider(provider: str, adapter: object) -> None:
         bucket = _adapters_by_provider.setdefault(provider, [])
         if adapter not in bucket:
             bucket.append(adapter)
+        disabled = _db_injection_disabled_adapter_ids.setdefault(provider, set())
+        if allow_db_key_injection:
+            disabled.discard(id(adapter))
+        else:
+            disabled.add(id(adapter))
         _known_providers.add(provider)
 
 
@@ -63,9 +75,16 @@ def get_known_providers() -> set[str]:
         return set(_known_providers)
 
 
-def _pools_for_provider_locked(provider: str) -> list[KeyPool]:
+def _pools_for_provider_locked(
+    provider: str,
+    *,
+    include_db_injection_disabled: bool = True,
+) -> list[KeyPool]:
     pools: list[KeyPool] = []
+    disabled_ids = _db_injection_disabled_adapter_ids.get(provider, set())
     for adapter in _adapters_by_provider.get(provider, []):
+        if not include_db_injection_disabled and id(adapter) in disabled_ids:
+            continue
         pool = getattr(adapter, "_key_pool", None)
         if pool is not None:
             pools.append(pool)
@@ -113,11 +132,17 @@ def add_key_to_provider(provider: str, key: str) -> int:
     the same raw value.
     """
     with _lock:
-        pools = _pools_for_provider_locked(provider)
+        pools = _pools_for_provider_locked(provider, include_db_injection_disabled=False)
         for pool in pools:
             pool.add_key(key)
         _db_injected_keys.setdefault(provider, set()).add(key)
         return len(pools)
+
+
+def mark_db_key_for_provider(provider: str, key: str) -> None:
+    """Track *key* as DB-sourced without injecting it into existing pools."""
+    with _lock:
+        _db_injected_keys.setdefault(provider, set()).add(key)
 
 
 def remove_key_from_provider(provider: str, key: str) -> int:

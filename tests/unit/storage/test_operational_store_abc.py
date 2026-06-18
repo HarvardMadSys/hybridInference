@@ -96,3 +96,10 @@ def test_provider_route_candidate_signatures():
         "model_id",
         "route_id",
     ]
+    assert list(
+        inspect.signature(OperationalStore.delete_provider_route_candidate_with_config).parameters
+    ) == [
+        "self",
+        "model_id",
+        "route_id",
+    ]

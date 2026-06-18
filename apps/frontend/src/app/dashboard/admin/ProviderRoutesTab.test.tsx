@@ -371,7 +371,7 @@ describe('ProviderRoutesTab', () => {
     });
   });
 
-  it('restores an override to the config route', async () => {
+  it('resets an override to the config route', async () => {
     const overrideRoute = {
       ...route,
       upstream_provider: 'openrouter',
@@ -399,7 +399,7 @@ describe('ProviderRoutesTab', () => {
 
     render(<ProviderRoutesTab />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Restore config' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Reset config' }));
 
     await waitFor(() => {
       expect(deleteProviderRoute).toHaveBeenCalledWith(

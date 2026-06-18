@@ -118,11 +118,17 @@ class ModelRouterRegistry:
         return router
 
     def get_router_name(self, model_id: str) -> str:
-        """Return the configured strategy name for ``model_id``."""
+        """Return the active strategy name for ``model_id``."""
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         name, _params = self._router_spec(canonical_model_id, cfg)
         return name
+
+    def get_configured_router_name(self, model_id: str) -> str:
+        """Return the YAML/default strategy name, ignoring runtime overrides."""
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
+        return str(cfg.get("router") or self._default)
 
     def _router_spec(
         self, canonical_model_id: str, cfg: dict[str, Any]
