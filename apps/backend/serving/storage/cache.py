@@ -880,9 +880,14 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_provider_keys(provider)
 
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
         """Delegate to wrapped store."""
-        return await self._store.list_provider_keys_full(provider)
+        return await self._store.list_provider_keys_full(provider, exclude_ids=exclude_ids)
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         """Delegate to wrapped store."""

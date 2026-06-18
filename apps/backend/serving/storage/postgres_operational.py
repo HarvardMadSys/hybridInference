@@ -2689,15 +2689,31 @@ class PostgresOperationalStore(OperationalStore):
             for r in rows
         ]
 
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
         """Return raw active API keys for *provider* (boot-time use only)."""
+        excluded = sorted(exclude_ids or set())
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT api_key FROM provider_api_keys "
-                "WHERE provider = $1 AND status = 'active' "
-                "ORDER BY created_at ASC",
-                provider,
-            )
+            if excluded:
+                rows = await conn.fetch(
+                    "SELECT api_key FROM provider_api_keys "
+                    "WHERE provider = $1 AND status = 'active' "
+                    "AND NOT (id = ANY($2::text[])) "
+                    "ORDER BY created_at ASC",
+                    provider,
+                    excluded,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT api_key FROM provider_api_keys "
+                    "WHERE provider = $1 AND status = 'active' "
+                    "ORDER BY created_at ASC",
+                    provider,
+                )
         return [r["api_key"] for r in rows]
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:

@@ -166,6 +166,24 @@ def remove_key_from_provider(provider: str, key: str) -> int:
         return sum(1 for pool in pools if pool.remove_key(key))
 
 
+def _is_db_provider_key_id(key_id: object) -> bool:
+    return isinstance(key_id, str) and bool(key_id) and not key_id.startswith("env:")
+
+
+async def _list_route_bound_db_key_ids(operational_store: OperationalStore) -> set[str]:
+    """Return DB provider-key ids reserved by provider route configs."""
+    key_ids: set[str] = set()
+    for rows in (
+        await operational_store.list_all_provider_route_configs(),
+        await operational_store.list_all_provider_route_candidates(),
+    ):
+        for row in rows:
+            key_id = row.get("api_key_id")
+            if _is_db_provider_key_id(key_id):
+                key_ids.add(key_id)
+    return key_ids
+
+
 async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
     """Pull persisted provider keys and seed each registered adapter's pool.
 
@@ -174,6 +192,16 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
     """
     with _lock:
         providers = list(_known_providers)
+
+    try:
+        route_bound_key_ids = await _list_route_bound_db_key_ids(operational_store)
+    except Exception as exc:
+        logger.warning(
+            "dynamic_keys: failed to load route-bound provider key ids; "
+            "skipping DB key boot seeding to avoid global key leakage: %s",
+            exc,
+        )
+        return
 
     for provider in providers:
         try:
@@ -196,7 +224,10 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
                         pool.remove_key(key)
 
         try:
-            keys = await operational_store.list_provider_keys_full(provider)
+            keys = await operational_store.list_provider_keys_full(
+                provider,
+                exclude_ids=route_bound_key_ids,
+            )
         except Exception as exc:
             logger.warning(
                 "dynamic_keys: failed to load DB keys for provider=%s: %s",

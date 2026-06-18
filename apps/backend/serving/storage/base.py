@@ -889,8 +889,18 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
-        """Return raw active API keys for ``provider`` (boot-time only)."""
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
+        """Return raw active API keys for ``provider`` (boot-time only).
+
+        ``exclude_ids`` omits DB rows that are bound to explicit provider-route
+        configs/candidates, so route-scoped keys are not injected into a
+        provider's global pool during boot.
+        """
 
     @abstractmethod
     async def delete_provider_key(self, key_id: str) -> bool:
