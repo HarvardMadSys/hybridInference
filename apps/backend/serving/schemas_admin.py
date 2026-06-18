@@ -1148,6 +1148,25 @@ class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimporte
 SiteUpdatePlacement = Literal["feed", "banner"]
 
 
+def _validate_link_url(v: str | None) -> str | None:
+    """Restrict ``link_url`` to http(s) so it is safe to render as an href.
+
+    The homepage renders ``link_url`` directly inside ``<a href=...>`` on a
+    public, unauthenticated page, bypassing react-markdown's URL sanitization.
+    Enforcing the scheme here blocks stored-XSS vectors such as
+    ``javascript:`` and ``data:`` regardless of which client renders the value.
+    Empty/whitespace-only strings normalize to ``None``.
+    """
+    if v is None:
+        return None
+    cleaned = v.strip()
+    if not cleaned:
+        return None
+    if not (cleaned.lower().startswith("http://") or cleaned.lower().startswith("https://")):
+        raise ValueError("link_url must start with http:// or https://")
+    return cleaned
+
+
 class SiteUpdateItem(BaseModel):  # type: ignore[no-any-unimported]
     """A single site update as returned by the admin endpoints."""
 
@@ -1180,6 +1199,11 @@ class CreateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]
     link_url: str | None = Field(None, max_length=2000)
     link_label: str | None = Field(None, max_length=80)
 
+    @field_validator("link_url")
+    @classmethod
+    def _check_link_url(cls, v: str | None) -> str | None:
+        return _validate_link_url(v)
+
 
 class UpdateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]
     """Request payload for ``PATCH /admin/site-updates/{id}`` (all optional)."""
@@ -1190,6 +1214,22 @@ class UpdateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]
     published: bool | None = None
     link_url: str | None = Field(None, max_length=2000)
     link_label: str | None = Field(None, max_length=80)
+
+    # NOT NULL columns: reject an explicit ``null`` (only runs when the field is
+    # present in the payload, so omitting it for a partial update is still fine).
+    # Without this, ``{"body": null}`` would pass validation and then violate the
+    # NOT NULL constraint at write time (500 instead of 422).
+    @field_validator("title", "body", "placement", "published")
+    @classmethod
+    def _reject_null(cls, v: Any) -> Any:
+        if v is None:
+            raise ValueError("value cannot be null")
+        return v
+
+    @field_validator("link_url")
+    @classmethod
+    def _check_link_url(cls, v: str | None) -> str | None:
+        return _validate_link_url(v)
 
 
 class PublicSiteUpdate(BaseModel):  # type: ignore[no-any-unimported]

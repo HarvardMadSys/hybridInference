@@ -12,12 +12,18 @@ published content and never drafts.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends
 
 from serving.schemas_admin import PublicSiteUpdate, PublicSiteUpdatesResponse
 from serving.servers.deps import get_db_logger
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+_EMPTY = PublicSiteUpdatesResponse(banner=None, updates=[])
 
 # Cap on the number of feed entries returned to the homepage.
 _FEED_LIMIT = 20
@@ -48,26 +54,33 @@ async def get_public_site_updates(
     breaks the public landing page.
     """
     if not db or not db.pool:
-        return PublicSiteUpdatesResponse(banner=None, updates=[])
+        return _EMPTY
 
-    async with db.pool.acquire() as conn:
-        banner_row = await conn.fetchrow(
-            f"""
-            SELECT {_PUBLIC_COLUMNS} FROM site_updates
-            WHERE published = TRUE AND placement = 'banner'
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
-        )
-        feed_rows = await conn.fetch(
-            f"""
-            SELECT {_PUBLIC_COLUMNS} FROM site_updates
-            WHERE published = TRUE AND placement = 'feed'
-            ORDER BY created_at DESC
-            LIMIT $1
-            """,
-            _FEED_LIMIT,
-        )
+    # A live but unreachable DB (network partition, overload) raises on
+    # acquire()/fetch — catch it so a transient outage degrades to an empty
+    # payload rather than 500-ing the public landing page.
+    try:
+        async with db.pool.acquire() as conn:
+            banner_row = await conn.fetchrow(
+                f"""
+                SELECT {_PUBLIC_COLUMNS} FROM site_updates
+                WHERE published = TRUE AND placement = 'banner'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            )
+            feed_rows = await conn.fetch(
+                f"""
+                SELECT {_PUBLIC_COLUMNS} FROM site_updates
+                WHERE published = TRUE AND placement = 'feed'
+                ORDER BY created_at DESC
+                LIMIT $1
+                """,
+                _FEED_LIMIT,
+            )
+    except Exception:
+        logger.warning("Failed to load public site updates; serving empty payload", exc_info=True)
+        return _EMPTY
 
     return PublicSiteUpdatesResponse(
         banner=_row_to_public(banner_row) if banner_row else None,

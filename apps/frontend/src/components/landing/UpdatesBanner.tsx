@@ -37,8 +37,16 @@ export function UpdatesBanner(): JSX.Element | null {
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <span className="font-semibold text-crimson">{banner.title}</span>
         {banner.body && (
-          <span className="[&_a]:text-crimson [&_a]:underline [&_p]:inline">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{banner.body}</ReactMarkdown>
+          <span className="[&_a]:text-crimson [&_a]:underline">
+            {/* Render markdown paragraphs as fragments so the banner stays inline:
+                a <p> nested in this <span> is invalid HTML and triggers a Next.js
+                hydration mismatch. */}
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{ p: ({ children }) => <>{children}</> }}
+            >
+              {banner.body}
+            </ReactMarkdown>
           </span>
         )}
         {banner.link_url && (
