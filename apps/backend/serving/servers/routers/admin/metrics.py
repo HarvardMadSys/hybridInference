@@ -32,6 +32,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.admin._common import (
     _build_histogram,
+    _escape_ilike_substring_term,
     _round_or_none,
 )
 from serving.storage.utils import coerce_json_object
@@ -121,11 +122,6 @@ derived AS (
 
 _DECODE_MIN_WINDOW_MS = 2000
 _DECODE_MIN_TOKENS = 8
-
-
-def _escape_ilike_substring_term(term: str) -> str:
-    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
-    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
 
 
 def _decode_throughput_tps(
@@ -589,7 +585,7 @@ async def admin_list_recent_requests(
     - limit: Max results (default: 50, max: 200)
     - offset: Pagination offset
     - days: Lookback window in days (default: 7, clamped to [1, 90])
-    - user_id: Filter by user ID
+    - user_id: Filter by user ID, name, or email (substring match)
     - model_id: Filter by model ID
     - status_code: Filter by HTTP status code
     - errors_only: If true, only show requests with errors
@@ -610,8 +606,17 @@ async def admin_list_recent_requests(
     where_clauses.append(f"l.timestamp >= NOW() - make_interval(days => ${len(params)}::int)")
 
     if user_id:
-        where_clauses.append(f"l.user_id = ${len(params) + 1}")
-        params.append(user_id)
+        # Substring match across the user id and the joined user's name/email so
+        # admins can search by any of the identifiers shown in the table, not
+        # just an exact user id. Matching runs server-side across the full
+        # lookback window, so it isn't limited to the current page of results.
+        params.append(_escape_ilike_substring_term(user_id))
+        idx = len(params)
+        where_clauses.append(
+            f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
+        )
 
     if model_id:
         params.append(_escape_ilike_substring_term(model_id))
@@ -630,9 +635,12 @@ async def admin_list_recent_requests(
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
     async with db_logger.pool.acquire() as conn:
-        # Get total count
+        # Get total count. Only join users when the user filter is active —
+        # it's the only predicate that references u.user_name/u.email, and
+        # api_logs is high-volume so the join is worth avoiding otherwise.
+        count_join_sql = "LEFT JOIN users u ON u.id = l.user_id " if user_id else ""
         count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM api_logs l {where_sql}",
+            f"SELECT COUNT(*) as total FROM api_logs l {count_join_sql}{where_sql}",
             *params,
         )
         total = int(count_row["total"] or 0) if count_row else 0

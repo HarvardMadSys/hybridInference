@@ -256,7 +256,11 @@ def test_export_applies_user_id_filter():
     call_args = mock_conn.fetch.call_args
     assert call_args is not None
     query = call_args[0][0]
-    assert "l.user_id = $3" in query
+    # Substring match across user id/name/email, mirroring /admin/recent-requests
+    # so the export matches what the admin filtered in the Requests tab.
+    assert "l.user_id ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
+    assert "u.user_name ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
+    assert "u.email ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
 
 
 def test_export_applies_model_id_filter():
@@ -288,7 +292,7 @@ def test_export_applies_model_id_filter():
     call_args = mock_conn.fetch.call_args
     assert call_args is not None
     query = call_args[0][0]
-    assert "l.model_id = $3" in query
+    assert "l.model_id ILIKE '%' || $3 || '%' ESCAPE '\\'" in query
 
 
 def test_export_applies_errors_only_filter():

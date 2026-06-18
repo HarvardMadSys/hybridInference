@@ -72,6 +72,11 @@ def _build_histogram(
     return buckets
 
 
+def _escape_ilike_substring_term(term: str) -> str:
+    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
+    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 def _round_or_none(value: Any, digits: int = 2) -> float | None:
     """Coerce a numeric DB value to float and round, or return None."""
     if value is None:
