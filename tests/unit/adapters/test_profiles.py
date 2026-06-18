@@ -120,7 +120,11 @@ def test_normalize_usage_default_sglang_cached_tokens_serializes_compat_field() 
     info = normalize_usage_default(usage_data)
 
     assert info.cache_read_tokens == 913
-    assert info.to_dict()["cached_tokens"] == 913
+    result = info.to_dict()
+    assert result["cached_tokens"] == 913
+    # OpenAI-standard nested shape so SDK clients reading
+    # usage.prompt_tokens_details.cached_tokens see the hit.
+    assert result["prompt_tokens_details"]["cached_tokens"] == 913
 
 
 def test_normalize_usage_default_empty_dict() -> None:

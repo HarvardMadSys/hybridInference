@@ -27,6 +27,7 @@ case "$cmd" in
       --host 0.0.0.0 --port 8001 \
       --context-length "$MAX_MODEL_LEN" \
       --mem-fraction-static "$GMU" \
+      --enable-cache-report \
       --tp 1 >/dev/null
     echo "$CONTAINER"
     ;;
