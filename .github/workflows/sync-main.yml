@@ -47,7 +47,12 @@ jobs:
           # (a failed or deleted release that left its tag) must NOT count as
           # already released.
           target="${{ steps.sync.outputs.after }}"
-          git fetch --tags --force origin >/dev/null 2>&1 || true
+          # Fail closed: tag discovery below (and the uniqueness loop) rely on a
+          # complete, up-to-date set of local tags. If the fetch fails we could
+          # miss an existing remote tag and let `gh release create` attach to a
+          # stale tag at the wrong commit, so abort rather than continue with
+          # stale refs (errexit propagates the failure).
+          git fetch --tags --force origin
           released_tag=""
           release_tags="$(gh release list --limit 200 --json tagName --jq '.[].tagName' || true)"
           for rtag in ${release_tags}; do
