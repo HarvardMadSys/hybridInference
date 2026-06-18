@@ -39,9 +39,11 @@ import {
   listProviderKeys,
   listProviderRoutes,
   listRouteWeights,
+  listRoutewiseSettings,
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteStrategy,
+  updateRoutewiseSetting,
   verifyProviderRoute,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
@@ -177,6 +179,60 @@ describe('ProviderRoutesTab', () => {
 
     expect(screen.getByLabelText('Routing policy')).toHaveValue('routewise');
     expect(screen.queryByLabelText('Fixed weight')).not.toBeInTheDocument();
+  });
+
+  it('renders and saves RouteWise settings when requested', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
+    vi.mocked(listRoutewiseSettings).mockResolvedValue({
+      settings: [
+        {
+          key: 'routewise_budget_alpha',
+          value: 0.75,
+          value_type: 'float',
+          default_value: 0.75,
+          description: 'RouteWise LP cost budget interpolation.',
+          min: 0,
+          max: 1,
+        },
+        {
+          key: 'routewise_latency_slo_sec',
+          value: 3,
+          value_type: 'float',
+          default_value: 3,
+          description: 'Latency SLO in seconds for Routewise LP decisions.',
+          min: 0.1,
+          max: null,
+        },
+      ],
+    });
+    vi.mocked(updateRoutewiseSetting).mockResolvedValue({
+      key: 'routewise_budget_alpha',
+      value: 0.4,
+      value_type: 'float',
+      default_value: 0.75,
+      description: 'RouteWise LP cost budget interpolation.',
+      min: 0,
+      max: 1,
+    });
+
+    render(<ProviderRoutesTab showRoutewiseSettings />);
+
+    expect(await screen.findByText('RouteWise parameters')).toBeInTheDocument();
+    const alphaInput = await screen.findByLabelText('Cost budget alpha value');
+    expect(alphaInput).toHaveValue(0.75);
+
+    fireEvent.change(alphaInput, { target: { value: '0.4' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Cost budget alpha' }));
+
+    await waitFor(() => {
+      expect(updateRoutewiseSetting).toHaveBeenCalledWith('routewise_budget_alpha', 0.4);
+    });
+    expect(alphaInput).toHaveValue(0.4);
   });
 
   it('shows fixed weight when adding a fixed provider route', async () => {
