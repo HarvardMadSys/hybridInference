@@ -104,6 +104,18 @@ export default function UsersTab() {
   const users = usersQuery.data?.users ?? [];
   const total = usersQuery.data?.total ?? 0;
 
+  // Clamp the page when the total shrinks beneath the current offset without a
+  // filter change — e.g. an admin deletes/approves the last users on a later
+  // page, so a refetch of the same offset comes back empty. Only act on a
+  // settled result for the current query (isSuccess && !isFetching); otherwise
+  // the transient total=0 while a freshly-navigated page loads would bounce the
+  // user straight back to page 0 and break forward navigation.
+  useEffect(() => {
+    if (!usersQuery.isSuccess || usersQuery.isFetching) return;
+    const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+    if (page > lastPage) setPage(lastPage);
+  }, [usersQuery.isSuccess, usersQuery.isFetching, total, page, pageSize]);
+
   const onPageSizeChange = (size: number) => {
     setPageSize(size);
     setPage(0);

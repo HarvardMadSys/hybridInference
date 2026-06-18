@@ -85,6 +85,22 @@ describe('Pagination', () => {
     expect(onPageSizeChange).toHaveBeenCalledWith(250);
   });
 
+  it('does not render a reversed range when the page is out of range (count=0, total>0)', () => {
+    // Transient state after a mutation shrinks total below the current offset,
+    // before the parent clamps `page`. Must not show "Showing 201–200".
+    render(
+      <Pagination
+        page={2}
+        pageSize={100}
+        total={200}
+        count={0}
+        onPageChange={vi.fn()}
+        onPageSizeChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/Showing/)).toHaveTextContent('Showing 0–0 of 200');
+  });
+
   it('renders an empty state with a single page when there are no users', () => {
     render(
       <Pagination

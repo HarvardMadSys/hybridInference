@@ -30,8 +30,13 @@ export function Pagination({
   onPageSizeChange,
 }: PaginationProps) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const firstRow = total === 0 ? 0 : page * pageSize + 1;
-  const lastRow = page * pageSize + count;
+  // When the page is briefly out of range (a mutation shrank `total` below the
+  // current offset, before the parent's clamp effect resets `page`), the
+  // current page has no rows. Guard the range so it never renders reversed
+  // numbers like "Showing 201–200"; show 0 rows until the clamp lands.
+  const hasRows = count > 0;
+  const firstRow = hasRows ? page * pageSize + 1 : 0;
+  const lastRow = hasRows ? page * pageSize + count : 0;
   const canPrev = page > 0;
   const canNext = page < pageCount - 1;
 
