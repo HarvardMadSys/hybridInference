@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_db_logger, verify_admin_access
+from serving.servers.routers.admin._common import _escape_ilike_substring_term
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -48,8 +49,8 @@ async def admin_export_requests(
     Query Parameters:
     - start_time: ISO8601 datetime, inclusive lower bound (required)
     - end_time: ISO8601 datetime, inclusive upper bound (defaults to now)
-    - user_id: Filter by user ID
-    - model_id: Filter by model ID
+    - user_id: Filter by user ID, name, or email (substring match)
+    - model_id: Filter by model ID (substring match)
     - errors_only: If true, only include requests with errors
     - include_content: If true, include prompt and response fields
 
@@ -69,13 +70,22 @@ async def admin_export_requests(
     where_clauses: list[str] = ["l.timestamp >= $1", "l.timestamp <= $2"]
     params: list[Any] = [start_time, end_time]
 
+    # Filters mirror /admin/recent-requests so the JSONL export matches exactly
+    # what the admin sees in the Requests tab (which reuses the same filter
+    # values): a substring match across user id/name/email, and a substring
+    # match on model id. The SELECT below already joins users.
     if user_id:
-        where_clauses.append(f"l.user_id = ${len(params) + 1}")
-        params.append(user_id)
+        params.append(_escape_ilike_substring_term(user_id))
+        idx = len(params)
+        where_clauses.append(
+            f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
+        )
 
     if model_id:
-        where_clauses.append(f"l.model_id = ${len(params) + 1}")
-        params.append(model_id)
+        params.append(_escape_ilike_substring_term(model_id))
+        where_clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
 
     if errors_only:
         where_clauses.append(

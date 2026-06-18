@@ -145,6 +145,17 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5.1"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "glm-5.1"
 
   - id: glm-5.2
     name: GLM-5.2
@@ -183,6 +194,17 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5.2"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "glm-5.2"
 
   - id: glm-5-turbo
     name: GLM-5 Turbo
@@ -210,6 +232,17 @@ models:
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
+        provider_model_id: "glm-5-turbo"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
         provider_model_id: "glm-5-turbo"
       # - kind: chutes
       #   weight: 0.05
@@ -275,6 +308,17 @@ models:
         api_keys:
           - ${FEATHERLESS_API_KEY}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "minimax-m2.5"
 
   - id: minimax-m3
     name: MiniMax M3
@@ -310,6 +354,17 @@ models:
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
+        provider_model_id: "minimax-m3"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
         provider_model_id: "minimax-m3"
 
   - id: minimax-fast
@@ -453,6 +508,17 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.7"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "minimax-m2.7"
 
   # ── Kimi / Moonshot (kind: kimi_coding) ─────────────────────────
   # Flagship served primarily through the Kimi Code coding-plan subscription
@@ -493,6 +559,17 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "kimi-k2.7-code"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "kimi-k2.7-code"
 
   - id: qwen3.6-35b
     name: Qwen3.6 35B (no concurrency limit currently)
@@ -523,6 +600,17 @@ models:
         extra_body:
           chat_template_kwargs:
             enable_thinking: false
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "qwen3.6-35b"
       # # Ollama Cloud fallback
       # - kind: ollama
       #   weight: 0.24
@@ -559,6 +647,17 @@ models:
         provider_model_id: "openai/gpt-oss-20b"
         api_keys:
           - ${LOCAL_API_KEY}
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "gpt-oss-20b"
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
   - id: deepseek-v4-flash
@@ -597,6 +696,17 @@ models:
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "deepseek-v4-flash"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
 
   - id: deepseek-v4-pro
     name: DeepSeek V4 Pro
@@ -633,6 +743,17 @@ models:
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
+        provider_model_id: "deepseek-v4-pro"
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      - kind: openai_compat
+        weight: 0.01
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
         provider_model_id: "deepseek-v4-pro"
 
 
@@ -703,6 +824,9 @@ models:
         provider_model_id: "BAAI/bge-m3"
         api_keys:
           - ${LOCAL_API_KEY}
+      # NOTE: no staging canary here. Embedding models bypass weighted routing
+      # (the loader registers only the first route), so a fallback route would be
+      # dead config — see registry.register_from_models_yaml.
 
   # ── Anthropic direct (kind: anthropic) ─────────────────────
   # These models route directly to api.anthropic.com via the AnthropicAdapter.

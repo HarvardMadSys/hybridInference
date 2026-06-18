@@ -178,6 +178,50 @@ async def test_list_model_filter_uses_partial_match(admin_client_capture):
 
 
 @pytest.mark.asyncio
+async def test_list_user_filter_matches_id_name_and_email(admin_client_capture):
+    """The user filter is a substring match across user id, name, and email.
+
+    Regression test for the bug where searching for a user only matched an
+    exact user id, so admins effectively could only find users visible on the
+    current page. Both COUNT and SELECT must run the broadened predicate (and
+    the COUNT must join ``users`` so the name/email columns resolve).
+    """
+    client, calls, _logger = admin_client_capture
+
+    resp = await client.get("/admin/recent-requests?user_id=alice")
+    assert resp.status_code == 200, resp.text
+
+    count_query, count_args = calls["fetchrow"][0]
+    select_query, select_args = calls["fetch"][0]
+
+    expected = (
+        "(l.user_id ILIKE '%' || $2 || '%' ESCAPE '\\' "
+        "OR u.user_name ILIKE '%' || $2 || '%' ESCAPE '\\' "
+        "OR u.email ILIKE '%' || $2 || '%' ESCAPE '\\')"
+    )
+    assert expected in count_query
+    assert expected in select_query
+    # COUNT must join users so u.user_name / u.email are available there too.
+    assert "LEFT JOIN users u ON u.id = l.user_id" in count_query
+    assert count_args[1] == "alice"
+    assert select_args[1] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_list_user_filter_escapes_like_wildcards(admin_client_capture):
+    client, calls, _logger = admin_client_capture
+
+    resp = await client.get("/admin/recent-requests?user_id=a%_b\\c")
+    assert resp.status_code == 200, resp.text
+
+    _count_query, count_args = calls["fetchrow"][0]
+    _select_query, select_args = calls["fetch"][0]
+
+    assert count_args[1] == r"a\%\_b\\c"
+    assert select_args[1] == r"a\%\_b\\c"
+
+
+@pytest.mark.asyncio
 async def test_list_model_filter_returns_matching_rows_only(admin_client_capture):
     client, _calls, logger = admin_client_capture
 

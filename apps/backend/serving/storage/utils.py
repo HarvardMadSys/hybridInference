@@ -32,7 +32,10 @@ def conversation_shape(
     Computed once at log time so the admin list query can read three cheap
     integer columns instead of de-TOASTing the full request payload per row.
     ``num_turns`` counts all messages, ``num_user_turns`` counts user-role
-    messages, and ``num_tool_calls`` sums ``tool_calls`` across messages.
+    messages, and ``num_tool_calls`` sums tool calls across messages. Both the
+    OpenAI shape (an assistant ``tool_calls`` array) and the Anthropic Messages
+    shape used by Claude Code (``tool_use`` content blocks) are counted, so the
+    column is accurate regardless of which API surface the request came in on.
 
     Returns ``(None, None, None)`` when ``prompt`` is not a chat-style messages
     list — e.g. a raw completion string, or an embedding input such as a list
@@ -54,6 +57,13 @@ def conversation_shape(
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list):
             num_tool_calls += len(tool_calls)
+        # Anthropic Messages format (e.g. Claude Code) carries tool calls as
+        # ``tool_use`` content blocks rather than an OpenAI ``tool_calls`` array.
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    num_tool_calls += 1
     if num_turns == 0:
         return None, None, None
     return num_turns, num_user_turns, num_tool_calls
