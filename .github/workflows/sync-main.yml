@@ -6,6 +6,13 @@ on:
 permissions:
   contents: write
 
+# Serialize dispatches so two runs can't both fast-forward from the same old
+# main and race on release creation. Runs queue rather than cancel so an
+# in-flight sync always completes.
+concurrency:
+  group: sync-dev-to-main
+  cancel-in-progress: false
+
 jobs:
   sync:
     name: Fast-forward main to dev
@@ -52,8 +59,11 @@ jobs:
             suffix=$((suffix + 1))
           done
 
-          echo "Creating release ${tag} from $(git rev-parse HEAD)"
+          # Pin the release to this run's synced commit rather than `main`, so a
+          # concurrent push advancing main can't make us tag the wrong commit.
+          target="${{ steps.sync.outputs.after }}"
+          echo "Creating release ${tag} from ${target}"
           gh release create "${tag}" \
-            --target main \
+            --target "${target}" \
             --title "${tag}" \
             --generate-notes
