@@ -6,6 +6,13 @@ on:
 permissions:
   contents: write
 
+# Serialize dispatches so two runs can't both fast-forward from the same old
+# main and race on release creation. Runs queue rather than cancel so an
+# in-flight sync always completes.
+concurrency:
+  group: sync-dev-to-main
+  cancel-in-progress: false
+
 jobs:
   sync:
     name: Fast-forward main to dev
@@ -17,7 +24,69 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fast-forward main to dev
+        id: sync
         run: |
+          set -euo pipefail
           git checkout main
           git merge --ff-only origin/dev
           git push origin main
+          echo "after=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Idempotent on the synced commit: skip only if an actual GitHub
+          # *release* already points at this commit. Gating on the commit (not on
+          # whether this run moved main) means a no-op re-run skips, while a
+          # re-run after a release that failed *after* the push still creates the
+          # missing one. We resolve each release's tag to its commit rather than
+          # using `git tag --points-at`, because a bare tag without a release
+          # (a failed or deleted release that left its tag) must NOT count as
+          # already released.
+          target="${{ steps.sync.outputs.after }}"
+          # Fail closed: tag discovery below (and the uniqueness loop) rely on a
+          # complete, up-to-date set of local tags. If the fetch fails we could
+          # miss an existing remote tag and let `gh release create` attach to a
+          # stale tag at the wrong commit, so abort rather than continue with
+          # stale refs (errexit propagates the failure).
+          git fetch --tags --force origin
+          released_tag=""
+          release_tags="$(gh release list --limit 200 --json tagName --jq '.[].tagName' || true)"
+          for rtag in ${release_tags}; do
+            rcommit="$(git rev-list -n 1 "refs/tags/${rtag}" 2>/dev/null || true)"
+            if [ "${rcommit}" = "${target}" ]; then
+              released_tag="${rtag}"
+              break
+            fi
+          done
+          if [ -n "${released_tag}" ]; then
+            echo "Commit ${target} already released as ${released_tag}; nothing to do."
+            exit 0
+          fi
+
+          # Date-based tag (YYYYMMDD), matching the existing release convention.
+          # If the name is already taken, append an incrementing suffix so the
+          # tag stays unique. Reject a name if EITHER a release or a bare tag
+          # already uses it: an existing tag without a release (e.g. a deleted
+          # or failed same-day release) would otherwise make `gh release create`
+          # attach to that stale tag instead of creating a new one at `target`,
+          # publishing the wrong commit. Tags are refreshed above via fetch.
+          base="$(date -u +%Y%m%d)"
+          tag="${base}"
+          suffix=1
+          while git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1 \
+            || gh release view "${tag}" >/dev/null 2>&1; do
+            tag="${base}.${suffix}"
+            suffix=$((suffix + 1))
+          done
+
+          # Pin the release to this run's synced commit rather than `main`, so a
+          # concurrent push advancing main can't make us tag the wrong commit.
+          echo "Creating release ${tag} from ${target}"
+          gh release create "${tag}" \
+            --target "${target}" \
+            --title "${tag}" \
+            --generate-notes
