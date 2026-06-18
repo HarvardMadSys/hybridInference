@@ -11,6 +11,7 @@ interface TeamMember {
   affiliations: string[];
   badge?: string;
   image?: string;
+  website?: string;
 }
 
 const members: TeamMember[] = [
@@ -27,6 +28,8 @@ const members: TeamMember[] = [
       'Undergraduate at University of Toronto',
     ],
     badge: 'Core developer',
+    image: '/team/murphy-tian.jpg',
+    website: 'https://realtmxi.github.io/',
   },
   {
     name: 'Haoran Ni',
@@ -92,7 +95,18 @@ export default function TeamPage(): JSX.Element {
             </div>
 
             <h2 className="mt-5 font-serif text-xl font-semibold tracking-tight text-gray-950">
-              {member.name}
+              {member.website ? (
+                <a
+                  href={member.website}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="transition hover:text-crimson hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-crimson"
+                >
+                  {member.name}
+                </a>
+              ) : (
+                member.name
+              )}
             </h2>
 
             {member.badge && (
