@@ -10,18 +10,23 @@ import {
   ProviderRouteStrategy,
   ProviderRouteType,
   ProviderRouteOption,
+  RouteWeight,
+  clearRouteWeight,
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  listRouteWeights,
   listProviderKeys,
   listOpenRouterProviderOptions,
   listProviderRoutes,
+  setRouteWeight,
   updateProviderRoute,
   updateProviderRouteStrategy,
   verifyProviderRoute,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 
 type RouteForm = {
   upstreamProvider: string;
@@ -89,8 +94,23 @@ function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
 }
 
+function routeWeightKey(route: Pick<RouteWeight, 'model_id' | 'endpoint_id'>) {
+  return `${route.model_id}\u0000${route.endpoint_id}`;
+}
+
 function formatWeight(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(3);
+}
+
+function parseWeightDraft(value: string) {
+  if (value.trim() === '') {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
 }
 
 function keyLabel(route: ProviderRoute) {
@@ -353,8 +373,15 @@ function createProviderOptionsFor(
   );
 }
 
-export function ProviderRoutesTab() {
+interface ProviderRoutesTabProps {
+  showRoutewiseSettings?: boolean;
+}
+
+export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
+  const [routeWeights, setRouteWeights] = useState<RouteWeight[]>([]);
+  const [draftWeights, setDraftWeights] = useState<Record<string, string>>({});
+  const [savingWeightKey, setSavingWeightKey] = useState<string | null>(null);
   const [providerOptions, setProviderOptions] = useState<ProviderRouteOption[]>([]);
   const [openRouterProviderOptions, setOpenRouterProviderOptions] = useState<
     OpenRouterProviderOption[]
@@ -395,8 +422,9 @@ export function ProviderRoutesTab() {
   const loadRoutes = useCallback(async () => {
     setLoading(true);
     try {
-      const resp = await listProviderRoutes();
+      const [resp, loadedWeights] = await Promise.all([listProviderRoutes(), listRouteWeights()]);
       setRoutes(resp.routes);
+      setRouteWeights(loadedWeights);
       setProviderOptions(resp.provider_options);
       setOpenRouterProviderOptions(resp.openrouter_provider_options ?? []);
       const models = Array.from(new Set(resp.routes.map((route) => route.model_id))).sort();
@@ -420,6 +448,13 @@ export function ProviderRoutesTab() {
     () => routes.filter((route) => route.model_id === selectedModel),
     [routes, selectedModel],
   );
+  const routeWeightByKey = useMemo(() => {
+    const byKey = new Map<string, RouteWeight>();
+    for (const routeWeight of routeWeights) {
+      byKey.set(routeWeightKey(routeWeight), routeWeight);
+    }
+    return byKey;
+  }, [routeWeights]);
   const providerSelectBaseOptions = useMemo(
     () => primaryProviderOptions(providerOptions),
     [providerOptions],
@@ -784,6 +819,16 @@ export function ProviderRoutesTab() {
     );
   }, []);
 
+  const replaceRouteWeight = useCallback((updated: RouteWeight) => {
+    setRouteWeights((current) => {
+      const key = routeWeightKey(updated);
+      const replaced = current.map((weight) => (routeWeightKey(weight) === key ? updated : weight));
+      return replaced.some((weight) => routeWeightKey(weight) === key)
+        ? replaced
+        : [...current, updated];
+    });
+  }, []);
+
   const replaceRoute = useCallback(
     (updated: ProviderRoute) => {
       updateRoute(updated);
@@ -1013,6 +1058,53 @@ export function ProviderRoutesTab() {
     }
   };
 
+  const onSaveWeight = async (route: ProviderRoute) => {
+    const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
+    const currentWeight = routeWeightByKey.get(key);
+    const draft =
+      draftWeights[key] ?? formatWeight(currentWeight?.effective_weight ?? route.effective_weight);
+    const parsed = parseWeightDraft(draft);
+    if (parsed === null) {
+      toast.error('Weight must be a non-negative number.');
+      return;
+    }
+
+    setSavingWeightKey(key);
+    try {
+      const updated = await setRouteWeight(route.model_id, route.endpoint_id, parsed);
+      replaceRouteWeight(updated);
+      setDraftWeights((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      toast.success(`Updated ${route.endpoint_id} weight.`);
+    } catch (err) {
+      toast.error(`Weight update failed: ${getErrorMessage(err)}`);
+    } finally {
+      setSavingWeightKey(null);
+    }
+  };
+
+  const onClearWeight = async (route: ProviderRoute) => {
+    const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
+    setSavingWeightKey(key);
+    try {
+      const updated = await clearRouteWeight(route.model_id, route.endpoint_id);
+      replaceRouteWeight(updated);
+      setDraftWeights((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      toast.success(`Cleared ${route.endpoint_id} weight override.`);
+    } catch (err) {
+      toast.error(`Weight reset failed: ${getErrorMessage(err)}`);
+    } finally {
+      setSavingWeightKey(null);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1066,16 +1158,10 @@ export function ProviderRoutesTab() {
           >
             Add provider
           </button>
-          <button
-            type="button"
-            onClick={() => loadRoutes()}
-            disabled={loading}
-            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
-          >
-            Refresh
-          </button>
         </div>
       </div>
+
+      {showRoutewiseSettings && isRoutewise && <RoutewiseSettingsPanel />}
 
       {loading && routes.length === 0 ? (
         <div className="flex justify-center py-24">
@@ -1087,7 +1173,7 @@ export function ProviderRoutesTab() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-lg border border-gray-200 bg-white text-[13px]">
-          <div className="hidden grid-cols-[minmax(0,1.1fr)_minmax(0,1.8fr)_minmax(0,.95fr)_minmax(56px,.45fr)_minmax(86px,.65fr)_minmax(96px,.65fr)] gap-3 rounded-t-lg bg-gray-50 px-4 py-2 text-[12px] font-semibold uppercase tracking-wide text-gray-500 lg:grid">
+          <div className="hidden grid-cols-[minmax(0,1.1fr)_minmax(0,1.6fr)_minmax(0,.95fr)_minmax(176px,.9fr)_minmax(86px,.6fr)_minmax(96px,.6fr)] gap-3 rounded-t-lg bg-gray-50 px-4 py-2 text-[12px] font-semibold uppercase tracking-wide text-gray-500 lg:grid">
             <div>Candidate</div>
             <div>Target</div>
             <div>API key</div>
@@ -1102,10 +1188,23 @@ export function ProviderRoutesTab() {
               const targetProvider = routePrimaryProvider(route);
               const targetUpstreamProvider = routePrimaryUpstreamProvider(route);
               const targetOpenRouterProvider = routeOpenRouterProvider(route);
+              const weightKey = routeWeightKey({
+                model_id: route.model_id,
+                endpoint_id: route.endpoint_id,
+              });
+              const routeWeight = routeWeightByKey.get(weightKey);
+              const yamlWeight = routeWeight?.yaml_weight ?? route.yaml_weight;
+              const effectiveWeight = routeWeight?.effective_weight ?? route.effective_weight;
+              const draftWeight = draftWeights[weightKey] ?? formatWeight(effectiveWeight);
+              const parsedDraftWeight = parseWeightDraft(draftWeight);
+              const weightDirty =
+                parsedDraftWeight !== null && parsedDraftWeight !== effectiveWeight;
+              const isSavingWeight = savingWeightKey === weightKey;
+              const hasWeightOverride = routeWeight?.override_weight != null;
               return (
                 <div
                   key={key}
-                  className={`grid gap-3 px-4 py-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.8fr)_minmax(0,.95fr)_minmax(56px,.45fr)_minmax(86px,.65fr)_minmax(96px,.65fr)] ${
+                  className={`grid gap-3 px-4 py-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.6fr)_minmax(0,.95fr)_minmax(176px,.9fr)_minmax(86px,.6fr)_minmax(96px,.6fr)] ${
                     isEditing ? 'bg-gray-50' : 'bg-white'
                   }`}
                 >
@@ -1162,7 +1261,53 @@ export function ProviderRoutesTab() {
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
                       {isRoutewise ? 'Quota' : 'Weight'}
                     </div>
-                    <div>{routeLimitLabel(route, isRoutewise)}</div>
+                    {isRoutewise ? (
+                      <div>{routeLimitLabel(route, isRoutewise)}</div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div className="text-[11px] leading-4 text-gray-400">
+                          YAML {formatWeight(yamlWeight)} · Effective{' '}
+                          {formatWeight(effectiveWeight)}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <input
+                            aria-label={`Runtime weight for ${route.endpoint_id}`}
+                            className="h-8 w-20 rounded-md border border-gray-300 px-2 text-right text-[13px] text-gray-900"
+                            disabled={isSavingWeight}
+                            min={0}
+                            step={0.1}
+                            type="number"
+                            value={draftWeight}
+                            onChange={(event) =>
+                              setDraftWeights((current) => ({
+                                ...current,
+                                [weightKey]: event.target.value,
+                              }))
+                            }
+                          />
+                          <button
+                            aria-label={`Save ${route.endpoint_id} weight`}
+                            type="button"
+                            disabled={isSavingWeight || !weightDirty}
+                            onClick={() => void onSaveWeight(route)}
+                            className="h-8 rounded-md bg-gray-900 px-2.5 text-[12px] font-medium text-white disabled:opacity-50"
+                          >
+                            Save
+                          </button>
+                          {hasWeightOverride ? (
+                            <button
+                              aria-label={`Clear ${route.endpoint_id} weight override`}
+                              type="button"
+                              disabled={isSavingWeight}
+                              onClick={() => void onClearWeight(route)}
+                              className="h-8 rounded-md border border-gray-300 px-2 text-[12px] font-medium text-gray-600 disabled:opacity-50"
+                            >
+                              Reset
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div>
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
