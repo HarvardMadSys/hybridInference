@@ -686,6 +686,15 @@ describe('routewise settings client', () => {
         JSON.stringify({
           settings: [
             {
+              key: 'routewise_budget_alpha',
+              value: 0.75,
+              value_type: 'float',
+              default_value: 0.75,
+              description: 'RouteWise LP cost budget interpolation',
+              min: 0,
+              max: 1,
+            },
+            {
               key: 'routewise_latency_slo_sec',
               value: 2.5,
               value_type: 'float',
@@ -703,8 +712,8 @@ describe('routewise settings client', () => {
     const out = await listRoutewiseSettings();
 
     expect(out.settings[0]).toMatchObject({
-      key: 'routewise_latency_slo_sec',
-      value: 2.5,
+      key: 'routewise_budget_alpha',
+      value: 0.75,
       value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
@@ -717,31 +726,31 @@ describe('routewise settings client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          key: 'routewise_latency_slo_sec',
-          value: 2.5,
+          key: 'routewise_budget_alpha',
+          value: 0.4,
           value_type: 'float',
-          default_value: 3,
-          description: 'Latency SLO in seconds for Routewise LP decisions',
-          min: 0.1,
-          max: null,
+          default_value: 0.75,
+          description: 'RouteWise LP cost budget interpolation',
+          min: 0,
+          max: 1,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
 
-    const out = await updateRoutewiseSetting('routewise_latency_slo_sec', 2.5);
+    const out = await updateRoutewiseSetting('routewise_budget_alpha', 0.4);
 
     expect(out).toMatchObject({
-      key: 'routewise_latency_slo_sec',
-      value: 2.5,
+      key: 'routewise_budget_alpha',
+      value: 0.4,
       value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routewise/settings/routewise_latency_slo_sec');
+    expect(String(url)).toContain('/admin/routewise/settings/routewise_budget_alpha');
     expect(init.method).toBe('PATCH');
     expect(init.headers).toBeInstanceOf(Headers);
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
-    expect(JSON.parse(init.body as string)).toEqual({ value: 2.5 });
+    expect(JSON.parse(init.body as string)).toEqual({ value: 0.4 });
   });
 });

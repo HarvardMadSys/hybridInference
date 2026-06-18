@@ -280,6 +280,7 @@ class RouteWiseRouter(BaseRouter):
     def apply_runtime_overrides(
         self,
         *,
+        budget_alpha: float | None = None,
         latency_slo_sec: float | None = None,
         latency_min_samples: int | None = None,
     ) -> None:
@@ -288,6 +289,8 @@ class RouteWiseRouter(BaseRouter):
         Only algorithm knobs are runtime-overridable; resource limits are
         route-level configuration (``quota:`` / ``concurrency:`` blocks).
         """
+        if budget_alpha is not None:
+            self.config.budget_alpha = budget_alpha
         if latency_slo_sec is not None:
             self.config.latency_slo_sec = latency_slo_sec
         if latency_min_samples is not None:

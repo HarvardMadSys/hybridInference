@@ -62,6 +62,7 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
+            "routewise_budget_alpha": {"value": "0.6", "value_type": "float"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
         }.get(key)
     )
@@ -74,7 +75,9 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
     assert response.status_code == 200
     items = response.json()["settings"]
     keys = [item["key"] for item in items]
-    assert keys == ["routewise_latency_slo_sec"]
+    assert keys == ["routewise_budget_alpha", "routewise_latency_slo_sec"]
+    alpha = next(item for item in items if item["key"] == "routewise_budget_alpha")
+    assert alpha["value"] == 0.6
     slo = next(item for item in items if item["key"] == "routewise_latency_slo_sec")
     assert slo["value"] == 1.5
 
@@ -86,19 +89,19 @@ async def test_patch_routewise_setting_validates_and_persists(admin_client):
     op_store.set_setting = AsyncMock()
 
     response = await client.patch(
-        "/admin/routewise/settings/routewise_latency_slo_sec",
-        json={"value": 2.5},
+        "/admin/routewise/settings/routewise_budget_alpha",
+        json={"value": 0.4},
         headers={"Authorization": "Bearer test-admin"},
     )
 
     assert response.status_code == 200
     op_store.set_setting.assert_awaited_once_with(
-        "routewise_latency_slo_sec",
-        "2.5",
+        "routewise_budget_alpha",
+        "0.4",
         "float",
         "127.0.0.1",
     )
-    assert response.json()["value"] == 2.5
+    assert response.json()["value"] == 0.4
 
 
 @pytest.mark.asyncio
@@ -106,6 +109,7 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
+            "routewise_budget_alpha": {"value": "0.25", "value_type": "float"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
         }.get(key)
     )
@@ -115,6 +119,7 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     cached_at = time.monotonic()
     runtime_settings._cache.update(
         {
+            "routewise_budget_alpha": (cached_at, 0.75),
             "routewise_latency_slo_sec": (cached_at, 1.5),
         }
     )
@@ -131,6 +136,7 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     )
 
     assert response.status_code == 200
+    assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
     assert router.config.latency_min_samples == 10
 
@@ -140,6 +146,7 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
+            "routewise_budget_alpha": {"value": "0.25", "value_type": "float"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
         }.get(key)
     )
@@ -148,6 +155,7 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
     runtime_settings = client._transport.app.state.services.runtime_settings
     runtime_settings._cache.update(
         {
+            "routewise_budget_alpha": (time.monotonic(), 0.9),
             "routewise_latency_slo_sec": (time.monotonic(), 9.9),
         }
     )
@@ -163,14 +171,15 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
     client._transport.app.state.services.model_router_registry = registry
 
     response = await client.patch(
-        "/admin/routewise/settings/routewise_latency_slo_sec",
-        json={"value": 1.5},
+        "/admin/routewise/settings/routewise_budget_alpha",
+        json={"value": 0.25},
         headers={"Authorization": "Bearer test-admin"},
     )
 
     assert response.status_code == 200
     uncached_router = registry.get_router("uncached-model")
     assert isinstance(uncached_router, RouteWiseRouter)
+    assert uncached_router.config.budget_alpha == 0.25
     assert uncached_router.config.latency_slo_sec == 1.5
     assert uncached_router.config.latency_min_samples == 10
 
@@ -180,6 +189,7 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
+            "routewise_budget_alpha": {"value": "0.25", "value_type": "float"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
         }.get(key)
     )
@@ -188,6 +198,7 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     runtime_settings = client._transport.app.state.services.runtime_settings
     runtime_settings._cache.update(
         {
+            "routewise_budget_alpha": (time.monotonic(), 0.9),
             "routewise_latency_slo_sec": (time.monotonic(), 9.9),
         }
     )
@@ -204,6 +215,7 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     )
 
     assert response.status_code == 200
+    assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
     assert router.config.latency_min_samples == 10
 
@@ -270,6 +282,21 @@ async def test_patch_routewise_setting_rejects_latency_slo_below_min(admin_clien
 
 
 @pytest.mark.asyncio
+async def test_patch_routewise_setting_rejects_budget_alpha_above_max(admin_client):
+    client, op_store, _ = admin_client
+    op_store.get_setting = AsyncMock(return_value=None)
+
+    response = await client.patch(
+        "/admin/routewise/settings/routewise_budget_alpha",
+        json={"value": 1.5},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 400
+    assert "above max" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_patch_routewise_setting_rejects_boolean_for_float(admin_client):
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(return_value=None)
@@ -302,8 +329,8 @@ async def test_generic_admin_settings_rejects_routewise_keys(admin_client):
     client, _, _ = admin_client
 
     response = await client.patch(
-        "/admin/settings/routewise_latency_slo_sec",
-        json={"value": 2.5},
+        "/admin/settings/routewise_budget_alpha",
+        json={"value": 0.5},
         headers={"Authorization": "Bearer test-admin"},
     )
 

@@ -23,6 +23,7 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/admin")
 
 ROUTEWISE_SETTINGS_KEYS = {
+    "routewise_budget_alpha",
     "routewise_latency_slo_sec",
     "routewise_latency_min_samples",
 }

@@ -24,6 +24,7 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/admin/routewise")
 
 ROUTEWISE_KEYS = (
+    "routewise_budget_alpha",
     "routewise_latency_slo_sec",
 )
 
@@ -60,6 +61,7 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
     for key in ROUTEWISE_KEYS:
         rt.invalidate_key(key)
 
+    budget_alpha = await rt.get_float("routewise_budget_alpha")
     latency_slo_sec = await rt.get_float("routewise_latency_slo_sec")
 
     for model_id in registry.configured_model_ids():
@@ -70,6 +72,7 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
     for router in registry.cached_routers():
         if isinstance(router, RouteWiseRouter):
             router.apply_runtime_overrides(
+                budget_alpha=budget_alpha,
                 latency_slo_sec=latency_slo_sec,
             )
 

@@ -717,6 +717,7 @@ class RoutewiseSettingItem(BaseModel):
     """A curated Routewise runtime setting with current value and metadata."""
 
     key: Literal[
+        "routewise_budget_alpha",
         "routewise_latency_slo_sec",
     ]
     value: Any

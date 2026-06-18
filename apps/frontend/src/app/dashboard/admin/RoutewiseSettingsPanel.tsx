@@ -8,8 +8,13 @@ import { listRoutewiseSettings, updateRoutewiseSetting } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { validateNumericSettingInput } from './numericSettingValidation';
 
+const SETTING_LABELS: Record<string, string> = {
+  routewise_budget_alpha: 'Cost budget alpha',
+  routewise_latency_slo_sec: 'Latency SLO (sec)',
+};
+
 function displayKey(setting: RoutewiseSettingItem) {
-  return setting.key;
+  return SETTING_LABELS[setting.key] ?? setting.key;
 }
 
 function validateSettingDraft(setting: RoutewiseSettingItem, draft: string) {
