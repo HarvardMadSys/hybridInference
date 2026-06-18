@@ -33,20 +33,23 @@ describe('TeamPage', () => {
     expect(photo).toHaveAttribute('src', expect.stringContaining('junchengyang.com'));
   });
 
-  it('renders the research interns with badges, affiliations, and placeholder avatars', () => {
+  it('renders the research interns with badges, affiliations, photos, and placeholder avatars', () => {
     render(<TeamPage />);
 
     const murphyCard = cardFor(/murphy tian/i);
     expect(within(murphyCard).getByText(/^core developer$/i)).toBeInTheDocument();
+    expect(within(murphyCard).getByRole('link', { name: /murphy tian/i })).toHaveAttribute(
+      'href',
+      'https://realtmxi.github.io/',
+    );
     expect(
       within(murphyCard).getByText(/research intern at harvard university/i),
     ).toBeInTheDocument();
     expect(
       within(murphyCard).getByText(/undergraduate at university of toronto/i),
     ).toBeInTheDocument();
-    expect(
-      within(murphyCard).getByLabelText(/placeholder avatar for murphy tian/i),
-    ).toBeInTheDocument();
+    const murphyPhoto = within(murphyCard).getByAltText(/photo of murphy tian/i);
+    expect(murphyPhoto).toHaveAttribute('src', expect.stringContaining('murphy-tian.jpg'));
 
     const haoranCard = cardFor(/haoran ni/i);
     expect(
