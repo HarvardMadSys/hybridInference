@@ -61,7 +61,7 @@ async def create_api_key(
         raise HTTPException(
             status_code=409,
             detail=f"User '{payload.user_id}' already has an active API key. "
-            "Revoke it first or use /regenerate endpoint.",
+            "Revoke it first, then create a new one.",
         )
 
     plaintext_key = generate_api_key()
