@@ -704,8 +704,8 @@ class RoutewiseSettingItem(BaseModel):
     """A curated Routewise runtime setting with current value and metadata."""
 
     key: Literal[
+        "routewise_budget_alpha",
         "routewise_latency_slo_sec",
-        "routewise_latency_min_samples",
     ]
     value: Any
     value_type: Literal["str", "int", "float"]
@@ -793,6 +793,123 @@ class UpdateRouteWeightRequest(BaseModel):
     weight: float
 
 
+class ProviderRouteApiKeyRef(BaseModel):
+    """Masked API key reference used by provider route overrides."""
+
+    id: str | None = None
+    provider: str
+    label: str | None = None
+    key_prefix: str | None = None
+    source: Literal["default", "db", "env", "missing"]
+
+
+class ProviderRouteOption(BaseModel):
+    """Provider target available for route override selection."""
+
+    provider: str
+    label: str
+    kind: str
+    key_provider: str
+    default_base_url: str
+
+
+class OpenRouterProviderOption(BaseModel):
+    """OpenRouter backend provider pin available for OpenRouter targets."""
+
+    provider: str
+    label: str
+
+
+class ListOpenRouterProviderOptionsResponse(BaseModel):
+    """Response payload for OpenRouter backend providers available for one model."""
+
+    provider_model_id: str
+    providers: list[OpenRouterProviderOption]
+
+
+class ProviderRouteItem(BaseModel):
+    """Runtime provider target for one model route candidate."""
+
+    model_id: str
+    strategy: str
+    route_id: str
+    route_type: str
+    provider: str
+    upstream_provider: str
+    openrouter_provider: str | None = None
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    key_provider: str
+    base_url: str
+    api_key_id: str | None = None
+    api_key: ProviderRouteApiKeyRef
+    provider_model_id: str | None = None
+    quota_limit: int | None = Field(None, ge=1)
+    endpoint_id: str
+    yaml_weight: float
+    effective_weight: float
+    source: Literal["yaml", "override", "runtime"]
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+
+
+class ListProviderRoutesResponse(BaseModel):
+    """Response payload for listing provider routes for one model."""
+
+    model_id: str
+    strategy: str
+    provider_options: list[ProviderRouteOption]
+    openrouter_provider_options: list[OpenRouterProviderOption] = Field(default_factory=list)
+    routes: list[ProviderRouteItem]
+
+
+class ListAllProviderRoutesResponse(BaseModel):
+    """Response payload for listing provider routes across canonical models."""
+
+    provider_options: list[ProviderRouteOption]
+    openrouter_provider_options: list[OpenRouterProviderOption] = Field(default_factory=list)
+    routes: list[ProviderRouteItem]
+
+
+class UpdateProviderRouteStrategyRequest(BaseModel):
+    """Request payload for updating one model's router strategy."""
+
+    strategy: Literal["fixed", "routewise"]
+
+
+class CreateProviderRouteRequest(BaseModel):
+    """Request payload for adding one runtime provider route candidate."""
+
+    route_type: Literal["quota", "concurrency", "on_demand"]
+    upstream_provider: str = Field(..., min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str = Field(..., min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+    concurrency_limit: int | None = Field(None, ge=1)
+    weight: float = Field(1.0, gt=0)
+
+
+class UpdateProviderRouteRequest(BaseModel):
+    """Request payload for updating one provider route target."""
+
+    provider: str | None = Field(None, min_length=1, max_length=64)
+    upstream_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str | None = Field(None, min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+
+
+class VerifyProviderRouteResponse(BaseModel):
+    """Response payload for a provider route verification dry run."""
+
+    ok: bool = True
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -821,22 +938,30 @@ __all__ = [
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
+    "CreateProviderRouteRequest",
     "DeleteUserRequest",
     "DeleteUserResponse",
     "HardDeleteUserRequest",
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
+    "ListAllProviderRoutesResponse",
     "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
+    "ListOpenRouterProviderOptionsResponse",
+    "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
     "ListRoutewiseSettingsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
     "ModelVisibilityItem",
+    "OpenRouterProviderOption",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
+    "ProviderRouteApiKeyRef",
+    "ProviderRouteItem",
+    "ProviderRouteOption",
     "RejectUserRequest",
     "RejectUserResponse",
     "ResumeUserRequest",
@@ -852,6 +977,8 @@ __all__ = [
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateModelVisibilityRequest",
+    "UpdateProviderRouteRequest",
+    "UpdateProviderRouteStrategyRequest",
     "UpdateRouteWeightRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",
@@ -861,6 +988,7 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
     "UsersSummaryResponse",
+    "VerifyProviderRouteResponse",
 ]
 
 

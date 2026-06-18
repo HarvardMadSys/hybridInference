@@ -27,8 +27,10 @@ class _StubStore:
 
     def __init__(self) -> None:
         self.rows: dict[str, ProviderKeyRow] = {}
-        self.raw: dict[str, list[str]] = {}
+        self.raw: dict[str, list[tuple[str, str]]] = {}
         self.disabled: set[tuple[str, str]] = set()
+        self.route_configs: list[dict] = []
+        self.route_candidates: list[dict] = []
         self.audit: list[dict] = []
         self.fail_full_for: set[str] = set()
         self.fail_disabled_for: set[str] = set()
@@ -60,10 +62,22 @@ class _StubStore:
         out = [r for r in self.rows.values() if provider is None or r.provider == provider]
         return list(out)
 
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
         if provider in self.fail_full_for:
             raise RuntimeError(f"boom-full-{provider}")
-        return [raw for _id, raw in self.raw.get(provider, [])]
+        excluded = exclude_ids or set()
+        return [raw for key_id, raw in self.raw.get(provider, []) if key_id not in excluded]
+
+    async def list_all_provider_route_configs(self) -> list[dict]:
+        return list(self.route_configs)
+
+    async def list_all_provider_route_candidates(self) -> list[dict]:
+        return list(self.route_candidates)
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         for provider, bucket in self.raw.items():
@@ -374,6 +388,69 @@ async def test_disabled_env_key_is_removed_when_db_keys_apply_at_boot(store):
     await dynamic_keys.apply_db_keys_at_boot(store)
 
     assert pool.snapshot_keys() == [live_key]
+
+
+@pytest.mark.asyncio
+async def test_route_bound_db_key_is_not_seeded_into_provider_pool_at_boot(store):
+    """Provider-route scoped keys should not become global provider keys."""
+    global_key = "sk-zai-global-boot-key-aaaaaaaa"
+    route_key = "sk-zai-route-bound-key-bbbbbbbb"
+    await store.add_provider_key(
+        provider="zai",
+        api_key=global_key,
+        label=None,
+        created_by="admin",
+        key_id="global-key",
+    )
+    await store.add_provider_key(
+        provider="zai",
+        api_key=route_key,
+        label=None,
+        created_by="admin",
+        key_id="route-key",
+    )
+    store.route_configs = [{"api_key_id": "route-key"}]
+    pool = KeyPool(keys=["env-zai-live-at-boot-cccccccc"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    keys = pool.snapshot_keys()
+    assert global_key in keys
+    assert route_key not in keys
+
+
+@pytest.mark.asyncio
+async def test_route_candidate_bound_db_key_is_not_seeded_into_provider_pool_at_boot(store):
+    """Runtime-added candidate keys are also scoped to the route candidate."""
+    global_key = "sk-zai-global-candidate-key-aaaaaaaa"
+    candidate_key = "sk-zai-route-candidate-key-bbbbb"
+    await store.add_provider_key(
+        provider="zai",
+        api_key=global_key,
+        label=None,
+        created_by="admin",
+        key_id="global-key",
+    )
+    await store.add_provider_key(
+        provider="zai",
+        api_key=candidate_key,
+        label=None,
+        created_by="admin",
+        key_id="candidate-key",
+    )
+    store.route_candidates = [{"api_key_id": "candidate-key"}]
+    env_key = "env-zai-live-candidate-boot-cccccc"
+    pool = KeyPool(keys=[env_key], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    assert pool.snapshot_keys() == [env_key, global_key]
 
 
 @pytest.mark.asyncio

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -166,6 +166,59 @@ async def test_refresh_get_and_consume_snapshot() -> None:
     assert after_consume is not None
     assert after_consume.remaining == 89
     assert after_consume.used_fraction == pytest.approx(0.11)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_local_fallback_snapshot_skips_provider_refresh_and_preserves_increment() -> None:
+    fetch_calls = 0
+
+    async def fetch_chutes() -> list[ProviderQuotaResult]:
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return [_result(used=40.0, limit=100.0)]
+
+    store = ProviderQuotaSnapshotStore(fetchers={"chutes": fetch_chutes})
+    source = _store_source()
+
+    store.configure_local_fallbacks({source: 5000})
+    assert store.consume(source) is True
+    assert store.get(source).remaining == 4999
+
+    await store.refresh_once([source])
+
+    assert fetch_calls == 0
+    assert store.get(source).remaining == 4999
+
+    store.configure_local_fallbacks({source: 5000})
+    assert store.get(source).remaining == 4999
+
+    store.configure_local_fallbacks({source: 8000})
+    assert store.get(source).remaining == 7999
+
+    store.configure_local_fallbacks({})
+    assert store.get(source) is None
+
+
+@pytest.mark.unit
+def test_local_fallback_resets_at_server_local_midnight() -> None:
+    store = ProviderQuotaSnapshotStore(fetchers={})
+    source = _store_source()
+
+    store.configure_local_fallbacks({source: 2})
+    assert store.consume(source) is True
+    assert store.consume(source) is True
+    assert store.get(source).remaining == 0
+
+    expired = datetime.now().astimezone() - timedelta(seconds=1)
+    store._snapshots[source] = replace(store._snapshots[source], reset_at=expired)
+
+    snapshot = store.get(source)
+    assert snapshot is not None
+    assert snapshot.remaining == 2
+    assert snapshot.local_increment == 0
+    assert snapshot.reset_at is not None
+    assert snapshot.reset_at > datetime.now().astimezone()
 
 
 @pytest.mark.unit

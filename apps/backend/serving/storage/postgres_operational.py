@@ -514,6 +514,58 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_pwo_model ON provider_weight_overrides(model_id)"
         )
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_route_configs (
+                model_id TEXT NOT NULL,
+                route_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                openrouter_sort TEXT,
+                base_url TEXT NOT NULL,
+                api_key_id TEXT,
+                provider_model_id TEXT NOT NULL,
+                quota_limit INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT,
+                PRIMARY KEY (model_id, route_id)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_prc_model ON provider_route_configs(model_id)"
+        )
+        await conn.execute(
+            "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS quota_limit INTEGER"
+        )
+        await conn.execute(
+            "ALTER TABLE provider_route_configs ADD COLUMN IF NOT EXISTS openrouter_sort TEXT"
+        )
+
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_route_candidates (
+                model_id TEXT NOT NULL,
+                route_id TEXT NOT NULL,
+                route_type TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                openrouter_sort TEXT,
+                base_url TEXT NOT NULL,
+                api_key_id TEXT,
+                provider_model_id TEXT NOT NULL,
+                quota_limit INTEGER,
+                concurrency_limit INTEGER,
+                weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT,
+                PRIMARY KEY (model_id, route_id)
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_prcand_model ON provider_route_candidates(model_id)"
+        )
+        await conn.execute(
+            "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS openrouter_sort TEXT"
+        )
+
         # --- provider_api_keys ---
         # Runtime-managed upstream provider credentials added by admins
         # through the dashboard. Augments env-var-sourced keys at boot.
@@ -2022,6 +2074,177 @@ class PostgresOperationalStore(OperationalStore):
             )
         return _parse_command_tag_count(tag) > 0
 
+    async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
+        """Return provider route override rows for one model ordered by route_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, provider, openrouter_sort, base_url, api_key_id, "
+                "provider_model_id, quota_limit, created_at, updated_at, updated_by "
+                "FROM provider_route_configs WHERE model_id = $1 ORDER BY route_id",
+                model_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_all_provider_route_configs(self) -> list[Row]:
+        """Return all provider route override rows ordered by model_id and route_id."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, provider, openrouter_sort, base_url, api_key_id, "
+                "provider_model_id, quota_limit, created_at, updated_at, updated_by "
+                "FROM provider_route_configs ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_provider_route_config(
+        self,
+        model_id: str,
+        route_id: str,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a runtime provider route override row."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_route_configs "
+                "(model_id, route_id, provider, openrouter_sort, base_url, api_key_id, "
+                "provider_model_id, quota_limit, created_at, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW(), $9) "
+                "ON CONFLICT (model_id, route_id) DO UPDATE SET "
+                "provider = EXCLUDED.provider, "
+                "openrouter_sort = EXCLUDED.openrouter_sort, "
+                "base_url = EXCLUDED.base_url, "
+                "api_key_id = EXCLUDED.api_key_id, "
+                "provider_model_id = EXCLUDED.provider_model_id, "
+                "quota_limit = EXCLUDED.quota_limit, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                route_id,
+                provider,
+                openrouter_sort,
+                base_url,
+                api_key_id,
+                provider_model_id,
+                quota_limit,
+                updated_by,
+            )
+
+    async def delete_provider_route_config(self, model_id: str, route_id: str) -> bool:
+        """Delete a runtime provider route override row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_route_configs WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def list_provider_route_candidates_for_model(self, model_id: str) -> list[Row]:
+        """Return runtime provider route candidate rows for one model."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
+                "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
+                "updated_at, updated_by "
+                "FROM provider_route_candidates WHERE model_id = $1 ORDER BY route_id",
+                model_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def list_all_provider_route_candidates(self) -> list[Row]:
+        """Return all runtime provider route candidate rows ordered by model and route."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
+                "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
+                "updated_at, updated_by "
+                "FROM provider_route_candidates ORDER BY model_id, route_id"
+            )
+        return [dict(r) for r in rows]
+
+    async def upsert_provider_route_candidate(
+        self,
+        model_id: str,
+        route_id: str,
+        route_type: str,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        concurrency_limit: int | None,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a DB-backed runtime provider route candidate row."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO provider_route_candidates "
+                "(model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
+                "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
+                "updated_at, updated_by) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW(), $12) "
+                "ON CONFLICT (model_id, route_id) DO UPDATE SET "
+                "route_type = EXCLUDED.route_type, "
+                "provider = EXCLUDED.provider, "
+                "openrouter_sort = EXCLUDED.openrouter_sort, "
+                "base_url = EXCLUDED.base_url, "
+                "api_key_id = EXCLUDED.api_key_id, "
+                "provider_model_id = EXCLUDED.provider_model_id, "
+                "quota_limit = EXCLUDED.quota_limit, "
+                "concurrency_limit = EXCLUDED.concurrency_limit, "
+                "weight = EXCLUDED.weight, "
+                "updated_at = NOW(), "
+                "updated_by = EXCLUDED.updated_by",
+                model_id,
+                route_id,
+                route_type,
+                provider,
+                openrouter_sort,
+                base_url,
+                api_key_id,
+                provider_model_id,
+                quota_limit,
+                concurrency_limit,
+                weight,
+                updated_by,
+            )
+
+    async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
+        """Delete a runtime provider route candidate row. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_route_candidates WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def delete_provider_route_candidate_with_config(
+        self,
+        model_id: str,
+        route_id: str,
+    ) -> bool:
+        """Atomically delete a route candidate and any matching override row."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM provider_route_configs WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+            tag = await conn.execute(
+                "DELETE FROM provider_route_candidates WHERE model_id = $1 AND route_id = $2",
+                model_id,
+                route_id,
+            )
+        return _parse_command_tag_count(tag) > 0
+
     # -- cost counters -------------------------------------------------------
 
     async def increment_user_cost(
@@ -2466,15 +2689,31 @@ class PostgresOperationalStore(OperationalStore):
             for r in rows
         ]
 
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
         """Return raw active API keys for *provider* (boot-time use only)."""
+        excluded = sorted(exclude_ids or set())
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT api_key FROM provider_api_keys "
-                "WHERE provider = $1 AND status = 'active' "
-                "ORDER BY created_at ASC",
-                provider,
-            )
+            if excluded:
+                rows = await conn.fetch(
+                    "SELECT api_key FROM provider_api_keys "
+                    "WHERE provider = $1 AND status = 'active' "
+                    "AND NOT (id = ANY($2::text[])) "
+                    "ORDER BY created_at ASC",
+                    provider,
+                    excluded,
+                )
+            else:
+                rows = await conn.fetch(
+                    "SELECT api_key FROM provider_api_keys "
+                    "WHERE provider = $1 AND status = 'active' "
+                    "ORDER BY created_at ASC",
+                    provider,
+                )
         return [r["api_key"] for r in rows]
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:

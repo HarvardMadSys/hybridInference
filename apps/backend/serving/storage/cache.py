@@ -725,6 +725,94 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_weight_override(model_id, endpoint_id)
 
+    async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_route_configs_for_model(model_id)
+
+    async def list_all_provider_route_configs(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_provider_route_configs()
+
+    async def upsert_provider_route_config(
+        self,
+        model_id: str,
+        route_id: str,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.upsert_provider_route_config(
+            model_id,
+            route_id,
+            provider,
+            openrouter_sort,
+            base_url,
+            api_key_id,
+            provider_model_id,
+            quota_limit,
+            updated_by,
+        )
+
+    async def delete_provider_route_config(self, model_id: str, route_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_route_config(model_id, route_id)
+
+    async def list_provider_route_candidates_for_model(self, model_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_route_candidates_for_model(model_id)
+
+    async def list_all_provider_route_candidates(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_provider_route_candidates()
+
+    async def upsert_provider_route_candidate(
+        self,
+        model_id: str,
+        route_id: str,
+        route_type: str,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        concurrency_limit: int | None,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.upsert_provider_route_candidate(
+            model_id,
+            route_id,
+            route_type,
+            provider,
+            openrouter_sort,
+            base_url,
+            api_key_id,
+            provider_model_id,
+            quota_limit,
+            concurrency_limit,
+            weight,
+            updated_by,
+        )
+
+    async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_route_candidate(model_id, route_id)
+
+    async def delete_provider_route_candidate_with_config(
+        self,
+        model_id: str,
+        route_id: str,
+    ) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_route_candidate_with_config(model_id, route_id)
+
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(
@@ -792,9 +880,14 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_provider_keys(provider)
 
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
         """Delegate to wrapped store."""
-        return await self._store.list_provider_keys_full(provider)
+        return await self._store.list_provider_keys_full(provider, exclude_ids=exclude_ids)
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         """Delegate to wrapped store."""
