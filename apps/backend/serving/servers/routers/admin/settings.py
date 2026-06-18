@@ -59,6 +59,7 @@ async def list_runtime_settings_endpoint(
                 max=i.get("max"),
             )
             for i in items
+            if i["key"] not in ROUTEWISE_SETTINGS_KEYS
         ]
     )
 

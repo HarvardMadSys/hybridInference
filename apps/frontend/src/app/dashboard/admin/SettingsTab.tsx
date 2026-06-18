@@ -21,8 +21,6 @@ import { validateSignupDomainInput } from './signupDomainValidation';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
 
-export type SettingsSubtab = 'general';
-
 function relTime(iso: string | null): string {
   if (!iso) return '—';
   const ms = Date.now() - new Date(iso).getTime();
@@ -40,11 +38,7 @@ function relTime(iso: string | null): string {
   });
 }
 
-interface SettingsTabProps {
-  initialSubtab?: SettingsSubtab;
-}
-
-export function SettingsTab(_props: SettingsTabProps = {}) {
+export function SettingsTab() {
   const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
