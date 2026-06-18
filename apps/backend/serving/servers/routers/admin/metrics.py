@@ -589,7 +589,7 @@ async def admin_list_recent_requests(
     - limit: Max results (default: 50, max: 200)
     - offset: Pagination offset
     - days: Lookback window in days (default: 7, clamped to [1, 90])
-    - user_id: Filter by user ID
+    - user_id: Filter by user ID, name, or email (substring match)
     - model_id: Filter by model ID
     - status_code: Filter by HTTP status code
     - errors_only: If true, only show requests with errors
@@ -610,8 +610,17 @@ async def admin_list_recent_requests(
     where_clauses.append(f"l.timestamp >= NOW() - make_interval(days => ${len(params)}::int)")
 
     if user_id:
-        where_clauses.append(f"l.user_id = ${len(params) + 1}")
-        params.append(user_id)
+        # Substring match across the user id and the joined user's name/email so
+        # admins can search by any of the identifiers shown in the table, not
+        # just an exact user id. Matching runs server-side across the full
+        # lookback window, so it isn't limited to the current page of results.
+        params.append(_escape_ilike_substring_term(user_id))
+        idx = len(params)
+        where_clauses.append(
+            f"(l.user_id ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.user_name ILIKE '%' || ${idx} || '%' ESCAPE '\\' "
+            f"OR u.email ILIKE '%' || ${idx} || '%' ESCAPE '\\')"
+        )
 
     if model_id:
         params.append(_escape_ilike_substring_term(model_id))
@@ -630,9 +639,11 @@ async def admin_list_recent_requests(
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
     async with db_logger.pool.acquire() as conn:
-        # Get total count
+        # Get total count. The users join mirrors the SELECT below so the user
+        # filter can match on the joined user_name/email columns.
         count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM api_logs l {where_sql}",
+            f"SELECT COUNT(*) as total FROM api_logs l "
+            f"LEFT JOIN users u ON u.id = l.user_id {where_sql}",
             *params,
         )
         total = int(count_row["total"] or 0) if count_row else 0

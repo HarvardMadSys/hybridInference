@@ -845,7 +845,7 @@ export function RequestsTab() {
             setReqOffset(0);
           }}
           onSubmit={flushFilterSearch}
-          placeholder="Filter by user ID…"
+          placeholder="Filter by user ID, name, or email…"
         />
         <SearchInput
           value={reqModelFilter}
