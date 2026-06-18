@@ -775,6 +775,35 @@ class DatabaseLogger:
             """)
 
             # ====================================================
+            # site_updates — admin-managed homepage announcements.
+            # ``placement='feed'`` rows render in the chronological
+            # Updates section; ``placement='banner'`` rows surface as
+            # the single dismissible notice at the top of the homepage
+            # (only the most recent published banner is shown).
+            # ====================================================
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS site_updates (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL DEFAULT '',
+                    placement TEXT NOT NULL DEFAULT 'feed'
+                        CHECK (placement IN ('feed','banner')),
+                    published BOOLEAN NOT NULL DEFAULT TRUE,
+                    link_url TEXT,
+                    link_label TEXT,
+                    created_by TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+            # Public homepage read filters on (published, placement) and
+            # orders by created_at DESC — index covers both query shapes.
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_site_updates_published
+                ON site_updates(published, placement, created_at DESC)
+            """)
+
+            # ====================================================
             # provider_hourly_stats — hourly rollup of api_logs by
             # (provider, model_id). Populated by the
             # rollup_provider_stats APScheduler job.

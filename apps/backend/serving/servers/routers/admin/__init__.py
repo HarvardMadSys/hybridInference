@@ -2,7 +2,8 @@
 
 Aggregates domain-focused sub-routers (analytics, api_keys, broadcast,
 export, login_events, metrics, model_concurrency, model_visibility,
-providers, settings, signup_domains, stats, users) into a single ``router``
+providers, settings, signup_domains, site_updates, stats, users) into a
+single ``router``
 exported at this level. Callers use
 ``from serving.servers.routers import admin`` unchanged.
 """
@@ -25,6 +26,7 @@ from serving.servers.routers.admin import (
     routing_weights,
     settings,
     signup_domains,
+    site_updates,
     stats,
     users,
 )
@@ -46,6 +48,7 @@ router.include_router(routewise.router)
 router.include_router(routing_weights.router)
 router.include_router(settings.router)
 router.include_router(signup_domains.router)
+router.include_router(site_updates.router)
 router.include_router(stats.router)
 router.include_router(users.router)
 
