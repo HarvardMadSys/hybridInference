@@ -1136,3 +1136,75 @@ class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimporte
     id: str
     provider: str
     pools_updated: int
+
+
+# ============================================================
+# Site Updates (homepage announcements / banner)
+# ============================================================
+
+# Where an update renders on the public homepage. ``feed`` entries appear in
+# the chronological "Updates" section; ``banner`` entries surface as the single
+# dismissible notice at the top of the page (only the newest published one).
+SiteUpdatePlacement = Literal["feed", "banner"]
+
+
+class SiteUpdateItem(BaseModel):  # type: ignore[no-any-unimported]
+    """A single site update as returned by the admin endpoints."""
+
+    id: str
+    title: str
+    body: str
+    placement: SiteUpdatePlacement
+    published: bool
+    link_url: str | None
+    link_label: str | None
+    created_by: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ListSiteUpdatesResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``GET /admin/site-updates``."""
+
+    total: int
+    updates: list[SiteUpdateItem]
+
+
+class CreateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request payload for ``POST /admin/site-updates``."""
+
+    title: str = Field(..., min_length=1, max_length=200)
+    body: str = Field("", description="Markdown body rendered on the homepage")
+    placement: SiteUpdatePlacement = "feed"
+    published: bool = True
+    link_url: str | None = Field(None, max_length=2000)
+    link_label: str | None = Field(None, max_length=80)
+
+
+class UpdateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request payload for ``PATCH /admin/site-updates/{id}`` (all optional)."""
+
+    title: str | None = Field(None, min_length=1, max_length=200)
+    body: str | None = None
+    placement: SiteUpdatePlacement | None = None
+    published: bool | None = None
+    link_url: str | None = Field(None, max_length=2000)
+    link_label: str | None = Field(None, max_length=80)
+
+
+class PublicSiteUpdate(BaseModel):  # type: ignore[no-any-unimported]
+    """A published update as exposed on the public homepage endpoint."""
+
+    id: str
+    title: str
+    body: str
+    link_url: str | None
+    link_label: str | None
+    created_at: datetime
+
+
+class PublicSiteUpdatesResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for the public ``GET /site-updates`` endpoint."""
+
+    banner: PublicSiteUpdate | None
+    updates: list[PublicSiteUpdate]
