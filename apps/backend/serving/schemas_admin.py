@@ -138,19 +138,6 @@ class RevokeAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     message: str
 
 
-class RegenerateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
-    """Response payload for successful key regeneration."""
-
-    api_key: str = Field(..., description="New plaintext API key (shown only once)")
-    user_id: str
-    key_prefix: str
-    old_key_prefix: str
-    warning: str = Field(
-        default="⚠️ Old key is now revoked. Save this new key immediately.",
-        description="Security warning",
-    )
-
-
 # ========================================
 # User Registration Management Schemas
 # ========================================
@@ -850,7 +837,6 @@ __all__ = [
     "ModelVisibilityItem",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
-    "RegenerateAPIKeyResponse",
     "RejectUserRequest",
     "RejectUserResponse",
     "ResumeUserRequest",

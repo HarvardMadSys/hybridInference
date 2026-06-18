@@ -153,21 +153,6 @@ export async function rejectUser(userId: string, reason: string): Promise<Approv
 }
 
 // ========================================
-// API Key Management
-// ========================================
-
-export async function regenerateApiKeyAdmin(
-  userId: string,
-): Promise<{ api_key: string; key_prefix: string }> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/admin/api-keys/${encodeURIComponent(userId)}/regenerate`,
-    { method: 'POST' },
-  );
-  return jsonOrThrow<{ api_key: string; key_prefix: string }>(resp);
-}
-
-// ========================================
 // User Detail & Edit
 // ========================================
 

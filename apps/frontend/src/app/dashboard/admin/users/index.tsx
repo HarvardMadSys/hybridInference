@@ -8,7 +8,6 @@ import {
   approveUser,
   deleteUser,
   hardDeleteUser,
-  regenerateApiKeyAdmin,
   rejectUser,
   resumeUser,
   updateUser,
@@ -54,10 +53,6 @@ export default function UsersTab() {
     },
     [pathname, router],
   );
-
-  // New API key banner (shown after a regenerate)
-  const [newKey, setNewKey] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   // Persisted density
   useEffect(() => {
@@ -174,15 +169,6 @@ export default function UsersTab() {
         toast.error(getErrorMessage(e));
       }
     },
-    onRegenerateKey: async (id: string) => {
-      try {
-        const r = await regenerateApiKeyAdmin(id);
-        setNewKey(r.api_key);
-        usersQuery.refetch();
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      }
-    },
   };
 
   return (
@@ -195,41 +181,6 @@ export default function UsersTab() {
         density={density}
         onDensityChange={setDensity}
       />
-
-      {/* New API key banner (after regenerate) */}
-      {newKey && (
-        <div className="rounded-lg border border-gray-200 bg-white p-4">
-          <div className="flex items-center justify-between">
-            <span className="text-[13px] font-semibold text-gray-900">New API key generated</span>
-            <button
-              type="button"
-              onClick={() => setNewKey(null)}
-              className="text-gray-300 hover:text-gray-500"
-            >
-              &times;
-            </button>
-          </div>
-          <p className="mt-1 text-[12px] text-gray-400">
-            Copy it now. It won&apos;t be shown again.
-          </p>
-          <div className="mt-3 flex items-center gap-2">
-            <code className="flex-1 select-all break-all rounded-md border border-gray-100 bg-gray-50 px-3 py-2 font-mono text-[13px] text-gray-900">
-              {newKey}
-            </code>
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard.writeText(newKey);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 2000);
-              }}
-              className="shrink-0 rounded-md bg-gray-900 px-3 py-2 text-[12px] font-semibold text-white transition hover:bg-gray-800"
-            >
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-        </div>
-      )}
 
       {usersQuery.isLoading && (
         <div className="flex justify-center py-12">
