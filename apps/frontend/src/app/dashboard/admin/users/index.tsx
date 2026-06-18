@@ -17,6 +17,7 @@ import { SummaryCards } from './SummaryCards';
 import { SavedViews } from './SavedViews';
 import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
+import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers } from './hooks/useUsers';
 import { useBulkCostHistory } from './hooks/useUserCostHistory';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
@@ -25,6 +26,8 @@ import type { Density, FilterState, UserRow } from './types';
 import type { SummaryCardId } from './SummaryCards';
 
 const DENSITY_KEY = 'admin.users.density';
+const PAGE_SIZE_KEY = 'admin.users.pageSize';
+const DEFAULT_PAGE_SIZE = PAGE_SIZE_OPTIONS[1]; // 100
 
 export default function UsersTab() {
   // Filter state — initialized from URL on mount so reload + shared links
@@ -37,6 +40,11 @@ export default function UsersTab() {
   );
   const [density, setDensity] = useState<Density>('comfortable');
 
+  // Pagination state. `page` is zero-based; `pageSize` is persisted across
+  // sessions like `density`. Filter changes reset back to the first page.
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+
   // In Next.js App Router, useSearchParams() is reactive: it returns a new
   // object on every URL change (including browser back/forward). Sync
   // filterState whenever searchParams changes so the table stays in sync with
@@ -44,11 +52,15 @@ export default function UsersTab() {
   // applyFilterState.
   useEffect(() => {
     setFilterState(filterStateFromUrl(searchParams));
+    // Filters changed (incl. browser back/forward) — return to the first page
+    // so the user isn't stranded on an out-of-range offset.
+    setPage(0);
   }, [searchParams]);
 
   const applyFilterState = useCallback(
     (next: FilterState) => {
       setFilterState(next);
+      setPage(0);
       const qs = filterStateToUrl(next);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
@@ -68,8 +80,19 @@ export default function UsersTab() {
     localStorage.setItem(DENSITY_KEY, density);
   }, [density]);
 
+  // Persisted page size
+  useEffect(() => {
+    const saved = Number(localStorage.getItem(PAGE_SIZE_KEY));
+    if (PAGE_SIZE_OPTIONS.includes(saved as (typeof PAGE_SIZE_OPTIONS)[number])) {
+      setPageSize(saved);
+    }
+  }, []);
+  useEffect(() => {
+    localStorage.setItem(PAGE_SIZE_KEY, String(pageSize));
+  }, [pageSize]);
+
   // Data
-  const usersQuery = useUsers(filterState);
+  const usersQuery = useUsers(filterState, pageSize, page * pageSize);
 
   // Surface query errors via toast (non-fatal — table also shows inline error)
   useEffect(() => {
@@ -79,6 +102,12 @@ export default function UsersTab() {
   }, [usersQuery.error]);
 
   const users = usersQuery.data?.users ?? [];
+  const total = usersQuery.data?.total ?? 0;
+
+  const onPageSizeChange = (size: number) => {
+    setPageSize(size);
+    setPage(0);
+  };
 
   // Map AdminUser[] (from listUsers) → UserRow[] expected by the table.
   // AdminUser.role is `string`, AdminUser.usage_*_usd are `number`; UserRow
@@ -245,14 +274,24 @@ export default function UsersTab() {
         </div>
       )}
       {!usersQuery.isLoading && (
-        <UserTable
-          users={userRows}
-          costHistories={costHistories}
-          density={density}
-          filterState={filterState}
-          onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
-          {...handlers}
-        />
+        <>
+          <UserTable
+            users={userRows}
+            costHistories={costHistories}
+            density={density}
+            filterState={filterState}
+            onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
+            {...handlers}
+          />
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            count={users.length}
+            onPageChange={setPage}
+            onPageSizeChange={onPageSizeChange}
+          />
+        </>
       )}
     </div>
   );
