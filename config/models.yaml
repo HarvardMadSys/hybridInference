@@ -680,7 +680,7 @@ models:
 
 
   # ===== Embedding Models =====
-  # Served locally on a GPU box by ops/sglang_idle_proxy (sglang --is-embedding),
+  # Served locally on a GPU box by ops/local_deployment_proxy (sglang --is-embedding),
   # the same idle proxy that serves the local chat models. Reuses LOCAL_DEPLOYMENT_URL
   # (the proxy's reverse tunnel); the proxy routes by the model field.
 

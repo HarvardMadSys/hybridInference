@@ -76,8 +76,8 @@ def _load_proxy(monkeypatch: Any, tmp_path: Path, *, backend_port: int = 18080) 
     monkeypatch.setenv("HEALTH_TIMEOUT", "0.2")
     monkeypatch.setenv("HEALTH_INTERVAL", "0.01")
 
-    sys.modules.pop("ops.sglang_idle_proxy.sglang_idle_proxy", None)
-    return importlib.import_module("ops.sglang_idle_proxy.sglang_idle_proxy")
+    sys.modules.pop("ops.local_deployment_proxy.local_deployment_proxy", None)
+    return importlib.import_module("ops.local_deployment_proxy.local_deployment_proxy")
 
 
 class RecordingBackendHandler(BaseHTTPRequestHandler):

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Install sglang idle proxy as a systemd service.
+# Install local deployment proxy as a systemd service.
 #
 # Usage:
-#   sudo ./ops/sglang_idle_proxy/install_service.sh          # install & start
-#   sudo ./ops/sglang_idle_proxy/install_service.sh --uninstall  # remove service
+#   sudo ./ops/local_deployment_proxy/install_service.sh          # install & start
+#   sudo ./ops/local_deployment_proxy/install_service.sh --uninstall  # remove service
 #
-# Environment overrides (must match deploy/systemd/sglang_idle_proxy.service):
+# Environment overrides (must match deploy/systemd/local_deployment_proxy.service):
 #   REPO_DIR=/srv/hybridInference   # path to the hybridInference checkout
 
 set -euo pipefail
 
 REPO_DIR="${REPO_DIR:-/srv/hybridInference}"
-SERVICE_NAME="sglang_idle_proxy"
+SERVICE_NAME="local_deployment_proxy"
 SERVICE_SRC="${REPO_DIR}/deploy/systemd/${SERVICE_NAME}.service"
 SERVICE_DST="/etc/systemd/system/${SERVICE_NAME}.service"
 

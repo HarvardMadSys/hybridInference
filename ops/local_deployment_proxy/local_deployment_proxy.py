@@ -11,13 +11,13 @@ stays alive so callers always see an open port.
 
 Usage:
     # Foreground (Ctrl-C to quit):
-    python sglang_idle_proxy/sglang_idle_proxy.py
+    python local_deployment_proxy/local_deployment_proxy.py
 
     # Background:
-    nohup python sglang_idle_proxy/sglang_idle_proxy.py &
+    nohup python local_deployment_proxy/local_deployment_proxy.py &
 
     # Custom settings via environment:
-    LISTEN_PORT=9000 IDLE_TIMEOUT=600 python sglang_idle_proxy/sglang_idle_proxy.py
+    LISTEN_PORT=9000 IDLE_TIMEOUT=600 python local_deployment_proxy/local_deployment_proxy.py
 
 Environment variables
 ---------------------
@@ -107,7 +107,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("sglang_proxy")
+log = logging.getLogger("local_deployment_proxy")
 
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8001"))
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "1440"))
@@ -969,7 +969,7 @@ def main() -> None:
     """Start the proxy HTTP server and serve until interrupted."""
     models = list(_backends.keys())
     log.info(
-        "sglang idle proxy listening on :%d  (%d models: %s)  (idle timeout %ds)",
+        "local deployment proxy listening on :%d  (%d models: %s)  (idle timeout %ds)",
         LISTEN_PORT,
         len(models),
         ", ".join(models) if models else "none",
