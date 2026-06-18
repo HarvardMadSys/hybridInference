@@ -928,6 +928,64 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_runtime_candidate_list_ignores_stale_override_row(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    create = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+    assert create.status_code == 200, create.text
+    route_id = "minimax-fast:openrouter[parasail]-api"
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": route_id,
+            "provider": "chutes",
+            "openrouter_sort": None,
+            "base_url": "https://llm.chutes.ai/v1",
+            "api_key_id": None,
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "quota_limit": 5000,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    runtime_row = next(row for row in response.json()["routes"] if row["route_id"] == route_id)
+    assert runtime_row["source"] == "runtime"
+    assert runtime_row["upstream_provider"] == "openrouter"
+    assert runtime_row["openrouter_provider"] == "parasail"
+    assert runtime_row["base_url"] == "https://openrouter.ai/api/v1"
+    assert runtime_row["provider_model_id"] == "minimax/minimax-m2.5"
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+
+
+@pytest.mark.asyncio
 async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")

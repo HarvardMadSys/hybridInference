@@ -1497,9 +1497,14 @@ async def _route_row(
     endpoint_id: str,
     override_row: dict[str, Any] | None,
 ) -> ProviderRouteItem:
+    # Runtime-added candidates own their full config row. Ignore any stale
+    # override row for the same route_id so list responses do not mix sources.
+    effective_override = None if _is_runtime_candidate(adapter) else override_row
     raw_route_provider = _route_provider(adapter)
     raw_upstream_provider = (
-        str(override_row["provider"]) if override_row else _upstream_provider(adapter)
+        str(effective_override["provider"])
+        if effective_override
+        else _upstream_provider(adapter)
     )
     route_target = _target_for_provider(raw_route_provider)
     target = _target_for_provider(raw_upstream_provider)
@@ -1507,13 +1512,13 @@ async def _route_row(
     upstream_provider = _primary_provider_for_target(target)
     openrouter_provider = _openrouter_pin_for_target(target)
     openrouter_sort = (
-        str(override_row["openrouter_sort"])
-        if override_row and override_row.get("openrouter_sort") is not None
+        str(effective_override["openrouter_sort"])
+        if effective_override and effective_override.get("openrouter_sort") is not None
         else _openrouter_sort(adapter)
     )
     api_key_id = (
-        str(override_row["api_key_id"])
-        if override_row and override_row.get("api_key_id") is not None
+        str(effective_override["api_key_id"])
+        if effective_override and effective_override.get("api_key_id") is not None
         else None
     )
     api_key = await _api_key_ref(
@@ -1521,14 +1526,18 @@ async def _route_row(
         key_provider=target.key_provider,
         api_key_id=api_key_id,
     )
-    base_url = str(override_row["base_url"]) if override_row else str(adapter.config.base_url)
+    base_url = (
+        str(effective_override["base_url"])
+        if effective_override
+        else str(adapter.config.base_url)
+    )
     provider_model_id = (
-        str(override_row["provider_model_id"])
-        if override_row and override_row.get("provider_model_id") is not None
+        str(effective_override["provider_model_id"])
+        if effective_override and effective_override.get("provider_model_id") is not None
         else getattr(adapter.config, "provider_model_id", None)
     )
     source = (
-        "runtime" if _is_runtime_candidate(adapter) else ("override" if override_row else "yaml")
+        "runtime" if _is_runtime_candidate(adapter) else ("override" if effective_override else "yaml")
     )
     return ProviderRouteItem(
         model_id=model_id,
@@ -1544,13 +1553,13 @@ async def _route_row(
         api_key_id=api_key_id,
         api_key=api_key,
         provider_model_id=provider_model_id,
-        quota_limit=_quota_limit_for_row(adapter, override_row),
+        quota_limit=_quota_limit_for_row(adapter, effective_override),
         endpoint_id=endpoint_id,
         yaml_weight=float(yaml_weight),
         effective_weight=_effective_weight(services, model_id, float(yaml_weight), endpoint_id),
         source=source,
-        updated_at=override_row.get("updated_at") if override_row else None,
-        updated_by=override_row.get("updated_by") if override_row else None,
+        updated_at=effective_override.get("updated_at") if effective_override else None,
+        updated_by=effective_override.get("updated_by") if effective_override else None,
     )
 
 
@@ -1689,6 +1698,9 @@ async def update_provider_route_strategy(
         model_id,
         payload.strategy,
     )
+    # Apply first so a live-router failure does not persist a strategy that
+    # this process could not actually serve. A DB failure after this point can
+    # leave a hot-only change, but the admin receives the error and can retry.
     await _apply_model_router_strategy(services, canonical_model_id, payload.strategy)
     await op_store.set_setting(
         _model_strategy_setting_key(canonical_model_id),
