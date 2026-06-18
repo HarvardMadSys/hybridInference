@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import type { AdminRecentRequestItem } from '@/lib/api/admin';
@@ -113,5 +113,63 @@ describe('AdminRecentRequestDetailPanel', () => {
     expect(
       reasoning.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it('renders Anthropic tool_use and tool_result content blocks with full detail', () => {
+    const prompt = JSON.stringify([
+      { role: 'user', content: [{ type: 'text', text: 'list the files' }] },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Let me check.' },
+          {
+            type: 'tool_use',
+            id: 'toolu_abc',
+            name: 'Bash',
+            input: { command: 'ls -la' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_abc',
+            content: 'total 8\nfile.txt',
+            is_error: false,
+          },
+        ],
+      },
+    ]);
+
+    const { container } = render(
+      <AdminRecentRequestDetailPanel
+        req={makeAdminRequest({ request_surface: 'anthropic_messages' })}
+        content={{
+          prompt,
+          reasoning_content: null,
+          response: null,
+          loading: false,
+        }}
+      />,
+    );
+
+    // Expand the folded Prompt section so the JSON chat view renders.
+    container.querySelectorAll('details').forEach((d) => {
+      d.open = true;
+      fireEvent(d, new Event('toggle', { bubbles: true }));
+    });
+
+    // Tool name and the literal argument JSON are both visible (not just "[tool_use]").
+    expect(screen.getByText('Bash')).toBeInTheDocument();
+    expect(screen.getAllByText('tool_use').length).toBeGreaterThan(0);
+    expect(getSmallestMatchingElement(container, /"command": "ls -la"/)).toBeInTheDocument();
+
+    // Tool result content is rendered, not collapsed to "[tool_result]".
+    expect(screen.getAllByText('tool_result').length).toBeGreaterThan(0);
+    expect(getSmallestMatchingElement(container, /file\.txt/)).toBeInTheDocument();
+    expect(screen.queryByText('[tool_use]')).not.toBeInTheDocument();
+    expect(screen.queryByText('[tool_result]')).not.toBeInTheDocument();
   });
 });

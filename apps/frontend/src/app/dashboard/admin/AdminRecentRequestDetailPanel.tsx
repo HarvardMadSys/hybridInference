@@ -108,6 +108,54 @@ function toolCallArgs(tc: ToolCall): string {
   return JSON.stringify(args, null, 2);
 }
 
+type AnthropicToolUse = { id?: unknown; name?: unknown; input?: unknown };
+type AnthropicToolResult = { tool_use_id?: unknown; content?: unknown; is_error?: unknown };
+
+function contentBlocks(content: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter(isRecord);
+}
+
+function getToolUseBlocks(message: ChatMessage): AnthropicToolUse[] {
+  return contentBlocks(message.content).filter((b) => b.type === 'tool_use');
+}
+
+function getToolResultBlocks(message: ChatMessage): AnthropicToolResult[] {
+  return contentBlocks(message.content).filter((b) => b.type === 'tool_result');
+}
+
+function toolUseName(tu: AnthropicToolUse): string {
+  return typeof tu.name === 'string' ? tu.name : '';
+}
+
+function jsonPretty(value: unknown): string {
+  if (typeof value === 'string') {
+    const parsed = tryParseJson(value);
+    return parsed.ok ? JSON.stringify(parsed.value, null, 2) : value;
+  }
+  if (value == null) return '';
+  return JSON.stringify(value, null, 2);
+}
+
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (isRecord(part)) {
+          if (part.type === 'text' && typeof part.text === 'string') return part.text;
+          return JSON.stringify(part, null, 2);
+        }
+        return '';
+      })
+      .filter((s) => s.length > 0)
+      .join('\n');
+  }
+  if (content == null) return '';
+  return JSON.stringify(content, null, 2);
+}
+
 function flattenContent(content: unknown): string {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -116,6 +164,9 @@ function flattenContent(content: unknown): string {
         if (typeof part === 'string') return part;
         if (isRecord(part)) {
           if (part.type === 'text' && typeof part.text === 'string') return part.text;
+          // tool_use / tool_result blocks are rendered separately with full
+          // detail (name, input, result), so skip them in the text flatten.
+          if (part.type === 'tool_use' || part.type === 'tool_result') return '';
           if (typeof part.type === 'string') return `[${part.type}]`;
         }
         return '';
@@ -194,6 +245,8 @@ function MessageBlock({ message }: { message: ChatMessage }) {
   const reasoning = messageReasoning(message);
   const refusal = messageRefusal(message);
   const toolCalls = getToolCalls(message);
+  const toolUseBlocks = getToolUseBlocks(message);
+  const toolResultBlocks = getToolResultBlocks(message);
   const toolCallId = typeof message.tool_call_id === 'string' ? message.tool_call_id : '';
   const toolName = typeof message.name === 'string' ? message.name : '';
   const showToolMeta = message.role === 'tool' && (toolCallId || toolName);
@@ -202,6 +255,8 @@ function MessageBlock({ message }: { message: ChatMessage }) {
     reasoning.length > 0 ||
     refusal.length > 0 ||
     toolCalls.length > 0 ||
+    toolUseBlocks.length > 0 ||
+    toolResultBlocks.length > 0 ||
     showToolMeta;
   return (
     <div className="rounded-md border border-gray-200 bg-white px-2 py-1.5">
@@ -281,6 +336,71 @@ function MessageBlock({ message }: { message: ChatMessage }) {
           })}
         </div>
       )}
+      {toolUseBlocks.length > 0 && (
+        <div className="mt-1 space-y-1">
+          {toolUseBlocks.map((tu, i) => {
+            const name = toolUseName(tu);
+            const id = typeof tu.id === 'string' ? tu.id : '';
+            const input = jsonPretty(tu.input);
+            return (
+              <div
+                key={id || `${i}-${name}`}
+                className="rounded-md border border-gray-200 bg-white px-2 py-1"
+              >
+                <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[10px]">
+                  <span className="font-medium uppercase tracking-wide text-gray-500">
+                    tool_use
+                  </span>
+                  {name && <span className="font-mono text-gray-700">{name}</span>}
+                  {id && <span className="font-mono text-gray-400">{id}</span>}
+                </div>
+                {input.length > 0 && (
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] text-gray-700">
+                    {input}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {toolResultBlocks.length > 0 && (
+        <div className="mt-1 space-y-1">
+          {toolResultBlocks.map((tr, i) => {
+            const id = typeof tr.tool_use_id === 'string' ? tr.tool_use_id : '';
+            const isError = tr.is_error === true;
+            const out = toolResultText(tr.content);
+            return (
+              <div
+                key={id || `${i}`}
+                className={`rounded-md border bg-white px-2 py-1 ${
+                  isError ? 'border-red-200' : 'border-gray-200'
+                }`}
+              >
+                <div className="mb-0.5 flex flex-wrap items-center gap-x-2 text-[10px]">
+                  <span
+                    className={`font-medium uppercase tracking-wide ${
+                      isError ? 'text-red-600' : 'text-gray-500'
+                    }`}
+                  >
+                    tool_result{isError ? ' (error)' : ''}
+                  </span>
+                  {id && <span className="font-mono text-gray-400">{id}</span>}
+                </div>
+                {out.length > 0 && (
+                  <pre
+                    className={`overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] ${
+                      isError ? 'text-red-700' : 'text-gray-700'
+                    }`}
+                  >
+                    {out}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
       {!rendered && <div className="text-[11px] italic text-gray-400">(no content)</div>}
     </div>
   );
@@ -342,8 +462,11 @@ function JsonChatView({ data }: { data: unknown }) {
 
 function toolCallsPreview(message: ChatMessage): string {
   const calls = getToolCalls(message);
-  if (calls.length === 0) return '';
-  const names = calls.map(toolCallName).filter((n) => n.length > 0);
+  const toolUses = getToolUseBlocks(message);
+  if (calls.length === 0 && toolUses.length === 0) return '';
+  const names = [...calls.map(toolCallName), ...toolUses.map(toolUseName)].filter(
+    (n) => n.length > 0,
+  );
   return names.length > 0 ? `[tool_calls: ${names.join(', ')}]` : '[tool_calls]';
 }
 
