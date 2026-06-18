@@ -21,3 +21,26 @@ jobs:
           git checkout main
           git merge --ff-only origin/dev
           git push origin main
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Date-based tag (YYYYMMDD), matching the existing release convention.
+          # If a release already exists for today (e.g. a second sync the same
+          # day), append an incrementing suffix so the tag stays unique.
+          base="$(date -u +%Y%m%d)"
+          tag="${base}"
+          suffix=1
+          while gh release view "${tag}" >/dev/null 2>&1; do
+            tag="${base}.${suffix}"
+            suffix=$((suffix + 1))
+          done
+
+          echo "Creating release ${tag} from $(git rev-parse HEAD)"
+          gh release create "${tag}" \
+            --target main \
+            --title "${tag}" \
+            --generate-notes
