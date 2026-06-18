@@ -152,7 +152,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "glm-5.1"
@@ -201,7 +201,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "glm-5.2"
@@ -240,7 +240,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "glm-5-turbo"
@@ -315,7 +315,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "minimax-m2.5"
@@ -362,7 +362,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "minimax-m3"
@@ -515,7 +515,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "minimax-m2.7"
@@ -566,7 +566,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "kimi-k2.7-code"
@@ -607,7 +607,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "qwen3.6-35b"
@@ -654,7 +654,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "gpt-oss-20b"
@@ -703,7 +703,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "deepseek-v4-flash"
@@ -751,7 +751,7 @@ models:
       - kind: openai_compat
         weight: 0.01
         optional: true
-        base_url: ${STAGING_BASE_URL}
+        base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "deepseek-v4-pro"
