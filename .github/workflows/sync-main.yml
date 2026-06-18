@@ -51,12 +51,17 @@ jobs:
           fi
 
           # Date-based tag (YYYYMMDD), matching the existing release convention.
-          # If a release already exists for today (e.g. a second sync the same
-          # day), append an incrementing suffix so the tag stays unique.
+          # If the name is already taken, append an incrementing suffix so the
+          # tag stays unique. Reject a name if EITHER a release or a bare tag
+          # already uses it: an existing tag without a release (e.g. a deleted
+          # or failed same-day release) would otherwise make `gh release create`
+          # attach to that stale tag instead of creating a new one at `target`,
+          # publishing the wrong commit. Tags are refreshed above via fetch.
           base="$(date -u +%Y%m%d)"
           tag="${base}"
           suffix=1
-          while gh release view "${tag}" >/dev/null 2>&1; do
+          while git rev-parse -q --verify "refs/tags/${tag}" >/dev/null 2>&1 \
+            || gh release view "${tag}" >/dev/null 2>&1; do
             tag="${base}.${suffix}"
             suffix=$((suffix + 1))
           done
