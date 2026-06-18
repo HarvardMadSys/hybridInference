@@ -321,6 +321,11 @@ def register_from_models_yaml(
                 kind = r.get("kind") or top_cfg.get("provider")
                 base_url = expand_env(r.get("base_url") or top_cfg.get("base_url"))
                 weight = float(r.get("weight", 1.0))
+                # Optional routes (e.g. a staging canary) degrade gracefully:
+                # when their env-backed key resolves blank we skip just this
+                # route, keeping the rest of the model, instead of dropping the
+                # whole model via the model-level MissingEnvBackedKeyError catch.
+                route_optional = bool(r.get("optional", False))
 
                 raw_api_keys = r.get("api_keys")
                 raw_api_key = r.get("api_key") or top_cfg.get("api_key")
@@ -363,6 +368,14 @@ def register_from_models_yaml(
                             continue
                         kept.append(normalized)
                     if not kept:
+                        if route_optional:
+                            logger.warning(
+                                "Skipping optional route (kind=%s) for model %s: "
+                                "api_keys resolved to empty list after env expansion",
+                                kind,
+                                top_cfg.get("id"),
+                            )
+                            continue
                         raise MissingEnvBackedKeyError(
                             f"api_keys for {top_cfg.get('id')!r} resolved to "
                             f"empty list after env expansion"
@@ -375,6 +388,14 @@ def register_from_models_yaml(
                         and raw_api_key.startswith("${")
                         and (api_key is None or not api_key.strip())
                     ):
+                        if route_optional:
+                            logger.warning(
+                                "Skipping optional route (kind=%s) for model %s: "
+                                "api_key resolved to empty/None after env expansion",
+                                kind,
+                                top_cfg.get("id"),
+                            )
+                            continue
                         raise MissingEnvBackedKeyError(
                             f"api_key for {top_cfg.get('id')!r} resolved to "
                             f"empty/None after env expansion"

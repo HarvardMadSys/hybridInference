@@ -188,3 +188,77 @@ def test_missing_single_api_key_raises_in_strict_mode(tmp_path, monkeypatch):
     router = RouteExecutor()
     with pytest.raises(ValueError, match="after env expansion"):
         register_from_models_yaml(router, yaml_path)
+
+
+def test_optional_route_skipped_when_key_unset(tmp_path, monkeypatch):
+    """An optional route with a blank env-backed key is dropped, not the model."""
+    monkeypatch.setenv("PRIMARY_KEY", "primary-key")
+    monkeypatch.delenv("STAGING_API_KEY", raising=False)
+
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: glm-test
+            name: glm-test
+            provider: zai
+            base_url: https://api.example.com
+            route:
+              - kind: zai
+                weight: 1.0
+                base_url: https://api.example.com
+                api_keys:
+                  - ${PRIMARY_KEY}
+              - kind: openai_compat
+                weight: 0.01
+                optional: true
+                base_url: https://staging.example.com/v1
+                api_keys:
+                  - ${STAGING_API_KEY}
+        """,
+    )
+
+    router = RouteExecutor()
+    register_from_models_yaml(router, yaml_path)
+
+    # Model survives with only the primary route; the optional staging route
+    # is skipped rather than dropping the whole model.
+    adapters = router.routes["glm-test"].adapters
+    assert len(adapters) == 1
+    assert adapters[0][0].config.api_keys == ["primary-key"]
+
+
+def test_optional_route_included_when_key_set(tmp_path, monkeypatch):
+    """An optional route is registered normally once its key resolves."""
+    monkeypatch.setenv("PRIMARY_KEY", "primary-key")
+    monkeypatch.setenv("STAGING_API_KEY", "staging-key")
+
+    yaml_path = _write_yaml(
+        tmp_path,
+        """
+        models:
+          - id: glm-test
+            name: glm-test
+            provider: zai
+            base_url: https://api.example.com
+            route:
+              - kind: zai
+                weight: 1.0
+                base_url: https://api.example.com
+                api_keys:
+                  - ${PRIMARY_KEY}
+              - kind: openai_compat
+                weight: 0.01
+                optional: true
+                base_url: https://staging.example.com/v1
+                api_keys:
+                  - ${STAGING_API_KEY}
+        """,
+    )
+
+    router = RouteExecutor()
+    register_from_models_yaml(router, yaml_path)
+
+    adapters = router.routes["glm-test"].adapters
+    assert len(adapters) == 2
+    assert adapters[1][0].config.api_keys == ["staging-key"]
