@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# benchmark/local_deployment_service.sh — start/stop the local deployment proxy daemon.
+# ops/local_deployment_proxy/local_deployment_service.sh — start/stop the local deployment proxy daemon.
 #
 # Usage:
 #   ./local_deployment_proxy/local_deployment_service.sh start   # launch proxy in background
