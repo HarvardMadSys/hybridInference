@@ -24,7 +24,6 @@ def mock_stores():
     op_store.get_key_detail = AsyncMock()
     op_store.update_key = AsyncMock()
     op_store.revoke_key = AsyncMock()
-    op_store.regenerate_key = AsyncMock()
     op_store.log_admin_action = AsyncMock()
     op_store.get_batch_usage = AsyncMock(return_value={})
 
@@ -261,25 +260,3 @@ async def test_revoke_api_key_hard_delete(admin_client):
 
     assert response.status_code == 200
     op_store.revoke_key.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_regenerate_api_key_success(admin_client, monkeypatch):
-    client, op_store, _log_store, log_action = admin_client
-    op_store.regenerate_key.return_value = "hyi-old"
-    monkeypatch.setattr(
-        "serving.servers.routers.admin.api_keys.generate_api_key", lambda: "hyi-new-key"
-    )
-    monkeypatch.setattr("serving.servers.routers.admin.api_keys.hash_api_key", lambda _: "new-hash")
-
-    response = await client.post(
-        "/admin/api-keys/alice/regenerate",
-        headers={"Authorization": "Bearer test-admin"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["api_key"] == "hyi-new-key"
-    assert payload["old_key_prefix"] == "hyi-old"
-    op_store.regenerate_key.assert_awaited_once()
-    log_action.assert_awaited()

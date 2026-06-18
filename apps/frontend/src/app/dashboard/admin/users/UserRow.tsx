@@ -13,7 +13,6 @@ interface UserRowProps {
   onToggleExpanded: () => void;
   onApprove: () => void;
   onReject: () => void;
-  onRegenerateKey: () => void;
 }
 
 const STATUS_GLYPH: Record<string, { glyph: string; color: string; title: string }> = {
@@ -41,7 +40,6 @@ export function UserRow({
   onToggleExpanded,
   onApprove,
   onReject,
-  onRegenerateKey,
 }: UserRowProps) {
   const statusMark = STATUS_GLYPH[user.status] ?? STATUS_GLYPH.active;
   const today = Number(user.usage_today_usd);
@@ -121,17 +119,6 @@ export function UserRow({
               Reject
             </button>
           </div>
-        )}
-        {user.status === 'active' && user.has_key && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onRegenerateKey();
-            }}
-            className="rounded bg-gray-200 px-2 py-0.5 text-xs"
-          >
-            Regenerate
-          </button>
         )}
       </td>
     </tr>

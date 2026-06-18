@@ -61,7 +61,6 @@ function renderTable(user: UserRow = baseUser) {
       onResume={vi.fn(async () => undefined)}
       onDelete={vi.fn(async () => undefined)}
       onHardDelete={vi.fn(async () => undefined)}
-      onRegenerateKey={vi.fn(async () => undefined)}
     />,
   );
 }
