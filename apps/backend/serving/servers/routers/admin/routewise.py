@@ -25,7 +25,6 @@ router = APIRouter(prefix="/admin/routewise")
 
 ROUTEWISE_KEYS = (
     "routewise_latency_slo_sec",
-    "routewise_latency_min_samples",
 )
 
 
@@ -62,7 +61,6 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
         rt.invalidate_key(key)
 
     latency_slo_sec = await rt.get_float("routewise_latency_slo_sec")
-    latency_min_samples = await rt.get_int("routewise_latency_min_samples")
 
     for model_id in registry.configured_model_ids():
         if registry.get_router_name(model_id) != "routewise":
@@ -73,7 +71,6 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
         if isinstance(router, RouteWiseRouter):
             router.apply_runtime_overrides(
                 latency_slo_sec=latency_slo_sec,
-                latency_min_samples=latency_min_samples,
             )
 
 

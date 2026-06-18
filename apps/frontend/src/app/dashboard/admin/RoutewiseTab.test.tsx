@@ -32,13 +32,13 @@ describe('RoutewiseTab', () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       settings: [
         {
-          key: 'routewise_latency_min_samples',
-          value: 5,
-          value_type: 'int',
+          key: 'routewise_latency_slo_sec',
+          value: 2.5,
+          value_type: 'float',
           default_value: 3,
-          description: 'Minimum samples before latency is considered.',
-          min: 1,
-          max: 20,
+          description: 'Latency SLO in seconds for Routewise LP decisions.',
+          min: 0.1,
+          max: null,
         },
       ],
     });
@@ -49,7 +49,7 @@ describe('RoutewiseTab', () => {
       await screen.findByRole('heading', { level: 2, name: 'RouteWise Settings' }),
     ).toBeInTheDocument();
     expect(await screen.findByText('RouteWise parameters')).toBeInTheDocument();
-    expect(screen.getByLabelText('routewise_latency_min_samples value')).toHaveValue(5);
+    expect(screen.getByLabelText('routewise_latency_slo_sec value')).toHaveValue(2.5);
     expect(screen.queryByText('Runtime Weight')).not.toBeInTheDocument();
   });
 
@@ -57,24 +57,24 @@ describe('RoutewiseTab', () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       settings: [
         {
-          key: 'routewise_latency_min_samples',
-          value: 5,
-          value_type: 'int',
+          key: 'routewise_latency_slo_sec',
+          value: 2.5,
+          value_type: 'float',
           default_value: 3,
-          description: 'Minimum samples before latency is considered.',
-          min: 1,
-          max: 20,
+          description: 'Latency SLO in seconds for Routewise LP decisions.',
+          min: 0.1,
+          max: null,
         },
       ],
     });
 
     render(<RoutewiseTab />);
 
-    const input = await screen.findByLabelText('routewise_latency_min_samples value');
-    fireEvent.change(input, { target: { value: '1.5' } });
+    const input = await screen.findByLabelText('routewise_latency_slo_sec value');
+    fireEvent.change(input, { target: { value: '0.05' } });
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Must be a whole number.');
-    fireEvent.click(screen.getByRole('button', { name: 'Save routewise_latency_min_samples' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Must be ≥ 0.1.');
+    fireEvent.click(screen.getByRole('button', { name: 'Save routewise_latency_slo_sec' }));
     expect(updateRoutewiseSetting).not.toHaveBeenCalled();
   });
 
@@ -82,35 +82,35 @@ describe('RoutewiseTab', () => {
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
       settings: [
         {
-          key: 'routewise_latency_min_samples',
-          value: 5,
-          value_type: 'int',
+          key: 'routewise_latency_slo_sec',
+          value: 2.5,
+          value_type: 'float',
           default_value: 3,
-          description: 'Minimum samples before latency is considered.',
-          min: 1,
-          max: 20,
+          description: 'Latency SLO in seconds for Routewise LP decisions.',
+          min: 0.1,
+          max: null,
         },
       ],
     });
     vi.mocked(updateRoutewiseSetting).mockResolvedValue({
-      key: 'routewise_latency_min_samples',
-      value: 8,
-      value_type: 'int',
+      key: 'routewise_latency_slo_sec',
+      value: 2,
+      value_type: 'float',
       default_value: 3,
-      description: 'Minimum samples before latency is considered.',
-      min: 1,
-      max: 20,
+      description: 'Latency SLO in seconds for Routewise LP decisions.',
+      min: 0.1,
+      max: null,
     });
 
     render(<RoutewiseTab />);
 
-    const input = await screen.findByLabelText('routewise_latency_min_samples value');
-    fireEvent.change(input, { target: { value: '8' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save routewise_latency_min_samples' }));
+    const input = await screen.findByLabelText('routewise_latency_slo_sec value');
+    fireEvent.change(input, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save routewise_latency_slo_sec' }));
 
     await waitFor(() => {
-      expect(updateRoutewiseSetting).toHaveBeenCalledWith('routewise_latency_min_samples', 8);
+      expect(updateRoutewiseSetting).toHaveBeenCalledWith('routewise_latency_slo_sec', 2);
     });
-    expect(input).toHaveValue(8);
+    expect(input).toHaveValue(2);
   });
 });

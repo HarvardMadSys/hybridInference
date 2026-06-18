@@ -686,13 +686,13 @@ describe('routewise settings client', () => {
         JSON.stringify({
           settings: [
             {
-              key: 'routewise_latency_min_samples',
-              value: 20,
-              value_type: 'int',
-              default_value: 10,
-              description: 'Minimum samples before Routewise latency LP warmup ends',
-              min: 1,
-              max: 10000,
+              key: 'routewise_latency_slo_sec',
+              value: 2.5,
+              value_type: 'float',
+              default_value: 3,
+              description: 'Latency SLO in seconds for Routewise LP decisions',
+              min: 0.1,
+              max: null,
             },
           ],
         }),
@@ -703,9 +703,9 @@ describe('routewise settings client', () => {
     const out = await listRoutewiseSettings();
 
     expect(out.settings[0]).toMatchObject({
-      key: 'routewise_latency_min_samples',
-      value: 20,
-      value_type: 'int',
+      key: 'routewise_latency_slo_sec',
+      value: 2.5,
+      value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routewise/settings');
@@ -717,31 +717,31 @@ describe('routewise settings client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          key: 'routewise_latency_min_samples',
-          value: 12,
-          value_type: 'int',
-          default_value: 10,
-          description: 'Minimum samples for latency decisions',
-          min: 1,
-          max: 100,
+          key: 'routewise_latency_slo_sec',
+          value: 2.5,
+          value_type: 'float',
+          default_value: 3,
+          description: 'Latency SLO in seconds for Routewise LP decisions',
+          min: 0.1,
+          max: null,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
 
-    const out = await updateRoutewiseSetting('routewise_latency_min_samples', 12);
+    const out = await updateRoutewiseSetting('routewise_latency_slo_sec', 2.5);
 
     expect(out).toMatchObject({
-      key: 'routewise_latency_min_samples',
-      value: 12,
-      value_type: 'int',
+      key: 'routewise_latency_slo_sec',
+      value: 2.5,
+      value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routewise/settings/routewise_latency_min_samples');
+    expect(String(url)).toContain('/admin/routewise/settings/routewise_latency_slo_sec');
     expect(init.method).toBe('PATCH');
     expect(init.headers).toBeInstanceOf(Headers);
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
-    expect(JSON.parse(init.body as string)).toEqual({ value: 12 });
+    expect(JSON.parse(init.body as string)).toEqual({ value: 2.5 });
   });
 });

@@ -718,7 +718,6 @@ class RoutewiseSettingItem(BaseModel):
 
     key: Literal[
         "routewise_latency_slo_sec",
-        "routewise_latency_min_samples",
     ]
     value: Any
     value_type: Literal["str", "int", "float"]
