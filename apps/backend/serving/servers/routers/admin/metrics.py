@@ -639,11 +639,12 @@ async def admin_list_recent_requests(
     where_sql = "WHERE " + " AND ".join(where_clauses)
 
     async with db_logger.pool.acquire() as conn:
-        # Get total count. The users join mirrors the SELECT below so the user
-        # filter can match on the joined user_name/email columns.
+        # Get total count. Only join users when the user filter is active —
+        # it's the only predicate that references u.user_name/u.email, and
+        # api_logs is high-volume so the join is worth avoiding otherwise.
+        count_join_sql = "LEFT JOIN users u ON u.id = l.user_id " if user_id else ""
         count_row = await conn.fetchrow(
-            f"SELECT COUNT(*) as total FROM api_logs l "
-            f"LEFT JOIN users u ON u.id = l.user_id {where_sql}",
+            f"SELECT COUNT(*) as total FROM api_logs l {count_join_sql}{where_sql}",
             *params,
         )
         total = int(count_row["total"] or 0) if count_row else 0
