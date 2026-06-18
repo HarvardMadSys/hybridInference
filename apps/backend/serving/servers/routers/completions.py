@@ -77,6 +77,9 @@ _CONTENT_BLOCK_MODALITY = {
     "input_image": "image",
     "input_audio": "audio",
     "audio": "audio",
+    "video_url": "video",
+    "video": "video",
+    "input_video": "video",
 }
 
 
