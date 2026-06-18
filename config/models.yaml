@@ -132,8 +132,13 @@ models:
         api_keys:
           - ${ZAI_API_KEY}
         provider_model_id: "glm-5.1"
+      # RC sglang deployment (base_url via RC_DEPLOYMENT_URL).
+      # optional: route is skipped at load when RC_DEPLOYMENT_URL is unset/blank,
+      # so the rest of the model stays available instead of registering a dead
+      # "glm-5.1:unknown-api" endpoint that streams to a host-less URL.
       - kind: sglang
         weight: 1.0
+        optional: true
         base_url: ${RC_DEPLOYMENT_URL}
         provider_model_id: "/n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2"
         # api_keys:
