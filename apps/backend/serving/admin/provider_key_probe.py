@@ -118,16 +118,18 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
     return values
 
 
+def _openrouter_adapter_kind(config: Any) -> str:
+    pinned = getattr(config, "openrouter_pinned_provider", None)
+    return f"openrouter[{pinned}]" if pinned else "openrouter"
+
+
 def _adapter_kind(adapter: object) -> str:
     config = getattr(adapter, "config", None)
     if config is None:
         return ""
     provider = str(getattr(config, "provider", "") or "")
     if isinstance(adapter, OpenRouterAdapter):
-        pinned = getattr(config, "openrouter_pinned_provider", None)
-        if pinned:
-            return f"openrouter[{pinned}]"
-        return "openrouter"
+        return _openrouter_adapter_kind(config)
     if isinstance(adapter, ClaudeAdapter):
         return "claude"
     if isinstance(adapter, GeminiAdapter):
