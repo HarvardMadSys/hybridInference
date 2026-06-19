@@ -651,7 +651,8 @@ class ProviderQuotaResult(BaseModel):
     """Result of querying a single upstream provider's quota."""
 
     name: str = Field(
-        ..., description="Lowercase identifier: chutes | zai | minimax | kimi | ollama"
+        ...,
+        description="Lowercase identifier: chutes | zai | minimax | kimi | ollama | featherless",
     )
     display_name: str = Field(..., description="Human-readable name")
     key_index: int | None = Field(
@@ -664,7 +665,7 @@ class ProviderQuotaResult(BaseModel):
     ok: bool = Field(..., description="True if quota fetch succeeded")
     error: str | None = Field(
         None,
-        description="Short reason code if !ok: 'auth_failed' | 'timeout' | 'not_configured' | 'parse_error' | 'unexpected'",
+        description="Short reason code if !ok: 'auth_failed' | 'plan_api_disabled' | 'timeout' | 'not_configured' | 'probe_unavailable' | 'parse_error' | 'unexpected'",
     )
     usages: list[ProviderQuotaUsage] = Field(default_factory=list)
 
@@ -949,6 +950,7 @@ __all__ = [
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
     "ListOpenRouterProviderOptionsResponse",
+    "ListProviderApiKeyProvidersResponse",
     "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
     "ListRoutewiseSettingsResponse",
@@ -988,6 +990,8 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
     "UsersSummaryResponse",
+    "VerifyProviderApiKeyRequest",
+    "VerifyProviderApiKeyResponse",
     "VerifyProviderRouteResponse",
 ]
 
@@ -1211,12 +1215,25 @@ class ListProviderApiKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
     keys: list[ProviderApiKeyItem]
 
 
+class ListProviderApiKeyProvidersResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for listing providers that can accept runtime API keys."""
+
+    providers: list[str]
+
+
 class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     """Request body for ``POST /admin/provider-keys``."""
 
     provider: str = Field(..., min_length=1, max_length=64)
     api_key: str = Field(..., min_length=1, max_length=4096)
     label: str | None = Field(None, max_length=255)
+
+
+class VerifyProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for dry-run provider API key verification."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    api_key: str = Field(..., min_length=1, max_length=4096)
 
 
 class DisableProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -1250,6 +1267,12 @@ class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimporte
     id: str
     provider: str
     pools_updated: int
+
+
+class VerifyProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/verify``."""
+
+    ok: bool = True
 
 
 # ============================================================
