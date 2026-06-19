@@ -34,6 +34,19 @@ from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
 
 
+@pytest.fixture(autouse=True)
+def _reset_featherless_fetch_state():
+    import serving.admin.provider_quotas as provider_quotas
+
+    provider_quotas._FEATHERLESS_CACHE = None
+    provider_quotas._FEATHERLESS_FETCH_SIGNATURE = None
+    provider_quotas._FEATHERLESS_FETCH_TASK = None
+    yield
+    provider_quotas._FEATHERLESS_CACHE = None
+    provider_quotas._FEATHERLESS_FETCH_SIGNATURE = None
+    provider_quotas._FEATHERLESS_FETCH_TASK = None
+
+
 class TestMaskKey:
     def test_normal_length_key_shows_prefix_and_suffix(self):
         # >= 16 chars: first 8 + "..." + last 4
@@ -195,6 +208,21 @@ class TestDiscoverEnvKeys:
 
 
 class TestDiscoverProviderKeys:
+    @staticmethod
+    def _store(
+        *,
+        db_keys: list[str] | None = None,
+        disabled_hashes: set[str] | None = None,
+        route_configs: list[dict[str, Any]] | None = None,
+        route_candidates: list[dict[str, Any]] | None = None,
+    ):
+        return SimpleNamespace(
+            list_provider_keys_full=AsyncMock(return_value=db_keys or []),
+            list_disabled_provider_env_key_hashes=AsyncMock(return_value=disabled_hashes or set()),
+            list_all_provider_route_configs=AsyncMock(return_value=route_configs or []),
+            list_all_provider_route_candidates=AsyncMock(return_value=route_candidates or []),
+        )
+
     @pytest.mark.asyncio
     async def test_appends_db_and_live_pool_keys_and_deduplicates(self, monkeypatch):
         env_key = "key1_long_enough_1234"
@@ -203,7 +231,7 @@ class TestDiscoverProviderKeys:
         db_key_2 = "db_key_long_enough_9012"
         db_key_3 = "db_key_long_enough_3456"
         monkeypatch.setenv("FEATHERLESS_API_KEY", env_key)
-        store = SimpleNamespace(list_provider_keys_full=AsyncMock(return_value=[env_key, db_key]))
+        store = self._store(db_keys=[env_key, db_key])
         dynamic_keys.register_adapter_for_provider(
             "featherless",
             SimpleNamespace(_key_pool=KeyPool([env_key, db_key_1, db_key_2], "featherless")),
@@ -227,6 +255,56 @@ class TestDiscoverProviderKeys:
             (4, db_key_2),
             (5, db_key_3),
         ]
+        store.list_provider_keys_full.assert_awaited_once_with(
+            "featherless",
+            exclude_ids=set(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_route_bound_db_keys(self, monkeypatch):
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        global_db_key = "db_key_global_123456"
+        route_bound_db_key = "db_key_route_bound_123456"
+        store = self._store(
+            db_keys=[global_db_key],
+            route_configs=[{"api_key_id": "route-key-id"}],
+        )
+
+        keys = await _discover_provider_keys(
+            "featherless",
+            "FEATHERLESS_API_KEY",
+            "FEATHERLESS_API_KEY",
+            store,
+        )
+
+        assert keys == [(1, global_db_key)]
+        store.list_provider_keys_full.assert_awaited_once_with(
+            "featherless",
+            exclude_ids={"route-key-id"},
+        )
+        assert route_bound_db_key not in [key for _idx, key in keys]
+
+    @pytest.mark.asyncio
+    async def test_skips_disabled_env_keys(self, monkeypatch):
+        active_key = "key1_long_enough_1234"
+        disabled_key = "key2_long_enough_5678"
+        pool_key = "key3_long_enough_9012"
+        monkeypatch.setenv("FEATHERLESS_API_KEY", active_key)
+        monkeypatch.setenv("FEATHERLESS_API_KEY2", disabled_key)
+        store = self._store(disabled_hashes={dynamic_keys.env_key_hash(disabled_key)})
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([disabled_key, pool_key], "featherless")),
+        )
+
+        keys = await _discover_provider_keys(
+            "featherless",
+            "FEATHERLESS_API_KEY",
+            "FEATHERLESS_API_KEY",
+            store,
+        )
+
+        assert keys == [(1, active_key), (2, pool_key)]
 
 
 class TestFetchChutes:
@@ -1524,9 +1602,7 @@ class TestFetchFeatherless:
                 json_data={"limit": 4, "used_cost": 1, "request_count": 1, "requests": []},
             ),
         ) as session_factory:
-            usage = await _fetch_featherless_concurrency_usage(
-                "rc_1111111111111111aaaa"
-            )
+            usage = await _fetch_featherless_concurrency_usage("rc_1111111111111111aaaa")
 
         assert usage is not None
         assert usage.label == "Concurrency"
@@ -1535,9 +1611,8 @@ class TestFetchFeatherless:
         assert usage.unit == "units"
         session = session_factory.return_value.__aenter__.return_value
         session.get.assert_called_once()
-        assert session.get.call_args.args == (
-            "https://api.featherless.ai/account/concurrency",
-        )
+        assert session.get.call_args.args == ("https://api.featherless.ai/account/concurrency",)
+        assert session.get.call_args.kwargs["allow_redirects"] is False
 
     @pytest.mark.asyncio
     async def test_returns_probe_unavailable_without_services(self, monkeypatch):

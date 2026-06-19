@@ -16,6 +16,7 @@ from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.adapters.key_pool import KeyPool
 from serving.admin.provider_key_probe import (
     FEATHERLESS_PLAN_API_DISABLED_MESSAGE,
+    probe_error_detail,
     probe_error_reason,
 )
 from serving.servers.deps import AppServices
@@ -36,12 +37,21 @@ def test_probe_error_reason_detects_featherless_plan_api_disabled():
         message="Forbidden",
     )
     exc.error_body = (  # type: ignore[attr-defined]
-        '{"error":{"message":"'
-        + FEATHERLESS_PLAN_API_DISABLED_MESSAGE
-        + '","type":"forbidden"}}'
+        '{"error":{"message":"' + FEATHERLESS_PLAN_API_DISABLED_MESSAGE + '","type":"forbidden"}}'
     )
 
     assert probe_error_reason(exc) == "plan_api_disabled"
+
+
+def test_probe_error_detail_redacts_before_truncating():
+    api_key = "rc_featherless_secret_that_crosses_truncation_boundary"
+    exc = RuntimeError("x" * 490 + api_key + " trailing detail")
+
+    detail = probe_error_detail(exc, timeout_seconds=20, api_key=api_key)
+
+    assert api_key not in detail
+    assert api_key[:12] not in detail
+    assert "[redacted]" in detail
 
 
 class _StubStore:

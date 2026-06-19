@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 _TIMEOUT_SECONDS = 8
 _FEATHERLESS_CONCURRENCY_URL = "https://api.featherless.ai/account/concurrency"
 _FEATHERLESS_FETCH_LOCK = asyncio.Lock()
+_FEATHERLESS_CACHE_TTL_SECONDS = 15.0
+_FEATHERLESS_FETCH_TASK: asyncio.Task[list[ProviderQuotaResult]] | None = None
+_FEATHERLESS_FETCH_SIGNATURE: tuple[str, ...] | None = None
+_FEATHERLESS_CACHE: tuple[float, tuple[str, ...], list[ProviderQuotaResult]] | None = None
 
 
 def _mask_key(key: str) -> str:
@@ -81,12 +85,44 @@ async def _discover_provider_keys(
     operational_store: Any | None = None,
 ) -> list[tuple[int, str]]:
     """Discover configured keys from env, DB, and live adapter key pools."""
-    keys = _discover_env_keys(base_var, numbered_prefix)
-    seen = {key for _, key in keys}
-
+    disabled_hashes: set[str] = set()
+    route_bound_key_ids: set[str] | None = set()
     if operational_store is not None:
         try:
-            db_keys = await operational_store.list_provider_keys_full(provider)
+            disabled_hashes = set(
+                await operational_store.list_disabled_provider_env_key_hashes(provider)
+            )
+        except Exception as exc:
+            logger.warning("failed to load disabled env keys for provider=%s: %s", provider, exc)
+
+        try:
+            route_bound_key_ids = await dynamic_keys._list_route_bound_db_key_ids(operational_store)
+        except Exception as exc:
+            logger.warning(
+                "failed to load route-bound provider key ids for provider=%s; "
+                "skipping DB keys to avoid global key leakage: %s",
+                provider,
+                exc,
+            )
+            route_bound_key_ids = None
+
+    def is_disabled_env_key(key: str) -> bool:
+        key_hash = dynamic_keys.env_key_hash(key)
+        return key_hash in disabled_hashes or dynamic_keys.is_env_key_disabled(provider, key_hash)
+
+    keys = [
+        (index, key)
+        for index, key in _discover_env_keys(base_var, numbered_prefix)
+        if not is_disabled_env_key(key)
+    ]
+    seen = {key for _, key in keys}
+
+    if operational_store is not None and route_bound_key_ids is not None:
+        try:
+            db_keys = await operational_store.list_provider_keys_full(
+                provider,
+                exclude_ids=route_bound_key_ids,
+            )
         except Exception as exc:
             logger.warning("failed to load DB keys for provider=%s: %s", provider, exc)
         else:
@@ -98,7 +134,7 @@ async def _discover_provider_keys(
 
     for pool in dynamic_keys.get_pools_for_provider(provider):
         for key in pool.snapshot_keys():
-            if not key or key in seen:
+            if not key or key in seen or is_disabled_env_key(key):
                 continue
             keys.append((len(keys) + 1, key))
             seen.add(key)
@@ -1349,6 +1385,7 @@ async def _fetch_featherless_concurrency_usage(key: str) -> ProviderQuotaUsage |
                     "Authorization": f"Bearer {key}",
                     "Accept": "application/json",
                 },
+                allow_redirects=False,
             ) as resp,
         ):
             if resp.status >= 400:
@@ -1373,35 +1410,86 @@ async def _fetch_featherless_concurrency_usage(key: str) -> ProviderQuotaUsage |
     )
 
 
+def _clone_provider_quota_results(
+    results: list[ProviderQuotaResult],
+) -> list[ProviderQuotaResult]:
+    return [result.model_copy(deep=True) for result in results]
+
+
+async def _fetch_featherless_for_keys(
+    keys: list[tuple[int, str]],
+    services: Any | None,
+) -> list[ProviderQuotaResult]:
+    raw = await asyncio.gather(
+        *[_fetch_featherless_for_key(key, services) for _idx, key in keys],
+        return_exceptions=True,
+    )
+    for result in raw:
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+    return _process_multi_key_results("featherless", "Featherless", keys, raw)
+
+
 async def fetch_featherless(
     operational_store: Any | None = None,
     services: Any | None = None,
 ) -> list[ProviderQuotaResult]:
     """Show configured Featherless keys and probe concurrency-based availability."""
+    global _FEATHERLESS_CACHE, _FEATHERLESS_FETCH_SIGNATURE, _FEATHERLESS_FETCH_TASK
+
+    keys = await _discover_provider_keys(
+        "featherless",
+        "FEATHERLESS_API_KEY",
+        "FEATHERLESS_API_KEY",
+        operational_store,
+    )
+    if not keys:
+        return [
+            ProviderQuotaResult(
+                name="featherless",
+                display_name="Featherless",
+                key_configured=False,
+                key_masked=None,
+                fetched_at=_now(),
+                ok=False,
+                error="not_configured",
+                usages=[],
+            )
+        ]
+
+    signature = tuple(key for _idx, key in keys)
+    now = asyncio.get_running_loop().time()
     async with _FEATHERLESS_FETCH_LOCK:
-        keys = await _discover_provider_keys(
-            "featherless",
-            "FEATHERLESS_API_KEY",
-            "FEATHERLESS_API_KEY",
-            operational_store,
-        )
-        if not keys:
-            return [
-                ProviderQuotaResult(
-                    name="featherless",
-                    display_name="Featherless",
-                    key_configured=False,
-                    key_masked=None,
-                    fetched_at=_now(),
-                    ok=False,
-                    error="not_configured",
-                    usages=[],
-                )
-            ]
-        results: list[ProviderQuotaResult | BaseException] = []
-        for _idx, key in keys:
-            try:
-                results.append(await _fetch_featherless_for_key(key, services))
-            except BaseException as exc:
-                results.append(exc)
-        return _process_multi_key_results("featherless", "Featherless", keys, results)
+        if (
+            _FEATHERLESS_CACHE is not None
+            and _FEATHERLESS_CACHE[1] == signature
+            and now - _FEATHERLESS_CACHE[0] <= _FEATHERLESS_CACHE_TTL_SECONDS
+        ):
+            return _clone_provider_quota_results(_FEATHERLESS_CACHE[2])
+
+        if (
+            _FEATHERLESS_FETCH_TASK is None
+            or _FEATHERLESS_FETCH_TASK.done()
+            or signature != _FEATHERLESS_FETCH_SIGNATURE
+        ):
+            _FEATHERLESS_FETCH_TASK = asyncio.create_task(
+                _fetch_featherless_for_keys(keys, services)
+            )
+            _FEATHERLESS_FETCH_SIGNATURE = signature
+        task = _FEATHERLESS_FETCH_TASK
+
+    try:
+        results = await task
+    except Exception:
+        async with _FEATHERLESS_FETCH_LOCK:
+            if _FEATHERLESS_FETCH_TASK is task:
+                _FEATHERLESS_FETCH_TASK = None
+                _FEATHERLESS_FETCH_SIGNATURE = None
+        raise
+
+    async with _FEATHERLESS_FETCH_LOCK:
+        if _FEATHERLESS_FETCH_TASK is task:
+            _FEATHERLESS_CACHE = (asyncio.get_running_loop().time(), signature, results)
+            _FEATHERLESS_FETCH_TASK = None
+            _FEATHERLESS_FETCH_SIGNATURE = None
+    return _clone_provider_quota_results(results)

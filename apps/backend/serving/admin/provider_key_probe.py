@@ -18,6 +18,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
+from serving.exceptions import scrub_provider_identity
 from serving.servers.registry import _make_adapter
 
 DEFAULT_VERIFY_TIMEOUT_SECONDS = 20.0
@@ -50,7 +51,10 @@ def probe_error_reason(exc: BaseException) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
     if isinstance(exc, aiohttp.ClientResponseError):
-        if exc.status == 403 and _upstream_error_message(exc) == FEATHERLESS_PLAN_API_DISABLED_MESSAGE:
+        if (
+            exc.status == 403
+            and _upstream_error_message(exc) == FEATHERLESS_PLAN_API_DISABLED_MESSAGE
+        ):
             return "plan_api_disabled"
         if exc.status in (301, 302, 303, 307, 308, 401, 403):
             return "auth_failed"
@@ -79,14 +83,26 @@ def _upstream_error_message(exc: aiohttp.ClientResponseError) -> str:
     return ""
 
 
-def probe_error_detail(exc: BaseException, *, timeout_seconds: float) -> str:
+def _safe_probe_detail(value: str, *, api_key: str) -> str:
+    if api_key:
+        value = value.replace(api_key, "[redacted]")
+    return truncate_probe_detail(scrub_provider_identity(value))
+
+
+def probe_error_detail(
+    exc: BaseException,
+    *,
+    timeout_seconds: float,
+    api_key: str = "",
+) -> str:
     if isinstance(exc, asyncio.TimeoutError):
         return f"Provider key verification timed out after {timeout_seconds:.0f}s"
     if isinstance(exc, aiohttp.ClientResponseError):
         body = getattr(exc, "error_body", "")
-        body_text = f": {truncate_probe_detail(str(body))}" if body else ""
+        body_text = f": {_safe_probe_detail(str(body), api_key=api_key)}" if body else ""
         return f"Provider key verification failed with HTTP {exc.status}{body_text}"
-    return f"Provider key verification failed: {truncate_probe_detail(str(exc) or type(exc).__name__)}"
+    detail = _safe_probe_detail(str(exc) or type(exc).__name__, api_key=api_key)
+    return f"Provider key verification failed: {detail}"
 
 
 def _config_to_dict(config: Any) -> dict[str, Any]:
@@ -181,7 +197,5 @@ async def probe_provider_key_with_existing_route(
             timeout=timeout_seconds,
         )
     except Exception as exc:
-        detail = probe_error_detail(exc, timeout_seconds=timeout_seconds)
-        if api_key in detail:
-            detail = detail.replace(api_key, "[redacted]")
+        detail = probe_error_detail(exc, timeout_seconds=timeout_seconds, api_key=api_key)
         raise ProviderKeyProbeError(probe_error_reason(exc), detail) from exc
