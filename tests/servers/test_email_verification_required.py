@@ -196,6 +196,54 @@ async def test_email_verification_can_be_disabled(auth_client, require_db, email
     assert "access_token" in response.json()
 
 
+async def test_disabled_verification_marks_new_user_verified(
+    auth_client, require_db, email_verification_flag
+):
+    """New users are stored as verified when verification is disabled.
+
+    Regression test: previously every new user was created with
+    ``email_verified=False`` regardless of the verification setting, leaving
+    users created while verification was disabled permanently unverified (and
+    locked out if verification was later re-enabled).
+    """
+    email_verification_flag(False)
+
+    signup_data = {
+        "email": f"disabledverify_{os.urandom(4).hex()}@signuptest.dev",
+        "password": "SecurePass123!",
+        "user_name": "Disabled Verify User",
+        "accepted_tos": True,
+    }
+
+    response = await auth_client.post("/auth/signup", json=signup_data)
+    assert response.status_code == 201
+
+    user_row = await require_db.get_user_by_email(signup_data["email"])
+    assert user_row is not None
+    assert user_row["email_verified"] is True
+
+
+async def test_required_verification_marks_new_user_unverified(
+    auth_client, require_db, email_verification_flag
+):
+    """New users remain unverified when verification is required."""
+    email_verification_flag(True)
+
+    signup_data = {
+        "email": f"requiredverify_{os.urandom(4).hex()}@signuptest.dev",
+        "password": "SecurePass123!",
+        "user_name": "Required Verify User",
+        "accepted_tos": True,
+    }
+
+    response = await auth_client.post("/auth/signup", json=signup_data)
+    assert response.status_code == 201
+
+    user_row = await require_db.get_user_by_email(signup_data["email"])
+    assert user_row is not None
+    assert user_row["email_verified"] is False
+
+
 async def test_unverified_user_cannot_access_protected_endpoint(
     auth_client, require_db, email_verification_flag
 ):
