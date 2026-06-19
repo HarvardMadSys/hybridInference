@@ -433,7 +433,7 @@ async def test_verify_provider_key_matches_pinned_openrouter_route(client):
 
     assert resp.status_code == 200, resp.text
     kind, cfg = make_adapter.call_args.args
-    assert kind == "openrouter"
+    assert kind == "openrouter[deepinfra]"
     assert cfg["api_key"] == api_key
     assert cfg["provider_model_id"] == "openai/gpt-oss-120b"
     assert cfg["openrouter_pinned_provider"] == "deepinfra"

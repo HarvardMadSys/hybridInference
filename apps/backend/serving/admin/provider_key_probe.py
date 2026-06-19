@@ -124,6 +124,9 @@ def _adapter_kind(adapter: object) -> str:
         return ""
     provider = str(getattr(config, "provider", "") or "")
     if isinstance(adapter, OpenRouterAdapter):
+        pinned = getattr(config, "openrouter_pinned_provider", None)
+        if pinned:
+            return f"openrouter[{pinned}]"
         return "openrouter"
     if isinstance(adapter, ClaudeAdapter):
         return "claude"
