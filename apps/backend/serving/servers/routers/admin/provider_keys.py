@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys
+from serving.admin.provider_key_probe import (
+    ProviderKeyProbeError,
+    probe_provider_key_with_existing_route,
+)
 from serving.schemas_admin import (
     AddProviderApiKeyRequest,
     AddProviderApiKeyResponse,
     DeleteProviderApiKeyResponse,
     DisableProviderEnvKeyRequest,
     DisableProviderEnvKeyResponse,
+    ListProviderApiKeyProvidersResponse,
     ListProviderApiKeysResponse,
     ProviderApiKeyItem,
+    VerifyProviderApiKeyRequest,
+    VerifyProviderApiKeyResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.servers.deps import get_operational_store, get_services, verify_admin_access
 
 router = APIRouter(prefix="/admin")
 
@@ -29,6 +38,56 @@ def _mask(api_key: str) -> str:
 
 def _env_key_id(api_key: str) -> str:
     return f"env:{dynamic_keys.env_key_hash(api_key)[:32]}"
+
+
+_MAX_NUMBERED_ENV_KEYS = 20
+_PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
+    "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
+    "featherless": ("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY"),
+    "kimi": ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY"),
+    "minimax": ("MINIMAX_API_KEY", "MINIMAX_API_KEY"),
+    "ollama": ("OLLAMA_API_KEY", "OLLAMA_API_KEY"),
+    "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
+}
+
+
+def _numbered_env_keys_for_provider(provider: str) -> list[str]:
+    """Return provider keys configured through base + numbered env vars."""
+    spec = _PROVIDER_ENV_KEY_VARS.get(provider)
+    if spec is None:
+        return []
+
+    base_var, numbered_prefix = spec
+    base_value = os.getenv(base_var, "")
+    if not base_value:
+        return []
+
+    keys = [base_value]
+    for index in range(2, _MAX_NUMBERED_ENV_KEYS):
+        value = os.getenv(f"{numbered_prefix}{index}", "")
+        if not value:
+            break
+        keys.append(value)
+    return keys
+
+
+def _env_keys_for_provider(provider: str) -> list[str]:
+    """Return live env-sourced keys from adapter pools plus numbered env vars."""
+    keys: list[str] = []
+    seen: set[str] = set()
+
+    for pool in dynamic_keys.get_pools_for_provider(provider):
+        for raw in pool.snapshot_keys():
+            if raw and raw not in seen:
+                seen.add(raw)
+                keys.append(raw)
+
+    for raw in _numbered_env_keys_for_provider(provider):
+        if raw and raw not in seen:
+            seen.add(raw)
+            keys.append(raw)
+
+    return keys
 
 
 def _validate_provider(provider: str) -> None:
@@ -100,34 +159,60 @@ async def list_provider_keys(
         )
 
     for prov in providers_to_inspect:
-        pools = dynamic_keys.get_pools_for_provider(prov)
-        seen: set[str] = set()
-        for pool in pools:
-            for raw in pool.snapshot_keys():
-                if raw in db_raw_keys.get(prov, set()):
-                    continue
-                raw_hash = dynamic_keys.env_key_hash(raw)
-                if raw_hash in disabled_hashes.get(prov, set()) or dynamic_keys.is_env_key_disabled(
-                    prov,
-                    raw_hash,
-                ):
-                    continue
-                if raw in seen:
-                    continue
-                seen.add(raw)
-                keys.append(
-                    ProviderApiKeyItem(
-                        id=_env_key_id(raw),
-                        provider=prov,
-                        key_prefix=_mask(raw),
-                        label=None,
-                        source="env",
-                        status="active",
-                        created_at=None,
-                    )
+        for raw in _env_keys_for_provider(prov):
+            if raw in db_raw_keys.get(prov, set()):
+                continue
+            raw_hash = dynamic_keys.env_key_hash(raw)
+            if raw_hash in disabled_hashes.get(prov, set()) or dynamic_keys.is_env_key_disabled(
+                prov,
+                raw_hash,
+            ):
+                continue
+            keys.append(
+                ProviderApiKeyItem(
+                    id=_env_key_id(raw),
+                    provider=prov,
+                    key_prefix=_mask(raw),
+                    label=None,
+                    source="env",
+                    status="active",
+                    created_at=None,
                 )
+            )
 
     return ListProviderApiKeysResponse(provider=provider, keys=keys)
+
+
+@router.get("/provider-keys/providers", response_model=ListProviderApiKeyProvidersResponse)
+async def list_provider_key_providers(
+    _admin_id: str = Depends(verify_admin_access),
+) -> ListProviderApiKeyProvidersResponse:
+    """List providers that support runtime-managed API keys."""
+    return ListProviderApiKeyProvidersResponse(providers=sorted(dynamic_keys.get_known_providers()))
+
+
+@router.post("/provider-keys/verify", response_model=VerifyProviderApiKeyResponse)
+async def verify_provider_key(
+    payload: VerifyProviderApiKeyRequest,
+    _admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+) -> VerifyProviderApiKeyResponse:
+    """Verify a provider API key against an existing registered provider route."""
+    _validate_provider(payload.provider)
+
+    api_key = payload.api_key.strip()
+    if not api_key:
+        raise HTTPException(422, "api_key must not be blank")
+
+    try:
+        await probe_provider_key_with_existing_route(
+            services,
+            provider=payload.provider,
+            api_key=api_key,
+        )
+    except ProviderKeyProbeError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    return VerifyProviderApiKeyResponse(ok=True)
 
 
 @router.post("/provider-keys", response_model=AddProviderApiKeyResponse, status_code=201)
@@ -209,14 +294,11 @@ async def disable_provider_env_key(
         ) from exc
 
     target_key: str | None = None
-    for pool in dynamic_keys.get_pools_for_provider(payload.provider):
-        for raw in pool.snapshot_keys():
-            if raw in db_raw_keys:
-                continue
-            if _env_key_id(raw) == payload.env_key_id:
-                target_key = raw
-                break
-        if target_key is not None:
+    for raw in _env_keys_for_provider(payload.provider):
+        if raw in db_raw_keys:
+            continue
+        if _env_key_id(raw) == payload.env_key_id:
+            target_key = raw
             break
 
     if target_key is None:

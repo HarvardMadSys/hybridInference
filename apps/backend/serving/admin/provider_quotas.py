@@ -24,12 +24,19 @@ from typing import Any
 import aiohttp
 from bs4 import BeautifulSoup
 
+from serving.adapters import dynamic_keys
+from serving.admin.provider_key_probe import (
+    ProviderKeyProbeError,
+    probe_provider_key_with_existing_route,
+)
 from serving.config.settings import settings
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
+_FEATHERLESS_CONCURRENCY_URL = "https://api.featherless.ai/account/concurrency"
+_FEATHERLESS_FETCH_LOCK = asyncio.Lock()
 
 
 def _mask_key(key: str) -> str:
@@ -64,6 +71,38 @@ def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, s
         if not val:
             break
         keys.append((i, val))
+    return keys
+
+
+async def _discover_provider_keys(
+    provider: str,
+    base_var: str,
+    numbered_prefix: str,
+    operational_store: Any | None = None,
+) -> list[tuple[int, str]]:
+    """Discover configured keys from env, DB, and live adapter key pools."""
+    keys = _discover_env_keys(base_var, numbered_prefix)
+    seen = {key for _, key in keys}
+
+    if operational_store is not None:
+        try:
+            db_keys = await operational_store.list_provider_keys_full(provider)
+        except Exception as exc:
+            logger.warning("failed to load DB keys for provider=%s: %s", provider, exc)
+        else:
+            for key in db_keys:
+                if not key or key in seen:
+                    continue
+                keys.append((len(keys) + 1, key))
+                seen.add(key)
+
+    for pool in dynamic_keys.get_pools_for_provider(provider):
+        for key in pool.snapshot_keys():
+            if not key or key in seen:
+                continue
+            keys.append((len(keys) + 1, key))
+            seen.add(key)
+
     return keys
 
 
@@ -265,9 +304,14 @@ async def _fetch_chutes_for_key(key: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_chutes() -> list[ProviderQuotaResult]:
+async def fetch_chutes(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch quota usage from Chutes for all configured API keys."""
-    keys = _discover_env_keys("CHUTES_API_KEY", "CHUTES_API_KEY")
+    keys = await _discover_provider_keys(
+        "chutes",
+        "CHUTES_API_KEY",
+        "CHUTES_API_KEY",
+        operational_store,
+    )
     if not keys:
         return [
             ProviderQuotaResult(
@@ -499,12 +543,17 @@ async def _fetch_zai_for_key(key: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_zai() -> list[ProviderQuotaResult]:
+async def fetch_zai(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch quota usage from ZAI for all configured API keys.
 
     Endpoint discovered from ZAI's official ``glm-plan-usage`` plugin.
     """
-    keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+    keys = await _discover_provider_keys(
+        "zai",
+        "ZAI_API_KEY",
+        "ZAI_API_KEY",
+        operational_store,
+    )
     if not keys:
         return [
             ProviderQuotaResult(
@@ -788,7 +837,7 @@ async def _fetch_minimax_via_api_key(key: str) -> ProviderQuotaResult:
     return _minimax_result_from_payload(data, key)
 
 
-async def fetch_minimax() -> list[ProviderQuotaResult]:
+async def fetch_minimax(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch coding/token-plan quota from MiniMax for all configured keys.
 
     Prefers API-key auth (``MINIMAX_API_KEY``) against the documented
@@ -801,7 +850,12 @@ async def fetch_minimax() -> list[ProviderQuotaResult]:
     if not cookie_keys and settings.minimax_session_cookie:
         cookie_keys = [(1, settings.minimax_session_cookie)]
 
-    api_keys = _discover_env_keys("MINIMAX_API_KEY", "MINIMAX_API_KEY")
+    api_keys = await _discover_provider_keys(
+        "minimax",
+        "MINIMAX_API_KEY",
+        "MINIMAX_API_KEY",
+        operational_store,
+    )
     if api_keys:
         results = await asyncio.gather(
             *[_fetch_minimax_via_api_key(k) for _, k in api_keys],
@@ -889,7 +943,7 @@ async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_ollama() -> list[ProviderQuotaResult]:
+async def fetch_ollama(_operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Scrape Ollama Cloud usage for all configured session cookies."""
     keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
     if not keys:
@@ -1167,13 +1221,18 @@ async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_kimi() -> list[ProviderQuotaResult]:
+async def fetch_kimi(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch coding-plan quota from Kimi for all configured API keys.
 
     Endpoint discovered from the official Kimi Code CLI ``/usage`` command,
     which queries ``{base}/usages`` with ``Authorization: Bearer`` auth.
     """
-    keys = _discover_env_keys("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY")
+    keys = await _discover_provider_keys(
+        "kimi",
+        "KIMI_CODING_API_KEY",
+        "KIMI_CODING_API_KEY",
+        operational_store,
+    )
     if not keys:
         return [
             ProviderQuotaResult(
@@ -1196,7 +1255,10 @@ async def fetch_kimi() -> list[ProviderQuotaResult]:
     return _process_multi_key_results("kimi", "Kimi", keys, results)
 
 
-async def gather_all() -> list[ProviderQuotaResult]:
+async def gather_all(
+    operational_store: Any | None = None,
+    services: Any | None = None,
+) -> list[ProviderQuotaResult]:
     """Run all provider fetchers in parallel; never raise.
 
     Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
@@ -1204,15 +1266,15 @@ async def gather_all() -> list[ProviderQuotaResult]:
     exception is caught and converted to a single error result.
     """
     fetchers = [
-        ("chutes", "Chutes", fetch_chutes),
-        ("zai", "ZAI", fetch_zai),
-        ("minimax", "MiniMax", fetch_minimax),
-        ("kimi", "Kimi", fetch_kimi),
-        ("ollama", "Ollama Cloud", fetch_ollama),
-        ("featherless", "Featherless", fetch_featherless),
+        ("chutes", "Chutes", fetch_chutes(operational_store)),
+        ("zai", "ZAI", fetch_zai(operational_store)),
+        ("minimax", "MiniMax", fetch_minimax(operational_store)),
+        ("kimi", "Kimi", fetch_kimi(operational_store)),
+        ("ollama", "Ollama Cloud", fetch_ollama(operational_store)),
+        ("featherless", "Featherless", fetch_featherless(operational_store, services)),
     ]
     raw = await asyncio.gather(
-        *(f() for _, _, f in fetchers),
+        *(task for _, _, task in fetchers),
         return_exceptions=True,
     )
     out: list[ProviderQuotaResult] = []
@@ -1236,25 +1298,110 @@ async def gather_all() -> list[ProviderQuotaResult]:
     return out
 
 
-async def fetch_featherless() -> list[ProviderQuotaResult]:
-    """Return a stub result for Featherless (no public quota API)."""
-    keys = _discover_env_keys("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY")
-    if not keys:
-        return [
-            ProviderQuotaResult(
-                name="featherless",
-                display_name="Featherless",
-                key_configured=False,
-                key_masked=None,
-                fetched_at=_now(),
-                ok=False,
-                error="not_configured",
-                usages=[],
-            )
-        ]
-    return _process_multi_key_results(
-        "featherless",
-        "Featherless",
-        keys,
-        [_err("featherless", "Featherless", k, "no_quota_api") for _, k in keys],
+async def _fetch_featherless_for_key(
+    key: str,
+    services: Any | None,
+) -> ProviderQuotaResult:
+    """Probe whether a Featherless key works for the configured chat route."""
+    if services is None:
+        return _err("featherless", "Featherless", key, "probe_unavailable")
+    try:
+        await probe_provider_key_with_existing_route(
+            services,
+            provider="featherless",
+            api_key=key,
+            timeout_seconds=_TIMEOUT_SECONDS,
+        )
+    except ProviderKeyProbeError as exc:
+        usage = await _fetch_featherless_concurrency_usage(key)
+        return ProviderQuotaResult(
+            name="featherless",
+            display_name="Featherless",
+            key_configured=True,
+            key_masked=_mask_key(key),
+            fetched_at=_now(),
+            ok=False,
+            error=exc.reason,
+            usages=[usage] if usage is not None else [],
+        )
+
+    usage = await _fetch_featherless_concurrency_usage(key)
+    return ProviderQuotaResult(
+        name="featherless",
+        display_name="Featherless",
+        key_configured=True,
+        key_masked=_mask_key(key),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=[usage] if usage is not None else [],
     )
+
+
+async def _fetch_featherless_concurrency_usage(key: str) -> ProviderQuotaUsage | None:
+    try:
+        timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(
+                _FEATHERLESS_CONCURRENCY_URL,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+            ) as resp,
+        ):
+            if resp.status >= 400:
+                return None
+            data = await resp.json()
+    except Exception as exc:
+        logger.debug("fetch_featherless: concurrency check failed: %s", exc)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    used = _as_float(data.get("used_cost"))
+    limit = _as_float(data.get("limit"))
+    if used is None and limit is None:
+        return None
+    return ProviderQuotaUsage(
+        label="Concurrency",
+        used=used,
+        limit=limit,
+        unit="units",
+        reset_at=None,
+    )
+
+
+async def fetch_featherless(
+    operational_store: Any | None = None,
+    services: Any | None = None,
+) -> list[ProviderQuotaResult]:
+    """Show configured Featherless keys and probe concurrency-based availability."""
+    async with _FEATHERLESS_FETCH_LOCK:
+        keys = await _discover_provider_keys(
+            "featherless",
+            "FEATHERLESS_API_KEY",
+            "FEATHERLESS_API_KEY",
+            operational_store,
+        )
+        if not keys:
+            return [
+                ProviderQuotaResult(
+                    name="featherless",
+                    display_name="Featherless",
+                    key_configured=False,
+                    key_masked=None,
+                    fetched_at=_now(),
+                    ok=False,
+                    error="not_configured",
+                    usages=[],
+                )
+            ]
+        results: list[ProviderQuotaResult | BaseException] = []
+        for _idx, key in keys:
+            try:
+                results.append(await _fetch_featherless_for_key(key, services))
+            except BaseException as exc:
+                results.append(exc)
+        return _process_multi_key_results("featherless", "Featherless", keys, results)
