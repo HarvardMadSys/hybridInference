@@ -8,6 +8,7 @@ provider and add or remove keys at runtime without restarting the process.
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 from typing import TYPE_CHECKING
 
@@ -21,24 +22,44 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _adapters_by_provider: dict[str, list] = {}
+_db_injection_disabled_adapter_ids: dict[str, set[int]] = {}
 _known_providers: set[str] = set()
 # Tracks raw key values that were injected from the DB (per provider).
 # Used by ``remove_key_from_provider`` to ensure we never tombstone an
 # env-configured key that happens to share its raw value with a deleted DB row.
 _db_injected_keys: dict[str, set[str]] = {}
 _disabled_env_key_hashes: dict[str, set[str]] = {}
+_MAX_NUMBERED_ENV_KEYS = 20
+_PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
+    "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
+    "featherless": ("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY"),
+    "kimi": ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY"),
+    "minimax": ("MINIMAX_API_KEY", "MINIMAX_API_KEY"),
+    "ollama": ("OLLAMA_API_KEY", "OLLAMA_API_KEY"),
+    "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
+    "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
+}
+_KEY_PROVIDER_ALIASES = {
+    "kimi_coding": "kimi",
+}
 
 
 def reset() -> None:
     """Clear the registry. Test helper — not used in production paths."""
     with _lock:
         _adapters_by_provider.clear()
+        _db_injection_disabled_adapter_ids.clear()
         _known_providers.clear()
         _db_injected_keys.clear()
         _disabled_env_key_hashes.clear()
 
 
-def register_adapter_for_provider(provider: str, adapter: object) -> None:
+def register_adapter_for_provider(
+    provider: str,
+    adapter: object,
+    *,
+    allow_db_key_injection: bool = True,
+) -> None:
     """Register an adapter under *provider* so its KeyPool can be located later.
 
     Adapters without a key pool (single-key configurations) may still be
@@ -48,6 +69,11 @@ def register_adapter_for_provider(provider: str, adapter: object) -> None:
         bucket = _adapters_by_provider.setdefault(provider, [])
         if adapter not in bucket:
             bucket.append(adapter)
+        disabled = _db_injection_disabled_adapter_ids.setdefault(provider, set())
+        if allow_db_key_injection:
+            disabled.discard(id(adapter))
+        else:
+            disabled.add(id(adapter))
         _known_providers.add(provider)
 
 
@@ -63,19 +89,33 @@ def get_known_providers() -> set[str]:
         return set(_known_providers)
 
 
-def _pools_for_provider_locked(provider: str) -> list[KeyPool]:
+def _pools_for_provider_locked(
+    provider: str,
+    *,
+    include_db_injection_disabled: bool = True,
+) -> list[KeyPool]:
     pools: list[KeyPool] = []
+    disabled_ids = _db_injection_disabled_adapter_ids.get(provider, set())
     for adapter in _adapters_by_provider.get(provider, []):
+        if not include_db_injection_disabled and id(adapter) in disabled_ids:
+            continue
         pool = getattr(adapter, "_key_pool", None)
         if pool is not None:
             pools.append(pool)
     return pools
 
 
-def get_pools_for_provider(provider: str) -> list[KeyPool]:
+def get_pools_for_provider(
+    provider: str,
+    *,
+    include_db_injection_disabled: bool = True,
+) -> list[KeyPool]:
     """Return the live KeyPool instances configured for *provider*."""
     with _lock:
-        return _pools_for_provider_locked(provider)
+        return _pools_for_provider_locked(
+            provider,
+            include_db_injection_disabled=include_db_injection_disabled,
+        )
 
 
 def is_env_key_disabled(provider: str, key_hash: str) -> bool:
@@ -128,6 +168,31 @@ def env_key_hash(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+def normalize_key_provider(provider: str) -> str:
+    """Return the provider name used for shared API-key management."""
+    return _KEY_PROVIDER_ALIASES.get(provider, provider)
+
+
+def configured_env_keys_for_provider(provider: str) -> list[str]:
+    """Return provider keys configured through base + numbered env vars."""
+    spec = _PROVIDER_ENV_KEY_VARS.get(provider)
+    if spec is None:
+        return []
+
+    base_var, numbered_prefix = spec
+    base_value = os.getenv(base_var, "")
+    if not base_value:
+        return []
+
+    keys = [base_value]
+    for index in range(2, _MAX_NUMBERED_ENV_KEYS):
+        value = os.getenv(f"{numbered_prefix}{index}", "")
+        if not value:
+            break
+        keys.append(value)
+    return keys
+
+
 def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
     """Disable an env-sourced key for *provider* and remove it from rotation.
 
@@ -156,9 +221,7 @@ def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
         return updated
 
 
-def _attach_key_to_adapter_locked(
-    adapter: object, key: str, disabled_hashes: set[str]
-) -> bool:
+def _attach_key_to_adapter_locked(adapter: object, key: str, disabled_hashes: set[str]) -> bool:
     """Attach *key* to a single adapter, promoting it to a pool if needed.
 
     Pool-capable adapters (``add_runtime_key``) lazily create a ``KeyPool``
@@ -264,9 +327,12 @@ def enable_env_key_for_provider(provider: str, key_hash: str) -> int:
     """Re-enable a disabled env key: clear the tombstone and re-add to pools.
 
     Clears the in-memory disabled-hash set and re-injects the raw key
-    (recovered from adapter config) into every live pool. Returns the number
-    of pools updated; 0 when the raw key can no longer be recovered (e.g. the
-    env var was removed since it was disabled).
+    (recovered from adapter config) into the pools of the adapters that were
+    actually configured with it. Re-adding only to *owning* adapters avoids
+    leaking a model-scoped credential into unrelated routes/models under the
+    same provider (which could fail auth or mix quotas). Returns the number of
+    pools updated; 0 when the raw key can no longer be recovered (e.g. the env
+    var was removed since it was disabled).
     """
     with _lock:
         disabled = _disabled_env_key_hashes.get(provider)
@@ -275,10 +341,21 @@ def enable_env_key_for_provider(provider: str, key_hash: str) -> int:
         raw = _find_env_key_by_hash_locked(provider, key_hash)
         if raw is None:
             return 0
-        pools = _pools_for_provider_locked(provider)
-        for pool in pools:
+        updated = 0
+        for adapter in _adapters_by_provider.get(provider, []):
+            if raw not in _gather_static_keys(adapter):
+                continue
+            pool = getattr(adapter, "_key_pool", None)
+            if pool is None:
+                ensure = getattr(adapter, "ensure_key_pool", None)
+                if not callable(ensure):
+                    continue
+                pool = ensure()
+                if pool is None:
+                    continue
             pool.add_key(raw)
-        return len(pools)
+            updated += 1
+        return updated
 
 
 def add_key_to_provider(provider: str, key: str) -> int:
@@ -299,12 +376,25 @@ def add_key_to_provider(provider: str, key: str) -> int:
     """
     with _lock:
         adapters = _adapters_by_provider.get(provider, [])
+        # Route-bound adapters opt out of global DB-key injection — a DB key
+        # added for the whole provider must not land on a route reserved for a
+        # specific key (mirrors ``_pools_for_provider_locked(..., False)``).
+        disabled_ids = _db_injection_disabled_adapter_ids.get(provider, set())
         disabled = _disabled_env_key_hashes.get(provider, set())
         attached = sum(
-            1 for adapter in adapters if _attach_key_to_adapter_locked(adapter, key, disabled)
+            1
+            for adapter in adapters
+            if id(adapter) not in disabled_ids
+            and _attach_key_to_adapter_locked(adapter, key, disabled)
         )
         _db_injected_keys.setdefault(provider, set()).add(key)
         return attached
+
+
+def mark_db_key_for_provider(provider: str, key: str) -> None:
+    """Track *key* as DB-sourced without injecting it into existing pools."""
+    with _lock:
+        _db_injected_keys.setdefault(provider, set()).add(key)
 
 
 def remove_key_from_provider(provider: str, key: str) -> int:
@@ -328,6 +418,24 @@ def remove_key_from_provider(provider: str, key: str) -> int:
         return sum(1 for pool in pools if pool.remove_key(key))
 
 
+def _is_db_provider_key_id(key_id: object) -> bool:
+    return isinstance(key_id, str) and bool(key_id) and not key_id.startswith("env:")
+
+
+async def _list_route_bound_db_key_ids(operational_store: OperationalStore) -> set[str]:
+    """Return DB provider-key ids reserved by provider route configs."""
+    key_ids: set[str] = set()
+    for rows in (
+        await operational_store.list_all_provider_route_configs(),
+        await operational_store.list_all_provider_route_candidates(),
+    ):
+        for row in rows:
+            key_id = row.get("api_key_id")
+            if _is_db_provider_key_id(key_id):
+                key_ids.add(key_id)
+    return key_ids
+
+
 async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
     """Pull persisted provider keys and seed each registered adapter's pool.
 
@@ -336,6 +444,16 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
     """
     with _lock:
         providers = list(_known_providers)
+
+    try:
+        route_bound_key_ids = await _list_route_bound_db_key_ids(operational_store)
+    except Exception as exc:
+        logger.warning(
+            "dynamic_keys: failed to load route-bound provider key ids; "
+            "skipping DB key boot seeding to avoid global key leakage: %s",
+            exc,
+        )
+        return
 
     for provider in providers:
         try:
@@ -358,7 +476,10 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
             enforce_disabled_static_keys(provider, set(disabled_hashes))
 
         try:
-            keys = await operational_store.list_provider_keys_full(provider)
+            keys = await operational_store.list_provider_keys_full(
+                provider,
+                exclude_ids=route_bound_key_ids,
+            )
         except Exception as exc:
             logger.warning(
                 "dynamic_keys: failed to load DB keys for provider=%s: %s",

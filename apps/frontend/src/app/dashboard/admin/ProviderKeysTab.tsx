@@ -9,8 +9,10 @@ import {
   disableProviderEnvKey,
   enableProviderEnvKey,
   getProviderQuotas,
+  listProviderKeyProviders,
   listProviderKeys,
   setProviderKeyStatus,
+  verifyProviderKey,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -40,16 +42,16 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   const [formApiKey, setFormApiKey] = useState('');
   const [formLabel, setFormLabel] = useState('');
   const [submittingKey, setSubmittingKey] = useState(false);
+  const [verifyingKey, setVerifyingKey] = useState(false);
+  const [verifiedKeySignature, setVerifiedKeySignature] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [disablingEnvId, setDisablingEnvId] = useState<string | null>(null);
   const [togglingId, setTogglingId] = useState<string | null>(null);
 
-  // Populate the provider dropdown from the existing provider-quotas
-  // endpoint to avoid adding a new "list providers" endpoint.
   const loadProviders = useCallback(async () => {
     try {
-      const resp = await getProviderQuotas();
-      const names = Array.from(new Set(resp.providers.map((p) => p.name))).sort();
+      const resp = await listProviderKeyProviders();
+      const names = resp.providers;
       setProviders(names);
       if (names.length > 0) {
         setSelectedProvider((current) => current || names[0]);
@@ -104,6 +106,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
       }
       setFormApiKey('');
       setFormLabel('');
+      setVerifiedKeySignature(null);
       if (formProvider === selectedProvider) {
         await loadKeys(selectedProvider);
       } else {
@@ -113,6 +116,25 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
       toast.error(`Add failed: ${getErrorMessage(err)}`);
     } finally {
       setSubmittingKey(false);
+    }
+  };
+
+  const formKeySignature =
+    formProvider && formApiKey.trim() ? `${formProvider}\u0000${formApiKey.trim()}` : null;
+  const keyVerified = verifiedKeySignature != null && verifiedKeySignature === formKeySignature;
+
+  const onVerifyKey = async () => {
+    if (!formProvider || !formApiKey.trim() || !formKeySignature) return;
+    setVerifyingKey(true);
+    try {
+      await verifyProviderKey(formProvider, formApiKey.trim());
+      setVerifiedKeySignature(formKeySignature);
+      toast.success('Provider key verified');
+    } catch (err) {
+      setVerifiedKeySignature(null);
+      toast.error(`Verify failed: ${getErrorMessage(err)}`);
+    } finally {
+      setVerifyingKey(false);
     }
   };
 
@@ -215,8 +237,8 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         ) : sortedKeys.length === 0 ? (
           <p className="mt-3 text-[13px] text-gray-400">No keys configured for this provider.</p>
         ) : (
-          <div className="mt-3 overflow-hidden rounded-lg border border-gray-200">
-            <table className="w-full text-[13px]">
+          <div className="mt-3 overflow-x-auto rounded-lg border border-gray-200">
+            <table className="min-w-[680px] w-full text-[13px]">
               <thead className="bg-gray-50 text-left text-[12px] uppercase tracking-wide text-gray-500">
                 <tr>
                   <th className="px-3 py-2">Prefix</th>
@@ -383,10 +405,22 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
               required
             />
           </div>
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={onVerifyKey}
+              disabled={verifyingKey || submittingKey || !formProvider || !formApiKey.trim()}
+              className={
+                keyVerified
+                  ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
+                  : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+              }
+            >
+              {verifyingKey ? 'Verifying…' : keyVerified ? 'Verified' : 'Verify'}
+            </button>
             <button
               type="submit"
-              disabled={submittingKey || !formProvider || !formApiKey.trim()}
+              disabled={submittingKey || verifyingKey || !formProvider || !formApiKey.trim()}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               {submittingKey ? 'Adding…' : 'Add key'}

@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from serving.adapters import dynamic_keys
-from serving.adapters.base import ModelConfig
+from serving.adapters import ModelConfig, OpenAICompatAdapter, OpenRouterAdapter, dynamic_keys
 from serving.adapters.key_pool import KeyPool
-from serving.adapters.openai_compat import OpenAICompatAdapter
+from serving.admin.provider_key_probe import (
+    FEATHERLESS_PLAN_API_DISABLED_MESSAGE,
+    find_verification_adapter,
+    probe_error_detail,
+    probe_error_reason,
+)
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 from serving.storage.base import ProviderKeyRow
@@ -24,14 +30,71 @@ AUTH = {"Authorization": "Bearer test-admin"}
 _NOW = datetime(2025, 6, 15, tzinfo=timezone.utc)
 
 
+def test_probe_error_reason_detects_featherless_plan_api_disabled():
+    exc = aiohttp.ClientResponseError(
+        request_info=MagicMock(),
+        history=(),
+        status=403,
+        message="Forbidden",
+    )
+    exc.error_body = (  # type: ignore[attr-defined]
+        '{"error":{"message":"' + FEATHERLESS_PLAN_API_DISABLED_MESSAGE + '","type":"forbidden"}}'
+    )
+
+    assert probe_error_reason(exc) == "plan_api_disabled"
+
+
+def test_probe_error_reason_decodes_bytes_error_body():
+    exc = aiohttp.ClientResponseError(
+        request_info=MagicMock(),
+        history=(),
+        status=403,
+        message="Forbidden",
+    )
+    exc.error_body = (  # type: ignore[attr-defined]
+        b'{"error":{"message":"'
+        + FEATHERLESS_PLAN_API_DISABLED_MESSAGE.encode("utf-8")
+        + b'","type":"forbidden"}}'
+    )
+
+    assert probe_error_reason(exc) == "plan_api_disabled"
+
+
+def test_probe_error_detail_redacts_before_truncating():
+    api_key = "rc_featherless_secret_that_crosses_truncation_boundary"
+    exc = RuntimeError("x" * 490 + api_key + " trailing detail")
+
+    detail = probe_error_detail(exc, timeout_seconds=20, api_key=api_key)
+
+    assert api_key not in detail
+    assert api_key[:12] not in detail
+    assert "[redacted]" in detail
+
+
+def test_find_verification_adapter_skips_adapter_without_config():
+    services = SimpleNamespace(
+        router=SimpleNamespace(
+            routes={
+                "broken": SimpleNamespace(
+                    adapters=[(SimpleNamespace(config=None), 1.0)],
+                ),
+            },
+        ),
+    )
+
+    assert find_verification_adapter(services, "featherless") is None
+
+
 class _StubStore:
     """In-memory OperationalStore stand-in for provider key CRUD."""
 
     def __init__(self) -> None:
         self.rows: dict[str, ProviderKeyRow] = {}
-        self.raw: dict[str, list[str]] = {}
+        self.raw: dict[str, list[tuple[str, str]]] = {}
         # (provider, key_hash) -> key_prefix
         self.disabled: dict[tuple[str, str], str] = {}
+        self.route_configs: list[dict] = []
+        self.route_candidates: list[dict] = []
         self.audit: list[dict] = []
         self.fail_full_for: set[str] = set()
         self.fail_disabled_for: set[str] = set()
@@ -63,13 +126,19 @@ class _StubStore:
         out = [r for r in self.rows.values() if provider is None or r.provider == provider]
         return list(out)
 
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
         if provider in self.fail_full_for:
             raise RuntimeError(f"boom-full-{provider}")
+        excluded = exclude_ids or set()
         return [
             raw
             for kid, raw in self.raw.get(provider, [])
-            if kid not in self.rows or self.rows[kid].status == "active"
+            if kid not in excluded and (kid not in self.rows or self.rows[kid].status == "active")
         ]
 
     async def set_provider_key_status(self, key_id: str, status: str) -> bool:
@@ -78,6 +147,12 @@ class _StubStore:
             return False
         row.status = status
         return True
+
+    async def list_all_provider_route_configs(self) -> list[dict]:
+        return list(self.route_configs)
+
+    async def list_all_provider_route_candidates(self) -> list[dict]:
+        return list(self.route_candidates)
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         for provider, bucket in self.raw.items():
@@ -137,13 +212,14 @@ def store():
 async def client(monkeypatch, store):
     app = FastAPI(title="Provider Keys Test")
     services = AppServices(
-        router=MagicMock(),
+        router=MagicMock(routes={}),
         db_logger=MagicMock(),
         operational_store=store,
         log_store=MagicMock(),
         routing_manager=None,
     )
     app.state.services = services  # type: ignore[attr-defined]
+    store.services = services
     app.include_router(admin_router.router)
 
     transport = ASGITransport(app=app)
@@ -153,6 +229,17 @@ async def client(monkeypatch, store):
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
     monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "0")
+    for env_var in (
+        "CHUTES_API_KEY",
+        "FEATHERLESS_API_KEY",
+        "KIMI_CODING_API_KEY",
+        "MINIMAX_API_KEY",
+        "OLLAMA_API_KEY",
+        "ZAI_API_KEY",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+        for index in range(2, 21):
+            monkeypatch.delenv(f"{env_var}{index}", raising=False)
 
     # The verify_admin_access dependency requires get_user_by_id to short-
     # circuit cleanly when authenticating with the ADMIN_TOKEN — provide a
@@ -182,6 +269,29 @@ async def client(monkeypatch, store):
         await http.aclose()
 
 
+def _registered_provider_adapter(provider: str, *, api_key: str = "env-key-original-1234567890"):
+    return OpenAICompatAdapter(
+        ModelConfig(
+            id="minimax-fast",
+            name="minimax-fast",
+            provider=provider,
+            base_url=f"https://{provider}.example/v1",
+            api_keys=[api_key],
+            provider_model_id="Provider/Test-Model",
+            endpoint_id=f"minimax-fast:{provider}",
+        )
+    )
+
+
+def _install_provider_route(store, provider: str):
+    adapter = _registered_provider_adapter(provider)
+    dynamic_keys.register_adapter_for_provider(provider, adapter)
+    store.services.router.routes = {
+        "minimax-fast": SimpleNamespace(adapters=[(adapter, 1.0)]),
+    }
+    return adapter
+
+
 @pytest.mark.asyncio
 async def test_list_requires_admin(client):
     http, _store = client
@@ -200,6 +310,219 @@ async def test_add_unknown_provider_rejected(client):
     )
     assert resp.status_code == 400
     assert "fictional" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_dry_run_does_not_persist_or_seed_pool(client):
+    """Verification probes a temporary adapter and leaves DB/pools untouched."""
+    http, store = client
+    base_adapter = _install_provider_route(store, "featherless")
+    pool = base_adapter._key_pool
+    api_key = "rc-featherless-verify-key-aaaaaaaa"
+    dry_run_adapter = MagicMock()
+    dry_run_adapter.chat_completion = AsyncMock(return_value={"id": "ok"})
+
+    with patch(
+        "serving.admin.provider_key_probe._make_adapter",
+        return_value=dry_run_adapter,
+    ) as make_adapter:
+        resp = await http.post(
+            "/admin/provider-keys/verify",
+            json={"provider": "featherless", "api_key": api_key},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True}
+    assert len(store.rows) == 0
+    assert api_key not in pool.snapshot_keys()
+    kind, cfg = make_adapter.call_args.args
+    assert kind == "featherless"
+    assert cfg["api_key"] == api_key
+    assert cfg["api_keys"] is None
+    assert cfg["base_url"] == "https://featherless.example/v1"
+    assert cfg["provider_model_id"] == "Provider/Test-Model"
+    dry_run_adapter.chat_completion.assert_awaited_once_with(
+        [{"role": "user", "content": "ping"}],
+        max_tokens=1,
+        temperature=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_can_probe_raw_route_entries(client):
+    """RouteWise may mask active adapters; verification should still inspect raw routes."""
+    http, store = client
+    featherless_adapter = _registered_provider_adapter("featherless")
+    featherless_adapter.config.model_type = None
+    openrouter_adapter = _registered_provider_adapter("openrouter")
+    dynamic_keys.register_adapter_for_provider("featherless", featherless_adapter)
+    store.services.router.routes = {
+        "minimax-fast": SimpleNamespace(
+            adapters=[(openrouter_adapter, 1.0)],
+            raw_adapters=[(featherless_adapter, 1.0, "minimax-fast:featherless-api")],
+        ),
+    }
+    api_key = "rc-featherless-raw-route-aaaaaaaa"
+    dry_run_adapter = MagicMock()
+    dry_run_adapter.chat_completion = AsyncMock(return_value={"id": "ok"})
+
+    with patch(
+        "serving.admin.provider_key_probe._make_adapter",
+        return_value=dry_run_adapter,
+    ) as make_adapter:
+        resp = await http.post(
+            "/admin/provider-keys/verify",
+            json={"provider": "featherless", "api_key": api_key},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    kind, cfg = make_adapter.call_args.args
+    assert kind == "featherless"
+    assert cfg["api_key"] == api_key
+    assert cfg["provider_model_id"] == "Provider/Test-Model"
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_matches_kimi_coding_route(client):
+    """Kimi keys verify against the coding-plan route kind."""
+    http, store = client
+    kimi_adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="kimi-k2.7-code",
+            name="kimi-k2.7-code",
+            provider="kimi_coding",
+            base_url="https://kimi.example/v1",
+            api_keys=["env-kimi-coding-key-1234567890"],
+            provider_model_id="kimi-for-coding",
+            endpoint_id="kimi-k2.7-code:kimi-api",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("kimi", kimi_adapter)
+    store.services.router.routes = {
+        "kimi-k2.7-code": SimpleNamespace(adapters=[(kimi_adapter, 1.0)]),
+    }
+    api_key = "kimi-candidate-key-aaaaaaaa"
+    dry_run_adapter = MagicMock()
+    dry_run_adapter.chat_completion = AsyncMock(return_value={"id": "ok"})
+
+    with patch(
+        "serving.admin.provider_key_probe._make_adapter",
+        return_value=dry_run_adapter,
+    ) as make_adapter:
+        resp = await http.post(
+            "/admin/provider-keys/verify",
+            json={"provider": "kimi", "api_key": api_key},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    kind, cfg = make_adapter.call_args.args
+    assert kind == "kimi_coding"
+    assert cfg["api_key"] == api_key
+    assert cfg["provider_model_id"] == "kimi-for-coding"
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_matches_pinned_openrouter_route(client):
+    """OpenRouter keys verify against pinned OpenRouter route variants."""
+    http, store = client
+    openrouter_adapter = OpenRouterAdapter(
+        ModelConfig(
+            id="openrouter-model",
+            name="openrouter-model",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_keys=["env-openrouter-key-1234567890"],
+            provider_model_id="openai/gpt-oss-120b",
+            endpoint_id="openrouter-model:openrouter-deepinfra-api",
+            openrouter_pinned_provider="deepinfra",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("openrouter", openrouter_adapter)
+    store.services.router.routes = {
+        "openrouter-model": SimpleNamespace(adapters=[(openrouter_adapter, 1.0)]),
+    }
+    api_key = "sk-or-candidate-key-aaaaaaaa"
+    dry_run_adapter = MagicMock()
+    dry_run_adapter.chat_completion = AsyncMock(return_value={"id": "ok"})
+
+    with patch(
+        "serving.admin.provider_key_probe._make_adapter",
+        return_value=dry_run_adapter,
+    ) as make_adapter:
+        resp = await http.post(
+            "/admin/provider-keys/verify",
+            json={"provider": "openrouter", "api_key": api_key},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    kind, cfg = make_adapter.call_args.args
+    assert kind == "openrouter[deepinfra]"
+    assert cfg["api_key"] == api_key
+    assert cfg["provider_model_id"] == "openai/gpt-oss-120b"
+    assert cfg["openrouter_pinned_provider"] == "deepinfra"
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_failure_returns_400_without_raw_key(client):
+    """Verification failures are reported without persisting or echoing the secret."""
+    http, store = client
+    _install_provider_route(store, "featherless")
+    api_key = "rc-featherless-bad-key-bbbbbbbb"
+    dry_run_adapter = MagicMock()
+    dry_run_adapter.chat_completion = AsyncMock(
+        side_effect=RuntimeError(f"upstream rejected {api_key}")
+    )
+
+    with patch(
+        "serving.admin.provider_key_probe._make_adapter",
+        return_value=dry_run_adapter,
+    ):
+        resp = await http.post(
+            "/admin/provider-keys/verify",
+            json={"provider": "featherless", "api_key": api_key},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 400
+    assert "Provider key verification failed" in resp.json()["detail"]
+    assert api_key not in resp.text
+    assert "[redacted]" in resp.json()["detail"]
+    assert len(store.rows) == 0
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_requires_registered_route(client):
+    """Provider whitelist alone is not enough; verify needs a configured route model."""
+    http, _store = client
+    dynamic_keys.register_known_provider("featherless")
+
+    resp = await http.post(
+        "/admin/provider-keys/verify",
+        json={"provider": "featherless", "api_key": "rc-featherless-key-cccccccc"},
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 400
+    assert "No registered route available" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_provider_key_providers_comes_from_runtime_registry(client):
+    """Provider choices for Keys are independent from quota-card support."""
+    http, _store = client
+    dynamic_keys.register_known_provider("featherless")
+    dynamic_keys.register_known_provider("kimi_coding")
+
+    resp = await http.get("/admin/provider-keys/providers", headers=AUTH)
+
+    assert resp.status_code == 200
+    assert "featherless" in resp.json()["providers"]
+    assert "kimi" in resp.json()["providers"]
+    assert "kimi_coding" not in resp.json()["providers"]
 
 
 @pytest.mark.asyncio
@@ -305,7 +628,7 @@ async def test_disable_and_enable_db_key_toggles_pool(client):
 @pytest.mark.asyncio
 async def test_disabled_keys_appear_in_list(client):
     """Disabled DB and env keys are surfaced in the list for re-enabling."""
-    http, store = client
+    http, _store = client
     env_key = "env-zai-listed-key-aaaaaaaa"
     pool = KeyPool(keys=[env_key], provider_label="zai")
     adapter = MagicMock()
@@ -441,6 +764,107 @@ async def test_disable_db_key_preserves_shared_env_value(client):
     assert store.rows[key_id].status == "disabled"
 
 
+@pytest.mark.asyncio
+async def test_delete_db_key_preserves_value_shared_by_another_db_row(client):
+    """Deleting one DB row keeps the value when another DB row still uses it.
+
+    Regression for the delete path: the disable path guards against evicting a
+    value still active via another source, but a hard-delete that did not repeat
+    the check would yank a credential a second, still-active DB row relies on —
+    stopping traffic until restart/re-enable.
+    """
+    http, store = client
+    shared = "shared-zai-dbrow-ffffffffffff"
+    pool = KeyPool(keys=["env-zai-other-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    first = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared},
+        headers=AUTH,
+    )
+    first_id = first.json()["key"]["id"]
+    second = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared},
+        headers=AUTH,
+    )
+    second_id = second.json()["key"]["id"]
+    assert shared in pool.snapshot_keys()
+
+    # Delete the first row — the second active row still owns the value, so it
+    # must remain in the pool.
+    resp = await http.delete(f"/admin/provider-keys/{first_id}", headers=AUTH)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pools_updated"] == 0
+    assert shared in pool.snapshot_keys()
+    assert first_id not in store.rows
+
+    # Deleting the last remaining row finally evicts the value.
+    resp2 = await http.delete(f"/admin/provider-keys/{second_id}", headers=AUTH)
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["pools_updated"] == 1
+    assert shared not in pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_enable_env_key_only_restores_to_owning_pool(client):
+    """Re-enabling an env key re-adds it only to adapters configured with it.
+
+    Regression for cross-pool leakage: a provider with two adapters carrying
+    distinct env credentials must not have one adapter's re-enabled key injected
+    into the other adapter's pool (which could fail auth or mix quotas).
+    """
+    http, _store = client
+    key_a = "env-zai-owner-a-aaaaaaaaaaaa"
+    key_b = "env-zai-owner-b-bbbbbbbbbbbb"
+    adapter_a = OpenAICompatAdapter(
+        ModelConfig(
+            id="owner-a-model",
+            name="owner-a-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[key_a],
+            provider_model_id="owner-a-model",
+        )
+    )
+    adapter_b = OpenAICompatAdapter(
+        ModelConfig(
+            id="owner-b-model",
+            name="owner-b-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[key_b],
+            provider_model_id="owner-b-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter_a)
+    dynamic_keys.register_adapter_for_provider("zai", adapter_b)
+
+    env_id = f"env:{dynamic_keys.env_key_hash(key_a)[:32]}"
+    dis = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert dis.status_code == 200, dis.text
+    assert key_a not in adapter_a._key_pool.snapshot_keys()
+
+    en = await http.post(
+        "/admin/provider-keys/enable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert en.status_code == 200, en.text
+    # Only the owning adapter (A) gets key_a back; B's pool is untouched.
+    assert en.json()["pools_updated"] == 1
+    assert key_a in adapter_a._key_pool.snapshot_keys()
+    assert key_a not in adapter_b._key_pool.snapshot_keys()
+    assert key_b in adapter_b._key_pool.snapshot_keys()
+
+
 def test_promotion_drops_disabled_static_env_key():
     """A disabled env key must not return when promotion re-seeds the pool.
 
@@ -560,6 +984,35 @@ async def test_list_combines_env_and_db_keys(client):
     payload_text = resp.text
     assert env_key not in payload_text
     assert db_key not in payload_text
+
+
+@pytest.mark.asyncio
+async def test_list_includes_numbered_featherless_env_keys(client, monkeypatch):
+    """Numbered provider env vars should appear in the Keys tab list."""
+    http, _store = client
+    keys = [
+        "rc_featherless_env_key_1111aaaa",
+        "rc_featherless_env_key_2222bbbb",
+        "rc_featherless_env_key_3333cccc",
+    ]
+    monkeypatch.setenv("FEATHERLESS_API_KEY", keys[0])
+    monkeypatch.setenv("FEATHERLESS_API_KEY2", keys[1])
+    monkeypatch.setenv("FEATHERLESS_API_KEY3", keys[2])
+    monkeypatch.delenv("FEATHERLESS_API_KEY4", raising=False)
+    dynamic_keys.register_known_provider("featherless")
+
+    resp = await http.get("/admin/provider-keys?provider=featherless", headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [item["key_prefix"] for item in body["keys"]] == [
+        "rc_feath...aaaa",
+        "rc_feath...bbbb",
+        "rc_feath...cccc",
+    ]
+    assert {item["source"] for item in body["keys"]} == {"env"}
+    for raw in keys:
+        assert raw not in resp.text
 
 
 @pytest.mark.asyncio
@@ -711,6 +1164,69 @@ async def test_disabled_env_key_is_removed_when_db_keys_apply_at_boot(store):
     await dynamic_keys.apply_db_keys_at_boot(store)
 
     assert pool.snapshot_keys() == [live_key]
+
+
+@pytest.mark.asyncio
+async def test_route_bound_db_key_is_not_seeded_into_provider_pool_at_boot(store):
+    """Provider-route scoped keys should not become global provider keys."""
+    global_key = "sk-zai-global-boot-key-aaaaaaaa"
+    route_key = "sk-zai-route-bound-key-bbbbbbbb"
+    await store.add_provider_key(
+        provider="zai",
+        api_key=global_key,
+        label=None,
+        created_by="admin",
+        key_id="global-key",
+    )
+    await store.add_provider_key(
+        provider="zai",
+        api_key=route_key,
+        label=None,
+        created_by="admin",
+        key_id="route-key",
+    )
+    store.route_configs = [{"api_key_id": "route-key"}]
+    pool = KeyPool(keys=["env-zai-live-at-boot-cccccccc"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    keys = pool.snapshot_keys()
+    assert global_key in keys
+    assert route_key not in keys
+
+
+@pytest.mark.asyncio
+async def test_route_candidate_bound_db_key_is_not_seeded_into_provider_pool_at_boot(store):
+    """Runtime-added candidate keys are also scoped to the route candidate."""
+    global_key = "sk-zai-global-candidate-key-aaaaaaaa"
+    candidate_key = "sk-zai-route-candidate-key-bbbbb"
+    await store.add_provider_key(
+        provider="zai",
+        api_key=global_key,
+        label=None,
+        created_by="admin",
+        key_id="global-key",
+    )
+    await store.add_provider_key(
+        provider="zai",
+        api_key=candidate_key,
+        label=None,
+        created_by="admin",
+        key_id="candidate-key",
+    )
+    store.route_candidates = [{"api_key_id": "candidate-key"}]
+    env_key = "env-zai-live-candidate-boot-cccccc"
+    pool = KeyPool(keys=[env_key], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    assert pool.snapshot_keys() == [env_key, global_key]
 
 
 @pytest.mark.asyncio

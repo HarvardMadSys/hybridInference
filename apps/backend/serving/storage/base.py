@@ -772,6 +772,71 @@ class OperationalStore(ABC):
     async def delete_weight_override(self, model_id: str, endpoint_id: str) -> bool:
         """Delete a provider weight override row. Returns True if removed."""
 
+    @abstractmethod
+    async def list_provider_route_configs_for_model(self, model_id: str) -> list[Row]:
+        """Return provider route override rows for one model ordered by route_id."""
+
+    @abstractmethod
+    async def list_all_provider_route_configs(self) -> list[Row]:
+        """Return all provider route override rows ordered by model_id and route_id."""
+
+    @abstractmethod
+    async def upsert_provider_route_config(
+        self,
+        model_id: str,
+        route_id: str,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a runtime provider route override row."""
+
+    @abstractmethod
+    async def delete_provider_route_config(self, model_id: str, route_id: str) -> bool:
+        """Delete a provider route override row. Returns True if removed."""
+
+    @abstractmethod
+    async def list_provider_route_candidates_for_model(self, model_id: str) -> list[Row]:
+        """Return DB-backed runtime provider route candidates for one model."""
+
+    @abstractmethod
+    async def list_all_provider_route_candidates(self) -> list[Row]:
+        """Return all DB-backed runtime provider route candidates."""
+
+    @abstractmethod
+    async def upsert_provider_route_candidate(
+        self,
+        model_id: str,
+        route_id: str,
+        route_type: str,
+        provider: str,
+        openrouter_sort: str | None,
+        base_url: str,
+        api_key_id: str | None,
+        provider_model_id: str,
+        quota_limit: int | None,
+        concurrency_limit: int | None,
+        weight: float,
+        updated_by: str | None,
+    ) -> None:
+        """Upsert a DB-backed runtime provider route candidate."""
+
+    @abstractmethod
+    async def delete_provider_route_candidate(self, model_id: str, route_id: str) -> bool:
+        """Delete a runtime provider route candidate row. Returns True if removed."""
+
+    @abstractmethod
+    async def delete_provider_route_candidate_with_config(
+        self,
+        model_id: str,
+        route_id: str,
+    ) -> bool:
+        """Atomically delete a route candidate and any matching override row."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod
@@ -826,11 +891,18 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def list_provider_keys_full(self, provider: str) -> list[str]:
+    async def list_provider_keys_full(
+        self,
+        provider: str,
+        *,
+        exclude_ids: set[str] | None = None,
+    ) -> list[str]:
         """Return raw active API keys for ``provider`` (boot-time only).
 
         Disabled keys are excluded so a disabled key is never re-seeded into a
-        live pool at boot.
+        live pool at boot. ``exclude_ids`` omits DB rows that are bound to
+        explicit provider-route configs/candidates, so route-scoped keys are not
+        injected into a provider's global pool during boot.
         """
 
     @abstractmethod

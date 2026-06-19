@@ -5,6 +5,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys
+from serving.admin.provider_key_probe import (
+    ProviderKeyProbeError,
+    probe_provider_key_with_existing_route,
+)
 from serving.schemas_admin import (
     AddProviderApiKeyRequest,
     AddProviderApiKeyResponse,
@@ -13,12 +17,15 @@ from serving.schemas_admin import (
     DisableProviderEnvKeyResponse,
     EnableProviderEnvKeyRequest,
     EnableProviderEnvKeyResponse,
+    ListProviderApiKeyProvidersResponse,
     ListProviderApiKeysResponse,
     ProviderApiKeyItem,
     SetProviderApiKeyStatusResponse,
+    VerifyProviderApiKeyRequest,
+    VerifyProviderApiKeyResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.servers.deps import get_operational_store, get_services, verify_admin_access
 from serving.utils.logging import get_logger
 
 router = APIRouter(prefix="/admin")
@@ -37,9 +44,35 @@ def _env_key_id(api_key: str) -> str:
     return f"env:{dynamic_keys.env_key_hash(api_key)[:32]}"
 
 
+def _env_keys_for_provider(provider: str) -> list[str]:
+    """Return live env-sourced keys from adapter pools plus numbered env vars."""
+    keys: list[str] = []
+    seen: set[str] = set()
+
+    for pool in dynamic_keys.get_pools_for_provider(provider):
+        for raw in pool.snapshot_keys():
+            if raw and raw not in seen:
+                seen.add(raw)
+                keys.append(raw)
+
+    for raw in dynamic_keys.configured_env_keys_for_provider(provider):
+        if raw and raw not in seen:
+            seen.add(raw)
+            keys.append(raw)
+
+    return keys
+
+
+def _known_key_providers() -> set[str]:
+    return {
+        dynamic_keys.normalize_key_provider(provider)
+        for provider in dynamic_keys.get_known_providers()
+    }
+
+
 def _validate_provider(provider: str) -> None:
     """Reject providers that did not appear in the loaded model registry."""
-    known = dynamic_keys.get_known_providers()
+    known = _known_key_providers()
     if provider not in known:
         raise HTTPException(
             status_code=400,
@@ -106,11 +139,17 @@ async def list_provider_keys(
         )
 
     for prov in providers_to_inspect:
-        # Candidate env keys include live pool keys AND the static keys of
-        # legacy single-api_key adapters that have not been promoted to a pool,
-        # so those env credentials are still surfaced for management.
+        # Candidate env keys union three sources so every env credential is
+        # surfaced for management: live pool keys + base/numbered env vars
+        # (``_env_keys_for_provider``) and the static keys of legacy
+        # single-api_key adapters not yet promoted to a pool
+        # (``list_candidate_env_keys``).
         seen: set[str] = set()
+        candidates = list(_env_keys_for_provider(prov))
         for raw in dynamic_keys.list_candidate_env_keys(prov):
+            if raw not in candidates:
+                candidates.append(raw)
+        for raw in candidates:
             if raw in db_raw_keys.get(prov, set()):
                 continue
             raw_hash = dynamic_keys.env_key_hash(raw)
@@ -155,6 +194,38 @@ async def list_provider_keys(
             )
 
     return ListProviderApiKeysResponse(provider=provider, keys=keys)
+
+
+@router.get("/provider-keys/providers", response_model=ListProviderApiKeyProvidersResponse)
+async def list_provider_key_providers(
+    _admin_id: str = Depends(verify_admin_access),
+) -> ListProviderApiKeyProvidersResponse:
+    """List providers that support runtime-managed API keys."""
+    return ListProviderApiKeyProvidersResponse(providers=sorted(_known_key_providers()))
+
+
+@router.post("/provider-keys/verify", response_model=VerifyProviderApiKeyResponse)
+async def verify_provider_key(
+    payload: VerifyProviderApiKeyRequest,
+    _admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+) -> VerifyProviderApiKeyResponse:
+    """Verify a provider API key against an existing registered provider route."""
+    _validate_provider(payload.provider)
+
+    api_key = payload.api_key.strip()
+    if not api_key:
+        raise HTTPException(422, "api_key must not be blank")
+
+    try:
+        await probe_provider_key_with_existing_route(
+            services,
+            provider=payload.provider,
+            api_key=api_key,
+        )
+    except ProviderKeyProbeError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+    return VerifyProviderApiKeyResponse(ok=True)
 
 
 @router.post("/provider-keys", response_model=AddProviderApiKeyResponse, status_code=201)
@@ -245,7 +316,11 @@ async def disable_provider_env_key(
         ) from exc
 
     target_key: str | None = None
+    candidates = list(_env_keys_for_provider(payload.provider))
     for raw in dynamic_keys.list_candidate_env_keys(payload.provider):
+        if raw not in candidates:
+            candidates.append(raw)
+    for raw in candidates:
         if raw in db_raw_keys:
             continue
         if _env_key_id(raw) == payload.env_key_id:
@@ -460,9 +535,22 @@ async def delete_provider_key(
     if not deleted:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    # ``remove_key_from_provider`` no-ops on env-configured keys with the
-    # same raw value, so we always pass the raw key without checking.
-    pools_updated = dynamic_keys.remove_key_from_provider(provider, raw_key)
+    # ``remove_key_from_provider`` no-ops on a value that was never DB-injected,
+    # but a value shared by *another* still-active source (a second DB row with
+    # the same value, or a non-disabled env key) must also be preserved —
+    # otherwise deleting one duplicate evicts the credential the other source
+    # still relies on. The row is already hard-deleted, so the active full list
+    # no longer includes it; if the value survives there or as an active env
+    # static key, leave it in the pool. (Mirrors the disable handler's guard.)
+    try:
+        active_after = set(await op_store.list_provider_keys_full(provider))
+    except Exception:
+        active_after = set()
+    shared = raw_key in active_after or dynamic_keys.is_active_env_static_key(provider, raw_key)
+    # When shared, leave both the pool entry and the ``_db_injected_keys``
+    # bookkeeping intact: the surviving source still owns the value, and a later
+    # delete of *that* row re-runs this same guard.
+    pools_updated = 0 if shared else dynamic_keys.remove_key_from_provider(provider, raw_key)
 
     await log_admin_action(
         op_store,

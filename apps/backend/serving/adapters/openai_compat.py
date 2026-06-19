@@ -289,6 +289,8 @@ class OpenAICompatAdapter(BaseAdapter):
         # Bound the loop to pool size — defensive; acquire already filters
         # cooled-down keys, so we shouldn't reacquire the same just-cooled one.
         max_attempts = self._key_pool.size()
+        if max_attempts <= 0:
+            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
         last_429_error: aiohttp.ClientResponseError | None = None
 
         for _ in range(max_attempts):
@@ -407,6 +409,8 @@ class OpenAICompatAdapter(BaseAdapter):
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
         provider = self.config.provider
         max_attempts = self._key_pool.size()
+        if max_attempts <= 0:
+            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
         last_429: aiohttp.ClientResponseError | None = None
 
         for _ in range(max_attempts):
