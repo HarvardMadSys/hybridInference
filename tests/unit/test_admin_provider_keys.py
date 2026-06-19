@@ -30,7 +30,8 @@ class _StubStore:
     def __init__(self) -> None:
         self.rows: dict[str, ProviderKeyRow] = {}
         self.raw: dict[str, list[str]] = {}
-        self.disabled: set[tuple[str, str]] = set()
+        # (provider, key_hash) -> key_prefix
+        self.disabled: dict[tuple[str, str], str] = {}
         self.audit: list[dict] = []
         self.fail_full_for: set[str] = set()
         self.fail_disabled_for: set[str] = set()
@@ -65,7 +66,18 @@ class _StubStore:
     async def list_provider_keys_full(self, provider: str) -> list[str]:
         if provider in self.fail_full_for:
             raise RuntimeError(f"boom-full-{provider}")
-        return [raw for _id, raw in self.raw.get(provider, [])]
+        return [
+            raw
+            for kid, raw in self.raw.get(provider, [])
+            if kid not in self.rows or self.rows[kid].status == "active"
+        ]
+
+    async def set_provider_key_status(self, key_id: str, status: str) -> bool:
+        row = self.rows.get(key_id)
+        if row is None:
+            return False
+        row.status = status
+        return True
 
     async def get_provider_key_full(self, key_id: str) -> tuple[str, str] | None:
         for provider, bucket in self.raw.items():
@@ -93,12 +105,24 @@ class _StubStore:
         key_prefix: str,
         disabled_by: str | None,
     ) -> None:
-        self.disabled.add((provider, key_hash))
+        self.disabled[(provider, key_hash)] = key_prefix
 
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
         if provider in self.fail_disabled_for:
             raise RuntimeError(f"boom-disabled-{provider}")
-        return {key_hash for prov, key_hash in self.disabled if prov == provider}
+        return {key_hash for (prov, key_hash) in self.disabled if prov == provider}
+
+    async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
+        if provider in self.fail_disabled_for:
+            raise RuntimeError(f"boom-disabled-{provider}")
+        return [
+            (key_hash, prefix)
+            for (prov, key_hash), prefix in self.disabled.items()
+            if prov == provider
+        ]
+
+    async def enable_provider_env_key(self, provider: str, key_hash: str) -> bool:
+        return self.disabled.pop((provider, key_hash), None) is not None
 
     async def log_admin_action(self, **kwargs):
         self.audit.append(kwargs)
@@ -143,8 +167,11 @@ async def client(monkeypatch, store):
         "list_provider_keys_full",
         "get_provider_key_full",
         "delete_provider_key",
+        "set_provider_key_status",
         "disable_provider_env_key",
         "list_disabled_provider_env_key_hashes",
+        "list_disabled_provider_env_keys",
+        "enable_provider_env_key",
         "log_admin_action",
     ):
         setattr(store_mock, attr, getattr(store, attr))
@@ -237,6 +264,105 @@ async def test_add_lazily_promotes_single_key_adapter(client):
     assert "env-key-original-1234567890" in adapter._key_pool.snapshot_keys()
 
 
+@pytest.mark.asyncio
+async def test_disable_and_enable_db_key_toggles_pool(client):
+    """A DB key can be disabled (removed from pool) and re-enabled (re-added)."""
+    http, store = client
+    pool = KeyPool(keys=["env-key-original-1234567890"], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    api_key = "sk-zai-toggle-abcdefghij12"
+    add_resp = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": api_key},
+        headers=AUTH,
+    )
+    key_id = add_resp.json()["key"]["id"]
+    assert api_key in pool.snapshot_keys()
+
+    # Disable -> removed from pool, status flips to disabled, key still persisted.
+    dis = await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+    assert dis.status_code == 200, dis.text
+    body = dis.json()
+    assert body["status"] == "disabled"
+    assert body["pools_updated"] == 1
+    assert api_key not in pool.snapshot_keys()
+    assert store.rows[key_id].status == "disabled"
+
+    # Disabled keys are excluded from the boot seeding list.
+    assert api_key not in await store.list_provider_keys_full("zai")
+
+    # Enable -> back in the pool, status active again.
+    en = await http.post(f"/admin/provider-keys/{key_id}/enable", headers=AUTH)
+    assert en.status_code == 200, en.text
+    assert en.json()["status"] == "active"
+    assert api_key in pool.snapshot_keys()
+    assert store.rows[key_id].status == "active"
+
+
+@pytest.mark.asyncio
+async def test_disabled_keys_appear_in_list(client):
+    """Disabled DB and env keys are surfaced in the list for re-enabling."""
+    http, store = client
+    env_key = "env-zai-listed-key-aaaaaaaa"
+    pool = KeyPool(keys=[env_key], provider_label="zai")
+    adapter = MagicMock()
+    adapter._key_pool = pool
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    # Disable the env key via the endpoint.
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+    dis = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert dis.status_code == 200, dis.text
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    items = listing.json()["keys"]
+    env_items = [k for k in items if k["source"] == "env"]
+    assert any(k["status"] == "disabled" and k["id"] == env_id for k in env_items)
+
+
+@pytest.mark.asyncio
+async def test_enable_env_key_restores_to_pool(client):
+    """Re-enabling a disabled env key recovers the raw key and re-adds it."""
+    http, _store = client
+    env_key = "env-zai-reenable-bbbbbbbbbb"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="reenable-model",
+            name="reenable-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[env_key],
+            provider_model_id="reenable-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    assert env_key in adapter._key_pool.snapshot_keys()
+
+    env_id = f"env:{dynamic_keys.env_key_hash(env_key)[:32]}"
+    await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert env_key not in adapter._key_pool.snapshot_keys()
+
+    en = await http.post(
+        "/admin/provider-keys/enable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert en.status_code == 200, en.text
+    assert en.json()["pools_updated"] == 1
+    assert env_key in adapter._key_pool.snapshot_keys()
+
+
 def test_promotion_drops_disabled_static_env_key():
     """A disabled env key must not return when promotion re-seeds the pool.
 
@@ -270,6 +396,41 @@ def test_promotion_drops_disabled_static_env_key():
     snapshot = adapter._key_pool.snapshot_keys()
     assert db_key in snapshot
     assert env_key not in snapshot
+
+
+@pytest.mark.asyncio
+async def test_boot_enforces_tombstone_on_single_key_adapter(store):
+    """At boot, a disabled env key is stripped even with no DB keys to promote.
+
+    Regression for the legacy single-key path: an adapter with no pool serves
+    ``config.api_key`` directly, bypassing tombstones. Boot must promote it to
+    a pool and drop the disabled key so the env key is not resurrected.
+    """
+    env_key = "env-zai-boot-cccccccccccc"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="boot-model",
+            name="boot-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_key=env_key,
+            provider_model_id="boot-model",
+        )
+    )
+    assert adapter._key_pool is None
+    dynamic_keys.register_known_provider("zai")
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    await store.disable_provider_env_key(
+        provider="zai",
+        key_hash=dynamic_keys.env_key_hash(env_key),
+        key_prefix="env-zai-b...cccc",
+        disabled_by=None,
+    )
+
+    await dynamic_keys.apply_db_keys_at_boot(store)
+
+    assert adapter._key_pool is not None
+    assert env_key not in adapter._key_pool.snapshot_keys()
 
 
 @pytest.mark.asyncio
@@ -377,9 +538,14 @@ async def test_env_key_can_be_disabled_from_admin_dashboard(client):
     assert store.disabled
     assert store.audit and store.audit[-1]["action"] == "disable_provider_env_key"
 
+    # The disabled env key is no longer active in any pool, but it is still
+    # surfaced (status="disabled") so it can be re-enabled from the dashboard.
     relisted = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
     assert relisted.status_code == 200, relisted.text
-    assert relisted.json()["keys"] == []
+    relisted_keys = relisted.json()["keys"]
+    assert [k["status"] for k in relisted_keys] == ["disabled"]
+    assert relisted_keys[0]["source"] == "env"
+    assert relisted_keys[0]["id"] == env_row["id"]
 
 
 @pytest.mark.asyncio

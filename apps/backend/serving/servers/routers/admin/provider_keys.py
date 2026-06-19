@@ -11,8 +11,11 @@ from serving.schemas_admin import (
     DeleteProviderApiKeyResponse,
     DisableProviderEnvKeyRequest,
     DisableProviderEnvKeyResponse,
+    EnableProviderEnvKeyRequest,
+    EnableProviderEnvKeyResponse,
     ListProviderApiKeysResponse,
     ProviderApiKeyItem,
+    SetProviderApiKeyStatusResponse,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, verify_admin_access
@@ -129,6 +132,26 @@ async def list_provider_keys(
                         created_at=None,
                     )
                 )
+
+    # Disabled env keys are no longer in any pool, so surface them from the
+    # tombstone table with their masked prefix and an enable affordance.
+    for prov in providers_to_inspect:
+        try:
+            tombstones = await op_store.list_disabled_provider_env_keys(prov)
+        except Exception as exc:
+            raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
+        for key_hash, key_prefix in tombstones:
+            keys.append(
+                ProviderApiKeyItem(
+                    id=f"env:{key_hash[:32]}",
+                    provider=prov,
+                    key_prefix=key_prefix,
+                    label=None,
+                    source="env",
+                    status="disabled",
+                    created_at=None,
+                )
+            )
 
     return ListProviderApiKeysResponse(provider=provider, keys=keys)
 
@@ -264,6 +287,149 @@ async def disable_provider_env_key(
     return DisableProviderEnvKeyResponse(
         id=payload.env_key_id,
         provider=payload.provider,
+        pools_updated=pools_updated,
+    )
+
+
+@router.post("/provider-keys/enable-env", response_model=EnableProviderEnvKeyResponse)
+async def enable_provider_env_key(
+    payload: EnableProviderEnvKeyRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> EnableProviderEnvKeyResponse:
+    """Re-enable a previously disabled env-sourced provider API key."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    _validate_provider(payload.provider)
+
+    try:
+        tombstones = await op_store.list_disabled_provider_env_keys(payload.provider)
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            f"Failed to load provider keys for {payload.provider}: {exc}",
+        ) from exc
+
+    # The list view exposes a truncated id (``env:{hash[:32]}``); recover the
+    # full hash from the tombstone rows so we can clear the right one.
+    target_hash: str | None = None
+    for key_hash, _prefix in tombstones:
+        if f"env:{key_hash[:32]}" == payload.env_key_id:
+            target_hash = key_hash
+            break
+
+    if target_hash is None:
+        raise HTTPException(404, "Disabled env provider key not found")
+
+    await op_store.enable_provider_env_key(payload.provider, target_hash)
+    pools_updated = dynamic_keys.enable_env_key_for_provider(payload.provider, target_hash)
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "enable_provider_env_key",
+        None,
+        {
+            "id": payload.env_key_id,
+            "provider": payload.provider,
+            "pools_updated": pools_updated,
+        },
+    )
+
+    return EnableProviderEnvKeyResponse(
+        id=payload.env_key_id,
+        provider=payload.provider,
+        pools_updated=pools_updated,
+    )
+
+
+@router.post("/provider-keys/{key_id}/disable", response_model=SetProviderApiKeyStatusResponse)
+async def disable_provider_key(
+    key_id: str,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> SetProviderApiKeyStatusResponse:
+    """Disable a DB-sourced provider key (reversible) and drop it from pools."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    target = await op_store.get_provider_key_full(key_id)
+    if target is None:
+        raise HTTPException(404, f"Provider key {key_id!r} not found")
+    provider, raw_key = target
+
+    updated = await op_store.set_provider_key_status(key_id, "disabled")
+    if not updated:
+        raise HTTPException(404, f"Provider key {key_id!r} not found")
+
+    pools_updated = dynamic_keys.remove_key_from_pools(provider, raw_key)
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "disable_provider_key",
+        None,
+        {
+            "id": key_id,
+            "provider": provider,
+            "key_prefix": _mask(raw_key),
+            "pools_updated": pools_updated,
+        },
+    )
+
+    return SetProviderApiKeyStatusResponse(
+        id=key_id,
+        provider=provider,
+        status="disabled",
+        pools_updated=pools_updated,
+    )
+
+
+@router.post("/provider-keys/{key_id}/enable", response_model=SetProviderApiKeyStatusResponse)
+async def enable_provider_key(
+    key_id: str,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> SetProviderApiKeyStatusResponse:
+    """Re-enable a disabled DB-sourced provider key and re-add it to pools."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    target = await op_store.get_provider_key_full(key_id)
+    if target is None:
+        raise HTTPException(404, f"Provider key {key_id!r} not found")
+    provider, raw_key = target
+
+    updated = await op_store.set_provider_key_status(key_id, "active")
+    if not updated:
+        raise HTTPException(404, f"Provider key {key_id!r} not found")
+
+    pools_updated = dynamic_keys.add_key_to_provider(provider, raw_key)
+    if pools_updated == 0:
+        logger.warning(
+            "provider key %r re-enabled but attached to 0 pools for provider %r",
+            key_id,
+            provider,
+        )
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "enable_provider_key",
+        None,
+        {
+            "id": key_id,
+            "provider": provider,
+            "key_prefix": _mask(raw_key),
+            "pools_updated": pools_updated,
+        },
+    )
+
+    return SetProviderApiKeyStatusResponse(
+        id=key_id,
+        provider=provider,
+        status="active",
         pools_updated=pools_updated,
     )
 

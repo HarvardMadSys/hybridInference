@@ -112,6 +112,29 @@ class OpenAICompatAdapter(BaseAdapter):
             self._usage_profile = ProviderProfile.DEFAULT
         self._usage_normalizer = get_usage_normalizer(self._usage_profile)
 
+    def ensure_key_pool(self) -> KeyPool | None:
+        """Create a pool from the adapter's static keys if it has none yet.
+
+        Used to enforce env-key tombstones even when no runtime key is present:
+        a single-``api_key`` adapter otherwise serves ``config.api_key`` via the
+        legacy path, bypassing tombstones. Returns the pool (existing or new),
+        or None when there is no static key to seed.
+        """
+        if self._key_pool is not None:
+            return self._key_pool
+        seed: list[str] = []
+        if self.config.api_keys:
+            seed.extend(
+                k.strip() for k in self.config.api_keys if isinstance(k, str) and k.strip()
+            )
+        static = self.config.api_key
+        if isinstance(static, str) and static.strip() and static.strip() not in seed:
+            seed.append(static.strip())
+        if not seed:
+            return None
+        self._key_pool = KeyPool(keys=seed, provider_label=self.config.provider)
+        return self._key_pool
+
     def add_runtime_key(self, key: str) -> bool:
         """Attach a runtime-managed API key, creating the pool if needed.
 

@@ -1124,6 +1124,30 @@ class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimporte
     pools_updated: int
 
 
+class EnableProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for re-enabling a disabled env-sourced provider API key."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+
+
+class EnableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/enable-env``."""
+
+    id: str
+    provider: str
+    pools_updated: int
+
+
+class SetProviderApiKeyStatusResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for enabling/disabling a DB-sourced provider API key."""
+
+    id: str
+    provider: str
+    status: Literal["active", "disabled"]
+    pools_updated: int
+
+
 # ============================================================
 # Site Updates (homepage announcements / banner)
 # ============================================================

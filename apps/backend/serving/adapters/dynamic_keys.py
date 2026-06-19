@@ -134,6 +134,98 @@ def _attach_key_to_adapter_locked(
     return attached
 
 
+def remove_key_from_pools(provider: str, key: str) -> int:
+    """Remove *key* from every live pool for *provider*, regardless of source.
+
+    Used by the DB-key disable toggle: the DB row's ``status`` is the source of
+    truth for whether the key is enabled, so (unlike the env-key path) no hash
+    tombstone is recorded here. Returns the number of pools the key left.
+    """
+    with _lock:
+        pools = _pools_for_provider_locked(provider)
+        return sum(1 for pool in pools if pool.remove_key(key))
+
+
+def _gather_static_keys(adapter: object) -> list[str]:
+    """Return the env-sourced static keys an adapter was configured with."""
+    cfg = getattr(adapter, "config", None)
+    if cfg is None:
+        return []
+    out: list[str] = []
+    ak = getattr(cfg, "api_key", None)
+    if isinstance(ak, str) and ak.strip():
+        out.append(ak.strip())
+    aks = getattr(cfg, "api_keys", None)
+    if aks:
+        out.extend(k.strip() for k in aks if isinstance(k, str) and k.strip())
+    return out
+
+
+def _find_env_key_by_hash_locked(provider: str, key_hash: str) -> str | None:
+    """Recover a raw env-sourced key for *provider* whose hash matches.
+
+    Env keys are not stored in the DB (only a tombstone hash + prefix), so to
+    re-enable one we recover the raw value from a registered adapter's static
+    config (``api_key`` / ``api_keys``).
+    """
+    for adapter in _adapters_by_provider.get(provider, []):
+        for raw in _gather_static_keys(adapter):
+            if env_key_hash(raw) == key_hash:
+                return raw
+    return None
+
+
+def enforce_disabled_static_keys(provider: str, disabled_hashes: set[str]) -> None:
+    """Ensure disabled env keys are never served via the legacy single-key path.
+
+    A single-``api_key`` adapter with no pool serves ``config.api_key``
+    directly, bypassing tombstones. When *provider* has disabled-env-key
+    hashes, promote any such adapter whose static key is disabled to a pool and
+    drop the disabled key — so e.g. an add-key → disable-env → delete-key
+    history cannot resurrect the disabled env key after a restart. Adapters
+    that already have a pool simply have their disabled keys removed.
+    """
+    if not disabled_hashes:
+        return
+    with _lock:
+        for adapter in _adapters_by_provider.get(provider, []):
+            pool = getattr(adapter, "_key_pool", None)
+            if pool is None:
+                statics = _gather_static_keys(adapter)
+                if not any(env_key_hash(k) in disabled_hashes for k in statics):
+                    continue
+                ensure = getattr(adapter, "ensure_key_pool", None)
+                if not callable(ensure):
+                    continue
+                pool = ensure()
+                if pool is None:
+                    continue
+            for existing in pool.snapshot_keys():
+                if env_key_hash(existing) in disabled_hashes:
+                    pool.remove_key(existing)
+
+
+def enable_env_key_for_provider(provider: str, key_hash: str) -> int:
+    """Re-enable a disabled env key: clear the tombstone and re-add to pools.
+
+    Clears the in-memory disabled-hash set and re-injects the raw key
+    (recovered from adapter config) into every live pool. Returns the number
+    of pools updated; 0 when the raw key can no longer be recovered (e.g. the
+    env var was removed since it was disabled).
+    """
+    with _lock:
+        disabled = _disabled_env_key_hashes.get(provider)
+        if disabled is not None:
+            disabled.discard(key_hash)
+        raw = _find_env_key_by_hash_locked(provider, key_hash)
+        if raw is None:
+            return 0
+        pools = _pools_for_provider_locked(provider)
+        for pool in pools:
+            pool.add_key(raw)
+        return len(pools)
+
+
 def add_key_to_provider(provider: str, key: str) -> int:
     """Attach *key* to every pool-capable adapter registered for *provider*.
 
@@ -205,10 +297,10 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
         if disabled_hashes:
             with _lock:
                 _disabled_env_key_hashes[provider] = set(disabled_hashes)
-            for pool in get_pools_for_provider(provider):
-                for key in pool.snapshot_keys():
-                    if env_key_hash(key) in disabled_hashes:
-                        pool.remove_key(key)
+            # Promote pool-less single-key adapters whose static key is disabled
+            # and strip disabled keys from every pool, so the legacy single-key
+            # path can never serve a tombstoned env key after a restart.
+            enforce_disabled_static_keys(provider, set(disabled_hashes))
 
         try:
             keys = await operational_store.list_provider_keys_full(provider)

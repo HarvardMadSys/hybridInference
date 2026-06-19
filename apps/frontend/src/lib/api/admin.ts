@@ -1128,6 +1128,19 @@ export interface DisableProviderEnvKeyResponse {
   pools_updated: number;
 }
 
+export interface EnableProviderEnvKeyResponse {
+  id: string;
+  provider: string;
+  pools_updated: number;
+}
+
+export interface SetProviderApiKeyStatusResponse {
+  id: string;
+  provider: string;
+  status: 'active' | 'disabled';
+  pools_updated: number;
+}
+
 export async function listProviderKeys(provider?: string): Promise<ListProviderApiKeysResponse> {
   const params = new URLSearchParams();
   if (provider) params.set('provider', provider);
@@ -1171,6 +1184,31 @@ export async function disableProviderEnvKey(
     body: JSON.stringify({ provider, env_key_id: envKeyId }),
   });
   return jsonOrThrow<DisableProviderEnvKeyResponse>(resp);
+}
+
+export async function enableProviderEnvKey(
+  provider: string,
+  envKeyId: string,
+): Promise<EnableProviderEnvKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/enable-env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, env_key_id: envKeyId }),
+  });
+  return jsonOrThrow<EnableProviderEnvKeyResponse>(resp);
+}
+
+export async function setProviderKeyStatus(
+  id: string,
+  enabled: boolean,
+): Promise<SetProviderApiKeyStatusResponse> {
+  const action = enabled ? 'enable' : 'disable';
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/provider-keys/${encodeURIComponent(id)}/${action}`,
+    { method: 'POST' },
+  );
+  return jsonOrThrow<SetProviderApiKeyStatusResponse>(resp);
 }
 
 // ========================================

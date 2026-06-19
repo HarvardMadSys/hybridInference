@@ -2439,18 +2439,22 @@ class PostgresOperationalStore(OperationalStore):
         return key_id
 
     async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
-        """Return masked active provider key rows, newest first."""
+        """Return masked provider key rows (active and disabled), newest first.
+
+        Disabled rows are included so the admin UI can show them with an enable
+        toggle; ``status`` distinguishes the two.
+        """
         async with self._pool.acquire() as conn:
             if provider is None:
                 rows = await conn.fetch(
                     "SELECT id, provider, key_prefix, label, status, created_at "
-                    "FROM provider_api_keys WHERE status = 'active' "
+                    "FROM provider_api_keys "
                     "ORDER BY created_at DESC"
                 )
             else:
                 rows = await conn.fetch(
                     "SELECT id, provider, key_prefix, label, status, created_at "
-                    "FROM provider_api_keys WHERE status = 'active' AND provider = $1 "
+                    "FROM provider_api_keys WHERE provider = $1 "
                     "ORDER BY created_at DESC",
                     provider,
                 )
@@ -2487,6 +2491,18 @@ class PostgresOperationalStore(OperationalStore):
         if row is None:
             return None
         return (row["provider"], row["api_key"])
+
+    async def set_provider_key_status(self, key_id: str, status: str) -> bool:
+        """Set a provider key row's status. Returns True when a row was updated."""
+        if status not in ("active", "disabled"):
+            raise ValueError(f"invalid provider key status: {status!r}")
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "UPDATE provider_api_keys SET status = $2 WHERE id = $1",
+                key_id,
+                status,
+            )
+        return _parse_command_tag_count(tag) > 0
 
     async def delete_provider_key(self, key_id: str) -> bool:
         """Hard-delete the provider key row. Returns True when a row was removed."""
@@ -2529,6 +2545,27 @@ class PostgresOperationalStore(OperationalStore):
                 provider,
             )
         return {r["key_hash"] for r in rows}
+
+    async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
+        """Return ``(key_hash, key_prefix)`` for disabled env keys of *provider*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key_hash, key_prefix FROM disabled_provider_env_keys "
+                "WHERE provider = $1 ORDER BY disabled_at DESC",
+                provider,
+            )
+        return [(r["key_hash"], r["key_prefix"]) for r in rows]
+
+    async def enable_provider_env_key(self, provider: str, key_hash: str) -> bool:
+        """Delete an env-key tombstone. Returns True when a row was removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM disabled_provider_env_keys "
+                "WHERE provider = $1 AND key_hash = $2",
+                provider,
+                key_hash,
+            )
+        return _parse_command_tag_count(tag) > 0
 
 
 def _mask_provider_key(api_key: str) -> str:
