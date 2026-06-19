@@ -106,32 +106,33 @@ async def list_provider_keys(
         )
 
     for prov in providers_to_inspect:
-        pools = dynamic_keys.get_pools_for_provider(prov)
+        # Candidate env keys include live pool keys AND the static keys of
+        # legacy single-api_key adapters that have not been promoted to a pool,
+        # so those env credentials are still surfaced for management.
         seen: set[str] = set()
-        for pool in pools:
-            for raw in pool.snapshot_keys():
-                if raw in db_raw_keys.get(prov, set()):
-                    continue
-                raw_hash = dynamic_keys.env_key_hash(raw)
-                if raw_hash in disabled_hashes.get(prov, set()) or dynamic_keys.is_env_key_disabled(
-                    prov,
-                    raw_hash,
-                ):
-                    continue
-                if raw in seen:
-                    continue
-                seen.add(raw)
-                keys.append(
-                    ProviderApiKeyItem(
-                        id=_env_key_id(raw),
-                        provider=prov,
-                        key_prefix=_mask(raw),
-                        label=None,
-                        source="env",
-                        status="active",
-                        created_at=None,
-                    )
+        for raw in dynamic_keys.list_candidate_env_keys(prov):
+            if raw in db_raw_keys.get(prov, set()):
+                continue
+            raw_hash = dynamic_keys.env_key_hash(raw)
+            if raw_hash in disabled_hashes.get(prov, set()) or dynamic_keys.is_env_key_disabled(
+                prov,
+                raw_hash,
+            ):
+                continue
+            if raw in seen:
+                continue
+            seen.add(raw)
+            keys.append(
+                ProviderApiKeyItem(
+                    id=_env_key_id(raw),
+                    provider=prov,
+                    key_prefix=_mask(raw),
+                    label=None,
+                    source="env",
+                    status="active",
+                    created_at=None,
                 )
+            )
 
     # Disabled env keys are no longer in any pool, so surface them from the
     # tombstone table with their masked prefix and an enable affordance.
@@ -244,14 +245,11 @@ async def disable_provider_env_key(
         ) from exc
 
     target_key: str | None = None
-    for pool in dynamic_keys.get_pools_for_provider(payload.provider):
-        for raw in pool.snapshot_keys():
-            if raw in db_raw_keys:
-                continue
-            if _env_key_id(raw) == payload.env_key_id:
-                target_key = raw
-                break
-        if target_key is not None:
+    for raw in dynamic_keys.list_candidate_env_keys(payload.provider):
+        if raw in db_raw_keys:
+            continue
+        if _env_key_id(raw) == payload.env_key_id:
+            target_key = raw
             break
 
     if target_key is None:
@@ -363,7 +361,16 @@ async def disable_provider_key(
     if not updated:
         raise HTTPException(404, f"Provider key {key_id!r} not found")
 
-    pools_updated = dynamic_keys.remove_key_from_pools(provider, raw_key)
+    # Don't evict the raw value from the pool if it is still active via another
+    # source — another active DB row with the same value, or a non-disabled
+    # env-configured key sharing it. (status was already flipped, so the active
+    # full list no longer includes this row.)
+    try:
+        active_after = set(await op_store.list_provider_keys_full(provider))
+    except Exception:
+        active_after = set()
+    shared = raw_key in active_after or dynamic_keys.is_active_env_static_key(provider, raw_key)
+    pools_updated = 0 if shared else dynamic_keys.remove_key_from_pools(provider, raw_key)
 
     await log_admin_action(
         op_store,

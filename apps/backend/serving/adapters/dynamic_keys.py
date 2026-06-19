@@ -84,21 +84,76 @@ def is_env_key_disabled(provider: str, key_hash: str) -> bool:
         return key_hash in _disabled_env_key_hashes.get(provider, set())
 
 
+def list_candidate_env_keys(provider: str) -> list[str]:
+    """Return raw keys that may be env-sourced and manageable for *provider*.
+
+    Union of (a) all keys currently in live pools and (b) the static
+    ``api_key`` / ``api_keys`` of adapters not yet promoted to a pool — so a
+    legacy single-``api_key`` route's env credential is surfaced for the admin
+    list and ``disable-env`` even though it has no pool yet. The caller filters
+    out DB-injected and already-disabled keys. Order is stable (deduped).
+    """
+    with _lock:
+        out: list[str] = []
+        for pool in _pools_for_provider_locked(provider):
+            for k in pool.snapshot_keys():
+                if k not in out:
+                    out.append(k)
+        for adapter in _adapters_by_provider.get(provider, []):
+            if getattr(adapter, "_key_pool", None) is not None:
+                continue
+            for k in _gather_static_keys(adapter):
+                if k not in out:
+                    out.append(k)
+        return out
+
+
+def is_active_env_static_key(provider: str, key: str) -> bool:
+    """Return True when *key* is an env-configured static key still in use.
+
+    Used to avoid evicting a raw value from the pool when disabling a DB row
+    that happens to share its value with a (non-disabled) env-sourced key.
+    """
+    with _lock:
+        if env_key_hash(key) in _disabled_env_key_hashes.get(provider, set()):
+            return False
+        return any(
+            key in _gather_static_keys(adapter)
+            for adapter in _adapters_by_provider.get(provider, [])
+        )
+
+
 def env_key_hash(key: str) -> str:
     """Return the stable hash used to identify env-sourced provider keys."""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
-    """Disable an env-sourced key in all live pools for *provider*.
+    """Disable an env-sourced key for *provider* and remove it from rotation.
 
     The hash is tracked so the admin list view can continue filtering the key
-    after the raw key has been removed from the pools.
+    after the raw key has been removed from the pools. Pool-less single-key
+    adapters whose static key is being disabled are promoted to a pool first,
+    otherwise the legacy single-key request path would keep serving the
+    disabled key. Returns the number of pools the key was removed from.
     """
     with _lock:
         _disabled_env_key_hashes.setdefault(provider, set()).add(key_hash)
-        pools = _pools_for_provider_locked(provider)
-        return sum(1 for pool in pools if pool.remove_key(key))
+        updated = 0
+        for adapter in _adapters_by_provider.get(provider, []):
+            pool = getattr(adapter, "_key_pool", None)
+            if pool is None:
+                if key not in _gather_static_keys(adapter):
+                    continue
+                ensure = getattr(adapter, "ensure_key_pool", None)
+                if not callable(ensure):
+                    continue
+                pool = ensure()
+                if pool is None:
+                    continue
+            if pool.remove_key(key):
+                updated += 1
+        return updated
 
 
 def _attach_key_to_adapter_locked(

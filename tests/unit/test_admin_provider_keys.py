@@ -363,6 +363,84 @@ async def test_enable_env_key_restores_to_pool(client):
     assert env_key in adapter._key_pool.snapshot_keys()
 
 
+@pytest.mark.asyncio
+async def test_single_key_env_credential_is_listed_and_disableable(client):
+    """A legacy single-api_key route's env credential is manageable w/o a pool.
+
+    Regression for the gap where the list and disable-env only inspected pools:
+    a pool-less single-key adapter's static key must appear in the list and be
+    disable-able (promoted to a pool and stripped).
+    """
+    http, _store = client
+    env_key = "env-zai-single-only-dddddddddd"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="single-model",
+            name="single-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_key=env_key,
+            provider_model_id="single-model",
+        )
+    )
+    assert adapter._key_pool is None
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+
+    listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    env_items = [k for k in listing.json()["keys"] if k["source"] == "env"]
+    assert len(env_items) == 1 and env_items[0]["status"] == "active"
+    env_id = env_items[0]["id"]
+
+    dis = await http.post(
+        "/admin/provider-keys/disable-env",
+        json={"provider": "zai", "env_key_id": env_id},
+        headers=AUTH,
+    )
+    assert dis.status_code == 200, dis.text
+    assert dis.json()["pools_updated"] == 1
+    # Adapter was promoted and the disabled key stripped.
+    assert adapter._key_pool is not None
+    assert env_key not in adapter._key_pool.snapshot_keys()
+
+    relist = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
+    env_after = [k for k in relist.json()["keys"] if k["source"] == "env"]
+    assert [k["status"] for k in env_after] == ["disabled"]
+
+
+@pytest.mark.asyncio
+async def test_disable_db_key_preserves_shared_env_value(client):
+    """Disabling a DB row keeps the raw value when an env key still shares it."""
+    http, store = client
+    shared = "shared-zai-value-eeeeeeeeeeee"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="shared-model",
+            name="shared-model",
+            provider="zai",
+            base_url="https://api.example.com",
+            api_keys=[shared],
+            provider_model_id="shared-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("zai", adapter)
+    assert shared in adapter._key_pool.snapshot_keys()
+
+    # Add a DB row whose value collides with the active env key.
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": shared},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+
+    dis = await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+    assert dis.status_code == 200, dis.text
+    # The shared value is still active via the env key, so it stays in the pool.
+    assert dis.json()["pools_updated"] == 0
+    assert shared in adapter._key_pool.snapshot_keys()
+    assert store.rows[key_id].status == "disabled"
+
+
 def test_promotion_drops_disabled_static_env_key():
     """A disabled env key must not return when promotion re-seeds the pool.
 
