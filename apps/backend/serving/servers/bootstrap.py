@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
@@ -38,11 +39,47 @@ from .deps import AppServices
 from .registry import ModelRegistrationInfo, register_from_models_yaml
 
 logger = get_logger(__name__)
+MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 
 # Strong references to fire-and-forget background tasks created at startup.
 # asyncio holds only weak refs to running tasks, so without this set the
 # garbage collector can cancel mid-flight tasks.
 _BACKGROUND_TASKS: set = set()
+
+
+def _collect_routewise_routers(
+    model_router_registry: ModelRouterRegistry,
+    model_infos: list[ModelRegistrationInfo],
+    managed_routers: list[Any],
+) -> tuple[list[Any], dict[int, set[str]], dict[int, dict[str, str]]]:
+    """Collect RouteWise routers and their model aliases for lifecycle/bootstrap."""
+    from routing.routewise.router import RouteWiseRouter as _RWR
+
+    routewise_routers: list[_RWR] = []
+    model_ids_by_router: dict[int, set[str]] = {}
+    donor_overrides_by_router: dict[int, dict[str, str]] = {}
+    aliases_by_model = {info.model_id: list(info.aliases) for info in model_infos}
+    managed_ids = {id(existing) for existing in managed_routers}
+    for info in model_infos:
+        routewise_router = model_router_registry.get_router(info.model_id)
+        if not isinstance(routewise_router, _RWR):
+            continue
+        model_ids_by_router.setdefault(id(routewise_router), set()).update(
+            [info.model_id, *info.aliases]
+        )
+        donors = getattr(routewise_router.config, "envelope_bootstrap_donor_models", None) or []
+        for donor in donors:
+            if donor == info.model_id:
+                continue
+            overrides = donor_overrides_by_router.setdefault(id(routewise_router), {})
+            for donor_id in (donor, *aliases_by_model.get(donor, [])):
+                overrides[donor_id] = info.model_id
+        if all(id(existing) != id(routewise_router) for existing in routewise_routers):
+            routewise_routers.append(routewise_router)
+        if id(routewise_router) not in managed_ids:
+            managed_routers.append(routewise_router)
+            managed_ids.add(id(routewise_router))
+    return routewise_routers, model_ids_by_router, donor_overrides_by_router
 
 
 async def _refresh_weight_override_snapshots(
@@ -126,6 +163,60 @@ async def _bootstrap_routewise_from_logs(
                 model_ids,
                 exc_info=True,
             )
+
+
+async def _reset_failed_runtime_router_override(
+    *,
+    managed_router: Any,
+    model_router_registry: ModelRouterRegistry | None,
+    managed_routers: list[Any],
+    operational_store: Any,
+) -> bool:
+    """Reset a DB-backed router override that cannot start.
+
+    YAML-configured RouteWise routers still fail fast when envelope calibration
+    is required. This path is only for stale runtime overrides from older admin
+    writes that would otherwise brick startup before an admin can reset them.
+    """
+    if model_router_registry is None:
+        return False
+    model_id = getattr(managed_router, "_model_router_override_id", None)
+    fallback_strategy = getattr(managed_router, "_model_router_fallback_strategy", None)
+    if not isinstance(model_id, str) or not isinstance(fallback_strategy, str):
+        return False
+
+    logger.warning(
+        "Runtime model router override failed to start; resetting model=%s to strategy=%s",
+        model_id,
+        fallback_strategy,
+    )
+    model_router_registry.set_router_override(model_id, fallback_strategy)
+    fallback_router = model_router_registry.get_router(model_id)
+    managed_routers[:] = [
+        router_obj for router_obj in managed_routers if id(router_obj) != id(managed_router)
+    ]
+
+    if operational_store is not None:
+        try:
+            await operational_store.set_setting(
+                f"{MODEL_ROUTER_STRATEGY_SETTING_PREFIX}{model_id}",
+                fallback_strategy,
+                "string",
+                "bootstrap",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist runtime model router override reset for model=%s",
+                model_id,
+                exc_info=True,
+            )
+
+    if isinstance(fallback_router, ManagedRouter) and all(
+        id(existing) != id(fallback_router) for existing in managed_routers
+    ):
+        await fallback_router.start()
+        managed_routers.append(fallback_router)
+    return True
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -416,29 +507,11 @@ async def initialize() -> AppServices:
         logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
 
     managed_routers = list(model_router_registry.managed_routers())
-    from routing.routewise.router import RouteWiseRouter as _RWR
-
-    routewise_routers: list[_RWR] = []
-    routewise_model_ids_by_router: dict[int, set[str]] = {}
-    routewise_donor_overrides_by_router: dict[int, dict[str, str]] = {}
-    aliases_by_model = {info.model_id: list(info.aliases) for info in model_infos}
-    for info in model_infos:
-        r = model_router_registry.get_router(info.model_id)
-        if isinstance(r, _RWR):
-            routewise_model_ids_by_router.setdefault(id(r), set()).update(
-                [info.model_id, *info.aliases]
-            )
-            donors = getattr(r.config, "envelope_bootstrap_donor_models", None) or []
-            for donor in donors:
-                if donor == info.model_id:
-                    continue
-                overrides = routewise_donor_overrides_by_router.setdefault(id(r), {})
-                for donor_id in (donor, *aliases_by_model.get(donor, [])):
-                    overrides[donor_id] = info.model_id
-            if all(id(existing) != id(r) for existing in routewise_routers):
-                routewise_routers.append(r)
-            if all(id(existing) != id(r) for existing in managed_routers):
-                managed_routers.append(r)
+    (
+        routewise_routers,
+        routewise_model_ids_by_router,
+        routewise_donor_overrides_by_router,
+    ) = _collect_routewise_routers(model_router_registry, model_infos, managed_routers)
 
     # Build store abstractions
     operational_store = None
@@ -508,6 +581,54 @@ async def initialize() -> AppServices:
             await apply_db_keys_at_boot(operational_store)
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider keys at boot: {exc}")
+        try:
+            from serving.servers.routers.admin.provider_routes import (
+                apply_persisted_model_router_strategy_overrides,
+                apply_persisted_provider_route_candidates,
+                apply_persisted_provider_route_configs,
+            )
+
+            provider_route_services = AppServices(
+                router=router,
+                operational_store=operational_store,
+                model_router_registry=model_router_registry,
+                managed_routers=managed_routers,
+            )
+            await apply_persisted_model_router_strategy_overrides(
+                provider_route_services,
+                operational_store,
+            )
+            (
+                updated_routewise_routers,
+                updated_routewise_model_ids_by_router,
+                updated_routewise_donor_overrides_by_router,
+            ) = _collect_routewise_routers(model_router_registry, model_infos, managed_routers)
+            existing_routewise_ids = {id(router_obj) for router_obj in routewise_routers}
+            new_routewise_routers = [
+                router_obj
+                for router_obj in updated_routewise_routers
+                if id(router_obj) not in existing_routewise_ids
+            ]
+            if new_routewise_routers:
+                await _bootstrap_routewise_from_logs(
+                    log_store,
+                    new_routewise_routers,
+                    updated_routewise_model_ids_by_router,
+                    updated_routewise_donor_overrides_by_router,
+                )
+                routewise_routers = updated_routewise_routers
+                routewise_model_ids_by_router = updated_routewise_model_ids_by_router
+                routewise_donor_overrides_by_router = updated_routewise_donor_overrides_by_router
+            await apply_persisted_provider_route_candidates(
+                provider_route_services,
+                operational_store,
+            )
+            await apply_persisted_provider_route_configs(
+                provider_route_services,
+                operational_store,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to apply DB-backed provider route configs at boot: {exc}")
 
     # Runtime settings (DB-backed feature flags with TTL cache)
     runtime_settings = None
@@ -615,12 +736,21 @@ async def initialize() -> AppServices:
     # Start managed router lifecycle hooks only after the rest of bootstrap has
     # succeeded, so a later startup failure cannot leave background tasks
     # running without a matching shutdown.
-    for managed_router in managed_routers:
+    for managed_router in list(managed_routers):
         try:
             await managed_router.start()
         except EnvelopeNotCalibratedError:
-            # RouteWise quota shadow pricing requires workload-derived [L, U].
-            # Do not silently fall back to a fabricated envelope.
+            reset = await _reset_failed_runtime_router_override(
+                managed_router=managed_router,
+                model_router_registry=model_router_registry,
+                managed_routers=managed_routers,
+                operational_store=operational_store,
+            )
+            if reset:
+                continue
+            # YAML-configured RouteWise quota shadow pricing requires
+            # workload-derived [L, U]. Do not silently fall back to a fabricated
+            # envelope for real config.
             raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Managed router start() failed: {exc}")

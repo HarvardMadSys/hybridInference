@@ -131,6 +131,21 @@ class TestModelRouterRegistry:
         router = reg.get_router("glm-4.7")
         assert isinstance(router, RouteWiseRouter)
 
+    def test_configured_router_name_ignores_runtime_override(self):
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+
+        reg = ModelRouterRegistry(
+            models_config={"glm-4.7": {"router": "fixed"}},
+            default_router_name="fixed",
+        )
+        reg.bind_fixed_router(FixedRouter())
+
+        reg.set_router_override("glm-4.7", "routewise")
+
+        assert reg.get_router_name("glm-4.7") == "routewise"
+        assert reg.get_configured_router_name("glm-4.7") == "fixed"
+
     def test_get_router_unknown_strategy_raises(self):
         from routing.model_router_registry import ModelRouterRegistry
 

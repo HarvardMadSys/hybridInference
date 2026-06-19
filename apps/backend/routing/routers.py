@@ -26,6 +26,9 @@ if TYPE_CHECKING:
 from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.utils import context as req_ctx
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Strong references to fire-and-forget Slack alert tasks. asyncio holds only
 # weak refs to scheduled tasks, so without this set the GC may cancel an alert
@@ -411,7 +414,23 @@ class _CircuitBreaker:
         with self._lock:
             self.consecutive_failures = 0
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
+                # Capture how long the circuit stayed open before clearing the
+                # timestamp, so the recovery log carries the outage duration.
+                duration_ms = (
+                    (time.perf_counter() - self.last_opened) * 1000.0
+                    if self.last_opened is not None
+                    else None
+                )
                 self.state = _CircuitState.CLOSED
+                self.last_opened = None
+                logger.info(
+                    "circuit_closed",
+                    extra={
+                        "event": "circuit_closed",
+                        "provider": self.provider,
+                        "duration_ms": duration_ms,
+                    },
+                )
 
     def on_failure(
         self,
@@ -445,6 +464,21 @@ class _CircuitBreaker:
                     # the alert is actionable without grepping logs.
                     if detail:
                         context["upstream_error"] = detail
+                    # Emit a structured log record for the circuit-open
+                    # transition. The Slack alert is fire-and-forget and writes
+                    # no log line, so without this the event is invisible in the
+                    # application logs.
+                    logger.warning(
+                        "circuit_open",
+                        extra={
+                            "event": "circuit_open",
+                            "provider": self.provider,
+                            "consecutive_failures": self.consecutive_failures,
+                            "availability": availability,
+                            "reason": reason or "unknown",
+                            "upstream_error": detail,
+                        },
+                    )
                     try:
                         task = asyncio.ensure_future(
                             alert_slack(

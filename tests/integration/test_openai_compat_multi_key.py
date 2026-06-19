@@ -131,6 +131,75 @@ async def test_single_api_key_legacy_path_unchanged():
     assert captured["headers"]["Authorization"] == "Bearer single-key"
 
 
+async def test_add_runtime_key_promotes_single_key_adapter():
+    """A runtime key promotes a single-`api_key` adapter to a pool.
+
+    The original static key is seeded alongside the new key so both keep
+    serving traffic, and the request path switches to the pool without a
+    restart.
+    """
+    config = ModelConfig(
+        id="test-model",
+        name="test-model",
+        provider="minimax",
+        base_url="https://api.example.com",
+        api_key="env-key",
+        provider_model_id="test-model",
+    )
+    adapter = OpenAICompatAdapter(config)
+    assert adapter._key_pool is None
+
+    assert adapter.add_runtime_key("dash-key") is True
+    assert adapter._key_pool is not None
+    assert sorted(adapter._key_pool.snapshot_keys()) == ["dash-key", "env-key"]
+
+    # A second runtime key is appended to the now-existing pool.
+    assert adapter.add_runtime_key("dash-key-2") is True
+    assert sorted(adapter._key_pool.snapshot_keys()) == [
+        "dash-key",
+        "dash-key-2",
+        "env-key",
+    ]
+
+    # Blank keys are ignored.
+    assert adapter.add_runtime_key("   ") is False
+
+
+async def test_add_runtime_key_without_static_key_seeds_pool():
+    """Promotion works even when the route had no static api_key."""
+    config = ModelConfig(
+        id="test-model",
+        name="test-model",
+        provider="minimax",
+        base_url="https://api.example.com",
+        provider_model_id="test-model",
+    )
+    adapter = OpenAICompatAdapter(config)
+    assert adapter._key_pool is None
+
+    assert adapter.add_runtime_key("dash-key") is True
+    assert adapter._key_pool is not None
+    assert adapter._key_pool.snapshot_keys() == ["dash-key"]
+
+
+async def test_empty_pool_raises_keypool_exhausted_not_assertion():
+    """A pool drained to size 0 yields KeyPoolExhausted, not an AssertionError.
+
+    Happens when the only static key was disabled (tombstone) and there are no
+    DB keys: the adapter is promoted to a pool that is then emptied. The request
+    path must surface a controlled error for router fallback.
+    """
+    from serving.adapters.key_pool import KeyPoolExhausted
+
+    adapter = OpenAICompatAdapter(_make_config(["only-key"]))
+    # Drain the pool so size() == 0, mirroring tombstone removal at boot.
+    adapter._key_pool.remove_key("only-key")
+    assert adapter._key_pool.size() == 0
+
+    with pytest.raises(KeyPoolExhausted):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+
 async def test_non_429_error_does_not_cooldown():
     """A 500 error must not place a key in cooldown."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))

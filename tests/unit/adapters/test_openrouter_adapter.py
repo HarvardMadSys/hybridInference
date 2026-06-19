@@ -256,7 +256,11 @@ def test_build_final_chunk_includes_upstream_cost_when_set() -> None:
     assert payload["_routing"]["base_url"] == cfg.base_url
 
 
-def _make_or_cfg(*, pinned: str | None = None) -> ModelConfig:
+def _make_or_cfg(
+    *,
+    pinned: str | None = None,
+    sort: str | None = None,
+) -> ModelConfig:
     return ModelConfig(
         id="or-model",
         name="OR Model",
@@ -269,6 +273,7 @@ def _make_or_cfg(*, pinned: str | None = None) -> ModelConfig:
         supported_params=["temperature", "top_p", "max_tokens"],
         provider_profile="openrouter",
         openrouter_pinned_provider=pinned,
+        openrouter_sort=sort,
     )
 
 
@@ -298,6 +303,15 @@ def test_openrouter_adapter_payload_with_pin() -> None:
         stream=False,
     )
     assert payload["provider"] == {"order": ["deepinfra"], "allow_fallbacks": False}
+
+
+def test_openrouter_adapter_payload_with_sort() -> None:
+    adapter = OpenRouterAdapter(_make_or_cfg(sort="throughput"))
+    payload = adapter._augment_payload(
+        {"model": "x", "messages": []},
+        stream=False,
+    )
+    assert payload["provider"] == {"sort": "throughput"}
 
 
 def test_openrouter_adapter_streaming_payload_includes_stream_options() -> None:

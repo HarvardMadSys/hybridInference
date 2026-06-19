@@ -112,6 +112,56 @@ class OpenAICompatAdapter(BaseAdapter):
             self._usage_profile = ProviderProfile.DEFAULT
         self._usage_normalizer = get_usage_normalizer(self._usage_profile)
 
+    def ensure_key_pool(self) -> KeyPool | None:
+        """Create a pool from the adapter's static keys if it has none yet.
+
+        Used to enforce env-key tombstones even when no runtime key is present:
+        a single-``api_key`` adapter otherwise serves ``config.api_key`` via the
+        legacy path, bypassing tombstones. Returns the pool (existing or new),
+        or None when there is no static key to seed.
+        """
+        if self._key_pool is not None:
+            return self._key_pool
+        seed: list[str] = []
+        if self.config.api_keys:
+            seed.extend(k.strip() for k in self.config.api_keys if isinstance(k, str) and k.strip())
+        static = self.config.api_key
+        if isinstance(static, str) and static.strip() and static.strip() not in seed:
+            seed.append(static.strip())
+        if not seed:
+            return None
+        self._key_pool = KeyPool(keys=seed, provider_label=self.config.provider)
+        return self._key_pool
+
+    def add_runtime_key(self, key: str) -> bool:
+        """Attach a runtime-managed API key, creating the pool if needed.
+
+        Single-key adapters are constructed without a ``KeyPool`` (the legacy
+        fast path in ``_post_with_pool``/``_stream_with_pool``). When an admin
+        adds a key at runtime (provider-keys dashboard) we lazily promote the
+        adapter to a pool seeded with the original static ``api_key`` so both
+        the env-configured key and the new key keep serving traffic. The
+        request path reads ``self._key_pool`` per request, so the promotion is
+        picked up without a restart.
+
+        Returns True once the key is attached (always, for pool-capable
+        adapters).
+        """
+        normalized = key.strip() if isinstance(key, str) else ""
+        if not normalized:
+            return False
+        if self._key_pool is None:
+            seed: list[str] = []
+            static = self.config.api_key
+            if isinstance(static, str) and static.strip():
+                seed.append(static.strip())
+            if normalized not in seed:
+                seed.append(normalized)
+            self._key_pool = KeyPool(keys=seed, provider_label=self.config.provider)
+            return True
+        self._key_pool.add_key(normalized)
+        return True
+
     def _apply_supported_passthrough_params(
         self, payload: dict[str, Any], params: dict[str, Any]
     ) -> None:
@@ -237,6 +287,8 @@ class OpenAICompatAdapter(BaseAdapter):
         # Bound the loop to pool size — defensive; acquire already filters
         # cooled-down keys, so we shouldn't reacquire the same just-cooled one.
         max_attempts = self._key_pool.size()
+        if max_attempts <= 0:
+            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
         last_429_error: aiohttp.ClientResponseError | None = None
 
         for _ in range(max_attempts):
@@ -302,7 +354,11 @@ class OpenAICompatAdapter(BaseAdapter):
                 self._key_pool.release(lease, status_code=e.status, retry_after=None)
                 raise
 
-        # Loop exhausted naturally (every key returned 429 in this single call)
+        # Loop exhausted: either every key returned 429 (raise that), or the
+        # pool had no usable keys to begin with (size 0 — e.g. the only key was
+        # disabled). Raise a controlled KeyPoolExhausted in the latter case so
+        # the router gets a clean upstream-failure signal instead of an
+        # AssertionError.
         logger.warning(
             "key_pool_exhausted",
             extra={
@@ -311,8 +367,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 "stage": "all_429",
             },
         )
-        assert last_429_error is not None
-        raise last_429_error
+        if last_429_error is not None:
+            raise last_429_error
+        raise KeyPoolExhausted(f"No usable API keys for provider {provider!r}")
 
     async def _open_stream_with_pool(
         self, url: str, payload: dict[str, Any], timeout: Any = None
@@ -350,6 +407,8 @@ class OpenAICompatAdapter(BaseAdapter):
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
         provider = self.config.provider
         max_attempts = self._key_pool.size()
+        if max_attempts <= 0:
+            raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
         last_429: aiohttp.ClientResponseError | None = None
 
         for _ in range(max_attempts):
@@ -421,7 +480,9 @@ class OpenAICompatAdapter(BaseAdapter):
             yield stream_iter, lease, first
             return
 
-        # Loop exhausted — every key returned 429
+        # Loop exhausted — every key returned 429, or the pool had no usable
+        # keys (size 0). Raise a controlled KeyPoolExhausted in the latter case
+        # rather than an AssertionError.
         logger.warning(
             "key_pool_exhausted",
             extra={
@@ -430,8 +491,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 "stage": "stream_all_429",
             },
         )
-        assert last_429 is not None
-        raise last_429
+        if last_429 is not None:
+            raise last_429
+        raise KeyPoolExhausted(f"No usable API keys for provider {provider!r}")
 
     def _build_url(self) -> str:
         """Build full endpoint URL (standard OpenAI path)."""

@@ -2,13 +2,23 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import {
   applyRoleQuota,
   clearRouteWeight,
+  createProviderRouteCandidate,
+  deleteProviderRoute,
+  deleteProviderRouteCandidate,
+  listProviderKeyProviders,
+  listOpenRouterProviderOptions,
+  listProviderRoutes,
   listRouteWeights,
   listRoutewiseSettings,
   updateUser,
   listModelVisibility,
   previewRoleQuotaApply,
   setRouteWeight,
+  updateProviderRoute,
+  updateProviderRouteStrategy,
   updateRoutewiseSetting,
+  verifyProviderRoute,
+  verifyProviderRouteCandidate,
   updateModelVisibility,
 } from '../admin';
 import { setAccessToken } from '../client';
@@ -67,6 +77,25 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+});
+
+describe('provider key client', () => {
+  it('listProviderKeyProviders hits provider-key provider list endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ providers: ['featherless', 'zai'] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await listProviderKeyProviders();
+
+    expect(out.providers).toEqual(['featherless', 'zai']);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/provider-keys/providers');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
   });
 });
 
@@ -265,6 +294,411 @@ describe('route weight client', () => {
   });
 });
 
+describe('provider route client', () => {
+  it('listProviderRoutes hits model provider routes endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          provider_options: [
+            {
+              provider: 'openrouter',
+              label: 'OpenRouter',
+              kind: 'openrouter',
+              key_provider: 'openrouter',
+              default_base_url: 'https://openrouter.ai/api/v1',
+            },
+          ],
+          openrouter_provider_options: [{ provider: 'parasail', label: 'Parasail' }],
+          routes: [
+            {
+              model_id: 'minimax-fast',
+              strategy: 'routewise',
+              route_id: 'minimax-fast:featherless-api',
+              route_type: 'concurrency',
+              provider: 'featherless',
+              upstream_provider: 'featherless',
+              key_provider: 'featherless',
+              base_url: 'https://api.featherless.ai/v1',
+              api_key_id: null,
+              api_key: {
+                id: null,
+                provider: 'featherless',
+                label: 'Provider default',
+                key_prefix: null,
+                source: 'default',
+              },
+              provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+              quota_limit: null,
+              endpoint_id: 'minimax-fast:featherless-api',
+              yaml_weight: 1,
+              effective_weight: 1,
+              source: 'yaml',
+              updated_at: null,
+              updated_by: null,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listProviderRoutes('minimax-fast');
+
+    expect(out.routes[0].route_id).toBe('minimax-fast:featherless-api');
+    expect(out.provider_options[0].provider).toBe('openrouter');
+    expect(out.openrouter_provider_options?.[0].provider).toBe('parasail');
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-routes/minimax-fast');
+  });
+
+  it('listOpenRouterProviderOptions hits model endpoint discovery', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          provider_model_id: 'minimax/minimax-m2.5',
+          providers: [
+            { provider: 'inceptron', label: 'Inceptron' },
+            { provider: 'chutes', label: 'Chutes' },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listOpenRouterProviderOptions('minimax/minimax-m2.5');
+
+    expect(out.providers.map((provider) => provider.provider)).toEqual(['inceptron', 'chutes']);
+    const [url] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/openrouter-providers?provider_model_id=minimax%2Fminimax-m2.5',
+    );
+  });
+
+  it('updateProviderRoute PUTs provider target body', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          route_id: 'minimax-fast:featherless-api',
+          route_type: 'concurrency',
+          provider: 'featherless',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
+          openrouter_sort: null,
+          key_provider: 'openrouter',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          api_key: {
+            id: 'key-1',
+            provider: 'openrouter',
+            label: 'staging',
+            key_prefix: 'sk-or...1234',
+            source: 'db',
+          },
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+          endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+          yaml_weight: 1,
+          effective_weight: 1,
+          source: 'override',
+          updated_at: null,
+          updated_by: '127.0.0.1',
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await updateProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: 8000,
+    });
+
+    expect(out.provider).toBe('featherless');
+    expect(out.upstream_provider).toBe('openrouter');
+    expect(out.openrouter_provider).toBe('parasail');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
+    );
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body as string)).toEqual({
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: 8000,
+    });
+  });
+
+  it('verifyProviderRoute POSTs provider target body to dry-run endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await verifyProviderRoute('minimax-fast', 'minimax-fast:featherless-api', {
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: 8000,
+    });
+
+    expect(out.ok).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/provider-route-verifications/minimax-fast/minimax-fast%3Afeatherless-api',
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: 8000,
+    });
+  });
+
+  it('deleteProviderRoute DELETEs provider route override', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          route_id: 'minimax-fast:featherless-api',
+          route_type: 'concurrency',
+          provider: 'featherless',
+          upstream_provider: 'featherless',
+          key_provider: 'featherless',
+          base_url: 'https://api.featherless.ai/v1',
+          api_key_id: null,
+          api_key: {
+            id: null,
+            provider: 'featherless',
+            label: 'Provider default',
+            key_prefix: null,
+            source: 'default',
+          },
+          provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+          quota_limit: null,
+          endpoint_id: 'minimax-fast:featherless-api',
+          yaml_weight: 1,
+          effective_weight: 1,
+          source: 'yaml',
+          updated_at: null,
+          updated_by: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await deleteProviderRoute('minimax-fast', 'minimax-fast:featherless-api');
+
+    expect(out.source).toBe('yaml');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/provider-routes/minimax-fast/minimax-fast%3Afeatherless-api',
+    );
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('createProviderRouteCandidate POSTs runtime provider route payload', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          route_id: 'minimax-fast:openrouter[parasail]-api',
+          route_type: 'on_demand',
+          provider: 'openrouter',
+          upstream_provider: 'openrouter',
+          openrouter_provider: 'parasail',
+          openrouter_sort: null,
+          key_provider: 'openrouter',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          api_key: {
+            id: 'key-1',
+            provider: 'openrouter',
+            label: 'staging',
+            key_prefix: 'sk-or...1234',
+            source: 'db',
+          },
+          provider_model_id: 'minimax/minimax-m2.5',
+          quota_limit: null,
+          endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+          yaml_weight: 1,
+          effective_weight: 1,
+          source: 'runtime',
+          updated_at: null,
+          updated_by: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await createProviderRouteCandidate('minimax-fast', {
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+
+    expect(out.source).toBe('runtime');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-route-candidates/minimax-fast');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+  });
+
+  it('verifyProviderRouteCandidate POSTs runtime route body to dry-run endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await verifyProviderRouteCandidate('minimax-fast', {
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+
+    expect(out.ok).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/provider-route-candidate-verifications/minimax-fast',
+    );
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+  });
+
+  it('deleteProviderRouteCandidate DELETEs runtime provider route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'routewise',
+          provider_options: [],
+          routes: [],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await deleteProviderRouteCandidate(
+      'minimax-fast',
+      'minimax-fast:openrouter[parasail]-api',
+    );
+
+    expect(out.routes).toEqual([]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain(
+      '/admin/routing/provider-route-candidates/minimax-fast/minimax-fast%3Aopenrouter%5Bparasail%5D-api',
+    );
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('updateProviderRouteStrategy PATCHes model route strategy', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          strategy: 'fixed',
+          provider_options: [],
+          routes: [
+            {
+              model_id: 'minimax-fast',
+              strategy: 'fixed',
+              route_id: 'minimax-fast:featherless-api',
+              route_type: 'concurrency',
+              provider: 'featherless',
+              upstream_provider: 'featherless',
+              key_provider: 'featherless',
+              base_url: 'https://api.featherless.ai/v1',
+              api_key_id: null,
+              api_key: {
+                id: null,
+                provider: 'featherless',
+                label: 'Provider default',
+                key_prefix: null,
+                source: 'default',
+              },
+              provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
+              quota_limit: null,
+              endpoint_id: 'minimax-fast:featherless-api',
+              yaml_weight: 1,
+              effective_weight: 1,
+              source: 'yaml',
+              updated_at: null,
+              updated_by: null,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await updateProviderRouteStrategy('minimax-fast', 'fixed');
+
+    expect(out.strategy).toBe('fixed');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-route-strategies/minimax-fast');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ strategy: 'fixed' });
+  });
+});
+
 describe('routewise settings client', () => {
   it('listRoutewiseSettings hits routewise settings endpoint', async () => {
     fetchMock.mockResolvedValueOnce(
@@ -272,13 +706,22 @@ describe('routewise settings client', () => {
         JSON.stringify({
           settings: [
             {
-              key: 'routewise_latency_min_samples',
-              value: 20,
-              value_type: 'int',
-              default_value: 10,
-              description: 'Minimum samples before Routewise latency LP warmup ends',
-              min: 1,
-              max: 10000,
+              key: 'routewise_budget_alpha',
+              value: 0.75,
+              value_type: 'float',
+              default_value: 0.75,
+              description: 'RouteWise LP cost budget interpolation',
+              min: 0,
+              max: 1,
+            },
+            {
+              key: 'routewise_latency_slo_sec',
+              value: 2.5,
+              value_type: 'float',
+              default_value: 3,
+              description: 'Latency SLO in seconds for Routewise LP decisions',
+              min: 0.1,
+              max: null,
             },
           ],
         }),
@@ -289,9 +732,9 @@ describe('routewise settings client', () => {
     const out = await listRoutewiseSettings();
 
     expect(out.settings[0]).toMatchObject({
-      key: 'routewise_latency_min_samples',
-      value: 20,
-      value_type: 'int',
+      key: 'routewise_budget_alpha',
+      value: 0.75,
+      value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain('/admin/routewise/settings');
@@ -303,31 +746,31 @@ describe('routewise settings client', () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
-          key: 'routewise_latency_min_samples',
-          value: 12,
-          value_type: 'int',
-          default_value: 10,
-          description: 'Minimum samples for latency decisions',
-          min: 1,
-          max: 100,
+          key: 'routewise_budget_alpha',
+          value: 0.4,
+          value_type: 'float',
+          default_value: 0.75,
+          description: 'RouteWise LP cost budget interpolation',
+          min: 0,
+          max: 1,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
 
-    const out = await updateRoutewiseSetting('routewise_latency_min_samples', 12);
+    const out = await updateRoutewiseSetting('routewise_budget_alpha', 0.4);
 
     expect(out).toMatchObject({
-      key: 'routewise_latency_min_samples',
-      value: 12,
-      value_type: 'int',
+      key: 'routewise_budget_alpha',
+      value: 0.4,
+      value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routewise/settings/routewise_latency_min_samples');
+    expect(String(url)).toContain('/admin/routewise/settings/routewise_budget_alpha');
     expect(init.method).toBe('PATCH');
     expect(init.headers).toBeInstanceOf(Headers);
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
-    expect(JSON.parse(init.body as string)).toEqual({ value: 12 });
+    expect(JSON.parse(init.body as string)).toEqual({ value: 0.4 });
   });
 });

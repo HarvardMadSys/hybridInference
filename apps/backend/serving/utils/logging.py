@@ -69,6 +69,10 @@ _STRUCTURED_LOG_KEYS = (
     "gain_a",
     "theta_q",
     "lp_status",
+    # Circuit-breaker state-change events (routing/routers.py).
+    "consecutive_failures",
+    "availability",
+    "upstream_error",
 )
 
 
