@@ -227,9 +227,9 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
 
 
 def _dynamic_key_provider_name(kind: str, adapter_cfg: dict[str, Any]) -> str:
-    if kind == "kimi_coding":
-        return "kimi"
-    return str(adapter_cfg.get("provider") or kind)
+    from serving.adapters import dynamic_keys
+
+    return dynamic_keys.normalize_key_provider(str(adapter_cfg.get("provider") or kind))
 
 
 def register_from_models_yaml(

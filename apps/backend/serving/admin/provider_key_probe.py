@@ -17,6 +17,7 @@ from serving.adapters import (
     ModelConfig,
     OpenAICompatAdapter,
     OpenRouterAdapter,
+    dynamic_keys,
 )
 from serving.exceptions import scrub_provider_identity
 from serving.servers.registry import _make_adapter
@@ -25,9 +26,6 @@ DEFAULT_VERIFY_TIMEOUT_SECONDS = 20.0
 FEATHERLESS_PLAN_API_DISABLED_MESSAGE = (
     "The current subscription plan does not have API access enabled."
 )
-_KEY_PROVIDER_ALIASES = {
-    "kimi_coding": "kimi",
-}
 
 
 class ProviderKeyProbeError(Exception):
@@ -156,7 +154,7 @@ def _adapter_key_provider(adapter: object) -> str:
     ):
         return "openrouter"
     provider = str(getattr(config, "provider", "") or "")
-    return _KEY_PROVIDER_ALIASES.get(provider, provider)
+    return dynamic_keys.normalize_key_provider(provider)
 
 
 def find_verification_adapter(services: Any, provider: str) -> object | None:

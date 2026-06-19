@@ -38,11 +38,6 @@ def _env_key_id(api_key: str) -> str:
     return f"env:{dynamic_keys.env_key_hash(api_key)[:32]}"
 
 
-_KEY_PROVIDER_ALIASES = {
-    "kimi_coding": "kimi",
-}
-
-
 def _env_keys_for_provider(provider: str) -> list[str]:
     """Return live env-sourced keys from adapter pools plus numbered env vars."""
     keys: list[str] = []
@@ -64,7 +59,7 @@ def _env_keys_for_provider(provider: str) -> list[str]:
 
 def _known_key_providers() -> set[str]:
     return {
-        _KEY_PROVIDER_ALIASES.get(provider, provider)
+        dynamic_keys.normalize_key_provider(provider)
         for provider in dynamic_keys.get_known_providers()
     }
 

@@ -39,6 +39,9 @@ _PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
     "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
     "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
 }
+_KEY_PROVIDER_ALIASES = {
+    "kimi_coding": "kimi",
+}
 
 
 def reset() -> None:
@@ -124,6 +127,11 @@ def is_env_key_disabled(provider: str, key_hash: str) -> bool:
 def env_key_hash(key: str) -> str:
     """Return the stable hash used to identify env-sourced provider keys."""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def normalize_key_provider(provider: str) -> str:
+    """Return the provider name used for shared API-key management."""
+    return _KEY_PROVIDER_ALIASES.get(provider, provider)
 
 
 def configured_env_keys_for_provider(provider: str) -> list[str]:
