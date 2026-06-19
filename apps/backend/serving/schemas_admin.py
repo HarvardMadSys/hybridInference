@@ -896,6 +896,7 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
 
     model_id: str = Field(..., min_length=1, max_length=255)
     strategy: Literal["fixed", "routewise"] = "fixed"
+    required_role: Literal["free", "pro", "internal", "admin"] = "admin"
 
     @field_validator("model_id")
     @classmethod

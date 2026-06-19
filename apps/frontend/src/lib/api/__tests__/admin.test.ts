@@ -602,6 +602,7 @@ describe('provider route client', () => {
     const out = await createProviderRouteModel({
       model_id: 'deepseek-v4-flash',
       strategy: 'fixed',
+      required_role: 'admin',
       route_type: 'on_demand',
       upstream_provider: 'openrouter',
       openrouter_provider: null,
@@ -622,6 +623,7 @@ describe('provider route client', () => {
     expect(JSON.parse(init.body as string)).toEqual({
       model_id: 'deepseek-v4-flash',
       strategy: 'fixed',
+      required_role: 'admin',
       route_type: 'on_demand',
       upstream_provider: 'openrouter',
       openrouter_provider: null,
@@ -646,6 +648,7 @@ describe('provider route client', () => {
     const out = await verifyProviderRouteModel({
       model_id: 'deepseek-v4-flash',
       strategy: 'routewise',
+      required_role: 'internal',
       route_type: 'on_demand',
       upstream_provider: 'openrouter',
       openrouter_provider: null,
@@ -665,6 +668,7 @@ describe('provider route client', () => {
     expect(JSON.parse(init.body as string)).toEqual({
       model_id: 'deepseek-v4-flash',
       strategy: 'routewise',
+      required_role: 'internal',
       route_type: 'on_demand',
       upstream_provider: 'openrouter',
       openrouter_provider: null,

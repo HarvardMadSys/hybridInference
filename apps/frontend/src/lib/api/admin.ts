@@ -1185,6 +1185,7 @@ export interface CreateProviderRoutePayload {
 export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
   model_id: string;
   strategy: ProviderRouteStrategy;
+  required_role?: Role;
 }
 
 export interface VerifyProviderRouteResponse {

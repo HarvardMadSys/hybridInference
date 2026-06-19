@@ -704,6 +704,7 @@ describe('ProviderRoutesTab', () => {
       expect(createProviderRouteModel).toHaveBeenCalledWith({
         model_id: 'deepseek-v4-flash',
         strategy: 'fixed',
+        required_role: 'admin',
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
         openrouter_provider: null,
@@ -746,6 +747,7 @@ describe('ProviderRoutesTab', () => {
       expect(verifyProviderRouteModel).toHaveBeenCalledWith({
         model_id: 'deepseek-v4-flash',
         strategy: 'routewise',
+        required_role: 'admin',
         route_type: 'on_demand',
         upstream_provider: 'openrouter',
         openrouter_provider: null,
@@ -760,6 +762,38 @@ describe('ProviderRoutesTab', () => {
     });
     expect(createProviderRouteModel).not.toHaveBeenCalled();
     expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
+  });
+
+  it('threads create-model visibility into the payload', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Visibility'), {
+      target: { value: 'free' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await waitFor(() => {
+      expect(verifyProviderRouteModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model_id: 'deepseek-v4-flash',
+          required_role: 'free',
+        }),
+      );
+    });
   });
 
   it('does not filter create-model providers by the selected model routes', async () => {

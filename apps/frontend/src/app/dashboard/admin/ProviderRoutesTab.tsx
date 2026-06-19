@@ -10,6 +10,7 @@ import {
   ProviderRouteStrategy,
   ProviderRouteType,
   ProviderRouteOption,
+  Role,
   RouteWeight,
   clearRouteWeight,
   createProviderRouteModel,
@@ -92,6 +93,12 @@ const OPENROUTER_SORT_ROUTING_OPTIONS: Array<{
   { value: 'sort:latency', label: 'Sort by latency' },
 ];
 const EMPTY_PROVIDER_ROUTES: ProviderRoute[] = [];
+const MODEL_ROLE_OPTIONS: Array<{ value: Role; label: string }> = [
+  { value: 'admin', label: 'Admin only' },
+  { value: 'internal', label: 'Internal and admins' },
+  { value: 'pro', label: 'Pro, internal, and admins' },
+  { value: 'free', label: 'All users' },
+];
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
@@ -400,6 +407,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [creatingModel, setCreatingModel] = useState(false);
   const [newModelId, setNewModelId] = useState('');
   const [newModelStrategy, setNewModelStrategy] = useState<ProviderRouteStrategy>('fixed');
+  const [newModelRequiredRole, setNewModelRequiredRole] = useState<Role>('admin');
   const [form, setForm] = useState<RouteForm>({
     upstreamProvider: '',
     openRouterProvider: '',
@@ -637,6 +645,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const createVerificationSignature = formSignature({
     model_id: creatingModel ? newModelIdValue : selectedModel,
     strategy: creatingModel ? newModelStrategy : strategy,
+    required_role: creatingModel ? newModelRequiredRole : undefined,
     payload: createRoutePayload,
   });
   const editRouteVerified =
@@ -939,6 +948,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     });
     setNewModelId('');
     setNewModelStrategy('fixed');
+    setNewModelRequiredRole('admin');
     setCreateKeyOptions([]);
     setVerifiedCreateSignature(null);
     setCreatingModel(true);
@@ -1040,6 +1050,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           ...createRoutePayload,
           model_id: newModelIdValue,
           strategy: newModelStrategy,
+          required_role: newModelRequiredRole,
         });
       } else {
         created = await createProviderRouteCandidate(selectedModel, createRoutePayload);
@@ -1068,6 +1079,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           ...createRoutePayload,
           model_id: newModelIdValue,
           strategy: newModelStrategy,
+          required_role: newModelRequiredRole,
         });
       } else {
         await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
@@ -1468,7 +1480,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           </div>
 
           {creatingModel && (
-            <div className="mb-3 grid gap-3 sm:grid-cols-2">
+            <div className="mb-3 grid gap-3 sm:grid-cols-3">
               <div>
                 <label className="text-[12px] font-medium text-gray-500" htmlFor="new-model-id">
                   Model ID
@@ -1509,6 +1521,29 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 >
                   <option value="fixed">fixed</option>
                   <option value="routewise">routewise</option>
+                </select>
+              </div>
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-model-required-role"
+                >
+                  Visibility
+                </label>
+                <select
+                  id="new-model-required-role"
+                  value={newModelRequiredRole}
+                  onChange={(event) => {
+                    setNewModelRequiredRole(event.target.value as Role);
+                    setVerifiedCreateSignature(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                >
+                  {MODEL_ROLE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>

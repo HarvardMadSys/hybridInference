@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from routing.routers import ManagedRouter, _get_endpoint_id
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.adapters import ModelConfig, dynamic_keys
+from serving.config.settings import VALID_ROLES
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
     CreateProviderRouteRequest,
@@ -47,7 +48,9 @@ OPENROUTER_ENDPOINT_DISCOVERY_CACHE_TTL_SEC = 300.0
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
 BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
+MODEL_REQUIRED_ROLE_SETTING_PREFIX = "model_required_role:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
+DEFAULT_RUNTIME_MODEL_REQUIRED_ROLE = "admin"
 OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 OPENROUTER_MODEL_ID_RE = re.compile(
     r"^[A-Za-z0-9_.:-]*[A-Za-z0-9][A-Za-z0-9_.:-]*/"
@@ -236,6 +239,17 @@ def _model_id_from_strategy_setting_key(key: str) -> str | None:
     if not key.startswith(MODEL_ROUTER_STRATEGY_SETTING_PREFIX):
         return None
     model_id = key[len(MODEL_ROUTER_STRATEGY_SETTING_PREFIX) :]
+    return model_id or None
+
+
+def _model_required_role_setting_key(model_id: str) -> str:
+    return f"{MODEL_REQUIRED_ROLE_SETTING_PREFIX}{model_id}"
+
+
+def _model_id_from_required_role_setting_key(key: str) -> str | None:
+    if not key.startswith(MODEL_REQUIRED_ROLE_SETTING_PREFIX):
+        return None
+    model_id = key[len(MODEL_REQUIRED_ROLE_SETTING_PREFIX) :]
     return model_id or None
 
 
@@ -1468,14 +1482,23 @@ def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> Non
     _rebuild_routewise_routers(services)
 
 
-def _install_provider_route_model(services, candidate: PreparedRouteCandidate) -> None:
+def _install_provider_route_model(
+    services,
+    candidate: PreparedRouteCandidate,
+    *,
+    required_role: str = DEFAULT_RUNTIME_MODEL_REQUIRED_ROLE,
+) -> None:
     model_id = candidate.adapter.config.id
     if _model_exists(services, model_id):
         raise HTTPException(status_code=409, detail=f"Model already exists: {model_id}")
 
     registered = False
     try:
-        services.router.register_route(model_id, [(candidate.adapter, candidate.weight)])
+        services.router.register_route(
+            model_id,
+            [(candidate.adapter, candidate.weight)],
+            required_role=required_role,
+        )
         registered = True
         route = services.router.routes[model_id]
         setattr(route, BASELINE_ENTRIES_ATTR, [])
@@ -2012,7 +2035,11 @@ async def create_provider_route_model(
     persisted_candidate = False
     strategy_applied = False
     try:
-        _install_provider_route_model(services, candidate)
+        _install_provider_route_model(
+            services,
+            candidate,
+            required_role=payload.required_role,
+        )
         installed = True
         if getattr(services, "model_router_registry", None) is not None:
             await _apply_model_router_strategy(services, model_id, payload.strategy)
@@ -2032,6 +2059,12 @@ async def create_provider_route_model(
             admin_id,
         )
         persisted_candidate = True
+        await op_store.set_setting(
+            _model_required_role_setting_key(model_id),
+            payload.required_role,
+            "string",
+            admin_id,
+        )
         if getattr(services, "model_router_registry", None) is not None:
             await op_store.set_setting(
                 _model_strategy_setting_key(model_id),
@@ -2065,6 +2098,7 @@ async def create_provider_route_model(
         {
             "model_id": model_id,
             "strategy": payload.strategy,
+            "required_role": payload.required_role,
             "route_id": candidate.route_id,
             "route_type": candidate.route_type,
             "upstream_provider": candidate.upstream_provider,
@@ -2423,14 +2457,27 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> None:
     """Apply persisted runtime provider route candidates to the in-process router."""
     rows = await op_store.list_all_provider_route_candidates()
     strategy_overrides: dict[str, str] = {}
+    role_overrides: dict[str, str] = {}
     try:
         for row in await op_store.list_settings():
-            model_id = _model_id_from_strategy_setting_key(str(row["key"]))
-            strategy = str(row["value"])
-            if model_id is not None and strategy in MODEL_ROUTER_STRATEGIES:
-                strategy_overrides[model_id] = strategy
+            key = str(row["key"])
+            value = str(row["value"])
+            model_id = _model_id_from_strategy_setting_key(key)
+            if model_id is not None and value in MODEL_ROUTER_STRATEGIES:
+                strategy_overrides[model_id] = value
+                continue
+            model_id = _model_id_from_required_role_setting_key(key)
+            if model_id is not None and value in VALID_ROLES:
+                role_overrides[model_id] = value
+                continue
+            if model_id is not None:
+                logger.warning(
+                    "Ignoring invalid runtime model required_role for model=%s role=%s",
+                    model_id,
+                    value,
+                )
     except Exception as exc:
-        logger.warning("Failed to load model router strategy overrides for route restore: %s", exc)
+        logger.warning("Failed to load runtime model settings for route restore: %s", exc)
 
     for row in rows:
         model_id = str(row["model_id"])
@@ -2452,7 +2499,14 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> None:
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
                 )
-                _install_provider_route_model(services, candidate)
+                _install_provider_route_model(
+                    services,
+                    candidate,
+                    required_role=role_overrides.get(
+                        model_id,
+                        DEFAULT_RUNTIME_MODEL_REQUIRED_ROLE,
+                    ),
+                )
                 strategy = strategy_overrides.get(model_id)
                 if strategy is not None:
                     await _apply_model_router_strategy(

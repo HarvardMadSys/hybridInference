@@ -973,20 +973,100 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
         1.25,
         "127.0.0.1",
     )
-    op_store.set_setting.assert_awaited_once_with(
-        "model_router_strategy:deepseek-v4-flash",
-        "fixed",
-        "string",
-        "127.0.0.1",
+    op_store.set_setting.assert_has_awaits(
+        [
+            call(
+                "model_required_role:deepseek-v4-flash",
+                "admin",
+                "string",
+                "127.0.0.1",
+            ),
+            call(
+                "model_router_strategy:deepseek-v4-flash",
+                "fixed",
+                "string",
+                "127.0.0.1",
+            ),
+        ]
     )
     verify_mock.assert_awaited_once()
 
+    assert route_executor.routes["deepseek-v4-flash"].required_role == "admin"
     runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[0][0]
     assert runtime_adapter.config.id == "deepseek-v4-flash"
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_accepts_explicit_required_role(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "required_role": "free",
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 1.25,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert route_executor.routes["deepseek-v4-flash"].required_role == "free"
+    op_store.set_setting.assert_has_awaits(
+        [
+            call(
+                "model_required_role:deepseek-v4-flash",
+                "free",
+                "string",
+                "127.0.0.1",
+            ),
+            call(
+                "model_router_strategy:deepseek-v4-flash",
+                "fixed",
+                "string",
+                "127.0.0.1",
+            ),
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_rejects_invalid_required_role(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "required_role": "world",
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 1.25,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422
+    assert "deepseek-v4-flash" not in route_executor.routes
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    op_store.set_setting.assert_not_awaited()
+    verify_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1020,7 +1100,7 @@ async def test_post_provider_route_model_rolls_back_when_install_rebuild_fails(a
 
 
 @pytest.mark.asyncio
-async def test_post_provider_route_model_rolls_back_when_strategy_setting_fails(admin_client):
+async def test_post_provider_route_model_rolls_back_when_setting_fails(admin_client):
     client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     op_store.set_setting.side_effect = RuntimeError("settings down")
@@ -1450,9 +1530,13 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     ]
     op_store.list_settings.return_value = [
         {
+            "key": "model_required_role:deepseek-v4-flash",
+            "value": "internal",
+        },
+        {
             "key": "model_router_strategy:deepseek-v4-flash",
             "value": "fixed",
-        }
+        },
     ]
     registry = MagicMock()
     strategy_state = {"deepseek-v4-flash": "routewise"}
@@ -1485,6 +1569,7 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     ].raw_adapters[0]
     assert endpoint_id == "deepseek-v4-flash:openrouter[parasail]-api"
     assert raw_weight == 1.25
+    assert route_executor.routes["deepseek-v4-flash"].required_role == "internal"
     assert runtime_adapter.config.id == "deepseek-v4-flash"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
