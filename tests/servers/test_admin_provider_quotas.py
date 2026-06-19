@@ -42,10 +42,14 @@ def _reset_featherless_fetch_state():
     provider_quotas._FEATHERLESS_CACHE = None
     provider_quotas._FEATHERLESS_FETCH_SIGNATURE = None
     provider_quotas._FEATHERLESS_FETCH_TASK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK_LOOP = None
     yield
     provider_quotas._FEATHERLESS_CACHE = None
     provider_quotas._FEATHERLESS_FETCH_SIGNATURE = None
     provider_quotas._FEATHERLESS_FETCH_TASK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK_LOOP = None
 
 
 class TestMaskKey:
@@ -269,6 +273,11 @@ class TestDiscoverProviderKeys:
         store = self._store(
             db_keys=[global_db_key],
             route_configs=[{"api_key_id": "route-key-id"}],
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([route_bound_db_key], "featherless")),
+            allow_db_key_injection=False,
         )
 
         keys = await _discover_provider_keys(

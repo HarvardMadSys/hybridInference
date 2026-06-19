@@ -47,7 +47,11 @@ _PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
     "kimi": ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY"),
     "minimax": ("MINIMAX_API_KEY", "MINIMAX_API_KEY"),
     "ollama": ("OLLAMA_API_KEY", "OLLAMA_API_KEY"),
+    "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
     "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
+}
+_KEY_PROVIDER_ALIASES = {
+    "kimi_coding": "kimi",
 }
 
 
@@ -90,9 +94,16 @@ def _env_keys_for_provider(provider: str) -> list[str]:
     return keys
 
 
+def _known_key_providers() -> set[str]:
+    return {
+        _KEY_PROVIDER_ALIASES.get(provider, provider)
+        for provider in dynamic_keys.get_known_providers()
+    }
+
+
 def _validate_provider(provider: str) -> None:
     """Reject providers that did not appear in the loaded model registry."""
-    known = dynamic_keys.get_known_providers()
+    known = _known_key_providers()
     if provider not in known:
         raise HTTPException(
             status_code=400,
@@ -188,7 +199,7 @@ async def list_provider_key_providers(
     _admin_id: str = Depends(verify_admin_access),
 ) -> ListProviderApiKeyProvidersResponse:
     """List providers that support runtime-managed API keys."""
-    return ListProviderApiKeyProvidersResponse(providers=sorted(dynamic_keys.get_known_providers()))
+    return ListProviderApiKeyProvidersResponse(providers=sorted(_known_key_providers()))
 
 
 @router.post("/provider-keys/verify", response_model=VerifyProviderApiKeyResponse)

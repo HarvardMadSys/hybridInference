@@ -32,7 +32,7 @@ function unavailableMessage(provider: ProviderQuotaResult): string {
   if (provider.error === 'probe_unavailable') {
     return 'Status unavailable — no configured route to probe.';
   }
-  return `Quota unavailable — ${provider.error}`;
+  return `Quota unavailable — ${provider.error ?? 'unknown error'}`;
 }
 
 function featherlessConcurrencyMessage(provider: ProviderQuotaResult): string | null {
@@ -63,7 +63,7 @@ function featherlessMessage(provider: ProviderQuotaResult): string {
   if (provider.error === 'auth_failed') {
     return 'Unavailable — auth failed.';
   }
-  return `Unavailable — ${provider.error}`;
+  return `Unavailable — ${provider.error ?? 'unknown error'}`;
 }
 
 function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {

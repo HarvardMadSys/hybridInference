@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
 _FEATHERLESS_CONCURRENCY_URL = "https://api.featherless.ai/account/concurrency"
-_FEATHERLESS_FETCH_LOCK = asyncio.Lock()
+_FEATHERLESS_FETCH_LOCK: asyncio.Lock | None = None
+_FEATHERLESS_FETCH_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
 _FEATHERLESS_CACHE_TTL_SECONDS = 15.0
 _FEATHERLESS_FETCH_TASK: asyncio.Task[list[ProviderQuotaResult]] | None = None
 _FEATHERLESS_FETCH_SIGNATURE: tuple[str, ...] | None = None
@@ -76,6 +77,16 @@ def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, s
             break
         keys.append((i, val))
     return keys
+
+
+def _featherless_fetch_lock() -> asyncio.Lock:
+    global _FEATHERLESS_FETCH_LOCK, _FEATHERLESS_FETCH_LOCK_LOOP
+
+    loop = asyncio.get_running_loop()
+    if _FEATHERLESS_FETCH_LOCK is None or _FEATHERLESS_FETCH_LOCK_LOOP is not loop:
+        _FEATHERLESS_FETCH_LOCK = asyncio.Lock()
+        _FEATHERLESS_FETCH_LOCK_LOOP = loop
+    return _FEATHERLESS_FETCH_LOCK
 
 
 async def _discover_provider_keys(
@@ -132,7 +143,10 @@ async def _discover_provider_keys(
                 keys.append((len(keys) + 1, key))
                 seen.add(key)
 
-    for pool in dynamic_keys.get_pools_for_provider(provider):
+    for pool in dynamic_keys.get_pools_for_provider(
+        provider,
+        include_db_injection_disabled=False,
+    ):
         for key in pool.snapshot_keys():
             if not key or key in seen or is_disabled_env_key(key):
                 continue
@@ -1459,7 +1473,8 @@ async def fetch_featherless(
 
     signature = tuple(key for _idx, key in keys)
     now = asyncio.get_running_loop().time()
-    async with _FEATHERLESS_FETCH_LOCK:
+    lock = _featherless_fetch_lock()
+    async with lock:
         if (
             _FEATHERLESS_CACHE is not None
             and _FEATHERLESS_CACHE[1] == signature
@@ -1481,13 +1496,13 @@ async def fetch_featherless(
     try:
         results = await task
     except Exception:
-        async with _FEATHERLESS_FETCH_LOCK:
+        async with lock:
             if _FEATHERLESS_FETCH_TASK is task:
                 _FEATHERLESS_FETCH_TASK = None
                 _FEATHERLESS_FETCH_SIGNATURE = None
         raise
 
-    async with _FEATHERLESS_FETCH_LOCK:
+    async with lock:
         if _FEATHERLESS_FETCH_TASK is task:
             _FEATHERLESS_CACHE = (asyncio.get_running_loop().time(), signature, results)
             _FEATHERLESS_FETCH_TASK = None

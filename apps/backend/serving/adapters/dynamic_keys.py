@@ -91,10 +91,17 @@ def _pools_for_provider_locked(
     return pools
 
 
-def get_pools_for_provider(provider: str) -> list[KeyPool]:
+def get_pools_for_provider(
+    provider: str,
+    *,
+    include_db_injection_disabled: bool = True,
+) -> list[KeyPool]:
     """Return the live KeyPool instances configured for *provider*."""
     with _lock:
-        return _pools_for_provider_locked(provider)
+        return _pools_for_provider_locked(
+            provider,
+            include_db_injection_disabled=include_db_injection_disabled,
+        )
 
 
 def is_env_key_disabled(provider: str, key_hash: str) -> bool:

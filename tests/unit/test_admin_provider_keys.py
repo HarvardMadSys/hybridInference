@@ -16,6 +16,7 @@ from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
 from serving.adapters.key_pool import KeyPool
 from serving.admin.provider_key_probe import (
     FEATHERLESS_PLAN_API_DISABLED_MESSAGE,
+    find_verification_adapter,
     probe_error_detail,
     probe_error_reason,
 )
@@ -43,6 +44,22 @@ def test_probe_error_reason_detects_featherless_plan_api_disabled():
     assert probe_error_reason(exc) == "plan_api_disabled"
 
 
+def test_probe_error_reason_decodes_bytes_error_body():
+    exc = aiohttp.ClientResponseError(
+        request_info=MagicMock(),
+        history=(),
+        status=403,
+        message="Forbidden",
+    )
+    exc.error_body = (  # type: ignore[attr-defined]
+        b'{"error":{"message":"'
+        + FEATHERLESS_PLAN_API_DISABLED_MESSAGE.encode("utf-8")
+        + b'","type":"forbidden"}}'
+    )
+
+    assert probe_error_reason(exc) == "plan_api_disabled"
+
+
 def test_probe_error_detail_redacts_before_truncating():
     api_key = "rc_featherless_secret_that_crosses_truncation_boundary"
     exc = RuntimeError("x" * 490 + api_key + " trailing detail")
@@ -52,6 +69,20 @@ def test_probe_error_detail_redacts_before_truncating():
     assert api_key not in detail
     assert api_key[:12] not in detail
     assert "[redacted]" in detail
+
+
+def test_find_verification_adapter_skips_adapter_without_config():
+    services = SimpleNamespace(
+        router=SimpleNamespace(
+            routes={
+                "broken": SimpleNamespace(
+                    adapters=[(SimpleNamespace(config=None), 1.0)],
+                ),
+            },
+        ),
+    )
+
+    assert find_verification_adapter(services, "featherless") is None
 
 
 class _StubStore:
@@ -375,11 +406,14 @@ async def test_list_provider_key_providers_comes_from_runtime_registry(client):
     """Provider choices for Keys are independent from quota-card support."""
     http, _store = client
     dynamic_keys.register_known_provider("featherless")
+    dynamic_keys.register_known_provider("kimi_coding")
 
     resp = await http.get("/admin/provider-keys/providers", headers=AUTH)
 
     assert resp.status_code == 200
     assert "featherless" in resp.json()["providers"]
+    assert "kimi" in resp.json()["providers"]
+    assert "kimi_coding" not in resp.json()["providers"]
 
 
 @pytest.mark.asyncio

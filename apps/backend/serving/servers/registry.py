@@ -226,6 +226,12 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     raise ValueError(f"Unknown adapter kind: {kind}")
 
 
+def _dynamic_key_provider_name(kind: str, adapter_cfg: dict[str, Any]) -> str:
+    if kind == "kimi_coding":
+        return "kimi"
+    return str(adapter_cfg.get("provider") or kind)
+
+
 def register_from_models_yaml(
     router: RouteExecutor,
     path: Path,
@@ -509,7 +515,7 @@ def register_from_models_yaml(
                 # mark the provider as known (whitelist) and only attach the
                 # adapter when it carries a key pool — otherwise admin actions
                 # would silently no-op against single-key adapters.
-                provider_key = adapter_cfg.get("provider") or kind
+                provider_key = _dynamic_key_provider_name(kind, adapter_cfg)
                 dynamic_key_providers.add(provider_key)
                 if getattr(adapter, "_key_pool", None) is not None:
                     dynamic_key_registrations.append((provider_key, adapter))

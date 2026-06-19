@@ -68,8 +68,9 @@ def _upstream_error_message(exc: aiohttp.ClientResponseError) -> str:
     body = getattr(exc, "error_body", "")
     if not body:
         return ""
+    body = body.decode("utf-8", errors="ignore") if isinstance(body, bytes) else str(body)
     try:
-        data = json.loads(str(body))
+        data = json.loads(body)
     except json.JSONDecodeError:
         return ""
     if not isinstance(data, dict):
@@ -118,6 +119,8 @@ def _config_to_dict(config: Any) -> dict[str, Any]:
 
 def _adapter_kind(adapter: object) -> str:
     config = getattr(adapter, "config", None)
+    if config is None:
+        return ""
     provider = str(getattr(config, "provider", "") or "")
     if isinstance(adapter, OpenRouterAdapter):
         return "openrouter"
@@ -143,6 +146,8 @@ def _route_entries(route: Any) -> list[tuple[object, float]]:
 
 def _adapter_provider(adapter: object) -> str:
     config = getattr(adapter, "config", None)
+    if config is None:
+        return ""
     route_metadata = getattr(config, "route_metadata", None) or {}
     upstream_provider = route_metadata.get("upstream_provider")
     if upstream_provider:
@@ -159,6 +164,8 @@ def find_verification_adapter(services: Any, provider: str) -> object | None:
     for route in routes.values():
         for adapter, _weight in _route_entries(route):
             config = getattr(adapter, "config", None)
+            if config is None:
+                continue
             if _adapter_provider(adapter) != provider:
                 continue
             if (getattr(config, "model_type", None) or "chat") != "chat":
