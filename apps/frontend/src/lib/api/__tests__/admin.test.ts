@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import {
   applyRoleQuota,
   clearRouteWeight,
+  createProviderRouteModel,
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
@@ -17,6 +18,7 @@ import {
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
   verifyProviderRoute,
+  verifyProviderRouteModel,
   verifyProviderRouteCandidate,
   updateModelVisibility,
 } from '../admin';
@@ -556,6 +558,120 @@ describe('provider route client', () => {
       base_url: 'https://openrouter.ai/api/v1',
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+  });
+
+  it('createProviderRouteModel POSTs runtime model payload', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'deepseek-v4-flash',
+          strategy: 'fixed',
+          route_id: 'deepseek-v4-flash:openrouter-api',
+          route_type: 'on_demand',
+          provider: 'openrouter',
+          upstream_provider: 'openrouter',
+          openrouter_provider: null,
+          openrouter_sort: null,
+          key_provider: 'openrouter',
+          base_url: 'https://openrouter.ai/api/v1',
+          api_key_id: 'key-1',
+          api_key: {
+            id: 'key-1',
+            provider: 'openrouter',
+            label: 'staging',
+            key_prefix: 'sk-or...1234',
+            source: 'db',
+          },
+          provider_model_id: 'deepseek/deepseek-v4-flash',
+          quota_limit: null,
+          endpoint_id: 'deepseek-v4-flash:openrouter-api',
+          yaml_weight: 1,
+          effective_weight: 1,
+          source: 'runtime',
+          updated_at: null,
+          updated_by: null,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await createProviderRouteModel({
+      model_id: 'deepseek-v4-flash',
+      strategy: 'fixed',
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: null,
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'deepseek/deepseek-v4-flash',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+
+    expect(out.model_id).toBe('deepseek-v4-flash');
+    expect(out.source).toBe('runtime');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-route-models');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      model_id: 'deepseek-v4-flash',
+      strategy: 'fixed',
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: null,
+      openrouter_sort: null,
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      provider_model_id: 'deepseek/deepseek-v4-flash',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+  });
+
+  it('verifyProviderRouteModel POSTs runtime model body to dry-run endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await verifyProviderRouteModel({
+      model_id: 'deepseek-v4-flash',
+      strategy: 'routewise',
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: null,
+      openrouter_sort: 'throughput',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: null,
+      provider_model_id: 'deepseek/deepseek-v4-flash',
+      quota_limit: null,
+      concurrency_limit: null,
+      weight: 1,
+    });
+
+    expect(out.ok).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routing/provider-route-model-verifications');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({
+      model_id: 'deepseek-v4-flash',
+      strategy: 'routewise',
+      route_type: 'on_demand',
+      upstream_provider: 'openrouter',
+      openrouter_provider: null,
+      openrouter_sort: 'throughput',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: null,
+      provider_model_id: 'deepseek/deepseek-v4-flash',
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,

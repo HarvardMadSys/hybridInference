@@ -12,6 +12,7 @@ import {
   ProviderRouteOption,
   RouteWeight,
   clearRouteWeight,
+  createProviderRouteModel,
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
@@ -23,6 +24,7 @@ import {
   updateProviderRoute,
   updateProviderRouteStrategy,
   verifyProviderRoute,
+  verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -89,6 +91,7 @@ const OPENROUTER_SORT_ROUTING_OPTIONS: Array<{
   { value: 'sort:throughput', label: 'Sort by throughput' },
   { value: 'sort:latency', label: 'Sort by latency' },
 ];
+const EMPTY_PROVIDER_ROUTES: ProviderRoute[] = [];
 
 function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
   return `${route.model_id}\u0000${route.route_id}`;
@@ -394,6 +397,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [loading, setLoading] = useState(false);
   const [editingRoute, setEditingRoute] = useState<ProviderRoute | null>(null);
   const [addingRoute, setAddingRoute] = useState(false);
+  const [creatingModel, setCreatingModel] = useState(false);
+  const [newModelId, setNewModelId] = useState('');
+  const [newModelStrategy, setNewModelStrategy] = useState<ProviderRouteStrategy>('fixed');
   const [form, setForm] = useState<RouteForm>({
     upstreamProvider: '',
     openRouterProvider: '',
@@ -448,6 +454,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     () => routes.filter((route) => route.model_id === selectedModel),
     [routes, selectedModel],
   );
+  const createFormOpen = addingRoute || creatingModel;
+  const createTargetRoutes = creatingModel ? EMPTY_PROVIDER_ROUTES : selectedRoutes;
+  const newModelIdValue = newModelId.trim();
+  const newModelIdAvailable = !newModelIdValue || !models.includes(newModelIdValue);
   const routeWeightByKey = useMemo(() => {
     const byKey = new Map<string, RouteWeight>();
     for (const routeWeight of routeWeights) {
@@ -485,14 +495,16 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     createForm.customOpenRouterProvider,
   );
   const activeOpenRouterProviderModelId =
-    addingRoute && createForm.upstreamProvider === 'openrouter'
+    createFormOpen && createForm.upstreamProvider === 'openrouter'
       ? createForm.providerModelId.trim()
       : editingRoute && form.upstreamProvider === 'openrouter'
         ? form.providerModelId.trim()
         : '';
   const strategy = selectedRoutes[0]?.strategy ?? 'fixed';
   const isRoutewise = strategy === 'routewise';
-  const showCreateWeight = !isRoutewise;
+  const createStrategy = creatingModel ? newModelStrategy : strategy;
+  const createIsRoutewise = createStrategy === 'routewise';
+  const showCreateWeight = !createIsRoutewise;
   const showCreateLimits =
     createForm.routeType === 'quota' || createForm.routeType === 'concurrency' || showCreateWeight;
   const editsLocalQuota =
@@ -523,7 +535,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       Number.isInteger(parsedCreateConcurrencyLimit) &&
       parsedCreateConcurrencyLimit > 0);
   const createWeightValid =
-    isRoutewise || (Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0);
+    createIsRoutewise || (Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0);
   const formOpenRouterProviderValid = customOpenRouterProviderValid(
     form.openRouterProvider,
     form.customOpenRouterProvider,
@@ -533,7 +545,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     createForm.customOpenRouterProvider,
   );
   const createFormValid =
-    Boolean(selectedModel) &&
+    (creatingModel ? Boolean(newModelIdValue) && newModelIdAvailable : Boolean(selectedModel)) &&
     Boolean(createForm.upstreamProvider) &&
     Boolean(createForm.baseUrl.trim()) &&
     Boolean(createForm.providerModelId.trim()) &&
@@ -595,7 +607,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       quota_limit: createForm.routeType === 'quota' ? parsedCreateQuotaLimit : null,
       concurrency_limit:
         createForm.routeType === 'concurrency' ? parsedCreateConcurrencyLimit : null,
-      weight: isRoutewise ? 1 : parsedCreateWeight,
+      weight: createIsRoutewise ? 1 : parsedCreateWeight,
     }),
     [
       createForm.apiKeyId,
@@ -609,7 +621,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       parsedCreateQuotaLimit,
       parsedCreateWeight,
       selectedCreateOpenRouterProvider,
-      isRoutewise,
+      createIsRoutewise,
     ],
   );
   const editVerificationSignature = (() => {
@@ -623,7 +635,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     });
   })();
   const createVerificationSignature = formSignature({
-    model_id: selectedModel,
+    model_id: creatingModel ? newModelIdValue : selectedModel,
+    strategy: creatingModel ? newModelStrategy : strategy,
     payload: createRoutePayload,
   });
   const editRouteVerified =
@@ -672,9 +685,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       openRouterProviderOptionsForCreate(
         openRouterSelectOptions,
         createForm.routeType,
-        selectedRoutes,
+        createTargetRoutes,
       ),
-    [createForm.routeType, openRouterSelectOptions, selectedRoutes],
+    [createForm.routeType, openRouterSelectOptions, createTargetRoutes],
   );
   const createOpenRouterSelectOptions = useMemo(
     () => withCustomOpenRouterOption(createOpenRouterProviderOptions),
@@ -690,8 +703,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   );
 
   const createProviderOptions = useMemo(
-    () => createProviderOptionsFor(providerSelectBaseOptions, createForm.routeType, selectedRoutes),
-    [createForm.routeType, providerSelectBaseOptions, selectedRoutes],
+    () =>
+      createProviderOptionsFor(providerSelectBaseOptions, createForm.routeType, createTargetRoutes),
+    [createForm.routeType, providerSelectBaseOptions, createTargetRoutes],
   );
 
   const providerSelectOptions = useMemo(() => {
@@ -750,9 +764,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   }, [editingRoute, keyProvider, loadKeys]);
 
   useEffect(() => {
-    if (!addingRoute || !createKeyProvider) return;
+    if (!createFormOpen || !createKeyProvider) return;
     void loadCreateKeys(createKeyProvider);
-  }, [addingRoute, createKeyProvider, loadCreateKeys]);
+  }, [createFormOpen, createKeyProvider, loadCreateKeys]);
 
   useEffect(() => {
     setDiscoveredOpenRouterProviderOptions([]);
@@ -779,7 +793,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   }, [activeOpenRouterProviderModelId]);
 
   useEffect(() => {
-    if (!addingRoute) return;
+    if (!createFormOpen) return;
     if (createProviderOptions.length === 0) {
       setCreateForm((current) => ({
         ...current,
@@ -807,7 +821,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       apiKeyId: '',
     }));
   }, [
-    addingRoute,
+    createFormOpen,
     createForm.upstreamProvider,
     createOpenRouterProviderOptions,
     createProviderOptions,
@@ -895,6 +909,40 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     setCreateKeyOptions([]);
     setVerifiedCreateSignature(null);
     setAddingRoute(true);
+    setCreatingModel(false);
+    setEditingRoute(null);
+  };
+
+  const openCreateModelForm = () => {
+    const firstProvider = createProviderOptionsFor(
+      providerSelectBaseOptions,
+      emptyCreateForm.routeType,
+      [],
+    )[0];
+    const availableOpenRouterProviders = openRouterProviderOptionsForCreate(
+      openRouterSelectOptions,
+      emptyCreateForm.routeType,
+      [],
+    );
+    const nextOpenRouterProvider =
+      firstProvider?.provider === 'openrouter'
+        ? (availableOpenRouterProviders[0]?.provider ?? OPENROUTER_PROVIDER_CUSTOM)
+        : OPENROUTER_PROVIDER_AUTO;
+    setCreateForm({
+      ...emptyCreateForm,
+      upstreamProvider: firstProvider?.provider ?? '',
+      openRouterProvider: nextOpenRouterProvider,
+      customOpenRouterProvider: '',
+      openRouterSort: '',
+      baseUrl: firstProvider?.default_base_url ?? '',
+      providerModelId: '',
+    });
+    setNewModelId('');
+    setNewModelStrategy('fixed');
+    setCreateKeyOptions([]);
+    setVerifiedCreateSignature(null);
+    setCreatingModel(true);
+    setAddingRoute(false);
     setEditingRoute(null);
   };
 
@@ -912,7 +960,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       baseUrl: selected?.default_base_url || current.baseUrl,
       apiKeyId: '',
       providerModelId:
-        defaultProviderModelIdFor(upstreamProvider, selectedRoutes) || current.providerModelId,
+        defaultProviderModelIdFor(upstreamProvider, createTargetRoutes) || current.providerModelId,
     }));
   };
 
@@ -920,7 +968,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     const nextOpenRouterOptions = openRouterProviderOptionsForCreate(
       openRouterSelectOptions,
       routeType,
-      selectedRoutes,
+      createTargetRoutes,
     );
     const nextProvider = createProviderOptionsFor(
       providerSelectBaseOptions,
@@ -940,7 +988,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       baseUrl: nextProvider?.default_base_url ?? '',
       apiKeyId: '',
       providerModelId: nextProvider
-        ? defaultProviderModelIdFor(nextProvider.provider, selectedRoutes)
+        ? defaultProviderModelIdFor(nextProvider.provider, createTargetRoutes)
         : current.providerModelId,
     }));
   };
@@ -986,13 +1034,26 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (!createFormValid) return;
     setCreatingRoute(true);
     try {
-      const created = await createProviderRouteCandidate(selectedModel, createRoutePayload);
+      let created: ProviderRoute;
+      if (creatingModel) {
+        created = await createProviderRouteModel({
+          ...createRoutePayload,
+          model_id: newModelIdValue,
+          strategy: newModelStrategy,
+        });
+      } else {
+        created = await createProviderRouteCandidate(selectedModel, createRoutePayload);
+      }
       setRoutes((current) => [...current, created]);
+      if (creatingModel) {
+        setSelectedModel(created.model_id);
+      }
       setAddingRoute(false);
+      setCreatingModel(false);
       setVerifiedCreateSignature(null);
-      toast.success('Provider route added');
+      toast.success(creatingModel ? 'Model created' : 'Provider route added');
     } catch (err) {
-      toast.error(`Add failed: ${getErrorMessage(err)}`);
+      toast.error(`${creatingModel ? 'Create' : 'Add'} failed: ${getErrorMessage(err)}`);
     } finally {
       setCreatingRoute(false);
     }
@@ -1002,9 +1063,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (!createFormValid) return;
     setVerifyingCreateRoute(true);
     try {
-      await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
+      if (creatingModel) {
+        await verifyProviderRouteModel({
+          ...createRoutePayload,
+          model_id: newModelIdValue,
+          strategy: newModelStrategy,
+        });
+      } else {
+        await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
+      }
       setVerifiedCreateSignature(createVerificationSignature);
-      toast.success('Provider route verified');
+      toast.success(creatingModel ? 'Model route verified' : 'Provider route verified');
     } catch (err) {
       setVerifiedCreateSignature(null);
       toast.error(`Verify failed: ${getErrorMessage(err)}`);
@@ -1119,6 +1188,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               setSelectedModel(event.target.value);
               setEditingRoute(null);
               setAddingRoute(false);
+              setCreatingModel(false);
             }}
             className="mt-1 w-full min-w-[240px] max-w-sm rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
           >
@@ -1157,6 +1227,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             className="rounded-lg border border-gray-900 bg-gray-900 px-3 py-2 text-[13px] font-medium text-white hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
           >
             Add provider
+          </button>
+          <button
+            type="button"
+            onClick={openCreateModelForm}
+            disabled={loading || providerOptions.length === 0}
+            className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Create model
           </button>
         </div>
       </div>
@@ -1348,7 +1426,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     ) : (
                       <button
                         type="button"
-                        onClick={() => setEditingRoute(route)}
+                        onClick={() => {
+                          setEditingRoute(route);
+                          setAddingRoute(false);
+                          setCreatingModel(false);
+                        }}
                         className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
                       >
                         Edit
@@ -1362,21 +1444,75 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       )}
 
-      {addingRoute && (
+      {createFormOpen && (
         <form onSubmit={onCreateSubmit} className="rounded-lg border border-gray-200 bg-white p-4">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-[14px] font-semibold text-gray-900">Add provider route</h3>
-              <p className="mt-1 font-mono text-[12px] text-gray-400">{selectedModel}</p>
+              <h3 className="text-[14px] font-semibold text-gray-900">
+                {creatingModel ? 'Create model' : 'Add provider route'}
+              </h3>
+              <p className="mt-1 font-mono text-[12px] text-gray-400">
+                {creatingModel ? 'New runtime model' : selectedModel}
+              </p>
             </div>
             <button
               type="button"
-              onClick={() => setAddingRoute(false)}
+              onClick={() => {
+                setAddingRoute(false);
+                setCreatingModel(false);
+              }}
               className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100"
             >
               Close
             </button>
           </div>
+
+          {creatingModel && (
+            <div className="mb-3 grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="text-[12px] font-medium text-gray-500" htmlFor="new-model-id">
+                  Model ID
+                </label>
+                <input
+                  id="new-model-id"
+                  type="text"
+                  value={newModelId}
+                  onChange={(event) => {
+                    setNewModelId(event.target.value);
+                    setVerifiedCreateSignature(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                  placeholder="deepseek-v4-flash"
+                  required
+                />
+                {!newModelIdAvailable && (
+                  <p className="mt-1 text-[11px] leading-5 text-red-600">
+                    A model with this ID already exists.
+                  </p>
+                )}
+              </div>
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-model-strategy"
+                >
+                  Initial routing policy
+                </label>
+                <select
+                  id="new-model-strategy"
+                  value={newModelStrategy}
+                  onChange={(event) => {
+                    setNewModelStrategy(event.target.value as ProviderRouteStrategy);
+                    setVerifiedCreateSignature(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                >
+                  <option value="fixed">fixed</option>
+                  <option value="routewise">routewise</option>
+                </select>
+              </div>
+            </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div>
@@ -1643,7 +1779,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               disabled={creatingRoute || !createFormValid}
               className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {creatingRoute ? 'Adding…' : 'Add'}
+              {creatingRoute
+                ? creatingModel
+                  ? 'Creating…'
+                  : 'Adding…'
+                : creatingModel
+                  ? 'Create'
+                  : 'Add'}
             </button>
           </div>
         </form>

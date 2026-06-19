@@ -1182,6 +1182,11 @@ export interface CreateProviderRoutePayload {
   weight: number;
 }
 
+export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
+  model_id: string;
+  strategy: ProviderRouteStrategy;
+}
+
 export interface VerifyProviderRouteResponse {
   ok: boolean;
 }
@@ -1216,6 +1221,28 @@ export async function updateProviderRouteStrategy(
     },
   );
   return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+export async function createProviderRouteModel(
+  payload: CreateProviderRouteModelPayload,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routing/provider-route-models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function verifyProviderRouteModel(
+  payload: CreateProviderRouteModelPayload,
+): Promise<VerifyProviderRouteResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routing/provider-route-model-verifications', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow<VerifyProviderRouteResponse>(resp);
 }
 
 export async function updateProviderRoute(

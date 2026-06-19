@@ -891,6 +891,24 @@ class CreateProviderRouteRequest(BaseModel):
     weight: float = Field(1.0, gt=0)
 
 
+class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
+    """Request payload for creating a runtime model with its first provider route."""
+
+    model_id: str = Field(..., min_length=1, max_length=255)
+    strategy: Literal["fixed", "routewise"] = "fixed"
+
+    @field_validator("model_id")
+    @classmethod
+    def validate_model_id(cls, value: str) -> str:
+        """Reject blank or control-character model identifiers."""
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("model_id must not be blank")
+        if any(ord(ch) < 32 or ch == "\x7f" for ch in cleaned):
+            raise ValueError("model_id must not contain control characters")
+        return cleaned
+
+
 class UpdateProviderRouteRequest(BaseModel):
     """Request payload for updating one provider route target."""
 
@@ -938,6 +956,7 @@ __all__ = [
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
+    "CreateProviderRouteModelRequest",
     "CreateProviderRouteRequest",
     "DeleteUserRequest",
     "DeleteUserResponse",
