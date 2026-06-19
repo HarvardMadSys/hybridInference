@@ -354,7 +354,11 @@ class OpenAICompatAdapter(BaseAdapter):
                 self._key_pool.release(lease, status_code=e.status, retry_after=None)
                 raise
 
-        # Loop exhausted naturally (every key returned 429 in this single call)
+        # Loop exhausted: either every key returned 429 (raise that), or the
+        # pool had no usable keys to begin with (size 0 — e.g. the only key was
+        # disabled). Raise a controlled KeyPoolExhausted in the latter case so
+        # the router gets a clean upstream-failure signal instead of an
+        # AssertionError.
         logger.warning(
             "key_pool_exhausted",
             extra={
@@ -363,8 +367,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 "stage": "all_429",
             },
         )
-        assert last_429_error is not None
-        raise last_429_error
+        if last_429_error is not None:
+            raise last_429_error
+        raise KeyPoolExhausted(f"No usable API keys for provider {provider!r}")
 
     async def _open_stream_with_pool(
         self, url: str, payload: dict[str, Any], timeout: Any = None
@@ -473,7 +478,9 @@ class OpenAICompatAdapter(BaseAdapter):
             yield stream_iter, lease, first
             return
 
-        # Loop exhausted — every key returned 429
+        # Loop exhausted — every key returned 429, or the pool had no usable
+        # keys (size 0). Raise a controlled KeyPoolExhausted in the latter case
+        # rather than an AssertionError.
         logger.warning(
             "key_pool_exhausted",
             extra={
@@ -482,8 +489,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 "stage": "stream_all_429",
             },
         )
-        assert last_429 is not None
-        raise last_429
+        if last_429 is not None:
+            raise last_429
+        raise KeyPoolExhausted(f"No usable API keys for provider {provider!r}")
 
     def _build_url(self) -> str:
         """Build full endpoint URL (standard OpenAI path)."""
