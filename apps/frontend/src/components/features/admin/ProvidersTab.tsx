@@ -70,8 +70,7 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
   const isFeatherless = provider.name === 'featherless';
   const stripeColor = provider.ok
     ? 'bg-emerald-500'
-    : provider.error === 'not_configured' ||
-        provider.error === 'probe_unavailable'
+    : provider.error === 'not_configured' || provider.error === 'probe_unavailable'
       ? 'bg-gray-300'
       : 'bg-red-400';
 
@@ -146,9 +145,7 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
             </div>
           )
         ) : (
-          <p className="mt-3 text-[12px] text-gray-400">
-            {unavailableMessage(provider)}
-          </p>
+          <p className="mt-3 text-[12px] text-gray-400">{unavailableMessage(provider)}</p>
         )}
       </div>
     </div>

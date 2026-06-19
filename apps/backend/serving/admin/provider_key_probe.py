@@ -41,6 +41,7 @@ class ProviderKeyProbeNoRouteError(ProviderKeyProbeError):
 
 
 def truncate_probe_detail(value: str, limit: int = 500) -> str:
+    """Trim provider probe details to a bounded UI-safe length."""
     value = value.strip()
     if len(value) <= limit:
         return value
@@ -48,6 +49,7 @@ def truncate_probe_detail(value: str, limit: int = 500) -> str:
 
 
 def probe_error_reason(exc: BaseException) -> str:
+    """Classify a probe exception into a short admin API reason code."""
     if isinstance(exc, asyncio.TimeoutError):
         return "timeout"
     if isinstance(exc, aiohttp.ClientResponseError):
@@ -95,6 +97,7 @@ def probe_error_detail(
     timeout_seconds: float,
     api_key: str = "",
 ) -> str:
+    """Build a redacted provider probe failure message for admin users."""
     if isinstance(exc, asyncio.TimeoutError):
         return f"Provider key verification timed out after {timeout_seconds:.0f}s"
     if isinstance(exc, aiohttp.ClientResponseError):
@@ -151,6 +154,7 @@ def _adapter_provider(adapter: object) -> str:
 
 
 def find_verification_adapter(services: Any, provider: str) -> object | None:
+    """Find a route adapter suitable for probing a candidate provider key."""
     routes = getattr(getattr(services, "router", None), "routes", {}) or {}
     for route in routes.values():
         for adapter, _weight in _route_entries(route):

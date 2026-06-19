@@ -174,6 +174,17 @@ async def client(monkeypatch, store):
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
     monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "0")
+    for env_var in (
+        "CHUTES_API_KEY",
+        "FEATHERLESS_API_KEY",
+        "KIMI_CODING_API_KEY",
+        "MINIMAX_API_KEY",
+        "OLLAMA_API_KEY",
+        "ZAI_API_KEY",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
+        for index in range(2, 21):
+            monkeypatch.delenv(f"{env_var}{index}", raising=False)
 
     # The verify_admin_access dependency requires get_user_by_id to short-
     # circuit cleanly when authenticating with the ADMIN_TOKEN — provide a
