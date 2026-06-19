@@ -830,6 +830,33 @@ def _unique(values: list[str]) -> list[str]:
     return out
 
 
+async def _active_env_keys_for_provider(op_store, key_provider: str) -> list[str]:
+    disabled_hashes: set[str] = set()
+    try:
+        disabled_hashes = set(await op_store.list_disabled_provider_env_key_hashes(key_provider))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to load disabled env keys for {key_provider}: {exc}",
+        ) from exc
+
+    keys: list[str] = []
+    for pool in dynamic_keys.get_pools_for_provider(key_provider):
+        keys.extend(pool.snapshot_keys())
+    keys.extend(dynamic_keys.configured_env_keys_for_provider(key_provider))
+
+    active_keys: list[str] = []
+    for key in _unique([key for key in keys if key.strip()]):
+        key_hash = dynamic_keys.env_key_hash(key)
+        if key_hash in disabled_hashes or dynamic_keys.is_env_key_disabled(
+            key_provider,
+            key_hash,
+        ):
+            continue
+        active_keys.append(key)
+    return active_keys
+
+
 async def _resolve_key_material(
     op_store,
     *,
@@ -837,9 +864,7 @@ async def _resolve_key_material(
     api_key_id: str | None,
 ) -> tuple[str | None, list[str] | None]:
     if api_key_id is None:
-        keys: list[str] = []
-        for pool in dynamic_keys.get_pools_for_provider(key_provider):
-            keys.extend(pool.snapshot_keys())
+        keys = await _active_env_keys_for_provider(op_store, key_provider)
         try:
             db_keys = await op_store.list_provider_keys_full(key_provider)
         except Exception as exc:
@@ -859,10 +884,9 @@ async def _resolve_key_material(
         return None, keys
 
     if api_key_id.startswith("env:"):
-        for pool in dynamic_keys.get_pools_for_provider(key_provider):
-            for raw in pool.snapshot_keys():
-                if _env_key_id(raw) == api_key_id:
-                    return None, [raw]
+        for raw in await _active_env_keys_for_provider(op_store, key_provider):
+            if _env_key_id(raw) == api_key_id:
+                return None, [raw]
         raise HTTPException(status_code=404, detail="Env provider key not found")
 
     row = await op_store.get_provider_key_full(api_key_id)
@@ -893,16 +917,15 @@ async def _api_key_ref(
             source="default",
         )
     if api_key_id.startswith("env:"):
-        for pool in dynamic_keys.get_pools_for_provider(key_provider):
-            for raw in pool.snapshot_keys():
-                if _env_key_id(raw) == api_key_id:
-                    return ProviderRouteApiKeyRef(
-                        id=api_key_id,
-                        provider=key_provider,
-                        label=None,
-                        key_prefix=_mask(raw),
-                        source="env",
-                    )
+        for raw in await _active_env_keys_for_provider(op_store, key_provider):
+            if _env_key_id(raw) == api_key_id:
+                return ProviderRouteApiKeyRef(
+                    id=api_key_id,
+                    provider=key_provider,
+                    label=None,
+                    key_prefix=_mask(raw),
+                    source="env",
+                )
         return ProviderRouteApiKeyRef(
             id=api_key_id,
             provider=key_provider,
@@ -1138,6 +1161,7 @@ async def _prepare_route_candidate(
                 "upstream_provider": upstream_provider,
                 "provider_type": route_type,
                 "openrouter_sort": openrouter_sort,
+                "api_key_id": api_key_id,
                 "runtime_candidate": True,
             },
         }
@@ -1774,9 +1798,13 @@ async def _route_row(
     endpoint_id: str,
     override_row: dict[str, Any] | None,
 ) -> ProviderRouteItem:
+    is_runtime = _is_runtime_candidate(adapter)
+    route_metadata = getattr(adapter.config, "route_metadata", None)
+    route_metadata = route_metadata if isinstance(route_metadata, dict) else {}
+
     # Runtime-added candidates own their full config row. Ignore any stale
     # override row for the same route_id so list responses do not mix sources.
-    effective_override = None if _is_runtime_candidate(adapter) else override_row
+    effective_override = None if is_runtime else override_row
     raw_route_provider = _route_provider(adapter)
     raw_upstream_provider = (
         str(effective_override["provider"]) if effective_override else _upstream_provider(adapter)
@@ -1794,7 +1822,11 @@ async def _route_row(
     api_key_id = (
         str(effective_override["api_key_id"])
         if effective_override and effective_override.get("api_key_id") is not None
-        else None
+        else (
+            str(route_metadata["api_key_id"])
+            if is_runtime and route_metadata.get("api_key_id") is not None
+            else None
+        )
     )
     api_key = await _api_key_ref(
         op_store,
@@ -1809,11 +1841,7 @@ async def _route_row(
         if effective_override and effective_override.get("provider_model_id") is not None
         else getattr(adapter.config, "provider_model_id", None)
     )
-    source = (
-        "runtime"
-        if _is_runtime_candidate(adapter)
-        else ("override" if effective_override else "yaml")
-    )
+    source = "runtime" if is_runtime else ("override" if effective_override else "yaml")
     return ProviderRouteItem(
         model_id=model_id,
         strategy=strategy,

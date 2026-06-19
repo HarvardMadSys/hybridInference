@@ -1377,6 +1377,10 @@ export interface ListProviderApiKeysResponse {
   keys: ProviderApiKeyItem[];
 }
 
+export interface ListProviderApiKeyProvidersResponse {
+  providers: string[];
+}
+
 export interface AddProviderApiKeyResponse {
   key: ProviderApiKeyItem;
   pools_updated: number;
@@ -1394,6 +1398,10 @@ export interface DisableProviderEnvKeyResponse {
   pools_updated: number;
 }
 
+export interface VerifyProviderApiKeyResponse {
+  ok: boolean;
+}
+
 export async function listProviderKeys(provider?: string): Promise<ListProviderApiKeysResponse> {
   const params = new URLSearchParams();
   if (provider) params.set('provider', provider);
@@ -1401,6 +1409,11 @@ export async function listProviderKeys(provider?: string): Promise<ListProviderA
   const path = qs ? `/admin/provider-keys?${qs}` : '/admin/provider-keys';
   const resp = await fetchWithAuth(API_BASE, path);
   return jsonOrThrow<ListProviderApiKeysResponse>(resp);
+}
+
+export async function listProviderKeyProviders(): Promise<ListProviderApiKeyProvidersResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/providers');
+  return jsonOrThrow<ListProviderApiKeyProvidersResponse>(resp);
 }
 
 export async function addProviderKey(
@@ -1418,6 +1431,18 @@ export async function addProviderKey(
     }),
   });
   return jsonOrThrow<AddProviderApiKeyResponse>(resp);
+}
+
+export async function verifyProviderKey(
+  provider: string,
+  apiKey: string,
+): Promise<VerifyProviderApiKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  });
+  return jsonOrThrow<VerifyProviderApiKeyResponse>(resp);
 }
 
 export async function deleteProviderKey(id: string): Promise<DeleteProviderApiKeyResponse> {
