@@ -88,8 +88,8 @@ def test_make_adapter_invalid_openrouter_kind_raises() -> None:
 
 def test_make_adapter_bracket_normalizes_provider_field() -> None:
     """ModelConfig.provider should be 'openrouter' even for bracket form,
-    so api_logs.provider and Prometheus labels see one cohort rather than
-    one cohort per pinned upstream."""
+    so api_logs.provider sees one cohort rather than one cohort per pinned
+    upstream."""
     from serving.servers.registry import parse_openrouter_kind
 
     base_kind, pinned = parse_openrouter_kind("openrouter[deepinfra]")

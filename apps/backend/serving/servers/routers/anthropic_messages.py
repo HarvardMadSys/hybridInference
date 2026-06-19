@@ -31,11 +31,6 @@ from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user
-from serving.observability.metrics import (
-    API_MODEL_REQUESTS,
-    normalize_model_label,
-    normalize_provider_label,
-)
 from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
@@ -413,11 +408,6 @@ def _log_failure(
     error_message: str,
 ) -> None:
     latency_ms = int((time.time() - start) * 1000)
-    API_MODEL_REQUESTS.labels(
-        model=normalize_model_label(canonical),
-        provider=normalize_provider_label(adapter.config.provider),
-        status_code=str(status_code),
-    ).inc()
     if log_store:
         _schedule_log_store_task(
             log_store,
@@ -651,11 +641,6 @@ async def anthropic_messages(
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
             finally:
                 latency_ms = int((time.time() - start) * 1000)
-                API_MODEL_REQUESTS.labels(
-                    model=normalize_model_label(canonical),
-                    provider=normalize_provider_label(adapter.config.provider),
-                    status_code=str(stream_status_code),
-                ).inc()
                 if log_store:
                     _schedule_log_store_task(
                         log_store,
@@ -739,11 +724,6 @@ async def anthropic_messages(
     }
     latency_ms = int((time.time() - start) * 1000)
     provider = adapter.config.provider
-    API_MODEL_REQUESTS.labels(
-        model=normalize_model_label(canonical),
-        provider=normalize_provider_label(provider),
-        status_code="200",
-    ).inc()
     if log_store:
         _schedule_log_store_task(
             log_store,

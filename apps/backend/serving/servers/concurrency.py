@@ -8,7 +8,7 @@ Limits are resolved per-call via a ``LimitsProvider`` async callable so
 operators can adjust caps at runtime through the admin settings API.
 Each existing ``_UserSlot`` lazily resizes on its owner's next acquire.
 The slot's *role label* remains sticky to its creation-time value so
-metrics stay coherent across role changes.
+rejection logs stay coherent across role changes.
 """
 
 from __future__ import annotations
@@ -18,11 +18,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
-from serving.observability.metrics import (
-    USER_CONCURRENCY_ACQUIRES_TOTAL,
-    USER_CONCURRENCY_IN_FLIGHT,
-    USER_CONCURRENCY_REJECTED_TOTAL,
-)
 from serving.observability.rejection_log import extract_prompt_from_body, log_rejection
 from serving.utils.logging import get_logger
 
@@ -71,7 +66,7 @@ class _UserSlot:
     """
 
     capacity: int
-    role: str  # role label captured at slot creation; used for metrics
+    role: str  # role label captured at slot creation; used for logging
     in_use: int = 0
 
     def try_acquire(self) -> bool:
@@ -154,12 +149,7 @@ class UserConcurrencyLimiter:
 
         granted = slot.try_acquire()
         label = slot.role
-        if granted:
-            USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="granted").inc()
-            USER_CONCURRENCY_IN_FLIGHT.labels(role=label).inc()
-        else:
-            USER_CONCURRENCY_ACQUIRES_TOTAL.labels(role=label, outcome="rejected").inc()
-            USER_CONCURRENCY_REJECTED_TOTAL.labels(role=label).inc()
+        if not granted:
             logger.warning(
                 "concurrency_rejected",
                 extra={
@@ -175,10 +165,7 @@ class UserConcurrencyLimiter:
         slot = self._slots.get(user_id)
         if slot is None:
             return
-        had_one = slot.in_use > 0
         slot.release()
-        if had_one:
-            USER_CONCURRENCY_IN_FLIGHT.labels(role=slot.role).dec()
 
     def role_for(self, user_id: str) -> str | None:
         """Return the role label captured at slot creation, or None."""
@@ -187,7 +174,7 @@ class UserConcurrencyLimiter:
 
 
 # Dependency lives at the bottom of the module so it can reference the
-# limiter class and metrics defined above.
+# limiter class defined above.
 
 from typing import TYPE_CHECKING, Any
 

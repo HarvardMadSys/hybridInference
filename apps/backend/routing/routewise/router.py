@@ -54,10 +54,6 @@ from routing.routers import (
     _routing_chunk,
 )
 from serving.exceptions import operator_safe_error
-from serving.observability.metrics import (
-    API_FALLBACKS,
-    normalize_provider_label,
-)
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens
@@ -1719,22 +1715,6 @@ class RouteWiseRouter(BaseRouter):
             routing["fallback_policy"] = "routewise_resolve"
             routing["failed_attempts"] = _dedupe_failed_attempts(failed_attempts)
 
-    @staticmethod
-    def _record_fallback_metric(
-        failed_attempts: list[dict[str, Any]],
-        winner: BaseAdapter,
-    ) -> None:
-        if not failed_attempts:
-            return
-        first = failed_attempts[0]
-        source = first.get("endpoint_id") or first.get("provider") or "unknown"
-        reason = first.get("error_type") or "error"
-        API_FALLBACKS.labels(
-            from_provider=normalize_provider_label(str(source)),
-            to_provider=normalize_provider_label(_get_endpoint_id(winner)),
-            reason=str(reason),
-        ).inc()
-
     def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
         model_id = self._canonical_model_id(model_id)
         if model_id not in self.classified:
@@ -2215,8 +2195,6 @@ class RouteWiseRouter(BaseRouter):
                         primary,
                         failed_attempts=failed_attempts,
                     )
-                    if failed_attempts:
-                        self._record_fallback_metric(failed_attempts, primary)
                     decision_info = self._pending_decisions.pop(request_id, None)
                     if decision_info and isinstance(resp, dict) and "_routing" in resp:
                         self._attach_decision_info(resp["_routing"], decision_info)
@@ -2316,8 +2294,6 @@ class RouteWiseRouter(BaseRouter):
                         yield chunk
                         chunks_yielded = True
 
-                    if failed_attempts:
-                        self._record_fallback_metric(failed_attempts, primary)
                     decision_info = self._pending_decisions.pop(request_id, None)
                     if decision_info:
                         decision_info["is_streaming"] = True
