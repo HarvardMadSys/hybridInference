@@ -124,11 +124,13 @@ async def test_circuit_open_emits_structured_log(monkeypatch, caplog):
 
     with (
         patch("routing.routers.alert_slack", new=AsyncMock()),
-        caplog.at_level(logging.WARNING, logger="routing.routers"),
+        caplog.at_level(logging.INFO, logger="routing.routers"),
     ):
         cb.on_failure(reason="stream_exception", detail="access_terminated_error")
         cb.on_failure(reason="stream_exception", detail="access_terminated_error")
         assert cb.state == _CircuitState.OPEN
+        cb.on_success()
+        assert cb.state == _CircuitState.CLOSED
 
     records = [r for r in caplog.records if r.getMessage() == "circuit_open"]
     assert len(records) == 1
@@ -139,6 +141,14 @@ async def test_circuit_open_emits_structured_log(monkeypatch, caplog):
     assert rec.reason == "stream_exception"
     assert rec.consecutive_failures == 2
     assert rec.upstream_error == "access_terminated_error"
+
+    closed_records = [r for r in caplog.records if r.getMessage() == "circuit_closed"]
+    assert len(closed_records) == 1
+    closed_rec = closed_records[0]
+    assert closed_rec.levelno == logging.INFO
+    assert closed_rec.event == "circuit_closed"
+    assert closed_rec.provider == "openai"
+    assert closed_rec.duration_ms is not None
 
 
 async def test_circuit_open_logs_once_per_transition(monkeypatch, caplog):

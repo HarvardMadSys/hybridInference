@@ -434,11 +434,23 @@ class _CircuitBreaker:
         with self._lock:
             self.consecutive_failures = 0
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
+                # Capture how long the circuit stayed open before clearing the
+                # timestamp, so the recovery log carries the outage duration.
+                duration_ms = (
+                    (time.perf_counter() - self.last_opened) * 1000.0
+                    if self.last_opened is not None
+                    else None
+                )
                 self.state = _CircuitState.CLOSED
+                self.last_opened = None
                 CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(0)
                 logger.info(
                     "circuit_closed",
-                    extra={"event": "circuit_closed", "provider": self.provider},
+                    extra={
+                        "event": "circuit_closed",
+                        "provider": self.provider,
+                        "duration_ms": duration_ms,
+                    },
                 )
 
     def on_failure(
