@@ -101,23 +101,46 @@ def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
         return sum(1 for pool in pools if pool.remove_key(key))
 
 
-def add_key_to_provider(provider: str, key: str) -> int:
-    """Append *key* to every KeyPool registered for *provider*.
+def _attach_key_to_adapter_locked(adapter: object, key: str) -> bool:
+    """Attach *key* to a single adapter, promoting it to a pool if needed.
 
-    Returns the number of pools the key was added to. A return value of 0
-    means *provider* has no multi-key adapters — the caller should treat
-    this as a configuration error and surface it to the admin.
+    Pool-capable adapters (``add_runtime_key``) lazily create a ``KeyPool``
+    seeded with their original static key, so a runtime key is used even when
+    the route was configured with a single ``api_key``. Adapters that already
+    expose a pool but predate ``add_runtime_key`` fall back to ``add_key``.
+    Returns True when the key was attached.
+    """
+    pool = getattr(adapter, "_key_pool", None)
+    if pool is not None:
+        pool.add_key(key)
+        return True
+    attach = getattr(adapter, "add_runtime_key", None)
+    if callable(attach):
+        return bool(attach(key))
+    return False
+
+
+def add_key_to_provider(provider: str, key: str) -> int:
+    """Attach *key* to every pool-capable adapter registered for *provider*.
+
+    Returns the number of adapters the key was attached to. A return value of
+    0 means *provider* has no multi-key-capable adapters — the caller should
+    treat this as a configuration error and surface it to the admin, since the
+    key has been persisted but will never be used for inference.
+
+    Adapters configured with a single ``api_key`` are promoted to a pool on
+    first runtime key (seeded with the original key), so dashboard-added keys
+    are used without requiring the route to pre-declare ``api_keys``.
 
     The key is tracked as DB-injected so a future ``remove_key_from_provider``
     call can distinguish it from env-configured keys that happen to share
     the same raw value.
     """
     with _lock:
-        pools = _pools_for_provider_locked(provider)
-        for pool in pools:
-            pool.add_key(key)
+        adapters = _adapters_by_provider.get(provider, [])
+        attached = sum(1 for adapter in adapters if _attach_key_to_adapter_locked(adapter, key))
         _db_injected_keys.setdefault(provider, set()).add(key)
-        return len(pools)
+        return attached
 
 
 def remove_key_from_provider(provider: str, key: str) -> int:

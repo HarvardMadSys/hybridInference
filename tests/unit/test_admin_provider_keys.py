@@ -11,7 +11,9 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from serving.adapters import dynamic_keys
+from serving.adapters.base import ModelConfig
 from serving.adapters.key_pool import KeyPool
+from serving.adapters.openai_compat import OpenAICompatAdapter
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 from serving.storage.base import ProviderKeyRow
@@ -198,6 +200,62 @@ async def test_add_persists_and_seeds_pool(client):
     assert api_key in pool.snapshot_keys()
     assert len(store.rows) == 1
     assert store.audit and store.audit[0]["action"] == "add_provider_key"
+
+
+@pytest.mark.asyncio
+async def test_add_lazily_promotes_single_key_adapter(client):
+    """Adding a key to a single-`api_key` provider promotes it to a pool.
+
+    Regression: previously such an adapter had no KeyPool, so the runtime key
+    attached to 0 pools and was silently persisted-but-unused. It must now be
+    attached (pools_updated >= 1) and live in the pool alongside the env key.
+    """
+    http, _store = client
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="lazy-model",
+            name="lazy-model",
+            provider="minimax-lazy",
+            base_url="https://api.example.com",
+            api_key="env-key-original-1234567890",
+            provider_model_id="lazy-model",
+        )
+    )
+    assert adapter._key_pool is None
+    dynamic_keys.register_adapter_for_provider("minimax-lazy", adapter)
+
+    api_key = "sk-minimax-runtime-abcdefghij"
+    resp = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "minimax-lazy", "api_key": api_key},
+        headers=AUTH,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["pools_updated"] == 1
+    assert adapter._key_pool is not None
+    assert api_key in adapter._key_pool.snapshot_keys()
+    assert "env-key-original-1234567890" in adapter._key_pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+async def test_add_reports_zero_pools_when_no_capable_adapter(client):
+    """A provider with no pool-capable adapter reports pools_updated == 0.
+
+    The key is still persisted, but the response signals it is not attached to
+    any live pool so the UI can warn the operator instead of implying success.
+    """
+    http, store = client
+    dynamic_keys.register_known_provider("noop-provider")
+
+    resp = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "noop-provider", "api_key": "sk-noop-abcdefghij1234"},
+        headers=AUTH,
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["pools_updated"] == 0
+    # The key is persisted even though it is not attached to a pool.
+    assert len(store.rows) == 1
 
 
 @pytest.mark.asyncio

@@ -16,8 +16,11 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.utils.logging import get_logger
 
 router = APIRouter(prefix="/admin")
+
+logger = get_logger(__name__)
 
 
 def _mask(api_key: str) -> str:
@@ -154,6 +157,15 @@ async def add_provider_key(
     )
 
     pools_updated = dynamic_keys.add_key_to_provider(payload.provider, api_key)
+    if pools_updated == 0:
+        # The key is persisted but no live adapter accepted it, so it will not
+        # be used for inference. Surface it loudly instead of reporting success.
+        logger.warning(
+            "provider key for %r persisted but attached to 0 pools - no "
+            "multi-key-capable adapter is registered for this provider; the "
+            "key will NOT be used for inference",
+            payload.provider,
+        )
 
     await log_admin_action(
         op_store,

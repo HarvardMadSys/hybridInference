@@ -112,6 +112,35 @@ class OpenAICompatAdapter(BaseAdapter):
             self._usage_profile = ProviderProfile.DEFAULT
         self._usage_normalizer = get_usage_normalizer(self._usage_profile)
 
+    def add_runtime_key(self, key: str) -> bool:
+        """Attach a runtime-managed API key, creating the pool if needed.
+
+        Single-key adapters are constructed without a ``KeyPool`` (the legacy
+        fast path in ``_post_with_pool``/``_stream_with_pool``). When an admin
+        adds a key at runtime (provider-keys dashboard) we lazily promote the
+        adapter to a pool seeded with the original static ``api_key`` so both
+        the env-configured key and the new key keep serving traffic. The
+        request path reads ``self._key_pool`` per request, so the promotion is
+        picked up without a restart.
+
+        Returns True once the key is attached (always, for pool-capable
+        adapters).
+        """
+        normalized = key.strip() if isinstance(key, str) else ""
+        if not normalized:
+            return False
+        if self._key_pool is None:
+            seed: list[str] = []
+            static = self.config.api_key
+            if isinstance(static, str) and static.strip():
+                seed.append(static.strip())
+            if normalized not in seed:
+                seed.append(normalized)
+            self._key_pool = KeyPool(keys=seed, provider_label=self.config.provider)
+            return True
+        self._key_pool.add_key(normalized)
+        return True
+
     def _apply_supported_passthrough_params(
         self, payload: dict[str, Any], params: dict[str, Any]
     ) -> None:

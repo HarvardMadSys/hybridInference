@@ -91,7 +91,14 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         formApiKey.trim(),
         formLabel.trim() || undefined,
       );
-      toast.success(`Key added (${resp.pools_updated} pool(s) updated)`);
+      if (resp.pools_updated === 0) {
+        toast.error(
+          'Key saved but not attached to any live pool — it will NOT be used ' +
+            'for inference. This provider has no multi-key-capable adapter loaded.',
+        );
+      } else {
+        toast.success(`Key added (${resp.pools_updated} pool(s) updated)`);
+      }
       setFormApiKey('');
       setFormLabel('');
       if (formProvider === selectedProvider) {
