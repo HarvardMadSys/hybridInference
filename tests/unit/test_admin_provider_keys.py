@@ -237,6 +237,41 @@ async def test_add_lazily_promotes_single_key_adapter(client):
     assert "env-key-original-1234567890" in adapter._key_pool.snapshot_keys()
 
 
+def test_promotion_drops_disabled_static_env_key():
+    """A disabled env key must not return when promotion re-seeds the pool.
+
+    Regression for the boot ordering: ``apply_db_keys_at_boot`` records the
+    disabled hash before seeding DB keys, but a single-key adapter has no pool
+    to filter at that point. When the DB key later promotes the adapter, the
+    static env key is re-seeded — it must be dropped because it was disabled.
+    """
+    env_key = "env-disabled-key-1234567890"
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="disabled-model",
+            name="disabled-model",
+            provider="minimax-disabled",
+            base_url="https://api.example.com",
+            api_key=env_key,
+            provider_model_id="disabled-model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("minimax-disabled", adapter)
+    # Admin disabled the env key earlier (hash tracked even with no live pool).
+    dynamic_keys.disable_env_key_for_provider(
+        "minimax-disabled", env_key, dynamic_keys.env_key_hash(env_key)
+    )
+
+    db_key = "sk-minimax-db-abcdefghij12"
+    attached = dynamic_keys.add_key_to_provider("minimax-disabled", db_key)
+
+    assert attached == 1
+    assert adapter._key_pool is not None
+    snapshot = adapter._key_pool.snapshot_keys()
+    assert db_key in snapshot
+    assert env_key not in snapshot
+
+
 @pytest.mark.asyncio
 async def test_add_reports_zero_pools_when_no_capable_adapter(client):
     """A provider with no pool-capable adapter reports pools_updated == 0.

@@ -101,7 +101,9 @@ def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
         return sum(1 for pool in pools if pool.remove_key(key))
 
 
-def _attach_key_to_adapter_locked(adapter: object, key: str) -> bool:
+def _attach_key_to_adapter_locked(
+    adapter: object, key: str, disabled_hashes: set[str]
+) -> bool:
     """Attach *key* to a single adapter, promoting it to a pool if needed.
 
     Pool-capable adapters (``add_runtime_key``) lazily create a ``KeyPool``
@@ -109,15 +111,27 @@ def _attach_key_to_adapter_locked(adapter: object, key: str) -> bool:
     the route was configured with a single ``api_key``. Adapters that already
     expose a pool but predate ``add_runtime_key`` fall back to ``add_key``.
     Returns True when the key was attached.
+
+    Promotion re-seeds the adapter's static ``api_key`` into the new pool. If
+    an admin has disabled that env key (tracked by hash), it must not silently
+    come back into rotation — so any disabled env key is dropped from the pool
+    afterwards. The key being added is never dropped, even if its hash matches.
     """
     pool = getattr(adapter, "_key_pool", None)
     if pool is not None:
         pool.add_key(key)
-        return True
-    attach = getattr(adapter, "add_runtime_key", None)
-    if callable(attach):
-        return bool(attach(key))
-    return False
+        attached = True
+    else:
+        attach = getattr(adapter, "add_runtime_key", None)
+        if not callable(attach):
+            return False
+        attached = bool(attach(key))
+        pool = getattr(adapter, "_key_pool", None)
+    if attached and pool is not None and disabled_hashes:
+        for existing in pool.snapshot_keys():
+            if existing != key and env_key_hash(existing) in disabled_hashes:
+                pool.remove_key(existing)
+    return attached
 
 
 def add_key_to_provider(provider: str, key: str) -> int:
@@ -138,7 +152,10 @@ def add_key_to_provider(provider: str, key: str) -> int:
     """
     with _lock:
         adapters = _adapters_by_provider.get(provider, [])
-        attached = sum(1 for adapter in adapters if _attach_key_to_adapter_locked(adapter, key))
+        disabled = _disabled_env_key_hashes.get(provider, set())
+        attached = sum(
+            1 for adapter in adapters if _attach_key_to_adapter_locked(adapter, key, disabled)
+        )
         _db_injected_keys.setdefault(provider, set()).add(key)
         return attached
 
