@@ -39,6 +39,9 @@ from serving.observability.metrics import (
     normalize_provider_label,
 )
 from serving.utils import context as req_ctx
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Strong references to fire-and-forget Slack alert tasks. asyncio holds only
 # weak refs to scheduled tasks, so without this set the GC may cancel an alert
@@ -433,6 +436,10 @@ class _CircuitBreaker:
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
                 self.state = _CircuitState.CLOSED
                 CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(0)
+                logger.info(
+                    "circuit_closed",
+                    extra={"event": "circuit_closed", "provider": self.provider},
+                )
 
     def on_failure(
         self,
@@ -470,6 +477,21 @@ class _CircuitBreaker:
                     # the alert is actionable without grepping logs.
                     if detail:
                         context["upstream_error"] = detail
+                    # Emit a structured log record for the circuit-open
+                    # transition. The Slack alert is fire-and-forget and writes
+                    # no log line, so without this the event is invisible in the
+                    # application logs (only Prometheus counters reflect it).
+                    logger.warning(
+                        "circuit_open",
+                        extra={
+                            "event": "circuit_open",
+                            "provider": self.provider,
+                            "consecutive_failures": self.consecutive_failures,
+                            "availability": availability,
+                            "reason": reason or "unknown",
+                            "upstream_error": detail,
+                        },
+                    )
                     try:
                         task = asyncio.ensure_future(
                             alert_slack(
