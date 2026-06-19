@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -1592,6 +1593,99 @@ class TestFetchFeatherless:
         assert result.usages[0].used == 0.0
         assert result.usages[0].limit == 2.0
         assert result.usages[0].unit == "units"
+
+    @pytest.mark.asyncio
+    async def test_reuses_cached_result_within_ttl(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+        probe_calls = 0
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            nonlocal probe_calls
+            del _services, provider, api_key, timeout_seconds
+            probe_calls += 1
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        first = await fetch_featherless(services=SimpleNamespace())
+        second = await fetch_featherless(services=SimpleNamespace())
+
+        assert probe_calls == 1
+        assert first[0].ok is True
+        assert second[0].ok is True
+        assert first is not second
+        assert first[0] is not second[0]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_calls_share_single_in_flight_probe(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+        started = asyncio.Event()
+        release = asyncio.Event()
+        probe_calls = 0
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            nonlocal probe_calls
+            del _services, provider, api_key, timeout_seconds
+            probe_calls += 1
+            started.set()
+            await release.wait()
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        first_task = asyncio.create_task(fetch_featherless(services=SimpleNamespace()))
+        await started.wait()
+        second_task = asyncio.create_task(fetch_featherless(services=SimpleNamespace()))
+        release.set()
+        first, second = await asyncio.gather(first_task, second_task)
+
+        assert probe_calls == 1
+        assert first[0].ok is True
+        assert second[0].ok is True
+
+    @pytest.mark.asyncio
+    async def test_cancelled_probe_is_rethrown(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            del _services, provider, api_key, timeout_seconds
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await fetch_featherless(services=SimpleNamespace())
 
     @pytest.mark.asyncio
     async def test_concurrency_usage_fetcher_uses_account_snapshot_endpoint(self):

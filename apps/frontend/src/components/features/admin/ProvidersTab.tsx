@@ -29,9 +29,6 @@ function formatNum(v: number | null): string {
 }
 
 function unavailableMessage(provider: ProviderQuotaResult): string {
-  if (provider.error === 'not_quota_metered') {
-    return 'No quota meter — Featherless usage is not quota-based.';
-  }
   if (provider.error === 'probe_unavailable') {
     return 'Status unavailable — no configured route to probe.';
   }
@@ -74,7 +71,6 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
   const stripeColor = provider.ok
     ? 'bg-emerald-500'
     : provider.error === 'not_configured' ||
-        provider.error === 'not_quota_metered' ||
         provider.error === 'probe_unavailable'
       ? 'bg-gray-300'
       : 'bg-red-400';

@@ -651,7 +651,8 @@ class ProviderQuotaResult(BaseModel):
     """Result of querying a single upstream provider's quota."""
 
     name: str = Field(
-        ..., description="Lowercase identifier: chutes | zai | minimax | kimi | ollama | featherless"
+        ...,
+        description="Lowercase identifier: chutes | zai | minimax | kimi | ollama | featherless",
     )
     display_name: str = Field(..., description="Human-readable name")
     key_index: int | None = Field(
@@ -664,7 +665,7 @@ class ProviderQuotaResult(BaseModel):
     ok: bool = Field(..., description="True if quota fetch succeeded")
     error: str | None = Field(
         None,
-        description="Short reason code if !ok: 'auth_failed' | 'plan_api_disabled' | 'timeout' | 'not_configured' | 'not_quota_metered' | 'probe_unavailable' | 'parse_error' | 'unexpected'",
+        description="Short reason code if !ok: 'auth_failed' | 'plan_api_disabled' | 'timeout' | 'not_configured' | 'probe_unavailable' | 'parse_error' | 'unexpected'",
     )
     usages: list[ProviderQuotaUsage] = Field(default_factory=list)
 
