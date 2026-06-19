@@ -30,7 +30,7 @@ router = APIRouter(prefix="/admin")
 
 _PROVIDER_STATS_MAX_DAYS = 90
 _PROVIDER_STATS_DEFAULT_DAYS = 7
-_SYNTHETIC_PERFORMANCE_PROVIDERS = frozenset({"router"})
+_SYNTHETIC_PERFORMANCE_PROVIDERS = frozenset({"", "router"})
 
 _TOKEN_USAGE_RANGES: dict[str, timedelta] = {
     "1h": timedelta(hours=1),

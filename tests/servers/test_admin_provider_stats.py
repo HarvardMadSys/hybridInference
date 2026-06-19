@@ -179,7 +179,7 @@ class TestProviderStatsRangeCap:
 
 @pytest.mark.asyncio
 async def test_router_provider_is_hidden_from_provider_performance():
-    """Synthetic router failure rows are not reportable upstream provider stats."""
+    """Synthetic failure rows are not reportable upstream provider stats."""
     bucket = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
     router_row = {
         "hour_bucket": bucket,
@@ -190,15 +190,17 @@ async def test_router_provider_is_hidden_from_provider_performance():
         "stream_count": 0,
         "total_completion_tokens": 0,
     }
+    empty_provider_row = {**router_row, "provider": "", "model_id": "rejected-model"}
     fake_db_logger = MagicMock()
     fake_db_logger.pool = _FakePool(
         [
-            [router_row],
+            [router_row, empty_provider_row],
             [
                 {"provider": "openrouter", "model_id": "qwen/qwen3-coder"},
                 {"provider": "router", "model_id": "missing-model"},
+                {"provider": "", "model_id": "rejected-model"},
             ],
-            [{"provider": "openrouter"}, {"provider": "router"}],
+            [{"provider": "openrouter"}, {"provider": "router"}, {"provider": ""}],
         ]
     )
 
