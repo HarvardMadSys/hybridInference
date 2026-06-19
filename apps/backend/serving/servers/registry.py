@@ -512,12 +512,18 @@ def register_from_models_yaml(
                 adapters_with_weights.append((adapter, weight))
 
                 # Register adapter for runtime key-pool management. We always
-                # mark the provider as known (whitelist) and only attach the
-                # adapter when it carries a key pool — otherwise admin actions
-                # would silently no-op against single-key adapters.
+                # mark the provider as known (whitelist) and register every
+                # pool-capable adapter — including single-``api_key`` ones,
+                # which are promoted to a pool lazily when an admin adds a
+                # runtime key (see ``OpenAICompatAdapter.add_runtime_key``).
+                # Registering only pre-built pools here would make dashboard
+                # keys silently no-op against single-key adapters.
                 provider_key = _dynamic_key_provider_name(kind, adapter_cfg)
                 dynamic_key_providers.add(provider_key)
-                if getattr(adapter, "_key_pool", None) is not None:
+                pool_capable = hasattr(adapter, "add_runtime_key") or (
+                    getattr(adapter, "_key_pool", None) is not None
+                )
+                if pool_capable:
                     dynamic_key_registrations.append((provider_key, adapter))
 
             # Determine model type: "embedding" models bypass RouteExecutor
