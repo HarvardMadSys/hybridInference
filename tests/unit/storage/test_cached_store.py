@@ -39,6 +39,7 @@ def inner_store() -> MagicMock:
     store.update_key = AsyncMock()
     store.revoke_key = AsyncMock()
     store.regenerate_key = AsyncMock(return_value="old-pfx")
+    store.mark_user_email_verified = AsyncMock()
     return store
 
 
@@ -204,6 +205,22 @@ class TestWriteInvalidation:
         await cached.reject_user("u1", admin_id="a1", reason="spam")
         await cached.get_user_by_id("u1")
         assert inner_store.get_user_by_id.await_count == 2
+
+    async def test_mark_email_verified_invalidates_user_and_auth(self, cached, inner_store):
+        # Populate user and auth caches with the pre-verification (stale) rows.
+        await cached.get_user_by_id("u1")
+        await cached.get_auth_context_by_key_hash("h1")
+        await cached.get_auth_context_lightweight("h1")
+
+        await cached.mark_user_email_verified("u1")
+
+        # All three caches must be cleared so the next read reflects verification.
+        await cached.get_user_by_id("u1")
+        await cached.get_auth_context_by_key_hash("h1")
+        await cached.get_auth_context_lightweight("h1")
+        assert inner_store.get_user_by_id.await_count == 2
+        assert inner_store.get_auth_context_by_key_hash.await_count == 2
+        assert inner_store.get_auth_context_lightweight.await_count == 2
 
     async def test_update_key_invalidates_auth(self, cached, inner_store):
         await cached.get_auth_context_by_key_hash("h1")

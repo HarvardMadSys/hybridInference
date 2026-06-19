@@ -540,8 +540,13 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.mark_verification_used(token)
 
     async def mark_user_email_verified(self, user_id: str) -> None:
-        """Delegate to wrapped store."""
-        return await self._store.mark_user_email_verified(user_id)
+        """Delegate then invalidate user + auth caches so verification is visible immediately."""
+        await self._store.mark_user_email_verified(user_id)
+        await self._cache.delete(self._user_key(user_id))
+        # email_verified is carried in the cached auth contexts too, but we don't
+        # know which key_hash maps to this user, so clear all auth entries.
+        await self._cache.delete_pattern("auth:*")
+        await self._cache.delete_pattern("auth_light:*")
 
     async def delete_user_verification_tokens(self, user_id: str) -> None:
         """Delegate to wrapped store."""
