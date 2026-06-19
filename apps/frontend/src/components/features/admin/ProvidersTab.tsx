@@ -28,10 +28,54 @@ function formatNum(v: number | null): string {
   return v.toFixed(2);
 }
 
+function unavailableMessage(provider: ProviderQuotaResult): string {
+  if (provider.error === 'not_quota_metered') {
+    return 'No quota meter — Featherless usage is not quota-based.';
+  }
+  if (provider.error === 'probe_unavailable') {
+    return 'Status unavailable — no configured route to probe.';
+  }
+  return `Quota unavailable — ${provider.error}`;
+}
+
+function featherlessConcurrencyMessage(provider: ProviderQuotaResult): string | null {
+  const usage = provider.usages.find((u) => u.label.toLowerCase() === 'concurrency');
+  if (!usage) return null;
+  if (usage.limit == null) {
+    return 'Concurrency available';
+  }
+  return `Concurrency ${formatNum(usage.limit)} units`;
+}
+
+function featherlessMessage(provider: ProviderQuotaResult): string {
+  if (provider.ok) {
+    return featherlessConcurrencyMessage(provider) ?? 'Available';
+  }
+  if (provider.error === 'not_configured') {
+    return 'Not configured.';
+  }
+  if (provider.error === 'plan_api_disabled') {
+    return 'The current subscription plan does not have API access enabled.';
+  }
+  if (provider.error === 'probe_unavailable') {
+    return 'Status unavailable — no configured Featherless route to probe.';
+  }
+  if (provider.error === 'timeout') {
+    return 'Unavailable — probe timed out.';
+  }
+  if (provider.error === 'auth_failed') {
+    return 'Unavailable — auth failed.';
+  }
+  return `Unavailable — ${provider.error}`;
+}
+
 function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
+  const isFeatherless = provider.name === 'featherless';
   const stripeColor = provider.ok
     ? 'bg-emerald-500'
-    : provider.error === 'not_configured'
+    : provider.error === 'not_configured' ||
+        provider.error === 'not_quota_metered' ||
+        provider.error === 'probe_unavailable'
       ? 'bg-gray-300'
       : 'bg-red-400';
 
@@ -48,7 +92,19 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
           </span>
         </div>
 
-        {provider.ok ? (
+        {isFeatherless ? (
+          <p
+            className={`mt-3 text-[12px] ${
+              provider.ok
+                ? 'text-emerald-700'
+                : provider.error === 'not_configured' || provider.error === 'probe_unavailable'
+                  ? 'text-gray-400'
+                  : 'text-red-600'
+            }`}
+          >
+            {featherlessMessage(provider)}
+          </p>
+        ) : provider.ok ? (
           provider.usages.length === 0 ? (
             <p className="mt-3 text-[12px] text-gray-400">No usage data returned.</p>
           ) : (
@@ -95,7 +151,7 @@ function ProviderCard({ provider }: { provider: ProviderQuotaResult }) {
           )
         ) : (
           <p className="mt-3 text-[12px] text-gray-400">
-            Quota unavailable — <span className="text-gray-500">{provider.error}</span>
+            {unavailableMessage(provider)}
           </p>
         )}
       </div>
@@ -148,8 +204,11 @@ function QuotasSection() {
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
-          {providerQuotas.map((p) => (
-            <ProviderCard key={p.name} provider={p} />
+          {providerQuotas.map((p, index) => (
+            <ProviderCard
+              key={`${p.name}-${p.key_index ?? 'single'}-${p.key_masked ?? index}`}
+              provider={p}
+            />
           ))}
         </div>
       )}
