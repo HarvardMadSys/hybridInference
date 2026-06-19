@@ -898,6 +898,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_provider_key_full(key_id)
 
+    async def set_provider_key_status(self, key_id: str, status: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.set_provider_key_status(key_id, status)
+
     async def delete_provider_key(self, key_id: str) -> bool:
         """Delegate to wrapped store."""
         return await self._store.delete_provider_key(key_id)
@@ -921,3 +925,11 @@ class CachedOperationalStore(OperationalStore):
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
         """Delegate to wrapped store."""
         return await self._store.list_disabled_provider_env_key_hashes(provider)
+
+    async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
+        """Delegate to wrapped store."""
+        return await self._store.list_disabled_provider_env_keys(provider)
+
+    async def enable_provider_env_key(self, provider: str, key_hash: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.enable_provider_env_key(provider, key_hash)

@@ -291,6 +291,7 @@ models:
         base_url: ${MINIMAX_BASE_URL}
         api_keys:
           - ${MINIMAX_API_KEY}
+          - ${MINIMAX_API_KEY2}
         provider_model_id: "MiniMax-M2.5"
       # Ollama Cloud fallback
       - kind: ollama
@@ -352,6 +353,7 @@ models:
         base_url: ${MINIMAX_BASE_URL}
         api_keys:
           - ${MINIMAX_API_KEY}
+          - ${MINIMAX_API_KEY2}
         provider_model_id: "MiniMax-M3"
       # Ollama Cloud fallback
       - kind: ollama
@@ -502,6 +504,7 @@ models:
         base_url: ${MINIMAX_BASE_URL}
         api_keys:
           - ${MINIMAX_API_KEY}
+          - ${MINIMAX_API_KEY2}
         provider_model_id: "MiniMax-M2.7"
       # Ollama Cloud fallback
       - kind: ollama

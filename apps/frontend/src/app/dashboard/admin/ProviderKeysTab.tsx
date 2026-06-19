@@ -7,8 +7,10 @@ import {
   addProviderKey,
   deleteProviderKey,
   disableProviderEnvKey,
+  enableProviderEnvKey,
   listProviderKeyProviders,
   listProviderKeys,
+  setProviderKeyStatus,
   verifyProviderKey,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -43,6 +45,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   const [verifiedKeySignature, setVerifiedKeySignature] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [disablingEnvId, setDisablingEnvId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
 
   const loadProviders = useCallback(async () => {
     try {
@@ -92,7 +95,14 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
         formApiKey.trim(),
         formLabel.trim() || undefined,
       );
-      toast.success(`Key added (${resp.pools_updated} pool(s) updated)`);
+      if (resp.pools_updated === 0) {
+        toast.error(
+          'Key saved but not attached to any live pool — it will NOT be used ' +
+            'for inference. This provider has no multi-key-capable adapter loaded.',
+        );
+      } else {
+        toast.success(`Key added (${resp.pools_updated} pool(s) updated)`);
+      }
       setFormApiKey('');
       setFormLabel('');
       setVerifiedKeySignature(null);
@@ -157,6 +167,40 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
     }
   };
 
+  const onEnableEnv = async (provider: string, id: string) => {
+    setDisablingEnvId(id);
+    try {
+      const resp = await enableProviderEnvKey(provider, id);
+      if (resp.pools_updated === 0) {
+        toast.error('Env key re-enabled but could not be re-added to any pool.');
+      } else {
+        toast.success('Env key enabled');
+      }
+      await loadKeys(selectedProvider);
+    } catch (err) {
+      toast.error(`Enable failed: ${getErrorMessage(err)}`);
+    } finally {
+      setDisablingEnvId(null);
+    }
+  };
+
+  const onToggleDb = async (id: string, enable: boolean) => {
+    setTogglingId(id);
+    try {
+      const resp = await setProviderKeyStatus(id, enable);
+      if (enable && resp.pools_updated === 0) {
+        toast.error('Key enabled but not attached to any live pool — it will not be used.');
+      } else {
+        toast.success(enable ? 'Key enabled' : 'Key disabled');
+      }
+      await loadKeys(selectedProvider);
+    } catch (err) {
+      toast.error(`${enable ? 'Enable' : 'Disable'} failed: ${getErrorMessage(err)}`);
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
   const sortedKeys = useMemo(
     () => [...keys].sort((a, b) => (a.source === b.source ? 0 : a.source === 'db' ? -1 : 1)),
     [keys],
@@ -199,52 +243,104 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                   <th className="px-3 py-2">Prefix</th>
                   <th className="px-3 py-2">Label</th>
                   <th className="px-3 py-2">Source</th>
+                  <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Created</th>
                   <th className="px-3 py-2 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 bg-white">
-                {sortedKeys.map((k) => (
-                  <tr key={`${k.source}-${k.id ?? k.key_prefix}`}>
-                    <td className="px-3 py-2 font-mono text-[12px] text-gray-700">
-                      {k.key_prefix}
-                    </td>
-                    <td className="px-3 py-2 text-gray-600">{k.label ?? '—'}</td>
-                    <td className="px-3 py-2">
-                      <span
-                        className={
-                          k.source === 'db'
-                            ? 'rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
-                            : 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
-                        }
-                      >
-                        {k.source}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-gray-500">{formatRelative(k.created_at)}</td>
-                    <td className="px-3 py-2 text-right">
-                      {k.source === 'env' ? (
-                        <button
-                          type="button"
-                          onClick={() => k.id && onDisableEnv(k.provider, k.id)}
-                          disabled={!k.id || disablingEnvId === k.id}
-                          className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                {sortedKeys.map((k) => {
+                  const disabled = k.status === 'disabled';
+                  const busy = (k.id && (togglingId === k.id || disablingEnvId === k.id)) || false;
+                  return (
+                    <tr
+                      key={`${k.source}-${k.id ?? k.key_prefix}`}
+                      className={disabled ? 'opacity-60' : ''}
+                    >
+                      <td className="px-3 py-2 font-mono text-[12px] text-gray-700">
+                        {k.key_prefix}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600">{k.label ?? '—'}</td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={
+                            k.source === 'db'
+                              ? 'rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
+                              : 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                          }
                         >
-                          {disablingEnvId === k.id ? 'Disabling…' : 'Disable'}
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => k.id && onDelete(k.id)}
-                          disabled={!k.id || deletingId === k.id}
-                          className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                          {k.source}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span
+                          className={
+                            disabled
+                              ? 'rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500'
+                              : 'rounded bg-green-50 px-1.5 py-0.5 text-[11px] font-medium text-green-700'
+                          }
                         >
-                          {deletingId === k.id ? 'Deleting…' : 'Delete'}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                          {disabled ? 'disabled' : 'active'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-gray-500">{formatRelative(k.created_at)}</td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="flex justify-end gap-1">
+                          {k.source === 'env' ? (
+                            disabled ? (
+                              <button
+                                type="button"
+                                onClick={() => k.id && onEnableEnv(k.provider, k.id)}
+                                disabled={busy}
+                                className="rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                              >
+                                {busy ? 'Enabling…' : 'Enable'}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => k.id && onDisableEnv(k.provider, k.id)}
+                                disabled={busy}
+                                className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                              >
+                                {busy ? 'Disabling…' : 'Disable'}
+                              </button>
+                            )
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => k.id && onToggleDb(k.id, disabled)}
+                                disabled={busy}
+                                className={
+                                  disabled
+                                    ? 'rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent'
+                                    : 'rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent'
+                                }
+                              >
+                                {busy
+                                  ? disabled
+                                    ? 'Enabling…'
+                                    : 'Disabling…'
+                                  : disabled
+                                    ? 'Enable'
+                                    : 'Disable'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => k.id && onDelete(k.id)}
+                                disabled={!k.id || deletingId === k.id}
+                                className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                              >
+                                {deletingId === k.id ? 'Deleting…' : 'Delete'}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
