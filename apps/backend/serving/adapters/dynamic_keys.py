@@ -8,6 +8,7 @@ provider and add or remove keys at runtime without restarting the process.
 from __future__ import annotations
 
 import hashlib
+import os
 import threading
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,16 @@ _known_providers: set[str] = set()
 # env-configured key that happens to share its raw value with a deleted DB row.
 _db_injected_keys: dict[str, set[str]] = {}
 _disabled_env_key_hashes: dict[str, set[str]] = {}
+_MAX_NUMBERED_ENV_KEYS = 20
+_PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
+    "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
+    "featherless": ("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY"),
+    "kimi": ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY"),
+    "minimax": ("MINIMAX_API_KEY", "MINIMAX_API_KEY"),
+    "ollama": ("OLLAMA_API_KEY", "OLLAMA_API_KEY"),
+    "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
+    "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
+}
 
 
 def reset() -> None:
@@ -113,6 +124,26 @@ def is_env_key_disabled(provider: str, key_hash: str) -> bool:
 def env_key_hash(key: str) -> str:
     """Return the stable hash used to identify env-sourced provider keys."""
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def configured_env_keys_for_provider(provider: str) -> list[str]:
+    """Return provider keys configured through base + numbered env vars."""
+    spec = _PROVIDER_ENV_KEY_VARS.get(provider)
+    if spec is None:
+        return []
+
+    base_var, numbered_prefix = spec
+    base_value = os.getenv(base_var, "")
+    if not base_value:
+        return []
+
+    keys = [base_value]
+    for index in range(2, _MAX_NUMBERED_ENV_KEYS):
+        value = os.getenv(f"{numbered_prefix}{index}", "")
+        if not value:
+            break
+        keys.append(value)
+    return keys
 
 
 def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:
