@@ -25,6 +25,9 @@ DEFAULT_VERIFY_TIMEOUT_SECONDS = 20.0
 FEATHERLESS_PLAN_API_DISABLED_MESSAGE = (
     "The current subscription plan does not have API access enabled."
 )
+_KEY_PROVIDER_ALIASES = {
+    "kimi_coding": "kimi",
+}
 
 
 class ProviderKeyProbeError(Exception):
@@ -144,18 +147,16 @@ def _route_entries(route: Any) -> list[tuple[object, float]]:
     return list(getattr(route, "adapters", []) or [])
 
 
-def _adapter_provider(adapter: object) -> str:
+def _adapter_key_provider(adapter: object) -> str:
     config = getattr(adapter, "config", None)
     if config is None:
         return ""
-    route_metadata = getattr(config, "route_metadata", None) or {}
-    upstream_provider = route_metadata.get("upstream_provider")
-    if upstream_provider:
-        return str(upstream_provider)
-    pinned = getattr(config, "openrouter_pinned_provider", None)
-    if pinned:
-        return str(pinned)
-    return str(getattr(config, "provider", "") or "")
+    if isinstance(adapter, OpenRouterAdapter) or getattr(
+        config, "openrouter_pinned_provider", None
+    ):
+        return "openrouter"
+    provider = str(getattr(config, "provider", "") or "")
+    return _KEY_PROVIDER_ALIASES.get(provider, provider)
 
 
 def find_verification_adapter(services: Any, provider: str) -> object | None:
@@ -166,7 +167,7 @@ def find_verification_adapter(services: Any, provider: str) -> object | None:
             config = getattr(adapter, "config", None)
             if config is None:
                 continue
-            if _adapter_provider(adapter) != provider:
+            if _adapter_key_provider(adapter) != provider:
                 continue
             if (getattr(config, "model_type", None) or "chat") != "chat":
                 continue

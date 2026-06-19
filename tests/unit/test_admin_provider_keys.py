@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
+from serving.adapters import ModelConfig, OpenAICompatAdapter, OpenRouterAdapter, dynamic_keys
 from serving.adapters.key_pool import KeyPool
 from serving.admin.provider_key_probe import (
     FEATHERLESS_PLAN_API_DISABLED_MESSAGE,
@@ -355,6 +355,88 @@ async def test_verify_provider_key_can_probe_raw_route_entries(client):
     assert kind == "featherless"
     assert cfg["api_key"] == api_key
     assert cfg["provider_model_id"] == "Provider/Test-Model"
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_matches_kimi_coding_route(client):
+    """Kimi keys verify against the coding-plan route kind."""
+    http, store = client
+    kimi_adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="kimi-k2.7-code",
+            name="kimi-k2.7-code",
+            provider="kimi_coding",
+            base_url="https://kimi.example/v1",
+            api_keys=["env-kimi-coding-key-1234567890"],
+            provider_model_id="kimi-for-coding",
+            endpoint_id="kimi-k2.7-code:kimi-api",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("kimi", kimi_adapter)
+    store.services.router.routes = {
+        "kimi-k2.7-code": SimpleNamespace(adapters=[(kimi_adapter, 1.0)]),
+    }
+    api_key = "kimi-candidate-key-aaaaaaaa"
+    dry_run_adapter = MagicMock()
+    dry_run_adapter.chat_completion = AsyncMock(return_value={"id": "ok"})
+
+    with patch(
+        "serving.admin.provider_key_probe._make_adapter",
+        return_value=dry_run_adapter,
+    ) as make_adapter:
+        resp = await http.post(
+            "/admin/provider-keys/verify",
+            json={"provider": "kimi", "api_key": api_key},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    kind, cfg = make_adapter.call_args.args
+    assert kind == "kimi_coding"
+    assert cfg["api_key"] == api_key
+    assert cfg["provider_model_id"] == "kimi-for-coding"
+
+
+@pytest.mark.asyncio
+async def test_verify_provider_key_matches_pinned_openrouter_route(client):
+    """OpenRouter keys verify against pinned OpenRouter route variants."""
+    http, store = client
+    openrouter_adapter = OpenRouterAdapter(
+        ModelConfig(
+            id="openrouter-model",
+            name="openrouter-model",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_keys=["env-openrouter-key-1234567890"],
+            provider_model_id="openai/gpt-oss-120b",
+            endpoint_id="openrouter-model:openrouter-deepinfra-api",
+            openrouter_pinned_provider="deepinfra",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider("openrouter", openrouter_adapter)
+    store.services.router.routes = {
+        "openrouter-model": SimpleNamespace(adapters=[(openrouter_adapter, 1.0)]),
+    }
+    api_key = "sk-or-candidate-key-aaaaaaaa"
+    dry_run_adapter = MagicMock()
+    dry_run_adapter.chat_completion = AsyncMock(return_value={"id": "ok"})
+
+    with patch(
+        "serving.admin.provider_key_probe._make_adapter",
+        return_value=dry_run_adapter,
+    ) as make_adapter:
+        resp = await http.post(
+            "/admin/provider-keys/verify",
+            json={"provider": "openrouter", "api_key": api_key},
+            headers=AUTH,
+        )
+
+    assert resp.status_code == 200, resp.text
+    kind, cfg = make_adapter.call_args.args
+    assert kind == "openrouter"
+    assert cfg["api_key"] == api_key
+    assert cfg["provider_model_id"] == "openai/gpt-oss-120b"
+    assert cfg["openrouter_pinned_provider"] == "deepinfra"
 
 
 @pytest.mark.asyncio
