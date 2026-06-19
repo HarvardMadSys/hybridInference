@@ -117,10 +117,6 @@ thresholds are described in `apps/backend/serving/observability/`.
 Set `ALERTS_ENABLED=true` and `SLACK_ALERTS_WEBHOOK_URL=...` in `.env`
 to enable.
 
-External blackbox monitoring (a separate Prometheus + Alertmanager
-stack that probes the public API from outside) lives under
-`deploy/external-monitor/` and is unrelated to the in-process engine.
-
 ## Database
 
 PostgreSQL runs in Docker with data persisted to a named volume (`hybridinference_postgres_data`).

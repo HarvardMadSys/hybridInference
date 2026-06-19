@@ -268,9 +268,6 @@ async def initialize() -> AppServices:
             try:
                 await db_logger.initialize()
                 logger.info("Database logger initialized successfully")
-                from serving.observability.metrics import DATABASE_CONNECTED
-
-                DATABASE_CONNECTED.set(1)
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
                 if db_logger.pool:
@@ -343,9 +340,6 @@ async def initialize() -> AppServices:
                         f"{exc}. Service will start without database logging."
                     )
                     db_logger = None
-                    from serving.observability.metrics import DATABASE_CONNECTED
-
-                    DATABASE_CONNECTED.set(0)
 
     # Models into router
     embedding_adapters, model_infos = await _init_router_and_models(router)
@@ -471,8 +465,7 @@ async def initialize() -> AppServices:
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
-    # Alerting framework (replaces Prometheus scaffolding). Dark-launched in
-    # PR 1: defaults to disabled, no behavior change. Operators flip the
+    # In-process alerting framework. Defaults to disabled. Operators flip the
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
     alert_engine = None
     if settings.alerts_enabled:

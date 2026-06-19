@@ -412,8 +412,8 @@ def register_from_models_yaml(
                 # provider field. The bracketed form survives in `endpoint_id`
                 # (via _make_provider_id called below) and `openrouter_pinned_provider`
                 # (set inside _make_adapter), so per-pin circuit-breaker isolation is
-                # preserved while analytics columns (api_logs.provider, Prometheus
-                # labels) see a single "openrouter" cohort.
+                # preserved while the analytics column (api_logs.provider) sees
+                # a single "openrouter" cohort.
                 provider_for_cfg, _ = parse_openrouter_kind(kind)
                 # Preserve explicit model-level provider only for logical OpenAI
                 # adapters where route kind remains OpenAI-compatible and the
