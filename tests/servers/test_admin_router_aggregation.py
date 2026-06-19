@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 75  # includes role-quota, provider-key, visibility, concurrency,
+    expected = 77  # includes role-quota, provider-key, visibility, concurrency,
     # routewise, routing-weight, provider-route, recent-requests/clear-errors,
     # alert-snooze GET/POST/DELETE, and site-updates CRUD routes
     # (regenerate-api-key removed in #733)

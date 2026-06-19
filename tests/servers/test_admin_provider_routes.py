@@ -115,6 +115,7 @@ async def admin_client(monkeypatch):
     op_store.get_provider_key_full = AsyncMock(return_value=None)
     op_store.list_provider_keys = AsyncMock(return_value=[])
     op_store.list_provider_keys_full = AsyncMock(return_value=[])
+    op_store.list_disabled_provider_env_key_hashes = AsyncMock(return_value=set())
     op_store.get_user_by_id = AsyncMock(return_value=None)
     op_store.create_audit_log = AsyncMock()
 
@@ -925,6 +926,81 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, monkeypatch):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    base_key = "sk-or-base111111111111111111"
+    numbered_key = "sk-or-numbered222222222222"
+    monkeypatch.setenv("OPENROUTER_API_KEY", base_key)
+    monkeypatch.setenv("OPENROUTER_API_KEY2", numbered_key)
+    monkeypatch.delenv("OPENROUTER_API_KEY3", raising=False)
+    env_key_id = provider_routes._env_key_id(numbered_key)
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": env_key_id,
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 1.5,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source"] == "runtime"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["api_key"]["id"] == env_key_id
+    assert payload["api_key"]["source"] == "env"
+    assert payload["api_key"]["key_prefix"] == provider_routes._mask(numbered_key)
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.api_keys == [numbered_key]
+    op_store.upsert_provider_route_candidate.assert_awaited_once()
+    verify_mock.assert_awaited_once()
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_provider_route_list_resolves_numbered_env_key_ref(admin_client, monkeypatch):
+    client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
+    base_key = "rc_base111111111111111111111111"
+    numbered_key = "rc_numbered222222222222222222"
+    monkeypatch.setenv("FEATHERLESS_API_KEY", base_key)
+    monkeypatch.setenv("FEATHERLESS_API_KEY2", numbered_key)
+    monkeypatch.delenv("FEATHERLESS_API_KEY3", raising=False)
+    env_key_id = provider_routes._env_key_id(numbered_key)
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:chutes-api",
+            "provider": "featherless",
+            "openrouter_sort": None,
+            "base_url": "https://api.featherless.ai/v1",
+            "api_key_id": env_key_id,
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5",
+            "quota_limit": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
+
+    assert response.status_code == 200, response.text
+    route = next(
+        row for row in response.json()["routes"] if row["route_id"] == "minimax-fast:chutes-api"
+    )
+    assert route["upstream_provider"] == "featherless"
+    assert route["api_key"]["id"] == env_key_id
+    assert route["api_key"]["source"] == "env"
+    assert route["api_key"]["key_prefix"] == provider_routes._mask(numbered_key)
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,12 +13,18 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from serving.adapters import dynamic_keys
+from serving.adapters.key_pool import KeyPool
+from serving.admin.provider_key_probe import ProviderKeyProbeError
 from serving.admin.provider_quotas import (
     _discover_env_keys,
+    _discover_provider_keys,
+    _fetch_featherless_concurrency_usage,
     _mask_key,
     _next_reset,
     _parse_iso,
     fetch_chutes,
+    fetch_featherless,
     fetch_kimi,
     fetch_minimax,
     fetch_ollama,
@@ -25,6 +33,23 @@ from serving.admin.provider_quotas import (
 )
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
+
+
+@pytest.fixture(autouse=True)
+def _reset_featherless_fetch_state():
+    import serving.admin.provider_quotas as provider_quotas
+
+    provider_quotas._FEATHERLESS_CACHE = None
+    provider_quotas._FEATHERLESS_FETCH_SIGNATURE = None
+    provider_quotas._FEATHERLESS_FETCH_TASK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK_LOOP = None
+    yield
+    provider_quotas._FEATHERLESS_CACHE = None
+    provider_quotas._FEATHERLESS_FETCH_SIGNATURE = None
+    provider_quotas._FEATHERLESS_FETCH_TASK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK = None
+    provider_quotas._FEATHERLESS_FETCH_LOCK_LOOP = None
 
 
 class TestMaskKey:
@@ -185,6 +210,111 @@ class TestDiscoverEnvKeys:
         monkeypatch.setenv("ZAI_API_KEY2", "key2_long_enough_5678")
         keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
         assert keys == []
+
+
+class TestDiscoverProviderKeys:
+    @staticmethod
+    def _store(
+        *,
+        db_keys: list[str] | None = None,
+        disabled_hashes: set[str] | None = None,
+        route_configs: list[dict[str, Any]] | None = None,
+        route_candidates: list[dict[str, Any]] | None = None,
+    ):
+        return SimpleNamespace(
+            list_provider_keys_full=AsyncMock(return_value=db_keys or []),
+            list_disabled_provider_env_key_hashes=AsyncMock(return_value=disabled_hashes or set()),
+            list_all_provider_route_configs=AsyncMock(return_value=route_configs or []),
+            list_all_provider_route_candidates=AsyncMock(return_value=route_candidates or []),
+        )
+
+    @pytest.mark.asyncio
+    async def test_appends_db_and_live_pool_keys_and_deduplicates(self, monkeypatch):
+        env_key = "key1_long_enough_1234"
+        db_key = "db_key_long_enough_0000"
+        db_key_1 = "db_key_long_enough_5678"
+        db_key_2 = "db_key_long_enough_9012"
+        db_key_3 = "db_key_long_enough_3456"
+        monkeypatch.setenv("FEATHERLESS_API_KEY", env_key)
+        store = self._store(db_keys=[env_key, db_key])
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([env_key, db_key_1, db_key_2], "featherless")),
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([db_key_1, db_key_3], "featherless")),
+        )
+
+        keys = await _discover_provider_keys(
+            "featherless",
+            "FEATHERLESS_API_KEY",
+            "FEATHERLESS_API_KEY",
+            store,
+        )
+
+        assert keys == [
+            (1, env_key),
+            (2, db_key),
+            (3, db_key_1),
+            (4, db_key_2),
+            (5, db_key_3),
+        ]
+        store.list_provider_keys_full.assert_awaited_once_with(
+            "featherless",
+            exclude_ids=set(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_skips_route_bound_db_keys(self, monkeypatch):
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        global_db_key = "db_key_global_123456"
+        route_bound_db_key = "db_key_route_bound_123456"
+        store = self._store(
+            db_keys=[global_db_key],
+            route_configs=[{"api_key_id": "route-key-id"}],
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([route_bound_db_key], "featherless")),
+            allow_db_key_injection=False,
+        )
+
+        keys = await _discover_provider_keys(
+            "featherless",
+            "FEATHERLESS_API_KEY",
+            "FEATHERLESS_API_KEY",
+            store,
+        )
+
+        assert keys == [(1, global_db_key)]
+        store.list_provider_keys_full.assert_awaited_once_with(
+            "featherless",
+            exclude_ids={"route-key-id"},
+        )
+        assert route_bound_db_key not in [key for _idx, key in keys]
+
+    @pytest.mark.asyncio
+    async def test_skips_disabled_env_keys(self, monkeypatch):
+        active_key = "key1_long_enough_1234"
+        disabled_key = "key2_long_enough_5678"
+        pool_key = "key3_long_enough_9012"
+        monkeypatch.setenv("FEATHERLESS_API_KEY", active_key)
+        monkeypatch.setenv("FEATHERLESS_API_KEY2", disabled_key)
+        store = self._store(disabled_hashes={dynamic_keys.env_key_hash(disabled_key)})
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([disabled_key, pool_key], "featherless")),
+        )
+
+        keys = await _discover_provider_keys(
+            "featherless",
+            "FEATHERLESS_API_KEY",
+            "FEATHERLESS_API_KEY",
+            store,
+        )
+
+        assert keys == [(1, active_key), (2, pool_key)]
 
 
 class TestFetchChutes:
@@ -1352,6 +1482,252 @@ class TestFetchOllama:
         assert weekly_use.unit == "%"
 
 
+class TestFetchFeatherless:
+    @pytest.mark.asyncio
+    async def test_returns_each_live_pool_key_with_working_probe_status(self, monkeypatch):
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        keys = [
+            "rc_1111111111111111aaaa",
+            "rc_2222222222222222bbbb",
+            "rc_3333333333333333cccc",
+            "rc_4444444444444444dddd",
+            "rc_5555555555555555eeee",
+        ]
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool(keys[:3], "featherless")),
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool([keys[0], *keys[3:]], "featherless")),
+        )
+
+        probed: list[str] = []
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            assert provider == "featherless"
+            assert timeout_seconds == 8
+            probed.append(api_key)
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        results = await fetch_featherless(services=SimpleNamespace())
+
+        assert len(results) == 5
+        assert [r.key_index for r in results] == [1, 2, 3, 4, 5]
+        assert [r.display_name for r in results] == [
+            "Featherless #1",
+            "Featherless #2",
+            "Featherless #3",
+            "Featherless #4",
+            "Featherless #5",
+        ]
+        assert all(r.name == "featherless" for r in results)
+        assert all(r.key_configured is True for r in results)
+        assert all(r.ok is True for r in results)
+        assert all(r.error is None for r in results)
+        assert {r.key_masked for r in results} == {_mask_key(k) for k in keys}
+        assert probed == keys
+
+    @pytest.mark.asyncio
+    async def test_returns_each_live_pool_key_with_failed_probe_status(self, monkeypatch):
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        keys = [
+            "rc_1111111111111111aaaa",
+            "rc_2222222222222222bbbb",
+        ]
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool(keys, "featherless")),
+        )
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            del provider, timeout_seconds
+            if api_key.endswith("bbbb"):
+                raise ProviderKeyProbeError("auth_failed", "bad key")
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        results = await fetch_featherless(services=SimpleNamespace())
+
+        assert [r.ok for r in results] == [True, False]
+        assert [r.error for r in results] == [None, "auth_failed"]
+
+    @pytest.mark.asyncio
+    async def test_working_probe_includes_concurrency_usage(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            del _services, provider, api_key, timeout_seconds
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(
+                status=200,
+                json_data={"limit": 2, "used_cost": 0, "request_count": 0, "requests": []},
+            ),
+        ):
+            results = await fetch_featherless(services=SimpleNamespace())
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.ok is True
+        assert result.usages[0].label == "Concurrency"
+        assert result.usages[0].used == 0.0
+        assert result.usages[0].limit == 2.0
+        assert result.usages[0].unit == "units"
+
+    @pytest.mark.asyncio
+    async def test_reuses_cached_result_within_ttl(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+        probe_calls = 0
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            nonlocal probe_calls
+            del _services, provider, api_key, timeout_seconds
+            probe_calls += 1
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        first = await fetch_featherless(services=SimpleNamespace())
+        second = await fetch_featherless(services=SimpleNamespace())
+
+        assert probe_calls == 1
+        assert first[0].ok is True
+        assert second[0].ok is True
+        assert first is not second
+        assert first[0] is not second[0]
+
+    @pytest.mark.asyncio
+    async def test_concurrent_calls_share_single_in_flight_probe(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+        started = asyncio.Event()
+        release = asyncio.Event()
+        probe_calls = 0
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            nonlocal probe_calls
+            del _services, provider, api_key, timeout_seconds
+            probe_calls += 1
+            started.set()
+            await release.wait()
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        first_task = asyncio.create_task(fetch_featherless(services=SimpleNamespace()))
+        await started.wait()
+        second_task = asyncio.create_task(fetch_featherless(services=SimpleNamespace()))
+        release.set()
+        first, second = await asyncio.gather(first_task, second_task)
+
+        assert probe_calls == 1
+        assert first[0].ok is True
+        assert second[0].ok is True
+
+    @pytest.mark.asyncio
+    async def test_cancelled_probe_is_rethrown(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            del _services, provider, api_key, timeout_seconds
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await fetch_featherless(services=SimpleNamespace())
+
+    @pytest.mark.asyncio
+    async def test_concurrency_usage_fetcher_uses_account_snapshot_endpoint(self):
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(
+                status=200,
+                json_data={"limit": 4, "used_cost": 1, "request_count": 1, "requests": []},
+            ),
+        ) as session_factory:
+            usage = await _fetch_featherless_concurrency_usage("rc_1111111111111111aaaa")
+
+        assert usage is not None
+        assert usage.label == "Concurrency"
+        assert usage.used == 1.0
+        assert usage.limit == 4.0
+        assert usage.unit == "units"
+        session = session_factory.return_value.__aenter__.return_value
+        session.get.assert_called_once()
+        assert session.get.call_args.args == ("https://api.featherless.ai/account/concurrency",)
+        assert session.get.call_args.kwargs["allow_redirects"] is False
+
+    @pytest.mark.asyncio
+    async def test_returns_probe_unavailable_without_services(self, monkeypatch):
+        monkeypatch.setenv("FEATHERLESS_API_KEY", "rc_1111111111111111aaaa")
+
+        results = await fetch_featherless()
+
+        assert len(results) == 1
+        assert results[0].ok is False
+        assert results[0].error == "probe_unavailable"
+
+
 class TestGatherAll:
     @pytest.mark.asyncio
     async def test_gather_all_returns_five_results_when_unconfigured(self, monkeypatch):
@@ -1372,7 +1748,7 @@ class TestGatherAll:
 
     @pytest.mark.asyncio
     async def test_gather_all_handles_unexpected_exception(self, monkeypatch):
-        async def boom():
+        async def boom(_operational_store=None):
             raise RuntimeError("simulated failure")
 
         monkeypatch.setattr("serving.admin.provider_quotas.fetch_chutes", boom)
@@ -1389,6 +1765,51 @@ class TestGatherAll:
         chutes = next(r for r in results if r.name == "chutes")
         assert chutes.ok is False
         assert chutes.error == "unexpected"
+
+    @pytest.mark.asyncio
+    async def test_gather_all_includes_featherless_live_pool_keys(self, monkeypatch):
+        monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+        monkeypatch.delenv("ZAI_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+        monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
+        keys = [
+            "rc_1111111111111111aaaa",
+            "rc_2222222222222222bbbb",
+            "rc_3333333333333333cccc",
+            "rc_4444444444444444dddd",
+            "rc_5555555555555555eeee",
+        ]
+        dynamic_keys.register_adapter_for_provider(
+            "featherless",
+            SimpleNamespace(_key_pool=KeyPool(keys, "featherless")),
+        )
+
+        async def _probe(_services, *, provider, api_key, timeout_seconds):
+            del _services, provider, api_key, timeout_seconds
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas.probe_provider_key_with_existing_route",
+            _probe,
+        )
+
+        async def _no_concurrency_usage(_key):
+            return None
+
+        monkeypatch.setattr(
+            "serving.admin.provider_quotas._fetch_featherless_concurrency_usage",
+            _no_concurrency_usage,
+        )
+
+        results = await gather_all(services=SimpleNamespace())
+
+        featherless = [r for r in results if r.name == "featherless"]
+        assert len(featherless) == 5
+        assert [r.key_index for r in featherless] == [1, 2, 3, 4, 5]
+        assert all(r.ok is True for r in featherless)
+        assert all(r.error is None for r in featherless)
 
 
 class TestProviderQuotasRoute:

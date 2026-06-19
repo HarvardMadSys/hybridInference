@@ -367,6 +367,42 @@ def test_register_kimi_coding_and_metered_routes_get_distinct_endpoint_ids(tmp_p
 
 
 @pytest.mark.unit
+def test_register_kimi_coding_dynamic_keys_use_kimi_provider(tmp_path, monkeypatch):
+    from serving.adapters import dynamic_keys
+
+    dynamic_keys.reset()
+    yaml_text = (
+        "models:\n"
+        "  - id: kimi-k2.7-code\n"
+        "    name: Kimi K2.7 Code\n"
+        "    provider: kimi\n"
+        "    route:\n"
+        "      - kind: kimi_coding\n"
+        "        weight: 1.0\n"
+        "        base_url: ${KIMI_CODING_BASE_URL}\n"
+        "        api_keys:\n"
+        "          - ${KIMI_CODING_API_KEY}\n"
+        '        provider_model_id: "kimi-for-coding"\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("KIMI_CODING_BASE_URL", "https://api.kimi.com/coding/v1")
+    monkeypatch.setenv("KIMI_CODING_API_KEY", "sk-coding")
+
+    try:
+        exe = RouteExecutor()
+        registry.register_from_models_yaml(exe, Path(p))
+
+        assert "kimi" in dynamic_keys.get_known_providers()
+        assert "kimi_coding" not in dynamic_keys.get_known_providers()
+        pools = dynamic_keys.get_pools_for_provider("kimi")
+        assert len(pools) == 1
+        assert pools[0].snapshot_keys() == ["sk-coding"]
+    finally:
+        dynamic_keys.reset()
+
+
+@pytest.mark.unit
 def test_make_adapter_cliproxy_uses_openai_compat():
     """kind: cliproxy routes through OpenAICompatAdapter with a cliproxy provider label."""
     adapter = registry._make_adapter(

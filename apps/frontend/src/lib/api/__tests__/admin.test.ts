@@ -5,6 +5,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  listProviderKeyProviders,
   listOpenRouterProviderOptions,
   listProviderRoutes,
   listRouteWeights,
@@ -76,6 +77,25 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+});
+
+describe('provider key client', () => {
+  it('listProviderKeyProviders hits provider-key provider list endpoint', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ providers: ['featherless', 'zai'] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await listProviderKeyProviders();
+
+    expect(out.providers).toEqual(['featherless', 'zai']);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/provider-keys/providers');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
   });
 });
 
