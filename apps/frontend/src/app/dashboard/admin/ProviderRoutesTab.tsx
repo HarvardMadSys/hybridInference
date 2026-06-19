@@ -973,7 +973,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     const nextProvider = createProviderOptionsFor(
       providerSelectBaseOptions,
       routeType,
-      selectedRoutes,
+      createTargetRoutes,
     )[0];
     setCreateForm((current) => ({
       ...current,

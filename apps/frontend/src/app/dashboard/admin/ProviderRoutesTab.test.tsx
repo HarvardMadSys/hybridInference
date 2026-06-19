@@ -762,6 +762,44 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
   });
 
+  it('does not filter create-model providers by the selected model routes', async () => {
+    const chutesOption = {
+      provider: 'chutes',
+      label: 'Chutes',
+      kind: 'chutes',
+      key_provider: 'chutes',
+      default_base_url: 'https://llm.chutes.ai/v1',
+    };
+    const quotaRoute = {
+      ...route,
+      route_id: 'minimax-fast:chutes-api',
+      route_type: 'quota',
+      provider: 'chutes',
+      upstream_provider: 'chutes',
+      key_provider: 'chutes',
+      base_url: 'https://llm.chutes.ai/v1',
+      provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
+      quota_limit: 5000,
+      endpoint_id: 'minimax-fast:chutes-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: [chutesOption, ...providerOptions],
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, quotaRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+
+    const providerSelect = screen.getByLabelText('Provider');
+    expect(providerSelect).toHaveValue('chutes');
+    expect(within(providerSelect).getByRole('option', { name: 'Chutes' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://llm.chutes.ai/v1');
+  });
+
   it('verifies a runtime provider route without adding it', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,

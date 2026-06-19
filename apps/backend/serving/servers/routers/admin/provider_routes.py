@@ -331,6 +331,52 @@ async def _apply_model_router_strategy(
         raise
 
 
+async def _discard_model_router_strategy_override(services, model_id: str) -> None:
+    """Best-effort cleanup for a runtime model strategy override."""
+    registry = getattr(services, "model_router_registry", None)
+    if registry is None:
+        return
+
+    router_obj = None
+    try:
+        router_obj = registry.get_router(model_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to load router while rolling back strategy override for model=%s: %s",
+            model_id,
+            exc,
+        )
+
+    clear_override = getattr(registry, "clear_router_override", None)
+    if callable(clear_override):
+        clear_override(model_id)
+    else:
+        overrides = getattr(registry, "_router_overrides", None)
+        if isinstance(overrides, dict):
+            overrides.pop(model_id, None)
+        cache = getattr(registry, "_cache", None)
+        if isinstance(cache, dict):
+            cache.pop(model_id, None)
+
+    managed_routers = getattr(services, "managed_routers", None)
+    if (
+        managed_routers is not None
+        and isinstance(router_obj, ManagedRouter)
+        and id(router_obj) in _managed_router_ids(services)
+    ):
+        try:
+            await router_obj.stop()
+        except Exception as exc:
+            logger.warning(
+                "Failed to stop managed router while rolling back model=%s: %s",
+                model_id,
+                exc,
+            )
+        managed_routers[:] = [
+            existing for existing in managed_routers if id(existing) != id(router_obj)
+        ]
+
+
 def _is_canonical_model(model_id: str, route) -> bool:
     return bool(route.adapters) and route.adapters[0][0].config.id == model_id
 
@@ -1427,20 +1473,27 @@ def _install_provider_route_model(services, candidate: PreparedRouteCandidate) -
     if _model_exists(services, model_id):
         raise HTTPException(status_code=409, detail=f"Model already exists: {model_id}")
 
-    services.router.register_route(model_id, [(candidate.adapter, candidate.weight)])
-    route = services.router.routes[model_id]
-    setattr(route, BASELINE_ENTRIES_ATTR, [])
-    candidate.route = route
+    registered = False
+    try:
+        services.router.register_route(model_id, [(candidate.adapter, candidate.weight)])
+        registered = True
+        route = services.router.routes[model_id]
+        setattr(route, BASELINE_ENTRIES_ATTR, [])
+        candidate.route = route
 
-    dynamic_keys.register_known_provider(candidate.key_provider)
-    if getattr(candidate.adapter, "_key_pool", None) is not None:
-        dynamic_keys.register_adapter_for_provider(
-            candidate.key_provider,
-            candidate.adapter,
-            allow_db_key_injection=candidate.api_key_id is None,
-        )
+        dynamic_keys.register_known_provider(candidate.key_provider)
+        if getattr(candidate.adapter, "_key_pool", None) is not None:
+            dynamic_keys.register_adapter_for_provider(
+                candidate.key_provider,
+                candidate.adapter,
+                allow_db_key_injection=candidate.api_key_id is None,
+            )
 
-    _rebuild_routewise_routers(services)
+        _rebuild_routewise_routers(services)
+    except Exception:
+        if registered:
+            _discard_provider_route_model_install(services, candidate)
+        raise
 
 
 def _install_route_candidate_delete(services, route, route_id: str) -> tuple[object, float, str]:
@@ -1644,6 +1697,28 @@ def _rebuild_routewise_routers(services) -> None:
                     rebuild()
             else:
                 rebuild()
+
+
+def _discard_provider_route_model_install(services, candidate: PreparedRouteCandidate) -> None:
+    """Best-effort cleanup for a runtime model installed only in memory."""
+    model_id = candidate.adapter.config.id
+    if getattr(candidate.adapter, "_key_pool", None) is not None:
+        unregister = getattr(dynamic_keys, "unregister_adapter_for_provider", None)
+        if unregister is not None:
+            unregister(candidate.key_provider, candidate.adapter)
+
+    removed_route = services.router.routes.pop(model_id, None)
+    if removed_route is not None and candidate.route is removed_route:
+        candidate.route = None
+
+    try:
+        _rebuild_routewise_routers(services)
+    except Exception as exc:
+        logger.warning(
+            "Failed to rebuild routewise routers while rolling back runtime model=%s: %s",
+            model_id,
+            exc,
+        )
 
 
 def _effective_weight(services, model_id: str, raw_weight: float, endpoint_id: str) -> float:
@@ -1935,11 +2010,13 @@ async def create_provider_route_model(
     model_id = candidate.adapter.config.id
     installed = False
     persisted_candidate = False
+    strategy_applied = False
     try:
         _install_provider_route_model(services, candidate)
         installed = True
         if getattr(services, "model_router_registry", None) is not None:
             await _apply_model_router_strategy(services, model_id, payload.strategy)
+            strategy_applied = True
         await op_store.upsert_provider_route_candidate(
             model_id,
             candidate.route_id,
@@ -1963,8 +2040,21 @@ async def create_provider_route_model(
                 admin_id,
             )
     except Exception:
-        if installed and not persisted_candidate:
-            services.router.routes.pop(model_id, None)
+        if persisted_candidate:
+            try:
+                await op_store.delete_provider_route_candidate(model_id, candidate.route_id)
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "Failed to delete provider route candidate while rolling back "
+                    "runtime model=%s route_id=%s: %s",
+                    model_id,
+                    candidate.route_id,
+                    cleanup_exc,
+                )
+        if strategy_applied:
+            await _discard_model_router_strategy_override(services, model_id)
+        if installed:
+            _discard_provider_route_model_install(services, candidate)
         raise
 
     await log_admin_action(

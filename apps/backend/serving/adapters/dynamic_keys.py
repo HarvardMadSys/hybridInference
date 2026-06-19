@@ -7,6 +7,7 @@ provider and add or remove keys at runtime without restarting the process.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import threading
 from typing import TYPE_CHECKING
@@ -61,6 +62,22 @@ def register_adapter_for_provider(
         else:
             disabled.add(id(adapter))
         _known_providers.add(provider)
+
+
+def unregister_adapter_for_provider(provider: str, adapter: object) -> None:
+    """Remove one adapter registration for rollback paths."""
+    with _lock:
+        bucket = _adapters_by_provider.get(provider)
+        if bucket is not None:
+            with contextlib.suppress(ValueError):
+                bucket.remove(adapter)
+            if not bucket:
+                _adapters_by_provider.pop(provider, None)
+        disabled = _db_injection_disabled_adapter_ids.get(provider)
+        if disabled is not None:
+            disabled.discard(id(adapter))
+            if not disabled:
+                _db_injection_disabled_adapter_ids.pop(provider, None)
 
 
 def register_known_provider(provider: str) -> None:
