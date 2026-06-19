@@ -124,9 +124,7 @@ class OpenAICompatAdapter(BaseAdapter):
             return self._key_pool
         seed: list[str] = []
         if self.config.api_keys:
-            seed.extend(
-                k.strip() for k in self.config.api_keys if isinstance(k, str) and k.strip()
-            )
+            seed.extend(k.strip() for k in self.config.api_keys if isinstance(k, str) and k.strip())
         static = self.config.api_key
         if isinstance(static, str) and static.strip() and static.strip() not in seed:
             seed.append(static.strip())

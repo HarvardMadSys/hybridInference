@@ -8,7 +8,6 @@ import {
   deleteProviderKey,
   disableProviderEnvKey,
   enableProviderEnvKey,
-  getProviderQuotas,
   listProviderKeyProviders,
   listProviderKeys,
   setProviderKeyStatus,
@@ -254,7 +253,10 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
                   const disabled = k.status === 'disabled';
                   const busy = (k.id && (togglingId === k.id || disablingEnvId === k.id)) || false;
                   return (
-                    <tr key={`${k.source}-${k.id ?? k.key_prefix}`} className={disabled ? 'opacity-60' : ''}>
+                    <tr
+                      key={`${k.source}-${k.id ?? k.key_prefix}`}
+                      className={disabled ? 'opacity-60' : ''}
+                    >
                       <td className="px-3 py-2 font-mono text-[12px] text-gray-700">
                         {k.key_prefix}
                       </td>

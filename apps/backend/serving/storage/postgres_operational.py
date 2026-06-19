@@ -2799,8 +2799,7 @@ class PostgresOperationalStore(OperationalStore):
         """Delete an env-key tombstone. Returns True when a row was removed."""
         async with self._pool.acquire() as conn:
             tag = await conn.execute(
-                "DELETE FROM disabled_provider_env_keys "
-                "WHERE provider = $1 AND key_hash = $2",
+                "DELETE FROM disabled_provider_env_keys WHERE provider = $1 AND key_hash = $2",
                 provider,
                 key_hash,
             )
