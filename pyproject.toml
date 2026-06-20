@@ -22,7 +22,7 @@ dependencies = [
     "openai>=1.0.0",
     "passlib[argon2]>=1.7.4",
     "pydantic[email]>=2.0.0",
-    "pydantic-settings>=2.0.0",
+    "pydantic-settings>=2.14.2",
     "PyJWT>=2.13.0",
     "python-dotenv>=1.1.1",
     "python-ulid>=2.0.0",
@@ -35,6 +35,7 @@ dependencies = [
     "httpx>=0.28.1",
     "cryptography>=48.0.1",
     "tiktoken>=0.3.0",
+    "zstandard>=0.25.0",
 ]
 
 [tool.setuptools]
