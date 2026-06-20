@@ -2,6 +2,7 @@
 
 import { hasRole } from '@/components/providers/AuthProvider';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import { UserRecentRequests } from './UserRecentRequests';
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -312,6 +313,9 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           </div>
         </div>
       )}
+
+      {/* Recent requests made by this user */}
+      <UserRecentRequests userId={u.id} />
     </div>
   );
 }
