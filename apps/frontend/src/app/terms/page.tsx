@@ -39,6 +39,7 @@ const sections = [
     body: [
       'All prompts and responses may be logged for research purposes, stored, hashed, redacted, or otherwise processed depending on operator configuration and service needs. Logs and derived data may be used to operate, secure, debug, improve, and analyze the service.',
       'We sanitize all text before analysis where feasible to reduce sensitive or identifying content in analysis workflows. Sanitization is not a guarantee that all sensitive information will be removed from logs, derived data, or third-party provider systems.',
+      'Logged requests are analyzed to study how the service is used, and anonymized data derived from them — such as sanitized prompts and responses, usage statistics, and routing metrics — may be published or open-sourced to support reproducible research. Any such release is intended to contain only de-identified data, but, as noted above, sanitization cannot guarantee that all sensitive information is removed.',
       'Do not submit sensitive personal information, confidential information, regulated data, secrets, credentials, or data you are not authorized to process through the service.',
     ],
   },
@@ -85,7 +86,7 @@ export default function TermsPage(): JSX.Element {
           Terms of Service
         </h1>
         <p className="mt-4 text-sm leading-6 text-gray-600">
-          Last updated: May 7, 2026. These terms are a practical operating policy for using{' '}
+          Last updated: June 20, 2026. These terms are a practical operating policy for using{' '}
           {config.appName} and are not legal advice.
         </p>
       </div>
