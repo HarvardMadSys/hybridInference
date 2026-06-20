@@ -19,6 +19,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
+import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
 import { RoutewiseTab } from './RoutewiseTab';
@@ -507,6 +508,8 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
               </div>
             )}
           </div>
+
+          <AlertSnoozeSection onToast={flashToast} />
 
           <ModelVisibilitySection onToast={flashToast} />
 

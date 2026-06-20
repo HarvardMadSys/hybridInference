@@ -905,6 +905,35 @@ export async function updateRuntimeSetting(
 }
 
 // ========================================
+// Slack Alert Snooze
+// ========================================
+
+export interface AlertSnoozeStatus {
+  snoozed: boolean;
+  snooze_until: number | null;
+  seconds_remaining: number;
+}
+
+export async function getAlertSnooze(): Promise<AlertSnoozeStatus> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/snooze');
+  return jsonOrThrow<AlertSnoozeStatus>(resp);
+}
+
+export async function snoozeAlerts(durationSeconds: number): Promise<AlertSnoozeStatus> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/snooze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ duration_seconds: durationSeconds }),
+  });
+  return jsonOrThrow<AlertSnoozeStatus>(resp);
+}
+
+export async function clearAlertSnooze(): Promise<AlertSnoozeStatus> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/snooze', { method: 'DELETE' });
+  return jsonOrThrow<AlertSnoozeStatus>(resp);
+}
+
+// ========================================
 // Per-Role Daily Quota
 // ========================================
 
