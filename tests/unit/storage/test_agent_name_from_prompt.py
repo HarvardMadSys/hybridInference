@@ -138,10 +138,25 @@ def test_generic_system_field_rejected() -> None:
         ("You are Hermes, a software engineer.", "Hermes"),
         # Case-insensitive keyword match.
         ("you are OPENCLAW running in VS Code.", "openClaw"),
+        # Keyword need not follow "You are" — it can appear anywhere in the
+        # opening sentence.
+        ("You are an expert coding assistant operating inside pi", "pi"),
     ],
 )
 def test_recognizes_client_keywords(content: str, expected: str) -> None:
     assert agent_name_from_prompt([{"role": "system", "content": content}]) == expected
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        # "pi" as a substring of a larger word must not match.
+        "You are Cursor, calling the API for completions.",
+        "You are Cline, running the pipeline.",
+    ],
+)
+def test_short_keyword_requires_word_boundary(content: str) -> None:
+    assert agent_name_from_prompt([{"role": "system", "content": content}]) != "pi"
 
 
 def test_keyword_takes_precedence_over_wrapped_agent() -> None:

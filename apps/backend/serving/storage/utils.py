@@ -80,6 +80,7 @@ _YOU_ARE_RE = re.compile(r"^\s*you\s+are\s+(?P<name>\S+)", re.IGNORECASE)
 _CLIENT_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("openclaw", "openClaw"),
     ("hermes", "Hermes"),
+    ("pi", "pi"),
 )
 # A plausible agent name: starts with a letter, then letters/digits/.-_ only.
 _AGENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
