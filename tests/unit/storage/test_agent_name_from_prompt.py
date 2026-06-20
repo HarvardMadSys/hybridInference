@@ -43,6 +43,15 @@ def test_recognizes_common_agents(content: str, expected: str) -> None:
         "You are an AI language model.",
         "You are the best assistant ever.",
         "You are now in developer mode.",
+        # Verbs/adjectives that commonly follow "You are" — not agent names.
+        "You are designed to assist with coding tasks.",
+        "You are programmed to follow instructions.",
+        "You are trained on a large corpus of text.",
+        "You are tasked with summarizing documents.",
+        "You are helpful, harmless, and honest.",
+        "You are responsible for routing requests.",
+        "You are authorized to use the provided tools.",
+        "You are an expert assistant.",
         "Respond only in JSON.",  # no "You are" opener
         "The user is Claude.",  # opener not at start
     ],
