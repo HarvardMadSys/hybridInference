@@ -72,6 +72,15 @@ def conversation_shape(
 
 # Leading "You are <token>" opener, captured from the start of a system prompt.
 _YOU_ARE_RE = re.compile(r"^\s*you\s+are\s+(?P<name>\S+)", re.IGNORECASE)
+# Known coding-agent clients that identify themselves by a keyword in the
+# opening sentence of the system prompt rather than via a "You are <Name>"
+# opener. Many wrap another agent (e.g. Claude Code), so the generic opener
+# would mislabel them as the wrapped agent — a keyword match takes precedence.
+# Each entry maps a lowercase keyword to the canonical client name to report.
+_CLIENT_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("openclaw", "openClaw"),
+    ("hermes", "Hermes"),
+)
 # A plausible agent name: starts with a letter, then letters/digits/.-_ only.
 _AGENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 # Generic fillers that follow "You are" in non-agent prompts (e.g. "You are a
@@ -195,16 +204,43 @@ def _message_text(content: Any) -> str | None:
     return None
 
 
-def _agent_name_from_text(text: str | None) -> str | None:
-    """Return the agent name declared by a ``"You are <Name>"`` opener, or None.
+def _first_sentence(text: str) -> str:
+    """Return the leading sentence of ``text`` (up to the first ``.!?`` or newline)."""
+    match = re.search(r"[.!?\n]", text)
+    return text[: match.start()] if match else text
 
-    Applies the shared guardrails: only the first token after ``"You are"`` is
-    taken, it must look like a name (leading letter; letters/digits/``.-_``; at
-    most 32 chars) and must not be a generic filler such as ``"a"``/``"the"`` or
-    a common role verb/adjective such as ``"helpful"``/``"designed"``.
+
+def _client_from_keywords(text: str) -> str | None:
+    """Return a known client name if its keyword appears in the first sentence.
+
+    Matches each ``_CLIENT_KEYWORDS`` entry case-insensitively on a word
+    boundary within the opening sentence only, so a keyword buried deeper in a
+    long prompt (or pasted user content) does not produce a false positive.
+    """
+    sentence = _first_sentence(text).lower()
+    for keyword, canonical in _CLIENT_KEYWORDS:
+        if re.search(rf"\b{re.escape(keyword)}\b", sentence):
+            return canonical
+    return None
+
+
+def _agent_name_from_text(text: str | None) -> str | None:
+    """Return the agent name for a system prompt, or None.
+
+    A known client keyword in the opening sentence (see ``_CLIENT_KEYWORDS``)
+    takes precedence, since those clients often wrap another agent and would
+    otherwise be mislabeled by the generic opener. Otherwise the name declared
+    by a ``"You are <Name>"`` opener is used, subject to the shared guardrails:
+    only the first token after ``"You are"`` is taken, it must look like a name
+    (leading letter; letters/digits/``.-_``; at most 32 chars) and must not be a
+    generic filler such as ``"a"``/``"the"`` or a common role verb/adjective
+    such as ``"helpful"``/``"designed"``.
     """
     if not isinstance(text, str):
         return None
+    keyword_name = _client_from_keywords(text)
+    if keyword_name is not None:
+        return keyword_name
     match = _YOU_ARE_RE.match(text)
     if match is None:
         return None
@@ -231,6 +267,12 @@ def agent_name_from_prompt(
     label the client by its declared identity instead of the ``User-Agent``
     header. Returns ``None`` when no system prompt carries a recognizable
     opener, so callers fall back to User-Agent parsing.
+
+    Some clients (see ``_CLIENT_KEYWORDS``, e.g. ``openClaw``/``Hermes``) wrap
+    another agent and so carry the wrapped agent's opener. For those, a known
+    keyword anywhere in the opening sentence of the system prompt takes
+    precedence over the opener, so the wrapper is reported rather than the
+    agent it wraps.
 
     ``system`` is the optional top-level system field used by the Anthropic
     ``/v1/messages`` surface (Claude Code), where the system prompt is carried

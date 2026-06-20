@@ -129,3 +129,46 @@ def test_generic_system_field_rejected() -> None:
         )
         is None
     )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("You are openClaw, a coding agent.", "openClaw"),
+        ("You are Hermes, a software engineer.", "Hermes"),
+        # Case-insensitive keyword match.
+        ("you are OPENCLAW running in VS Code.", "openClaw"),
+    ],
+)
+def test_recognizes_client_keywords(content: str, expected: str) -> None:
+    assert agent_name_from_prompt([{"role": "system", "content": content}]) == expected
+
+
+def test_keyword_takes_precedence_over_wrapped_agent() -> None:
+    # openClaw/Hermes wrap another agent, so the opener names the wrapped agent;
+    # the keyword in the opening sentence must win.
+    prompt = [{"role": "system", "content": "You are Claude Code, running under openClaw."}]
+    assert agent_name_from_prompt(prompt) == "openClaw"
+
+
+def test_keyword_only_matched_in_first_sentence() -> None:
+    # A keyword that appears only after the first sentence is ignored, so pasted
+    # content or later prose does not mislabel the client.
+    prompt = [
+        {
+            "role": "system",
+            "content": "You are Claude Code, a CLI. It can interoperate with openClaw.",
+        }
+    ]
+    assert agent_name_from_prompt(prompt) == "Claude"
+
+
+def test_keyword_requires_word_boundary() -> None:
+    # Substrings within larger words must not trigger a false positive.
+    prompt = [{"role": "system", "content": "You are Thermesensor, a probe."}]
+    assert agent_name_from_prompt(prompt) == "Thermesensor"
+
+
+def test_keyword_from_anthropic_system_field() -> None:
+    messages = [{"role": "user", "content": "hi"}]
+    assert agent_name_from_prompt(messages, system="You are Hermes, a CLI.") == "Hermes"
