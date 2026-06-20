@@ -1,6 +1,6 @@
 """Admin router package.
 
-Aggregates domain-focused sub-routers (analytics, api_keys, broadcast,
+Aggregates domain-focused sub-routers (alerts, analytics, api_keys, broadcast,
 export, login_events, metrics, model_concurrency, model_visibility,
 providers, settings, signup_domains, site_updates, stats, users) into a
 single ``router``
@@ -11,6 +11,7 @@ exported at this level. Callers use
 from fastapi import APIRouter
 
 from serving.servers.routers.admin import (
+    alerts,
     analytics,
     api_keys,
     broadcast,
@@ -33,6 +34,7 @@ from serving.servers.routers.admin import (
 from serving.servers.routers.admin.metrics import _decode_throughput_tps
 
 router = APIRouter()
+router.include_router(alerts.router)
 router.include_router(analytics.router)
 router.include_router(api_keys.router)
 router.include_router(broadcast.router)

@@ -461,6 +461,12 @@ async def initialize() -> AppServices:
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
 
+    # Wire the operational store into the global Slack-alert snooze so admins
+    # can pause alerting from the dashboard. Safe with a None store (no-op).
+    from serving.observability.alert_snooze import init_alert_snooze
+
+    init_alert_snooze(operational_store)
+
     await _bootstrap_routewise_from_logs(
         log_store,
         routewise_routers,

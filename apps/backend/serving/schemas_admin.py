@@ -700,6 +700,25 @@ class UpdateSettingRequest(BaseModel):
     value: Any
 
 
+class SnoozeAlertsRequest(BaseModel):
+    """Request payload for snoozing Slack alerts for a duration."""
+
+    duration_seconds: int = Field(
+        ...,
+        gt=0,
+        le=7 * 24 * 60 * 60,
+        description="How long to suppress Slack alerts, in seconds (max 7 days).",
+    )
+
+
+class AlertSnoozeStatus(BaseModel):
+    """Current Slack-alert snooze state."""
+
+    snoozed: bool
+    snooze_until: float | None = None
+    seconds_remaining: int = 0
+
+
 class RoutewiseSettingItem(BaseModel):
     """A curated Routewise runtime setting with current value and metadata."""
 

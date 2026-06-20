@@ -229,6 +229,15 @@ async def alert_slack(
     if not webhook_url:
         return False
 
+    # Admin-controlled global snooze: pause all alerts until a deadline.
+    try:
+        from serving.observability.alert_snooze import is_snoozed
+
+        if await is_snoozed():
+            return False
+    except Exception:
+        log.debug("alert snooze check failed; sending alert", exc_info=True)
+
     key = dedupe_key or f"{severity.value}:{title}"
     now = _monotonic()
     async with _DEDUPE_LOCK:
