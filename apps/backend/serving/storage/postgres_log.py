@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
 from serving.storage.utils import (
+    agent_name_from_prompt,
     calculate_cost,
     conversation_shape,
     json_safe,
@@ -248,6 +249,18 @@ class PostgresLogStore(LogStore):
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
         num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
+        # Agent identity declared in the system prompt (e.g. "You are Claude
+        # Code, ..."). Stored in metadata so the admin list query can label the
+        # client by its declared name, falling back to User-Agent parsing when
+        # absent. Derived from the original inbound prompt, like conversation
+        # shape, so it is recorded independent of full-content storage. The
+        # Anthropic /v1/messages surface carries the system prompt as a
+        # top-level ``system`` field (outside ``messages``), preserved in
+        # request_payload — pass it so that surface is covered too.
+        system_field = request_payload.get("system") if isinstance(request_payload, dict) else None
+        agent = agent_name_from_prompt(prompt, system=system_field)
+        if agent is not None:
+            sanitized_metadata = {**(sanitized_metadata or {}), "agent": agent}
 
         async with self.pool.acquire() as conn:
             await conn.execute(

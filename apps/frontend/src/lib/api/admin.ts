@@ -391,6 +391,10 @@ export interface AdminRecentRequestItem {
   ip_source?: string | null;
   x_forwarded_for?: string | null;
   user_agent?: string | null;
+  // Calling agent's self-declared name, parsed backend-side from the system
+  // prompt's "You are <Name>" opener. Preferred over user_agent for the client
+  // column when present.
+  agent?: string | null;
   session_id?: string | null;
   request_surface?: string | null;
   model_id: string;
