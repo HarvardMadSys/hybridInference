@@ -91,18 +91,21 @@ def _collect_routewise_runtime_routers(
     from routing.routewise.router import RouteWiseRouter as _RWR
 
     routewise_routers: list[_RWR] = []
+    routewise_router_ids: set[int] = set()
     model_ids_by_router: dict[int, set[str]] = {}
     managed_ids = {id(existing) for existing in managed_routers}
     for model_id in sorted(model_ids):
         routewise_router = model_router_registry.get_router(model_id)
         if not isinstance(routewise_router, _RWR):
             continue
-        model_ids_by_router.setdefault(id(routewise_router), set()).add(model_id)
-        if all(id(existing) != id(routewise_router) for existing in routewise_routers):
+        router_id = id(routewise_router)
+        model_ids_by_router.setdefault(router_id, set()).add(model_id)
+        if router_id not in routewise_router_ids:
             routewise_routers.append(routewise_router)
-        if id(routewise_router) not in managed_ids:
+            routewise_router_ids.add(router_id)
+        if router_id not in managed_ids:
             managed_routers.append(routewise_router)
-            managed_ids.add(id(routewise_router))
+            managed_ids.add(router_id)
     return routewise_routers, model_ids_by_router
 
 
@@ -647,7 +650,7 @@ async def initialize() -> AppServices:
                 provider_route_services,
                 operational_store,
             )
-            if restored_routewise_model_ids:
+            if restored_routewise_model_ids and model_router_registry is not None:
                 (
                     runtime_routewise_routers,
                     runtime_routewise_model_ids_by_router,
