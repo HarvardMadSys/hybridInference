@@ -1,0 +1,4 @@
+results/.state/
+results/*/*-openai-completions-concurrency*/
+__pycache__/
+*.pyc
