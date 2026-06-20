@@ -168,8 +168,8 @@ export function DashboardView() {
       )}
 
       <p className="border-t border-gray-200 pt-6 text-center text-xs text-gray-500">
-        Your requests are logged and analyzed to study how the service is used. Anonymized data
-        derived from them may be open-sourced to support research. See our{' '}
+        Your prompts and responses are logged and analyzed to study how the service is used.
+        Anonymized data derived from them may be open-sourced to support research. See our{' '}
         <Link href="/terms" className="underline hover:text-gray-700">
           Terms of Service
         </Link>
