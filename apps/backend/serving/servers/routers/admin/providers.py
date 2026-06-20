@@ -251,6 +251,11 @@ async def admin_provider_token_usage(
             end,
         )
 
+    # Hide synthetic gateway/routing failure rows (e.g. the "router" label)
+    # so Token Usage matches Provider Performance and only reports real
+    # upstream providers. Filter before totals so the KPIs stay consistent.
+    rows = [r for r in rows if _is_reportable_performance_provider(r["provider"])]
+
     out_rows = [ProviderTokenUsageRow(**dict(r)) for r in rows]
     totals = ProviderTokenUsageTotals(
         input_tokens=sum(r.input_tokens for r in out_rows),

@@ -38,6 +38,33 @@ def _override_admin(app: FastAPI) -> None:
     app.dependency_overrides[verify_admin_access] = _fake_admin
 
 
+class _FakeAcquire:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakePool:
+    def __init__(self, rows):
+        self.conn = _FakeConnection(rows)
+
+    def acquire(self):
+        return _FakeAcquire(self.conn)
+
+
+class _FakeConnection:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def fetch(self, *_args, **_kwargs):
+        return self.rows
+
+
 # ---------------------------------------------------------------------
 # Auth + validation
 # ---------------------------------------------------------------------
@@ -86,6 +113,54 @@ class TestTokenUsageValidation:
             resp = await client.get("/admin/api/provider-token-usage")
         app.dependency_overrides.clear()
         assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_router_provider_is_hidden_from_token_usage():
+    """Synthetic router rows are excluded from Token Usage rows and totals."""
+    router_row = {
+        "provider": "router",
+        "model_id": "missing-model",
+        "input_tokens": 1_234,
+        "output_tokens": 0,
+        "cached_tokens": 0,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.0,
+        "request_count": 8,
+    }
+    real_row = {
+        "provider": "openrouter",
+        "model_id": "qwen/qwen3-coder",
+        "input_tokens": 100_000,
+        "output_tokens": 20_000,
+        "cached_tokens": 5_000,
+        "reasoning_tokens": 0,
+        "cost_usd": 0.50,
+        "request_count": 50,
+    }
+    fake_db_logger = MagicMock()
+    fake_db_logger.pool = _FakePool([real_row, router_row])
+
+    app = _build_admin_app(db_logger=fake_db_logger)
+    _override_admin(app)
+    app.dependency_overrides[get_db_logger] = lambda: fake_db_logger
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/admin/api/provider-token-usage",
+            params={"range": "24h"},
+        )
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Only the real upstream row survives; the synthetic "router" row is gone.
+    assert [r["provider"] for r in body["rows"]] == ["openrouter"]
+    # Totals are recomputed from the filtered rows, so router's 1234 input
+    # tokens and 8 requests do not leak into the KPIs.
+    assert body["totals"]["input_tokens"] == 100_000
+    assert body["totals"]["request_count"] == 50
 
 
 # ---------------------------------------------------------------------
