@@ -1914,6 +1914,15 @@ class PostgresOperationalStore(OperationalStore):
                 updated_by,
             )
 
+    async def delete_setting(self, key: str) -> bool:
+        """Delete a site_settings row by key. Returns True when removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM site_settings WHERE key = $1",
+                key,
+            )
+        return _parse_command_tag_count(tag) > 0
+
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows ordered by key."""
         async with self._pool.acquire() as conn:

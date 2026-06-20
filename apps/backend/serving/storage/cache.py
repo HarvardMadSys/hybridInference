@@ -663,6 +663,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         await self._store.set_setting(key, value, value_type, updated_by)
 
+    async def delete_setting(self, key: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_setting(key)
+
     async def list_settings(self) -> list[Row]:
         """Delegate to wrapped store."""
         return await self._store.list_settings()

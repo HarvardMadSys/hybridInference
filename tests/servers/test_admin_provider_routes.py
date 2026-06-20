@@ -107,6 +107,7 @@ async def admin_client(monkeypatch):
     op_store.list_all_provider_route_candidates = AsyncMock(return_value=[])
     op_store.list_settings = AsyncMock(return_value=[])
     op_store.set_setting = AsyncMock()
+    op_store.delete_setting = AsyncMock(return_value=True)
     op_store.upsert_provider_route_config = AsyncMock()
     op_store.delete_provider_route_config = AsyncMock(return_value=True)
     op_store.upsert_provider_route_candidate = AsyncMock()
@@ -1595,6 +1596,49 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
     op_store.delete_provider_route_config.assert_not_awaited()
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
     assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_last_runtime_route_removes_whole_model(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+
+    create_response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+    assert create_response.status_code == 200, create_response.text
+    assert "deepseek-v4-flash" in route_executor.routes
+
+    response = await client.delete(
+        "/admin/routing/provider-route-candidates/deepseek-v4-flash/"
+        "deepseek-v4-flash:openrouter[parasail]-api",
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["routes"] == []
+    # The whole runtime model is gone, not left serving in memory.
+    assert "deepseek-v4-flash" not in route_executor.routes
+    # Its persisted settings are removed so it does not resurrect on restart.
+    op_store.delete_setting.assert_has_awaits(
+        [
+            call("model_required_role:deepseek-v4-flash"),
+            call("model_router_strategy:deepseek-v4-flash"),
+        ],
+        any_order=True,
+    )
 
 
 @pytest.mark.asyncio

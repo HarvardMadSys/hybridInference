@@ -1790,6 +1790,46 @@ def _discard_provider_route_model_install(services, candidate: PreparedRouteCand
         )
 
 
+async def _teardown_runtime_model(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    route,
+    route_id: str,
+) -> tuple[object, float, str]:
+    """Remove a runtime-created model whose only route is being deleted.
+
+    Deleting the last route of a runtime model removes the model itself: drop the
+    in-memory route, clear any runtime strategy override/managed router, and delete
+    the persisted ``model_required_role``/``model_router_strategy`` settings so the
+    model is not resurrected (and does not emit per-boot warnings) on restart.
+    """
+    entries = _raw_route_entries(route)
+    adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+
+    # Clear the strategy override/managed router while the route still resolves.
+    await _discard_model_router_strategy_override(services, model_id)
+    _mutate_router_routes(services, lambda: services.router.routes.pop(model_id, None))
+    _rebuild_routewise_routers(services)
+
+    for setting_key in (
+        _model_required_role_setting_key(model_id),
+        _model_strategy_setting_key(model_id),
+    ):
+        try:
+            await op_store.delete_setting(setting_key)
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete setting %s while removing runtime model=%s: %s",
+                setting_key,
+                model_id,
+                exc,
+            )
+
+    return adapter, float(raw_weight), endpoint_id
+
+
 def _effective_weight(services, model_id: str, raw_weight: float, endpoint_id: str) -> float:
     resolver = getattr(services, "weight_override_resolver", None)
     if resolver is None:
@@ -2465,19 +2505,37 @@ async def delete_provider_route_candidate(
             status_code=400,
             detail="Only runtime-added provider routes can be deleted",
         )
+    # A runtime candidate that is the model's only route means the whole model was
+    # created at runtime (YAML models always keep >=1 non-deletable base route).
+    # Deleting it removes the model rather than leaving the DB row deleted while the
+    # in-memory model keeps serving until the next restart.
+    deleting_model = len(current_entries) == 1
+
     deleted = await op_store.delete_provider_route_candidate_with_config(model_id, route_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Provider route candidate not found")
-    deleted_adapter, _raw_weight, deleted_endpoint_id = _install_route_candidate_delete(
-        services,
-        route,
-        route_id,
-    )
+
+    if deleting_model:
+        deleted_adapter, _raw_weight, deleted_endpoint_id = await _teardown_runtime_model(
+            services,
+            op_store,
+            model_id=model_id,
+            route=route,
+            route_id=route_id,
+        )
+    else:
+        deleted_adapter, _raw_weight, deleted_endpoint_id = _install_route_candidate_delete(
+            services,
+            route,
+            route_id,
+        )
 
     await log_admin_action(
         op_store,
         admin_id,
-        "routing.provider_routes.candidate.delete",
+        "routing.provider_routes.model.delete"
+        if deleting_model
+        else "routing.provider_routes.candidate.delete",
         None,
         {
             "model_id": model_id,
@@ -2486,6 +2544,15 @@ async def delete_provider_route_candidate(
             "endpoint_id": deleted_endpoint_id,
         },
     )
+
+    if deleting_model:
+        return ListProviderRoutesResponse(
+            model_id=model_id,
+            strategy="fixed",
+            provider_options=_provider_options(),
+            openrouter_provider_options=_openrouter_provider_options(),
+            routes=[],
+        )
 
     override_rows = await op_store.list_provider_route_configs_for_model(model_id)
     return ListProviderRoutesResponse(
