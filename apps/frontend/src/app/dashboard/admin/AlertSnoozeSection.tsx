@@ -57,23 +57,22 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
     load();
   }, [load]);
 
-  // Tick the remaining countdown down once a minute so the status stays fresh,
-  // and reload from the server when the snooze elapses.
+  // Recompute the remaining countdown from the absolute deadline so it stays
+  // accurate across timer drift and background-tab throttling, and reload from
+  // the server once the snooze elapses.
   useEffect(() => {
-    if (!status?.snoozed) return;
+    if (!status?.snoozed || !status.snooze_until) return;
+    const until = status.snooze_until;
     const id = setInterval(() => {
-      setStatus((prev) => {
-        if (!prev || !prev.snoozed) return prev;
-        const remaining = prev.seconds_remaining - 60;
-        if (remaining <= 0) {
-          load();
-          return prev;
-        }
-        return { ...prev, seconds_remaining: remaining };
-      });
-    }, 60_000);
+      const remaining = Math.max(0, Math.round(until - Date.now() / 1000));
+      if (remaining <= 0) {
+        load();
+      } else {
+        setStatus((prev) => (prev ? { ...prev, seconds_remaining: remaining } : null));
+      }
+    }, 10_000);
     return () => clearInterval(id);
-  }, [status?.snoozed, load]);
+  }, [status?.snoozed, status?.snooze_until, load]);
 
   const onSnooze = async (seconds: number, label: string) => {
     setBusy(true);

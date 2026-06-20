@@ -59,8 +59,12 @@ async def get_snooze_until() -> float:
     try:
         row = await _store.get_setting(SNOOZE_SETTING_KEY)
     except Exception:
+        # Cache the fallback for the TTL so a DB outage doesn't trigger a
+        # query on every alert check (thundering herd).
         logger.debug("alert snooze read failed", exc_info=True)
-        return cached[1] if cached is not None else 0.0
+        fallback = cached[1] if cached is not None else 0.0
+        _cache = (now, fallback)
+        return fallback
 
     value = _coerce_epoch(row.get("value")) if row is not None else 0.0
     _cache = (now, value)
