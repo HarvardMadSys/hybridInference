@@ -1506,6 +1506,22 @@ def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> Non
     _rebuild_routewise_routers(services)
 
 
+def _mutate_router_routes(services, mutate):
+    """Run *mutate* under the router lock so concurrent readers never see a torn dict.
+
+    Sibling helpers (``_install_route_candidate``/``_install_route_update``) guard
+    their ``routes``/``adapters`` mutations with ``services.router._lock``; runtime
+    model install and its rollback must use the same guard or a concurrent request
+    iterating ``services.router.routes`` can hit
+    ``RuntimeError: dictionary changed size during iteration``.
+    """
+    lock = getattr(services.router, "_lock", None)
+    if lock is not None:
+        with lock:
+            return mutate()
+    return mutate()
+
+
 def _install_provider_route_model(
     services,
     candidate: PreparedRouteCandidate,
@@ -1518,10 +1534,13 @@ def _install_provider_route_model(
 
     registered = False
     try:
-        services.router.register_route(
-            model_id,
-            [(candidate.adapter, candidate.weight)],
-            required_role=required_role,
+        _mutate_router_routes(
+            services,
+            lambda: services.router.register_route(
+                model_id,
+                [(candidate.adapter, candidate.weight)],
+                required_role=required_role,
+            ),
         )
         registered = True
         route = services.router.routes[model_id]
@@ -1754,7 +1773,10 @@ def _discard_provider_route_model_install(services, candidate: PreparedRouteCand
         if unregister is not None:
             unregister(candidate.key_provider, candidate.adapter)
 
-    removed_route = services.router.routes.pop(model_id, None)
+    removed_route = _mutate_router_routes(
+        services,
+        lambda: services.router.routes.pop(model_id, None),
+    )
     if removed_route is not None and candidate.route is removed_route:
         candidate.route = None
 

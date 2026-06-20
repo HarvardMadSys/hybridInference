@@ -1109,6 +1109,78 @@ async def test_post_provider_route_model_rejects_invalid_required_role(admin_cli
     verify_mock.assert_not_awaited()
 
 
+class _TrackingLock:
+    """Context manager that counts acquisitions for router-lock assertions."""
+
+    def __init__(self) -> None:
+        self.enter_count = 0
+
+    def __enter__(self) -> _TrackingLock:
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, *_exc: object) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_registers_under_router_lock(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    tracking_lock = _TrackingLock()
+    route_executor._lock = tracking_lock
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    assert "deepseek-v4-flash" in route_executor.routes
+    assert tracking_lock.enter_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_rollback_pops_route_under_router_lock(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.set_setting.side_effect = RuntimeError("settings down")
+    tracking_lock = _TrackingLock()
+    route_executor._lock = tracking_lock
+
+    with pytest.raises(RuntimeError, match="settings down"):
+        await client.post(
+            "/admin/routing/provider-route-models",
+            json={
+                "model_id": "deepseek-v4-flash",
+                "strategy": "fixed",
+                "route_type": "on_demand",
+                "upstream_provider": "openrouter",
+                "openrouter_provider": "parasail",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_id": "db-openrouter",
+                "provider_model_id": "deepseek/deepseek-v4-flash",
+                "weight": 1,
+            },
+            headers=AUTH,
+        )
+
+    assert "deepseek-v4-flash" not in route_executor.routes
+    # register_route on install + routes.pop on rollback both acquire the lock.
+    assert tracking_lock.enter_count >= 2
+
+
 @pytest.mark.asyncio
 async def test_post_provider_route_model_rolls_back_when_install_rebuild_fails(admin_client):
     client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
