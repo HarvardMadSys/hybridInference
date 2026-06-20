@@ -633,6 +633,10 @@ describe('provider route client', () => {
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
+      pricing: {
+        prompt: '0.14',
+        completion: '0.28',
+      },
     });
 
     expect(out.model_id).toBe('deepseek-v4-flash');
@@ -654,6 +658,10 @@ describe('provider route client', () => {
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
+      pricing: {
+        prompt: '0.14',
+        completion: '0.28',
+      },
     });
   });
 
@@ -679,6 +687,10 @@ describe('provider route client', () => {
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
+      pricing: {
+        prompt: '0.14',
+        completion: '0.28',
+      },
     });
 
     expect(out.ok).toBe(true);
@@ -699,6 +711,10 @@ describe('provider route client', () => {
       quota_limit: null,
       concurrency_limit: null,
       weight: 1,
+      pricing: {
+        prompt: '0.14',
+        completion: '0.28',
+      },
     });
   });
 

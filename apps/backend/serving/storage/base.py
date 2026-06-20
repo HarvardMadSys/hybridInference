@@ -825,6 +825,7 @@ class OperationalStore(ABC):
         quota_limit: int | None,
         concurrency_limit: int | None,
         weight: float,
+        pricing: dict[str, str] | None,
         updated_by: str | None,
     ) -> None:
         """Upsert a DB-backed runtime provider route candidate."""

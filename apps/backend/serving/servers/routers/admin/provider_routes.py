@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import math
 import os
 import re
@@ -1052,6 +1053,38 @@ def _validate_positive_weight(weight: float) -> float:
     return value
 
 
+def _normalize_runtime_model_pricing(raw: Any) -> dict[str, str]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("runtime model pricing must be a JSON object") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("runtime model pricing is required")
+
+    required_keys = ("prompt", "completion")
+    missing = [key for key in required_keys if key not in raw]
+    if missing:
+        raise ValueError(f"runtime model pricing missing: {', '.join(missing)}")
+
+    pricing: dict[str, str] = {}
+    for key, value in raw.items():
+        key_text = str(key).strip()
+        value_text = str(value).strip()
+        if not key_text:
+            raise ValueError("runtime model pricing keys must not be blank")
+        try:
+            parsed = float(value_text)
+        except ValueError as exc:
+            raise ValueError(f"runtime model pricing.{key_text} must be numeric") from exc
+        if not math.isfinite(parsed) or parsed < 0:
+            raise ValueError(
+                f"runtime model pricing.{key_text} must be a non-negative finite number"
+            )
+        pricing[key_text] = value_text
+    return pricing
+
+
 def _validate_create_route_type_for_provider(route_type: str, upstream_provider: str) -> None:
     target = _target_for_provider(upstream_provider)
     provider = _primary_provider_for_target(target)
@@ -1213,6 +1246,7 @@ async def _prepare_model_route_candidate(
     quota_limit: int | None,
     concurrency_limit: int | None,
     weight: float,
+    pricing: dict[str, str] | str | None,
     route_id: str | None = None,
 ) -> PreparedRouteCandidate:
     model_id = _validate_new_model_id(services, model_id)
@@ -1244,6 +1278,7 @@ async def _prepare_model_route_candidate(
     if not provider_model_id:
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
     raw_weight = _validate_positive_weight(weight)
+    normalized_pricing = _normalize_runtime_model_pricing(pricing)
 
     provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
     candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
@@ -1269,6 +1304,7 @@ async def _prepare_model_route_candidate(
         "quota": None,
         "concurrency_pool": None,
         "concurrency": None,
+        "pricing": normalized_pricing,
         "route_metadata": {
             "route_id": candidate_route_id,
             "route_provider": upstream_provider,
@@ -1689,6 +1725,7 @@ async def _prepare_model_candidate_from_payload(
         quota_limit=payload.quota_limit,
         concurrency_limit=payload.concurrency_limit,
         weight=payload.weight,
+        pricing=payload.pricing,
         route_id=route_id,
     )
 
@@ -1791,6 +1828,62 @@ def _discard_provider_route_model_install(services, candidate: PreparedRouteCand
         )
 
 
+def _clear_weight_override_snapshot(services, model_id: str, endpoint_id: str) -> None:
+    resolver = getattr(services, "weight_override_resolver", None)
+    if resolver is not None:
+        clear_override = getattr(resolver, "clear_override", None)
+        if callable(clear_override):
+            clear_override(model_id, endpoint_id)
+
+
+async def _delete_weight_override_for_route(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    endpoint_id: str,
+) -> None:
+    try:
+        await op_store.delete_weight_override(model_id, endpoint_id)
+        _clear_weight_override_snapshot(services, model_id, endpoint_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete weight override while removing runtime route "
+            "model=%s endpoint_id=%s: %s",
+            model_id,
+            endpoint_id,
+            exc,
+        )
+
+
+async def _delete_weight_overrides_for_model(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    fallback_endpoint_id: str,
+) -> None:
+    try:
+        rows = await op_store.list_weight_overrides_for_model(model_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to list weight overrides while removing runtime model=%s: %s",
+            model_id,
+            exc,
+        )
+        rows = [{"endpoint_id": fallback_endpoint_id}]
+
+    endpoint_ids = {str(row["endpoint_id"]) for row in rows if row.get("endpoint_id") is not None}
+    endpoint_ids.add(fallback_endpoint_id)
+    for endpoint_id in endpoint_ids:
+        await _delete_weight_override_for_route(
+            services,
+            op_store,
+            model_id=model_id,
+            endpoint_id=endpoint_id,
+        )
+
+
 async def _teardown_runtime_model(
     services,
     op_store,
@@ -1803,8 +1896,8 @@ async def _teardown_runtime_model(
 
     Deleting the last route of a runtime model removes the model itself: drop the
     in-memory route, clear any runtime strategy override/managed router, and delete
-    persisted runtime settings/visibility overrides so the model is not resurrected
-    (and does not inherit stale access policy) on restart.
+    persisted runtime settings/visibility/weight overrides so the model is not
+    resurrected and does not inherit stale access or routing policy on restart.
     """
     entries = _raw_route_entries(route)
     adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
@@ -1842,6 +1935,13 @@ async def _teardown_runtime_model(
         invalidate = getattr(resolver, "invalidate_model", None)
         if callable(invalidate):
             invalidate(model_id)
+
+    await _delete_weight_overrides_for_model(
+        services,
+        op_store,
+        model_id=model_id,
+        fallback_endpoint_id=endpoint_id,
+    )
 
     return adapter, float(raw_weight), endpoint_id
 
@@ -2162,6 +2262,7 @@ async def create_provider_route_model(
             candidate.quota_limit,
             candidate.concurrency_limit,
             candidate.weight,
+            candidate.adapter.config.pricing,
             admin_id,
         )
         persisted_candidate = True
@@ -2286,6 +2387,7 @@ async def create_provider_route_candidate(
         candidate.quota_limit,
         candidate.concurrency_limit,
         candidate.weight,
+        None,
         admin_id,
     )
     _install_route_candidate(services, candidate)
@@ -2545,6 +2647,12 @@ async def delete_provider_route_candidate(
             route,
             route_id,
         )
+        await _delete_weight_override_for_route(
+            services,
+            op_store,
+            model_id=model_id,
+            endpoint_id=deleted_endpoint_id,
+        )
 
     await log_admin_action(
         op_store,
@@ -2646,6 +2754,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> None:
                     quota_limit=row.get("quota_limit"),
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
+                    pricing=row.get("pricing"),
                 )
                 _install_provider_route_model(
                     services,

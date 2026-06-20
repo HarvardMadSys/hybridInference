@@ -1,5 +1,6 @@
 """Pydantic schemas for admin API endpoints."""
 
+import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -898,6 +899,7 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
     model_id: str = Field(..., min_length=1, max_length=255)
     strategy: Literal["fixed", "routewise"] = "fixed"
     required_role: Literal["free", "pro", "internal", "admin"] = "admin"
+    pricing: dict[str, str] = Field(..., min_length=1)
 
     @field_validator("model_id")
     @classmethod
@@ -908,6 +910,29 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
             raise ValueError("model_id must not be blank")
         if any(ord(ch) < 32 or ch == "\x7f" for ch in cleaned):
             raise ValueError("model_id must not contain control characters")
+        return cleaned
+
+    @field_validator("pricing")
+    @classmethod
+    def validate_pricing(cls, value: dict[str, str]) -> dict[str, str]:
+        """Require explicit, numeric pricing for runtime-created models."""
+        required_keys = ("prompt", "completion")
+        missing = [key for key in required_keys if key not in value]
+        if missing:
+            raise ValueError(f"pricing must include {', '.join(missing)}")
+        cleaned: dict[str, str] = {}
+        for key, raw in value.items():
+            key_text = str(key).strip()
+            raw_text = str(raw).strip()
+            if not key_text:
+                raise ValueError("pricing keys must not be blank")
+            try:
+                parsed = float(raw_text)
+            except ValueError as exc:
+                raise ValueError(f"pricing.{key_text} must be numeric") from exc
+            if not math.isfinite(parsed) or parsed < 0:
+                raise ValueError(f"pricing.{key_text} must be a non-negative finite number")
+            cleaned[key_text] = raw_text
         return cleaned
 
 

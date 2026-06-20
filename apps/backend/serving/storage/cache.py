@@ -792,6 +792,7 @@ class CachedOperationalStore(OperationalStore):
         quota_limit: int | None,
         concurrency_limit: int | None,
         weight: float,
+        pricing: dict[str, str] | None,
         updated_by: str | None,
     ) -> None:
         """Delegate to wrapped store."""
@@ -807,6 +808,7 @@ class CachedOperationalStore(OperationalStore):
             quota_limit,
             concurrency_limit,
             weight,
+            pricing,
             updated_by,
         )
 

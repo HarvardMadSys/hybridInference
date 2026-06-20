@@ -553,6 +553,7 @@ class PostgresOperationalStore(OperationalStore):
                 quota_limit INTEGER,
                 concurrency_limit INTEGER,
                 weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                pricing JSONB,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_by TEXT,
@@ -564,6 +565,9 @@ class PostgresOperationalStore(OperationalStore):
         )
         await conn.execute(
             "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS openrouter_sort TEXT"
+        )
+        await conn.execute(
+            "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS pricing JSONB"
         )
 
         # --- provider_api_keys ---
@@ -2158,7 +2162,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
-                "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
+                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, created_at, "
                 "updated_at, updated_by "
                 "FROM provider_route_candidates WHERE model_id = $1 ORDER BY route_id",
                 model_id,
@@ -2170,7 +2174,7 @@ class PostgresOperationalStore(OperationalStore):
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
-                "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
+                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, created_at, "
                 "updated_at, updated_by "
                 "FROM provider_route_candidates ORDER BY model_id, route_id"
             )
@@ -2189,6 +2193,7 @@ class PostgresOperationalStore(OperationalStore):
         quota_limit: int | None,
         concurrency_limit: int | None,
         weight: float,
+        pricing: dict[str, str] | None,
         updated_by: str | None,
     ) -> None:
         """Upsert a DB-backed runtime provider route candidate row."""
@@ -2196,9 +2201,9 @@ class PostgresOperationalStore(OperationalStore):
             await conn.execute(
                 "INSERT INTO provider_route_candidates "
                 "(model_id, route_id, route_type, provider, openrouter_sort, base_url, api_key_id, "
-                "provider_model_id, quota_limit, concurrency_limit, weight, created_at, "
+                "provider_model_id, quota_limit, concurrency_limit, weight, pricing, created_at, "
                 "updated_at, updated_by) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW(), $12) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, NOW(), NOW(), $13) "
                 "ON CONFLICT (model_id, route_id) DO UPDATE SET "
                 "route_type = EXCLUDED.route_type, "
                 "provider = EXCLUDED.provider, "
@@ -2209,6 +2214,7 @@ class PostgresOperationalStore(OperationalStore):
                 "quota_limit = EXCLUDED.quota_limit, "
                 "concurrency_limit = EXCLUDED.concurrency_limit, "
                 "weight = EXCLUDED.weight, "
+                "pricing = EXCLUDED.pricing, "
                 "updated_at = NOW(), "
                 "updated_by = EXCLUDED.updated_by",
                 model_id,
@@ -2222,6 +2228,7 @@ class PostgresOperationalStore(OperationalStore):
                 quota_limit,
                 concurrency_limit,
                 weight,
+                json.dumps(pricing) if pricing is not None else None,
                 updated_by,
             )
 

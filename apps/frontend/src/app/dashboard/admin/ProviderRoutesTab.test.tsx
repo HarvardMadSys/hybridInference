@@ -99,6 +99,11 @@ const discoveredOpenRouterProviderOptions = [
   { provider: 'parasail', label: 'Parasail' },
 ];
 
+function fillRuntimeModelPricing() {
+  fireEvent.change(screen.getByLabelText('Prompt $/M'), { target: { value: '0.14' } });
+  fireEvent.change(screen.getByLabelText('Completion $/M'), { target: { value: '0.28' } });
+}
+
 const route = {
   model_id: 'minimax-fast',
   strategy: 'routewise',
@@ -692,6 +697,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
+    fillRuntimeModelPricing();
 
     await waitFor(() => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
@@ -715,6 +721,10 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        pricing: {
+          prompt: '0.14',
+          completion: '0.28',
+        },
       });
     });
     expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
@@ -741,6 +751,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
+    fillRuntimeModelPricing();
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {
@@ -758,6 +769,10 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
+        pricing: {
+          prompt: '0.14',
+          completion: '0.28',
+        },
       });
     });
     expect(createProviderRouteModel).not.toHaveBeenCalled();
@@ -784,6 +799,7 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
+    fillRuntimeModelPricing();
     fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
 
     await waitFor(() => {

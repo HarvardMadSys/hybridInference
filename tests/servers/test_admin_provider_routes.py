@@ -25,6 +25,12 @@ from serving.storage.base import ProviderKeyRow
 
 AUTH = {"Authorization": "Bearer test-admin"}
 NOW = datetime(2026, 6, 16, tzinfo=timezone.utc)
+RUNTIME_PRICING = {
+    "prompt": "0.14",
+    "completion": "0.28",
+    "input_cache_reads": "0.0028",
+    "input_cache_writes": "0",
+}
 
 
 class _ManagedTestRouter:
@@ -109,6 +115,8 @@ async def admin_client(monkeypatch):
     op_store.set_setting = AsyncMock()
     op_store.delete_setting = AsyncMock(return_value=True)
     op_store.delete_model_visibility_override = AsyncMock(return_value=True)
+    op_store.list_weight_overrides_for_model = AsyncMock(return_value=[])
+    op_store.delete_weight_override = AsyncMock(return_value=True)
     op_store.upsert_provider_route_config = AsyncMock()
     op_store.delete_provider_route_config = AsyncMock(return_value=True)
     op_store.upsert_provider_route_candidate = AsyncMock()
@@ -922,6 +930,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
         None,
         None,
         2.5,
+        None,
         "127.0.0.1",
     )
     verify_mock.assert_awaited_once()
@@ -1000,6 +1009,7 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
             "api_key_id": "db-openrouter",
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.25,
+            "pricing": RUNTIME_PRICING,
         },
         headers=AUTH,
     )
@@ -1032,6 +1042,7 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
         None,
         None,
         1.25,
+        RUNTIME_PRICING,
         "127.0.0.1",
     )
     op_store.set_setting.assert_has_awaits(
@@ -1057,6 +1068,7 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     assert runtime_adapter.config.id == "deepseek-v4-flash"
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.pricing == RUNTIME_PRICING
     assert runtime_adapter.config.route_metadata["api_key_id"] == "db-openrouter"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
 
@@ -1089,6 +1101,7 @@ async def test_post_provider_route_model_accepts_explicit_required_role(admin_cl
             "api_key_id": "db-openrouter",
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.25,
+            "pricing": RUNTIME_PRICING,
         },
         headers=AUTH,
     )
@@ -1129,6 +1142,7 @@ async def test_post_provider_route_model_rejects_invalid_required_role(admin_cli
             "base_url": "https://openrouter.ai/api/v1",
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1.25,
+            "pricing": RUNTIME_PRICING,
         },
         headers=AUTH,
     )
@@ -1173,6 +1187,7 @@ async def test_post_provider_route_model_registers_under_router_lock(admin_clien
             "api_key_id": "db-openrouter",
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
+            "pricing": RUNTIME_PRICING,
         },
         headers=AUTH,
     )
@@ -1203,6 +1218,7 @@ async def test_post_provider_route_model_rollback_pops_route_under_router_lock(a
                 "api_key_id": "db-openrouter",
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1,
+                "pricing": RUNTIME_PRICING,
             },
             headers=AUTH,
         )
@@ -1231,6 +1247,7 @@ async def test_post_provider_route_model_rolls_back_when_install_rebuild_fails(a
                 "api_key_id": "db-openrouter",
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1.25,
+                "pricing": RUNTIME_PRICING,
             },
             headers=AUTH,
         )
@@ -1261,6 +1278,7 @@ async def test_post_provider_route_model_rolls_back_when_setting_fails(admin_cli
                 "api_key_id": "db-openrouter",
                 "provider_model_id": "deepseek/deepseek-v4-flash",
                 "weight": 1.25,
+                "pricing": RUNTIME_PRICING,
             },
             headers=AUTH,
         )
@@ -1289,6 +1307,7 @@ async def test_post_provider_route_model_rejects_existing_model(admin_client):
             "base_url": "https://openrouter.ai/api/v1",
             "provider_model_id": "minimax/minimax-m2.5",
             "weight": 1,
+            "pricing": RUNTIME_PRICING,
         },
         headers=AUTH,
     )
@@ -1316,6 +1335,7 @@ async def test_verify_provider_route_model_does_not_create_model(admin_client):
             "api_key_id": "db-openrouter",
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
+            "pricing": RUNTIME_PRICING,
         },
         headers=AUTH,
     )
@@ -1549,6 +1569,7 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
         None,
         None,
         1.0,
+        None,
         "127.0.0.1",
     )
     verify_mock.assert_awaited_once()
@@ -1624,6 +1645,10 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
     )
     op_store.delete_provider_route_candidate.assert_not_awaited()
     op_store.delete_provider_route_config.assert_not_awaited()
+    op_store.delete_weight_override.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+    )
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
     assert fake_routewise._rebuild_from_fixed_router.call_count == 2
 
@@ -1634,6 +1659,15 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
     visibility_resolver = MagicMock()
     client.app.state.services.model_visibility_resolver = visibility_resolver
+    weight_resolver = MagicMock()
+    client.app.state.services.weight_override_resolver = weight_resolver
+    op_store.list_weight_overrides_for_model.return_value = [
+        {
+            "model_id": "deepseek-v4-flash",
+            "endpoint_id": "deepseek-v4-flash:openrouter[parasail]-api",
+            "weight": 0.5,
+        }
+    ]
 
     create_response = await client.post(
         "/admin/routing/provider-route-models",
@@ -1647,6 +1681,7 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
             "api_key_id": "db-openrouter",
             "provider_model_id": "deepseek/deepseek-v4-flash",
             "weight": 1,
+            "pricing": RUNTIME_PRICING,
         },
         headers=AUTH,
     )
@@ -1675,6 +1710,16 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
     # the same model cannot inherit stale access policy.
     op_store.delete_model_visibility_override.assert_awaited_once_with("deepseek-v4-flash")
     visibility_resolver.invalidate_model.assert_called_once_with("deepseek-v4-flash")
+    # Its route weight overrides are cleared for the same reason.
+    op_store.list_weight_overrides_for_model.assert_awaited_once_with("deepseek-v4-flash")
+    op_store.delete_weight_override.assert_awaited_once_with(
+        "deepseek-v4-flash",
+        "deepseek-v4-flash:openrouter[parasail]-api",
+    )
+    weight_resolver.clear_override.assert_called_once_with(
+        "deepseek-v4-flash",
+        "deepseek-v4-flash:openrouter[parasail]-api",
+    )
 
 
 @pytest.mark.asyncio
@@ -1752,6 +1797,7 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
             "quota_limit": None,
             "concurrency_limit": None,
             "weight": 1.25,
+            "pricing": RUNTIME_PRICING,
             "updated_at": NOW,
             "updated_by": "127.0.0.1",
         }
@@ -1800,6 +1846,7 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     assert route_executor.routes["deepseek-v4-flash"].required_role == "internal"
     assert runtime_adapter.config.id == "deepseek-v4-flash"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.pricing == RUNTIME_PRICING
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     registry.set_router_override.assert_called_once_with("deepseek-v4-flash", "fixed")
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()

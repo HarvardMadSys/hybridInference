@@ -54,6 +54,10 @@ type CreateRouteForm = {
   quotaLimit: string;
   concurrencyLimit: string;
   weight: string;
+  pricingPrompt: string;
+  pricingCompletion: string;
+  pricingCacheReads: string;
+  pricingCacheWrites: string;
 };
 
 const emptyCreateForm: CreateRouteForm = {
@@ -68,6 +72,10 @@ const emptyCreateForm: CreateRouteForm = {
   quotaLimit: '5000',
   concurrencyLimit: '1',
   weight: '1',
+  pricingPrompt: '',
+  pricingCompletion: '',
+  pricingCacheReads: '',
+  pricingCacheWrites: '',
 };
 
 const OPENROUTER_PROVIDER_AUTO = '';
@@ -106,6 +114,29 @@ function routeKey(route: Pick<ProviderRoute, 'model_id' | 'route_id'>) {
 
 function routeWeightKey(route: Pick<RouteWeight, 'model_id' | 'endpoint_id'>) {
   return `${route.model_id}\u0000${route.endpoint_id}`;
+}
+
+function pricingValueValid(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  const parsed = Number.parseFloat(trimmed);
+  return Number.isFinite(parsed) && parsed >= 0;
+}
+
+function optionalPricingValueValid(value: string) {
+  return !value.trim() || pricingValueValid(value);
+}
+
+function runtimePricingPayload(form: CreateRouteForm): Record<string, string> {
+  const pricing: Record<string, string> = {
+    prompt: form.pricingPrompt.trim(),
+    completion: form.pricingCompletion.trim(),
+  };
+  const cacheReads = form.pricingCacheReads.trim();
+  const cacheWrites = form.pricingCacheWrites.trim();
+  if (cacheReads) pricing.input_cache_reads = cacheReads;
+  if (cacheWrites) pricing.input_cache_writes = cacheWrites;
+  return pricing;
 }
 
 function formatWeight(value: number) {
@@ -532,6 +563,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       ? Number.parseInt(createForm.concurrencyLimit, 10)
       : null;
   const parsedCreateWeight = Number.parseFloat(createForm.weight);
+  const createPricingValid =
+    !creatingModel ||
+    (pricingValueValid(createForm.pricingPrompt) &&
+      pricingValueValid(createForm.pricingCompletion) &&
+      optionalPricingValueValid(createForm.pricingCacheReads) &&
+      optionalPricingValueValid(createForm.pricingCacheWrites));
   const createQuotaValid =
     createForm.routeType !== 'quota' ||
     (parsedCreateQuotaLimit !== null &&
@@ -560,7 +597,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     createOpenRouterProviderValid &&
     createQuotaValid &&
     createConcurrencyValid &&
-    createWeightValid;
+    createWeightValid &&
+    createPricingValid;
   const editFormValid =
     Boolean(editingRoute) &&
     Boolean(form.upstreamProvider) &&
@@ -598,6 +636,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     parsedQuotaLimit,
     selectedOpenRouterProvider,
   ]);
+  const runtimePricing = runtimePricingPayload(createForm);
   const createRoutePayload = useMemo(
     () => ({
       route_type: createForm.routeType,
@@ -646,6 +685,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     model_id: creatingModel ? newModelIdValue : selectedModel,
     strategy: creatingModel ? newModelStrategy : strategy,
     required_role: creatingModel ? newModelRequiredRole : undefined,
+    pricing: creatingModel ? runtimePricing : undefined,
     payload: createRoutePayload,
   });
   const editRouteVerified =
@@ -1051,6 +1091,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           model_id: newModelIdValue,
           strategy: newModelStrategy,
           required_role: newModelRequiredRole,
+          pricing: runtimePricing,
         });
       } else {
         created = await createProviderRouteCandidate(selectedModel, createRoutePayload);
@@ -1080,6 +1121,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           model_id: newModelIdValue,
           strategy: newModelStrategy,
           required_role: newModelRequiredRole,
+          pricing: runtimePricing,
         });
       } else {
         await verifyProviderRouteCandidate(selectedModel, createRoutePayload);
@@ -1545,6 +1587,105 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     </option>
                   ))}
                 </select>
+              </div>
+            </div>
+          )}
+
+          {creatingModel && (
+            <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-model-pricing-prompt"
+                >
+                  Prompt $/M
+                </label>
+                <input
+                  id="new-model-pricing-prompt"
+                  type="number"
+                  min="0"
+                  step="0.000001"
+                  value={createForm.pricingPrompt}
+                  onChange={(event) => {
+                    setCreateForm((current) => ({
+                      ...current,
+                      pricingPrompt: event.target.value,
+                    }));
+                    setVerifiedCreateSignature(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-model-pricing-completion"
+                >
+                  Completion $/M
+                </label>
+                <input
+                  id="new-model-pricing-completion"
+                  type="number"
+                  min="0"
+                  step="0.000001"
+                  value={createForm.pricingCompletion}
+                  onChange={(event) => {
+                    setCreateForm((current) => ({
+                      ...current,
+                      pricingCompletion: event.target.value,
+                    }));
+                    setVerifiedCreateSignature(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-model-pricing-cache-read"
+                >
+                  Cache read $/M
+                </label>
+                <input
+                  id="new-model-pricing-cache-read"
+                  type="number"
+                  min="0"
+                  step="0.000001"
+                  value={createForm.pricingCacheReads}
+                  onChange={(event) => {
+                    setCreateForm((current) => ({
+                      ...current,
+                      pricingCacheReads: event.target.value,
+                    }));
+                    setVerifiedCreateSignature(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="new-model-pricing-cache-write"
+                >
+                  Cache write $/M
+                </label>
+                <input
+                  id="new-model-pricing-cache-write"
+                  type="number"
+                  min="0"
+                  step="0.000001"
+                  value={createForm.pricingCacheWrites}
+                  onChange={(event) => {
+                    setCreateForm((current) => ({
+                      ...current,
+                      pricingCacheWrites: event.target.value,
+                    }));
+                    setVerifiedCreateSignature(null);
+                  }}
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                />
               </div>
             </div>
           )}
