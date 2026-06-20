@@ -67,10 +67,14 @@ export function UserRow({
           {statusMark.glyph}
         </span>
       </td>
-      <td className="px-2">
-        <div className="font-medium text-gray-900">{user.email}</div>
+      <td className="max-w-[12rem] px-2">
+        <div className="truncate font-medium text-gray-900" title={user.email}>
+          {user.email}
+        </div>
         {density === 'comfortable' && user.user_name && (
-          <div className="text-xs text-gray-500">{user.user_name}</div>
+          <div className="truncate text-xs text-gray-500" title={user.user_name}>
+            {user.user_name}
+          </div>
         )}
       </td>
       <td className="px-2 text-xs uppercase text-gray-600">

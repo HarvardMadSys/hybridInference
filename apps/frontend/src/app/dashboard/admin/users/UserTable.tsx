@@ -238,7 +238,7 @@ export function UserTable(props: UserTableProps) {
           <thead className="bg-gray-50">
             <tr className="text-left">
               <th className="w-8 px-2 py-2" />
-              <th className="px-2 py-2">Email</th>
+              <th className="w-48 px-2 py-2">Email</th>
               <th className="px-2 py-2">Role</th>
               <th className="px-2 py-2" aria-sort={ariaSortFor('cost_today')}>
                 <button
