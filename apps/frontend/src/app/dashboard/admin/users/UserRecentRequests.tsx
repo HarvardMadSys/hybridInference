@@ -11,21 +11,9 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { FoldedText } from '@/components/features/admin/requestContent';
+import { relTime } from './UserDetailPanel';
 
 const PAGE_SIZE = 25;
-
-function relTime(s: string | null): string {
-  if (!s) return 'Never';
-  const ms = Date.now() - new Date(s).getTime();
-  const m = Math.floor(ms / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
 
 function formatLatency(ms?: number | null): string {
   if (ms == null) return '—';
@@ -56,6 +44,7 @@ export function UserRecentRequests({ userId }: { userId: string }) {
   const [entries, setEntries] = useState<AdminRecentRequestItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [contentCache, setContentCache] = useState<Map<string, RequestContentState>>(
@@ -64,12 +53,15 @@ export function UserRecentRequests({ userId }: { userId: string }) {
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const d = await listRecentRequests(PAGE_SIZE, offset, userId);
       setEntries(d.requests);
       setTotal(d.total);
     } catch (e) {
-      toast.error(getErrorMessage(e));
+      const msg = getErrorMessage(e);
+      setError(msg);
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -83,7 +75,10 @@ export function UserRecentRequests({ userId }: { userId: string }) {
     (requestId: string) => {
       const next = expandedId === requestId ? null : requestId;
       setExpandedId(next);
-      if (next === null || contentCache.has(next)) return;
+      if (next === null) return;
+      // Retry a previously failed fetch on re-expand; skip only successful ones.
+      const cached = contentCache.get(next);
+      if (cached && !cached.error) return;
       setContentCache((prev) => {
         if (prev.has(next)) return prev;
         const updated = new Map(prev);
@@ -153,6 +148,10 @@ export function UserRecentRequests({ userId }: { userId: string }) {
         {loading && entries.length === 0 ? (
           <div className="flex items-center justify-center py-8">
             <span className="h-5 w-5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+          </div>
+        ) : error && entries.length === 0 ? (
+          <div className="py-8 text-center text-[12px] text-red-500">
+            Failed to load requests: {error}
           </div>
         ) : entries.length === 0 ? (
           <div className="py-8 text-center text-[12px] text-gray-400">No requests yet.</div>
@@ -337,7 +336,10 @@ export function UserRecentRequests({ userId }: { userId: string }) {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                onClick={() => {
+                  setOffset(Math.max(0, offset - PAGE_SIZE));
+                  setExpandedId(null);
+                }}
                 disabled={offset === 0 || loading}
                 className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition hover:bg-gray-100 disabled:opacity-30"
               >
@@ -345,7 +347,10 @@ export function UserRecentRequests({ userId }: { userId: string }) {
               </button>
               <button
                 type="button"
-                onClick={() => setOffset(offset + PAGE_SIZE)}
+                onClick={() => {
+                  setOffset(offset + PAGE_SIZE);
+                  setExpandedId(null);
+                }}
                 disabled={offset + PAGE_SIZE >= total || loading}
                 className="rounded-md px-2 py-1 text-[11px] font-medium text-gray-500 transition hover:bg-gray-100 disabled:opacity-30"
               >
