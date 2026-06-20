@@ -1,0 +1,249 @@
+{
+  "request_throughput": {
+    "unit": "requests/sec",
+    "avg": 0.9513949256108626
+  },
+  "request_latency": {
+    "unit": "ms",
+    "avg": 16250.221886489999,
+    "p1": 13328.542022139998,
+    "p5": 16197.46458645,
+    "p10": 16240.8790445,
+    "p25": 16263.46639,
+    "p50": 16383.766251,
+    "p75": 16473.88315075,
+    "p90": 16489.453799299998,
+    "p95": 16655.0710437,
+    "p99": 16655.22034688,
+    "min": 10125.344481,
+    "max": 16655.286948,
+    "std": 724.6747370732178
+  },
+  "request_count": {
+    "unit": "count",
+    "avg": 200.0
+  },
+  "time_to_first_token": {
+    "unit": "ms",
+    "avg": 82.95547848999999,
+    "p1": 51.86049806,
+    "p5": 54.686528149999994,
+    "p10": 57.054317899999994,
+    "p25": 78.382277,
+    "p50": 86.98715949999999,
+    "p75": 89.96450175,
+    "p90": 100.4216974,
+    "p95": 100.7904205,
+    "p99": 110.32282529,
+    "min": 49.876349,
+    "max": 110.34232499999999,
+    "std": 14.501788692111496
+  },
+  "time_to_second_token": {
+    "unit": "ms",
+    "avg": 11.065696119999998,
+    "p1": 6.74304432,
+    "p5": 6.771510299999999,
+    "p10": 7.3646438,
+    "p25": 8.27376075,
+    "p50": 8.8630285,
+    "p75": 11.93214875,
+    "p90": 14.774191599999996,
+    "p95": 31.9467916,
+    "p99": 32.7235987,
+    "min": 4.747331,
+    "max": 32.725294999999996,
+    "std": 5.887939144059442
+  },
+  "inter_token_latency": {
+    "unit": "ms",
+    "avg": 15.836060185,
+    "p1": 12.97434371,
+    "p5": 15.778906899999999,
+    "p10": 15.795632099999999,
+    "p25": 15.82441225,
+    "p50": 15.9269535,
+    "p75": 16.020099,
+    "p90": 16.0555459,
+    "p95": 16.19599105,
+    "p99": 16.19601904,
+    "min": 12.961675,
+    "max": 16.196039,
+    "std": 0.5626134838017133
+  },
+  "output_token_throughput": {
+    "unit": "tokens/sec",
+    "avg": 972.2399884309965
+  },
+  "output_token_throughput_per_user": {
+    "unit": "tokens/sec/user",
+    "avg": 63.242246464426934,
+    "p1": 61.74356781936709,
+    "p5": 61.74367452493746,
+    "p10": 62.28377586455026,
+    "p25": 62.42158678295382,
+    "p50": 62.786646548569934,
+    "p75": 63.19350159993175,
+    "p90": 63.30864089266465,
+    "p95": 63.37574627977339,
+    "p99": 77.07518949334582,
+    "min": 61.74349172658822,
+    "max": 77.15052259835245,
+    "std": 2.682566731912014
+  },
+  "output_sequence_length": {
+    "unit": "tokens",
+    "avg": 1021.91,
+    "p1": 1021.0,
+    "p5": 1023.0,
+    "p10": 1023.0,
+    "p25": 1024.0,
+    "p50": 1024.0,
+    "p75": 1024.0,
+    "p90": 1024.0,
+    "p95": 1024.05,
+    "p99": 1025.01,
+    "min": 637.0,
+    "max": 1027.0,
+    "std": 27.29344060392533
+  },
+  "input_sequence_length": {
+    "unit": "tokens",
+    "avg": 1023.99,
+    "p1": 1023.99,
+    "p5": 1024.0,
+    "p10": 1024.0,
+    "p25": 1024.0,
+    "p50": 1024.0,
+    "p75": 1024.0,
+    "p90": 1024.0,
+    "p95": 1024.0,
+    "p99": 1024.0,
+    "min": 1023.0,
+    "max": 1024.0,
+    "std": 0.09949874371066199
+  },
+  "input_config": {
+    "model_names": [
+      "MiniMaxAI/MiniMax-M2.7"
+    ],
+    "subcommand": "profile",
+    "verbose": false,
+    "template_filename": "genai_perf_config.yaml",
+    "analyze": {
+      "sweep_parameters": {
+        "concurrency": {
+          "min": 1,
+          "max": 1024
+        }
+      }
+    },
+    "endpoint": {
+      "model_selection_strategy": "round_robin",
+      "backend": "tensorrtllm",
+      "custom": "v1/completions",
+      "type": "completions",
+      "streaming": true,
+      "server_metrics_urls": [
+        "http://localhost:9400/metrics"
+      ],
+      "url": "http://localhost:8000",
+      "grpc_method": "",
+      "service_kind": "openai",
+      "output_format": "openai_completions"
+    },
+    "perf_analyzer": {
+      "path": "perf_analyzer",
+      "verbose": false,
+      "stimulus": {
+        "concurrency": 16
+      },
+      "stability_percentage": 999,
+      "measurement": {
+        "mode": "request_count",
+        "num": 200
+      },
+      "warmup_request_count": 30
+    },
+    "input": {
+      "batch_size": 1,
+      "extra": "",
+      "goodput": "",
+      "header": "",
+      "file": "",
+      "num_dataset_entries": 100,
+      "random_seed": 0,
+      "audio": {
+        "batch_size": 1,
+        "length": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "format": "wav",
+        "depths": [
+          16
+        ],
+        "sample_rates": [
+          16
+        ],
+        "num_channels": 1
+      },
+      "image": {
+        "width": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "height": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "batch_size": 1,
+        "format": "png"
+      },
+      "output_tokens": {
+        "mean": 1024,
+        "deterministic": false,
+        "stddev": 0
+      },
+      "synthetic_tokens": {
+        "mean": 1024,
+        "stddev": 0
+      },
+      "prefix_prompt": {
+        "num": 0,
+        "length": 100
+      },
+      "sessions": {
+        "num": 0,
+        "turns": {
+          "mean": 1,
+          "stddev": 0
+        },
+        "turn_delay": {
+          "mean": 0,
+          "ratio": 1.0,
+          "stddev": 0
+        }
+      },
+      "prompt_source": "synthetic",
+      "synthetic_files": [],
+      "payload_file": ""
+    },
+    "output": {
+      "artifact_directory": "/tmp/claude/worktree/minimax-m2.7-bench/benchmark/local/minimax-m2.7/results/vllm",
+      "checkpoint_directory": "checkpoint",
+      "profile_export_file": "decode_concurrency_16_run1.json",
+      "generate_plots": false,
+      "enable_checkpointing": false
+    },
+    "tokenizer": {
+      "name": "/netscratch/juncheng/models/MiniMax-M2.7-FP8",
+      "revision": "main",
+      "trust_remote_code": false,
+      "_enable_debug_logging": true
+    },
+    "process": {
+      "input_path": "aggregated"
+    }
+  }
+}

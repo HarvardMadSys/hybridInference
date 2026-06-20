@@ -1,0 +1,201 @@
+{
+  "request_throughput": {
+    "unit": "requests/sec",
+    "avg": 1.4460910326020096
+  },
+  "request_latency": {
+    "unit": "ms",
+    "avg": 691.20320277,
+    "p1": 682.6549576399999,
+    "p5": 683.0113642,
+    "p10": 683.5338624999999,
+    "p25": 685.02803725,
+    "p50": 686.7727115,
+    "p75": 702.6677374999999,
+    "p90": 707.5588001,
+    "p95": 711.5402735499999,
+    "p99": 735.6815703899999,
+    "min": 401.119359,
+    "max": 749.3257689999999,
+    "std": 23.583538414867675
+  },
+  "request_count": {
+    "unit": "count",
+    "avg": 200.0
+  },
+  "time_to_first_token": {
+    "unit": "ms",
+    "avg": 691.20320277,
+    "p1": 682.6549576399999,
+    "p5": 683.0113642,
+    "p10": 683.5338624999999,
+    "p25": 685.02803725,
+    "p50": 686.7727115,
+    "p75": 702.6677374999999,
+    "p90": 707.5588001,
+    "p95": 711.5402735499999,
+    "p99": 735.6815703899999,
+    "min": 401.119359,
+    "max": 749.3257689999999,
+    "std": 23.583538414867675
+  },
+  "output_token_throughput": {
+    "unit": "tokens/sec",
+    "avg": 1.4460910326020096
+  },
+  "output_sequence_length": {
+    "unit": "tokens",
+    "avg": 1.0,
+    "p1": 1.0,
+    "p5": 1.0,
+    "p10": 1.0,
+    "p25": 1.0,
+    "p50": 1.0,
+    "p75": 1.0,
+    "p90": 1.0,
+    "p95": 1.0,
+    "p99": 1.0,
+    "min": 1.0,
+    "max": 1.0,
+    "std": 0.0
+  },
+  "input_sequence_length": {
+    "unit": "tokens",
+    "avg": 16383.96,
+    "p1": 16383.0,
+    "p5": 16383.0,
+    "p10": 16384.0,
+    "p25": 16384.0,
+    "p50": 16384.0,
+    "p75": 16384.0,
+    "p90": 16384.0,
+    "p95": 16384.0,
+    "p99": 16385.01,
+    "min": 16383.0,
+    "max": 16386.0,
+    "std": 0.397994974842648
+  },
+  "input_config": {
+    "model_names": [
+      "MiniMaxAI/MiniMax-M2.7"
+    ],
+    "subcommand": "profile",
+    "verbose": false,
+    "template_filename": "genai_perf_config.yaml",
+    "analyze": {
+      "sweep_parameters": {
+        "concurrency": {
+          "min": 1,
+          "max": 1024
+        }
+      }
+    },
+    "endpoint": {
+      "model_selection_strategy": "round_robin",
+      "backend": "tensorrtllm",
+      "custom": "v1/completions",
+      "type": "completions",
+      "streaming": true,
+      "server_metrics_urls": [
+        "http://localhost:9400/metrics"
+      ],
+      "url": "http://localhost:8001",
+      "grpc_method": "",
+      "service_kind": "openai",
+      "output_format": "openai_completions"
+    },
+    "perf_analyzer": {
+      "path": "perf_analyzer",
+      "verbose": false,
+      "stimulus": {
+        "concurrency": 1
+      },
+      "stability_percentage": 999,
+      "measurement": {
+        "mode": "request_count",
+        "num": 200
+      },
+      "warmup_request_count": 30
+    },
+    "input": {
+      "batch_size": 1,
+      "extra": "",
+      "goodput": "",
+      "header": "",
+      "file": "",
+      "num_dataset_entries": 100,
+      "random_seed": 0,
+      "audio": {
+        "batch_size": 1,
+        "length": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "format": "wav",
+        "depths": [
+          16
+        ],
+        "sample_rates": [
+          16
+        ],
+        "num_channels": 1
+      },
+      "image": {
+        "width": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "height": {
+          "mean": 0,
+          "stddev": 0
+        },
+        "batch_size": 1,
+        "format": "png"
+      },
+      "output_tokens": {
+        "mean": 1,
+        "deterministic": false,
+        "stddev": 0
+      },
+      "synthetic_tokens": {
+        "mean": 16384,
+        "stddev": 0
+      },
+      "prefix_prompt": {
+        "num": 0,
+        "length": 100
+      },
+      "sessions": {
+        "num": 0,
+        "turns": {
+          "mean": 1,
+          "stddev": 0
+        },
+        "turn_delay": {
+          "mean": 0,
+          "ratio": 1.0,
+          "stddev": 0
+        }
+      },
+      "prompt_source": "synthetic",
+      "synthetic_files": [],
+      "payload_file": ""
+    },
+    "output": {
+      "artifact_directory": "/tmp/claude/worktree/minimax-m2.7-bench/benchmark/local/minimax-m2.7/results/sglang",
+      "checkpoint_directory": "checkpoint",
+      "profile_export_file": "prefill_input_16384_run1.json",
+      "generate_plots": false,
+      "enable_checkpointing": false
+    },
+    "tokenizer": {
+      "name": "/netscratch/juncheng/models/MiniMax-M2.7-FP8",
+      "revision": "main",
+      "trust_remote_code": false,
+      "_enable_debug_logging": true
+    },
+    "process": {
+      "input_path": "aggregated"
+    }
+  }
+}
