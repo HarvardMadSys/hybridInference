@@ -159,6 +159,16 @@ _GENERIC_AGENT_WORDS = frozenset(
         "specialized",
         "expert",
         "assistant",
+        "concise",
+        "accurate",
+        "precise",
+        "thorough",
+        "polite",
+        "patient",
+        "reliable",
+        "efficient",
+        "smart",
+        "intelligent",
     }
 )
 
@@ -185,7 +195,33 @@ def _message_text(content: Any) -> str | None:
     return None
 
 
-def agent_name_from_prompt(prompt: list[dict[str, Any]] | str | None) -> str | None:
+def _agent_name_from_text(text: str | None) -> str | None:
+    """Return the agent name declared by a ``"You are <Name>"`` opener, or None.
+
+    Applies the shared guardrails: only the first token after ``"You are"`` is
+    taken, it must look like a name (leading letter; letters/digits/``.-_``; at
+    most 32 chars) and must not be a generic filler such as ``"a"``/``"the"`` or
+    a common role verb/adjective such as ``"helpful"``/``"designed"``.
+    """
+    if not isinstance(text, str):
+        return None
+    match = _YOU_ARE_RE.match(text)
+    if match is None:
+        return None
+    name = match.group("name").strip("\"'`*.,;:!?()[]{}<>")
+    if not name or len(name) > 32:
+        return None
+    if name.lower() in _GENERIC_AGENT_WORDS:
+        return None
+    if not _AGENT_NAME_RE.match(name):
+        return None
+    return name
+
+
+def agent_name_from_prompt(
+    prompt: list[dict[str, Any]] | str | None,
+    system: Any = None,
+) -> str | None:
     """Extract the calling agent's self-declared name from a system prompt.
 
     Several coding agents announce themselves in the opening of their system
@@ -193,36 +229,31 @@ def agent_name_from_prompt(prompt: list[dict[str, Any]] | str | None) -> str | N
     When that pattern is present in a system (or ``developer``) message, the
     leading token after ``"You are"`` is returned so the admin dashboard can
     label the client by its declared identity instead of the ``User-Agent``
-    header. Returns ``None`` when no system message carries a recognizable
+    header. Returns ``None`` when no system prompt carries a recognizable
     opener, so callers fall back to User-Agent parsing.
+
+    ``system`` is the optional top-level system field used by the Anthropic
+    ``/v1/messages`` surface (Claude Code), where the system prompt is carried
+    outside the ``messages`` list as a string or a list of text blocks. It is
+    consulted only when the ``messages`` themselves yield no name.
 
     Guardrails: only the first token after ``"You are"`` is taken, it must look
     like a name (leading letter; letters/digits/``.-_``; at most 32 chars) and
-    must not be a generic filler such as ``"a"``/``"the"``/``"your"`` — so a
-    prompt like ``"You are a helpful assistant"`` yields ``None`` rather than
-    ``"a"``.
+    must not be a generic filler such as ``"a"``/``"the"``/``"your"`` or a
+    common role word such as ``"helpful"`` — so a prompt like ``"You are a
+    helpful assistant"`` yields ``None`` rather than ``"a"``.
     """
-    if not isinstance(prompt, list):
-        return None
-    for message in prompt:
-        if not isinstance(message, dict):
-            continue
-        if message.get("role") not in ("system", "developer"):
-            continue
-        text = _message_text(message.get("content"))
-        if text is None:
-            continue
-        match = _YOU_ARE_RE.match(text)
-        if match is None:
-            continue
-        name = match.group("name").strip("\"'`*.,;:!?()[]{}<>")
-        if not name or len(name) > 32:
-            continue
-        if name.lower() in _GENERIC_AGENT_WORDS:
-            continue
-        if not _AGENT_NAME_RE.match(name):
-            continue
-        return name
+    if isinstance(prompt, list):
+        for message in prompt:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") not in ("system", "developer"):
+                continue
+            name = _agent_name_from_text(_message_text(message.get("content")))
+            if name is not None:
+                return name
+    if system is not None:
+        return _agent_name_from_text(_message_text(system))
     return None
 
 

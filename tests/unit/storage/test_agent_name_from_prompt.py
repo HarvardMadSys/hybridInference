@@ -92,3 +92,40 @@ def test_uses_first_system_message_with_opener() -> None:
 def test_overlong_token_rejected() -> None:
     long_name = "X" * 40
     assert agent_name_from_prompt([{"role": "system", "content": f"You are {long_name}"}]) is None
+
+
+def test_adjective_only_prompt_without_article_rejected() -> None:
+    # No determiner, so the token after "You are" is an adjective, not a name.
+    assert (
+        agent_name_from_prompt([{"role": "system", "content": "You are helpful and concise."}])
+        is None
+    )
+    assert (
+        agent_name_from_prompt([{"role": "system", "content": "You are concise and helpful."}])
+        is None
+    )
+
+
+def test_anthropic_top_level_system_string() -> None:
+    # /v1/messages carries the system prompt outside the messages list.
+    messages = [{"role": "user", "content": "hi"}]
+    assert agent_name_from_prompt(messages, system="You are Claude Code, a CLI.") == "Claude"
+
+
+def test_anthropic_top_level_system_blocks() -> None:
+    system = [{"type": "text", "text": "You are Cline, a software engineer."}]
+    assert agent_name_from_prompt([{"role": "user", "content": "hi"}], system=system) == "Cline"
+
+
+def test_messages_take_precedence_over_system_field() -> None:
+    messages = [{"role": "system", "content": "You are Aider, a pair programmer."}]
+    assert agent_name_from_prompt(messages, system="You are Cline.") == "Aider"
+
+
+def test_generic_system_field_rejected() -> None:
+    assert (
+        agent_name_from_prompt(
+            [{"role": "user", "content": "hi"}], system="You are a helpful assistant."
+        )
+        is None
+    )

@@ -253,8 +253,12 @@ class PostgresLogStore(LogStore):
         # Code, ..."). Stored in metadata so the admin list query can label the
         # client by its declared name, falling back to User-Agent parsing when
         # absent. Derived from the original inbound prompt, like conversation
-        # shape, so it is recorded independent of full-content storage.
-        agent = agent_name_from_prompt(prompt)
+        # shape, so it is recorded independent of full-content storage. The
+        # Anthropic /v1/messages surface carries the system prompt as a
+        # top-level ``system`` field (outside ``messages``), preserved in
+        # request_payload — pass it so that surface is covered too.
+        system_field = request_payload.get("system") if isinstance(request_payload, dict) else None
+        agent = agent_name_from_prompt(prompt, system=system_field)
         if agent is not None:
             sanitized_metadata = {**(sanitized_metadata or {}), "agent": agent}
 
