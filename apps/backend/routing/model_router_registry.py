@@ -161,6 +161,16 @@ class ModelRouterRegistry:
             if target == canonical_model_id:
                 self._cache.pop(alias, None)
 
+    def clear_router_override(self, model_id: str) -> None:
+        """Remove a runtime router strategy override and clear cached routers."""
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        self._router_overrides.pop(canonical_model_id, None)
+        self._cache.pop(canonical_model_id, None)
+        self._cache.pop(model_id, None)
+        for alias, target in self._alias_to_model.items():
+            if target == canonical_model_id:
+                self._cache.pop(alias, None)
+
     def get_router_override(self, model_id: str) -> str | None:
         """Return the runtime router override, if present."""
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
