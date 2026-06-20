@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import json
 import math
 import os
 import re
@@ -19,7 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from routing.routers import ManagedRouter, _get_endpoint_id
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.adapters import ModelConfig, dynamic_keys
+from serving.config.settings import VALID_ROLES
 from serving.schemas_admin import (
+    CreateProviderRouteModelRequest,
     CreateProviderRouteRequest,
     ListAllProviderRoutesResponse,
     ListOpenRouterProviderOptionsResponse,
@@ -46,7 +49,9 @@ OPENROUTER_ENDPOINT_DISCOVERY_CACHE_TTL_SEC = 300.0
 OPENROUTER_API_BASE_URL = "https://openrouter.ai/api/v1"
 BASELINE_ENTRIES_ATTR = "_provider_route_baseline_entries"
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
+MODEL_REQUIRED_ROLE_SETTING_PREFIX = "model_required_role:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
+DEFAULT_RUNTIME_MODEL_REQUIRED_ROLE = "admin"
 OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 OPENROUTER_MODEL_ID_RE = re.compile(
     r"^[A-Za-z0-9_.:-]*[A-Za-z0-9][A-Za-z0-9_.:-]*/"
@@ -238,6 +243,17 @@ def _model_id_from_strategy_setting_key(key: str) -> str | None:
     return model_id or None
 
 
+def _model_required_role_setting_key(model_id: str) -> str:
+    return f"{MODEL_REQUIRED_ROLE_SETTING_PREFIX}{model_id}"
+
+
+def _model_id_from_required_role_setting_key(key: str) -> str | None:
+    if not key.startswith(MODEL_REQUIRED_ROLE_SETTING_PREFIX):
+        return None
+    model_id = key[len(MODEL_REQUIRED_ROLE_SETTING_PREFIX) :]
+    return model_id or None
+
+
 def _validate_model_router_strategy(services, model_id: str, strategy: str) -> tuple[str, Any]:
     if strategy not in MODEL_ROUTER_STRATEGIES:
         raise HTTPException(status_code=422, detail="strategy must be fixed or routewise")
@@ -330,6 +346,52 @@ async def _apply_model_router_strategy(
         raise
 
 
+async def _discard_model_router_strategy_override(services, model_id: str) -> None:
+    """Best-effort cleanup for a runtime model strategy override."""
+    registry = getattr(services, "model_router_registry", None)
+    if registry is None:
+        return
+
+    router_obj = None
+    try:
+        router_obj = registry.get_router(model_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to load router while rolling back strategy override for model=%s: %s",
+            model_id,
+            exc,
+        )
+
+    clear_override = getattr(registry, "clear_router_override", None)
+    if callable(clear_override):
+        clear_override(model_id)
+    else:
+        overrides = getattr(registry, "_router_overrides", None)
+        if isinstance(overrides, dict):
+            overrides.pop(model_id, None)
+        cache = getattr(registry, "_cache", None)
+        if isinstance(cache, dict):
+            cache.pop(model_id, None)
+
+    managed_routers = getattr(services, "managed_routers", None)
+    if (
+        managed_routers is not None
+        and isinstance(router_obj, ManagedRouter)
+        and id(router_obj) in _managed_router_ids(services)
+    ):
+        try:
+            await router_obj.stop()
+        except Exception as exc:
+            logger.warning(
+                "Failed to stop managed router while rolling back model=%s: %s",
+                model_id,
+                exc,
+            )
+        managed_routers[:] = [
+            existing for existing in managed_routers if id(existing) != id(router_obj)
+        ]
+
+
 def _is_canonical_model(model_id: str, route) -> bool:
     return bool(route.adapters) and route.adapters[0][0].config.id == model_id
 
@@ -382,6 +444,19 @@ def _validate_canonical_route(services, model_id: str):
     if route is None or not _is_canonical_model(model_id, route):
         raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
     return route
+
+
+def _model_exists(services, model_id: str) -> bool:
+    return services.router.routes.get(model_id) is not None
+
+
+def _validate_new_model_id(services, model_id: str) -> str:
+    cleaned = model_id.strip()
+    if not cleaned:
+        raise HTTPException(status_code=422, detail="model_id must not be blank")
+    if _model_exists(services, cleaned):
+        raise HTTPException(status_code=409, detail=f"Model already exists: {cleaned}")
+    return cleaned
 
 
 def _split_model_route_path(services, model_route_path: str) -> tuple[str, str, Any]:
@@ -978,6 +1053,38 @@ def _validate_positive_weight(weight: float) -> float:
     return value
 
 
+def _normalize_runtime_model_pricing(raw: Any) -> dict[str, str]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError("runtime model pricing must be a JSON object") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("runtime model pricing is required")
+
+    required_keys = ("prompt", "completion")
+    missing = [key for key in required_keys if key not in raw]
+    if missing:
+        raise ValueError(f"runtime model pricing missing: {', '.join(missing)}")
+
+    pricing: dict[str, str] = {}
+    for key, value in raw.items():
+        key_text = str(key).strip()
+        value_text = str(value).strip()
+        if not key_text:
+            raise ValueError("runtime model pricing keys must not be blank")
+        try:
+            parsed = float(value_text)
+        except ValueError as exc:
+            raise ValueError(f"runtime model pricing.{key_text} must be numeric") from exc
+        if not math.isfinite(parsed) or parsed < 0:
+            raise ValueError(
+                f"runtime model pricing.{key_text} must be a non-negative finite number"
+            )
+        pricing[key_text] = value_text
+    return pricing
+
+
 def _validate_create_route_type_for_provider(route_type: str, upstream_provider: str) -> None:
     target = _target_for_provider(upstream_provider)
     provider = _primary_provider_for_target(target)
@@ -1109,6 +1216,122 @@ async def _prepare_route_candidate(
     adapter = _make_adapter(target.kind, cfg)
     return PreparedRouteCandidate(
         route=route,
+        route_id=candidate_route_id,
+        adapter=adapter,
+        endpoint_id=_get_endpoint_id(adapter),
+        upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
+        key_provider=target.key_provider,
+        base_url=cleaned_base_url,
+        api_key_id=api_key_id,
+        provider_model_id=provider_model_id,
+        route_type=route_type,
+        quota_limit=_quota_limit_for_adapter(adapter),
+        concurrency_limit=_concurrency_limit_for_adapter(adapter),
+        weight=raw_weight,
+    )
+
+
+async def _prepare_model_route_candidate(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    route_type: str,
+    upstream_provider: str,
+    openrouter_sort: str | None,
+    base_url: str,
+    api_key_id: str | None,
+    provider_model_id: str,
+    quota_limit: int | None,
+    concurrency_limit: int | None,
+    weight: float,
+    pricing: dict[str, str] | str | None,
+    route_id: str | None = None,
+) -> PreparedRouteCandidate:
+    model_id = _validate_new_model_id(services, model_id)
+    if route_type not in {"quota", "concurrency", "on_demand"}:
+        raise HTTPException(status_code=422, detail="unknown route_type")
+    if route_type == "quota" and quota_limit is None:
+        raise HTTPException(status_code=422, detail="quota_limit is required for quota routes")
+    if route_type != "quota" and quota_limit is not None:
+        raise HTTPException(status_code=422, detail="quota_limit is only valid for quota routes")
+    if route_type == "concurrency" and concurrency_limit is None:
+        raise HTTPException(
+            status_code=422,
+            detail="concurrency_limit is required for concurrency routes",
+        )
+    if route_type != "concurrency" and concurrency_limit is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="concurrency_limit is only valid for concurrency routes",
+        )
+
+    target = _target_for_provider(upstream_provider)
+    _validate_create_route_type_for_provider(route_type, upstream_provider)
+    openrouter_sort = _openrouter_sort_from_request(
+        _primary_provider_for_target(target),
+        openrouter_sort,
+    )
+    cleaned_base_url = await _validate_base_url(base_url)
+    provider_model_id = provider_model_id.strip()
+    if not provider_model_id:
+        raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
+    raw_weight = _validate_positive_weight(weight)
+    normalized_pricing = _normalize_runtime_model_pricing(pricing)
+
+    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
+    api_key, api_keys = await _resolve_key_material(
+        op_store,
+        key_provider=target.key_provider,
+        api_key_id=api_key_id,
+    )
+
+    cfg: dict[str, Any] = {
+        "id": model_id,
+        "name": model_id,
+        "provider": provider_for_cfg,
+        "base_url": cleaned_base_url,
+        "api_key": api_key,
+        "api_keys": api_keys,
+        "provider_model_id": provider_model_id,
+        "openrouter_sort": openrouter_sort,
+        "endpoint_id": candidate_route_id,
+        "provider_type": route_type,
+        "quota_pool": None,
+        "quota_source": None,
+        "quota": None,
+        "concurrency_pool": None,
+        "concurrency": None,
+        "pricing": normalized_pricing,
+        "route_metadata": {
+            "route_id": candidate_route_id,
+            "route_provider": upstream_provider,
+            "upstream_provider": upstream_provider,
+            "provider_type": route_type,
+            "openrouter_sort": openrouter_sort,
+            "api_key_id": api_key_id,
+            "runtime_candidate": True,
+        },
+    }
+    if route_type == "quota":
+        quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
+        cfg["quota_pool"] = quota_pool
+        cfg["quota_source"] = {
+            "provider": "local",
+            "usage_label": f"routewise:{quota_pool}",
+            "unit": "requests",
+        }
+        cfg["quota"] = {"limit": quota_limit}
+        cfg["route_metadata"]["local_quota_fallback"] = True
+    elif route_type == "concurrency":
+        cfg["concurrency_pool"] = _runtime_concurrency_pool(model_id, candidate_route_id)
+        cfg["concurrency"] = {"limit": concurrency_limit}
+
+    adapter = _make_adapter(target.kind, cfg)
+    return PreparedRouteCandidate(
+        route=None,
         route_id=candidate_route_id,
         adapter=adapter,
         endpoint_id=_get_endpoint_id(adapter),
@@ -1320,6 +1543,62 @@ def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> Non
     _rebuild_routewise_routers(services)
 
 
+def _mutate_router_routes(services, mutate):
+    """Run *mutate* under the router lock so concurrent readers never see a torn dict.
+
+    Sibling helpers (``_install_route_candidate``/``_install_route_update``) guard
+    their ``routes``/``adapters`` mutations with ``services.router._lock``; runtime
+    model install and its rollback must use the same guard or a concurrent request
+    iterating ``services.router.routes`` can hit
+    ``RuntimeError: dictionary changed size during iteration``.
+    """
+    lock = getattr(services.router, "_lock", None)
+    if lock is not None:
+        with lock:
+            return mutate()
+    return mutate()
+
+
+def _install_provider_route_model(
+    services,
+    candidate: PreparedRouteCandidate,
+    *,
+    required_role: str = DEFAULT_RUNTIME_MODEL_REQUIRED_ROLE,
+) -> None:
+    model_id = candidate.adapter.config.id
+    if _model_exists(services, model_id):
+        raise HTTPException(status_code=409, detail=f"Model already exists: {model_id}")
+
+    registered = False
+    try:
+        _mutate_router_routes(
+            services,
+            lambda: services.router.register_route(
+                model_id,
+                [(candidate.adapter, candidate.weight)],
+                required_role=required_role,
+            ),
+        )
+        registered = True
+        route = services.router.routes[model_id]
+        setattr(route, BASELINE_ENTRIES_ATTR, [])
+        candidate.route = route
+
+        dynamic_keys.register_known_provider(candidate.key_provider)
+        if getattr(candidate.adapter, "_key_pool", None) is not None:
+            dynamic_keys.register_adapter_for_provider(
+                candidate.key_provider,
+                candidate.adapter,
+                allow_db_key_injection=candidate.api_key_id is None,
+            )
+
+        _rebuild_routewise_routers(services)
+    except Exception:
+        if registered:
+            _discard_provider_route_model_install(services, candidate)
+        raise
+
+
 def _install_route_candidate_delete(services, route, route_id: str) -> tuple[object, float, str]:
     current_entries = _raw_route_entries(route)
     current_index = _route_index_for_id(current_entries, route_id)
@@ -1418,6 +1697,39 @@ async def _prepare_candidate_from_payload(
     )
 
 
+async def _prepare_model_candidate_from_payload(
+    services,
+    op_store,
+    *,
+    payload: CreateProviderRouteModelRequest,
+    route_id: str | None = None,
+) -> PreparedRouteCandidate:
+    upstream_provider = _target_provider_from_request(
+        payload.upstream_provider,
+        payload.openrouter_provider,
+    )
+    openrouter_sort = _openrouter_sort_from_request(
+        payload.upstream_provider,
+        payload.openrouter_sort,
+    )
+    return await _prepare_model_route_candidate(
+        services,
+        op_store,
+        model_id=payload.model_id,
+        route_type=payload.route_type,
+        upstream_provider=upstream_provider,
+        openrouter_sort=openrouter_sort,
+        base_url=payload.base_url,
+        api_key_id=payload.api_key_id,
+        provider_model_id=payload.provider_model_id,
+        quota_limit=payload.quota_limit,
+        concurrency_limit=payload.concurrency_limit,
+        weight=payload.weight,
+        pricing=payload.pricing,
+        route_id=route_id,
+    )
+
+
 async def _prepare_update_context_from_payload(
     services,
     op_store,
@@ -1489,6 +1801,149 @@ def _rebuild_routewise_routers(services) -> None:
                     rebuild()
             else:
                 rebuild()
+
+
+def _discard_provider_route_model_install(services, candidate: PreparedRouteCandidate) -> None:
+    """Best-effort cleanup for a runtime model installed only in memory."""
+    model_id = candidate.adapter.config.id
+    if getattr(candidate.adapter, "_key_pool", None) is not None:
+        unregister = getattr(dynamic_keys, "unregister_adapter_for_provider", None)
+        if unregister is not None:
+            unregister(candidate.key_provider, candidate.adapter)
+
+    removed_route = _mutate_router_routes(
+        services,
+        lambda: services.router.routes.pop(model_id, None),
+    )
+    if removed_route is not None and candidate.route is removed_route:
+        candidate.route = None
+
+    try:
+        _rebuild_routewise_routers(services)
+    except Exception as exc:
+        logger.warning(
+            "Failed to rebuild routewise routers while rolling back runtime model=%s: %s",
+            model_id,
+            exc,
+        )
+
+
+def _clear_weight_override_snapshot(services, model_id: str, endpoint_id: str) -> None:
+    resolver = getattr(services, "weight_override_resolver", None)
+    if resolver is not None:
+        clear_override = getattr(resolver, "clear_override", None)
+        if callable(clear_override):
+            clear_override(model_id, endpoint_id)
+
+
+async def _delete_weight_override_for_route(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    endpoint_id: str,
+) -> None:
+    try:
+        await op_store.delete_weight_override(model_id, endpoint_id)
+        _clear_weight_override_snapshot(services, model_id, endpoint_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete weight override while removing runtime route "
+            "model=%s endpoint_id=%s: %s",
+            model_id,
+            endpoint_id,
+            exc,
+        )
+
+
+async def _delete_weight_overrides_for_model(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    fallback_endpoint_id: str,
+) -> None:
+    try:
+        rows = await op_store.list_weight_overrides_for_model(model_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to list weight overrides while removing runtime model=%s: %s",
+            model_id,
+            exc,
+        )
+        rows = [{"endpoint_id": fallback_endpoint_id}]
+
+    endpoint_ids = {str(row["endpoint_id"]) for row in rows if row.get("endpoint_id") is not None}
+    endpoint_ids.add(fallback_endpoint_id)
+    for endpoint_id in endpoint_ids:
+        await _delete_weight_override_for_route(
+            services,
+            op_store,
+            model_id=model_id,
+            endpoint_id=endpoint_id,
+        )
+
+
+async def _teardown_runtime_model(
+    services,
+    op_store,
+    *,
+    model_id: str,
+    route,
+    route_id: str,
+) -> tuple[object, float, str]:
+    """Remove a runtime-created model whose only route is being deleted.
+
+    Deleting the last route of a runtime model removes the model itself: drop the
+    in-memory route, clear any runtime strategy override/managed router, and delete
+    persisted runtime settings/visibility/weight overrides so the model is not
+    resurrected and does not inherit stale access or routing policy on restart.
+    """
+    entries = _raw_route_entries(route)
+    adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+
+    # Clear the strategy override/managed router while the route still resolves.
+    await _discard_model_router_strategy_override(services, model_id)
+    _mutate_router_routes(services, lambda: services.router.routes.pop(model_id, None))
+    _rebuild_routewise_routers(services)
+
+    for setting_key in (
+        _model_required_role_setting_key(model_id),
+        _model_strategy_setting_key(model_id),
+    ):
+        try:
+            await op_store.delete_setting(setting_key)
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete setting %s while removing runtime model=%s: %s",
+                setting_key,
+                model_id,
+                exc,
+            )
+
+    try:
+        await op_store.delete_model_visibility_override(model_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete visibility override while removing runtime model=%s: %s",
+            model_id,
+            exc,
+        )
+
+    resolver = getattr(services, "model_visibility_resolver", None)
+    if resolver is not None:
+        invalidate = getattr(resolver, "invalidate_model", None)
+        if callable(invalidate):
+            invalidate(model_id)
+
+    await _delete_weight_overrides_for_model(
+        services,
+        op_store,
+        model_id=model_id,
+        fallback_endpoint_id=endpoint_id,
+    )
+
+    return adapter, float(raw_weight), endpoint_id
 
 
 def _effective_weight(services, model_id: str, raw_weight: float, endpoint_id: str) -> float:
@@ -1761,6 +2216,146 @@ async def update_provider_route_strategy(
     )
 
 
+@router.post("/routing/provider-route-models", response_model=ProviderRouteItem)
+async def create_provider_route_model(
+    payload: CreateProviderRouteModelRequest,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Create a DB-backed runtime model with its first provider route."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    if payload.strategy != "fixed" and getattr(services, "model_router_registry", None) is None:
+        raise HTTPException(status_code=500, detail="Model router registry not configured")
+
+    candidate = await _prepare_model_candidate_from_payload(
+        services,
+        op_store,
+        payload=payload,
+    )
+    await _verify_provider_route(candidate)
+
+    model_id = candidate.adapter.config.id
+    installed = False
+    persisted_candidate = False
+    strategy_applied = False
+    try:
+        _install_provider_route_model(
+            services,
+            candidate,
+            required_role=payload.required_role,
+        )
+        installed = True
+        if getattr(services, "model_router_registry", None) is not None:
+            await _apply_model_router_strategy(services, model_id, payload.strategy)
+            strategy_applied = True
+        await op_store.upsert_provider_route_candidate(
+            model_id,
+            candidate.route_id,
+            candidate.route_type,
+            candidate.upstream_provider,
+            candidate.openrouter_sort,
+            candidate.base_url,
+            candidate.api_key_id,
+            candidate.provider_model_id,
+            candidate.quota_limit,
+            candidate.concurrency_limit,
+            candidate.weight,
+            candidate.adapter.config.pricing,
+            admin_id,
+        )
+        persisted_candidate = True
+        await op_store.set_setting(
+            _model_required_role_setting_key(model_id),
+            payload.required_role,
+            "string",
+            admin_id,
+        )
+        if getattr(services, "model_router_registry", None) is not None:
+            await op_store.set_setting(
+                _model_strategy_setting_key(model_id),
+                payload.strategy,
+                "string",
+                admin_id,
+            )
+    except Exception:
+        if persisted_candidate:
+            try:
+                await op_store.delete_provider_route_candidate(model_id, candidate.route_id)
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "Failed to delete provider route candidate while rolling back "
+                    "runtime model=%s route_id=%s: %s",
+                    model_id,
+                    candidate.route_id,
+                    cleanup_exc,
+                )
+        if strategy_applied:
+            await _discard_model_router_strategy_override(services, model_id)
+        if installed:
+            _discard_provider_route_model_install(services, candidate)
+        raise
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "routing.provider_routes.model.create",
+        None,
+        {
+            "model_id": model_id,
+            "strategy": payload.strategy,
+            "required_role": payload.required_role,
+            "route_id": candidate.route_id,
+            "route_type": candidate.route_type,
+            "upstream_provider": candidate.upstream_provider,
+            "openrouter_sort": candidate.openrouter_sort,
+            "endpoint_id": candidate.endpoint_id,
+            "api_key_id": candidate.api_key_id,
+            "quota_limit": candidate.quota_limit,
+            "concurrency_limit": candidate.concurrency_limit,
+            "weight": candidate.weight,
+        },
+    )
+
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=candidate.route_id,
+        adapter=candidate.adapter,
+        yaml_weight=candidate.weight,
+        endpoint_id=candidate.endpoint_id,
+        override_row=None,
+    )
+
+
+@router.post(
+    "/routing/provider-route-model-verifications",
+    response_model=VerifyProviderRouteResponse,
+)
+async def verify_provider_route_model(
+    payload: CreateProviderRouteModelRequest,
+    _admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> VerifyProviderRouteResponse:
+    """Verify a new runtime model route without registering or persisting it."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    if payload.strategy != "fixed" and getattr(services, "model_router_registry", None) is None:
+        raise HTTPException(status_code=500, detail="Model router registry not configured")
+
+    candidate = await _prepare_model_candidate_from_payload(
+        services,
+        op_store,
+        payload=payload,
+    )
+    await _verify_provider_route(candidate)
+    return VerifyProviderRouteResponse(ok=True)
+
+
 @router.post("/routing/provider-route-candidates/{model_id:path}", response_model=ProviderRouteItem)
 async def create_provider_route_candidate(
     model_id: str,
@@ -1792,6 +2387,7 @@ async def create_provider_route_candidate(
         candidate.quota_limit,
         candidate.concurrency_limit,
         candidate.weight,
+        None,
         admin_id,
     )
     _install_route_candidate(services, candidate)
@@ -2027,19 +2623,43 @@ async def delete_provider_route_candidate(
             status_code=400,
             detail="Only runtime-added provider routes can be deleted",
         )
+    # A runtime candidate that is the model's only route means the whole model was
+    # created at runtime (YAML models always keep >=1 non-deletable base route).
+    # Deleting it removes the model rather than leaving the DB row deleted while the
+    # in-memory model keeps serving until the next restart.
+    deleting_model = len(current_entries) == 1
+
     deleted = await op_store.delete_provider_route_candidate_with_config(model_id, route_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Provider route candidate not found")
-    deleted_adapter, _raw_weight, deleted_endpoint_id = _install_route_candidate_delete(
-        services,
-        route,
-        route_id,
-    )
+
+    if deleting_model:
+        deleted_adapter, _raw_weight, deleted_endpoint_id = await _teardown_runtime_model(
+            services,
+            op_store,
+            model_id=model_id,
+            route=route,
+            route_id=route_id,
+        )
+    else:
+        deleted_adapter, _raw_weight, deleted_endpoint_id = _install_route_candidate_delete(
+            services,
+            route,
+            route_id,
+        )
+        await _delete_weight_override_for_route(
+            services,
+            op_store,
+            model_id=model_id,
+            endpoint_id=deleted_endpoint_id,
+        )
 
     await log_admin_action(
         op_store,
         admin_id,
-        "routing.provider_routes.candidate.delete",
+        "routing.provider_routes.model.delete"
+        if deleting_model
+        else "routing.provider_routes.candidate.delete",
         None,
         {
             "model_id": model_id,
@@ -2048,6 +2668,15 @@ async def delete_provider_route_candidate(
             "endpoint_id": deleted_endpoint_id,
         },
     )
+
+    if deleting_model:
+        return ListProviderRoutesResponse(
+            model_id=model_id,
+            strategy="fixed",
+            provider_options=_provider_options(),
+            openrouter_provider_options=_openrouter_provider_options(),
+            routes=[],
+        )
 
     override_rows = await op_store.list_provider_route_configs_for_model(model_id)
     return ListProviderRoutesResponse(
@@ -2068,26 +2697,98 @@ async def delete_provider_route_candidate(
 async def apply_persisted_provider_route_candidates(services, op_store) -> None:
     """Apply persisted runtime provider route candidates to the in-process router."""
     rows = await op_store.list_all_provider_route_candidates()
+    strategy_overrides: dict[str, str] = {}
+    role_overrides: dict[str, str] = {}
+    try:
+        for row in await op_store.list_settings():
+            key = str(row["key"])
+            value = str(row["value"])
+            model_id = _model_id_from_strategy_setting_key(key)
+            if model_id is not None and value in MODEL_ROUTER_STRATEGIES:
+                strategy_overrides[model_id] = value
+                continue
+            model_id = _model_id_from_required_role_setting_key(key)
+            if model_id is not None and value in VALID_ROLES:
+                role_overrides[model_id] = value
+                continue
+            if model_id is not None:
+                logger.warning(
+                    "Ignoring invalid runtime model required_role for model=%s role=%s",
+                    model_id,
+                    value,
+                )
+    except Exception as exc:
+        logger.warning("Failed to load runtime model settings for route restore: %s", exc)
+
     for row in rows:
         model_id = str(row["model_id"])
         route_id = str(row["route_id"])
         try:
-            candidate = await _prepare_route_candidate(
-                services,
-                op_store,
-                model_id=model_id,
-                route_id=route_id,
-                route_type=str(row["route_type"]),
-                upstream_provider=str(row["provider"]),
-                openrouter_sort=row.get("openrouter_sort"),
-                base_url=str(row["base_url"]),
-                api_key_id=row.get("api_key_id"),
-                provider_model_id=str(row["provider_model_id"]),
-                quota_limit=row.get("quota_limit"),
-                concurrency_limit=row.get("concurrency_limit"),
-                weight=float(row["weight"]),
-            )
-            _install_route_candidate(services, candidate)
+            if services.router.routes.get(model_id) is None:
+                # Only resurrect models that were created through the runtime
+                # create-model endpoint, which always persists a
+                # ``model_required_role:<id>`` marker. Without that marker this
+                # row is a leftover candidate for a model that no longer exists
+                # in the router (e.g. a YAML model that was removed or renamed);
+                # registering it would silently bring the retired model back.
+                if model_id not in role_overrides:
+                    logger.warning(
+                        "Skipping provider route candidate for unknown model=%s "
+                        "route_id=%s (no runtime model marker; model likely "
+                        "removed from config)",
+                        model_id,
+                        route_id,
+                    )
+                    continue
+                candidate = await _prepare_model_route_candidate(
+                    services,
+                    op_store,
+                    model_id=model_id,
+                    route_id=route_id,
+                    route_type=str(row["route_type"]),
+                    upstream_provider=str(row["provider"]),
+                    openrouter_sort=row.get("openrouter_sort"),
+                    base_url=str(row["base_url"]),
+                    api_key_id=row.get("api_key_id"),
+                    provider_model_id=str(row["provider_model_id"]),
+                    quota_limit=row.get("quota_limit"),
+                    concurrency_limit=row.get("concurrency_limit"),
+                    weight=float(row["weight"]),
+                    pricing=row.get("pricing"),
+                )
+                _install_provider_route_model(
+                    services,
+                    candidate,
+                    required_role=role_overrides.get(
+                        model_id,
+                        DEFAULT_RUNTIME_MODEL_REQUIRED_ROLE,
+                    ),
+                )
+                strategy = strategy_overrides.get(model_id)
+                if strategy is not None:
+                    await _apply_model_router_strategy(
+                        services,
+                        model_id,
+                        strategy,
+                        start_managed=False,
+                    )
+            else:
+                candidate = await _prepare_route_candidate(
+                    services,
+                    op_store,
+                    model_id=model_id,
+                    route_id=route_id,
+                    route_type=str(row["route_type"]),
+                    upstream_provider=str(row["provider"]),
+                    openrouter_sort=row.get("openrouter_sort"),
+                    base_url=str(row["base_url"]),
+                    api_key_id=row.get("api_key_id"),
+                    provider_model_id=str(row["provider_model_id"]),
+                    quota_limit=row.get("quota_limit"),
+                    concurrency_limit=row.get("concurrency_limit"),
+                    weight=float(row["weight"]),
+                )
+                _install_route_candidate(services, candidate)
         except Exception as exc:
             logger.warning(
                 "Failed to apply provider route candidate for model=%s route_id=%s: %s",

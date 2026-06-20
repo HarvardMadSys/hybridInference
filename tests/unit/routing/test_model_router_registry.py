@@ -146,6 +146,26 @@ class TestModelRouterRegistry:
         assert reg.get_router_name("glm-4.7") == "routewise"
         assert reg.get_configured_router_name("glm-4.7") == "fixed"
 
+    def test_clear_router_override_restores_configured_strategy(self):
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+
+        reg = ModelRouterRegistry(
+            models_config={"glm-4.7": {"router": "fixed"}},
+            default_router_name="fixed",
+        )
+        fixed_router = FixedRouter()
+        reg.bind_fixed_router(fixed_router)
+
+        reg.set_router_override("glm-4.7", "routewise")
+        routewise_router = reg.get_router("glm-4.7")
+        reg.clear_router_override("glm-4.7")
+
+        assert reg.get_router_override("glm-4.7") is None
+        assert reg.get_router_name("glm-4.7") == "fixed"
+        assert reg.get_router("glm-4.7") is fixed_router
+        assert reg.get_router("glm-4.7") is not routewise_router
+
     def test_get_router_unknown_strategy_raises(self):
         from routing.model_router_registry import ModelRouterRegistry
 

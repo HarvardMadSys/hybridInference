@@ -706,6 +706,10 @@ class OperationalStore(ABC):
         """Upsert a site_settings row."""
 
     @abstractmethod
+    async def delete_setting(self, key: str) -> bool:
+        """Delete a site_settings row by key. Returns True when removed."""
+
+    @abstractmethod
     async def list_settings(self) -> list[Row]:
         """Return all site_settings rows."""
 
@@ -821,6 +825,7 @@ class OperationalStore(ABC):
         quota_limit: int | None,
         concurrency_limit: int | None,
         weight: float,
+        pricing: dict[str, str] | None,
         updated_by: str | None,
     ) -> None:
         """Upsert a DB-backed runtime provider route candidate."""

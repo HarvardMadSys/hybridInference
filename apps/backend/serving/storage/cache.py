@@ -663,6 +663,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         await self._store.set_setting(key, value, value_type, updated_by)
 
+    async def delete_setting(self, key: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_setting(key)
+
     async def list_settings(self) -> list[Row]:
         """Delegate to wrapped store."""
         return await self._store.list_settings()
@@ -788,6 +792,7 @@ class CachedOperationalStore(OperationalStore):
         quota_limit: int | None,
         concurrency_limit: int | None,
         weight: float,
+        pricing: dict[str, str] | None,
         updated_by: str | None,
     ) -> None:
         """Delegate to wrapped store."""
@@ -803,6 +808,7 @@ class CachedOperationalStore(OperationalStore):
             quota_limit,
             concurrency_limit,
             weight,
+            pricing,
             updated_by,
         )
 

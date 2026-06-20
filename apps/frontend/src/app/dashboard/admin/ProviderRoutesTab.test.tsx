@@ -7,6 +7,7 @@ import { ProviderRoutesTab } from './ProviderRoutesTab';
 
 vi.mock('@/lib/api/admin', () => ({
   clearRouteWeight: vi.fn(),
+  createProviderRouteModel: vi.fn(),
   createProviderRouteCandidate: vi.fn(),
   deleteProviderRoute: vi.fn(),
   deleteProviderRouteCandidate: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('@/lib/api/admin', () => ({
   updateProviderRoute: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
   verifyProviderRoute: vi.fn(),
+  verifyProviderRouteModel: vi.fn(),
   verifyProviderRouteCandidate: vi.fn(),
 }));
 
@@ -32,6 +34,7 @@ vi.mock('react-hot-toast', () => ({
 
 import {
   clearRouteWeight,
+  createProviderRouteModel,
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
@@ -45,6 +48,7 @@ import {
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
   verifyProviderRoute,
+  verifyProviderRouteModel,
   verifyProviderRouteCandidate,
 } from '@/lib/api/admin';
 import type { ListProviderApiKeysResponse } from '@/lib/api/admin';
@@ -94,6 +98,11 @@ const discoveredOpenRouterProviderOptions = [
   { provider: 'chutes', label: 'Chutes' },
   { provider: 'parasail', label: 'Parasail' },
 ];
+
+function fillRuntimeModelPricing() {
+  fireEvent.change(screen.getByLabelText('Prompt $/M'), { target: { value: '0.14' } });
+  fireEvent.change(screen.getByLabelText('Completion $/M'), { target: { value: '0.28' } });
+}
 
 const route = {
   model_id: 'minimax-fast',
@@ -147,6 +156,7 @@ describe('ProviderRoutesTab', () => {
     });
     vi.mocked(verifyProviderRoute).mockResolvedValue({ ok: true });
     vi.mocked(verifyProviderRouteCandidate).mockResolvedValue({ ok: true });
+    vi.mocked(verifyProviderRouteModel).mockResolvedValue({ ok: true });
   });
 
   it('renders routewise provider candidates without weight columns', async () => {
@@ -642,6 +652,202 @@ describe('ProviderRoutesTab', () => {
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('creates a runtime model with an initial provider route', async () => {
+    const createdRoute = {
+      ...route,
+      model_id: 'deepseek-v4-flash',
+      strategy: 'fixed',
+      route_id: 'deepseek-v4-flash:openrouter-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: null,
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db' as const,
+      },
+      provider_model_id: 'deepseek/deepseek-v4-flash',
+      endpoint_id: 'deepseek-v4-flash:openrouter-api',
+      source: 'runtime' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+    vi.mocked(createProviderRouteModel).mockResolvedValue(createdRoute);
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fillRuntimeModelPricing();
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteModel).toHaveBeenCalledWith({
+        model_id: 'deepseek-v4-flash',
+        strategy: 'fixed',
+        required_role: 'admin',
+        route_type: 'on_demand',
+        upstream_provider: 'openrouter',
+        openrouter_provider: null,
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'deepseek/deepseek-v4-flash',
+        quota_limit: null,
+        concurrency_limit: null,
+        weight: 1,
+        pricing: {
+          prompt: '0.14',
+          completion: '0.28',
+        },
+      });
+    });
+    expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
+    expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('verifies a runtime model without creating it', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
+      target: { value: 'routewise' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fillRuntimeModelPricing();
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await waitFor(() => {
+      expect(verifyProviderRouteModel).toHaveBeenCalledWith({
+        model_id: 'deepseek-v4-flash',
+        strategy: 'routewise',
+        required_role: 'admin',
+        route_type: 'on_demand',
+        upstream_provider: 'openrouter',
+        openrouter_provider: null,
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: null,
+        provider_model_id: 'deepseek/deepseek-v4-flash',
+        quota_limit: null,
+        concurrency_limit: null,
+        weight: 1,
+        pricing: {
+          prompt: '0.14',
+          completion: '0.28',
+        },
+      });
+    });
+    expect(createProviderRouteModel).not.toHaveBeenCalled();
+    expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
+  });
+
+  it('threads create-model visibility into the payload', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Visibility'), {
+      target: { value: 'free' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fillRuntimeModelPricing();
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await waitFor(() => {
+      expect(verifyProviderRouteModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model_id: 'deepseek-v4-flash',
+          required_role: 'free',
+        }),
+      );
+    });
+  });
+
+  it('does not filter create-model providers by the selected model routes', async () => {
+    const chutesOption = {
+      provider: 'chutes',
+      label: 'Chutes',
+      kind: 'chutes',
+      key_provider: 'chutes',
+      default_base_url: 'https://llm.chutes.ai/v1',
+    };
+    const quotaRoute = {
+      ...route,
+      route_id: 'minimax-fast:chutes-api',
+      route_type: 'quota',
+      provider: 'chutes',
+      upstream_provider: 'chutes',
+      key_provider: 'chutes',
+      base_url: 'https://llm.chutes.ai/v1',
+      provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
+      quota_limit: 5000,
+      endpoint_id: 'minimax-fast:chutes-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: [chutesOption, ...providerOptions],
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, quotaRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
+
+    const providerSelect = screen.getByLabelText('Provider');
+    expect(providerSelect).toHaveValue('chutes');
+    expect(within(providerSelect).getByRole('option', { name: 'Chutes' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Base URL')).toHaveValue('https://llm.chutes.ai/v1');
   });
 
   it('verifies a runtime provider route without adding it', async () => {
