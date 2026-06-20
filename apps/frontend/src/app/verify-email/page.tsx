@@ -3,10 +3,12 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { verifyEmail } from '@/lib/api/auth';
+import toast from 'react-hot-toast';
+import { resendVerification, verifyEmail } from '@/lib/api/auth';
 import { getErrorMessage, APIError } from '@/lib/utils/errors';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { InputField } from '@/components/ui/InputField';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +18,26 @@ function VerifyEmailContent(): JSX.Element {
     'loading',
   );
   const [message, setMessage] = useState('');
+  // A bad/expired verification link carries no email, so collect one here to
+  // request a fresh verification email instead of dead-ending the user.
+  const [resendEmail, setResendEmail] = useState('');
+  const [isResending, setIsResending] = useState(false);
+  const [resendDone, setResendDone] = useState(false);
+
+  const handleResend = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    if (!resendEmail.trim()) return;
+    setIsResending(true);
+    try {
+      await resendVerification(resendEmail.trim());
+      setResendDone(true);
+      toast.success('Verification email sent. Please check your inbox.');
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setIsResending(false);
+    }
+  };
 
   useEffect(() => {
     const token = searchParams.get('token');
@@ -87,6 +109,32 @@ function VerifyEmailContent(): JSX.Element {
                 <Button className="w-full">Go to Login</Button>
               </Link>
             )}
+
+            {status === 'error' &&
+              (resendDone ? (
+                <div className="w-full rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                  A new verification email is on its way to {resendEmail.trim()}. Please check your
+                  inbox (and spam folder), then follow the link to finish verifying.
+                </div>
+              ) : (
+                <form onSubmit={handleResend} className="w-full space-y-3">
+                  <p className="text-sm text-gray-600">
+                    Need a new link? Enter your email and we&apos;ll send a fresh verification
+                    email.
+                  </p>
+                  <InputField
+                    label="Email"
+                    type="email"
+                    autoComplete="email"
+                    value={resendEmail}
+                    onChange={(e) => setResendEmail(e.target.value)}
+                    required
+                  />
+                  <Button type="submit" className="w-full" isLoading={isResending}>
+                    Resend verification email
+                  </Button>
+                </form>
+              ))}
 
             {status === 'error' && (
               <div className="flex items-center gap-4">

@@ -111,3 +111,14 @@ export async function resetPassword(
 
   return jsonOrThrow(resp);
 }
+
+export async function resendVerification(email: string): Promise<{ message: string }> {
+  const resp = await fetch(`${API_BASE}/auth/resend-verification`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+    credentials: 'include',
+  });
+
+  return jsonOrThrow(resp);
+}

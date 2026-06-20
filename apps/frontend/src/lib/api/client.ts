@@ -176,6 +176,14 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
       if (lowerMessage.includes('already registered')) {
         errorCode = 'USER_ALREADY_EXISTS';
       } else if (
+        lowerMessage.includes('not verified') ||
+        lowerMessage.includes('verify your email')
+      ) {
+        // Login raises a plain HTTPException ({ detail: "Email not verified..." }),
+        // not the typed { error: {...} } shape, so match on the message here so the
+        // login page can offer a "resend verification email" action.
+        errorCode = 'EMAIL_NOT_VERIFIED';
+      } else if (
         lowerMessage.includes('reset link has already been used') ||
         (lowerMessage.includes('reset token') && lowerMessage.includes('used'))
       ) {
