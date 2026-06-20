@@ -1803,8 +1803,8 @@ async def _teardown_runtime_model(
 
     Deleting the last route of a runtime model removes the model itself: drop the
     in-memory route, clear any runtime strategy override/managed router, and delete
-    the persisted ``model_required_role``/``model_router_strategy`` settings so the
-    model is not resurrected (and does not emit per-boot warnings) on restart.
+    persisted runtime settings/visibility overrides so the model is not resurrected
+    (and does not inherit stale access policy) on restart.
     """
     entries = _raw_route_entries(route)
     adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
@@ -1827,6 +1827,21 @@ async def _teardown_runtime_model(
                 model_id,
                 exc,
             )
+
+    try:
+        await op_store.delete_model_visibility_override(model_id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to delete visibility override while removing runtime model=%s: %s",
+            model_id,
+            exc,
+        )
+
+    resolver = getattr(services, "model_visibility_resolver", None)
+    if resolver is not None:
+        invalidate = getattr(resolver, "invalidate_model", None)
+        if callable(invalidate):
+            invalidate(model_id)
 
     return adapter, float(raw_weight), endpoint_id
 

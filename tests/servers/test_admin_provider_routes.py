@@ -108,6 +108,7 @@ async def admin_client(monkeypatch):
     op_store.list_settings = AsyncMock(return_value=[])
     op_store.set_setting = AsyncMock()
     op_store.delete_setting = AsyncMock(return_value=True)
+    op_store.delete_model_visibility_override = AsyncMock(return_value=True)
     op_store.upsert_provider_route_config = AsyncMock()
     op_store.delete_provider_route_config = AsyncMock(return_value=True)
     op_store.upsert_provider_route_candidate = AsyncMock()
@@ -219,6 +220,7 @@ async def admin_client(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        client.app = app  # type: ignore[attr-defined]
         yield client, op_store, route_executor, fake_routewise, verify_mock
 
     dynamic_keys.reset()
@@ -1630,6 +1632,8 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
 async def test_delete_last_runtime_route_removes_whole_model(admin_client):
     client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    visibility_resolver = MagicMock()
+    client.app.state.services.model_visibility_resolver = visibility_resolver
 
     create_response = await client.post(
         "/admin/routing/provider-route-models",
@@ -1667,6 +1671,10 @@ async def test_delete_last_runtime_route_removes_whole_model(admin_client):
         ],
         any_order=True,
     )
+    # Its visibility override and resolver cache are also cleared so recreating
+    # the same model cannot inherit stale access policy.
+    op_store.delete_model_visibility_override.assert_awaited_once_with("deepseek-v4-flash")
+    visibility_resolver.invalidate_model.assert_called_once_with("deepseek-v4-flash")
 
 
 @pytest.mark.asyncio
