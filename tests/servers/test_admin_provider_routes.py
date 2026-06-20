@@ -1084,6 +1084,77 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_post_provider_route_candidate_persists_pricing_for_runtime_model(admin_client):
+    client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    create_model = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 1.25,
+            "pricing": RUNTIME_PRICING,
+        },
+        headers=AUTH,
+    )
+    assert create_model.status_code == 200, create_model.text
+    op_store.upsert_provider_route_candidate.reset_mock()
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/deepseek-v4-flash",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_sort": "throughput",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "weight": 0.75,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["route_id"] == "deepseek-v4-flash:openrouter-api"
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "deepseek-v4-flash",
+        "deepseek-v4-flash:openrouter-api",
+        "on_demand",
+        "openrouter",
+        "throughput",
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "deepseek/deepseek-v4-flash",
+        None,
+        None,
+        0.75,
+        RUNTIME_PRICING,
+        "127.0.0.1",
+    )
+    runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[-1][0]
+    assert runtime_adapter.config.pricing == RUNTIME_PRICING
+    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_post_provider_route_model_accepts_explicit_required_role(admin_client):
     client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
@@ -1850,6 +1921,78 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     registry.set_router_override.assert_called_once_with("deepseek-v4-flash", "fixed")
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_apply_persisted_provider_route_candidates_prefers_priced_runtime_seed(
+    admin_client,
+):
+    _client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_all_provider_route_candidates.return_value = [
+        {
+            "model_id": "deepseek-v4-flash",
+            "route_id": "deepseek-v4-flash:a-openrouter-api",
+            "route_type": "on_demand",
+            "provider": "openrouter",
+            "openrouter_sort": "throughput",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 0.75,
+            "pricing": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        },
+        {
+            "model_id": "deepseek-v4-flash",
+            "route_id": "deepseek-v4-flash:z-openrouter[parasail]-api",
+            "route_type": "on_demand",
+            "provider": "openrouter[parasail]",
+            "openrouter_sort": None,
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 1.25,
+            "pricing": RUNTIME_PRICING,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        },
+    ]
+    op_store.list_settings.return_value = [
+        {
+            "key": "model_required_role:deepseek-v4-flash",
+            "value": "internal",
+        }
+    ]
+    registry = MagicMock()
+    registry.cached_routers.return_value = [fake_routewise]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=registry,
+        managed_routers=[],
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    restored_routewise = await apply_persisted_provider_route_candidates(services, op_store)
+
+    restored_entries = route_executor.routes["deepseek-v4-flash"].raw_adapters
+    assert [endpoint_id for _adapter, _weight, endpoint_id in restored_entries] == [
+        "deepseek-v4-flash:z-openrouter[parasail]-api",
+        "deepseek-v4-flash:a-openrouter-api",
+    ]
+    assert all(
+        adapter.config.pricing == RUNTIME_PRICING for adapter, _weight, _id in restored_entries
+    )
+    assert route_executor.routes["deepseek-v4-flash"].required_role == "internal"
+    assert restored_routewise == set()
+    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
 
 
 @pytest.mark.asyncio

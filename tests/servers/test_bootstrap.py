@@ -243,6 +243,90 @@ class TestBootstrapInitialization:
         mock_routewise.start.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_initialize_bootstraps_restored_runtime_routewise_before_start(self, mock_env):
+        """Runtime-restored RouteWise models should replay DB logs before start()."""
+        from routing.routewise.router import RouteWiseRouter as _RWR
+
+        events: list[str] = []
+        runtime_routewise = MagicMock()
+        runtime_routewise.__class__ = _RWR
+        runtime_routewise.start = AsyncMock(side_effect=lambda: events.append("start"))
+
+        registry_instance = MagicMock()
+        registry_instance.bind_fixed_router = MagicMock()
+        registry_instance.get_router = MagicMock(return_value=runtime_routewise)
+        registry_instance.managed_routers.return_value = []
+
+        mock_db_logger = AsyncMock()
+        mock_db_logger.pool = object()
+        pg_store = AsyncMock()
+        cached_store = MagicMock()
+        log_store = MagicMock()
+
+        async def record_routewise_bootstrap(
+            _log_store, routewise_routers, model_ids_by_router, *_
+        ):
+            if routewise_routers:
+                events.append(
+                    "bootstrap:"
+                    + ",".join(sorted(model_ids_by_router.get(id(routewise_routers[0]), set())))
+                )
+
+        async def record_provider_route_config_restore(*_args):
+            events.append("configs")
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=mock_db_logger),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch(
+                "serving.servers.bootstrap.ModelRouterRegistry",
+                return_value=registry_instance,
+            ),
+            patch("serving.servers.bootstrap.PostgresOperationalStore", return_value=pg_store),
+            patch("serving.servers.bootstrap.CachedOperationalStore", return_value=cached_store),
+            patch("serving.servers.bootstrap.PostgresLogStore", return_value=log_store),
+            patch("serving.servers.bootstrap.email_scheduler.start_scheduler"),
+            patch(
+                "serving.servers.bootstrap.email_scheduler.rehydrate_scheduled_broadcasts",
+                new=AsyncMock(),
+            ),
+            patch("serving.servers.bootstrap.email_scheduler.get_scheduler", return_value=None),
+            patch("serving.adapters.dynamic_keys.apply_db_keys_at_boot", new=AsyncMock()),
+            patch(
+                "serving.servers.routers.admin.provider_routes."
+                "apply_persisted_model_router_strategy_overrides",
+                new=AsyncMock(),
+            ),
+            patch(
+                "serving.servers.routers.admin.provider_routes."
+                "apply_persisted_provider_route_candidates",
+                new=AsyncMock(return_value={"runtime-m"}),
+            ),
+            patch(
+                "serving.servers.routers.admin.provider_routes."
+                "apply_persisted_provider_route_configs",
+                new=AsyncMock(side_effect=record_provider_route_config_restore),
+            ),
+            patch(
+                "serving.servers.bootstrap._bootstrap_routewise_from_logs",
+                new=AsyncMock(side_effect=record_routewise_bootstrap),
+            ) as bootstrap_logs,
+        ):
+            services = await bootstrap.initialize()
+
+        assert services.managed_routers == [runtime_routewise]
+        assert events == ["configs", "bootstrap:runtime-m", "start"]
+        assert bootstrap_logs.await_count == 2
+        runtime_call = bootstrap_logs.await_args_list[1]
+        assert runtime_call.args[0] is log_store
+        assert runtime_call.args[1] == [runtime_routewise]
+        assert runtime_call.args[2] == {id(runtime_routewise): {"runtime-m"}}
+
+    @pytest.mark.asyncio
     async def test_routewise_db_bootstrap_replays_recent_logs(self):
         """RouteWise DB bootstrap queries assigned model ids and replays rows."""
         log_store = AsyncMock()
