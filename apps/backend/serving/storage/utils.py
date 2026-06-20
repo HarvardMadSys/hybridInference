@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 
 
@@ -67,6 +68,114 @@ def conversation_shape(
     if num_turns == 0:
         return None, None, None
     return num_turns, num_user_turns, num_tool_calls
+
+
+# Leading "You are <token>" opener, captured from the start of a system prompt.
+_YOU_ARE_RE = re.compile(r"^\s*you\s+are\s+(?P<name>\S+)", re.IGNORECASE)
+# A plausible agent name: starts with a letter, then letters/digits/.-_ only.
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+# Generic fillers that follow "You are" in non-agent prompts (e.g. "You are a
+# helpful assistant"). These are rejected so the column carries real agent
+# identities rather than noise.
+_GENERIC_AGENT_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "my",
+        "your",
+        "our",
+        "his",
+        "her",
+        "its",
+        "their",
+        "this",
+        "that",
+        "one",
+        "no",
+        "not",
+        "only",
+        "just",
+        "also",
+        "now",
+        "here",
+        "currently",
+        "being",
+        "going",
+        "to",
+        "in",
+        "on",
+        "at",
+        "about",
+        "very",
+        "really",
+        "always",
+        "never",
+    }
+)
+
+
+def _message_text(content: Any) -> str | None:
+    """Flatten a message ``content`` field to plain text, or None if empty.
+
+    Handles both the plain-string form and the structured content-block form
+    (OpenAI/Anthropic), concatenating the textual blocks.
+    """
+    if isinstance(content, str):
+        return content or None
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        joined = " ".join(parts).strip()
+        return joined or None
+    return None
+
+
+def agent_name_from_prompt(prompt: list[dict[str, Any]] | str | None) -> str | None:
+    """Extract the calling agent's self-declared name from a system prompt.
+
+    Several coding agents announce themselves in the opening of their system
+    prompt — e.g. ``"You are Claude Code, ..."`` or ``"You are Cline, ..."``.
+    When that pattern is present in a system (or ``developer``) message, the
+    leading token after ``"You are"`` is returned so the admin dashboard can
+    label the client by its declared identity instead of the ``User-Agent``
+    header. Returns ``None`` when no system message carries a recognizable
+    opener, so callers fall back to User-Agent parsing.
+
+    Guardrails: only the first token after ``"You are"`` is taken, it must look
+    like a name (leading letter; letters/digits/``.-_``; at most 32 chars) and
+    must not be a generic filler such as ``"a"``/``"the"``/``"your"`` — so a
+    prompt like ``"You are a helpful assistant"`` yields ``None`` rather than
+    ``"a"``.
+    """
+    if not isinstance(prompt, list):
+        return None
+    for message in prompt:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") not in ("system", "developer"):
+            continue
+        text = _message_text(message.get("content"))
+        if text is None:
+            continue
+        match = _YOU_ARE_RE.match(text)
+        if match is None:
+            continue
+        name = match.group("name").strip("\"'`*.,;:!?()[]{}<>")
+        if not name or len(name) > 32:
+            continue
+        if name.lower() in _GENERIC_AGENT_WORDS:
+            continue
+        if not _AGENT_NAME_RE.match(name):
+            continue
+        return name
+    return None
 
 
 def strip_null_bytes(value: Any) -> Any:

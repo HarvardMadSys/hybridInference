@@ -535,6 +535,11 @@ class AdminRecentRequestItem(BaseModel):
     ip_source: str | None = None
     x_forwarded_for: str | None = None
     user_agent: str | None = None
+    # Calling agent's self-declared identity, parsed from the opening "You are
+    # <Name>" line of the system prompt (e.g. "Claude" from Claude Code). None
+    # when no such opener is present; the dashboard then falls back to deriving
+    # a client label from user_agent.
+    agent: str | None = None
     session_id: str | None = None
     request_surface: str | None = None
     model_id: str

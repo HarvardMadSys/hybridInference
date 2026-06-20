@@ -673,7 +673,9 @@ export function RequestsTab() {
                         </td>
                         <td className="px-3 py-2.5 text-[12px] text-gray-600">
                           {(() => {
-                            const tool = parseClientTool(req.user_agent);
+                            // Prefer the agent's self-declared identity from the
+                            // system prompt; fall back to User-Agent parsing.
+                            const tool = req.agent || parseClientTool(req.user_agent);
                             if (tool) {
                               return (
                                 <span
