@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
 import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
 import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
@@ -165,6 +166,15 @@ export function DashboardView() {
           </div>
         </div>
       )}
+
+      <p className="border-t border-gray-200 pt-6 text-center text-xs text-gray-500">
+        Your requests are logged and analyzed to study how the service is used. Anonymized data
+        derived from them may be open-sourced to support research. See our{' '}
+        <Link href="/terms" className="underline hover:text-gray-700">
+          Terms of Service
+        </Link>
+        .
+      </p>
     </div>
   );
 }
