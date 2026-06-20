@@ -17,13 +17,6 @@ from serving.config.runtime_settings import RuntimeSettings, get_runtime_setting
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user
-from serving.observability.metrics import (
-    API_MODEL_REQUESTS,
-    API_TOKEN_ANOMALIES,
-    API_TOKENS,
-    normalize_model_label,
-    normalize_provider_label,
-)
 from serving.openai_chat_serializer import resolve_mode, sanitize_response
 from serving.schemas import (
     ChatCompletionRequest,
@@ -392,20 +385,13 @@ async def chat_completions(
         body = await request.json()
         payload = ChatCompletionRequest.model_validate(body)
     except Exception as e:
-        # Record 400 error for request parsing failures
-        if request.headers.get("x-probe", "").lower() != "synthetic":
-            API_MODEL_REQUESTS.labels(
-                model=normalize_model_label("unknown"),
-                provider=normalize_provider_label("router"),
-                status_code="400",
-            ).inc()
         raise HTTPException(400, "Invalid JSON or schema in request body") from e
 
     is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
     # ``log_synthetic_probes`` opts probe traffic into api_logs persistence so it
-    # (and its real usage/cost) shows in the requests dashboard. The Prometheus
-    # request metrics, per-user quota increment, and X-Provider header stay keyed
-    # on ``is_synthetic_probe``. A setting read failure defaults to suppression.
+    # (and its real usage/cost) shows in the requests dashboard. The per-user
+    # quota increment and X-Provider header stay keyed on ``is_synthetic_probe``.
+    # A setting read failure defaults to suppression.
     log_synthetic_probes = False
     if (
         is_synthetic_probe
@@ -417,15 +403,6 @@ async def chat_completions(
         except Exception:
             log_synthetic_probes = False
     suppress_synthetic_logging = is_synthetic_probe and not log_synthetic_probes
-
-    def record_model_request(status_code: str, provider_name: str) -> None:
-        if is_synthetic_probe:
-            return
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label(model),
-            provider=normalize_provider_label(provider_name),
-            status_code=status_code,
-        ).inc()
 
     model = payload.model
     messages = [m.model_dump() for m in payload.messages]
@@ -470,7 +447,6 @@ async def chat_completions(
 
     # Check if model has routing configured
     if model not in router_exec.routes:
-        record_model_request("404", "router")
         if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
@@ -506,7 +482,6 @@ async def chat_completions(
             "Insufficient role for model",
             extra={"model": model, "user_id": user_ctx.get("user_id"), "role": user_role},
         )
-        record_model_request("404", "router")
         if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
@@ -530,7 +505,6 @@ async def chat_completions(
     if is_model_disabled_for_user(
         route.adapters[0][0].config.id if route.adapters else model, user_ctx
     ):
-        record_model_request("404", "router")
         if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
@@ -649,7 +623,6 @@ async def chat_completions(
     unsupported_modality = _find_unsupported_modality(messages, model_modalities)
     if unsupported_modality:
         error_message = f"Model '{model}' does not support {unsupported_modality} input"
-        record_model_request("400", "router")
         if log_store and not suppress_synthetic_logging:
             completions_logger.schedule_log(
                 request_id,
@@ -685,7 +658,6 @@ async def chat_completions(
             and weight > 0
             for adapter, weight in route.adapters
         ):
-            record_model_request("400", "router")
             raise HTTPException(
                 status_code=400,
                 detail=f"Pinned provider '{pin_provider}' not found for model {model}",
@@ -752,7 +724,6 @@ async def chat_completions(
                 provider_header = get_single_route_provider()
                 if provider_header:
                     http_response.headers["X-Provider"] = provider_header
-            record_model_request("200", provider)
 
             async def _chain_first_then_rest(first: bytes | None, gen: Any) -> Any:
                 if first is not None:
@@ -779,8 +750,6 @@ async def chat_completions(
                 headers=streaming_headers or None,
             )
 
-        # Record 200 for streaming response (HTTP layer success)
-        record_model_request("200", provider)
         # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering
         # the stream to compress it, which collapses TTFT to total latency.
         response_headers = {
@@ -904,11 +873,6 @@ async def chat_completions(
                     total_tokens_raw or (prompt_tokens + completion_tokens + reasoning_tokens)
                 )
             except Exception:
-                API_TOKEN_ANOMALIES.labels(
-                    model=normalize_model_label(model),
-                    provider=normalize_provider_label(provider),
-                    reason="non_integer",
-                ).inc()
                 logger.warning(f"Invalid token usage types for {model}/{provider}: {usage}")
                 prompt_tokens = completion_tokens = reasoning_tokens = total_tokens = 0
 
@@ -922,31 +886,7 @@ async def chat_completions(
                 and total_tokens >= prompt_tokens + completion_tokens + reasoning_tokens
             )
             if not sane:
-                API_TOKEN_ANOMALIES.labels(
-                    model=normalize_model_label(model),
-                    provider=normalize_provider_label(provider),
-                    reason="invalid_values",
-                ).inc()
                 logger.warning(f"Token usage anomaly for {model}/{provider}: {usage}")
-            else:
-                if prompt_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="prompt",
-                    ).inc(prompt_tokens)
-                if completion_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="completion",
-                    ).inc(completion_tokens)
-                if reasoning_tokens:
-                    API_TOKENS.labels(
-                        model=normalize_model_label(model),
-                        provider=normalize_provider_label(provider),
-                        direction="reasoning",
-                    ).inc(reasoning_tokens)
 
         # Record routing observation for online learning (RouteWise)
         if not is_synthetic_probe:
@@ -962,14 +902,11 @@ async def chat_completions(
                 success=True,
             )
 
-        # Record 200 for non-streaming response
-        record_model_request("200", provider)
         if is_synthetic_probe and provider != "router":
             http_response.headers["X-Provider"] = provider
         return response
 
     except ProviderPinError as exc:
-        record_model_request("400", "router")
         raise HTTPException(
             status_code=400,
             detail=scrub_error_for_user(exc, request_id, 400),
@@ -980,7 +917,6 @@ async def chat_completions(
         # Surface this as 503 Service Unavailable so clients can distinguish
         # "we're temporarily overloaded / all upstreams down" from a generic
         # 500 server error.
-        record_model_request("503", "router")
         raise HTTPException(
             status_code=503,
             detail=scrub_error_for_user(exc, request_id, 503),
@@ -1040,9 +976,6 @@ async def chat_completions(
                     "request_payload": body,
                 },
             )
-        # Record error status code
-        record_model_request(str(exc_status_code), provider_for_error)
-
         raise HTTPException(
             exc_status_code,
             scrub_error_for_user(exc, request_id, exc_status_code),

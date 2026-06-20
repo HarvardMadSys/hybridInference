@@ -27,6 +27,11 @@ HEALTH_TIMEOUT : Max seconds to wait for backend startup  (default 600)
 HEALTH_INTERVAL: Seconds between health-check polls       (default 10)
 MODELS_CONFIG  : Path to a JSON config file               (see below)
 
+When ``MODELS_CONFIG`` is unset the proxy auto-selects a hardware profile from
+``nvidia-smi``: ``models.h200.json`` on a 4+ x H200 box (DeepSeek-V4-Flash at
+``tensor_parallel_size`` 4), ``models.rtx6000.json`` on an RTX (PRO) 6000
+(Qwen3.6-35B), else ``models.json``. See ``_detect_profile_config``.
+
 Model configuration
 -------------------
 Models are defined in a JSON file (default: ``models.json`` next to this
@@ -56,7 +61,10 @@ Example::
         }
     }
 
-``gpu_index`` can be omitted to auto-pick the least-used GPU.
+``gpu_index`` can be omitted to auto-pick the least-used GPU. Set
+``tensor_parallel_size`` > 1 to shard one model across several GPUs: pin them
+with a comma-list ``gpu_index`` (e.g. ``"0,1,2,3"``) or omit it to auto-pick N.
+The launch then gets ``--tp`` / ``--tensor-parallel-size N`` and ``--ipc=host``.
 
 Give two or more models the same ``colocate_group`` to make them share one
 GPU: the first to start auto-picks a free device and the rest follow it there
@@ -120,7 +128,61 @@ LOCAL_API_KEY = LOCAL_API_KEY.strip()
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = _SCRIPT_DIR / "models.json"
-MODELS_CONFIG = os.environ.get("MODELS_CONFIG", str(DEFAULT_CONFIG_PATH))
+
+
+def _detect_profile_config() -> Path:
+    """Pick a hardware-specific models profile by inspecting the local GPUs.
+
+    The same proxy code runs on machines with very different GPUs, and each
+    machine should serve the model that fits it. We inspect ``nvidia-smi`` once
+    at import and map the hardware to a profile JSON next to this script:
+
+      * **4+ x H200**       -> ``models.h200.json``     (DeepSeek-V4-Flash, TP=4)
+      * **RTX (PRO) 6000**  -> ``models.rtx6000.json``  (Qwen3.6-35B)
+      * anything else / no ``nvidia-smi`` → ``models.json`` (default fallback)
+
+    Only consulted when ``MODELS_CONFIG`` is unset, so an explicit override
+    always wins. A matched profile that is missing on disk falls back to the
+    default rather than leaving the proxy with no backends.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        log.info("nvidia-smi unavailable — using default profile %s.", DEFAULT_CONFIG_PATH.name)
+        return DEFAULT_CONFIG_PATH
+
+    names = [n.strip() for n in result.stdout.strip().splitlines() if n.strip()]
+    h200_count = sum("h200" in n.lower() for n in names)
+    has_rtx6000 = any("6000" in n and "rtx" in n.lower() for n in names)
+
+    chosen: Path | None = None
+    if h200_count >= 4:
+        chosen = _SCRIPT_DIR / "models.h200.json"
+    elif has_rtx6000:
+        chosen = _SCRIPT_DIR / "models.rtx6000.json"
+
+    if chosen is not None and chosen.is_file():
+        log.info("Detected GPUs %s — using profile %s.", names, chosen.name)
+        return chosen
+    if chosen is not None:
+        log.warning(
+            "Detected GPUs %s but profile %s is missing — falling back to %s.",
+            names,
+            chosen.name,
+            DEFAULT_CONFIG_PATH.name,
+        )
+    else:
+        log.info("GPUs %s match no hardware profile — using %s.", names, DEFAULT_CONFIG_PATH.name)
+    return DEFAULT_CONFIG_PATH
+
+
+# An explicit MODELS_CONFIG always wins; otherwise auto-select by hardware.
+MODELS_CONFIG = os.environ.get("MODELS_CONFIG") or str(_detect_profile_config())
 
 
 def _load_models_config() -> dict[str, dict[str, Any]]:
@@ -197,6 +259,23 @@ def _pick_free_gpu(exclude: set[str] | None = None) -> str:
         best_usage * 100,
     )
     return best_idx
+
+
+def _pick_free_gpus(count: int, exclude: set[str] | None = None) -> str:
+    """Return a comma-joined list of the ``count`` least-used GPU indices.
+
+    Used for tensor-parallel backends (``tensor_parallel_size`` > 1) that need
+    several devices. Picks greedily — least-used first, excluding each chosen
+    device from the next pick — and returns a string like ``"0,1,2,3"`` suitable
+    for a Docker ``--gpus device=...`` request.
+    """
+    exclude = set(exclude or set())
+    chosen: list[str] = []
+    for _ in range(max(1, count)):
+        gpu = _pick_free_gpu(exclude=exclude)
+        chosen.append(gpu)
+        exclude.add(gpu)
+    return ",".join(chosen)
 
 
 class BackendManager:
@@ -340,18 +419,24 @@ class BackendManager:
         # Exclude GPUs already claimed by other backends that are starting or
         # running. Auto-selected backends carry no gpu_index in their config, so
         # rely on the runtime GPU each one actually resolved to.
-        used_gpus = set()
+        # A tensor-parallel backend records several devices ("0,1,2,3"); expand
+        # them so each is excluded individually.
+        used_gpus: set[str] = set()
         for mgr in _backends.values():
             if mgr is self:
                 continue
             if mgr.state in ("starting", "ready") and mgr._current_gpu is not None:
-                used_gpus.add(mgr._current_gpu)
+                used_gpus.update(str(mgr._current_gpu).split(","))
+        tp = int(self.config.get("tensor_parallel_size", 1))
         log.info(
-            "[%s] Auto-selecting GPU (excluding %s)",
+            "[%s] Auto-selecting %d GPU(s) (excluding %s)",
             self.model_name,
+            tp,
             sorted(used_gpus) if used_gpus else "none",
         )
-        gpu = _pick_free_gpu(exclude=used_gpus)
+        gpu = (
+            _pick_free_gpus(tp, exclude=used_gpus) if tp > 1 else _pick_free_gpu(exclude=used_gpus)
+        )
         self._current_gpu = gpu
         return gpu
 
@@ -399,6 +484,7 @@ class BackendManager:
         vLLM's pooling runner, which has no KV cache, so ``--kv-cache-dtype`` and
         the generation parsers are omitted for them.
         """
+        tp = int(self.config.get("tensor_parallel_size", 1))
         cmd = [
             "sudo",
             "docker",
@@ -410,6 +496,9 @@ class BackendManager:
             f"device={gpu}",
             "--shm-size",
             "16g",
+            # Tensor-parallel backends span several GPUs inside one container;
+            # NCCL needs host IPC for fast peer-to-peer transport.
+            *(["--ipc=host"] if tp > 1 else []),
             "-p",
             f"{self.backend_port}:8000",
             "-v",
@@ -426,7 +515,7 @@ class BackendManager:
             "--gpu-memory-utilization",
             str(self.config.get("mem_fraction", "0.90")),
             "--tensor-parallel-size",
-            "1",
+            str(tp),
         ]
         if self.config.get("is_embedding"):
             # vLLM >= 0.20 selects the embedding runner with --runner pooling
@@ -458,6 +547,7 @@ class BackendManager:
 
     def _sglang_run_cmd(self, gpu: str) -> list[str]:
         """Build the ``docker run`` command for an sglang backend."""
+        tp = int(self.config.get("tensor_parallel_size", 1))
         cmd = [
             "sudo",
             "docker",
@@ -469,6 +559,9 @@ class BackendManager:
             f"device={gpu}",
             "--shm-size",
             "16g",
+            # Tensor-parallel backends span several GPUs inside one container;
+            # NCCL needs host IPC for fast peer-to-peer transport.
+            *(["--ipc=host"] if tp > 1 else []),
             "-p",
             f"{self.backend_port}:8001",
             "-v",
@@ -491,7 +584,7 @@ class BackendManager:
             "--mem-fraction-static",
             str(self.config.get("mem_fraction", "0.90")),
             "--tp",
-            "1",
+            str(tp),
         ]
         if self.config.get("is_embedding"):
             # Embedding models run sglang in encode-only mode; tool-call parsing
