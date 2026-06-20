@@ -1726,6 +1726,47 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
 
 
 @pytest.mark.asyncio
+async def test_apply_persisted_provider_route_candidates_skips_orphan_without_marker(admin_client):
+    _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    # Candidate row for a model that is NOT in the router and has NO runtime
+    # marker setting: a leftover candidate for a YAML model that was removed.
+    op_store.list_all_provider_route_candidates.return_value = [
+        {
+            "model_id": "retired-yaml-model",
+            "route_id": "retired-yaml-model:openrouter[parasail]-api",
+            "route_type": "on_demand",
+            "provider": "openrouter[parasail]",
+            "openrouter_sort": None,
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 1.0,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+    op_store.list_settings.return_value = []
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=MagicMock(),
+        managed_routers=[],
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_provider_route_candidates(services, op_store)
+
+    # The retired model must not be resurrected as a runtime model, and the row is
+    # skipped before any candidate preparation (no key material is resolved).
+    assert "retired-yaml-model" not in route_executor.routes
+    op_store.get_provider_key_full.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_apply_persisted_provider_route_config_skips_stale_positional_route_id(
     admin_client,
 ):

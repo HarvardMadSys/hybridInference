@@ -2534,6 +2534,21 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> None:
         route_id = str(row["route_id"])
         try:
             if services.router.routes.get(model_id) is None:
+                # Only resurrect models that were created through the runtime
+                # create-model endpoint, which always persists a
+                # ``model_required_role:<id>`` marker. Without that marker this
+                # row is a leftover candidate for a model that no longer exists
+                # in the router (e.g. a YAML model that was removed or renamed);
+                # registering it would silently bring the retired model back.
+                if model_id not in role_overrides:
+                    logger.warning(
+                        "Skipping provider route candidate for unknown model=%s "
+                        "route_id=%s (no runtime model marker; model likely "
+                        "removed from config)",
+                        model_id,
+                        route_id,
+                    )
+                    continue
                 candidate = await _prepare_model_route_candidate(
                     services,
                     op_store,
