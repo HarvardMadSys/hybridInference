@@ -272,6 +272,9 @@ class TestBootstrapInitialization:
                     + ",".join(sorted(model_ids_by_router.get(id(routewise_routers[0]), set())))
                 )
 
+        async def record_provider_route_config_restore(*_args):
+            events.append("configs")
+
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=mock_db_logger),
             patch(
@@ -306,7 +309,7 @@ class TestBootstrapInitialization:
             patch(
                 "serving.servers.routers.admin.provider_routes."
                 "apply_persisted_provider_route_configs",
-                new=AsyncMock(),
+                new=AsyncMock(side_effect=record_provider_route_config_restore),
             ),
             patch(
                 "serving.servers.bootstrap._bootstrap_routewise_from_logs",
@@ -316,7 +319,7 @@ class TestBootstrapInitialization:
             services = await bootstrap.initialize()
 
         assert services.managed_routers == [runtime_routewise]
-        assert events == ["bootstrap:runtime-m", "start"]
+        assert events == ["configs", "bootstrap:runtime-m", "start"]
         assert bootstrap_logs.await_count == 2
         runtime_call = bootstrap_logs.await_args_list[1]
         assert runtime_call.args[0] is log_store

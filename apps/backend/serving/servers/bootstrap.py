@@ -650,6 +650,10 @@ async def initialize() -> AppServices:
                 provider_route_services,
                 operational_store,
             )
+            await apply_persisted_provider_route_configs(
+                provider_route_services,
+                operational_store,
+            )
             if restored_routewise_model_ids and model_router_registry is not None:
                 (
                     runtime_routewise_routers,
@@ -672,10 +676,6 @@ async def initialize() -> AppServices:
                             known_routewise_ids.add(id(router_obj))
                     for router_id, model_ids in runtime_routewise_model_ids_by_router.items():
                         routewise_model_ids_by_router.setdefault(router_id, set()).update(model_ids)
-            await apply_persisted_provider_route_configs(
-                provider_route_services,
-                operational_store,
-            )
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider route configs at boot: {exc}")
 
