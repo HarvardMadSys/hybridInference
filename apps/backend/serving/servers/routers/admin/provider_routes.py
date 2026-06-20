@@ -1026,6 +1026,10 @@ def _is_runtime_candidate(adapter) -> bool:
     return isinstance(route_metadata, dict) and route_metadata.get("runtime_candidate") is True
 
 
+def _is_runtime_created_route(route) -> bool:
+    return getattr(route, BASELINE_ENTRIES_ATTR, None) == []
+
+
 def _route_is_runtime_candidate(services, model_id: str, route_id: str) -> bool:
     try:
         route = _validate_canonical_route(services, model_id)
@@ -1083,6 +1087,19 @@ def _normalize_runtime_model_pricing(raw: Any) -> dict[str, str]:
             )
         pricing[key_text] = value_text
     return pricing
+
+
+def _candidate_restore_sort_key(row: dict[str, Any]) -> tuple[str, bool, str]:
+    try:
+        _normalize_runtime_model_pricing(row.get("pricing"))
+        missing_runtime_pricing = False
+    except ValueError:
+        missing_runtime_pricing = True
+    return (
+        str(row["model_id"]),
+        missing_runtime_pricing,
+        str(row["route_id"]),
+    )
 
 
 def _validate_create_route_type_for_provider(route_type: str, upstream_provider: str) -> None:
@@ -2387,7 +2404,7 @@ async def create_provider_route_candidate(
         candidate.quota_limit,
         candidate.concurrency_limit,
         candidate.weight,
-        None,
+        candidate.adapter.config.pricing if _is_runtime_created_route(candidate.route) else None,
         admin_id,
     )
     _install_route_candidate(services, candidate)
@@ -2694,9 +2711,17 @@ async def delete_provider_route_candidate(
     )
 
 
-async def apply_persisted_provider_route_candidates(services, op_store) -> None:
-    """Apply persisted runtime provider route candidates to the in-process router."""
-    rows = await op_store.list_all_provider_route_candidates()
+async def apply_persisted_provider_route_candidates(services, op_store) -> set[str]:
+    """Apply persisted runtime provider route candidates to the in-process router.
+
+    Returns ids for runtime-created models restored with a RouteWise strategy so
+    bootstrap can warm their routers from logs before managed routers start.
+    """
+    rows = sorted(
+        await op_store.list_all_provider_route_candidates(),
+        key=_candidate_restore_sort_key,
+    )
+    restored_routewise_model_ids: set[str] = set()
     strategy_overrides: dict[str, str] = {}
     role_overrides: dict[str, str] = {}
     try:
@@ -2772,6 +2797,8 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> None:
                         strategy,
                         start_managed=False,
                     )
+                    if strategy == "routewise":
+                        restored_routewise_model_ids.add(model_id)
             else:
                 candidate = await _prepare_route_candidate(
                     services,
@@ -2796,6 +2823,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> None:
                 route_id,
                 exc,
             )
+    return restored_routewise_model_ids
 
 
 async def apply_persisted_provider_route_configs(services, op_store) -> None:

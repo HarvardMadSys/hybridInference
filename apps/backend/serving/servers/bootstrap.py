@@ -82,6 +82,30 @@ def _collect_routewise_routers(
     return routewise_routers, model_ids_by_router, donor_overrides_by_router
 
 
+def _collect_routewise_runtime_routers(
+    model_router_registry: ModelRouterRegistry,
+    model_ids: set[str],
+    managed_routers: list[Any],
+) -> tuple[list[Any], dict[int, set[str]]]:
+    """Collect DB-restored runtime RouteWise routers by their runtime model ids."""
+    from routing.routewise.router import RouteWiseRouter as _RWR
+
+    routewise_routers: list[_RWR] = []
+    model_ids_by_router: dict[int, set[str]] = {}
+    managed_ids = {id(existing) for existing in managed_routers}
+    for model_id in sorted(model_ids):
+        routewise_router = model_router_registry.get_router(model_id)
+        if not isinstance(routewise_router, _RWR):
+            continue
+        model_ids_by_router.setdefault(id(routewise_router), set()).add(model_id)
+        if all(id(existing) != id(routewise_router) for existing in routewise_routers):
+            routewise_routers.append(routewise_router)
+        if id(routewise_router) not in managed_ids:
+            managed_routers.append(routewise_router)
+            managed_ids.add(id(routewise_router))
+    return routewise_routers, model_ids_by_router
+
+
 async def _refresh_weight_override_snapshots(
     resolver: WeightOverrideResolver,
     *,
@@ -619,10 +643,32 @@ async def initialize() -> AppServices:
                 routewise_routers = updated_routewise_routers
                 routewise_model_ids_by_router = updated_routewise_model_ids_by_router
                 routewise_donor_overrides_by_router = updated_routewise_donor_overrides_by_router
-            await apply_persisted_provider_route_candidates(
+            restored_routewise_model_ids = await apply_persisted_provider_route_candidates(
                 provider_route_services,
                 operational_store,
             )
+            if restored_routewise_model_ids:
+                (
+                    runtime_routewise_routers,
+                    runtime_routewise_model_ids_by_router,
+                ) = _collect_routewise_runtime_routers(
+                    model_router_registry,
+                    restored_routewise_model_ids,
+                    managed_routers,
+                )
+                if runtime_routewise_routers:
+                    await _bootstrap_routewise_from_logs(
+                        log_store,
+                        runtime_routewise_routers,
+                        runtime_routewise_model_ids_by_router,
+                    )
+                    known_routewise_ids = {id(router_obj) for router_obj in routewise_routers}
+                    for router_obj in runtime_routewise_routers:
+                        if id(router_obj) not in known_routewise_ids:
+                            routewise_routers.append(router_obj)
+                            known_routewise_ids.add(id(router_obj))
+                    for router_id, model_ids in runtime_routewise_model_ids_by_router.items():
+                        routewise_model_ids_by_router.setdefault(router_id, set()).update(model_ids)
             await apply_persisted_provider_route_configs(
                 provider_route_services,
                 operational_store,
