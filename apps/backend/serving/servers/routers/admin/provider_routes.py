@@ -1275,6 +1275,7 @@ async def _prepare_model_route_candidate(
             "upstream_provider": upstream_provider,
             "provider_type": route_type,
             "openrouter_sort": openrouter_sort,
+            "api_key_id": api_key_id,
             "runtime_candidate": True,
         },
     }

@@ -975,6 +975,16 @@ async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, m
 async def test_post_provider_route_model_creates_runtime_model(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
 
     response = await client.post(
         "/admin/routing/provider-route-models",
@@ -999,6 +1009,14 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     assert payload["strategy"] == "fixed"
     assert payload["route_id"] == "deepseek-v4-flash:openrouter[parasail]-api"
     assert payload["openrouter_provider"] == "parasail"
+    assert payload["api_key_id"] == "db-openrouter"
+    assert payload["api_key"] == {
+        "id": "db-openrouter",
+        "provider": "openrouter",
+        "label": "staging",
+        "key_prefix": "openrou...7890",
+        "source": "db",
+    }
     assert payload["effective_weight"] == 1.25
     op_store.upsert_provider_route_candidate.assert_awaited_once_with(
         "deepseek-v4-flash",
@@ -1037,7 +1055,17 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     assert runtime_adapter.config.id == "deepseek-v4-flash"
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.route_metadata["api_key_id"] == "db-openrouter"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+
+    list_response = await client.get(
+        "/admin/routing/provider-routes/deepseek-v4-flash",
+        headers=AUTH,
+    )
+    assert list_response.status_code == 200, list_response.text
+    route = list_response.json()["routes"][0]
+    assert route["api_key_id"] == "db-openrouter"
+    assert route["api_key"]["source"] == "db"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
