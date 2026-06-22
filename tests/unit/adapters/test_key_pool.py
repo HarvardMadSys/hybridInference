@@ -1,10 +1,18 @@
-"""Unit tests for KeyPool — multi-key rotation with affinity + cooldown."""
+"""Unit tests for KeyPool — sequential rotation with affinity + 5-min mute.
+
+Selection is sequential: the pool hands out the earliest usable key and only
+advances to a later key once an earlier one is muted. *Any* upstream error
+(429, other 4xx/5xx, or a non-HTTP failure signalled by ``status_code=0``)
+mutes the leased key for ``MUTE_SECONDS`` (5 minutes).
+"""
 
 from __future__ import annotations
 
 import pytest
 
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
+
+MUTE = KeyPool.MUTE_SECONDS
 
 
 def test_keypool_module_exports():
@@ -33,19 +41,15 @@ def test_acquire_single_key_returns_that_key():
     assert lease.affinity_key == "user-A"
 
 
-def test_acquire_picks_least_loaded_key_for_new_user():
-    """First user picks index 0 (tie at request_count=0); load increments."""
+def test_new_users_all_get_the_first_key():
+    """Sequential selection: every new user lands on k0 while it is usable."""
     pool = KeyPool(keys=["k0", "k1", "k2"], provider_label="test")
 
-    # First two new users go to k0 then k1 — counters increment under the lock,
-    # and ties break by lowest index.
     k_a, _ = pool.acquire("user-A")
     k_b, _ = pool.acquire("user-B")
     k_c, _ = pool.acquire("user-C")
 
-    assert k_a == "k0"
-    assert k_b == "k1"
-    assert k_c == "k2"
+    assert k_a == k_b == k_c == "k0"
 
 
 def test_acquire_increments_request_count_on_each_call():
@@ -78,170 +82,106 @@ def test_same_user_keeps_same_key_within_ttl(monkeypatch):
     assert k1 == k2 == k3
 
 
-def test_affinity_expires_after_ttl(monkeypatch):
-    """After 5 minutes, the user may land on a different key."""
+def test_affinity_re_pick_after_ttl_stays_on_first_key(monkeypatch):
+    """After the affinity TTL, a fresh pick still lands on the first usable key."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
 
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     k_first, _ = pool.acquire("user-A")
-    # Advance well past 300s
+    # Advance well past the affinity TTL; k0 was never muted, so it is re-picked.
     fake_now[0] += 301
-    # Make k0 look heavily loaded so the new pick goes to k1
-    pool._keys[0].request_count = 1000
 
     k_second, _ = pool.acquire("user-A")
-    assert k_first == "k0"
-    assert k_second == "k1"
+    assert k_first == k_second == "k0"
 
 
-def test_different_users_can_share_or_split_keys():
-    """Two new users in a 2-key pool end up on different keys (load-spread)."""
+def test_concurrent_users_share_the_first_key():
+    """Two new users in a 2-key pool both land on k0 (sequential)."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     a, _ = pool.acquire("user-A")
     b, _ = pool.acquire("user-B")
-    assert {a, b} == {"k0", "k1"}
+    assert a == b == "k0"
 
 
-def test_release_with_retry_after_seconds_sets_cooldown(monkeypatch):
+@pytest.mark.parametrize("status_code", [429, 401, 403, 400, 500, 503, 0])
+def test_release_any_error_mutes_for_five_minutes(monkeypatch, status_code):
+    """Any non-2xx outcome (and the network sentinel 0) mutes for 5 minutes."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after="30")
+    pool.release(lease, status_code=status_code)
 
-    # k0 should be cooled until t=1030
-    assert pool._keys[lease.key_index].cooldown_until == pytest.approx(1030.0)
-
-
-def test_release_with_429_no_retry_after_uses_default_cooldown(monkeypatch):
-    pool = KeyPool(keys=["k0"], provider_label="test")
-    fake_now = [1000.0]
-    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
-
-    _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after=None)
-
-    assert pool._keys[0].cooldown_until == pytest.approx(1120.0)  # +120s default
+    assert pool._keys[lease.key_index].cooldown_until == pytest.approx(1000.0 + MUTE)
 
 
-def test_release_with_2xx_does_not_set_cooldown():
+@pytest.mark.parametrize("status_code", [200, 201, 204, 299])
+def test_release_with_2xx_does_not_mute(status_code):
     pool = KeyPool(keys=["k0"], provider_label="test")
     _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=200, retry_after=None)
+    pool.release(lease, status_code=status_code)
     assert pool._keys[0].cooldown_until == 0.0
 
 
-def test_release_with_other_4xx_does_not_set_cooldown():
-    pool = KeyPool(keys=["k0"], provider_label="test")
-    _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=401, retry_after=None)
-    assert pool._keys[0].cooldown_until == 0.0
-
-
-def test_retry_after_is_capped_at_one_hour(monkeypatch):
-    pool = KeyPool(keys=["k0"], provider_label="test")
-    fake_now = [1000.0]
-    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
-
-    _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after="86400")  # 1 day
-
-    assert pool._keys[0].cooldown_until == pytest.approx(1000.0 + 3600.0)
-
-
-def test_retry_after_negative_falls_back_to_default(monkeypatch):
-    pool = KeyPool(keys=["k0"], provider_label="test")
-    fake_now = [1000.0]
-    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
-
-    _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after="-5")
-    assert pool._keys[0].cooldown_until == pytest.approx(1120.0)
-
-
-def test_retry_after_http_date_format(monkeypatch):
-    """RFC 7231 allows HTTP-date format; we honor it."""
-    from datetime import datetime, timedelta, timezone
-    from email.utils import format_datetime
-
-    pool = KeyPool(keys=["k0"], provider_label="test")
-    base_real = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    # Fake time module sees t=1000.0; HTTP-date is base_real + 30s
-    fake_now = [1000.0]
-    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
-
-    # Use a known wall-clock anchor by monkeypatching _parse_retry_after's anchor.
-    # Easier: pass the date as 30s in the future relative to whatever time.time
-    # returns; we patch time.time too.
-    fake_wall = [base_real.timestamp()]
-    monkeypatch.setattr("serving.adapters.key_pool.time.time", lambda: fake_wall[0])
-
-    future_http_date = format_datetime(base_real + timedelta(seconds=30))
-
-    _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after=future_http_date)
-    # Expect cooldown ≈ now + 30s (capped before 3600)
-    assert 1020 <= pool._keys[0].cooldown_until <= 1040
-
-
-def test_cooldown_key_is_skipped_during_selection(monkeypatch):
+def test_muted_key_is_skipped_during_selection(monkeypatch):
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
-    # Burn k0 with a 429
+    # Burn k0 with an error.
     _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after="30")
+    pool.release(lease, status_code=429)
 
-    # New user must land on k1 since k0 is in cooldown
+    # New user must land on k1 since k0 is muted.
     k, _ = pool.acquire("user-B")
     assert k == "k1"
 
 
-def test_mid_affinity_user_re_picks_when_bound_key_cooled(monkeypatch):
-    """If the bound key is cooled mid-window, the user is reassigned."""
+def test_mid_affinity_user_re_picks_when_bound_key_muted(monkeypatch):
+    """If the bound key is muted mid-window, the user is reassigned."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     k_first, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after="60")
-    # User-A's affinity points at k0, but k0 is cooled
+    pool.release(lease, status_code=500)
+    # User-A's affinity points at k0, but k0 is muted.
     k_second, _ = pool.acquire("user-A")
     assert k_first == "k0"
     assert k_second == "k1"
 
 
-def test_all_keys_exhausted_raises_keypoolexhausted(monkeypatch):
+def test_all_keys_muted_raises_keypoolexhausted(monkeypatch):
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     _, lease0 = pool.acquire("user-A")
-    pool.release(lease0, status_code=429, retry_after="30")
+    pool.release(lease0, status_code=429)
     _, lease1 = pool.acquire("user-B")
-    pool.release(lease1, status_code=429, retry_after="30")
+    pool.release(lease1, status_code=500)
 
     with pytest.raises(KeyPoolExhausted):
         pool.acquire("user-C")
 
 
-def test_cooldown_recovers_after_time_passes(monkeypatch):
+def test_mute_recovers_after_five_minutes(monkeypatch):
     pool = KeyPool(keys=["k0"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after="30")
-    # Still in cooldown
+    pool.release(lease, status_code=429)
+    # Still muted just before the window closes.
+    fake_now[0] += MUTE - 1
     with pytest.raises(KeyPoolExhausted):
         pool.acquire("user-B")
 
-    fake_now[0] += 31
+    # Window elapsed — key is usable again.
+    fake_now[0] += 2
     k, _ = pool.acquire("user-B")
     assert k == "k0"
 
@@ -264,8 +204,8 @@ def test_affinity_sweep_drops_expired_entries(monkeypatch):
     assert "trigger-sweep" in pool._affinity
 
 
-def test_concurrent_acquires_distribute_evenly():
-    """Many threads acquiring as new users spread across keys without race."""
+def test_concurrent_acquires_all_use_the_first_key():
+    """Many threads acquiring as new users all concentrate on k0, no race."""
     import threading
 
     NUM_KEYS = 4
@@ -287,27 +227,8 @@ def test_concurrent_acquires_distribute_evenly():
     for t in threads:
         t.join()
 
-    # Total acquires == users
+    # Every acquire landed on the first key; no increments were lost.
     assert len(results) == NUM_USERS
-    # request_count totals across keys equals NUM_USERS (no double-counting,
-    # no lost increments)
-    assert sum(s.request_count for s in pool._keys) == NUM_USERS
-
-    # Distribution is reasonably balanced — each key gets within +/-20% of mean
-    expected = NUM_USERS / NUM_KEYS
-    for s in pool._keys:
-        assert 0.8 * expected <= s.request_count <= 1.2 * expected, (
-            f"unbalanced: {[k.request_count for k in pool._keys]}"
-        )
-
-
-@pytest.mark.parametrize("bad_value", ["abc", "tomorrow", "", "   ", "nan", "inf nope", "NaN"])
-def test_release_malformed_retry_after_falls_back_to_default(monkeypatch, bad_value):
-    """Per spec: malformed/non-finite Retry-After → 2-min default cooldown."""
-    pool = KeyPool(keys=["k0"], provider_label="test")
-    fake_now = [1000.0]
-    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
-
-    _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429, retry_after=bad_value)
-    assert pool._keys[0].cooldown_until == pytest.approx(1120.0)
+    assert all(idx == 0 for idx in results)
+    assert pool._keys[0].request_count == NUM_USERS
+    assert all(s.request_count == 0 for s in pool._keys[1:])

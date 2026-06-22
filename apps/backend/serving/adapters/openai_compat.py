@@ -215,13 +215,16 @@ class OpenAICompatAdapter(BaseAdapter):
         return headers
 
     async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """POST JSON with key-pool rotation on 429s.
+        """POST JSON with sequential key-pool rotation on any upstream error.
 
         When ``self._key_pool`` is None, falls through to the legacy single-key
-        path with retries. When set, loops over keys: a 429 on key K cools K
-        down and the loop tries the next least-loaded key. Pool exhaustion
-        raises the last 429 (or KeyPoolExhausted if none was seen yet), which
-        the caller surfaces as an upstream failure for the router fallback chain.
+        path with retries. When set, the pool hands out keys sequentially: a
+        request uses one key until it errors, at which point the key is muted
+        for 5 minutes and the loop advances to the next available key. *Any*
+        upstream failure — 429, other 4xx/5xx, or a timeout/connection error —
+        mutes the current key and triggers rotation. Pool exhaustion re-raises
+        the last error (or KeyPoolExhausted if none was seen yet), which the
+        caller surfaces as an upstream failure for the router fallback chain.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -235,9 +238,9 @@ class OpenAICompatAdapter(BaseAdapter):
         provider = self.config.provider
 
         # Bound the loop to pool size — defensive; acquire already filters
-        # cooled-down keys, so we shouldn't reacquire the same just-cooled one.
+        # muted keys, so we shouldn't reacquire the same just-muted one.
         max_attempts = self._key_pool.size()
-        last_429_error: aiohttp.ClientResponseError | None = None
+        last_error: BaseException | None = None
 
         for _ in range(max_attempts):
             try:
@@ -251,8 +254,8 @@ class OpenAICompatAdapter(BaseAdapter):
                         "stage": "acquire",
                     },
                 )
-                if last_429_error is not None:
-                    raise last_429_error from exhausted
+                if last_error is not None:
+                    raise last_error from exhausted
                 raise
 
             logger.debug(
@@ -272,52 +275,49 @@ class OpenAICompatAdapter(BaseAdapter):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=120),
                 )
-                self._key_pool.release(lease, status_code=200, retry_after=None)
-                logger.debug(
-                    "key_pool_active_affinities",
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Any upstream error mutes this key for 5 minutes and rotates.
+                status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
+                self._key_pool.release(lease, status_code=status)
+                logger.warning(
+                    "key_pool_cooldown",
                     extra={
-                        "event": "key_pool_active_affinities",
+                        "event": "key_pool_cooldown",
                         "provider": provider,
-                        "count": self._key_pool.affinity_count(),
+                        "key_index": lease.key_index,
+                        "status": status,
                     },
                 )
-                return response
-            except aiohttp.ClientResponseError as e:
-                if e.status == 429:
-                    retry_after = e.headers.get("Retry-After") if e.headers else None
-                    self._key_pool.release(lease, status_code=429, retry_after=retry_after)
-                    reason = "retry_after" if retry_after else "default_2min"
-                    logger.warning(
-                        "key_pool_cooldown",
-                        extra={
-                            "event": "key_pool_cooldown",
-                            "provider": provider,
-                            "key_index": lease.key_index,
-                            "reason": reason,
-                        },
-                    )
-                    last_429_error = e
-                    continue  # try next key
-                # Non-429 error — release without cooldown, propagate.
-                self._key_pool.release(lease, status_code=e.status, retry_after=None)
-                raise
+                last_error = e
+                continue  # try next key
 
-        # Loop exhausted naturally (every key returned 429 in this single call)
+            self._key_pool.release(lease, status_code=200)
+            logger.debug(
+                "key_pool_active_affinities",
+                extra={
+                    "event": "key_pool_active_affinities",
+                    "provider": provider,
+                    "count": self._key_pool.affinity_count(),
+                },
+            )
+            return response
+
+        # Loop exhausted naturally (every key errored in this single call).
         logger.warning(
             "key_pool_exhausted",
             extra={
                 "event": "key_pool_exhausted",
                 "provider": provider,
-                "stage": "all_429",
+                "stage": "all_errored",
             },
         )
-        assert last_429_error is not None
-        raise last_429_error
+        assert last_error is not None
+        raise last_error
 
     async def _open_stream_with_pool(
         self, url: str, payload: dict[str, Any], timeout: Any = None
     ) -> AsyncGenerator[tuple[Any, Any, str], None]:
-        """Open a streaming POST with key-pool rotation on opening 429s.
+        """Open a streaming POST with sequential key-pool rotation on opening errors.
 
         Yields exactly one tuple: ``(stream_iter, lease, first_chunk)``.
 
@@ -329,9 +329,9 @@ class OpenAICompatAdapter(BaseAdapter):
         - ``first_chunk`` is the first chunk already pulled from the iterator
           (must be processed first by the caller).
 
-        Rotates keys internally on opening 429s (status check happens before
-        any chunk is yielded). Mid-stream errors are not classified — they
-        propagate to the caller as today.
+        Rotates keys internally on any opening error (status check / connect
+        happens before any chunk is yielded). Mid-stream errors are not
+        classified — they propagate to the caller as today.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -350,7 +350,7 @@ class OpenAICompatAdapter(BaseAdapter):
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
         provider = self.config.provider
         max_attempts = self._key_pool.size()
-        last_429: aiohttp.ClientResponseError | None = None
+        last_error: BaseException | None = None
 
         for _ in range(max_attempts):
             try:
@@ -364,8 +364,8 @@ class OpenAICompatAdapter(BaseAdapter):
                         "stage": "stream_acquire",
                     },
                 )
-                if last_429 is not None:
-                    raise last_429 from exhausted
+                if last_error is not None:
+                    raise last_error from exhausted
                 raise
 
             logger.debug(
@@ -386,7 +386,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 first = await stream_iter.__anext__()
             except StopAsyncIteration:
                 # Empty stream — treat as success
-                self._key_pool.release(lease, status_code=200, retry_after=None)
+                self._key_pool.release(lease, status_code=200)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={
@@ -396,42 +396,38 @@ class OpenAICompatAdapter(BaseAdapter):
                     },
                 )
                 return
-            except aiohttp.ClientResponseError as e:
-                if e.status == 429:
-                    retry_after = e.headers.get("Retry-After") if e.headers else None
-                    self._key_pool.release(lease, status_code=429, retry_after=retry_after)
-                    reason = "retry_after" if retry_after else "default_2min"
-                    logger.warning(
-                        "key_pool_cooldown",
-                        extra={
-                            "event": "key_pool_cooldown",
-                            "provider": provider,
-                            "key_index": lease.key_index,
-                            "reason": reason,
-                            "stage": "stream",
-                        },
-                    )
-                    last_429 = e
-                    continue
-                # Non-429 — release without cooldown, propagate
-                self._key_pool.release(lease, status_code=e.status, retry_after=None)
-                raise
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                # Any opening error mutes this key for 5 minutes and rotates.
+                status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
+                self._key_pool.release(lease, status_code=status)
+                logger.warning(
+                    "key_pool_cooldown",
+                    extra={
+                        "event": "key_pool_cooldown",
+                        "provider": provider,
+                        "key_index": lease.key_index,
+                        "status": status,
+                        "stage": "stream",
+                    },
+                )
+                last_error = e
+                continue
 
             # First chunk read successfully — commit the lease (caller releases on stream end)
             yield stream_iter, lease, first
             return
 
-        # Loop exhausted — every key returned 429
+        # Loop exhausted — every key errored on open.
         logger.warning(
             "key_pool_exhausted",
             extra={
                 "event": "key_pool_exhausted",
                 "provider": provider,
-                "stage": "stream_all_429",
+                "stage": "stream_all_errored",
             },
         )
-        assert last_429 is not None
-        raise last_429
+        assert last_error is not None
+        raise last_error
 
     def _build_url(self) -> str:
         """Build full endpoint URL (standard OpenAI path)."""
@@ -722,7 +718,7 @@ class OpenAICompatAdapter(BaseAdapter):
             )
         finally:
             if active_lease is not None and self._key_pool is not None:
-                self._key_pool.release(active_lease, status_code=200, retry_after=None)
+                self._key_pool.release(active_lease, status_code=200)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={

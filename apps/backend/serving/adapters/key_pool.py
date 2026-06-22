@@ -1,19 +1,25 @@
-"""Multi-key API rotation with per-user session affinity.
+"""Multi-key API rotation with sequential (use-one-until-it-errors) selection.
 
 Each adapter that opts into multi-key holds a KeyPool. The pool exposes
 ``acquire(affinity_key)`` and ``release(lease, outcome)``. State is
 in-process, behind a single ``threading.Lock``.
 
-See docs/agents/specs/2026-04-30-multi-key-rotation-design.md
+Selection is **sequential**: the pool always hands out the earliest usable
+key and only advances to a later key once an earlier one is muted. A key is
+muted for ``MUTE_SECONDS`` (5 minutes) on *any* upstream error — rate
+limit/quota (429), auth failures, other 4xx/5xx, or non-HTTP failures such as
+timeouts and connection errors. The net effect is "use one key until it runs
+out of quota or errors, then move to the next".
+
+See docs/agents/specs/archive/2026-04-30-multi-key-rotation-design.md for the
+original (least-loaded) design this supersedes.
 """
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
 
 
 class KeyPoolExhausted(Exception):
@@ -43,11 +49,10 @@ class Lease:
 
 
 class KeyPool:
-    """Rotates API keys with per-user TTL affinity and 429 cooldowns."""
+    """Hands out API keys sequentially, muting a key for 5 minutes on any error."""
 
     AFFINITY_TTL_SECONDS: float = 300.0  # 5 minutes
-    DEFAULT_COOLDOWN_SECONDS: float = 120.0  # 2 minutes for 429 w/o Retry-After
-    MAX_COOLDOWN_SECONDS: float = 3600.0  # 1 hour cap on Retry-After
+    MUTE_SECONDS: float = 300.0  # 5 minutes — any upstream error mutes the key
     SWEEP_THRESHOLD: int = 1000
 
     def __init__(self, keys: list[str], provider_label: str) -> None:
@@ -126,11 +131,10 @@ class KeyPool:
                 # Drop stale or unusable affinity; we'll re-pick below.
                 del self._affinity[affinity_key]
 
-            idx = self._pick_least_loaded_locked(now)
+            idx = self._pick_first_available_locked(now)
             if idx is None:
                 raise KeyPoolExhausted(
-                    f"All {len(self._keys)} keys for provider "
-                    f"{self._provider_label!r} are in cooldown"
+                    f"All {len(self._keys)} keys for provider {self._provider_label!r} are muted"
                 )
 
             self._affinity[affinity_key] = _Affinity(
@@ -140,19 +144,21 @@ class KeyPool:
             self._keys[idx].request_count += 1
             return self._keys[idx].key, Lease(idx, affinity_key)
 
-    def _pick_least_loaded_locked(self, now: float) -> int | None:
-        """Return the index of the lowest-request_count non-cooled key, or None."""
-        best_idx: int | None = None
-        best_count: int | None = None
+    def _pick_first_available_locked(self, now: float) -> int | None:
+        """Return the index of the lowest-index key that is usable, or None.
+
+        Sequential selection: traffic concentrates on the earliest key that is
+        neither removed nor muted, and only advances to a later key once the
+        earlier ones are muted. ``request_count`` is no longer a selection
+        signal — it is retained purely for telemetry.
+        """
         for i, state in enumerate(self._keys):
             if state.removed:
                 continue
             if state.cooldown_until > now:
                 continue
-            if best_count is None or state.request_count < best_count:
-                best_idx = i
-                best_count = state.request_count
-        return best_idx
+            return i
+        return None
 
     def _maybe_sweep_locked(self, now: float) -> None:
         """Drop expired affinity entries when the dict grows past threshold."""
@@ -162,50 +168,22 @@ class KeyPool:
         for k in expired:
             del self._affinity[k]
 
-    def release(
-        self,
-        lease: Lease,
-        *,
-        status_code: int,
-        retry_after: str | None,
-    ) -> None:
-        """Report the request outcome so cooldowns can be updated.
+    def release(self, lease: Lease, *, status_code: int) -> None:
+        """Report the request outcome so an errored key can be muted.
+
+        Any non-success outcome mutes the leased key for ``MUTE_SECONDS``
+        (5 minutes): rate limit/quota (429), auth failures (401/403), other
+        4xx/5xx, and non-HTTP failures (``status_code == 0`` for timeouts and
+        connection errors). Only a 2xx response leaves the key available, so
+        sequential selection keeps using one key until it errors and then
+        advances to the next.
 
         Args:
             lease: the lease returned by ``acquire``.
-            status_code: HTTP status code (or 0 for non-HTTP failures, which
-                cause no cooldown change).
-            retry_after: raw ``Retry-After`` header value if any.
+            status_code: HTTP status code, or 0 for non-HTTP failures
+                (timeouts / network errors).
         """
-        if status_code != 429:
-            # Only 429 triggers cooldown. 2xx, other 4xx, 5xx, and network
-            # errors do not flag the key.
+        if 200 <= status_code < 300:
             return
         with self._lock:
-            now = time.monotonic()
-            cooldown = self._compute_cooldown_seconds(retry_after)
-            self._keys[lease.key_index].cooldown_until = now + cooldown
-
-    def _compute_cooldown_seconds(self, retry_after: str | None) -> float:
-        """Parse Retry-After per RFC 7231; clamp to [0, MAX_COOLDOWN_SECONDS]."""
-        if retry_after is None:
-            return self.DEFAULT_COOLDOWN_SECONDS
-
-        # Try integer seconds first
-        seconds: float | None
-        try:
-            seconds = float(retry_after.strip())
-        except (TypeError, ValueError, AttributeError):
-            seconds = None
-
-        # Fall back to HTTP-date
-        if seconds is None:
-            try:
-                dt = parsedate_to_datetime(retry_after)
-                seconds = dt.timestamp() - time.time()
-            except (TypeError, ValueError, IndexError):
-                return self.DEFAULT_COOLDOWN_SECONDS
-
-        if seconds is None or not math.isfinite(seconds) or seconds < 0:
-            return self.DEFAULT_COOLDOWN_SECONDS
-        return min(seconds, self.MAX_COOLDOWN_SECONDS)
+            self._keys[lease.key_index].cooldown_until = time.monotonic() + self.MUTE_SECONDS

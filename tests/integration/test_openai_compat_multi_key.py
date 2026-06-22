@@ -1,10 +1,10 @@
 """Integration tests for multi-key rotation in OpenAICompatAdapter.
 
 Covers:
-- 429 on key K cools K down and the next call goes to a different key.
-- All keys returning 429 in one call propagates the last 429.
+- 429 on key K mutes K and the next call goes to a different key.
+- Non-429 errors (e.g. 500) and network errors also mute K and rotate.
+- All keys erroring in one call propagates the last error.
 - Single-`api_key` routes do NOT create a key pool (legacy path).
-- Non-429 errors (e.g. 500) never put a key in cooldown.
 
 The pool integration routes through ``OpenAICompatAdapter._post_with_pool``,
 which calls ``self.http.json_post`` (NOT ``json_post_with_retry``) when a pool
@@ -131,23 +131,85 @@ async def test_single_api_key_legacy_path_unchanged():
     assert captured["headers"]["Authorization"] == "Bearer single-key"
 
 
-async def test_non_429_error_does_not_cooldown():
-    """A 500 error must not place a key in cooldown."""
+async def test_multi_key_rotates_on_non_429_error():
+    """First key 500s, second key returns 200; the 500 mutes only the first key."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
-    async def server_err(url, json, headers, timeout):
+    success_payload = {
+        "id": "x",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        "usage": {},
+    }
+
+    call_count = {"n": 0}
+
+    async def fake_json_post(url, json, headers, timeout):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            assert headers["Authorization"] == "Bearer k1"
+            raise _make_response_error(500)
+        assert headers["Authorization"] == "Bearer k2"
+        return success_payload
+
+    with patch.object(adapter.http, "json_post", side_effect=fake_json_post):
+        result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert call_count["n"] == 2
+    assert "choices" in result
+    # k1 was muted by the 500; k2 served the request and stayed clean.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_multi_key_rotates_on_network_error():
+    """A connection error (no HTTP status) mutes the key and rotates."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    success_payload = {
+        "id": "x",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        "usage": {},
+    }
+
+    call_count = {"n": 0}
+
+    async def fake_json_post(url, json, headers, timeout):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            assert headers["Authorization"] == "Bearer k1"
+            raise aiohttp.ServerDisconnectedError("connection reset")
+        assert headers["Authorization"] == "Bearer k2"
+        return success_payload
+
+    with patch.object(adapter.http, "json_post", side_effect=fake_json_post):
+        result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert call_count["n"] == 2
+    assert "choices" in result
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_all_keys_error_propagates_last_error():
+    """Every key 500s in one call -> all keys muted, the last 500 propagates."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    async def always_500(url, json, headers, timeout):
         raise _make_response_error(500)
 
     with (
-        patch.object(adapter.http, "json_post", side_effect=server_err),
-        pytest.raises(aiohttp.ClientResponseError),
+        patch.object(adapter.http, "json_post", side_effect=always_500),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
     ):
         await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
-    # Neither key entered cooldown.
+    assert exc_info.value.status == 500
+    # Both keys entered cooldown.
     assert adapter._key_pool is not None
-    assert adapter._key_pool._keys[0].cooldown_until == 0
-    assert adapter._key_pool._keys[1].cooldown_until == 0
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until > 0
 
 
 def _make_stream_gen(
