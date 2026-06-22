@@ -196,13 +196,18 @@ def _message_text(content: Any) -> str | None:
 
 
 def _first_sentence(text: str) -> str:
-    """Return the leading sentence of ``text`` (up to the first ``.!?`` or newline)."""
+    """Return the leading sentence of ``text`` (up to the first ``.!?`` or newline).
+
+    Leading whitespace is ignored first, so a prompt that begins with a blank
+    line (common in triple-quoted templates) does not yield an empty sentence.
+    """
+    text = text.lstrip()
     match = re.search(r"[.!?\n]", text)
     return text[: match.start()] if match else text
 
 
 def _wrapper_client_from_first_sentence(text: str) -> str | None:
-    """Return a wrapper client's canonical name if its marker is in the first sentence.
+    r"""Return a wrapper client's canonical name if its marker is in the first sentence.
 
     Wrapper clients (openClaw/Hermes/pi) name themselves by a distinctive marker
     in the opening sentence and typically embed the opener of the agent they
@@ -210,9 +215,13 @@ def _wrapper_client_from_first_sentence(text: str) -> str | None:
     matched ahead of the ``"You are <Name>"`` opener and reported instead of the
     wrapped agent. Only these unambiguous markers are matched here — common
     agents are left to the opener so an incidental mention does not override a
-    genuinely declared identity. Matching is case-insensitive, on a word
-    boundary, and scoped to the opening sentence, so a marker deeper in a long
-    prompt (or a substring such as ``"pi"`` inside ``"API"``) does not match.
+    genuinely declared identity. Matching is case-insensitive and scoped to the
+    opening sentence, so a marker deeper in a long prompt does not match.
+
+    ``openclaw``/``hermes`` are distinctive enough to match on a word boundary.
+    ``pi`` is too short and ambiguous for a bare match (it would catch
+    ``"explains pi"`` and collapse names like ``"Pi-Labs"`` since ``\b`` treats
+    a hyphen as a boundary), so it requires the wrapper phrase ``"inside pi"``.
     """
     sentence = _first_sentence(text).lower()
 
@@ -223,7 +232,7 @@ def _wrapper_client_from_first_sentence(text: str) -> str | None:
         return "openClaw"
     if has("hermes"):
         return "Hermes"
-    if has("pi"):
+    if re.search(r"\binside\s+pi\b", sentence):
         return "pi"
     return None
 

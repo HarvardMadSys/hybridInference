@@ -197,3 +197,25 @@ def test_keyword_requires_word_boundary() -> None:
 def test_keyword_from_anthropic_system_field() -> None:
     messages = [{"role": "user", "content": "hi"}]
     assert agent_name_from_prompt(messages, system="You are Hermes, a CLI.") == "Hermes"
+
+
+def test_wrapper_marker_found_after_leading_blank_line() -> None:
+    # Triple-quoted templates often begin with a newline; the leading blank
+    # line must not hide the wrapper marker behind an empty first "sentence".
+    prompt = [{"role": "system", "content": "\nYou are Claude Code, running under openClaw."}]
+    assert agent_name_from_prompt(prompt) == "openClaw"
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        # A bare "pi" must not be treated as the wrapper marker.
+        ("You are a math assistant that explains pi.", None),
+        # A declared name containing "pi" is reported as declared, not collapsed.
+        ("You are Pi-Labs, a research lab.", "Pi-Labs"),
+        # The unambiguous wrapper phrase still matches.
+        ("You are an expert coding assistant operating inside pi", "pi"),
+    ],
+)
+def test_pi_wrapper_requires_unambiguous_phrase(content: str, expected: str | None) -> None:
+    assert agent_name_from_prompt([{"role": "system", "content": content}]) == expected
