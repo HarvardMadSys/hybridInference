@@ -1109,6 +1109,78 @@ class TestRouteWiseLayer2:
 
         assert router._mean_ttft_sec("test-model:api-a", now) == pytest.approx(30.05)
 
+    def test_latency_history_prior_used_when_live_window_empty(self):
+        """Cold endpoints use successful history before the configured fallback."""
+        config = RouteWiseConfig(
+            latency_window_sec=10.0,
+            latency_history_prior_window_sec=3600.0,
+            latency_unprofiled_ttft_ms=5000.0,
+        )
+        router, _api_a, _api_b = _make_router_with_two_api(config)
+
+        counts = router.bootstrap_from_log_rows(
+            [
+                {
+                    "timestamp": 100.0,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": 250,
+                    "latency_ms": 700,
+                    "status_code": 200,
+                    "prompt_tokens": 100,
+                    "completion_tokens": 10,
+                }
+            ],
+            include_envelope=False,
+        )
+
+        assert counts["latency_prior_samples"] == 1
+        assert router._mean_ttft_sec("test-model:api-a", 1000.0) == pytest.approx(0.25)
+        assert router._latency_estimate("test-model:api-a", 1000.0)[1] == "history_prior"
+        fallback_value, fallback_source = router._latency_estimate("test-model:api-b", 1000.0)
+        assert fallback_value == pytest.approx(5.0)
+        assert fallback_source == "fallback"
+
+    async def test_probe_success_updates_profile_and_store(self):
+        """Active probe successes warm the latency profile and persist samples."""
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            yield "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+        store = MagicMock()
+        store.insert_routewise_probe_sample = AsyncMock()
+        router.attach_operational_store(store)
+
+        results = await router.run_probe_once(endpoint_id="test-model:api-a", idle_only=False)
+
+        assert len(results) == 1
+        assert results[0].ok is True
+        assert results[0].ttft_ms is not None
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+        store.insert_routewise_probe_sample.assert_awaited_once()
+
+    async def test_probe_failure_records_error_penalty(self):
+        """Active probe failures use the same 60s error penalty as traffic."""
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            raise TimeoutError("probe timed out")
+            yield ""  # pragma: no cover
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+
+        results = await router.run_probe_once(endpoint_id="test-model:api-a", idle_only=False)
+
+        assert len(results) == 1
+        assert results[0].ok is False
+        assert router._mean_ttft_sec("test-model:api-a", time.time()) == pytest.approx(60.0)
+
     def test_bootstrap_from_log_rows_warms_latency_and_envelope(self):
         """Startup history replay warms profiles with the same online semantics."""
         router, _api_a, _api_b = _make_router_with_two_api()
@@ -1156,6 +1228,7 @@ class TestRouteWiseLayer2:
             "latency_events": 2,
             "failed_attempts": 1,
             "envelope_samples": 1,
+            "latency_prior_samples": 1,
         }
         profile_a = router._latency_profiles["test-model:api-a"]
         profile_b = router._latency_profiles["test-model:api-b"]

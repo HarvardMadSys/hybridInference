@@ -372,6 +372,7 @@ class TestHedgedAdapterStreaming:
         # Both produce content immediately with no delay.
         primary = _make_fake_adapter(
             provider="primary",
+            endpoint_id="test:primary",
             stream_chunks=[
                 'data: {"choices":[{"delta":{"content":"p-content"}}]}\n\n',
             ],
@@ -379,6 +380,7 @@ class TestHedgedAdapterStreaming:
         )
         backup = _make_fake_adapter(
             provider="backup",
+            endpoint_id="test:backup",
             stream_chunks=[
                 'data: {"choices":[{"delta":{"content":"b-content"}}]}\n\n',
             ],
@@ -398,6 +400,8 @@ class TestHedgedAdapterStreaming:
         # Primary should win the tiebreak.
         assert "p-content" in combined
         assert "primary" in sink.successes
+        assert "test:primary" in hedged.leg_first_content_ttft_ms
+        assert hedged.leg_first_content_ttft_ms["test:primary"] >= 0.0
 
     @pytest.mark.asyncio
     async def test_pre_content_chunks_forwarded(self):
@@ -879,6 +883,38 @@ class TestRouterHedgeMode:
         assert routewise["hedged"] is True
         assert routewise["backup_won"] is True
         assert routewise["hedge_winner"] == "backup"
+
+    @pytest.mark.asyncio
+    async def test_hedge_loser_first_token_warms_backup_profile(self):
+        """A dispatched backup that loses after first token feeds the profile."""
+        router, api_a, api_b = _make_router_with_two_api(
+            RouteWiseConfig(latency_hedge_mode="probability_target")
+        )
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 200.0)
+        before_primary = router._latency_profiles["test-model:api-a"].sample_count(now)
+        before_backup = router._latency_profiles["test-model:api-b"].sample_count(now)
+
+        hedged = HedgedAdapter(
+            primary=api_a,
+            backup=api_b,
+            hedge_threshold_sec=0.0,
+            event_sink=router,
+        )
+        hedged.hedge_triggered = True
+        hedged.leg_first_content_ttft_ms = {
+            "test-model:api-a": 10.0,
+            "test-model:api-b": 20.0,
+        }
+
+        router._record_hedge_explorer_samples(hedged)
+
+        after = time.time()
+        assert router._latency_profiles["test-model:api-a"].sample_count(after) == before_primary
+        assert router._latency_profiles["test-model:api-b"].sample_count(after) == before_backup + 1
+        assert "test-model:api-b" in router._latency_history_priors_ms
 
     @pytest.mark.asyncio
     async def test_probability_target_can_dispatch_concurrency_backup(self):

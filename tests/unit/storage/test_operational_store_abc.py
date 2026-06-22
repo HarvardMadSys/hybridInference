@@ -104,3 +104,29 @@ def test_provider_route_candidate_signatures():
         "model_id",
         "route_id",
     ]
+
+
+def test_routewise_probe_sample_signatures():
+    assert list(inspect.signature(OperationalStore.insert_routewise_probe_sample).parameters) == [
+        "self",
+        "model_id",
+        "endpoint_id",
+        "ttft_ms",
+        "ok",
+        "error",
+        "cost_usd",
+        "checked_at",
+    ]
+    assert list(inspect.signature(OperationalStore.list_routewise_probe_samples).parameters) == [
+        "self",
+        "model_id",
+        "endpoint_id",
+        "since",
+        "limit",
+    ]
+    assert list(
+        inspect.signature(OperationalStore.purge_routewise_probe_samples_older_than).parameters
+    ) == [
+        "self",
+        "days",
+    ]

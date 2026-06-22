@@ -261,6 +261,7 @@ class TestBootstrapInitialization:
         mock_db_logger.pool = object()
         pg_store = AsyncMock()
         cached_store = MagicMock()
+        cached_store.list_routewise_probe_samples = AsyncMock(return_value=[])
         log_store = MagicMock()
 
         async def record_routewise_bootstrap(
@@ -320,7 +321,7 @@ class TestBootstrapInitialization:
 
         assert services.managed_routers == [runtime_routewise]
         assert events == ["configs", "bootstrap:runtime-m", "start"]
-        assert bootstrap_logs.await_count == 2
+        assert bootstrap_logs.await_count == 3
         runtime_call = bootstrap_logs.await_args_list[1]
         assert runtime_call.args[0] is log_store
         assert runtime_call.args[1] == [runtime_routewise]

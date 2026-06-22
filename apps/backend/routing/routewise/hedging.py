@@ -112,6 +112,7 @@ class HedgedAdapter(BaseAdapter):
         self.hedge_delay_sec: float | None = None
         self.hedge_success_probability: float | None = None
         self.failed_attempts: list[dict[str, str]] = []
+        self.leg_first_content_ttft_ms: dict[str, float] = {}
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
         self._stream_backup_gen: AsyncGenerator[str, None] | None = None
 
@@ -379,6 +380,19 @@ class HedgedAdapter(BaseAdapter):
         primary_error: BaseException | None = None
         checkpoint_index = 0
         schedule_start = asyncio.get_running_loop().time()
+        backup_start: float | None = None
+
+        def _record_first_content_ttft(
+            adapter: BaseAdapter | None,
+            started_at: float | None,
+        ) -> None:
+            if adapter is None or started_at is None:
+                return
+            endpoint_id = _endpoint_id_from_adapter(adapter)
+            self.leg_first_content_ttft_ms.setdefault(
+                endpoint_id,
+                max(0.0, (asyncio.get_running_loop().time() - started_at) * 1000.0),
+            )
 
         async def _checkpoint_timer(elapsed_sec: float) -> float:
             wait_remaining = schedule_start + elapsed_sec - asyncio.get_running_loop().time()
@@ -395,11 +409,12 @@ class HedgedAdapter(BaseAdapter):
             return asyncio.ensure_future(_checkpoint_timer(elapsed_sec))
 
         def _start_stream_backup(elapsed_sec: float) -> bool:
-            nonlocal backup_gen, backup_provider, backup_started, backup_next_task
+            nonlocal backup_gen, backup_provider, backup_started, backup_next_task, backup_start
             dispatch = self._start_backup_at(elapsed_sec)
             if dispatch is None:
                 return False
             backup_started = True
+            backup_start = asyncio.get_running_loop().time()
             self._stream_backup_dispatch = dispatch
             self._stream_backup_gen = dispatch.backup.stream_chat_completion(
                 messages,
@@ -450,6 +465,7 @@ class HedgedAdapter(BaseAdapter):
                         chunk = primary_next_task.result()
                         primary_buffer.append(chunk)
                         if _has_non_empty_content(chunk):
+                            _record_first_content_ttft(self.primary, schedule_start)
                             primary_has_content = True
                     except StopAsyncIteration:
                         primary_done = True
@@ -481,6 +497,7 @@ class HedgedAdapter(BaseAdapter):
                         chunk = backup_next_task.result()
                         backup_buffer.append(chunk)
                         if _has_non_empty_content(chunk):
+                            _record_first_content_ttft(self.backup, backup_start)
                             backup_has_content = True
                     except StopAsyncIteration:
                         backup_next_task = None

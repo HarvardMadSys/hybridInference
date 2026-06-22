@@ -147,6 +147,10 @@ async def _bootstrap_routewise_from_logs(
         if not model_ids or max_rows <= 0:
             continue
         latency_window_sec = max(float(getattr(rw.config, "latency_window_sec", 0.0) or 0.0), 1.0)
+        latency_history_sec = max(
+            float(getattr(rw.config, "latency_history_prior_window_sec", 0.0) or 0.0),
+            latency_window_sec,
+        )
         envelope_window_sec = max(
             float(getattr(rw.config, "envelope_window_hours", 0.0) or 0.0) * 3600.0,
             1.0,
@@ -154,7 +158,7 @@ async def _bootstrap_routewise_from_logs(
         try:
             latency_rows = await log_store.get_routewise_bootstrap_rows(
                 model_ids=model_ids,
-                since=now - dt.timedelta(seconds=latency_window_sec),
+                since=now - dt.timedelta(seconds=latency_history_sec),
                 limit=max_rows,
             )
             latency_counts = rw.bootstrap_from_log_rows(
@@ -187,6 +191,56 @@ async def _bootstrap_routewise_from_logs(
         except Exception:
             logger.warning(
                 "RouteWise DB bootstrap failed for models %s",
+                model_ids,
+                exc_info=True,
+            )
+
+
+async def _bootstrap_routewise_from_probe_samples(
+    operational_store: Any,
+    routewise_routers: list[Any],
+    model_ids_by_router: dict[int, set[str]],
+) -> None:
+    """Best-effort warmup of RouteWise latency state from persisted probes."""
+    if operational_store is None:
+        return
+    now = dt.datetime.now(dt.timezone.utc)
+    for rw in routewise_routers:
+        if not getattr(rw.config, "db_bootstrap_enabled", True):
+            continue
+        model_ids = sorted(model_ids_by_router.get(id(rw), set()))
+        max_rows = max(int(getattr(rw.config, "db_bootstrap_max_rows", 0) or 0), 0)
+        if not model_ids or max_rows <= 0:
+            continue
+        latency_window_sec = max(float(getattr(rw.config, "latency_window_sec", 0.0) or 0.0), 1.0)
+        history_sec = max(
+            float(getattr(rw.config, "latency_history_prior_window_sec", 0.0) or 0.0),
+            latency_window_sec,
+        )
+        try:
+            rows = []
+            per_model_limit = max(max_rows // max(len(model_ids), 1), 1)
+            for model_id in model_ids:
+                rows.extend(
+                    await operational_store.list_routewise_probe_samples(
+                        model_id=model_id,
+                        since=now - dt.timedelta(seconds=history_sec),
+                        limit=per_model_limit,
+                    )
+                )
+            rows.sort(key=lambda row: row.get("checked_at") or now)
+            counts = rw.bootstrap_from_probe_rows(rows[-max_rows:])
+            logger.info(
+                "RouteWise probe bootstrap replayed rows=%d latency_events=%d "
+                "latency_prior_samples=%d model_ids=%s",
+                counts["rows"],
+                counts["latency_events"],
+                counts["latency_prior_samples"],
+                model_ids,
+            )
+        except Exception:
+            logger.warning(
+                "RouteWise probe bootstrap failed for models %s",
                 model_ids,
                 exc_info=True,
             )
@@ -555,6 +609,11 @@ async def initialize() -> AppServices:
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
 
+    for rw in routewise_routers:
+        attach_store = getattr(rw, "attach_operational_store", None)
+        if callable(attach_store):
+            attach_store(operational_store)
+
     # Wire the operational store into the global Slack-alert snooze so admins
     # can pause alerting from the dashboard. Safe with a None store (no-op).
     from serving.observability.alert_snooze import init_alert_snooze
@@ -566,6 +625,11 @@ async def initialize() -> AppServices:
         routewise_routers,
         routewise_model_ids_by_router,
         routewise_donor_overrides_by_router,
+    )
+    await _bootstrap_routewise_from_probe_samples(
+        operational_store,
+        routewise_routers,
+        routewise_model_ids_by_router,
     )
 
     # Ensure a shared HTTP client is created lazily; no-op here.
@@ -643,6 +707,10 @@ async def initialize() -> AppServices:
                 if id(router_obj) not in existing_routewise_ids
             ]
             if new_routewise_routers:
+                for rw in new_routewise_routers:
+                    attach_store = getattr(rw, "attach_operational_store", None)
+                    if callable(attach_store):
+                        attach_store(operational_store)
                 await _bootstrap_routewise_from_logs(
                     log_store,
                     new_routewise_routers,
@@ -652,6 +720,11 @@ async def initialize() -> AppServices:
                 routewise_routers = updated_routewise_routers
                 routewise_model_ids_by_router = updated_routewise_model_ids_by_router
                 routewise_donor_overrides_by_router = updated_routewise_donor_overrides_by_router
+                await _bootstrap_routewise_from_probe_samples(
+                    operational_store,
+                    new_routewise_routers,
+                    updated_routewise_model_ids_by_router,
+                )
             restored_routewise_model_ids = await apply_persisted_provider_route_candidates(
                 provider_route_services,
                 operational_store,
@@ -670,8 +743,17 @@ async def initialize() -> AppServices:
                     managed_routers,
                 )
                 if runtime_routewise_routers:
+                    for rw in runtime_routewise_routers:
+                        attach_store = getattr(rw, "attach_operational_store", None)
+                        if callable(attach_store):
+                            attach_store(operational_store)
                     await _bootstrap_routewise_from_logs(
                         log_store,
+                        runtime_routewise_routers,
+                        runtime_routewise_model_ids_by_router,
+                    )
+                    await _bootstrap_routewise_from_probe_samples(
+                        operational_store,
                         runtime_routewise_routers,
                         runtime_routewise_model_ids_by_router,
                     )
@@ -682,6 +764,26 @@ async def initialize() -> AppServices:
                             known_routewise_ids.add(id(router_obj))
                     for router_id, model_ids in runtime_routewise_model_ids_by_router.items():
                         routewise_model_ids_by_router.setdefault(router_id, set()).update(model_ids)
+            (
+                routewise_routers,
+                routewise_model_ids_by_router,
+                routewise_donor_overrides_by_router,
+            ) = _collect_routewise_routers(model_router_registry, model_infos, managed_routers)
+            for rw in routewise_routers:
+                attach_store = getattr(rw, "attach_operational_store", None)
+                if callable(attach_store):
+                    attach_store(operational_store)
+            await _bootstrap_routewise_from_logs(
+                log_store,
+                routewise_routers,
+                routewise_model_ids_by_router,
+                routewise_donor_overrides_by_router,
+            )
+            await _bootstrap_routewise_from_probe_samples(
+                operational_store,
+                routewise_routers,
+                routewise_model_ids_by_router,
+            )
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider route configs at boot: {exc}")
 

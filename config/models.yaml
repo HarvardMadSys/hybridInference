@@ -414,9 +414,16 @@ models:
       # output_min_global_samples: 3
       # latency_slo_sec: 3.0
       # latency_window_sec: 900.0
+      # latency_history_prior_window_sec: 86400.0
       # latency_max_samples_per_profile: 5000
       # latency_min_samples: 10
       # latency_unprofiled_ttft_ms: 5000.0
+      # routewise_probe_enabled: false
+      # routewise_probe_interval_sec: 300.0
+      # routewise_probe_timeout_sec: 30.0
+      # routewise_probe_idle_only: true
+      # routewise_probe_idle_threshold_sec: 900.0
+      # routewise_probe_max_concurrency: 1
       # prefix_cache_cost_adjustment_enabled: false
     # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:

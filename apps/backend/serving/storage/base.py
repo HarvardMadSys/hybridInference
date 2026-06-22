@@ -842,6 +842,37 @@ class OperationalStore(ABC):
     ) -> bool:
         """Atomically delete a route candidate and any matching override row."""
 
+    # -- routewise probes ----------------------------------------------------
+
+    @abstractmethod
+    async def insert_routewise_probe_sample(
+        self,
+        *,
+        model_id: str,
+        endpoint_id: str,
+        ttft_ms: float | None,
+        ok: bool,
+        error: str | None,
+        cost_usd: float | None,
+        checked_at: datetime | None = None,
+    ) -> None:
+        """Persist one active RouteWise latency probe outcome."""
+
+    @abstractmethod
+    async def list_routewise_probe_samples(
+        self,
+        *,
+        model_id: str | None = None,
+        endpoint_id: str | None = None,
+        since: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[Row]:
+        """Return RouteWise probe samples ordered oldest-to-newest."""
+
+    @abstractmethod
+    async def purge_routewise_probe_samples_older_than(self, days: int) -> int:
+        """Delete old RouteWise probe samples and return affected row count."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

@@ -84,7 +84,10 @@ class ProviderProfile:
             return 0.0
 
         f_success = success_within / success_count
-        success_rate = 1.0 - (error_count / len(self._events))
+        # Denominator counts real outcomes (timed successes + errors); a success
+        # recorded with a non-positive TTFT is not a real outcome and must not
+        # inflate it, which would otherwise deflate the CDF.
+        success_rate = 1.0 - (error_count / (success_count + error_count))
         return success_rate * f_success
 
     def error_rate(self, current_time: float) -> float:
@@ -143,6 +146,13 @@ class ProviderProfile:
         successes = sum(1 for _, ttft, e in self._events if e is None and ttft > 0)
         errors = sum(1 for _, _ttft, e in self._events if e is not None)
         return successes + errors
+
+    def last_event_time(self, current_time: float) -> float | None:
+        """Return the newest retained event timestamp, or None when empty."""
+        self._prune(current_time)
+        if not self._events:
+            return None
+        return self._events[-1][0]
 
     def _prune(self, current_time: float) -> None:
         """Remove samples outside the time window."""

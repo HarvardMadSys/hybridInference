@@ -732,9 +732,12 @@ class RoutewiseSettingItem(BaseModel):
     key: Literal[
         "routewise_budget_alpha",
         "routewise_latency_slo_sec",
+        "routewise_latency_min_samples",
+        "routewise_probe_enabled",
+        "routewise_probe_interval_sec",
     ]
     value: Any
-    value_type: Literal["str", "int", "float"]
+    value_type: Literal["str", "int", "float", "bool"]
     default_value: Any
     description: str
     min: int | float | None = None
@@ -745,6 +748,47 @@ class ListRoutewiseSettingsResponse(BaseModel):
     """Response payload for listing Routewise runtime settings."""
 
     settings: list[RoutewiseSettingItem]
+
+
+class RoutewiseProbeSampleItem(BaseModel):
+    """Persisted RouteWise active-probe sample."""
+
+    model_id: str
+    endpoint_id: str
+    ttft_ms: float | None = None
+    ok: bool
+    error: str | None = None
+    checked_at: datetime
+
+
+class ListRoutewiseProbeSamplesResponse(BaseModel):
+    """Response payload for listing recent RouteWise probe samples."""
+
+    samples: list[RoutewiseProbeSampleItem]
+
+
+class RunRoutewiseProbeRequest(BaseModel):
+    """Request payload for manually running RouteWise probes."""
+
+    model_id: str | None = None
+    endpoint_id: str | None = None
+    idle_only: bool = False
+
+
+class RoutewiseProbeRunResult(BaseModel):
+    """Result of one manually triggered RouteWise probe."""
+
+    model_id: str
+    endpoint_id: str
+    ok: bool
+    ttft_ms: float | None = None
+    error: str | None = None
+
+
+class RunRoutewiseProbeResponse(BaseModel):
+    """Response payload for a manual RouteWise probe run."""
+
+    results: list[RoutewiseProbeRunResult]
 
 
 class ModelVisibilityItem(BaseModel):
@@ -1022,6 +1066,7 @@ __all__ = [
     "ListProviderApiKeyProvidersResponse",
     "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
+    "ListRoutewiseProbeSamplesResponse",
     "ListRoutewiseSettingsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
@@ -1039,7 +1084,11 @@ __all__ = [
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
     "RouteWeightItem",
+    "RoutewiseProbeRunResult",
+    "RoutewiseProbeSampleItem",
     "RoutewiseSettingItem",
+    "RunRoutewiseProbeRequest",
+    "RunRoutewiseProbeResponse",
     "RuntimeSettingItem",
     "SparklineBucket",
     "StatusCounts",

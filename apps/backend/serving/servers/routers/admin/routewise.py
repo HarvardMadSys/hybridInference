@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,11 +15,16 @@ from serving.config.runtime_settings import (
 )
 from serving.schemas_admin import (
     ListRoutewiseSettingsResponse,
+    ListRoutewiseProbeSamplesResponse,
+    RoutewiseProbeRunResult,
+    RoutewiseProbeSampleItem,
     RoutewiseSettingItem,
+    RunRoutewiseProbeRequest,
+    RunRoutewiseProbeResponse,
     UpdateSettingRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
+from serving.servers.deps import get_operational_store, get_services, verify_admin_access
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin/routewise")
@@ -26,6 +32,9 @@ router = APIRouter(prefix="/admin/routewise")
 ROUTEWISE_KEYS = (
     "routewise_budget_alpha",
     "routewise_latency_slo_sec",
+    "routewise_latency_min_samples",
+    "routewise_probe_enabled",
+    "routewise_probe_interval_sec",
 )
 
 
@@ -51,6 +60,25 @@ def _serialize_existing_value(raw: str | None, expected_type: str) -> Any:
     return raw
 
 
+def _routewise_routers_for_probe(services: Any, model_id: str | None) -> list[RouteWiseRouter]:
+    registry = getattr(services, "model_router_registry", None)
+    if registry is None:
+        return []
+    if model_id:
+        router_obj = registry.get_router(model_id)
+        return [router_obj] if isinstance(router_obj, RouteWiseRouter) else []
+    for configured_model_id in registry.configured_model_ids():
+        if registry.get_router_name(configured_model_id) == "routewise":
+            registry.get_router(configured_model_id)
+    seen: set[int] = set()
+    routers: list[RouteWiseRouter] = []
+    for router_obj in registry.cached_routers():
+        if isinstance(router_obj, RouteWiseRouter) and id(router_obj) not in seen:
+            routers.append(router_obj)
+            seen.add(id(router_obj))
+    return routers
+
+
 async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings) -> None:
     """Refresh cached RouteWise router instances from current runtime settings."""
     services = getattr(request.app.state, "services", None)
@@ -63,6 +91,9 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
 
     budget_alpha = await rt.get_float("routewise_budget_alpha")
     latency_slo_sec = await rt.get_float("routewise_latency_slo_sec")
+    latency_min_samples = await rt.get_int("routewise_latency_min_samples")
+    routewise_probe_enabled = await rt.get_bool("routewise_probe_enabled")
+    routewise_probe_interval_sec = await rt.get_float("routewise_probe_interval_sec")
 
     for model_id in registry.configured_model_ids():
         if registry.get_router_name(model_id) != "routewise":
@@ -74,7 +105,11 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
             router.apply_runtime_overrides(
                 budget_alpha=budget_alpha,
                 latency_slo_sec=latency_slo_sec,
+                latency_min_samples=latency_min_samples,
+                routewise_probe_enabled=routewise_probe_enabled,
+                routewise_probe_interval_sec=routewise_probe_interval_sec,
             )
+            await router.refresh_probe_task()
 
 
 @router.get("/settings", response_model=ListRoutewiseSettingsResponse)
@@ -181,4 +216,94 @@ async def update_routewise_setting_endpoint(
         description=entry["description"],
         min=entry.get("min"),
         max=entry.get("max"),
+    )
+
+
+@router.get("/probes", response_model=ListRoutewiseProbeSamplesResponse)
+async def list_routewise_probe_samples_endpoint(
+    model_id: str | None = None,
+    endpoint_id: str | None = None,
+    since_seconds: int = 86_400,
+    limit: int = 200,
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ListRoutewiseProbeSamplesResponse:
+    """List recent persisted RouteWise active-probe samples."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=max(int(since_seconds), 1))
+    rows = await op_store.list_routewise_probe_samples(
+        model_id=model_id,
+        endpoint_id=endpoint_id,
+        since=since,
+        limit=max(min(int(limit), 1000), 1),
+    )
+    return ListRoutewiseProbeSamplesResponse(
+        samples=[
+            RoutewiseProbeSampleItem(
+                model_id=str(row["model_id"]),
+                endpoint_id=str(row["endpoint_id"]),
+                ttft_ms=(float(row["ttft_ms"]) if row.get("ttft_ms") is not None else None),
+                ok=bool(row["ok"]),
+                error=row.get("error"),
+                checked_at=row["checked_at"],
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.post("/probes/run", response_model=RunRoutewiseProbeResponse)
+async def run_routewise_probe_endpoint(
+    request: Request,
+    payload: RunRoutewiseProbeRequest,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> RunRoutewiseProbeResponse:
+    """Manually run RouteWise latency probes against live route candidates."""
+    routers = _routewise_routers_for_probe(services, payload.model_id)
+    if not routers:
+        raise HTTPException(status_code=404, detail="No RouteWise router found")
+    results = []
+    for router_obj in routers:
+        attach_store = getattr(router_obj, "attach_operational_store", None)
+        if callable(attach_store):
+            attach_store(op_store)
+        probe_model_id = payload.model_id
+        canonical = getattr(router_obj, "_canonical_model_id", None)
+        if callable(canonical) and probe_model_id:
+            probe_model_id = canonical(probe_model_id)
+        results.extend(
+            await router_obj.run_probe_once(
+                model_id=probe_model_id,
+                endpoint_id=payload.endpoint_id,
+                idle_only=payload.idle_only,
+            )
+        )
+    # Audit after probing so failures still return probe diagnostics to the UI.
+    await log_admin_action(
+        op_store,
+        get_client_ip(request),
+        "routewise_probes.run",
+        None,
+        {
+            "model_id": payload.model_id,
+            "endpoint_id": payload.endpoint_id,
+            "idle_only": payload.idle_only,
+            "result_count": len(results),
+            "admin_id": admin_id,
+        },
+    )
+    return RunRoutewiseProbeResponse(
+        results=[
+            RoutewiseProbeRunResult(
+                model_id=result.model_id,
+                endpoint_id=result.endpoint_id,
+                ok=result.ok,
+                ttft_ms=result.ttft_ms,
+                error=result.error,
+            )
+            for result in results
+        ]
     )

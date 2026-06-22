@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routewise.config import RouteWiseConfig
-from routing.routewise.router import RouteWiseRouter
+from routing.routewise.router import RouteWiseProbeResult, RouteWiseRouter
 from serving.config.runtime_settings import RuntimeSettings
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
@@ -64,6 +64,9 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
         side_effect=lambda key: {
             "routewise_budget_alpha": {"value": "0.6", "value_type": "float"},
             "routewise_latency_slo_sec": {"value": "1.5", "value_type": "float"},
+            "routewise_latency_min_samples": {"value": "10", "value_type": "int"},
+            "routewise_probe_enabled": {"value": "false", "value_type": "bool"},
+            "routewise_probe_interval_sec": {"value": "300.0", "value_type": "float"},
         }.get(key)
     )
 
@@ -75,11 +78,19 @@ async def test_list_routewise_settings_returns_curated_runtime_keys(admin_client
     assert response.status_code == 200
     items = response.json()["settings"]
     keys = [item["key"] for item in items]
-    assert keys == ["routewise_budget_alpha", "routewise_latency_slo_sec"]
+    assert keys == [
+        "routewise_budget_alpha",
+        "routewise_latency_slo_sec",
+        "routewise_latency_min_samples",
+        "routewise_probe_enabled",
+        "routewise_probe_interval_sec",
+    ]
     alpha = next(item for item in items if item["key"] == "routewise_budget_alpha")
     assert alpha["value"] == 0.6
     slo = next(item for item in items if item["key"] == "routewise_latency_slo_sec")
     assert slo["value"] == 1.5
+    probe_enabled = next(item for item in items if item["key"] == "routewise_probe_enabled")
+    assert probe_enabled["value"] is False
 
 
 @pytest.mark.asyncio
@@ -221,7 +232,7 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
 
 
 @pytest.mark.asyncio
-async def test_patch_routewise_latency_min_samples_no_longer_exposed(admin_client):
+async def test_patch_routewise_latency_min_samples_is_still_runtime_tunable(admin_client):
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(return_value=None)
 
@@ -231,8 +242,67 @@ async def test_patch_routewise_latency_min_samples_no_longer_exposed(admin_clien
         headers={"Authorization": "Bearer test-admin"},
     )
 
-    assert response.status_code == 404
-    assert "Unknown setting" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["value"] == 12
+
+
+@pytest.mark.asyncio
+async def test_list_routewise_probe_samples(admin_client):
+    client, op_store, _ = admin_client
+    op_store.list_routewise_probe_samples = AsyncMock(
+        return_value=[
+            {
+                "model_id": "test-model",
+                "endpoint_id": "test-model:api",
+                "ttft_ms": 123.4,
+                "ok": True,
+                "error": None,
+                "checked_at": "2026-06-22T00:00:00Z",
+            }
+        ]
+    )
+
+    response = await client.get(
+        "/admin/routewise/probes?model_id=test-model",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["samples"][0]["endpoint_id"] == "test-model:api"
+    op_store.list_routewise_probe_samples.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_routewise_probe_calls_live_router(admin_client):
+    client, op_store, _ = admin_client
+    router = RouteWiseRouter(config=RouteWiseConfig())
+    router.run_probe_once = AsyncMock(
+        return_value=[
+            RouteWiseProbeResult(
+                model_id="test-model",
+                endpoint_id="test-model:api",
+                ok=True,
+                ttft_ms=42.0,
+            )
+        ]
+    )
+    registry = ModelRouterRegistry(models_config={})
+    registry._cache["test-model"] = router
+    client._transport.app.state.services.model_router_registry = registry
+
+    response = await client.post(
+        "/admin/routewise/probes/run",
+        json={"model_id": "test-model", "endpoint_id": "test-model:api", "idle_only": False},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["ttft_ms"] == 42.0
+    router.run_probe_once.assert_awaited_once_with(
+        model_id="test-model",
+        endpoint_id="test-model:api",
+        idle_only=False,
+    )
 
 
 @pytest.mark.asyncio

@@ -570,6 +570,27 @@ class PostgresOperationalStore(OperationalStore):
             "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS pricing JSONB"
         )
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS routewise_probe_samples (
+                id BIGSERIAL PRIMARY KEY,
+                model_id TEXT NOT NULL,
+                endpoint_id TEXT NOT NULL,
+                ttft_ms DOUBLE PRECISION,
+                ok BOOLEAN NOT NULL,
+                error TEXT,
+                cost_usd DOUBLE PRECISION,
+                checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rw_probe_endpoint_time "
+            "ON routewise_probe_samples(endpoint_id, checked_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rw_probe_model_time "
+            "ON routewise_probe_samples(model_id, checked_at DESC)"
+        )
+
         # --- provider_api_keys ---
         # Runtime-managed upstream provider credentials added by admins
         # through the dashboard. Augments env-var-sourced keys at boot.
@@ -2260,6 +2281,68 @@ class PostgresOperationalStore(OperationalStore):
                 route_id,
             )
         return _parse_command_tag_count(tag) > 0
+
+    async def insert_routewise_probe_sample(
+        self,
+        *,
+        model_id: str,
+        endpoint_id: str,
+        ttft_ms: float | None,
+        ok: bool,
+        error: str | None,
+        cost_usd: float | None,
+        checked_at: datetime | None = None,
+    ) -> None:
+        """Persist one active RouteWise latency probe outcome."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO routewise_probe_samples "
+                "(model_id, endpoint_id, ttft_ms, ok, error, cost_usd, checked_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, NOW()))",
+                model_id,
+                endpoint_id,
+                ttft_ms,
+                ok,
+                error,
+                cost_usd,
+                checked_at,
+            )
+
+    async def list_routewise_probe_samples(
+        self,
+        *,
+        model_id: str | None = None,
+        endpoint_id: str | None = None,
+        since: datetime | None = None,
+        limit: int = 1000,
+    ) -> list[Row]:
+        """Return RouteWise probe samples ordered oldest-to-newest."""
+        limit = max(int(limit), 1)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, model_id, endpoint_id, ttft_ms, ok, error, cost_usd, checked_at "
+                "FROM routewise_probe_samples "
+                "WHERE ($1::text IS NULL OR model_id = $1) "
+                "AND ($2::text IS NULL OR endpoint_id = $2) "
+                "AND ($3::timestamptz IS NULL OR checked_at >= $3) "
+                "ORDER BY checked_at ASC "
+                "LIMIT $4",
+                model_id,
+                endpoint_id,
+                since,
+                limit,
+            )
+        return [dict(r) for r in rows]
+
+    async def purge_routewise_probe_samples_older_than(self, days: int) -> int:
+        """Delete old RouteWise probe samples and return affected row count."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM routewise_probe_samples "
+                "WHERE checked_at < NOW() - ($1::int * INTERVAL '1 day')",
+                max(int(days), 1),
+            )
+        return _parse_command_tag_count(tag)
 
     # -- cost counters -------------------------------------------------------
 
