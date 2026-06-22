@@ -1661,6 +1661,32 @@ class TestFetchOllama:
         assert result.ok is True
         assert any("session" in u.label.lower() for u in result.usages)
 
+    @pytest.mark.asyncio
+    async def test_managed_api_key_from_operational_store_is_probed(self, monkeypatch):
+        # Keys surfaced by _discover_provider_keys (admin Provider Keys flow /
+        # live KeyPool, minus disabled-env tombstones) must be probed, not just a
+        # raw env OLLAMA_API_KEY.
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        payload = {"session": {"percent": 9}}
+        with (
+            patch(
+                "serving.admin.provider_quotas._discover_provider_keys",
+                new=AsyncMock(return_value=[(1, "managed_ollama_key_xyz")]),
+            ) as mock_discover,
+            patch(
+                "serving.admin.provider_quotas.aiohttp.ClientSession",
+                return_value=_mock_aiohttp_get(status=200, json_data=payload),
+            ) as mock_session_cls,
+        ):
+            result = (await fetch_ollama(operational_store=object()))[0]
+        assert result.ok is True
+        assert mock_discover.call_args.args[0] == "ollama"
+        session = mock_session_cls.return_value.__aenter__.return_value
+        assert session.get.call_args.kwargs["headers"]["Authorization"] == (
+            "Bearer managed_ollama_key_xyz"
+        )
+
 
 class TestFetchFeatherless:
     @pytest.mark.asyncio

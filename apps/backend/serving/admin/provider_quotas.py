@@ -1162,7 +1162,7 @@ async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_ollama(_operational_store: Any | None = None) -> list[ProviderQuotaResult]:
+async def fetch_ollama(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch Ollama Cloud usage for all configured credentials.
 
     Prefers ``OLLAMA_API_KEY`` (Bearer auth, which does not expire) against the
@@ -1171,8 +1171,17 @@ async def fetch_ollama(_operational_store: Any | None = None) -> list[ProviderQu
     official account-usage API (ollama/ollama#15663, #15132, #16448), so the
     API-key probe typically 404s today and the cookie remains the live source;
     the ordering future-proofs the tile for when the endpoint ships.
+
+    API keys are resolved through ``_discover_provider_keys`` (like the other
+    managed-key fetchers) so admin-managed / live KeyPool keys are probed and
+    disabled-env tombstones are honored; the session cookie stays env-only.
     """
-    api_keys = _discover_env_keys("OLLAMA_API_KEY", "OLLAMA_API_KEY")
+    api_keys = await _discover_provider_keys(
+        "ollama",
+        "OLLAMA_API_KEY",
+        "OLLAMA_API_KEY",
+        operational_store,
+    )
     cookie_keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
 
     if api_keys:
