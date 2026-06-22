@@ -23,13 +23,10 @@ class TestAdminAnalyticsRoute:
         """
         # Configure the mock connection's fetchrow / fetch as awaitables so
         # the production code (which uses one connection sequentially) works.
-        # fetchrow is called twice, in order: active-users then turn averages.
+        # The active-users count and turn averages are a single fetchrow.
         mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
         mock_conn.fetchrow = AsyncMock(
-            side_effect=[
-                {"cnt": 7},
-                {"avg_turns": 12.5, "avg_user_turns": 6.0},
-            ]
+            return_value={"active_users": 7, "avg_turns": 12.5, "avg_user_turns": 6.0}
         )
         mock_conn.fetch = AsyncMock(return_value=[])
 
@@ -80,10 +77,7 @@ class TestAdminAnalyticsRoute:
         """AVG over only non-chat requests returns NULL → averages serialize as null."""
         mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
         mock_conn.fetchrow = AsyncMock(
-            side_effect=[
-                {"cnt": 0},
-                {"avg_turns": None, "avg_user_turns": None},
-            ]
+            return_value={"active_users": 0, "avg_turns": None, "avg_user_turns": None}
         )
 
         async def _fake_admin() -> str:
