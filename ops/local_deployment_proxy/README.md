@@ -39,7 +39,10 @@ python local_deployment_proxy/local_deployment_proxy.py
 # Local only
 ./local_deployment_proxy/local_deployment_service.sh start
 
-# With SSH reverse tunnel to a public LLM router
+# With SSH reverse tunnel to a public LLM router.
+# Uses autossh when installed so the tunnel auto-reconnects after a drop or a
+# router reboot; falls back to plain ssh (no auto-recover) with a warning if
+# autossh is missing — install it for durable tunnels (`apt-get install autossh`).
 SSH_HOST='spark2|internal.freeinference.org' REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
 
 # With API key auth
