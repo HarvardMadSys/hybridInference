@@ -1,3 +1,5 @@
+"""Export api_logs table to a zstd-compressed JSONL file."""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +12,7 @@ from typing import Any
 
 import asyncpg
 import dotenv
+import zstandard as zstd
 
 
 def _load_env(env_path: str | None = None) -> None:
@@ -35,16 +38,18 @@ def _convert(obj: Any) -> Any:
 
 async def _export_jsonl(pool: asyncpg.Pool, output_path: str) -> int:
     count = 0
-    with open(output_path, "w") as f:
+    cctx = zstd.ZstdCompressor()
+    with open(output_path, "wb") as raw, cctx.stream_writer(raw) as f:
         async with pool.acquire() as conn:
             async with conn.transaction():
                 async for row in conn.cursor("SELECT * FROM api_logs ORDER BY id"):
-                    f.write(json.dumps(dict(row), default=_convert) + "\n")
+                    f.write((json.dumps(dict(row), default=_convert) + "\n").encode())
                     count += 1
     return count
 
 
-async def main(output_path: str = "api_logs_export.jsonl") -> int:
+async def main(output_path: str = "api_logs_export.jsonl.zst") -> int:
+    """Connect to Postgres and export api_logs to a zstd-compressed JSONL file."""
     db_user = os.environ.get("DB_USER")
     db_password = os.environ.get("DB_PASSWORD", "")
     if not db_user:
@@ -73,12 +78,13 @@ async def main(output_path: str = "api_logs_export.jsonl") -> int:
 
 
 def cli() -> None:
+    """Parse CLI arguments and run the export."""
     parser = argparse.ArgumentParser(description="Export all api_logs rows to a JSONL file")
     parser.add_argument(
         "-o",
         "--output",
-        default="api_logs_export.jsonl",
-        help="Output JSONL file path (default: api_logs_export.jsonl)",
+        default="api_logs_export.jsonl.zst",
+        help="Output path for zstd-compressed JSONL (default: api_logs_export.jsonl.zst)",
     )
     parser.add_argument(
         "--env-file",

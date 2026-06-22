@@ -1,5 +1,6 @@
 """Pydantic schemas for admin API endpoints."""
 
+import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
@@ -535,6 +536,11 @@ class AdminRecentRequestItem(BaseModel):
     ip_source: str | None = None
     x_forwarded_for: str | None = None
     user_agent: str | None = None
+    # Calling agent's self-declared identity, parsed from the opening "You are
+    # <Name>" line of the system prompt (e.g. "Claude" from Claude Code). None
+    # when no such opener is present; the dashboard then falls back to deriving
+    # a client label from user_agent.
+    agent: str | None = None
     session_id: str | None = None
     request_surface: str | None = None
     model_id: str
@@ -651,7 +657,8 @@ class ProviderQuotaResult(BaseModel):
     """Result of querying a single upstream provider's quota."""
 
     name: str = Field(
-        ..., description="Lowercase identifier: chutes | zai | minimax | kimi | ollama"
+        ...,
+        description="Lowercase identifier: chutes | zai | minimax | kimi | ollama | featherless",
     )
     display_name: str = Field(..., description="Human-readable name")
     key_index: int | None = Field(
@@ -664,7 +671,7 @@ class ProviderQuotaResult(BaseModel):
     ok: bool = Field(..., description="True if quota fetch succeeded")
     error: str | None = Field(
         None,
-        description="Short reason code if !ok: 'auth_failed' | 'timeout' | 'not_configured' | 'parse_error' | 'unexpected'",
+        description="Short reason code if !ok: 'auth_failed' | 'plan_api_disabled' | 'timeout' | 'not_configured' | 'probe_unavailable' | 'parse_error' | 'unexpected'",
     )
     usages: list[ProviderQuotaUsage] = Field(default_factory=list)
 
@@ -723,8 +730,8 @@ class RoutewiseSettingItem(BaseModel):
     """A curated Routewise runtime setting with current value and metadata."""
 
     key: Literal[
+        "routewise_budget_alpha",
         "routewise_latency_slo_sec",
-        "routewise_latency_min_samples",
     ]
     value: Any
     value_type: Literal["str", "int", "float"]
@@ -812,6 +819,166 @@ class UpdateRouteWeightRequest(BaseModel):
     weight: float
 
 
+class ProviderRouteApiKeyRef(BaseModel):
+    """Masked API key reference used by provider route overrides."""
+
+    id: str | None = None
+    provider: str
+    label: str | None = None
+    key_prefix: str | None = None
+    source: Literal["default", "db", "env", "missing"]
+
+
+class ProviderRouteOption(BaseModel):
+    """Provider target available for route override selection."""
+
+    provider: str
+    label: str
+    kind: str
+    key_provider: str
+    default_base_url: str
+
+
+class OpenRouterProviderOption(BaseModel):
+    """OpenRouter backend provider pin available for OpenRouter targets."""
+
+    provider: str
+    label: str
+
+
+class ListOpenRouterProviderOptionsResponse(BaseModel):
+    """Response payload for OpenRouter backend providers available for one model."""
+
+    provider_model_id: str
+    providers: list[OpenRouterProviderOption]
+
+
+class ProviderRouteItem(BaseModel):
+    """Runtime provider target for one model route candidate."""
+
+    model_id: str
+    strategy: str
+    route_id: str
+    route_type: str
+    provider: str
+    upstream_provider: str
+    openrouter_provider: str | None = None
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    key_provider: str
+    base_url: str
+    api_key_id: str | None = None
+    api_key: ProviderRouteApiKeyRef
+    provider_model_id: str | None = None
+    quota_limit: int | None = Field(None, ge=1)
+    endpoint_id: str
+    yaml_weight: float
+    effective_weight: float
+    source: Literal["yaml", "override", "runtime"]
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+
+
+class ListProviderRoutesResponse(BaseModel):
+    """Response payload for listing provider routes for one model."""
+
+    model_id: str
+    strategy: str
+    provider_options: list[ProviderRouteOption]
+    openrouter_provider_options: list[OpenRouterProviderOption] = Field(default_factory=list)
+    routes: list[ProviderRouteItem]
+
+
+class ListAllProviderRoutesResponse(BaseModel):
+    """Response payload for listing provider routes across canonical models."""
+
+    provider_options: list[ProviderRouteOption]
+    openrouter_provider_options: list[OpenRouterProviderOption] = Field(default_factory=list)
+    routes: list[ProviderRouteItem]
+
+
+class UpdateProviderRouteStrategyRequest(BaseModel):
+    """Request payload for updating one model's router strategy."""
+
+    strategy: Literal["fixed", "routewise"]
+
+
+class CreateProviderRouteRequest(BaseModel):
+    """Request payload for adding one runtime provider route candidate."""
+
+    route_type: Literal["quota", "concurrency", "on_demand"]
+    upstream_provider: str = Field(..., min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str = Field(..., min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+    concurrency_limit: int | None = Field(None, ge=1)
+    weight: float = Field(1.0, gt=0)
+
+
+class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
+    """Request payload for creating a runtime model with its first provider route."""
+
+    model_id: str = Field(..., min_length=1, max_length=255)
+    strategy: Literal["fixed", "routewise"] = "fixed"
+    required_role: Literal["free", "pro", "internal", "admin"] = "admin"
+    pricing: dict[str, str] = Field(..., min_length=1)
+
+    @field_validator("model_id")
+    @classmethod
+    def validate_model_id(cls, value: str) -> str:
+        """Reject blank or control-character model identifiers."""
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("model_id must not be blank")
+        if any(ord(ch) < 32 or ch == "\x7f" for ch in cleaned):
+            raise ValueError("model_id must not contain control characters")
+        return cleaned
+
+    @field_validator("pricing")
+    @classmethod
+    def validate_pricing(cls, value: dict[str, str]) -> dict[str, str]:
+        """Require explicit, numeric pricing for runtime-created models."""
+        required_keys = ("prompt", "completion")
+        missing = [key for key in required_keys if key not in value]
+        if missing:
+            raise ValueError(f"pricing must include {', '.join(missing)}")
+        cleaned: dict[str, str] = {}
+        for key, raw in value.items():
+            key_text = str(key).strip()
+            raw_text = str(raw).strip()
+            if not key_text:
+                raise ValueError("pricing keys must not be blank")
+            try:
+                parsed = float(raw_text)
+            except ValueError as exc:
+                raise ValueError(f"pricing.{key_text} must be numeric") from exc
+            if not math.isfinite(parsed) or parsed < 0:
+                raise ValueError(f"pricing.{key_text} must be a non-negative finite number")
+            cleaned[key_text] = raw_text
+        return cleaned
+
+
+class UpdateProviderRouteRequest(BaseModel):
+    """Request payload for updating one provider route target."""
+
+    provider: str | None = Field(None, min_length=1, max_length=64)
+    upstream_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_provider: str | None = Field(None, min_length=1, max_length=64)
+    openrouter_sort: Literal["price", "throughput", "latency"] | None = None
+    base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key_id: str | None = Field(None, min_length=1, max_length=128)
+    provider_model_id: str | None = Field(None, min_length=1, max_length=512)
+    quota_limit: int | None = Field(None, ge=1)
+
+
+class VerifyProviderRouteResponse(BaseModel):
+    """Response payload for a provider route verification dry run."""
+
+    ok: bool = True
+
+
 # Rebuild models to ensure forward references are resolved when imported via FastAPI
 __all__ = [
     "APIKeyDetailResponse",
@@ -840,22 +1007,32 @@ __all__ = [
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
+    "CreateProviderRouteModelRequest",
+    "CreateProviderRouteRequest",
     "DeleteUserRequest",
     "DeleteUserResponse",
     "HardDeleteUserRequest",
     "HardDeleteUserResponse",
     "ListAPIKeysResponse",
+    "ListAllProviderRoutesResponse",
     "ListAllRouteWeightsResponse",
     "ListAuditLogResponse",
     "ListModelVisibilityResponse",
+    "ListOpenRouterProviderOptionsResponse",
+    "ListProviderApiKeyProvidersResponse",
+    "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
     "ListRoutewiseSettingsResponse",
     "ListSettingsResponse",
     "ListSignupAllowedDomainsResponse",
     "ListUsersResponse",
     "ModelVisibilityItem",
+    "OpenRouterProviderOption",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
+    "ProviderRouteApiKeyRef",
+    "ProviderRouteItem",
+    "ProviderRouteOption",
     "RejectUserRequest",
     "RejectUserResponse",
     "ResumeUserRequest",
@@ -871,6 +1048,8 @@ __all__ = [
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateModelVisibilityRequest",
+    "UpdateProviderRouteRequest",
+    "UpdateProviderRouteStrategyRequest",
     "UpdateRouteWeightRequest",
     "UpdateSettingRequest",
     "UpdateUserRequest",
@@ -880,6 +1059,9 @@ __all__ = [
     "UserDetailResponse",
     "UserListItem",
     "UsersSummaryResponse",
+    "VerifyProviderApiKeyRequest",
+    "VerifyProviderApiKeyResponse",
+    "VerifyProviderRouteResponse",
 ]
 
 
@@ -1102,12 +1284,25 @@ class ListProviderApiKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
     keys: list[ProviderApiKeyItem]
 
 
+class ListProviderApiKeyProvidersResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for listing providers that can accept runtime API keys."""
+
+    providers: list[str]
+
+
 class AddProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     """Request body for ``POST /admin/provider-keys``."""
 
     provider: str = Field(..., min_length=1, max_length=64)
     api_key: str = Field(..., min_length=1, max_length=4096)
     label: str | None = Field(None, max_length=255)
+
+
+class VerifyProviderApiKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for dry-run provider API key verification."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    api_key: str = Field(..., min_length=1, max_length=4096)
 
 
 class DisableProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -1141,6 +1336,36 @@ class DisableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimporte
     id: str
     provider: str
     pools_updated: int
+
+
+class EnableProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for re-enabling a disabled env-sourced provider API key."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+
+
+class EnableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/enable-env``."""
+
+    id: str
+    provider: str
+    pools_updated: int
+
+
+class SetProviderApiKeyStatusResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for enabling/disabling a DB-sourced provider API key."""
+
+    id: str
+    provider: str
+    status: Literal["active", "disabled"]
+    pools_updated: int
+
+
+class VerifyProviderApiKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/verify``."""
+
+    ok: bool = True
 
 
 # ============================================================

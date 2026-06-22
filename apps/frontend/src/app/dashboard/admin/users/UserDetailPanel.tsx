@@ -2,8 +2,9 @@
 
 import { hasRole } from '@/components/providers/AuthProvider';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import { UserRecentRequests } from './UserRecentRequests';
 
-function relTime(s: string | null): string {
+export function relTime(s: string | null): string {
   if (!s) return 'Never';
   const ms = Date.now() - new Date(s).getTime();
   const m = Math.floor(ms / 60000);
@@ -312,6 +313,10 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           </div>
         </div>
       )}
+
+      {/* Recent requests made by this user. key={u.id} remounts the component
+          on user switch so its paging/expansion/cache state resets cleanly. */}
+      <UserRecentRequests key={u.id} userId={u.id} />
     </div>
   );
 }

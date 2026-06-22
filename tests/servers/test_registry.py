@@ -43,6 +43,125 @@ def test_register_from_models_yaml_env_expansion_and_aliases(tmp_path, monkeypat
 
 
 @pytest.mark.unit
+def test_optional_route_skipped_when_env_base_url_unset(tmp_path, monkeypatch):
+    """An optional route whose env-backed base_url is unset is dropped, while the
+    model's other routes stay registered — no ``<model>:unknown-api`` endpoint.
+
+    Regression for the glm-5.1 sglang RC leg (base_url ${RC_DEPLOYMENT_URL}):
+    an empty base_url used to silently register a dead provider that streamed to
+    a host-less ``/v1/chat/completions`` and tripped the circuit breaker.
+    """
+    yaml_text = (
+        "models:\n"
+        "  - id: glm-test\n"
+        "    name: GLM Test\n"
+        "    provider: openai_compat\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://api.example.test/v1\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        optional: true\n"
+        "        base_url: ${RC_DEPLOYMENT_URL}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.delenv("RC_DEPLOYMENT_URL", raising=False)
+
+    exe = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe, Path(p))
+
+    assert count == 1
+    adapters = exe.routes["glm-test"].adapters
+    assert len(adapters) == 1  # optional sglang route dropped, openai_compat kept
+    endpoint_ids = [adapter.config.endpoint_id for adapter, _ in adapters]
+    assert all("unknown-api" not in eid for eid in endpoint_ids)
+
+
+@pytest.mark.unit
+def test_required_route_raises_when_env_base_url_unset(tmp_path, monkeypatch):
+    """A non-optional env-backed base_url that resolves blank fails loudly
+    instead of silently registering a ``<model>:unknown-api`` dead route."""
+    yaml_text = (
+        "models:\n"
+        "  - id: oss-test\n"
+        "    name: OSS Test\n"
+        "    provider: vllm\n"
+        "    route:\n"
+        "      - kind: vllm\n"
+        "        weight: 1.0\n"
+        "        base_url: ${SPARK_DEPLOYMENT_URL}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.delenv("SPARK_DEPLOYMENT_URL", raising=False)
+
+    exe = RouteExecutor()
+    with pytest.raises(registry.MissingEnvBackedKeyError):
+        registry.register_from_models_yaml(exe, Path(p))
+
+
+@pytest.mark.unit
+def test_required_route_missing_base_url_skips_model_when_continue_on_missing_env(
+    tmp_path, monkeypatch
+):
+    """With continue_on_missing_env=True (production bootstrap), a missing
+    env-backed base_url skips the model with a warning instead of crashing boot."""
+    yaml_text = (
+        "models:\n"
+        "  - id: oss-test\n"
+        "    name: OSS Test\n"
+        "    provider: vllm\n"
+        "    route:\n"
+        "      - kind: vllm\n"
+        "        weight: 1.0\n"
+        "        base_url: ${SPARK_DEPLOYMENT_URL}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.delenv("SPARK_DEPLOYMENT_URL", raising=False)
+
+    exe = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe, Path(p), continue_on_missing_env=True)
+
+    assert count == 0
+    assert "oss-test" not in exe.routes
+
+
+@pytest.mark.unit
+def test_top_level_env_base_url_unset_skips_default_route(tmp_path, monkeypatch):
+    """A top-level env-backed base_url (no explicit ``route:`` list) that
+    resolves blank must not register a dead ``<model>:unknown-api`` route.
+
+    Regression for the default/inherited-route path: ``top_cfg["base_url"]`` used
+    to be expanded before the route loop, so the empty-base_url guard never saw
+    the original ``${VAR}`` template for the synthesized single route.
+    """
+    yaml_text = (
+        "models:\n"
+        "  - id: top-level-test\n"
+        "    name: Top Level Test\n"
+        "    provider: vllm\n"
+        "    base_url: ${MISSING_BASE_URL}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.delenv("MISSING_BASE_URL", raising=False)
+
+    # A required (non-optional) blank base_url fails loudly.
+    exe = RouteExecutor()
+    with pytest.raises(registry.MissingEnvBackedKeyError):
+        registry.register_from_models_yaml(exe, Path(p))
+
+    # Production bootstrap (continue_on_missing_env=True) skips the model instead.
+    exe2 = RouteExecutor()
+    count, _infos = registry.register_from_models_yaml(exe2, Path(p), continue_on_missing_env=True)
+    assert count == 0
+    assert "top-level-test" not in exe2.routes
+
+
+@pytest.mark.unit
 def test_register_from_models_yaml_merges_route_extra_body(tmp_path):
     yaml_text = (
         "models:\n"
@@ -245,6 +364,42 @@ def test_register_kimi_coding_and_metered_routes_get_distinct_endpoint_ids(tmp_p
     assert coding.config.endpoint_id == "kimi-k2.7-code:kimi-api"
     assert metered.config.endpoint_id == "kimi-k2.7-code:moonshot-api"
     assert coding.config.endpoint_id != metered.config.endpoint_id
+
+
+@pytest.mark.unit
+def test_register_kimi_coding_dynamic_keys_use_kimi_provider(tmp_path, monkeypatch):
+    from serving.adapters import dynamic_keys
+
+    dynamic_keys.reset()
+    yaml_text = (
+        "models:\n"
+        "  - id: kimi-k2.7-code\n"
+        "    name: Kimi K2.7 Code\n"
+        "    provider: kimi\n"
+        "    route:\n"
+        "      - kind: kimi_coding\n"
+        "        weight: 1.0\n"
+        "        base_url: ${KIMI_CODING_BASE_URL}\n"
+        "        api_keys:\n"
+        "          - ${KIMI_CODING_API_KEY}\n"
+        '        provider_model_id: "kimi-for-coding"\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("KIMI_CODING_BASE_URL", "https://api.kimi.com/coding/v1")
+    monkeypatch.setenv("KIMI_CODING_API_KEY", "sk-coding")
+
+    try:
+        exe = RouteExecutor()
+        registry.register_from_models_yaml(exe, Path(p))
+
+        assert "kimi" in dynamic_keys.get_known_providers()
+        assert "kimi_coding" not in dynamic_keys.get_known_providers()
+        pools = dynamic_keys.get_pools_for_provider("kimi")
+        assert len(pools) == 1
+        assert pools[0].snapshot_keys() == ["sk-coding"]
+    finally:
+        dynamic_keys.reset()
 
 
 @pytest.mark.unit

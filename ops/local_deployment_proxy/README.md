@@ -39,7 +39,10 @@ python local_deployment_proxy/local_deployment_proxy.py
 # Local only
 ./local_deployment_proxy/local_deployment_service.sh start
 
-# With SSH reverse tunnel to a public LLM router
+# With SSH reverse tunnel to a public LLM router.
+# Uses autossh when installed so the tunnel auto-reconnects after a drop or a
+# router reboot; falls back to plain ssh (no auto-recover) with a warning if
+# autossh is missing — install it for durable tunnels (`apt-get install autossh`).
 SSH_HOST='spark2|internal.freeinference.org' REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
 
 # With API key auth
@@ -51,6 +54,52 @@ LOCAL_API_KEY='your-secret-key' ./local_deployment_proxy/local_deployment_servic
 ```
 
 Logs are written to `/tmp/local_deployment_proxy_8001.log`.
+
+### Run as a systemd service (recommended for production)
+
+The background daemon above does not survive a reboot of this GPU box. For a
+durable setup, use the two units in [`deploy/systemd/`](../../deploy/systemd/):
+
+- `local_deployment_proxy.service` — the local listener (port 8001).
+- `local_deployment_tunnel@.service` — a **templated** reverse tunnel, one
+  instance per router host, run with `autossh` (`Restart=always`) so it
+  reconnects after a link drop **and** comes back after a reboot.
+
+`install.sh` installs autossh, copies both units, and enables the proxy plus a
+tunnel instance per router host:
+
+```bash
+# Defaults to SSH_HOST='internal.freeinference.org|spark2', ports 8001.
+sudo ./local_deployment_proxy/install.sh
+
+# Override hosts/ports if needed:
+sudo SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 \
+     ./local_deployment_proxy/install.sh
+```
+
+Equivalent manual steps, if you'd rather not use the script:
+
+```bash
+sudo cp deploy/systemd/local_deployment_proxy.service \
+        deploy/systemd/local_deployment_tunnel@.service /etc/systemd/system/
+sudo apt-get install -y autossh        # required by the tunnel unit
+sudo systemctl daemon-reload
+sudo systemctl enable --now local_deployment_proxy.service
+# One instance per router host (the part after @ is the SSH destination):
+sudo systemctl enable --now local_deployment_tunnel@internal.freeinference.org
+sudo systemctl enable --now local_deployment_tunnel@spark2
+```
+
+Requirements / knobs:
+
+- The tunnel unit runs as **root**, so root on this box needs an SSH key
+  authorized on each router host. Override `LISTEN_PORT` / `REMOTE_PORT` /
+  `REMOTE_BIND` via a drop-in (`systemctl edit local_deployment_tunnel@…`) if
+  the defaults (`8001` / `8001` / `0.0.0.0`) don't apply.
+- Binding `REMOTE_BIND=0.0.0.0` on the router requires `GatewayPorts
+  clientspecified` (or `yes`) in the router's `sshd_config`, so its Docker
+  containers can reach the forwarded port via `host.docker.internal`.
+- Logs: `journalctl -u local_deployment_tunnel@internal.freeinference.org -f`.
 
 ## Usage with OpenAI-compatible clients
 
@@ -116,7 +165,8 @@ Models are defined in `local_deployment_proxy/models.json`:
 |---|---|
 | `container` | Docker container name |
 | `engine` | serving engine: `sglang` (default) or `vllm` |
-| `gpu_index` | GPU device index (omit to auto-pick) |
+| `gpu_index` | GPU device index, or a comma list for tensor parallelism (e.g. `"0,1,2,3"`); omit to auto-pick |
+| `tensor_parallel_size` | number of GPUs to shard the model across (default `1`); when >1 the launch gets `--tp`/`--tensor-parallel-size N` and Docker `--ipc=host` for NCCL |
 | `colocate_group` | optional label; models sharing a value run on the same auto-picked GPU |
 | `backend_port` | Host port mapped to the container (→ sglang `8001` / vLLM `8000` internally) |
 | `model_dir` | Host path to model weights |
@@ -155,7 +205,7 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 | `IDLE_TIMEOUT` | `1440` | Seconds of inactivity before stopping a container (24 min) |
 | `HEALTH_TIMEOUT` | `600` | Max seconds to wait for a container to become healthy |
 | `HEALTH_INTERVAL` | `10` | Seconds between health-check polls |
-| `MODELS_CONFIG` | `models.json` | Path to the models config JSON |
+| `MODELS_CONFIG` | auto-detected | Path to the models config JSON. When unset, selected by GPU hardware (see [Hardware profiles](#hardware-profiles)); set explicitly to override |
 | `LOCAL_API_KEY` | (none) | API key for request auth; accept `Authorization: Bearer` or `X-API-Key` header |
 
 ## GPU auto-selection
@@ -163,6 +213,22 @@ To add a new model, append an entry to `models.json` and restart the proxy.
 When `gpu_index` is not set for a model, the proxy queries `nvidia-smi` at container start time and picks the GPU with the lowest memory utilization. It also excludes the GPU that each other starting/running backend actually resolved to (tracked at runtime, since auto-selected models have no `gpu_index` in config), so concurrent backends do not collide on the same device. Set `gpu_index` explicitly to pin a model to a specific device.
 
 To intentionally **colocate** models on one GPU, give them a shared `colocate_group`. The first member to start auto-picks a free GPU; every other member of the group then follows it onto that same device instead of being excluded from it. Keep the group's combined `mem_fraction` at ~0.9 or below.
+
+For **tensor-parallel** backends (`tensor_parallel_size` > 1), either pin the devices with a comma-list `gpu_index` (e.g. `"0,1,2,3"`) or omit `gpu_index` to auto-pick the N least-used GPUs.
+
+## Hardware profiles
+
+The same proxy runs on machines with different GPUs and serves the model set that fits the hardware. When `MODELS_CONFIG` is **unset**, the proxy inspects `nvidia-smi` once at startup and selects a profile JSON next to the script:
+
+| Detected hardware | Profile | Serves |
+|---|---|---|
+| 4+ × H200 | `models.h200.json` | `deepseek-v4-flash` — sglang, `tensor_parallel_size: 4` across all 4 GPUs |
+| RTX (PRO) 6000 | `models.rtx6000.json` | `Qwen/Qwen3.6-35B-A3B-FP8` + `BAAI/bge-m3` (single GPU) |
+| anything else / no `nvidia-smi` | `models.json` | default fallback |
+
+A matched-but-missing profile falls back to `models.json`; setting `MODELS_CONFIG` explicitly bypasses detection entirely.
+
+The H200 profile serves `sgl-project/DeepSeek-V4-Flash-FP8` (294 GB FP8, won't fit at TP<4 on 143 GB H200s), auto-downloaded via `hf_repo` on first request. Its `tool_call_parser` / `reasoning_parser` default to the DeepSeek-V3 values (`deepseekv3` / `deepseek-r1`) as the closest registered sglang parsers — adjust if your sglang build ships V4-specific names.
 
 ## On-demand Hugging Face download
 
