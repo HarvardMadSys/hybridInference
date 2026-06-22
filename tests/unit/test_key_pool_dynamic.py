@@ -46,13 +46,17 @@ def test_remove_key_returns_false_for_unknown_key():
     assert pool.size() == 1
 
 
-def test_remove_key_drops_affinity_entries_pointing_at_removed_slot():
+def test_remove_key_drops_affinity_entries_pointing_at_removed_slot(monkeypatch):
     """Removed-slot affinity entries must be purged so future acquires re-pick."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
-    # Pin user A to k0 and user B to k1.
-    key_a, _ = pool.acquire("user-A")
-    key_b, _ = pool.acquire("user-B")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    # Pin user-A to k0, then mute k0 so the next user is forced onto k1.
+    key_a, lease_a = pool.acquire("user-A")
     assert key_a == "k0"
+    pool.release(lease_a, status_code=429)  # mute k0
+    key_b, _ = pool.acquire("user-B")
     assert key_b == "k1"
     assert pool.affinity_count() == 2
 
@@ -60,16 +64,16 @@ def test_remove_key_drops_affinity_entries_pointing_at_removed_slot():
     # Only user-A's affinity should remain.
     assert pool.affinity_count() == 1
 
-    # User-B's next acquire must succeed against the surviving key.
+    # Once k0's mute elapses, user-B's next acquire succeeds against it.
+    fake_now[0] += 301
     new_key, _ = pool.acquire("user-B")
     assert new_key == "k0"
 
 
-def test_remove_key_excludes_slot_from_least_loaded_pick():
-    """Picker must skip removed slots even when they have the lowest load."""
+def test_remove_key_excludes_slot_from_selection():
+    """Picker must skip removed slots even when they sort first."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
-    # Inflate k1 load so the picker prefers k0; then remove k0 and verify k1 is used.
-    pool.acquire("user-A")  # picks k0 (tie at 0)
+    pool.acquire("user-A")  # picks k0 (first available)
     assert pool.remove_key("k0") is True
     key, _ = pool.acquire("user-B")
     assert key == "k1"
@@ -98,11 +102,15 @@ def test_add_remove_are_lock_protected_under_concurrency():
     assert pool.snapshot_keys() == ["base"]
 
 
-def test_add_key_made_available_for_acquire():
+def test_add_key_made_available_for_acquire(monkeypatch):
     """Newly added keys participate in subsequent acquires immediately."""
     pool = KeyPool(keys=["k0"], provider_label="test")
-    pool.acquire("user-A")  # k0 count -> 1
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429)  # mute the only existing key
     pool.add_key("k1")
-    # New user should pick the freshly added (zero-load) key.
+    # With k0 muted, the freshly added key carries the next user.
     key, _ = pool.acquire("user-B")
     assert key == "k1"
