@@ -135,6 +135,53 @@ def test_release_with_2xx_does_not_mute(status_code):
     assert pool._keys[0].cooldown_until == 0.0
 
 
+@pytest.mark.parametrize("status_code", [408, 425, 500, 503, 599, 0])
+def test_release_transient_error_does_not_mute_sole_key(status_code):
+    """A transient/provider-side error must not take the only usable key offline."""
+    pool = KeyPool(keys=["only"], provider_label="test")
+    _, lease = pool.acquire("user-A")
+    muted = pool.release(lease, status_code=status_code)
+    assert muted is False
+    assert pool._keys[0].cooldown_until == 0.0
+
+
+@pytest.mark.parametrize("status_code", [429, 401, 402, 403])
+def test_release_key_specific_error_mutes_sole_key(monkeypatch, status_code):
+    """Quota/auth/payment failures mute even the only key — retrying can't help."""
+    pool = KeyPool(keys=["only"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    muted = pool.release(lease, status_code=status_code)
+    assert muted is True
+    assert pool._keys[0].cooldown_until == pytest.approx(1000.0 + MUTE)
+
+
+def test_release_transient_error_keeps_last_usable_key(monkeypatch):
+    """In a multi-key pool, a transient error never mutes the last usable key."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    # Mute k0 (key-specific), then a transient 500 hits k1 — the last usable key.
+    _, lease0 = pool.acquire("user-A")
+    assert pool.release(lease0, status_code=429) is True
+    _, lease1 = pool.acquire("user-B")
+    assert lease1.key_index == 1
+    muted = pool.release(lease1, status_code=500)
+    assert muted is False
+    assert pool._keys[1].cooldown_until == 0.0
+
+
+def test_release_returns_false_for_non_muting_statuses():
+    """2xx and request-scoped 4xx report not-muted so callers propagate."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    _, lease = pool.acquire("user-A")
+    assert pool.release(lease, status_code=200) is False
+    assert pool.release(lease, status_code=400) is False
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected"),
     [
@@ -193,10 +240,11 @@ def test_all_keys_muted_raises_keypoolexhausted(monkeypatch):
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
+    # Both keys hit a key-specific failure (429), so even the last one is muted.
     _, lease0 = pool.acquire("user-A")
     pool.release(lease0, status_code=429)
     _, lease1 = pool.acquire("user-B")
-    pool.release(lease1, status_code=500)
+    pool.release(lease1, status_code=429)
 
     with pytest.raises(KeyPoolExhausted):
         pool.acquire("user-C")

@@ -18,7 +18,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .key_pool import KeyPool, KeyPoolExhausted, should_mute_status
+from .key_pool import KeyPool, KeyPoolExhausted
 from .processors import get_processor
 from .profiles import (
     ProviderProfile,
@@ -220,13 +220,15 @@ class OpenAICompatAdapter(BaseAdapter):
         When ``self._key_pool`` is None, falls through to the legacy single-key
         path with retries. When set, the pool hands out keys sequentially: a
         request uses one key until it hits a key-specific or transient failure
-        (see ``should_mute_status`` — 429, 401/402/403, 408/425, 5xx, or a
-        timeout/connection error), at which point the key is muted for 5 minutes
-        and the loop advances to the next key. Request-scoped client errors
-        (other 4xx like 400/422) fail on every key, so they propagate
-        immediately without muting or rotating. Pool exhaustion re-raises the
-        last error (or KeyPoolExhausted if none was seen yet), which the caller
-        surfaces as an upstream failure for the router fallback chain.
+        (429, 401/402/403, 408/425, 5xx, or a timeout/connection error), at
+        which point ``release`` mutes the key for 5 minutes and the loop advances
+        to the next key. ``release`` returns whether it actually muted: it does
+        not when the error is request-scoped (other 4xx like 400/422, which fail
+        on every key) or when a transient error hits the last usable key — in
+        both cases there is nothing to rotate to, so the error propagates. Pool
+        exhaustion re-raises the last error (or KeyPoolExhausted if none was seen
+        yet), which the caller surfaces as an upstream failure for the router
+        fallback chain.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -279,13 +281,12 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
-                self._key_pool.release(lease, status_code=status)
-                if not should_mute_status(status):
-                    # Request-scoped client error (e.g. 400/422): it will fail
-                    # identically on every key, so propagate without rotating.
+                if not self._key_pool.release(lease, status_code=status):
+                    # Not muted: either a request-scoped client error (fails
+                    # identically on every key) or a transient error on the last
+                    # usable key — nothing to rotate to, so propagate.
                     raise
-                # Key-specific or transient error: this key is now muted for
-                # 5 minutes; advance to the next one.
+                # Key muted for 5 minutes; advance to the next one.
                 logger.warning(
                     "key_pool_cooldown",
                     extra={
@@ -406,12 +407,11 @@ class OpenAICompatAdapter(BaseAdapter):
                 return
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
-                self._key_pool.release(lease, status_code=status)
-                if not should_mute_status(status):
-                    # Request-scoped client error: fails on every key, so
-                    # propagate without rotating.
+                if not self._key_pool.release(lease, status_code=status):
+                    # Not muted: request-scoped error, or a transient error on
+                    # the last usable key — propagate without rotating.
                     raise
-                # Key-specific or transient error: mute this key and rotate.
+                # Key muted for 5 minutes; rotate to the next one.
                 logger.warning(
                     "key_pool_cooldown",
                     extra={

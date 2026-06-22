@@ -218,8 +218,8 @@ async def test_request_scoped_4xx_propagates_without_muting():
     assert adapter._key_pool._keys[1].cooldown_until == 0
 
 
-async def test_all_keys_error_propagates_last_error():
-    """Every key 500s in one call -> all keys muted, the last 500 propagates."""
+async def test_all_keys_500_keeps_last_key_usable():
+    """Every key 500s (transient) -> all but the last key muted; last 500 propagates."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
     async def always_500(url, json, headers, timeout):
@@ -232,10 +232,50 @@ async def test_all_keys_error_propagates_last_error():
         await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
     assert exc_info.value.status == 500
-    # Both keys entered cooldown.
+    # k1 was muted; k2 (the last usable key) is kept in service for a transient
+    # error so a provider blip can't take the whole route offline.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_all_keys_429_mute_entire_pool():
+    """Every key 429s (key-specific) -> all keys muted, including the last."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    async def always_429(url, json, headers, timeout):
+        raise _make_response_error(429, retry_after="1")
+
+    with (
+        patch.object(adapter.http, "json_post", side_effect=always_429),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.status == 429
+    # Quota is key-specific, so even the last key is muted.
     assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until > 0
     assert adapter._key_pool._keys[1].cooldown_until > 0
+
+
+async def test_single_key_transient_error_does_not_mute():
+    """A transient 5xx on a sole-key pool must not take the route offline."""
+    adapter = OpenAICompatAdapter(_make_config(["only"]))
+
+    async def always_500(url, json, headers, timeout):
+        raise _make_response_error(500)
+
+    with (
+        patch.object(adapter.http, "json_post", side_effect=always_500),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.status == 500
+    # The sole key stays usable so the next request still reaches the provider.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0
 
 
 def _make_stream_gen(
