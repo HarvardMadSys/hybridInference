@@ -411,6 +411,40 @@ async def test_streaming_rotates_on_429_at_open():
     assert any("hi" in c for c in collected)
 
 
+async def test_streaming_open_io_error_does_not_replay_on_another_key():
+    """A non-status I/O failure while opening must not re-submit on another key.
+
+    The upstream may have returned 2xx and started streaming before the drop;
+    rotating would risk duplicate generation / double billing, so the error
+    propagates after a single attempt.
+    """
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    call_count = {"n": 0}
+
+    def stream_side_effect(*args, **kwargs):
+        call_count["n"] += 1
+
+        async def gen():
+            raise aiohttp.ServerDisconnectedError("body drop after 2xx")
+            yield  # pragma: no cover — makes this an async generator
+
+        return gen()
+
+    with (
+        patch.object(adapter.http, "stream_post", side_effect=stream_side_effect),
+        pytest.raises(aiohttp.ServerDisconnectedError),
+    ):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    # Only one upstream attempt — no replay on k2.
+    assert call_count["n"] == 1
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
 async def test_streaming_pool_exhausted_propagates():
     """Every key 429s on stream open → final 429 propagates to the caller."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))

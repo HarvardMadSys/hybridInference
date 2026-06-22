@@ -393,10 +393,13 @@ class OpenAICompatAdapter(BaseAdapter):
         - ``first_chunk`` is the first chunk already pulled from the iterator
           (must be processed first by the caller).
 
-        Rotates keys internally on key-specific or transient opening errors
-        (status check / connect happens before any chunk is yielded);
-        request-scoped 4xx propagate without muting. Mid-stream errors are
-        handled by the streaming consumer, not here.
+        Rotates keys only on status (``ClientResponseError``) opening errors,
+        which the client raises before any response-body byte is read: 429/auth
+        mute and rotate, request-scoped 4xx propagate without muting. A
+        non-status I/O error may instead be a disconnect after the upstream
+        returned 2xx and began streaming, so it propagates without rotating to
+        avoid re-submitting (duplicate generation / double billing). Mid-stream
+        errors are handled by the streaming consumer, not here.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -463,9 +466,10 @@ class OpenAICompatAdapter(BaseAdapter):
                     },
                 )
                 return
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
-                if not self._key_pool.release(lease, status_code=status):
+            except aiohttp.ClientResponseError as e:
+                # Status error — raised by the client before any response body
+                # byte is read, so re-issuing the request on another key is safe.
+                if not self._key_pool.release(lease, status_code=e.status):
                     # Not muted: request-scoped error, or a transient error on
                     # the last usable key — propagate without rotating.
                     raise
@@ -476,12 +480,21 @@ class OpenAICompatAdapter(BaseAdapter):
                         "event": "key_pool_cooldown",
                         "provider": provider,
                         "key_index": lease.key_index,
-                        "status": status,
+                        "status": e.status,
                         "stage": "stream",
                     },
                 )
                 last_error = e
                 continue
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                # A non-status I/O failure may have arrived after the upstream
+                # returned 2xx and began streaming the body. ``http.stream_post``
+                # deliberately scopes its retry to the connect phase and lets
+                # body-phase errors propagate so the upstream is never asked to
+                # regenerate (duplicate work / double billing). Mirror that: do
+                # not mute or rotate — release the key unchanged and propagate.
+                self._key_pool.release(lease, status_code=200)
+                raise
 
             # First chunk read successfully — commit the lease (caller releases on stream end)
             yield stream_iter, lease, first
