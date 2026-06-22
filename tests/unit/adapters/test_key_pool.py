@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
+from serving.adapters.key_pool import KeyPool, KeyPoolExhausted, should_mute_status
 
 MUTE = KeyPool.MUTE_SECONDS
 
@@ -105,9 +105,9 @@ def test_concurrent_users_share_the_first_key():
     assert a == b == "k0"
 
 
-@pytest.mark.parametrize("status_code", [429, 401, 403, 400, 500, 503, 0])
-def test_release_any_error_mutes_for_five_minutes(monkeypatch, status_code):
-    """Any non-2xx outcome (and the network sentinel 0) mutes for 5 minutes."""
+@pytest.mark.parametrize("status_code", [429, 401, 402, 403, 408, 425, 500, 503, 599, 0])
+def test_release_key_specific_or_transient_error_mutes_for_five_minutes(monkeypatch, status_code):
+    """Key-specific / transient failures (and the network sentinel 0) mute for 5 min."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
@@ -118,12 +118,46 @@ def test_release_any_error_mutes_for_five_minutes(monkeypatch, status_code):
     assert pool._keys[lease.key_index].cooldown_until == pytest.approx(1000.0 + MUTE)
 
 
+@pytest.mark.parametrize("status_code", [400, 404, 405, 409, 413, 415, 422, 451])
+def test_release_request_scoped_4xx_does_not_mute(status_code):
+    """Request-scoped client errors fail on every key, so they must not mute."""
+    pool = KeyPool(keys=["k0", "k1"], provider_label="test")
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=status_code)
+    assert pool._keys[lease.key_index].cooldown_until == 0.0
+
+
 @pytest.mark.parametrize("status_code", [200, 201, 204, 299])
 def test_release_with_2xx_does_not_mute(status_code):
     pool = KeyPool(keys=["k0"], provider_label="test")
     _, lease = pool.acquire("user-A")
     pool.release(lease, status_code=status_code)
     assert pool._keys[0].cooldown_until == 0.0
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (0, True),
+        (200, False),
+        (204, False),
+        (400, False),
+        (401, True),
+        (402, True),
+        (403, True),
+        (404, False),
+        (408, True),
+        (422, False),
+        (425, True),
+        (429, True),
+        (499, False),
+        (500, True),
+        (503, True),
+        (599, True),
+    ],
+)
+def test_should_mute_status(status_code, expected):
+    assert should_mute_status(status_code) is expected
 
 
 def test_muted_key_is_skipped_during_selection(monkeypatch):

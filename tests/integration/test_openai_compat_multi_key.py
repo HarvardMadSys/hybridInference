@@ -2,7 +2,9 @@
 
 Covers:
 - 429 on key K mutes K and the next call goes to a different key.
-- Non-429 errors (e.g. 500) and network errors also mute K and rotate.
+- Other key-specific / transient errors (e.g. 500) and network errors also
+  mute K and rotate.
+- Request-scoped client errors (e.g. 400) propagate without muting or rotating.
 - All keys erroring in one call propagates the last error.
 - Single-`api_key` routes do NOT create a key pool (legacy path).
 
@@ -189,6 +191,30 @@ async def test_multi_key_rotates_on_network_error():
     assert "choices" in result
     assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_request_scoped_4xx_propagates_without_muting():
+    """A 400 fails fast: it does not mute the key or rotate to the others."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    call_count = {"n": 0}
+
+    async def bad_request(url, json, headers, timeout):
+        call_count["n"] += 1
+        raise _make_response_error(400)
+
+    with (
+        patch.object(adapter.http, "json_post", side_effect=bad_request),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.status == 400
+    # Only the first key was tried; no rotation, no muting.
+    assert call_count["n"] == 1
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0
     assert adapter._key_pool._keys[1].cooldown_until == 0
 
 

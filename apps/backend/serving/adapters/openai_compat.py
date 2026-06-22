@@ -18,7 +18,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .key_pool import KeyPool, KeyPoolExhausted
+from .key_pool import KeyPool, KeyPoolExhausted, should_mute_status
 from .processors import get_processor
 from .profiles import (
     ProviderProfile,
@@ -219,12 +219,14 @@ class OpenAICompatAdapter(BaseAdapter):
 
         When ``self._key_pool`` is None, falls through to the legacy single-key
         path with retries. When set, the pool hands out keys sequentially: a
-        request uses one key until it errors, at which point the key is muted
-        for 5 minutes and the loop advances to the next available key. *Any*
-        upstream failure — 429, other 4xx/5xx, or a timeout/connection error —
-        mutes the current key and triggers rotation. Pool exhaustion re-raises
-        the last error (or KeyPoolExhausted if none was seen yet), which the
-        caller surfaces as an upstream failure for the router fallback chain.
+        request uses one key until it hits a key-specific or transient failure
+        (see ``should_mute_status`` — 429, 401/402/403, 408/425, 5xx, or a
+        timeout/connection error), at which point the key is muted for 5 minutes
+        and the loop advances to the next key. Request-scoped client errors
+        (other 4xx like 400/422) fail on every key, so they propagate
+        immediately without muting or rotating. Pool exhaustion re-raises the
+        last error (or KeyPoolExhausted if none was seen yet), which the caller
+        surfaces as an upstream failure for the router fallback chain.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -276,9 +278,14 @@ class OpenAICompatAdapter(BaseAdapter):
                     timeout=aiohttp.ClientTimeout(total=120),
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                # Any upstream error mutes this key for 5 minutes and rotates.
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
                 self._key_pool.release(lease, status_code=status)
+                if not should_mute_status(status):
+                    # Request-scoped client error (e.g. 400/422): it will fail
+                    # identically on every key, so propagate without rotating.
+                    raise
+                # Key-specific or transient error: this key is now muted for
+                # 5 minutes; advance to the next one.
                 logger.warning(
                     "key_pool_cooldown",
                     extra={
@@ -329,9 +336,10 @@ class OpenAICompatAdapter(BaseAdapter):
         - ``first_chunk`` is the first chunk already pulled from the iterator
           (must be processed first by the caller).
 
-        Rotates keys internally on any opening error (status check / connect
-        happens before any chunk is yielded). Mid-stream errors are not
-        classified — they propagate to the caller as today.
+        Rotates keys internally on key-specific or transient opening errors
+        (status check / connect happens before any chunk is yielded);
+        request-scoped 4xx propagate without muting. Mid-stream errors are
+        handled by the streaming consumer, not here.
         """
         if self._key_pool is None:
             headers = self._build_headers()
@@ -397,9 +405,13 @@ class OpenAICompatAdapter(BaseAdapter):
                 )
                 return
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                # Any opening error mutes this key for 5 minutes and rotates.
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
                 self._key_pool.release(lease, status_code=status)
+                if not should_mute_status(status):
+                    # Request-scoped client error: fails on every key, so
+                    # propagate without rotating.
+                    raise
+                # Key-specific or transient error: mute this key and rotate.
                 logger.warning(
                     "key_pool_cooldown",
                     extra={

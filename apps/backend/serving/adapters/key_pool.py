@@ -6,10 +6,13 @@ in-process, behind a single ``threading.Lock``.
 
 Selection is **sequential**: the pool always hands out the earliest usable
 key and only advances to a later key once an earlier one is muted. A key is
-muted for ``MUTE_SECONDS`` (5 minutes) on *any* upstream error — rate
-limit/quota (429), auth failures, other 4xx/5xx, or non-HTTP failures such as
-timeouts and connection errors. The net effect is "use one key until it runs
-out of quota or errors, then move to the next".
+muted for ``MUTE_SECONDS`` (5 minutes) on upstream failures that are
+key-specific or transient — rate limit/quota (429), auth/permission
+(401/402/403), request-timeout / too-early (408/425), any 5xx, and non-HTTP
+failures such as timeouts and connection errors. Request-scoped client errors
+(other 4xx like 400/404/422) do *not* mute: they fail identically on every
+key, so muting would take the whole pool down. The net effect is "use one key
+until it runs out of quota or errors, then move to the next".
 
 See docs/agents/specs/archive/2026-04-30-multi-key-rotation-design.md for the
 original (least-loaded) design this supersedes.
@@ -20,6 +23,30 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+
+# 4xx statuses that are key-specific (not request-scoped) and so should mute the
+# key and trigger rotation: auth/permission, payment, request-timeout/too-early,
+# and rate limit/quota. All other 4xx are treated as request-scoped.
+_MUTABLE_4XX = frozenset({401, 402, 403, 408, 425, 429})
+
+
+def should_mute_status(status_code: int) -> bool:
+    """Whether an upstream outcome should mute the key and trigger rotation.
+
+    Mutes on failures that are key-specific or transient: rate limit/quota
+    (429), auth/permission (401/402/403), request-timeout / too-early
+    (408/425), any 5xx, and non-HTTP failures (``status_code == 0`` for
+    timeouts / connection errors). A 2xx response and request-scoped client
+    errors (other 4xx such as 400/404/422) do not mute — a bad request fails
+    identically on every key, so muting it would disable the whole pool.
+    """
+    if 200 <= status_code < 300:
+        return False
+    if status_code == 0:
+        return True
+    if status_code in _MUTABLE_4XX:
+        return True
+    return 500 <= status_code <= 599
 
 
 class KeyPoolExhausted(Exception):
@@ -49,10 +76,10 @@ class Lease:
 
 
 class KeyPool:
-    """Hands out API keys sequentially, muting a key for 5 minutes on any error."""
+    """Hands out API keys sequentially, muting a key for 5 minutes on a key error."""
 
     AFFINITY_TTL_SECONDS: float = 300.0  # 5 minutes
-    MUTE_SECONDS: float = 300.0  # 5 minutes — any upstream error mutes the key
+    MUTE_SECONDS: float = 300.0  # 5 minutes — key-specific/transient errors mute the key
     SWEEP_THRESHOLD: int = 1000
 
     def __init__(self, keys: list[str], provider_label: str) -> None:
@@ -171,19 +198,18 @@ class KeyPool:
     def release(self, lease: Lease, *, status_code: int) -> None:
         """Report the request outcome so an errored key can be muted.
 
-        Any non-success outcome mutes the leased key for ``MUTE_SECONDS``
-        (5 minutes): rate limit/quota (429), auth failures (401/403), other
-        4xx/5xx, and non-HTTP failures (``status_code == 0`` for timeouts and
-        connection errors). Only a 2xx response leaves the key available, so
-        sequential selection keeps using one key until it errors and then
-        advances to the next.
+        Mutes the leased key for ``MUTE_SECONDS`` (5 minutes) when
+        ``should_mute_status(status_code)`` is true — i.e. for key-specific or
+        transient failures (429, 401/402/403, 408/425, 5xx, and non-HTTP
+        failures signalled by ``status_code == 0``). A 2xx response and
+        request-scoped client errors (other 4xx) leave the key usable.
 
         Args:
             lease: the lease returned by ``acquire``.
             status_code: HTTP status code, or 0 for non-HTTP failures
                 (timeouts / network errors).
         """
-        if 200 <= status_code < 300:
+        if not should_mute_status(status_code):
             return
         with self._lock:
             self._keys[lease.key_index].cooldown_until = time.monotonic() + self.MUTE_SECONDS
