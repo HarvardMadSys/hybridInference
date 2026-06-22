@@ -1077,14 +1077,14 @@ async def fetch_ollama() -> list[ProviderQuotaResult]:
             return_exceptions=True,
         )
         processed = _process_multi_key_results("ollama", "Ollama Cloud", api_keys, results)
-        # The usage endpoint isn't generally available yet, so a key that can't
-        # read quota (404/parse) should defer to a configured cookie rather than
-        # surfacing a spurious error. Only fall back when *every* key failed and a
-        # cookie exists, so a partial success is never discarded.
-        key_unusable = all(
-            not r.ok and r.error in ("no_quota_api", "auth_failed") for r in processed
-        )
-        if not (cookie_keys and key_unusable):
+        # The API endpoint is only a forward-looking probe; the cookie dashboard
+        # is still the live source. Defer to a configured cookie whenever the
+        # probe yields no usable quota — for *any* failure (404/parse, auth,
+        # timeout, 5xx/429, bad override), not just the expected 404 — so a
+        # transient probe error never regresses a working cookie-based display.
+        # Only a successful probe (real usages from any key) wins.
+        no_api_usage = all(not r.ok for r in processed)
+        if not (cookie_keys and no_api_usage):
             return processed
 
     if not cookie_keys:

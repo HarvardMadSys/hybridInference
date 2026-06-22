@@ -1501,6 +1501,22 @@ class TestFetchOllama:
         assert any("week" in label for label in labels)
 
     @pytest.mark.asyncio
+    async def test_api_key_server_error_falls_back_to_cookie(self, monkeypatch):
+        # A transient 5xx (or network error -> "unexpected") from the
+        # forward-looking probe must not regress a working cookie-based display.
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = "<html><body><div>Session usage 7% used Resets in 2 hours</div></body></html>"
+        sessions = iter([_mock_aiohttp_get(status=500), _mock_html_session(html)])
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            side_effect=lambda *a, **k: next(sessions),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is True
+        assert any("session" in u.label.lower() for u in result.usages)
+
+    @pytest.mark.asyncio
     async def test_api_key_auth_failed_falls_back_to_cookie(self, monkeypatch):
         # A 401 from the usage probe should also defer to a configured cookie.
         monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
