@@ -126,6 +126,23 @@ def _mock_aiohttp_multi_get(responses: list[tuple[int, dict | None]]):
     return session_cm
 
 
+def _mock_html_session(html: str, *, status: int = 200):
+    """Build a session mock whose `get` returns an HTML (`.text`) response."""
+    response = MagicMock()
+    response.status = status
+    response.text = AsyncMock(return_value=html)
+    response.json = AsyncMock(return_value={})
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=response)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.get = MagicMock(return_value=cm)
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(return_value=session)
+    session_cm.__aexit__ = AsyncMock(return_value=None)
+    return session_cm
+
+
 class TestParseIso:
     def test_z_suffix_parsed_as_utc(self):
         result = _parse_iso("2026-05-02T04:00:00Z")
@@ -1408,6 +1425,12 @@ class TestFetchKimi:
 
 
 class TestFetchOllama:
+    @pytest.fixture(autouse=True)
+    def _cookie_only(self, monkeypatch):
+        """Default to the cookie path unless a test opts into the API key."""
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_USAGE_URL", raising=False)
+
     @pytest.mark.asyncio
     async def test_not_configured_when_cookie_missing(self, monkeypatch):
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
@@ -1480,6 +1503,189 @@ class TestFetchOllama:
         assert weekly_use.used == 5.0
         assert weekly_use.limit == 100.0
         assert weekly_use.unit == "%"
+
+    @pytest.mark.asyncio
+    async def test_unparseable_authenticated_page_is_parse_error(self, monkeypatch):
+        # A valid cookie returns HTTP 200 but the usage figures aren't in the
+        # server-rendered HTML (client-rendered). A stray "Sign out" button or a
+        # "Login history" link must not be misreported as auth_failed.
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = (
+            "<html><body><nav>Account</nav><button>Sign out</button>"
+            "<a href='/login'>Login history</a></body></html>"
+        )
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_html_session(html),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is False
+        assert result.error == "parse_error"
+
+    @pytest.mark.asyncio
+    async def test_signed_out_shell_returns_auth_failed(self, monkeypatch):
+        # A 200 client-rendered shell with a real sign-in CTA is auth_failed.
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = "<html><body><h1>Sign in to Ollama</h1></body></html>"
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_html_session(html),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is False
+        assert result.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_bare_signin_cta_returns_auth_failed(self, monkeypatch):
+        # An expired cookie can yield a 200 shell whose only CTA is a bare
+        # "Sign in" / "Log in" button — still a real auth failure, not a parse
+        # failure. The "Login history" link must not flip this to parse_error.
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = (
+            "<html><head><title>Sign in - Ollama</title></head><body>"
+            "<button>Sign in</button><a href='/account'>Login history</a></body></html>"
+        )
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_html_session(html),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is False
+        assert result.error == "auth_failed"
+
+    @pytest.mark.asyncio
+    async def test_api_key_usage_endpoint_parsed_when_available(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        payload = {
+            "session": {"percent": 12, "reset_at": "2026-06-22T05:00:00Z"},
+            "weekly": {"used": 30, "limit": 100, "reset_at": "2026-06-28T00:00:00Z"},
+        }
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            result = (await fetch_ollama())[0]
+        assert result.ok is True
+        session = mock_session_cls.return_value.__aenter__.return_value
+        call_args = session.get.call_args
+        assert call_args.args[0] == "https://ollama.com/api/account/usage"
+        assert call_args.kwargs["headers"]["Authorization"] == "Bearer ollama_key_1234567890abcd"
+        assert "Cookie" not in call_args.kwargs["headers"]
+        labels = {u.label.lower(): u for u in result.usages}
+        assert labels["session usage"].used == 12.0
+        assert labels["session usage"].limit == 100.0
+        assert labels["session usage"].unit == "%"
+        assert labels["weekly usage"].used == 30.0
+        assert labels["weekly usage"].limit == 100.0
+
+    @pytest.mark.asyncio
+    async def test_usage_url_override_respected(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
+        monkeypatch.setenv("OLLAMA_USAGE_URL", "https://example.test/usage")
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        payload = {"session": {"percent": 5}}
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=200, json_data=payload),
+        ) as mock_session_cls:
+            result = (await fetch_ollama())[0]
+        assert result.ok is True
+        session = mock_session_cls.return_value.__aenter__.return_value
+        assert session.get.call_args.args[0] == "https://example.test/usage"
+
+    @pytest.mark.asyncio
+    async def test_api_key_404_no_cookie_returns_no_quota_api(self, monkeypatch):
+        # The usage endpoint doesn't exist yet and no cookie is configured.
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_aiohttp_get(status=404),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is False
+        assert result.error == "no_quota_api"
+
+    @pytest.mark.asyncio
+    async def test_api_key_404_falls_back_to_cookie(self, monkeypatch):
+        # API-key probe 404s (no endpoint yet) but a cookie is configured: the
+        # cookie dashboard scrape should still produce usage.
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = """
+        <html><body>
+          <div>Session usage 0% used Resets in 2 hours</div>
+          <div>Weekly usage 5% used Resets in 2 days</div>
+        </body></html>
+        """
+        sessions = iter([_mock_aiohttp_get(status=404), _mock_html_session(html)])
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            side_effect=lambda *a, **k: next(sessions),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is True
+        labels = [u.label.lower() for u in result.usages]
+        assert any("session" in label for label in labels)
+        assert any("week" in label for label in labels)
+
+    @pytest.mark.asyncio
+    async def test_api_key_server_error_falls_back_to_cookie(self, monkeypatch):
+        # A transient 5xx (or network error -> "unexpected") from the
+        # forward-looking probe must not regress a working cookie-based display.
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = "<html><body><div>Session usage 7% used Resets in 2 hours</div></body></html>"
+        sessions = iter([_mock_aiohttp_get(status=500), _mock_html_session(html)])
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            side_effect=lambda *a, **k: next(sessions),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is True
+        assert any("session" in u.label.lower() for u in result.usages)
+
+    @pytest.mark.asyncio
+    async def test_api_key_auth_failed_falls_back_to_cookie(self, monkeypatch):
+        # A 401 from the usage probe should also defer to a configured cookie.
+        monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = "<html><body><div>Session usage 3% used Resets in 2 hours</div></body></html>"
+        sessions = iter([_mock_aiohttp_get(status=401), _mock_html_session(html)])
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            side_effect=lambda *a, **k: next(sessions),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is True
+        assert any("session" in u.label.lower() for u in result.usages)
+
+    @pytest.mark.asyncio
+    async def test_managed_api_key_from_operational_store_is_probed(self, monkeypatch):
+        # Keys surfaced by _discover_provider_keys (admin Provider Keys flow /
+        # live KeyPool, minus disabled-env tombstones) must be probed, not just a
+        # raw env OLLAMA_API_KEY.
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
+        payload = {"session": {"percent": 9}}
+        with (
+            patch(
+                "serving.admin.provider_quotas._discover_provider_keys",
+                new=AsyncMock(return_value=[(1, "managed_ollama_key_xyz")]),
+            ) as mock_discover,
+            patch(
+                "serving.admin.provider_quotas.aiohttp.ClientSession",
+                return_value=_mock_aiohttp_get(status=200, json_data=payload),
+            ) as mock_session_cls,
+        ):
+            result = (await fetch_ollama(operational_store=object()))[0]
+        assert result.ok is True
+        assert mock_discover.call_args.args[0] == "ollama"
+        session = mock_session_cls.return_value.__aenter__.return_value
+        assert session.get.call_args.kwargs["headers"]["Authorization"] == (
+            "Bearer managed_ollama_key_xyz"
+        )
 
 
 class TestFetchFeatherless:
@@ -1737,6 +1943,7 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 
@@ -1757,6 +1964,7 @@ class TestGatherAll:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 
@@ -1849,6 +2057,7 @@ class TestProviderQuotasRoute:
         monkeypatch.delenv("MINIMAX_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
         monkeypatch.delenv("KIMI_CODING_API_KEY", raising=False)
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)
         monkeypatch.delenv("FEATHERLESS_API_KEY", raising=False)
 

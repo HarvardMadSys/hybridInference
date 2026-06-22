@@ -946,6 +946,175 @@ _USAGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_OLLAMA_USAGE_PERIODS = ("session", "weekly", "daily", "monthly")
+
+
+def _ollama_usage_url() -> str:
+    """Resolve the Ollama Cloud account-usage endpoint, honoring ``OLLAMA_USAGE_URL``.
+
+    Ollama Cloud does not yet expose an official account-usage API
+    (ollama/ollama#15663, #15132, #16448); this targets the proposed
+    ``/api/account/usage`` path so the probe starts working the moment Ollama
+    ships it. Override via ``OLLAMA_USAGE_URL`` if the path differs; the override
+    is used verbatim (no trailing-slash normalization) so an endpoint that
+    requires a trailing slash isn't turned into a redirect — which, with
+    ``allow_redirects=False``, would surface as a spurious ``auth_failed``.
+    """
+    return os.getenv("OLLAMA_USAGE_URL") or "https://ollama.com/api/account/usage"
+
+
+def _ollama_usage_row(period: str, block: dict[str, Any]) -> ProviderQuotaUsage | None:
+    """Parse one period block of an Ollama usage payload (percentage or counts).
+
+    The dashboard reports percentages, so a ``percent``-style field wins; we fall
+    back to raw ``used``/``limit`` counts (deriving ``used`` from ``remaining``
+    when needed). Returns ``None`` when neither shape is present.
+    """
+    reset_at = (
+        _parse_iso(block.get("reset_at"))
+        or _parse_iso(block.get("resetAt"))
+        or _parse_iso(block.get("reset"))
+        or _parse_epoch_ms(block.get("reset_at"))
+        or _parse_epoch_ms(block.get("resetAt"))
+        or _parse_epoch_ms(block.get("reset"))
+        or _next_reset(period)
+    )
+    label = f"{period.capitalize()} usage"
+
+    pct = _first_float(block, "percent", "percentage", "used_percent", "usedPercent")
+    if pct is not None:
+        return ProviderQuotaUsage(label=label, used=pct, limit=100.0, unit="%", reset_at=reset_at)
+
+    used = _first_float(block, "used", "usage", "consumed")
+    limit = _first_float(block, "limit", "total", "quota", "max")
+    remaining = _first_float(block, "remaining", "remain", "left")
+    if used is None and limit is not None and remaining is not None:
+        used = max(0.0, limit - remaining)
+    if used is not None and limit is not None:
+        return ProviderQuotaUsage(label=label, used=used, limit=limit, unit="", reset_at=reset_at)
+    return None
+
+
+def _parse_ollama_usage_json(payload: Any) -> list[ProviderQuotaUsage]:
+    """Best-effort parse of a (future) Ollama Cloud usage JSON payload.
+
+    Ollama has not finalized the schema, so we look for per-period blocks —
+    ``session``/``weekly``/``daily``/``monthly`` — at the root or under a
+    ``usage``/``data``/``account`` envelope. Unknown shapes yield an empty list
+    so the caller can fall back to the cookie scraper.
+    """
+    body = payload
+    if isinstance(payload, dict) and not any(p in payload for p in _OLLAMA_USAGE_PERIODS):
+        for envelope_key in ("usage", "data", "account"):
+            inner = payload.get(envelope_key)
+            if isinstance(inner, dict) and any(p in inner for p in _OLLAMA_USAGE_PERIODS):
+                body = inner
+                break
+    if not isinstance(body, dict):
+        return []
+
+    usages: list[ProviderQuotaUsage] = []
+    for period in _OLLAMA_USAGE_PERIODS:
+        block = body.get(period)
+        if isinstance(block, dict):
+            row = _ollama_usage_row(period, block)
+            if row is not None:
+                usages.append(row)
+    return usages
+
+
+async def _fetch_ollama_via_api_key(key: str) -> ProviderQuotaResult:
+    """Probe the Ollama Cloud account-usage endpoint for a single API key.
+
+    Uses ``Authorization: Bearer`` auth, which (unlike the session cookie) does
+    not expire. Ollama Cloud has no documented usage endpoint yet, so this
+    typically 404s today and ``fetch_ollama`` falls back to the cookie-scraped
+    dashboard; the ``no_quota_api`` / ``auth_failed`` results drive that
+    fallback. When Ollama ships the endpoint the API key becomes the live source.
+    """
+    url = _ollama_usage_url()
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("ollama", "Ollama Cloud", key, "auth_failed")
+            # The usage endpoint is not generally available yet; 404/405 means
+            # "no quota API here" -> defer to the cookie dashboard.
+            if resp.status in (404, 405):
+                return _err("ollama", "Ollama Cloud", key, "no_quota_api")
+            if resp.status >= 400:
+                return _err("ollama", "Ollama Cloud", key, "unexpected")
+            try:
+                data: Any = await resp.json(content_type=None)
+            except Exception:
+                return _err("ollama", "Ollama Cloud", key, "no_quota_api")
+    except asyncio.TimeoutError:
+        return _err("ollama", "Ollama Cloud", key, "timeout")
+    except aiohttp.ClientError:
+        return _err("ollama", "Ollama Cloud", key, "unexpected")
+    except Exception:
+        logger.exception("fetch_ollama: unexpected error (api key)")
+        return _err("ollama", "Ollama Cloud", key, "unexpected")
+
+    usages = _parse_ollama_usage_json(data)
+    if not usages:
+        # Endpoint reachable but no usage figures (e.g. a profile-only payload)
+        # -> treat as "no quota API" so the cookie dashboard is tried instead.
+        return _err("ollama", "Ollama Cloud", key, "no_quota_api")
+
+    return ProviderQuotaResult(
+        name="ollama",
+        display_name="Ollama Cloud",
+        key_configured=True,
+        key_masked=_mask_key(key),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+def _ollama_html_signed_out(html: str) -> bool:
+    """Detect a signed-out Ollama page returned with HTTP 200.
+
+    Unauthenticated requests to ``/settings`` normally 302 to the sign-in page
+    (caught at the HTTP layer), but a client-rendered shell can answer 200 with a
+    sign-in prompt instead. We look for an explicit sign-in *call to action* — a
+    prompt phrase, a signed-out ``<title>``, or a link/button/heading whose whole
+    visible text is "Sign in"/"Log in" — rather than any stray "login"/"sign in"
+    substring (a "Login history" link, a "Sign out" button, JS bundles). That
+    distinguishes a genuine expired-cookie shell (``auth_failed``) from a stale
+    parser on an authenticated page (``parse_error``).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True).lower()
+    phrases = (
+        "sign in to ollama",
+        "log in to ollama",
+        "sign in to continue",
+        "sign in to your account",
+    )
+    if any(phrase in text for phrase in phrases):
+        return True
+
+    title = soup.title.get_text(strip=True).lower() if soup.title else ""
+    if title.startswith(("sign in", "log in", "login")):
+        return True
+
+    cta_labels = {"sign in", "log in", "login"}
+    return any(
+        element.get_text(" ", strip=True).lower() in cta_labels
+        for element in soup.find_all(["a", "button", "h1", "h2"])
+    )
+
 
 async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
     """Scrape Ollama Cloud usage for a single session cookie."""
@@ -977,7 +1146,7 @@ async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
 
     usages = _parse_ollama_html(html)
     if not usages:
-        if "sign in" in html.lower() or "login" in html.lower():
+        if _ollama_html_signed_out(html):
             return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
         return _err("ollama", "Ollama Cloud", cookie, "parse_error")
 
@@ -993,10 +1162,45 @@ async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_ollama(_operational_store: Any | None = None) -> list[ProviderQuotaResult]:
-    """Scrape Ollama Cloud usage for all configured session cookies."""
-    keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
-    if not keys:
+async def fetch_ollama(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Fetch Ollama Cloud usage for all configured credentials.
+
+    Prefers ``OLLAMA_API_KEY`` (Bearer auth, which does not expire) against the
+    forward-looking usage endpoint, then falls back to scraping the signed-in
+    dashboard via ``OLLAMA_SESSION_COOKIE``. Ollama Cloud does not yet expose an
+    official account-usage API (ollama/ollama#15663, #15132, #16448), so the
+    API-key probe typically 404s today and the cookie remains the live source;
+    the ordering future-proofs the tile for when the endpoint ships.
+
+    API keys are resolved through ``_discover_provider_keys`` (like the other
+    managed-key fetchers) so admin-managed / live KeyPool keys are probed and
+    disabled-env tombstones are honored; the session cookie stays env-only.
+    """
+    api_keys = await _discover_provider_keys(
+        "ollama",
+        "OLLAMA_API_KEY",
+        "OLLAMA_API_KEY",
+        operational_store,
+    )
+    cookie_keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
+
+    if api_keys:
+        results = await asyncio.gather(
+            *[_fetch_ollama_via_api_key(k) for _, k in api_keys],
+            return_exceptions=True,
+        )
+        processed = _process_multi_key_results("ollama", "Ollama Cloud", api_keys, results)
+        # The API endpoint is only a forward-looking probe; the cookie dashboard
+        # is still the live source. Defer to a configured cookie whenever the
+        # probe yields no usable quota — for *any* failure (404/parse, auth,
+        # timeout, 5xx/429, bad override), not just the expected 404 — so a
+        # transient probe error never regresses a working cookie-based display.
+        # Only a successful probe (real usages from any key) wins.
+        no_api_usage = all(not r.ok for r in processed)
+        if not (cookie_keys and no_api_usage):
+            return processed
+
+    if not cookie_keys:
         return [
             ProviderQuotaResult(
                 name="ollama",
@@ -1011,11 +1215,11 @@ async def fetch_ollama(_operational_store: Any | None = None) -> list[ProviderQu
         ]
 
     results = await asyncio.gather(
-        *[_fetch_ollama_for_key(k) for _, k in keys],
+        *[_fetch_ollama_for_key(k) for _, k in cookie_keys],
         return_exceptions=True,
     )
 
-    return _process_multi_key_results("ollama", "Ollama Cloud", keys, results)
+    return _process_multi_key_results("ollama", "Ollama Cloud", cookie_keys, results)
 
 
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
