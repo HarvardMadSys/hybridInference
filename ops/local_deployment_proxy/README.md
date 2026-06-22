@@ -65,6 +65,20 @@ durable setup, use the two units in [`deploy/systemd/`](../../deploy/systemd/):
   instance per router host, run with `autossh` (`Restart=always`) so it
   reconnects after a link drop **and** comes back after a reboot.
 
+`install.sh` installs autossh, copies both units, and enables the proxy plus a
+tunnel instance per router host:
+
+```bash
+# Defaults to SSH_HOST='internal.freeinference.org|spark2', ports 8001.
+sudo ./local_deployment_proxy/install.sh
+
+# Override hosts/ports if needed:
+sudo SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 \
+     ./local_deployment_proxy/install.sh
+```
+
+Equivalent manual steps, if you'd rather not use the script:
+
 ```bash
 sudo cp deploy/systemd/local_deployment_proxy.service \
         deploy/systemd/local_deployment_tunnel@.service /etc/systemd/system/
