@@ -295,3 +295,49 @@ async def test_streaming_pool_exhausted_propagates():
     assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until > 0
     assert adapter._key_pool._keys[1].cooldown_until > 0
+
+
+async def test_streaming_mid_stream_error_mutes_key():
+    """An error after the first chunk mutes the key via the error-status release."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    async def gen():
+        yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        yield 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        raise aiohttp.ServerDisconnectedError("mid-stream drop")
+
+    with (
+        patch.object(adapter.http, "stream_post", return_value=gen()),
+        pytest.raises(aiohttp.ServerDisconnectedError),
+    ):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    # The committed key (k1) was muted by the mid-stream failure.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+
+
+async def test_streaming_client_disconnect_does_not_mute_key():
+    """Client closing the stream early (GeneratorExit) must not mute the key."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    sse_chunks = (
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" there"}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+    )
+
+    with patch.object(
+        adapter.http, "stream_post", side_effect=lambda *a, **k: _make_stream_gen(chunks=sse_chunks)
+    ):
+        agen = adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+        # Pull the first chunk, then close the generator (simulated disconnect).
+        await agen.__anext__()
+        await agen.aclose()
+
+    # A client-side cancellation is not an upstream error — k1 stays usable.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0

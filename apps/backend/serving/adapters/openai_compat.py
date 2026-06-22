@@ -662,10 +662,11 @@ class OpenAICompatAdapter(BaseAdapter):
 
         stream_timeout = self._build_stream_timeout()
 
-        # Open the stream via the key-pool-aware helper. The helper performs
-        # 429 rotation BEFORE the first chunk is yielded; once we receive the
-        # primed first chunk, the lease is committed for the lifetime of the
-        # stream and any mid-stream errors propagate as before.
+        # Open the stream via the key-pool-aware helper. The helper rotates
+        # keys on opening errors BEFORE the first chunk is yielded; once we
+        # receive the primed first chunk, the lease is committed for the
+        # lifetime of the stream. A mid-stream error mutes the key (released
+        # with an error status below) so the next request rotates off it.
         primed: str | None = None
         stream_iter: AsyncIterator[str] | None = None
         active_lease = None
@@ -685,7 +686,11 @@ class OpenAICompatAdapter(BaseAdapter):
                 async for c in stream_iter:
                     yield c
 
-        # Stream response
+        # Stream response. Track whether an upstream error interrupts the
+        # stream so the lease is muted (not released as healthy) on the way out.
+        # Only Exceptions count — client-side cancellations (CancelledError,
+        # GeneratorExit) are BaseExceptions and must not mute the key.
+        stream_error = False
         try:
             async for chunk in _drain():
                 if not chunk.strip():
@@ -711,14 +716,20 @@ class OpenAICompatAdapter(BaseAdapter):
                     except json.JSONDecodeError:
                         logger.warning(f"[OpenAICompat] Failed to parse chunk: {data_str[:100]}")
         except asyncio.TimeoutError:
+            stream_error = True
             logger.warning(
                 "[OpenAICompat] Stream idle timeout for model=%s after %.1fs",
                 self.config.id,
                 getattr(stream_timeout, "sock_read", -1.0) if stream_timeout else -1.0,
             )
+        except Exception:
+            # Mid-stream upstream failure (e.g. ClientPayloadError, disconnect):
+            # mute the key, then propagate to the client as before.
+            stream_error = True
+            raise
         finally:
             if active_lease is not None and self._key_pool is not None:
-                self._key_pool.release(active_lease, status_code=200)
+                self._key_pool.release(active_lease, status_code=0 if stream_error else 200)
                 logger.debug(
                     "key_pool_active_affinities",
                     extra={
