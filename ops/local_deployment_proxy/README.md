@@ -55,6 +55,38 @@ LOCAL_API_KEY='your-secret-key' ./local_deployment_proxy/local_deployment_servic
 
 Logs are written to `/tmp/local_deployment_proxy_8001.log`.
 
+### Run as a systemd service (recommended for production)
+
+The background daemon above does not survive a reboot of this GPU box. For a
+durable setup, use the two units in [`deploy/systemd/`](../../deploy/systemd/):
+
+- `local_deployment_proxy.service` — the local listener (port 8001).
+- `local_deployment_tunnel@.service` — a **templated** reverse tunnel, one
+  instance per router host, run with `autossh` (`Restart=always`) so it
+  reconnects after a link drop **and** comes back after a reboot.
+
+```bash
+sudo cp deploy/systemd/local_deployment_proxy.service \
+        deploy/systemd/local_deployment_tunnel@.service /etc/systemd/system/
+sudo apt-get install -y autossh        # required by the tunnel unit
+sudo systemctl daemon-reload
+sudo systemctl enable --now local_deployment_proxy.service
+# One instance per router host (the part after @ is the SSH destination):
+sudo systemctl enable --now local_deployment_tunnel@internal.freeinference.org
+sudo systemctl enable --now local_deployment_tunnel@spark2
+```
+
+Requirements / knobs:
+
+- The tunnel unit runs as **root**, so root on this box needs an SSH key
+  authorized on each router host. Override `LISTEN_PORT` / `REMOTE_PORT` /
+  `REMOTE_BIND` via a drop-in (`systemctl edit local_deployment_tunnel@…`) if
+  the defaults (`8001` / `8001` / `0.0.0.0`) don't apply.
+- Binding `REMOTE_BIND=0.0.0.0` on the router requires `GatewayPorts
+  clientspecified` (or `yes`) in the router's `sshd_config`, so its Docker
+  containers can reach the forwarded port via `host.docker.internal`.
+- Logs: `journalctl -u local_deployment_tunnel@internal.freeinference.org -f`.
+
 ## Usage with OpenAI-compatible clients
 
 ```python
