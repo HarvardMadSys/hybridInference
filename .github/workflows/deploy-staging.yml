@@ -103,6 +103,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Self-heal the checkout's ownership before syncing. A git or install
+          # command accidentally run as root (or a prior root-owned deploy) can
+          # leave parts of /srv/hybridInference owned by another user, which makes
+          # `git fetch`/`git reset --hard` fail with "Permission denied" (exit
+          # 1/128) and silently wedges every deploy — the host keeps serving the
+          # old code. `sudo -n` never blocks on a password prompt; if the deploy
+          # user lacks passwordless sudo the reclaim is skipped and the original
+          # git error still surfaces below, so this only ever helps.
+          remote_cmd="git config --global --add safe.directory /srv/hybridInference \
+            && cd /srv/hybridInference \
+            && { sudo -n chown -R '${STAGING_USER}' /srv/hybridInference 2>/dev/null \
+                 || echo '[deploy-staging] ownership reclaim skipped (no passwordless sudo?); continuing'; } \
+            && git fetch origin dev \
+            && git reset --hard '${DEPLOY_SHA}' \
+            && DEPLOY_SHA='${DEPLOY_SHA}' GITHUB_TOKEN='${ROUTEWISE_GITHUB_TOKEN}' bash ops/deploy/deploy_staging.sh"
+
           ssh \
             -i "${HOME}/.ssh/staging_deploy_key" \
             -p "${STAGING_PORT}" \
@@ -111,4 +127,4 @@ jobs:
             -o UserKnownHostsFile="${HOME}/.ssh/known_hosts" \
             -o GlobalKnownHostsFile=/dev/null \
             "${STAGING_USER}@${STAGING_HOST}" \
-            "git config --global --add safe.directory /srv/hybridInference && cd /srv/hybridInference && git fetch origin dev && git reset --hard ${DEPLOY_SHA} && DEPLOY_SHA=${DEPLOY_SHA} GITHUB_TOKEN='${ROUTEWISE_GITHUB_TOKEN}' bash ops/deploy/deploy_staging.sh"
+            "${remote_cmd}"
