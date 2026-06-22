@@ -219,3 +219,18 @@ def test_wrapper_marker_found_after_leading_blank_line() -> None:
 )
 def test_pi_wrapper_requires_unambiguous_phrase(content: str, expected: str | None) -> None:
     assert agent_name_from_prompt([{"role": "system", "content": content}]) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        # A declared name that starts with a marker plus a name separator is
+        # preserved in full rather than collapsed to the wrapper label.
+        ("You are Hermes-2, a software engineer.", "Hermes-2"),
+        ("You are openClaw.beta, a coding agent.", "openClaw.beta"),
+        # A genuine standalone marker still preempts the wrapped agent's opener.
+        ("You are Claude Code, running under openClaw.", "openClaw"),
+    ],
+)
+def test_wrapper_marker_respects_agent_name_characters(content: str, expected: str) -> None:
+    assert agent_name_from_prompt([{"role": "system", "content": content}]) == expected

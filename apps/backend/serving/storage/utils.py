@@ -196,14 +196,22 @@ def _message_text(content: Any) -> str | None:
 
 
 def _first_sentence(text: str) -> str:
-    """Return the leading sentence of ``text`` (up to the first ``.!?`` or newline).
+    """Return the leading sentence of ``text`` (up to the first sentence end or newline).
 
     Leading whitespace is ignored first, so a prompt that begins with a blank
     line (common in triple-quoted templates) does not yield an empty sentence.
+    A ``.`` ends the sentence only when followed by whitespace or end-of-text,
+    so an intra-name dot (e.g. ``"openClaw.beta"``) does not split the name.
     """
     text = text.lstrip()
-    match = re.search(r"[.!?\n]", text)
+    match = re.search(r"[!?\n]|\.(?=\s|$)", text)
     return text[: match.start()] if match else text
+
+
+# Agent-name characters (per ``_AGENT_NAME_RE``); used to bound wrapper markers
+# so a declared name that merely starts with a marker (e.g. ``"Hermes-2"``,
+# ``"openClaw.beta"``) is not collapsed to the wrapper label.
+_NAME_CHARS = "A-Za-z0-9._-"
 
 
 def _wrapper_client_from_first_sentence(text: str) -> str | None:
@@ -218,21 +226,24 @@ def _wrapper_client_from_first_sentence(text: str) -> str | None:
     genuinely declared identity. Matching is case-insensitive and scoped to the
     opening sentence, so a marker deeper in a long prompt does not match.
 
-    ``openclaw``/``hermes`` are distinctive enough to match on a word boundary.
-    ``pi`` is too short and ambiguous for a bare match (it would catch
-    ``"explains pi"`` and collapse names like ``"Pi-Labs"`` since ``\b`` treats
-    a hyphen as a boundary), so it requires the wrapper phrase ``"inside pi"``.
+    Markers are bounded by ``_NAME_CHARS`` rather than ``\b`` so a declared name
+    that merely starts with a marker followed by a name separator — e.g.
+    ``"Hermes-2"`` or ``"openClaw.beta"`` — is left to the opener and preserved
+    in full. ``pi`` is additionally too short and ambiguous for a bare match (it
+    would catch ``"explains pi"``), so it requires the wrapper phrase
+    ``"inside pi"``.
     """
     sentence = _first_sentence(text).lower()
 
     def has(marker: str) -> bool:
-        return re.search(rf"\b{re.escape(marker)}\b", sentence) is not None
+        pattern = rf"(?<![{_NAME_CHARS}]){re.escape(marker)}(?![{_NAME_CHARS}])"
+        return re.search(pattern, sentence) is not None
 
     if has("openclaw"):
         return "openClaw"
     if has("hermes"):
         return "Hermes"
-    if re.search(r"\binside\s+pi\b", sentence):
+    if re.search(rf"(?<![{_NAME_CHARS}])inside\s+pi(?![{_NAME_CHARS}])", sentence):
         return "pi"
     return None
 
