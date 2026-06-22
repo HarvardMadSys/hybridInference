@@ -17,7 +17,9 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import (
+    EXEMPT_MODEL_USER_CONCURRENCY_LIMIT,
     UserConcurrencyLimiter,
+    _exempt_slot_key,
     enforce_user_concurrency,
     static_limits_provider,
 )
@@ -384,7 +386,8 @@ async def test_exempt_model_bypasses_full_user_slot():
         resp_blocked = await client.post("/probe", json={"model": "normal-model"})
         assert resp_blocked.status_code == 429
 
-        # Exempt model bypasses the gate entirely -> 200 despite the full slot.
+        # Exempt model uses a separate per-user budget -> 200 despite the full
+        # normal slot.
         resp_exempt = await client.post("/probe", json={"model": "exempt-model"})
         assert resp_exempt.status_code == 200
         assert resp_exempt.json()["ok"] is True
@@ -407,6 +410,76 @@ async def test_exempt_model_consumes_no_slot():
 
     # The exempt path must not have touched the user's slot.
     assert limiter.role_for("u1") is None
+
+
+@pytest.mark.asyncio
+async def test_exempt_model_capped_per_user(monkeypatch):
+    """Exempt models are no longer unlimited: a user is capped per the
+    EXEMPT_MODEL_USER_CONCURRENCY_LIMIT and the over-cap request gets 429."""
+    # Shrink the cap so the test holds only a couple of concurrent requests.
+    monkeypatch.setattr("serving.servers.concurrency.EXEMPT_MODEL_USER_CONCURRENCY_LIMIT", 2)
+
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    # Do NOT set unary_event: the held handlers keep their exempt slots.
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Saturate the exempt budget (cap = 2).
+        tasks = [
+            asyncio.create_task(client.post("/probe", json={"model": "exempt-model"}))
+            for _ in range(2)
+        ]
+        await _wait_until_in_use(limiter, _exempt_slot_key("u1"), 2)
+
+        # The third concurrent exempt request exceeds the cap -> 429.
+        resp = await client.post("/probe", json={"model": "exempt-model"})
+        assert resp.status_code == 429
+        assert resp.json()["detail"]["error"]["limit"] == 2
+
+        # Release the held requests; they should all complete successfully.
+        app.unary_event.set()  # type: ignore[attr-defined]
+        for t in tasks:
+            assert (await t).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_exempt_budget_independent_of_normal_budget():
+    """Exempt requests draw on a separate per-user budget and never consume
+    the user's normal in-flight slots."""
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    # Do NOT set unary_event: held handlers keep their slots so we can probe
+    # the two budgets concurrently.
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Hold one normal request: saturates the free=1 normal budget.
+        normal_task = asyncio.create_task(client.post("/probe", json={"model": "normal-model"}))
+        await _wait_until_in_use(limiter, "u1", 1)
+
+        # Hold one exempt request: independent budget, must be granted even
+        # though the normal budget is full.
+        exempt_task = asyncio.create_task(client.post("/probe", json={"model": "exempt-model"}))
+        await _wait_until_in_use(limiter, _exempt_slot_key("u1"), 1)
+
+        # A second normal request is rejected — the in-flight exempt request
+        # did not free up (or consume) the normal budget.
+        resp_norm2 = await client.post("/probe", json={"model": "normal-model"})
+        assert resp_norm2.status_code == 429
+
+        # Release everything.
+        app.unary_event.set()  # type: ignore[attr-defined]
+        assert (await normal_task).status_code == 200
+        assert (await exempt_task).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_exempt_user_concurrency_limit_default_is_64():
+    """The exempt per-user cap defaults to 64 (the documented ceiling)."""
+    assert EXEMPT_MODEL_USER_CONCURRENCY_LIMIT == 64
 
 
 @pytest.mark.asyncio

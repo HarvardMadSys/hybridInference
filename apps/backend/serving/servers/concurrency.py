@@ -30,6 +30,13 @@ logger = get_logger(__name__)
 
 LimitsProvider = Callable[[], Awaitable[dict[str, int]]]
 
+# Per-user concurrency cap applied to concurrency-exempt models ("not limited
+# by concurrency"). Exempt-model requests do not count against the user's
+# normal role-based budget, but are still bounded to this many concurrent
+# in-flight requests per user so a single user cannot open unbounded
+# concurrent requests against an exempt model.
+EXEMPT_MODEL_USER_CONCURRENCY_LIMIT = 64
+
 
 def _build_fallback_limits() -> dict[str, int]:
     """Derive fallback caps from the runtime-settings registry.
@@ -200,6 +207,16 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
+def _exempt_slot_key(user_id: str) -> str:
+    """Return the separate per-user budget key for concurrency-exempt models.
+
+    Exempt-model requests must not consume the user's normal in-flight slots,
+    so they acquire against a distinct key. The NUL separator can never appear
+    in a real ``user_id``, so the two budgets can never collide.
+    """
+    return f"{user_id}\x00exempt"
+
+
 async def enforce_user_concurrency(
     request: Request,
     user: dict[str, Any] = Depends(verify_api_key),
@@ -209,9 +226,11 @@ async def enforce_user_concurrency(
 ) -> AsyncGenerator[None, None]:
     """Acquire a per-user concurrency slot or raise 429.
 
-    Models flagged as concurrency-exempt bypass the gate entirely: their
-    requests never consume a per-user slot and are never rejected with a
-    429 ``concurrency_limit_exceeded``.
+    Models flagged as concurrency-exempt ("not limited by concurrency") do not
+    consume the user's normal role-based in-flight budget. Instead they draw on
+    a separate per-user budget capped at ``EXEMPT_MODEL_USER_CONCURRENCY_LIMIT``,
+    so a single user still cannot open unbounded concurrent requests against an
+    exempt model.
 
     Uses ``yield`` so FastAPI runs the cleanup ``finally`` block after the
     response (including streaming body) is fully sent, on exception, or
@@ -231,6 +250,7 @@ async def enforce_user_concurrency(
     # must never break the gate, so any failure here falls through to the
     # normal acquire/release path. FastAPI caches the parsed body, so the
     # handler's own ``await request.json()`` still works.
+    is_exempt_model = False
     if concurrency_resolver is not None and router is not None and request.method == "POST":
         try:
             body = await request.json()
@@ -249,11 +269,10 @@ async def enforce_user_concurrency(
                 )
                 if canonical is not None and await concurrency_resolver.is_exempt(canonical):
                     logger.debug(
-                        "user_concurrency: model exempt; bypassing per-user gate",
+                        "user_concurrency: model exempt; using separate per-user budget",
                         extra={"model": model, "canonical": canonical},
                     )
-                    yield
-                    return
+                    is_exempt_model = True
         except Exception:
             # Never let exemption parsing break the gate; fall through to the
             # normal per-user concurrency path below.
@@ -264,7 +283,16 @@ async def enforce_user_concurrency(
     is_admin = bool(user.get("is_admin", False))
     max_concurrent = user.get("max_concurrent_requests")
 
-    granted, limit, role_label = await limiter.try_acquire(user_id, role, is_admin, max_concurrent)
+    if is_exempt_model:
+        # "Not limited by concurrency" models don't draw on the user's normal
+        # role-based budget, but are still capped per user so a single user
+        # cannot open unbounded concurrent requests against an exempt model.
+        slot_key = _exempt_slot_key(user_id)
+        max_concurrent = EXEMPT_MODEL_USER_CONCURRENCY_LIMIT
+    else:
+        slot_key = user_id
+
+    granted, limit, role_label = await limiter.try_acquire(slot_key, role, is_admin, max_concurrent)
     if not granted:
         logger.info(
             "per-user concurrency limit hit",
@@ -315,7 +343,7 @@ async def enforce_user_concurrency(
         yield
     finally:
         try:
-            limiter.release(user_id)
+            limiter.release(slot_key)
         except Exception:
             # Never let cleanup break the request lifecycle.
             logger.exception(
