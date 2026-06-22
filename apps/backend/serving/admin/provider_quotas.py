@@ -24,12 +24,24 @@ from typing import Any
 import aiohttp
 from bs4 import BeautifulSoup
 
+from serving.adapters import dynamic_keys
+from serving.admin.provider_key_probe import (
+    ProviderKeyProbeError,
+    probe_provider_key_with_existing_route,
+)
 from serving.config.settings import settings
 from serving.schemas_admin import ProviderQuotaResult, ProviderQuotaUsage
 
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 8
+_FEATHERLESS_CONCURRENCY_URL = "https://api.featherless.ai/account/concurrency"
+_FEATHERLESS_FETCH_LOCK: asyncio.Lock | None = None
+_FEATHERLESS_FETCH_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+_FEATHERLESS_CACHE_TTL_SECONDS = 15.0
+_FEATHERLESS_FETCH_TASK: asyncio.Task[list[ProviderQuotaResult]] | None = None
+_FEATHERLESS_FETCH_SIGNATURE: tuple[str, ...] | None = None
+_FEATHERLESS_CACHE: tuple[float, tuple[str, ...], list[ProviderQuotaResult]] | None = None
 
 
 def _mask_key(key: str) -> str:
@@ -64,6 +76,83 @@ def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, s
         if not val:
             break
         keys.append((i, val))
+    return keys
+
+
+def _featherless_fetch_lock() -> asyncio.Lock:
+    global _FEATHERLESS_FETCH_LOCK, _FEATHERLESS_FETCH_LOCK_LOOP
+
+    loop = asyncio.get_running_loop()
+    if _FEATHERLESS_FETCH_LOCK is None or _FEATHERLESS_FETCH_LOCK_LOOP is not loop:
+        _FEATHERLESS_FETCH_LOCK = asyncio.Lock()
+        _FEATHERLESS_FETCH_LOCK_LOOP = loop
+    return _FEATHERLESS_FETCH_LOCK
+
+
+async def _discover_provider_keys(
+    provider: str,
+    base_var: str,
+    numbered_prefix: str,
+    operational_store: Any | None = None,
+) -> list[tuple[int, str]]:
+    """Discover configured keys from env, DB, and live adapter key pools."""
+    disabled_hashes: set[str] = set()
+    route_bound_key_ids: set[str] | None = set()
+    if operational_store is not None:
+        try:
+            disabled_hashes = set(
+                await operational_store.list_disabled_provider_env_key_hashes(provider)
+            )
+        except Exception as exc:
+            logger.warning("failed to load disabled env keys for provider=%s: %s", provider, exc)
+
+        try:
+            route_bound_key_ids = await dynamic_keys._list_route_bound_db_key_ids(operational_store)
+        except Exception as exc:
+            logger.warning(
+                "failed to load route-bound provider key ids for provider=%s; "
+                "skipping DB keys to avoid global key leakage: %s",
+                provider,
+                exc,
+            )
+            route_bound_key_ids = None
+
+    def is_disabled_env_key(key: str) -> bool:
+        key_hash = dynamic_keys.env_key_hash(key)
+        return key_hash in disabled_hashes or dynamic_keys.is_env_key_disabled(provider, key_hash)
+
+    keys = [
+        (index, key)
+        for index, key in _discover_env_keys(base_var, numbered_prefix)
+        if not is_disabled_env_key(key)
+    ]
+    seen = {key for _, key in keys}
+
+    if operational_store is not None and route_bound_key_ids is not None:
+        try:
+            db_keys = await operational_store.list_provider_keys_full(
+                provider,
+                exclude_ids=route_bound_key_ids,
+            )
+        except Exception as exc:
+            logger.warning("failed to load DB keys for provider=%s: %s", provider, exc)
+        else:
+            for key in db_keys:
+                if not key or key in seen:
+                    continue
+                keys.append((len(keys) + 1, key))
+                seen.add(key)
+
+    for pool in dynamic_keys.get_pools_for_provider(
+        provider,
+        include_db_injection_disabled=False,
+    ):
+        for key in pool.snapshot_keys():
+            if not key or key in seen or is_disabled_env_key(key):
+                continue
+            keys.append((len(keys) + 1, key))
+            seen.add(key)
+
     return keys
 
 
@@ -265,9 +354,14 @@ async def _fetch_chutes_for_key(key: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_chutes() -> list[ProviderQuotaResult]:
+async def fetch_chutes(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch quota usage from Chutes for all configured API keys."""
-    keys = _discover_env_keys("CHUTES_API_KEY", "CHUTES_API_KEY")
+    keys = await _discover_provider_keys(
+        "chutes",
+        "CHUTES_API_KEY",
+        "CHUTES_API_KEY",
+        operational_store,
+    )
     if not keys:
         return [
             ProviderQuotaResult(
@@ -499,12 +593,17 @@ async def _fetch_zai_for_key(key: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_zai() -> list[ProviderQuotaResult]:
+async def fetch_zai(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch quota usage from ZAI for all configured API keys.
 
     Endpoint discovered from ZAI's official ``glm-plan-usage`` plugin.
     """
-    keys = _discover_env_keys("ZAI_API_KEY", "ZAI_API_KEY")
+    keys = await _discover_provider_keys(
+        "zai",
+        "ZAI_API_KEY",
+        "ZAI_API_KEY",
+        operational_store,
+    )
     if not keys:
         return [
             ProviderQuotaResult(
@@ -788,7 +887,7 @@ async def _fetch_minimax_via_api_key(key: str) -> ProviderQuotaResult:
     return _minimax_result_from_payload(data, key)
 
 
-async def fetch_minimax() -> list[ProviderQuotaResult]:
+async def fetch_minimax(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch coding/token-plan quota from MiniMax for all configured keys.
 
     Prefers API-key auth (``MINIMAX_API_KEY``) against the documented
@@ -801,7 +900,12 @@ async def fetch_minimax() -> list[ProviderQuotaResult]:
     if not cookie_keys and settings.minimax_session_cookie:
         cookie_keys = [(1, settings.minimax_session_cookie)]
 
-    api_keys = _discover_env_keys("MINIMAX_API_KEY", "MINIMAX_API_KEY")
+    api_keys = await _discover_provider_keys(
+        "minimax",
+        "MINIMAX_API_KEY",
+        "MINIMAX_API_KEY",
+        operational_store,
+    )
     if api_keys:
         results = await asyncio.gather(
             *[_fetch_minimax_via_api_key(k) for _, k in api_keys],
@@ -842,6 +946,175 @@ _USAGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_OLLAMA_USAGE_PERIODS = ("session", "weekly", "daily", "monthly")
+
+
+def _ollama_usage_url() -> str:
+    """Resolve the Ollama Cloud account-usage endpoint, honoring ``OLLAMA_USAGE_URL``.
+
+    Ollama Cloud does not yet expose an official account-usage API
+    (ollama/ollama#15663, #15132, #16448); this targets the proposed
+    ``/api/account/usage`` path so the probe starts working the moment Ollama
+    ships it. Override via ``OLLAMA_USAGE_URL`` if the path differs; the override
+    is used verbatim (no trailing-slash normalization) so an endpoint that
+    requires a trailing slash isn't turned into a redirect — which, with
+    ``allow_redirects=False``, would surface as a spurious ``auth_failed``.
+    """
+    return os.getenv("OLLAMA_USAGE_URL") or "https://ollama.com/api/account/usage"
+
+
+def _ollama_usage_row(period: str, block: dict[str, Any]) -> ProviderQuotaUsage | None:
+    """Parse one period block of an Ollama usage payload (percentage or counts).
+
+    The dashboard reports percentages, so a ``percent``-style field wins; we fall
+    back to raw ``used``/``limit`` counts (deriving ``used`` from ``remaining``
+    when needed). Returns ``None`` when neither shape is present.
+    """
+    reset_at = (
+        _parse_iso(block.get("reset_at"))
+        or _parse_iso(block.get("resetAt"))
+        or _parse_iso(block.get("reset"))
+        or _parse_epoch_ms(block.get("reset_at"))
+        or _parse_epoch_ms(block.get("resetAt"))
+        or _parse_epoch_ms(block.get("reset"))
+        or _next_reset(period)
+    )
+    label = f"{period.capitalize()} usage"
+
+    pct = _first_float(block, "percent", "percentage", "used_percent", "usedPercent")
+    if pct is not None:
+        return ProviderQuotaUsage(label=label, used=pct, limit=100.0, unit="%", reset_at=reset_at)
+
+    used = _first_float(block, "used", "usage", "consumed")
+    limit = _first_float(block, "limit", "total", "quota", "max")
+    remaining = _first_float(block, "remaining", "remain", "left")
+    if used is None and limit is not None and remaining is not None:
+        used = max(0.0, limit - remaining)
+    if used is not None and limit is not None:
+        return ProviderQuotaUsage(label=label, used=used, limit=limit, unit="", reset_at=reset_at)
+    return None
+
+
+def _parse_ollama_usage_json(payload: Any) -> list[ProviderQuotaUsage]:
+    """Best-effort parse of a (future) Ollama Cloud usage JSON payload.
+
+    Ollama has not finalized the schema, so we look for per-period blocks —
+    ``session``/``weekly``/``daily``/``monthly`` — at the root or under a
+    ``usage``/``data``/``account`` envelope. Unknown shapes yield an empty list
+    so the caller can fall back to the cookie scraper.
+    """
+    body = payload
+    if isinstance(payload, dict) and not any(p in payload for p in _OLLAMA_USAGE_PERIODS):
+        for envelope_key in ("usage", "data", "account"):
+            inner = payload.get(envelope_key)
+            if isinstance(inner, dict) and any(p in inner for p in _OLLAMA_USAGE_PERIODS):
+                body = inner
+                break
+    if not isinstance(body, dict):
+        return []
+
+    usages: list[ProviderQuotaUsage] = []
+    for period in _OLLAMA_USAGE_PERIODS:
+        block = body.get(period)
+        if isinstance(block, dict):
+            row = _ollama_usage_row(period, block)
+            if row is not None:
+                usages.append(row)
+    return usages
+
+
+async def _fetch_ollama_via_api_key(key: str) -> ProviderQuotaResult:
+    """Probe the Ollama Cloud account-usage endpoint for a single API key.
+
+    Uses ``Authorization: Bearer`` auth, which (unlike the session cookie) does
+    not expire. Ollama Cloud has no documented usage endpoint yet, so this
+    typically 404s today and ``fetch_ollama`` falls back to the cookie-scraped
+    dashboard; the ``no_quota_api`` / ``auth_failed`` results drive that
+    fallback. When Ollama ships the endpoint the API key becomes the live source.
+    """
+    url = _ollama_usage_url()
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Accept": "application/json",
+    }
+    timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+
+    try:
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(url, headers=headers, allow_redirects=False) as resp,
+        ):
+            if resp.status in (301, 302, 303, 307, 308, 401, 403):
+                return _err("ollama", "Ollama Cloud", key, "auth_failed")
+            # The usage endpoint is not generally available yet; 404/405 means
+            # "no quota API here" -> defer to the cookie dashboard.
+            if resp.status in (404, 405):
+                return _err("ollama", "Ollama Cloud", key, "no_quota_api")
+            if resp.status >= 400:
+                return _err("ollama", "Ollama Cloud", key, "unexpected")
+            try:
+                data: Any = await resp.json(content_type=None)
+            except Exception:
+                return _err("ollama", "Ollama Cloud", key, "no_quota_api")
+    except asyncio.TimeoutError:
+        return _err("ollama", "Ollama Cloud", key, "timeout")
+    except aiohttp.ClientError:
+        return _err("ollama", "Ollama Cloud", key, "unexpected")
+    except Exception:
+        logger.exception("fetch_ollama: unexpected error (api key)")
+        return _err("ollama", "Ollama Cloud", key, "unexpected")
+
+    usages = _parse_ollama_usage_json(data)
+    if not usages:
+        # Endpoint reachable but no usage figures (e.g. a profile-only payload)
+        # -> treat as "no quota API" so the cookie dashboard is tried instead.
+        return _err("ollama", "Ollama Cloud", key, "no_quota_api")
+
+    return ProviderQuotaResult(
+        name="ollama",
+        display_name="Ollama Cloud",
+        key_configured=True,
+        key_masked=_mask_key(key),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=usages,
+    )
+
+
+def _ollama_html_signed_out(html: str) -> bool:
+    """Detect a signed-out Ollama page returned with HTTP 200.
+
+    Unauthenticated requests to ``/settings`` normally 302 to the sign-in page
+    (caught at the HTTP layer), but a client-rendered shell can answer 200 with a
+    sign-in prompt instead. We look for an explicit sign-in *call to action* — a
+    prompt phrase, a signed-out ``<title>``, or a link/button/heading whose whole
+    visible text is "Sign in"/"Log in" — rather than any stray "login"/"sign in"
+    substring (a "Login history" link, a "Sign out" button, JS bundles). That
+    distinguishes a genuine expired-cookie shell (``auth_failed``) from a stale
+    parser on an authenticated page (``parse_error``).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True).lower()
+    phrases = (
+        "sign in to ollama",
+        "log in to ollama",
+        "sign in to continue",
+        "sign in to your account",
+    )
+    if any(phrase in text for phrase in phrases):
+        return True
+
+    title = soup.title.get_text(strip=True).lower() if soup.title else ""
+    if title.startswith(("sign in", "log in", "login")):
+        return True
+
+    cta_labels = {"sign in", "log in", "login"}
+    return any(
+        element.get_text(" ", strip=True).lower() in cta_labels
+        for element in soup.find_all(["a", "button", "h1", "h2"])
+    )
+
 
 async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
     """Scrape Ollama Cloud usage for a single session cookie."""
@@ -873,7 +1146,7 @@ async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
 
     usages = _parse_ollama_html(html)
     if not usages:
-        if "sign in" in html.lower() or "login" in html.lower():
+        if _ollama_html_signed_out(html):
             return _err("ollama", "Ollama Cloud", cookie, "auth_failed")
         return _err("ollama", "Ollama Cloud", cookie, "parse_error")
 
@@ -889,10 +1162,45 @@ async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_ollama() -> list[ProviderQuotaResult]:
-    """Scrape Ollama Cloud usage for all configured session cookies."""
-    keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
-    if not keys:
+async def fetch_ollama(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
+    """Fetch Ollama Cloud usage for all configured credentials.
+
+    Prefers ``OLLAMA_API_KEY`` (Bearer auth, which does not expire) against the
+    forward-looking usage endpoint, then falls back to scraping the signed-in
+    dashboard via ``OLLAMA_SESSION_COOKIE``. Ollama Cloud does not yet expose an
+    official account-usage API (ollama/ollama#15663, #15132, #16448), so the
+    API-key probe typically 404s today and the cookie remains the live source;
+    the ordering future-proofs the tile for when the endpoint ships.
+
+    API keys are resolved through ``_discover_provider_keys`` (like the other
+    managed-key fetchers) so admin-managed / live KeyPool keys are probed and
+    disabled-env tombstones are honored; the session cookie stays env-only.
+    """
+    api_keys = await _discover_provider_keys(
+        "ollama",
+        "OLLAMA_API_KEY",
+        "OLLAMA_API_KEY",
+        operational_store,
+    )
+    cookie_keys = _discover_env_keys("OLLAMA_SESSION_COOKIE", "OLLAMA_SESSION_COOKIE")
+
+    if api_keys:
+        results = await asyncio.gather(
+            *[_fetch_ollama_via_api_key(k) for _, k in api_keys],
+            return_exceptions=True,
+        )
+        processed = _process_multi_key_results("ollama", "Ollama Cloud", api_keys, results)
+        # The API endpoint is only a forward-looking probe; the cookie dashboard
+        # is still the live source. Defer to a configured cookie whenever the
+        # probe yields no usable quota — for *any* failure (404/parse, auth,
+        # timeout, 5xx/429, bad override), not just the expected 404 — so a
+        # transient probe error never regresses a working cookie-based display.
+        # Only a successful probe (real usages from any key) wins.
+        no_api_usage = all(not r.ok for r in processed)
+        if not (cookie_keys and no_api_usage):
+            return processed
+
+    if not cookie_keys:
         return [
             ProviderQuotaResult(
                 name="ollama",
@@ -907,11 +1215,11 @@ async def fetch_ollama() -> list[ProviderQuotaResult]:
         ]
 
     results = await asyncio.gather(
-        *[_fetch_ollama_for_key(k) for _, k in keys],
+        *[_fetch_ollama_for_key(k) for _, k in cookie_keys],
         return_exceptions=True,
     )
 
-    return _process_multi_key_results("ollama", "Ollama Cloud", keys, results)
+    return _process_multi_key_results("ollama", "Ollama Cloud", cookie_keys, results)
 
 
 def _parse_ollama_html(html: str) -> list[ProviderQuotaUsage]:
@@ -1167,13 +1475,18 @@ async def _fetch_kimi_for_key(key: str) -> ProviderQuotaResult:
     )
 
 
-async def fetch_kimi() -> list[ProviderQuotaResult]:
+async def fetch_kimi(operational_store: Any | None = None) -> list[ProviderQuotaResult]:
     """Fetch coding-plan quota from Kimi for all configured API keys.
 
     Endpoint discovered from the official Kimi Code CLI ``/usage`` command,
     which queries ``{base}/usages`` with ``Authorization: Bearer`` auth.
     """
-    keys = _discover_env_keys("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY")
+    keys = await _discover_provider_keys(
+        "kimi",
+        "KIMI_CODING_API_KEY",
+        "KIMI_CODING_API_KEY",
+        operational_store,
+    )
     if not keys:
         return [
             ProviderQuotaResult(
@@ -1196,7 +1509,10 @@ async def fetch_kimi() -> list[ProviderQuotaResult]:
     return _process_multi_key_results("kimi", "Kimi", keys, results)
 
 
-async def gather_all() -> list[ProviderQuotaResult]:
+async def gather_all(
+    operational_store: Any | None = None,
+    services: Any | None = None,
+) -> list[ProviderQuotaResult]:
     """Run all provider fetchers in parallel; never raise.
 
     Each fetcher returns a ``list[ProviderQuotaResult]`` (one per key).
@@ -1204,15 +1520,15 @@ async def gather_all() -> list[ProviderQuotaResult]:
     exception is caught and converted to a single error result.
     """
     fetchers = [
-        ("chutes", "Chutes", fetch_chutes),
-        ("zai", "ZAI", fetch_zai),
-        ("minimax", "MiniMax", fetch_minimax),
-        ("kimi", "Kimi", fetch_kimi),
-        ("ollama", "Ollama Cloud", fetch_ollama),
-        ("featherless", "Featherless", fetch_featherless),
+        ("chutes", "Chutes", fetch_chutes(operational_store)),
+        ("zai", "ZAI", fetch_zai(operational_store)),
+        ("minimax", "MiniMax", fetch_minimax(operational_store)),
+        ("kimi", "Kimi", fetch_kimi(operational_store)),
+        ("ollama", "Ollama Cloud", fetch_ollama(operational_store)),
+        ("featherless", "Featherless", fetch_featherless(operational_store, services)),
     ]
     raw = await asyncio.gather(
-        *(f() for _, _, f in fetchers),
+        *(task for _, _, task in fetchers),
         return_exceptions=True,
     )
     out: list[ProviderQuotaResult] = []
@@ -1236,9 +1552,115 @@ async def gather_all() -> list[ProviderQuotaResult]:
     return out
 
 
-async def fetch_featherless() -> list[ProviderQuotaResult]:
-    """Return a stub result for Featherless (no public quota API)."""
-    keys = _discover_env_keys("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY")
+async def _fetch_featherless_for_key(
+    key: str,
+    services: Any | None,
+) -> ProviderQuotaResult:
+    """Probe whether a Featherless key works for the configured chat route."""
+    if services is None:
+        return _err("featherless", "Featherless", key, "probe_unavailable")
+    try:
+        await probe_provider_key_with_existing_route(
+            services,
+            provider="featherless",
+            api_key=key,
+            timeout_seconds=_TIMEOUT_SECONDS,
+        )
+    except ProviderKeyProbeError as exc:
+        usage = await _fetch_featherless_concurrency_usage(key)
+        return ProviderQuotaResult(
+            name="featherless",
+            display_name="Featherless",
+            key_configured=True,
+            key_masked=_mask_key(key),
+            fetched_at=_now(),
+            ok=False,
+            error=exc.reason,
+            usages=[usage] if usage is not None else [],
+        )
+
+    usage = await _fetch_featherless_concurrency_usage(key)
+    return ProviderQuotaResult(
+        name="featherless",
+        display_name="Featherless",
+        key_configured=True,
+        key_masked=_mask_key(key),
+        fetched_at=_now(),
+        ok=True,
+        error=None,
+        usages=[usage] if usage is not None else [],
+    )
+
+
+async def _fetch_featherless_concurrency_usage(key: str) -> ProviderQuotaUsage | None:
+    try:
+        timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.get(
+                _FEATHERLESS_CONCURRENCY_URL,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+                allow_redirects=False,
+            ) as resp,
+        ):
+            if resp.status >= 400:
+                return None
+            data = await resp.json()
+    except Exception as exc:
+        logger.debug("fetch_featherless: concurrency check failed: %s", exc)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    used = _as_float(data.get("used_cost"))
+    limit = _as_float(data.get("limit"))
+    if used is None and limit is None:
+        return None
+    return ProviderQuotaUsage(
+        label="Concurrency",
+        used=used,
+        limit=limit,
+        unit="units",
+        reset_at=None,
+    )
+
+
+def _clone_provider_quota_results(
+    results: list[ProviderQuotaResult],
+) -> list[ProviderQuotaResult]:
+    return [result.model_copy(deep=True) for result in results]
+
+
+async def _fetch_featherless_for_keys(
+    keys: list[tuple[int, str]],
+    services: Any | None,
+) -> list[ProviderQuotaResult]:
+    raw = await asyncio.gather(
+        *[_fetch_featherless_for_key(key, services) for _idx, key in keys],
+        return_exceptions=True,
+    )
+    for result in raw:
+        if isinstance(result, asyncio.CancelledError):
+            raise result
+    return _process_multi_key_results("featherless", "Featherless", keys, raw)
+
+
+async def fetch_featherless(
+    operational_store: Any | None = None,
+    services: Any | None = None,
+) -> list[ProviderQuotaResult]:
+    """Show configured Featherless keys and probe concurrency-based availability."""
+    global _FEATHERLESS_CACHE, _FEATHERLESS_FETCH_SIGNATURE, _FEATHERLESS_FETCH_TASK
+
+    keys = await _discover_provider_keys(
+        "featherless",
+        "FEATHERLESS_API_KEY",
+        "FEATHERLESS_API_KEY",
+        operational_store,
+    )
     if not keys:
         return [
             ProviderQuotaResult(
@@ -1252,9 +1674,41 @@ async def fetch_featherless() -> list[ProviderQuotaResult]:
                 usages=[],
             )
         ]
-    return _process_multi_key_results(
-        "featherless",
-        "Featherless",
-        keys,
-        [_err("featherless", "Featherless", k, "no_quota_api") for _, k in keys],
-    )
+
+    signature = tuple(key for _idx, key in keys)
+    now = asyncio.get_running_loop().time()
+    lock = _featherless_fetch_lock()
+    async with lock:
+        if (
+            _FEATHERLESS_CACHE is not None
+            and _FEATHERLESS_CACHE[1] == signature
+            and now - _FEATHERLESS_CACHE[0] <= _FEATHERLESS_CACHE_TTL_SECONDS
+        ):
+            return _clone_provider_quota_results(_FEATHERLESS_CACHE[2])
+
+        if (
+            _FEATHERLESS_FETCH_TASK is None
+            or _FEATHERLESS_FETCH_TASK.done()
+            or signature != _FEATHERLESS_FETCH_SIGNATURE
+        ):
+            _FEATHERLESS_FETCH_TASK = asyncio.create_task(
+                _fetch_featherless_for_keys(keys, services)
+            )
+            _FEATHERLESS_FETCH_SIGNATURE = signature
+        task = _FEATHERLESS_FETCH_TASK
+
+    try:
+        results = await task
+    except Exception:
+        async with lock:
+            if _FEATHERLESS_FETCH_TASK is task:
+                _FEATHERLESS_FETCH_TASK = None
+                _FEATHERLESS_FETCH_SIGNATURE = None
+        raise
+
+    async with lock:
+        if _FEATHERLESS_FETCH_TASK is task:
+            _FEATHERLESS_CACHE = (asyncio.get_running_loop().time(), signature, results)
+            _FEATHERLESS_FETCH_TASK = None
+            _FEATHERLESS_FETCH_SIGNATURE = None
+    return _clone_provider_quota_results(results)

@@ -108,6 +108,59 @@ models:
 
 
 @pytest.mark.integration
+def test_runtime_router_override_switches_strategy(tmp_path):
+    from routing.model_router_registry import ModelRouterRegistry
+    from routing.routers import FixedRouter
+    from routing.routewise.router import RouteWiseRouter
+    from serving.servers import registry as serving_registry
+
+    yaml = """
+models:
+  - id: m-routewise
+    name: M-routewise
+    provider: openai_compat
+    base_url: http://example.com/v1
+    router: routewise
+    router_params:
+      budget_alpha: 0.5
+    pricing:
+      prompt: "1.0"
+      completion: "2.0"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://example.com/v1
+"""
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml)
+    fixed = FixedRouter()
+    _count, infos = serving_registry.register_from_models_yaml(fixed, Path(p))
+    models_config = {
+        info.model_id: {
+            "router": info.router,
+            "router_params": info.router_params,
+        }
+        for info in infos
+    }
+    reg = ModelRouterRegistry(models_config=models_config, default_router_name="fixed")
+    reg.bind_fixed_router(fixed)
+
+    routewise_router = reg.get_router("m-routewise")
+    assert isinstance(routewise_router, RouteWiseRouter)
+
+    reg.set_router_override("m-routewise", "fixed")
+    assert reg.get_router_name("m-routewise") == "fixed"
+    assert reg.get_router("m-routewise") is fixed
+
+    reg.set_router_override("m-routewise", "routewise")
+    assert reg.get_router_name("m-routewise") == "routewise"
+    switched_back = reg.get_router("m-routewise")
+    assert isinstance(switched_back, RouteWiseRouter)
+    assert switched_back is not routewise_router
+    assert switched_back.config.budget_alpha == 0.5
+
+
+@pytest.mark.integration
 def test_models_yaml_unknown_strategy_fails_loudly():
     """A typo in `router:` raises at first get_router call, not silently."""
     from routing.model_router_registry import ModelRouterRegistry

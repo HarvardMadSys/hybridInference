@@ -190,7 +190,10 @@ async def signup(
         initial_status = "pending_approval"
     require_approval = initial_status == "pending_approval"
 
-    # Create user
+    # Create user. When email verification is not required there is no
+    # verification flow, so mark the email verified up front. Otherwise users
+    # created while verification is disabled would be stuck as unverified and
+    # locked out if verification is later re-enabled.
     user_id = generate_ulid()
     password_hash_str = password_utils.hash_password(body.password)
 
@@ -199,7 +202,7 @@ async def signup(
         email=body.email,
         password_hash=password_hash_str,
         user_name=body.user_name,
-        email_verified=False,
+        email_verified=not require_verification,
         status=initial_status,
         signup_reason=(body.use_case or "").strip() or None,
     )

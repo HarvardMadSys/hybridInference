@@ -35,3 +35,72 @@ def test_weight_override_signatures():
         "model_id",
         "endpoint_id",
     ]
+
+
+def test_provider_route_config_signatures():
+    assert list(
+        inspect.signature(OperationalStore.list_provider_route_configs_for_model).parameters
+    ) == [
+        "self",
+        "model_id",
+    ]
+    assert list(inspect.signature(OperationalStore.list_all_provider_route_configs).parameters) == [
+        "self"
+    ]
+    assert list(inspect.signature(OperationalStore.upsert_provider_route_config).parameters) == [
+        "self",
+        "model_id",
+        "route_id",
+        "provider",
+        "openrouter_sort",
+        "base_url",
+        "api_key_id",
+        "provider_model_id",
+        "quota_limit",
+        "updated_by",
+    ]
+    assert list(inspect.signature(OperationalStore.delete_provider_route_config).parameters) == [
+        "self",
+        "model_id",
+        "route_id",
+    ]
+
+
+def test_provider_route_candidate_signatures():
+    assert list(
+        inspect.signature(OperationalStore.list_provider_route_candidates_for_model).parameters
+    ) == [
+        "self",
+        "model_id",
+    ]
+    assert list(
+        inspect.signature(OperationalStore.list_all_provider_route_candidates).parameters
+    ) == ["self"]
+    assert list(inspect.signature(OperationalStore.upsert_provider_route_candidate).parameters) == [
+        "self",
+        "model_id",
+        "route_id",
+        "route_type",
+        "provider",
+        "openrouter_sort",
+        "base_url",
+        "api_key_id",
+        "provider_model_id",
+        "quota_limit",
+        "concurrency_limit",
+        "weight",
+        "pricing",
+        "updated_by",
+    ]
+    assert list(inspect.signature(OperationalStore.delete_provider_route_candidate).parameters) == [
+        "self",
+        "model_id",
+        "route_id",
+    ]
+    assert list(
+        inspect.signature(OperationalStore.delete_provider_route_candidate_with_config).parameters
+    ) == [
+        "self",
+        "model_id",
+        "route_id",
+    ]

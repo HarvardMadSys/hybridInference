@@ -14,13 +14,24 @@ describe('AdminTabNav', () => {
     cleanup();
   });
 
-  it('keeps routing settings out of the top-level admin navigation', () => {
+  it('shows routing as a top-level admin tab', () => {
     render(<AdminTabNav />);
 
+    expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/providers',
+    );
+    expect(screen.getByRole('link', { name: 'Routing' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/routing',
+    );
+    expect(screen.getByRole('link', { name: 'Token Usage' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/token-usage',
+    );
     expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute(
       'href',
       '/dashboard/admin/settings',
     );
-    expect(screen.queryByRole('link', { name: 'Routing' })).not.toBeInTheDocument();
   });
 });

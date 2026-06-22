@@ -9,7 +9,6 @@ Provides:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import random
@@ -26,19 +25,10 @@ if TYPE_CHECKING:
 
 from serving.exceptions import operator_safe_error
 from serving.observability.alerts import AlertSeverity, alert_slack
-from serving.observability.metrics import (
-    API_FALLBACKS,
-    API_TTFT,
-    CIRCUIT_OPEN_TOTAL,
-    CIRCUIT_STATE,
-    PROVIDER_AVAILABILITY,
-    PROVIDER_LATENCY,
-    ROUTING_AFFINITY,
-    STREAMING_INTERRUPTION,
-    normalize_model_label,
-    normalize_provider_label,
-)
 from serving.utils import context as req_ctx
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Strong references to fire-and-forget Slack alert tasks. asyncio holds only
 # weak refs to scheduled tasks, so without this set the GC may cancel an alert
@@ -305,11 +295,6 @@ def _has_non_empty_content(chunk: Any) -> bool:
         return True
 
 
-def _safe_set_availability(provider: str, value: float) -> None:
-    with contextlib.suppress(Exception):
-        PROVIDER_AVAILABILITY.labels(provider=normalize_provider_label(provider)).set(value)
-
-
 def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
 
@@ -409,7 +394,6 @@ class _CircuitBreaker:
         self.consecutive_failures = 0
         self.last_opened: float | None = None
         self._lock = threading.Lock()
-        CIRCUIT_STATE.labels(provider=normalize_provider_label(provider)).set(0)
 
     def allow_request(self) -> bool:
         with self._lock:
@@ -421,7 +405,6 @@ class _CircuitBreaker:
                 if (time.perf_counter() - self.last_opened) >= self.cooldown_seconds:
                     # Move to half-open for a trial request.
                     self.state = _CircuitState.HALF_OPEN
-                    CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(0)
                     return True
                 return False
             # HALF_OPEN allows a single trial at a time; conservative approach: allow.
@@ -431,8 +414,23 @@ class _CircuitBreaker:
         with self._lock:
             self.consecutive_failures = 0
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
+                # Capture how long the circuit stayed open before clearing the
+                # timestamp, so the recovery log carries the outage duration.
+                duration_ms = (
+                    (time.perf_counter() - self.last_opened) * 1000.0
+                    if self.last_opened is not None
+                    else None
+                )
                 self.state = _CircuitState.CLOSED
-                CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(0)
+                self.last_opened = None
+                logger.info(
+                    "circuit_closed",
+                    extra={
+                        "event": "circuit_closed",
+                        "provider": self.provider,
+                        "duration_ms": duration_ms,
+                    },
+                )
 
     def on_failure(
         self,
@@ -452,10 +450,6 @@ class _CircuitBreaker:
                 prev_state = self.state
                 self.state = _CircuitState.OPEN
                 self.last_opened = time.perf_counter()
-                CIRCUIT_STATE.labels(provider=normalize_provider_label(self.provider)).set(1)
-                CIRCUIT_OPEN_TOTAL.labels(
-                    provider=normalize_provider_label(self.provider), reason=reason
-                ).inc()
                 # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
                 if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
                     context: dict[str, Any] = {
@@ -470,6 +464,21 @@ class _CircuitBreaker:
                     # the alert is actionable without grepping logs.
                     if detail:
                         context["upstream_error"] = detail
+                    # Emit a structured log record for the circuit-open
+                    # transition. The Slack alert is fire-and-forget and writes
+                    # no log line, so without this the event is invisible in the
+                    # application logs.
+                    logger.warning(
+                        "circuit_open",
+                        extra={
+                            "event": "circuit_open",
+                            "provider": self.provider,
+                            "consecutive_failures": self.consecutive_failures,
+                            "availability": availability,
+                            "reason": reason or "unknown",
+                            "upstream_error": detail,
+                        },
+                    )
                     try:
                         task = asyncio.ensure_future(
                             alert_slack(
@@ -525,9 +534,7 @@ class BaseRouter:
         with self._lock:
             self._ensure_health(endpoint_id)
             self._health[endpoint_id].record(True)
-            avail = self._health[endpoint_id].availability
             self._circuits[endpoint_id].on_success()
-        _safe_set_availability(endpoint_id, avail)
 
     def _on_failure(
         self, endpoint_id: str, *, reason: str = "error", detail: str | None = None
@@ -539,24 +546,17 @@ class BaseRouter:
             self._circuits[endpoint_id].on_failure(
                 availability=avail, reason=_reason_str(reason), detail=_detail_str(detail)
             )
-        _safe_set_availability(endpoint_id, avail)
 
     def _drop_affinity(self, model_id: str) -> None:
         """Drop affinity entry for the current request's affinity_key + model.
 
         No-op if affinity_key is missing from req_ctx or no entry exists.
-        Emits a `dropped_error` metric event when an entry is removed.
         """
         affinity_key = req_ctx.get().get("affinity_key")
         if not affinity_key:
             return
         with self._lock:
-            removed = self._affinity.pop((affinity_key, model_id), None)
-        if removed is not None:
-            ROUTING_AFFINITY.labels(
-                event="dropped_error",
-                model=normalize_model_label(model_id),
-            ).inc()
+            self._affinity.pop((affinity_key, model_id), None)
 
     def _maybe_sweep_affinity_locked(self, now: float) -> None:
         """Drop expired affinity entries. Caller must hold self._lock."""
@@ -603,13 +603,7 @@ class BaseRouter:
         endpoint_id = _get_endpoint_id(adapter)
         with req_ctx.push(model=model_id, provider=adapter.config.provider):
             self._ensure_health(endpoint_id)
-            started = time.perf_counter()
             resp = await adapter.chat_completion(messages, **params)
-            PROVIDER_LATENCY.labels(
-                provider=normalize_provider_label(endpoint_id),
-                model=normalize_model_label(model_id),
-                operation="chat_completion",
-            ).observe(time.perf_counter() - started)
             self._on_success(endpoint_id)
         return resp
 
@@ -629,14 +623,9 @@ class BaseRouter:
         with req_ctx.push(model=model_id, provider=adapter.config.provider):
             self._ensure_health(endpoint_id)
             first = True
-            started = time.perf_counter()
             async for chunk in adapter.stream_chat_completion(messages, **params):
                 if first and _has_non_empty_content(chunk):
                     first = False
-                    API_TTFT.labels(
-                        provider=normalize_provider_label(endpoint_id),
-                        model=normalize_model_label(model_id),
-                    ).observe(time.perf_counter() - started)
                     self._on_success(endpoint_id)
                 yield chunk
 
@@ -702,11 +691,6 @@ class BaseRouter:
                             getattr(adapter.config, "endpoint_id", None),
                         )
                         resp["_routing"].setdefault("failed_attempts", failed_attempts)
-                        API_FALLBACKS.labels(
-                            from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                            to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                            reason=primary_error.__class__.__name__,
-                        ).inc()
                         return resp
                     except Exception as fallback_error:
                         self._on_failure(
@@ -786,11 +770,6 @@ class BaseRouter:
                         ):
                             yield chunk
                             chunks_yielded = True
-                        API_FALLBACKS.labels(
-                            from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                            to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                            reason=primary_error.__class__.__name__,
-                        ).inc()
                         return
                     except Exception as fallback_error:
                         self._on_failure(
@@ -980,7 +959,6 @@ class FixedRouter(BaseRouter):
             )
 
         affinity_key: str | None = None
-        model_label = normalize_model_label(model_id)
         if AFFINITY_ENABLED:
             affinity_key = req_ctx.get().get("affinity_key") or None
 
@@ -992,15 +970,10 @@ class FixedRouter(BaseRouter):
                     for adapter, _w in allowed:
                         if _get_endpoint_id(adapter) == entry.endpoint_id:
                             entry.expires_at = now + AFFINITY_TTL_SECONDS
-                            ROUTING_AFFINITY.labels(event="hit", model=model_label).inc()
                             return adapter
                     del self._affinity[(affinity_key, model_id)]
-                    ROUTING_AFFINITY.labels(event="dropped_unavailable", model=model_label).inc()
                 elif entry is not None:
                     del self._affinity[(affinity_key, model_id)]
-                    ROUTING_AFFINITY.labels(event="expired", model=model_label).inc()
-                else:
-                    ROUTING_AFFINITY.labels(event="miss", model=model_label).inc()
 
         total_allowed = sum(w for _, w in allowed)
         pool = (
@@ -1028,7 +1001,6 @@ class FixedRouter(BaseRouter):
                     expires_at=now + AFFINITY_TTL_SECONDS,
                 )
                 self._maybe_sweep_affinity_locked(now)
-            ROUTING_AFFINITY.labels(event="created", model=model_label).inc()
 
         return chosen
 
@@ -1065,13 +1037,7 @@ class FixedRouter(BaseRouter):
             with req_ctx.push(model=model_id, provider=primary.config.provider):
                 endpoint_id = _get_endpoint_id(primary)
                 self._ensure_health(endpoint_id)
-                started = time.perf_counter()
                 resp = await primary.chat_completion(messages, **params)
-                PROVIDER_LATENCY.labels(
-                    provider=normalize_provider_label(endpoint_id),
-                    model=normalize_model_label(model_id),
-                    operation="chat_completion",
-                ).observe(time.perf_counter() - started)
                 self._on_success(endpoint_id)
             # Preserve adapter-set _routing if present;
             # only set default routing if the adapter didn't provide one.
@@ -1104,13 +1070,7 @@ class FixedRouter(BaseRouter):
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
                         endpoint_id = _get_endpoint_id(adapter)
                         self._ensure_health(endpoint_id)
-                        started = time.perf_counter()
                         resp = await adapter.chat_completion(messages, **params)
-                        PROVIDER_LATENCY.labels(
-                            provider=normalize_provider_label(endpoint_id),
-                            model=normalize_model_label(model_id),
-                            operation="chat_completion",
-                        ).observe(time.perf_counter() - started)
                         self._on_success(endpoint_id)
                     if "_routing" not in resp:
                         resp["_routing"] = {
@@ -1120,11 +1080,6 @@ class FixedRouter(BaseRouter):
                         }
                     resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
                     resp["_routing"].setdefault("failed_attempts", failed_attempts)
-                    API_FALLBACKS.labels(
-                        from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                        to_provider=normalize_provider_label(_get_endpoint_id(adapter)),
-                        reason=primary_error.__class__.__name__,
-                    ).inc()
                     return resp
                 except Exception as fallback_error:
                     self._on_failure(
@@ -1176,29 +1131,17 @@ class FixedRouter(BaseRouter):
                 # provider="router" and cost_usd=NULL.
                 yield _routing_chunk(primary)
                 first = True
-                started = time.perf_counter()
                 primary_endpoint_id = _get_endpoint_id(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
                     if first and _has_non_empty_content(chunk):
-                        # Observe TTFT only when the first non-empty content arrives.
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
-                        API_TTFT.labels(
-                            provider=normalize_provider_label(primary_endpoint_id),
-                            model=normalize_model_label(model_id),
-                        ).observe(time.perf_counter() - started)
                         # Consider first non-empty token as a success signal for availability.
                         self._on_success(primary_endpoint_id)
                     yield chunk
                     chunks_yielded = True
             return
         except Exception as primary_error:
-            # record streaming interruption for primary provider
-            STREAMING_INTERRUPTION.labels(
-                model=model_id,
-                provider=normalize_provider_label(_get_endpoint_id(primary)),
-                stage="adapter_stream",
-            ).inc()
             self._on_failure(
                 _get_endpoint_id(primary),
                 reason="stream_exception",
@@ -1229,29 +1172,14 @@ class FixedRouter(BaseRouter):
                             failed_attempts=failed_attempts,
                         )
                         first = True
-                        started = time.perf_counter()
                         adapter_endpoint_id = _get_endpoint_id(adapter)
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and _has_non_empty_content(chunk):
                                 first = False
-                                API_TTFT.labels(
-                                    provider=normalize_provider_label(adapter_endpoint_id),
-                                    model=normalize_model_label(model_id),
-                                ).observe(time.perf_counter() - started)
                                 self._on_success(adapter_endpoint_id)
                             yield chunk
-                    API_FALLBACKS.labels(
-                        from_provider=normalize_provider_label(_get_endpoint_id(primary)),
-                        to_provider=normalize_provider_label(adapter_endpoint_id),
-                        reason=primary_error.__class__.__name__,
-                    ).inc()
                     return
                 except Exception as fallback_error:
-                    STREAMING_INTERRUPTION.labels(
-                        model=model_id,
-                        provider=normalize_provider_label(adapter_endpoint_id),
-                        stage="adapter_stream",
-                    ).inc()
                     self._on_failure(
                         adapter_endpoint_id,
                         reason="stream_exception",

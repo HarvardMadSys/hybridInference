@@ -675,3 +675,135 @@ def test_health_endpoint_returns_200_without_api_key(monkeypatch: Any, tmp_path:
     assert status == 200
     assert headers["Content-Type"] == "application/json"
     assert json.loads(body) == {"status": "ok"}
+
+
+# ── Hardware profile selection + tensor parallelism ────────────────────────
+
+
+def _gpu_query_result(stdout: str) -> Any:
+    """Build a fake completed-process for a mocked nvidia-smi call."""
+    return SimpleNamespace(stdout=stdout, returncode=0)
+
+
+def test_detect_profile_selects_h200_for_four_h200s(monkeypatch: Any, tmp_path: Path) -> None:
+    # A box with 4x H200 must serve the DeepSeek-V4-Flash (TP=4) profile.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        proxy.subprocess,
+        "run",
+        lambda *a, **k: _gpu_query_result("NVIDIA H200\nNVIDIA H200\nNVIDIA H200\nNVIDIA H200\n"),
+    )
+    assert proxy._detect_profile_config().name == "models.h200.json"
+
+
+def test_detect_profile_selects_rtx6000(monkeypatch: Any, tmp_path: Path) -> None:
+    # A single RTX PRO 6000 must serve the Qwen profile.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        proxy.subprocess,
+        "run",
+        lambda *a, **k: _gpu_query_result("NVIDIA RTX PRO 6000 Blackwell Max-Q\n"),
+    )
+    assert proxy._detect_profile_config().name == "models.rtx6000.json"
+
+
+def test_detect_profile_falls_back_when_two_h200s(monkeypatch: Any, tmp_path: Path) -> None:
+    # Fewer than 4 H200s is not the DeepSeek deployment — use the default.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        proxy.subprocess,
+        "run",
+        lambda *a, **k: _gpu_query_result("NVIDIA H200\nNVIDIA H200\n"),
+    )
+    assert proxy._detect_profile_config().name == "models.json"
+
+
+def test_detect_profile_falls_back_without_nvidia_smi(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+
+    def boom(*_: Any, **__: Any) -> None:
+        raise FileNotFoundError
+
+    monkeypatch.setattr(proxy.subprocess, "run", boom)
+    assert proxy._detect_profile_config().name == "models.json"
+
+
+def test_pick_free_gpus_returns_distinct_least_used(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    # Four idle GPUs with strictly increasing memory use → 0 is least-used.
+    rows = "0, 1000, 100000\n1, 2000, 100000\n2, 3000, 100000\n3, 4000, 100000\n"
+    monkeypatch.setattr(proxy.subprocess, "run", lambda *a, **k: _gpu_query_result(rows))
+    assert proxy._pick_free_gpus(4) == "0,1,2,3"
+    assert proxy._pick_free_gpus(2) == "0,1"
+
+
+def test_vllm_tensor_parallel_spans_multiple_gpus(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "ds-vllm",
+            "engine": "vllm",
+            "gpu_index": "0,1,2,3",
+            "tensor_parallel_size": 4,
+            "backend_port": 18001,
+            "model_dir": "/tmp/ds",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.90",
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0,1,2,3")
+
+    assert cmd[cmd.index("--tensor-parallel-size") + 1] == "4"
+    assert cmd[cmd.index("--gpus") + 1] == "device=0,1,2,3"
+    # Multi-GPU NCCL needs host IPC.
+    assert "--ipc=host" in cmd
+
+
+def test_sglang_tensor_parallel_sets_tp_and_ipc(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "ds-sglang",
+            "engine": "sglang",
+            "gpu_index": "0,1,2,3",
+            "tensor_parallel_size": 4,
+            "backend_port": 18001,
+            "model_dir": "/tmp/ds",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.90",
+        },
+    )
+
+    cmd = backend._sglang_run_cmd("0,1,2,3")
+
+    assert cmd[cmd.index("--tp") + 1] == "4"
+    assert cmd[cmd.index("--gpus") + 1] == "device=0,1,2,3"
+    assert "--ipc=host" in cmd
+
+
+def test_single_gpu_backend_omits_ipc_host(monkeypatch: Any, tmp_path: Path) -> None:
+    # The default TP=1 path must not add --ipc=host (single-GPU, no NCCL).
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "qwen-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18001,
+            "model_dir": "/tmp/qwen",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.80",
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    assert "--ipc=host" not in cmd
+    assert cmd[cmd.index("--tensor-parallel-size") + 1] == "1"
