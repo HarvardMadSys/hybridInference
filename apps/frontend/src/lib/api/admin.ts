@@ -513,6 +513,10 @@ export interface AnalyticsBreakdownEntry {
 export interface AdminAnalyticsResponse {
   period: AnalyticsPeriod;
   active_users: number;
+  // Mean conversation depth per chat request; null when the period has no
+  // chat-style requests.
+  avg_turns: number | null;
+  avg_user_turns: number | null;
   sparkline: SparklineBucket[];
   top_users: AnalyticsUserEntry[];
   by_model: AnalyticsBreakdownEntry[];

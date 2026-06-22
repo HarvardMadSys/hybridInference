@@ -23,8 +23,14 @@ class TestAdminAnalyticsRoute:
         """
         # Configure the mock connection's fetchrow / fetch as awaitables so
         # the production code (which uses one connection sequentially) works.
+        # fetchrow is called twice, in order: active-users then turn averages.
         mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
-        mock_conn.fetchrow = AsyncMock(return_value={"cnt": 7})
+        mock_conn.fetchrow = AsyncMock(
+            side_effect=[
+                {"cnt": 7},
+                {"avg_turns": 12.5, "avg_user_turns": 6.0},
+            ]
+        )
         mock_conn.fetch = AsyncMock(return_value=[])
 
         app = FastAPI(title="Admin Analytics Test")
@@ -60,12 +66,40 @@ class TestAdminAnalyticsRoute:
         body = resp.json()
         assert body["period"] == "day"
         assert body["active_users"] == 7
+        assert body["avg_turns"] == 12.5
+        assert body["avg_user_turns"] == 6.0
         # Empty fetch() returns; lists must still be present for the schema.
         assert body["sparkline"] == []
         assert body["top_users"] == []
         assert body["by_model"] == []
         assert body["by_provider"] == []
         assert "generated_at" in body
+
+    @pytest.mark.asyncio
+    async def test_route_handles_period_with_no_chat_requests(self, admin_app, mock_db_logger):
+        """AVG over only non-chat requests returns NULL → averages serialize as null."""
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        mock_conn.fetchrow = AsyncMock(
+            side_effect=[
+                {"cnt": 0},
+                {"avg_turns": None, "avg_user_turns": None},
+            ]
+        )
+
+        async def _fake_admin() -> str:
+            return "admin@test"
+
+        admin_app.dependency_overrides[verify_admin_access] = _fake_admin
+
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/admin/analytics?period=day")
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["avg_turns"] is None
+        assert body["avg_user_turns"] is None
 
     @pytest.mark.asyncio
     async def test_route_rejects_invalid_period(self, admin_app):

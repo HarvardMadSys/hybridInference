@@ -57,6 +57,30 @@ async def admin_get_analytics(
         )
         active_users = int(active_users_row["cnt"] or 0)
 
+        # Mean conversation depth per chat request. num_turns / num_user_turns
+        # are NULL for non-chat requests (embeddings, raw completions), and
+        # AVG() skips NULLs, so this averages over chat requests only and is
+        # NULL itself when the period has none.
+        turns_row = await conn.fetchrow(
+            """
+            SELECT AVG(num_turns) AS avg_turns,
+                   AVG(num_user_turns) AS avg_user_turns
+            FROM api_logs
+            WHERE timestamp >= NOW() - ($1 * interval '1 minute')
+            """,
+            lookback_minutes,
+        )
+        avg_turns = (
+            float(turns_row["avg_turns"])
+            if turns_row and turns_row["avg_turns"] is not None
+            else None
+        )
+        avg_user_turns = (
+            float(turns_row["avg_user_turns"])
+            if turns_row and turns_row["avg_user_turns"] is not None
+            else None
+        )
+
         top_users_rows = await conn.fetch(
             """
             WITH totals AS (
@@ -214,6 +238,8 @@ async def admin_get_analytics(
     return AdminAnalyticsResponse(
         period=period,
         active_users=active_users,
+        avg_turns=avg_turns,
+        avg_user_turns=avg_user_turns,
         sparkline=[
             SparklineBucket(
                 start_time=row["bucket_start"],
