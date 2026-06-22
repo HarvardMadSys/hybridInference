@@ -1406,6 +1406,24 @@ class TestFetchOllama:
         assert result.error == "auth_failed"
 
     @pytest.mark.asyncio
+    async def test_bare_signin_cta_returns_auth_failed(self, monkeypatch):
+        # An expired cookie can yield a 200 shell whose only CTA is a bare
+        # "Sign in" / "Log in" button — still a real auth failure, not a parse
+        # failure. The "Login history" link must not flip this to parse_error.
+        monkeypatch.setenv("OLLAMA_SESSION_COOKIE", "ollama_session=abcdefghijklmnop")
+        html = (
+            "<html><head><title>Sign in - Ollama</title></head><body>"
+            "<button>Sign in</button><a href='/account'>Login history</a></body></html>"
+        )
+        with patch(
+            "serving.admin.provider_quotas.aiohttp.ClientSession",
+            return_value=_mock_html_session(html),
+        ):
+            result = (await fetch_ollama())[0]
+        assert result.ok is False
+        assert result.error == "auth_failed"
+
+    @pytest.mark.asyncio
     async def test_api_key_usage_endpoint_parsed_when_available(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_API_KEY", "ollama_key_1234567890abcd")
         monkeypatch.delenv("OLLAMA_SESSION_COOKIE", raising=False)

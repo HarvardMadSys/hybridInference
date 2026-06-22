@@ -851,9 +851,12 @@ def _ollama_usage_url() -> str:
     Ollama Cloud does not yet expose an official account-usage API
     (ollama/ollama#15663, #15132, #16448); this targets the proposed
     ``/api/account/usage`` path so the probe starts working the moment Ollama
-    ships it. Override via ``OLLAMA_USAGE_URL`` if the path differs.
+    ships it. Override via ``OLLAMA_USAGE_URL`` if the path differs; the override
+    is used verbatim (no trailing-slash normalization) so an endpoint that
+    requires a trailing slash isn't turned into a redirect — which, with
+    ``allow_redirects=False``, would surface as a spurious ``auth_failed``.
     """
-    return (os.getenv("OLLAMA_USAGE_URL") or "https://ollama.com/api/account/usage").rstrip("/")
+    return os.getenv("OLLAMA_USAGE_URL") or "https://ollama.com/api/account/usage"
 
 
 def _ollama_usage_row(period: str, block: dict[str, Any]) -> ProviderQuotaUsage | None:
@@ -980,19 +983,33 @@ def _ollama_html_signed_out(html: str) -> bool:
 
     Unauthenticated requests to ``/settings`` normally 302 to the sign-in page
     (caught at the HTTP layer), but a client-rendered shell can answer 200 with a
-    sign-in prompt instead. Match a sign-in *call to action* — not any stray
-    "login"/"sign in" substring (footers, "sign out", JS bundles) — so a stale
-    parser on an authenticated page is reported as ``parse_error`` rather than a
-    spurious ``auth_failed``.
+    sign-in prompt instead. We look for an explicit sign-in *call to action* — a
+    prompt phrase, a signed-out ``<title>``, or a link/button/heading whose whole
+    visible text is "Sign in"/"Log in" — rather than any stray "login"/"sign in"
+    substring (a "Login history" link, a "Sign out" button, JS bundles). That
+    distinguishes a genuine expired-cookie shell (``auth_failed``) from a stale
+    parser on an authenticated page (``parse_error``).
     """
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True).lower()
-    markers = (
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text(" ", strip=True).lower()
+    phrases = (
         "sign in to ollama",
         "log in to ollama",
         "sign in to continue",
         "sign in to your account",
     )
-    return any(marker in text for marker in markers)
+    if any(phrase in text for phrase in phrases):
+        return True
+
+    title = soup.title.get_text(strip=True).lower() if soup.title else ""
+    if title.startswith(("sign in", "log in", "login")):
+        return True
+
+    cta_labels = {"sign in", "log in", "login"}
+    return any(
+        element.get_text(" ", strip=True).lower() in cta_labels
+        for element in soup.find_all(["a", "button", "h1", "h2"])
+    )
 
 
 async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
