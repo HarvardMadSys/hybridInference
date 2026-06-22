@@ -61,8 +61,9 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
       <div className="mb-3">
         <h2 className="text-[14px] font-semibold text-gray-900">Model Concurrency Limit</h2>
         <p className="mt-1 text-[12px] text-gray-500">
-          Exempt a model from the per-user concurrency limit. Requests to an exempt model never
-          count toward a user&apos;s in-flight request cap.
+          Exempt a model from the per-user concurrency limit. Requests to an exempt model do not
+          count toward a user&apos;s normal in-flight request cap, but are still limited to at most
+          64 concurrent requests per user.
         </p>
       </div>
 
