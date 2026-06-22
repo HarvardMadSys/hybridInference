@@ -629,6 +629,12 @@ class AdminAnalyticsResponse(BaseModel):
 
     period: str = Field(..., pattern="^(hour|day|week|month)$")
     active_users: int
+    # Mean conversation depth per chat request in the period. ``avg_turns`` is
+    # the average message count and ``avg_user_turns`` the average user-message
+    # count; both are None when the period has no chat-style requests (non-chat
+    # requests such as embeddings have NULL turn columns and are excluded).
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
     sparkline: list[SparklineBucket]
     top_users: list[AnalyticsUserEntry]
     by_model: list[AnalyticsBreakdownEntry]

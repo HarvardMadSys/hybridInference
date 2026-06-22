@@ -75,6 +75,43 @@ function ActiveUsersCard({
   );
 }
 
+function avgTurns(value: number | null): string {
+  return value == null ? '—' : value.toFixed(1);
+}
+
+function ConversationDepthCard({
+  data,
+  period,
+}: {
+  data: AdminAnalyticsResponse;
+  period: AnalyticsPeriod;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-5">
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+        Avg Conversation Depth
+      </p>
+      <div className="mt-1 flex gap-8">
+        <div>
+          <p className="text-[40px] font-bold leading-none text-gray-900">
+            {avgTurns(data.avg_turns)}
+          </p>
+          <p className="mt-1 text-[12px] text-gray-400">turns / request</p>
+        </div>
+        <div>
+          <p className="text-[40px] font-bold leading-none text-gray-900">
+            {avgTurns(data.avg_user_turns)}
+          </p>
+          <p className="mt-1 text-[12px] text-gray-400">user turns / request</p>
+        </div>
+      </div>
+      <p className="mt-4 text-[10px] text-gray-300">
+        mean messages per chat request · past {period}
+      </p>
+    </div>
+  );
+}
+
 function DonutCard({
   title,
   entries,
@@ -256,10 +293,12 @@ export function AnalyticsTab() {
             <SkeletonCard />
             <SkeletonCard />
             <SkeletonCard />
+            <SkeletonCard />
           </>
         ) : (
           <>
             <ActiveUsersCard data={data} period={period} />
+            <ConversationDepthCard data={data} period={period} />
             <DonutCard title="Requests by Model" entries={data.by_model} />
             <TopUsersCard entries={data.top_users} />
             <DonutCard title="Requests by Provider" entries={data.by_provider} />

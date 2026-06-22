@@ -21,6 +21,8 @@ def test_admin_analytics_response_full():
     resp = AdminAnalyticsResponse(
         period="day",
         active_users=47,
+        avg_turns=12.5,
+        avg_user_turns=6.25,
         sparkline=[SparklineBucket(start_time=_now(), request_count=10)],
         top_users=[
             AnalyticsUserEntry(email="alice@example.com", user_id="u1", requests=200, fraction=0.5)
@@ -31,6 +33,23 @@ def test_admin_analytics_response_full():
     )
     assert resp.period == "day"
     assert resp.active_users == 47
+    assert resp.avg_turns == 12.5
+    assert resp.avg_user_turns == 6.25
+
+
+def test_admin_analytics_response_turn_averages_default_to_none():
+    # Averages are optional so a period with no chat requests still validates.
+    resp = AdminAnalyticsResponse(
+        period="day",
+        active_users=0,
+        sparkline=[],
+        top_users=[],
+        by_model=[],
+        by_provider=[],
+        generated_at=_now(),
+    )
+    assert resp.avg_turns is None
+    assert resp.avg_user_turns is None
 
 
 def test_admin_analytics_response_invalid_period():
