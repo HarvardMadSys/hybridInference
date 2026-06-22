@@ -15,7 +15,9 @@ vi.mock('@/lib/api/admin', () => ({
   listProviderKeys: vi.fn(),
   listProviderRoutes: vi.fn(),
   listRouteWeights: vi.fn(),
+  listRoutewiseProbeSamples: vi.fn(),
   listRoutewiseSettings: vi.fn(),
+  runRoutewiseProbe: vi.fn(),
   setRouteWeight: vi.fn(),
   updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
@@ -42,7 +44,9 @@ import {
   listProviderKeys,
   listProviderRoutes,
   listRouteWeights,
+  listRoutewiseProbeSamples,
   listRoutewiseSettings,
+  runRoutewiseProbe,
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteStrategy,
@@ -154,6 +158,8 @@ describe('ProviderRoutesTab', () => {
       provider_model_id: 'minimax/minimax-m2.5',
       providers: discoveredOpenRouterProviderOptions,
     });
+    vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({ samples: [] });
+    vi.mocked(runRoutewiseProbe).mockResolvedValue({ results: [] });
     vi.mocked(verifyProviderRoute).mockResolvedValue({ ok: true });
     vi.mocked(verifyProviderRouteCandidate).mockResolvedValue({ ok: true });
     vi.mocked(verifyProviderRouteModel).mockResolvedValue({ ok: true });
@@ -191,7 +197,7 @@ describe('ProviderRoutesTab', () => {
     expect(screen.queryByLabelText('Fixed weight')).not.toBeInTheDocument();
   });
 
-  it('renders and saves RouteWise settings when requested', async () => {
+  it('renders settings and runs RouteWise probes when requested', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
       openrouter_provider_options: openRouterProviderOptions,
@@ -218,17 +224,52 @@ describe('ProviderRoutesTab', () => {
           min: 0.1,
           max: null,
         },
+        {
+          key: 'routewise_probe_enabled',
+          value: false,
+          value_type: 'bool',
+          default_value: false,
+          description: 'Enable RouteWise background active latency probes.',
+          min: null,
+          max: null,
+        },
       ],
     });
-    vi.mocked(updateRoutewiseSetting).mockResolvedValue({
-      key: 'routewise_budget_alpha',
-      value: 0.4,
-      value_type: 'float',
-      default_value: 0.75,
-      description: 'RouteWise LP cost budget interpolation.',
-      min: 0,
-      max: 1,
+    vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({
+      samples: [
+        {
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:featherless-api',
+          ok: true,
+          ttft_ms: 123.4,
+          error: null,
+          checked_at: '2026-06-22T00:00:00Z',
+        },
+      ],
     });
+    vi.mocked(runRoutewiseProbe).mockResolvedValue({
+      results: [
+        {
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:featherless-api',
+          ok: true,
+          ttft_ms: 120,
+          error: null,
+        },
+      ],
+    });
+    vi.mocked(updateRoutewiseSetting).mockImplementation(async (key, value) => ({
+      key,
+      value,
+      value_type: key === 'routewise_probe_enabled' ? 'bool' : 'float',
+      default_value: key === 'routewise_probe_enabled' ? false : 0.75,
+      description:
+        key === 'routewise_probe_enabled'
+          ? 'Enable RouteWise background active latency probes.'
+          : 'RouteWise LP cost budget interpolation.',
+      min: key === 'routewise_probe_enabled' ? null : 0,
+      max: key === 'routewise_probe_enabled' ? null : 1,
+    }));
 
     render(<ProviderRoutesTab showRoutewiseSettings />);
 
@@ -243,6 +284,29 @@ describe('ProviderRoutesTab', () => {
       expect(updateRoutewiseSetting).toHaveBeenCalledWith('routewise_budget_alpha', 0.4);
     });
     expect(alphaInput).toHaveValue(0.4);
+
+    const probeToggle = screen.getByLabelText('Background probes enabled');
+    expect(probeToggle).not.toBeChecked();
+    fireEvent.click(probeToggle);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Background probes' }));
+
+    await waitFor(() => {
+      expect(updateRoutewiseSetting).toHaveBeenCalledWith('routewise_probe_enabled', true);
+    });
+
+    expect((await screen.findAllByText('minimax-fast:featherless-api')).length).toBeGreaterThan(0);
+    expect(screen.getByText('123 ms')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));
+
+    await waitFor(() => {
+      expect(runRoutewiseProbe).toHaveBeenCalledWith({
+        model_id: 'minimax-fast',
+        endpoint_id: null,
+        idle_only: false,
+      });
+    });
+    expect(await screen.findByText('Probe succeeded')).toBeInTheDocument();
   });
 
   it('shows fixed weight when adding a fixed provider route', async () => {

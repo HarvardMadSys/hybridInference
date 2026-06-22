@@ -1067,6 +1067,44 @@ export interface ListRoutewiseSettingsResponse {
   settings: RoutewiseSettingItem[];
 }
 
+export interface RoutewiseProbeSampleItem {
+  model_id: string;
+  endpoint_id: string;
+  ttft_ms: number | null;
+  ok: boolean;
+  error: string | null;
+  checked_at: string;
+}
+
+export interface ListRoutewiseProbeSamplesResponse {
+  samples: RoutewiseProbeSampleItem[];
+}
+
+export interface ListRoutewiseProbeSamplesOptions {
+  modelId?: string;
+  endpointId?: string;
+  sinceSeconds?: number;
+  limit?: number;
+}
+
+export interface RunRoutewiseProbeRequest {
+  model_id?: string | null;
+  endpoint_id?: string | null;
+  idle_only?: boolean;
+}
+
+export interface RoutewiseProbeRunResult {
+  model_id: string;
+  endpoint_id: string;
+  ok: boolean;
+  ttft_ms: number | null;
+  error: string | null;
+}
+
+export interface RunRoutewiseProbeResponse {
+  results: RoutewiseProbeRunResult[];
+}
+
 export async function listRouteWeights(modelId?: string): Promise<RouteWeight[]> {
   const path = modelId
     ? `/admin/routing/weights/${encodeURIComponent(modelId)}`
@@ -1121,6 +1159,30 @@ export async function updateRoutewiseSetting(
     },
   );
   return jsonOrThrow<RoutewiseSettingItem>(resp);
+}
+
+export async function listRoutewiseProbeSamples(
+  opts: ListRoutewiseProbeSamplesOptions = {},
+): Promise<ListRoutewiseProbeSamplesResponse> {
+  const params = new URLSearchParams();
+  if (opts.modelId) params.set('model_id', opts.modelId);
+  if (opts.endpointId) params.set('endpoint_id', opts.endpointId);
+  if (opts.sinceSeconds !== undefined) params.set('since_seconds', String(opts.sinceSeconds));
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const resp = await fetchWithAuth(API_BASE, `/admin/routewise/probes${suffix}`);
+  return jsonOrThrow<ListRoutewiseProbeSamplesResponse>(resp);
+}
+
+export async function runRoutewiseProbe(
+  payload: RunRoutewiseProbeRequest,
+): Promise<RunRoutewiseProbeResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routewise/probes/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow<RunRoutewiseProbeResponse>(resp);
 }
 
 // ========================================

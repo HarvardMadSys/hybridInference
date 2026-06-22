@@ -10,10 +10,12 @@ import {
   listOpenRouterProviderOptions,
   listProviderRoutes,
   listRouteWeights,
+  listRoutewiseProbeSamples,
   listRoutewiseSettings,
   updateUser,
   listModelVisibility,
   previewRoleQuotaApply,
+  runRoutewiseProbe,
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteStrategy,
@@ -908,5 +910,87 @@ describe('routewise settings client', () => {
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
     expect(JSON.parse(init.body as string)).toEqual({ value: 0.4 });
+  });
+
+  it('listRoutewiseProbeSamples sends model and endpoint filters', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          samples: [
+            {
+              model_id: 'minimax-fast',
+              endpoint_id: 'minimax-fast:featherless-api',
+              ttft_ms: 120,
+              ok: true,
+              error: null,
+              checked_at: '2026-06-22T00:00:00Z',
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await listRoutewiseProbeSamples({
+      modelId: 'minimax-fast',
+      endpointId: 'minimax-fast:featherless-api',
+      sinceSeconds: 3600,
+      limit: 20,
+    });
+
+    expect(out.samples[0]).toMatchObject({
+      model_id: 'minimax-fast',
+      endpoint_id: 'minimax-fast:featherless-api',
+      ok: true,
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routewise/probes?');
+    expect(String(url)).toContain('model_id=minimax-fast');
+    expect(String(url)).toContain('endpoint_id=minimax-fast%3Afeatherless-api');
+    expect(String(url)).toContain('since_seconds=3600');
+    expect(String(url)).toContain('limit=20');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+  });
+
+  it('runRoutewiseProbe POSTs the manual probe payload', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          results: [
+            {
+              model_id: 'minimax-fast',
+              endpoint_id: 'minimax-fast:featherless-api',
+              ok: true,
+              ttft_ms: 120,
+              error: null,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await runRoutewiseProbe({
+      model_id: 'minimax-fast',
+      endpoint_id: 'minimax-fast:featherless-api',
+      idle_only: false,
+    });
+
+    expect(out.results[0]).toMatchObject({
+      model_id: 'minimax-fast',
+      ok: true,
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routewise/probes/run');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+    expect(JSON.parse(init.body as string)).toEqual({
+      model_id: 'minimax-fast',
+      endpoint_id: 'minimax-fast:featherless-api',
+      idle_only: false,
+    });
   });
 });
