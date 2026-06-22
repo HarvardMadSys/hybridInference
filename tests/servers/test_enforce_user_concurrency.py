@@ -483,6 +483,62 @@ async def test_exempt_user_concurrency_limit_default_is_64():
 
 
 @pytest.mark.asyncio
+async def test_exempt_model_respects_custom_limit_below_cap():
+    """A per-user max_concurrent_requests override below the cap is honored
+    for exempt models (a restricted account is not bumped up to 64)."""
+    user = {"user_id": "u1", "role": "free", "is_admin": False, "max_concurrent_requests": 5}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    # Do NOT set unary_event: held handlers keep their exempt slots.
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # The custom limit (5) governs, not the default cap (64).
+        tasks = [
+            asyncio.create_task(client.post("/probe", json={"model": "exempt-model"}))
+            for _ in range(5)
+        ]
+        await _wait_until_in_use(limiter, _exempt_slot_key("u1"), 5)
+
+        resp = await client.post("/probe", json={"model": "exempt-model"})
+        assert resp.status_code == 429
+        assert resp.json()["detail"]["error"]["limit"] == 5
+
+        app.unary_event.set()  # type: ignore[attr-defined]
+        for t in tasks:
+            assert (await t).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_exempt_model_caps_custom_limit_above_ceiling(monkeypatch):
+    """A per-user override above the exempt ceiling is still capped ("64 at
+    most"): the override never raises the exempt budget beyond the cap."""
+    # Shrink the ceiling to 2 so an override of 10 must be clamped to 2.
+    monkeypatch.setattr("serving.servers.concurrency.EXEMPT_MODEL_USER_CONCURRENCY_LIMIT", 2)
+
+    user = {"user_id": "u1", "role": "free", "is_admin": False, "max_concurrent_requests": 10}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tasks = [
+            asyncio.create_task(client.post("/probe", json={"model": "exempt-model"}))
+            for _ in range(2)
+        ]
+        await _wait_until_in_use(limiter, _exempt_slot_key("u1"), 2)
+
+        # The override (10) is clamped to the ceiling (2) -> third request 429.
+        resp = await client.post("/probe", json={"model": "exempt-model"})
+        assert resp.status_code == 429
+        assert resp.json()["detail"]["error"]["limit"] == 2
+
+        app.unary_event.set()  # type: ignore[attr-defined]
+        for t in tasks:
+            assert (await t).status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_concurrency_429_calls_log_rejection(monkeypatch):
     """When a request is rejected with 429, log_rejection is fired off."""
     from unittest.mock import AsyncMock

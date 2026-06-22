@@ -211,10 +211,11 @@ def _exempt_slot_key(user_id: str) -> str:
     """Return the separate per-user budget key for concurrency-exempt models.
 
     Exempt-model requests must not consume the user's normal in-flight slots,
-    so they acquire against a distinct key. The NUL separator can never appear
-    in a real ``user_id``, so the two budgets can never collide.
+    so they acquire against a distinct key. User identifiers are ULIDs (or the
+    literal ``"anonymous"``) and never contain ``:``, so the exempt-budget key
+    can never collide with a real user's normal key.
     """
-    return f"{user_id}\x00exempt"
+    return f"{user_id}:exempt"
 
 
 async def enforce_user_concurrency(
@@ -287,8 +288,13 @@ async def enforce_user_concurrency(
         # "Not limited by concurrency" models don't draw on the user's normal
         # role-based budget, but are still capped per user so a single user
         # cannot open unbounded concurrent requests against an exempt model.
+        # An explicit per-user override is honored, but never above the cap
+        # ("64 at most"); without an override the cap itself applies.
         slot_key = _exempt_slot_key(user_id)
-        max_concurrent = EXEMPT_MODEL_USER_CONCURRENCY_LIMIT
+        if max_concurrent is None:
+            max_concurrent = EXEMPT_MODEL_USER_CONCURRENCY_LIMIT
+        else:
+            max_concurrent = min(max_concurrent, EXEMPT_MODEL_USER_CONCURRENCY_LIMIT)
     else:
         slot_key = user_id
 
