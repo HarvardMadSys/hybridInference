@@ -698,10 +698,13 @@ class OpenAICompatAdapter(BaseAdapter):
                 async for c in stream_iter:
                     yield c
 
-        # Stream response. Track whether an upstream error interrupts the
-        # stream so the lease is muted (not released as healthy) on the way out.
-        # Only Exceptions count — client-side cancellations (CancelledError,
-        # GeneratorExit) are BaseExceptions and must not mute the key.
+        # Stream response. Only failures reading from the upstream iterator mute
+        # the leased key: an idle timeout or a mid-stream I/O error
+        # (aiohttp.ClientError — disconnect, ClientPayloadError) is key-specific
+        # or transient. Chunk-processing errors (json / processor / format) are
+        # request/model/processor-scoped and propagate WITHOUT muting, and
+        # client-side cancellations (CancelledError, GeneratorExit) are
+        # BaseExceptions that never mute either.
         stream_error = False
         try:
             async for chunk in _drain():
@@ -728,14 +731,16 @@ class OpenAICompatAdapter(BaseAdapter):
                     except json.JSONDecodeError:
                         logger.warning(f"[OpenAICompat] Failed to parse chunk: {data_str[:100]}")
         except asyncio.TimeoutError:
+            # Idle timeout reading upstream: mute the key, end the stream
+            # gracefully (flush + [DONE] are still emitted below).
             stream_error = True
             logger.warning(
                 "[OpenAICompat] Stream idle timeout for model=%s after %.1fs",
                 self.config.id,
                 getattr(stream_timeout, "sock_read", -1.0) if stream_timeout else -1.0,
             )
-        except Exception:
-            # Mid-stream upstream failure (e.g. ClientPayloadError, disconnect):
+        except aiohttp.ClientError:
+            # Mid-stream upstream I/O failure (disconnect, ClientPayloadError):
             # mute the key, then propagate to the client as before.
             stream_error = True
             raise

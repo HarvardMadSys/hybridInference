@@ -344,6 +344,43 @@ async def test_streaming_mid_stream_error_mutes_key():
     assert adapter._key_pool._keys[0].cooldown_until > 0
 
 
+async def test_streaming_processor_error_does_not_mute_key():
+    """An adapter-side chunk-processing error is not key-specific, so no mute."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    sse_chunks = (
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        "data: [DONE]\n\n",
+    )
+
+    class _BoomProcessor:
+        def process_stream_chunk(self, data):
+            raise ValueError("bad chunk")
+
+        def flush(self):
+            return []
+
+    with (
+        patch.object(
+            adapter.http,
+            "stream_post",
+            side_effect=lambda *a, **k: _make_stream_gen(chunks=sse_chunks),
+        ),
+        patch(
+            "serving.adapters.openai_compat.get_processor",
+            return_value=_BoomProcessor(),
+        ),
+        pytest.raises(ValueError),
+    ):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    # The processing error propagated, but the key was not muted.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0
+
+
 async def test_streaming_client_disconnect_does_not_mute_key():
     """Client closing the stream early (GeneratorExit) must not mute the key."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
