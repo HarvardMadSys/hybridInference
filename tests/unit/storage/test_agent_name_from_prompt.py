@@ -53,24 +53,21 @@ def test_recognizes_common_agents(content: str, expected: str) -> None:
         "You are authorized to use the provided tools.",
         "You are an expert assistant.",
         "Respond only in JSON.",  # no "You are" opener and no known agent
+        # Incidental mention of a common agent in a generic prompt is not an
+        # identity — only wrapper markers match outside the opener.
+        "You are a helpful assistant; continue to answer concisely.",
+        "The user is Claude.",  # bare mention, no "You are" opener
     ],
 )
 def test_rejects_generic_or_missing_openers(content: str) -> None:
     assert agent_name_from_prompt([{"role": "system", "content": content}]) is None
 
 
-@pytest.mark.parametrize(
-    ("content", "expected"),
-    [
-        # A known agent named anywhere in the first sentence is matched, even
-        # when it is not the subject of a "You are <Name>" opener.
-        ("The user is Claude.", "Claude"),
-        ("Defer to Cursor for edits.", "Cursor"),
-        ("This session runs under Codex.", "Codex"),
-    ],
-)
-def test_matches_common_agent_anywhere_in_first_sentence(content: str, expected: str) -> None:
-    assert agent_name_from_prompt([{"role": "system", "content": content}]) == expected
+def test_declared_agent_wins_over_incidental_mention() -> None:
+    # A genuinely declared agent is reported even when the first sentence also
+    # mentions another (non-wrapper) agent.
+    prompt = [{"role": "system", "content": "You are AcmeBot, do not invoke Claude for edits."}]
+    assert agent_name_from_prompt(prompt) == "AcmeBot"
 
 
 def test_reads_developer_role() -> None:
@@ -149,14 +146,14 @@ def test_generic_system_field_rejected() -> None:
     [
         ("You are openClaw, a coding agent.", "openClaw"),
         ("You are Hermes, a software engineer.", "Hermes"),
-        # Case-insensitive keyword match.
+        # Case-insensitive wrapper-marker match.
         ("you are OPENCLAW running in VS Code.", "openClaw"),
-        # Keyword need not follow "You are" — it can appear anywhere in the
+        # The marker need not follow "You are" — it can appear anywhere in the
         # opening sentence.
         ("You are an expert coding assistant operating inside pi", "pi"),
     ],
 )
-def test_recognizes_client_keywords(content: str, expected: str) -> None:
+def test_recognizes_wrapper_clients(content: str, expected: str) -> None:
     assert agent_name_from_prompt([{"role": "system", "content": content}]) == expected
 
 

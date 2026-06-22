@@ -201,69 +201,51 @@ def _first_sentence(text: str) -> str:
     return text[: match.start()] if match else text
 
 
-def _client_from_first_sentence(text: str) -> str | None:
-    """Return a common agent's canonical name if it is named in the first sentence.
+def _wrapper_client_from_first_sentence(text: str) -> str | None:
+    """Return a wrapper client's canonical name if its marker is in the first sentence.
 
-    Scans the opening sentence of the system prompt (case-insensitively, on a
-    word boundary) for any known coding agent. This catches clients that name
-    themselves mid-sentence — e.g. ``"... operating inside pi"`` or ``"... running
-    under openClaw"`` — rather than via a leading ``"You are <Name>"`` opener.
-    Wrapper clients (openClaw/Hermes/pi) are checked first so a wrapper is
-    reported instead of the agent it wraps. Scoping to the first sentence and
-    requiring a word boundary keep a name mentioned deeper in a long prompt (or
-    a substring such as ``"pi"`` inside ``"API"``) from producing a match.
+    Wrapper clients (openClaw/Hermes/pi) name themselves by a distinctive marker
+    in the opening sentence and typically embed the opener of the agent they
+    wrap (e.g. ``"You are Claude Code, running under openClaw"``), so they are
+    matched ahead of the ``"You are <Name>"`` opener and reported instead of the
+    wrapped agent. Only these unambiguous markers are matched here — common
+    agents are left to the opener so an incidental mention does not override a
+    genuinely declared identity. Matching is case-insensitive, on a word
+    boundary, and scoped to the opening sentence, so a marker deeper in a long
+    prompt (or a substring such as ``"pi"`` inside ``"API"``) does not match.
     """
     sentence = _first_sentence(text).lower()
 
-    def names(word: str) -> bool:
-        return re.search(rf"\b{re.escape(word)}\b", sentence) is not None
+    def has(marker: str) -> bool:
+        return re.search(rf"\b{re.escape(marker)}\b", sentence) is not None
 
-    # Wrapper clients first — their prompts embed a wrapped agent's opener.
-    if names("openclaw"):
+    if has("openclaw"):
         return "openClaw"
-    if names("hermes"):
+    if has("hermes"):
         return "Hermes"
-    if names("pi"):
+    if has("pi"):
         return "pi"
-    # Other common coding agents.
-    if names("claude"):
-        return "Claude"
-    if names("codex"):
-        return "Codex"
-    if names("cursor"):
-        return "Cursor"
-    if names("cline"):
-        return "Cline"
-    if names("aider"):
-        return "Aider"
-    if names("continue"):
-        return "Continue"
-    if names("opencode"):
-        return "OpenCode"
-    if names("kilo-code"):
-        return "Kilo-Code"
-    if names("roo"):
-        return "Roo"
     return None
 
 
 def _agent_name_from_text(text: str | None) -> str | None:
     """Return the agent name for a system prompt, or None.
 
-    A common agent named anywhere in the opening sentence (see
-    ``_client_from_first_sentence``) takes precedence, since some clients wrap
-    another agent and would otherwise be mislabeled by the generic opener.
-    Otherwise the name declared by a ``"You are <Name>"`` opener is used,
-    subject to the shared guardrails: only the first token after ``"You are"``
-    is taken, it must look like a name (leading letter; letters/digits/``.-_``;
-    at most 32 chars) and must not be a generic filler such as ``"a"``/``"the"``
-    or a common role verb/adjective such as ``"helpful"``/``"designed"``.
+    A wrapper client named in the opening sentence (see
+    ``_wrapper_client_from_first_sentence``) takes precedence, since those
+    clients wrap another agent and would otherwise be mislabeled by the generic
+    opener. Otherwise the name declared by a ``"You are <Name>"`` opener is
+    used, subject to the shared guardrails: only the first token after
+    ``"You are"`` is taken, it must look like a name (leading letter;
+    letters/digits/``.-_``; at most 32 chars) and must not be a generic filler
+    such as ``"a"``/``"the"`` or a common role verb/adjective such as
+    ``"helpful"``/``"designed"``.
     """
     if not isinstance(text, str):
         return None
-    client_name = _client_from_first_sentence(text)
-    if client_name is not None:
-        return client_name
+    wrapper_name = _wrapper_client_from_first_sentence(text)
+    if wrapper_name is not None:
+        return wrapper_name
     match = _YOU_ARE_RE.match(text)
     if match is None:
         return None
@@ -291,11 +273,12 @@ def agent_name_from_prompt(
     header. Returns ``None`` when no system prompt carries a recognizable
     opener, so callers fall back to User-Agent parsing.
 
-    A common agent named anywhere in the opening sentence (see
-    ``_client_from_first_sentence``) is matched first. This both recognizes
-    agents that name themselves mid-sentence and lets wrapper clients
-    (e.g. ``openClaw``/``Hermes``/``pi``) — which carry the wrapped agent's
-    opener — be reported as the wrapper rather than the agent they wrap.
+    Wrapper clients (e.g. ``openClaw``/``Hermes``/``pi``) carry the opener of
+    the agent they wrap, so a distinctive wrapper marker in the opening sentence
+    (see ``_wrapper_client_from_first_sentence``) is matched first and reported
+    as the wrapper rather than the wrapped agent. All other agents are taken
+    from the ``"You are <Name>"`` opener, so an incidental mention of an agent
+    does not override a genuinely declared identity.
 
     ``system`` is the optional top-level system field used by the Anthropic
     ``/v1/messages`` surface (Claude Code), where the system prompt is carried
