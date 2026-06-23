@@ -9,7 +9,7 @@ const TABS = [
   { slug: 'providers', label: 'Providers' },
   { slug: 'routing', label: 'Routing' },
   { slug: 'token-usage', label: 'Token Usage' },
-  { slug: 'audit', label: 'Audit Log' },
+  { slug: 'log', label: 'Log' },
   { slug: 'announcements', label: 'Announcements' },
   { slug: 'analytics', label: 'Analytics' },
   { slug: 'settings', label: 'Settings' },

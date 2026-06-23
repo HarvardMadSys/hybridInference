@@ -1,7 +1,5 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { AuditTab } from '@/components/features/admin/AuditTab';
-
-export default function Page() {
-  return <AuditTab />;
+export default function AuditAdminPage() {
+  redirect('/dashboard/admin/log');
 }
