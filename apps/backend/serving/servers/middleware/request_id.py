@@ -38,10 +38,20 @@ class RequestIdMiddleware:
             req_id = secrets.token_hex(12)
 
         scope.setdefault("state", {})["request_id"] = req_id
-        # Always set both keys (User-Agent may be None) so a request without a
-        # User-Agent overwrites — never inherits — a prior request's value when
-        # the same task handles sequential scopes.
-        req_ctx.update({"request_id": req_id, "client_user_agent": user_agent or None})
+        # Always set these keys (values may be None) so a request that doesn't
+        # populate them overwrites — never inherits — a prior request's value
+        # when the same task handles sequential scopes. ``user_id`` /
+        # ``user_name`` are reset here so a route that invokes the router
+        # without authenticating (e.g. the admin playground) can't have a
+        # circuit-breaker alert misattributed to an earlier completions caller.
+        req_ctx.update(
+            {
+                "request_id": req_id,
+                "client_user_agent": user_agent or None,
+                "user_id": None,
+                "user_name": None,
+            }
+        )
 
         req_id_bytes = req_id.encode("latin-1")
 

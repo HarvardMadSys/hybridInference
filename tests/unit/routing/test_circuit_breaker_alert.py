@@ -132,8 +132,8 @@ async def test_circuit_open_emits_structured_log(monkeypatch, caplog):
         patch("routing.routers.alert_slack", new=AsyncMock()),
         caplog.at_level(logging.INFO, logger="routing.routers"),
     ):
-        cb.on_failure(reason="stream_exception", detail="access_terminated_error")
-        cb.on_failure(reason="stream_exception", detail="access_terminated_error")
+        cb.on_failure(reason="stream_exception", detail="access_terminated_error", offender="dave")
+        cb.on_failure(reason="stream_exception", detail="access_terminated_error", offender="dave")
         assert cb.state == _CircuitState.OPEN
         cb.on_success()
         assert cb.state == _CircuitState.CLOSED
@@ -147,6 +147,8 @@ async def test_circuit_open_emits_structured_log(monkeypatch, caplog):
     assert rec.reason == "stream_exception"
     assert rec.consecutive_failures == 2
     assert rec.upstream_error == "access_terminated_error"
+    # Structured (queryable) offender mapping, not the pre-formatted string.
+    assert rec.offending_users == {"dave": 2}
 
     closed_records = [r for r in caplog.records if r.getMessage() == "circuit_closed"]
     assert len(closed_records) == 1

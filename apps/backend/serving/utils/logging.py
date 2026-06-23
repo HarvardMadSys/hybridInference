@@ -73,6 +73,7 @@ _STRUCTURED_LOG_KEYS = (
     "consecutive_failures",
     "availability",
     "upstream_error",
+    "offending_users",
 )
 
 

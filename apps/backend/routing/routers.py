@@ -527,7 +527,10 @@ class _CircuitBreaker:
                             "availability": availability,
                             "reason": reason or "unknown",
                             "upstream_error": detail,
-                            "offending_users": offenders,
+                            # Log the raw {user: failure_count} mapping rather
+                            # than the pre-formatted alert string so log
+                            # aggregators can filter/aggregate by user.
+                            "offending_users": dict(self._offenders) or None,
                         },
                     )
                     try:
