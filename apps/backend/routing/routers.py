@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from serving.exceptions import operator_safe_error
-from serving.observability.alerts import AlertSeverity, alert_slack
+from serving.observability.alerts import AlertSeverity, alert_slack, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -333,16 +333,21 @@ def _offender_str() -> str | None:
     stable ``user_id`` so operators can act on the alert. Returns ``None`` when
     no identity is available (e.g. health probes or background tasks running
     outside a request).
+
+    The (caller-controlled) display name has its whitespace collapsed so a
+    name containing newlines can't forge extra lines in an alert; Slack control
+    characters are escaped later, at format time.
     """
     ctx = req_ctx.get()
     user_id = ctx.get("user_id")
-    user_name = ctx.get("user_name")
+    raw_name = ctx.get("user_name")
+    user_name = " ".join(str(raw_name).split()) if raw_name else None
     if user_id and user_name:
         return f"{user_name} ({user_id})"
     if user_id:
         return str(user_id)
     if user_name:
-        return str(user_name)
+        return user_name
     return None
 
 
@@ -557,12 +562,14 @@ class _CircuitBreaker:
         """Render the failure-streak offenders for an alert, busiest first.
 
         Caller must hold ``self._lock``. Returns ``None`` when no offenders were
-        attributed (e.g. failures raised outside any request context).
+        attributed (e.g. failures raised outside any request context). User
+        identities are Slack-escaped here because they may include a
+        caller-controlled display name.
         """
         if not self._offenders:
             return None
         named = self._offenders.most_common(top)
-        parts = [f"{user} x{count}" for user, count in named]
+        parts = [f"{escape_slack_text(user)} x{count}" for user, count in named]
         remaining = len(self._offenders) - len(named)
         if remaining > 0:
             parts.append(f"+{remaining} more")

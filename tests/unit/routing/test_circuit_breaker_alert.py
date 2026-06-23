@@ -233,6 +233,27 @@ def test_offender_str_prefers_name_and_pins_id():
     assert _offender_str() is None
 
 
+def test_offender_str_collapses_whitespace_in_display_name():
+    """A newline-laden display name can't forge extra alert lines."""
+    from serving.utils import context as req_ctx
+
+    with req_ctx.push(user_id="01ABC", user_name="ev il\nname\t!"):
+        rendered = _offender_str()
+    assert rendered == "ev il name ! (01ABC)"
+    assert "\n" not in rendered
+
+
+def test_format_offenders_escapes_slack_control_characters():
+    """A display name with Slack mrkdwn control chars is escaped, not injected."""
+    cb = _CircuitBreaker(
+        provider="openai", failure_threshold=999, cooldown_seconds=30, min_availability=0.0
+    )
+    cb.on_failure(reason="err", offender="<!channel> (01)")
+    rendered = cb._format_offenders()
+    assert rendered == "&lt;!channel&gt; (01) x1"
+    assert "<" not in rendered and ">" not in rendered
+
+
 async def test_circuit_open_alert_lists_offending_users(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "3")
