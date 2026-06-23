@@ -253,14 +253,20 @@ def _wrapper_client_from_first_sentence(text: str) -> str | None:
 # generic filler. Each marker maps to the canonical client label used by the
 # frontend ``parseClientTool`` (e.g. ``codex-cli/…`` → ``"codex"``), so the
 # admin UI shows the same name whether the client is identified by its system
-# prompt or its ``User-Agent``. Markers are bounded by ``_NAME_CHARS`` so they
-# do not match inside a larger word, and matched case-insensitively. ``Codex``
-# opens with ``"You are a coding agent running in the Codex CLI"``, whose first
-# token after ``"You are"`` is the filler ``"a"``.
+# prompt or its ``User-Agent``. Each marker matches the agent's self-description
+# phrase, not a bare product name: matching the product name alone would label a
+# prompt that merely *mentions* the tool (e.g. ``"You are a helpful assistant for
+# Codex CLI users"``) as the client, and since the admin UI prefers ``agent``
+# over ``User-Agent`` that would suppress the User-Agent fallback and corrupt
+# other clients' labels. Markers are bounded by ``_NAME_CHARS`` so they do not
+# match inside a larger word, and matched case-insensitively. ``Codex`` opens
+# with ``"You are a coding agent running in the Codex CLI"``, whose first token
+# after ``"You are"`` is the filler ``"a"``; the ``"running in"`` prefix (with an
+# optional ``"the"``) is required so only that self-description matches.
 _PHRASE_CLIENT_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
-            rf"(?<![{_NAME_CHARS}])codex[\s_-]+cli(?![{_NAME_CHARS}])",
+            rf"(?<![{_NAME_CHARS}])running\s+in\s+(?:the\s+)?codex[\s_-]+cli(?![{_NAME_CHARS}])",
             re.IGNORECASE,
         ),
         "codex",

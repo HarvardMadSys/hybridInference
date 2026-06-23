@@ -118,14 +118,28 @@ def test_codex_phrase_only_matched_in_first_sentence() -> None:
     assert agent_name_from_prompt(prompt) is None
 
 
+def test_codex_marker_requires_self_description_phrase() -> None:
+    # A prompt that merely mentions the product name rather than the agent's own
+    # "running in the Codex CLI" self-description must not be labeled codex, so
+    # the User-Agent fallback is preserved for other clients (the admin UI
+    # prefers ``agent`` over ``User-Agent``).
+    prompt = [{"role": "system", "content": "You are a helpful assistant for Codex CLI users."}]
+    assert agent_name_from_prompt(prompt) is None
+
+
 def test_codex_marker_requires_word_boundary() -> None:
-    # The marker as part of a larger token must not match. "codex-cli-style"
-    # contains "codex-cli" (separator present) but is bounded by name
-    # characters, so the trailing lookaround rejects it; "codexcli" lacks the
-    # required separator between "codex" and "cli".
-    bounded = [{"role": "system", "content": "You are a tool for codex-cli-style configs."}]
+    # With the self-description phrase present, the marker as part of a larger
+    # token must still not match. "codex-cli-style" contains "codex-cli"
+    # (separator present) but is bounded by name characters, so the trailing
+    # lookaround rejects it; "codexcli" lacks the required separator between
+    # "codex" and "cli".
+    bounded = [
+        {"role": "system", "content": "You are a coding agent running in codex-cli-style mode."}
+    ]
     assert agent_name_from_prompt(bounded) is None
-    no_separator = [{"role": "system", "content": "You are a tool for codexcli configs."}]
+    no_separator = [
+        {"role": "system", "content": "You are a coding agent running in codexcli mode."}
+    ]
     assert agent_name_from_prompt(no_separator) is None
 
 
