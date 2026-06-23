@@ -75,6 +75,55 @@ def test_reads_developer_role() -> None:
     assert agent_name_from_prompt(prompt) == "Codex"
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        # Codex announces itself descriptively rather than via a "You are <Name>"
+        # opener, so the opener token ("a") is a generic filler; the "Codex CLI"
+        # phrase marker identifies the client as the canonical "codex" label.
+        ("You are a coding agent running in the Codex CLI", "codex"),
+        (
+            "You are a coding agent running in the Codex CLI, a terminal-based coding assistant.",
+            "codex",
+        ),
+        # Case-insensitive, and the User-Agent-style hyphenated form also matches.
+        ("you are a coding agent running in codex-cli.", "codex"),
+    ],
+)
+def test_recognizes_codex_cli_phrase(content: str, expected: str) -> None:
+    assert agent_name_from_prompt([{"role": "developer", "content": content}]) == expected
+
+
+def test_codex_phrase_read_from_anthropic_system_field() -> None:
+    messages = [{"role": "user", "content": "hi"}]
+    system = "You are a coding agent running in the Codex CLI."
+    assert agent_name_from_prompt(messages, system=system) == "codex"
+
+
+def test_declared_name_wins_over_codex_phrase() -> None:
+    # A genuinely declared opener name takes precedence over the phrase marker.
+    prompt = [{"role": "system", "content": "You are AcmeBot running in the Codex CLI."}]
+    assert agent_name_from_prompt(prompt) == "AcmeBot"
+
+
+def test_codex_phrase_only_matched_in_first_sentence() -> None:
+    # A marker that appears only after the first sentence is ignored, so pasted
+    # content or later prose does not mislabel the client.
+    prompt = [
+        {
+            "role": "system",
+            "content": "You are a helpful assistant. It can drive the Codex CLI.",
+        }
+    ]
+    assert agent_name_from_prompt(prompt) is None
+
+
+def test_codex_marker_requires_word_boundary() -> None:
+    # "codex" as a substring of a larger word must not match the phrase marker.
+    prompt = [{"role": "system", "content": "You are a tool for codexcli-style configs."}]
+    assert agent_name_from_prompt(prompt) is None
+
+
 def test_ignores_non_system_messages() -> None:
     # Identity declared in a user turn is not treated as the agent name.
     prompt = [{"role": "user", "content": "You are Claude, please help."}]

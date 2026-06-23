@@ -248,24 +248,50 @@ def _wrapper_client_from_first_sentence(text: str) -> str | None:
     return None
 
 
-def _agent_name_from_text(text: str | None) -> str | None:
-    """Return the agent name for a system prompt, or None.
+# Clients that announce themselves with a descriptive phrase in their opening
+# sentence rather than a ``"You are <Name>"`` opener, so the opener yields a
+# generic filler. Each marker maps to the canonical client label used by the
+# frontend ``parseClientTool`` (e.g. ``codex-cli/…`` → ``"codex"``), so the
+# admin UI shows the same name whether the client is identified by its system
+# prompt or its ``User-Agent``. Markers are bounded by ``_NAME_CHARS`` so they
+# do not match inside a larger word, and matched case-insensitively. ``Codex``
+# opens with ``"You are a coding agent running in the Codex CLI"``, whose first
+# token after ``"You are"`` is the filler ``"a"``.
+_PHRASE_CLIENT_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            rf"(?<![{_NAME_CHARS}])codex[\s_-]+cli(?![{_NAME_CHARS}])",
+            re.IGNORECASE,
+        ),
+        "codex",
+    ),
+)
 
-    A wrapper client named in the opening sentence (see
-    ``_wrapper_client_from_first_sentence``) takes precedence, since those
-    clients wrap another agent and would otherwise be mislabeled by the generic
-    opener. Otherwise the name declared by a ``"You are <Name>"`` opener is
-    used, subject to the shared guardrails: only the first token after
-    ``"You are"`` is taken, it must look like a name (leading letter;
-    letters/digits/``.-_``; at most 32 chars) and must not be a generic filler
-    such as ``"a"``/``"the"`` or a common role verb/adjective such as
-    ``"helpful"``/``"designed"``.
+
+def _phrase_client_from_first_sentence(text: str) -> str | None:
+    """Return a client label when a known phrase marker is in the opening sentence.
+
+    A fallback for clients whose opener does not declare a name (see
+    ``_PHRASE_CLIENT_MARKERS``). Matching is scoped to the first sentence so a
+    marker buried in pasted content or later prose does not mislabel the client,
+    and is consulted only after the ``"You are <Name>"`` opener yields no usable
+    name, so a genuinely declared identity still wins.
     """
-    if not isinstance(text, str):
-        return None
-    wrapper_name = _wrapper_client_from_first_sentence(text)
-    if wrapper_name is not None:
-        return wrapper_name
+    sentence = _first_sentence(text)
+    for pattern, name in _PHRASE_CLIENT_MARKERS:
+        if pattern.search(sentence):
+            return name
+    return None
+
+
+def _name_from_opener(text: str) -> str | None:
+    """Return the name declared by a ``"You are <Name>"`` opener, or None.
+
+    Only the first token after ``"You are"`` is taken, it must look like a name
+    (leading letter; letters/digits/``.-_``; at most 32 chars) and must not be a
+    generic filler such as ``"a"``/``"the"`` or a common role verb/adjective
+    such as ``"helpful"``/``"designed"``.
+    """
     match = _YOU_ARE_RE.match(text)
     if match is None:
         return None
@@ -277,6 +303,31 @@ def _agent_name_from_text(text: str | None) -> str | None:
     if not _AGENT_NAME_RE.match(name):
         return None
     return name
+
+
+def _agent_name_from_text(text: str | None) -> str | None:
+    """Return the agent name for a system prompt, or None.
+
+    A wrapper client named in the opening sentence (see
+    ``_wrapper_client_from_first_sentence``) takes precedence, since those
+    clients wrap another agent and would otherwise be mislabeled by the generic
+    opener. Otherwise the name declared by a ``"You are <Name>"`` opener is used
+    (see ``_name_from_opener``). When the opener yields no usable name, a known
+    phrase marker in the opening sentence (see
+    ``_phrase_client_from_first_sentence``) is used as a fallback — covering
+    clients such as Codex that announce themselves descriptively
+    (``"You are a coding agent running in the Codex CLI"``) rather than by a
+    ``"You are <Name>"`` opener.
+    """
+    if not isinstance(text, str):
+        return None
+    wrapper_name = _wrapper_client_from_first_sentence(text)
+    if wrapper_name is not None:
+        return wrapper_name
+    name = _name_from_opener(text)
+    if name is not None:
+        return name
+    return _phrase_client_from_first_sentence(text)
 
 
 def agent_name_from_prompt(
@@ -298,7 +349,11 @@ def agent_name_from_prompt(
     (see ``_wrapper_client_from_first_sentence``) is matched first and reported
     as the wrapper rather than the wrapped agent. All other agents are taken
     from the ``"You are <Name>"`` opener, so an incidental mention of an agent
-    does not override a genuinely declared identity.
+    does not override a genuinely declared identity. Clients that announce
+    themselves descriptively instead of by a ``"You are <Name>"`` opener — e.g.
+    Codex (``"You are a coding agent running in the Codex CLI"``) — are matched
+    by a phrase marker in the opening sentence only after the opener yields no
+    usable name, and reported by their canonical label (``"codex"``).
 
     ``system`` is the optional top-level system field used by the Anthropic
     ``/v1/messages`` surface (Claude Code), where the system prompt is carried
