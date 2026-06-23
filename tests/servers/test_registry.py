@@ -269,6 +269,69 @@ def test_make_adapter_cliproxy_uses_openai_compat():
 
 
 @pytest.mark.unit
+def test_make_adapter_staging_uses_openai_compat_with_staging_provider():
+    """kind: staging routes through OpenAICompatAdapter but keeps a 'staging' label.
+
+    This lets a second generic OpenAI-compatible endpoint be tracked
+    independently from `openai_compat` in metrics/analytics.
+    """
+    adapter = registry._make_adapter(
+        "staging",
+        {
+            "id": "glm-4.7",
+            "name": "GLM 4.7",
+            "provider": "staging",
+            "base_url": "https://api.staging-provider.com/v1",
+            "api_key": "test-key",
+        },
+    )
+    from serving.adapters.openai_compat import OpenAICompatAdapter
+
+    assert isinstance(adapter, OpenAICompatAdapter)
+    assert adapter.config.provider == "staging"
+
+
+@pytest.mark.unit
+def test_register_staging_and_openai_compat_get_distinct_providers(tmp_path, monkeypatch):
+    """Two OpenAI-compatible upstreams get distinct provider labels via the staging kind."""
+    yaml_text = (
+        "models:\n"
+        "  - id: glm-4.7\n"
+        "    name: GLM 4.7\n"
+        "    provider: openai_compat\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: ${PRIMARY_BASE_URL}\n"
+        "        api_key: ${PRIMARY_API_KEY}\n"
+        "      - kind: staging\n"
+        "        weight: 0.1\n"
+        "        base_url: ${STAGING_BASE_URL}\n"
+        "        api_key: ${STAGING_API_KEY}\n"
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("PRIMARY_BASE_URL", "https://api.primary.com/v1")
+    monkeypatch.setenv("PRIMARY_API_KEY", "sk-primary")
+    monkeypatch.setenv("STAGING_BASE_URL", "https://api.staging.com/v1")
+    monkeypatch.setenv("STAGING_API_KEY", "sk-staging")
+
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    adapters = exe.routes["glm-4.7"].adapters
+    assert len(adapters) == 2
+    primary, staging = adapters[0][0], adapters[1][0]
+    assert primary.config.provider == "openai_compat"
+    assert staging.config.provider == "staging"
+    # Distinct provider labels keep metrics/analytics cohorts separate.
+    assert primary.config.provider != staging.config.provider
+    # endpoint_id extraction mirrors openai_compat (hostname-derived).
+    assert primary.config.endpoint_id == "glm-4.7:primary-api"
+    assert staging.config.endpoint_id == "glm-4.7:staging-api"
+
+
+@pytest.mark.unit
 def test_register_from_models_yaml_cliproxy_gpt55(tmp_path, monkeypatch):
     yaml_text = (
         "models:\n"

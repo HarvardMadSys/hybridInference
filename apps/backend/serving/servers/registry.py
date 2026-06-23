@@ -102,7 +102,7 @@ def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
             return f"{model_id}:local"
 
         # For generic adapters, extract service name from hostname
-        if kind in ("openai_compat", "vllm", "sglang", "kimi"):
+        if kind in ("openai_compat", "staging", "vllm", "sglang", "kimi"):
             # Extract service name: "api.minimax.io" -> "minimax"
             # Remove common prefixes and get the main domain part
             name = host.replace("api.", "").replace("llm.", "").split(".")[0]
@@ -150,7 +150,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
               ``"kimi"``, ``"kimi_coding"``, ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``,
-              ``"cliproxy"``, ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
+              ``"cliproxy"``, ``"openai_compat"``, ``"staging"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -207,6 +207,10 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "ollama",
         "cliproxy",
         "openai_compat",
+        # "staging" is a clone of "openai_compat": same adapter, but its own
+        # provider label so a second generic OpenAI-compatible endpoint can be
+        # tracked independently in metrics/analytics.
+        "staging",
         "deepseek",
         "kimi",
         "minimax",
