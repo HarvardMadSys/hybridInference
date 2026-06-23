@@ -178,6 +178,7 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
               </div>
 
               <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <DetailStat label="Model" value={req.model_id} />
                 <DetailStat label="Latency" value={formatLatency(req.latency_ms)} />
                 <DetailStat label="TTFT" value={formatLatency(req.ttft_ms)} />
                 <DetailStat label="Total Tokens" value={formatTokens(req.total_tokens)} />
