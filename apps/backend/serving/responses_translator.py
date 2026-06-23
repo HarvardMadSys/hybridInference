@@ -813,9 +813,7 @@ class ResponsesStreamTranslator:
                 },
             },
         )
-        self._text_segments.append(
-            {"item_id": item_id, "output_index": text_oi, "text": text}
-        )
+        self._text_segments.append({"item_id": item_id, "output_index": text_oi, "text": text})
 
     def finalize(self) -> Iterator[str]:
         """Emit the closing events and the terminal ``response.completed``.
