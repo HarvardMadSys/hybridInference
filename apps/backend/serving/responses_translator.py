@@ -419,13 +419,17 @@ def assistant_message_from_chat(chat: dict[str, Any]) -> dict[str, Any]:
     """Extract the assistant chat message (content + tool_calls) for storage.
 
     Used to append the model's turn onto the persisted conversation so a
-    follow-up request via ``previous_response_id`` can replay it.
+    follow-up request via ``previous_response_id`` can replay it. ``reasoning_content``
+    is preserved because some providers (e.g. DeepSeek) require the assistant's
+    reasoning history to be echoed back in thinking-mode tool flows.
     """
     choices = chat.get("choices") or []
     message = (choices[0].get("message") if choices else None) or {}
     out: dict[str, Any] = {"role": "assistant", "content": message.get("content")}
     if message.get("tool_calls"):
         out["tool_calls"] = message["tool_calls"]
+    if message.get("reasoning_content"):
+        out["reasoning_content"] = message["reasoning_content"]
     return out
 
 
@@ -541,6 +545,10 @@ class ResponsesStreamTranslator:
         # final message item); set in ``_close_text_block``.
         self._text_done_item_id: str | None = None
         self._text_accum = ""
+        # Accumulated reasoning_content (not emitted as Responses output, but
+        # carried into the persisted assistant message for chaining — some
+        # providers require it echoed in thinking-mode tool flows).
+        self._reasoning_accum = ""
 
         # Tool call accumulation, keyed by chat delta index.
         self._tool_calls: dict[int, dict[str, Any]] = {}
@@ -656,6 +664,10 @@ class ResponsesStreamTranslator:
         content = delta.get("content")
         if isinstance(content, str) and content:
             yield from self._feed_text(content)
+
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if isinstance(reasoning, str) and reasoning:
+            self._reasoning_accum += reasoning
 
         tool_calls = delta.get("tool_calls")
         if tool_calls:
@@ -869,6 +881,8 @@ class ResponsesStreamTranslator:
         }
         if tool_calls_for_msg:
             assistant_msg["tool_calls"] = tool_calls_for_msg
+        if self._reasoning_accum:
+            assistant_msg["reasoning_content"] = self._reasoning_accum
         self._assistant_message = assistant_msg
 
         # Truncated responses (length / content_filter) terminate with

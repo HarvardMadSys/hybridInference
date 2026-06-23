@@ -222,6 +222,38 @@ def test_chat_response_text():
     }
 
 
+def test_assistant_message_preserves_reasoning_content():
+    chat = {
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning_content": "let me think",
+                },
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    assert assistant_message_from_chat(chat)["reasoning_content"] == "let me think"
+
+
+def test_stream_accumulates_reasoning_into_assistant_message():
+    chunks = [
+        'data: {"choices":[{"index":0,"delta":{"reasoning_content":"think "}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"reasoning_content":"more"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+    ]
+    t, joined = _collect(chunks)
+    # reasoning is carried into the persisted assistant message...
+    assert t.assistant_message["reasoning_content"] == "think more"
+    assert t.assistant_message["content"] == "hi"
+    # ...but is not emitted as Responses output text.
+    assert "think" not in joined
+
+
 def test_chat_response_nested_usage_details_preserved():
     chat = {
         "choices": [
