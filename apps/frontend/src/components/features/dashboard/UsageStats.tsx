@@ -222,8 +222,8 @@ export function UsageStats(): JSX.Element {
           </div>
 
           <div className="text-center text-sm text-gray-500">
-            All prompts and responses are logged. Free within plan limits; dollar amounts are
-            attribution from logs, not invoices.
+            All prompts and responses are logged and may be open-sourced after anonymization. Free
+            within plan limits; dollar amounts are attribution from logs, not invoices.
           </div>
         </div>
       )}
