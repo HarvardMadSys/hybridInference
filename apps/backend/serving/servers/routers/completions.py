@@ -555,7 +555,9 @@ async def chat_completions(
     if payload.tool_choice is not None:
         params["tool_choice"] = payload.tool_choice
     if payload.response_format is not None:
-        params["response_format"] = payload.response_format.model_dump(by_alias=True)
+        params["response_format"] = payload.response_format.model_dump(
+            by_alias=True, exclude_none=True
+        )
     if session_id:
         params["session_id"] = session_id
 

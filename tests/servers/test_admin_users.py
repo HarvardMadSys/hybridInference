@@ -84,11 +84,15 @@ async def admin_client(monkeypatch, mock_stores):
             ],
         )
 
+    response_store = MagicMock()
+    response_store.delete_user_responses = AsyncMock(return_value=0)
+
     services = AppServices(
         router=router,
         db_logger=MagicMock(),
         operational_store=op_store,
         log_store=log_store,
+        responses_store=response_store,
         routing_manager=None,
     )
     app.state.services = services  # type: ignore[attr-defined]
@@ -1067,6 +1071,10 @@ async def test_hard_delete_user_wipes_data(admin_client):
 
     # LogStore wipe was issued with the user_id
     log_store.hard_delete_user_data.assert_awaited_once_with("u1")
+
+    # Stored Responses API rows for the user are purged too.
+    response_store = client._transport.app.state.services.responses_store
+    response_store.delete_user_responses.assert_awaited_once_with("u1")
 
     # LogStore wipe must run BEFORE the op_store wipe.
     call_names = [c[0] for c in manager.mock_calls]
