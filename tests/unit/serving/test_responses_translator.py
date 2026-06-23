@@ -102,6 +102,13 @@ def test_input_function_call_roundtrip():
     ]
 
 
+def test_input_developer_role_mapped_to_system():
+    msgs = responses_input_to_messages(
+        [{"type": "message", "role": "developer", "content": "be terse"}]
+    )
+    assert msgs == [{"role": "system", "content": "be terse"}]
+
+
 def test_input_function_call_output_non_string_serialized():
     msgs = responses_input_to_messages(
         [{"type": "function_call_output", "call_id": "c", "output": {"k": 1}}]
@@ -213,6 +220,24 @@ def test_chat_response_text():
         "output_tokens_details": {"reasoning_tokens": 0},
         "total_tokens": 12,
     }
+
+
+def test_chat_response_nested_usage_details_preserved():
+    chat = {
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "x"}, "finish_reason": "stop"}
+        ],
+        "usage": {
+            "prompt_tokens": 20,
+            "completion_tokens": 8,
+            "total_tokens": 28,
+            "prompt_tokens_details": {"cached_tokens": 12},
+            "completion_tokens_details": {"reasoning_tokens": 5},
+        },
+    }
+    r = chat_response_to_responses(chat, response_id="r", created_at=1, model="m", request_body={})
+    assert r["usage"]["input_tokens_details"]["cached_tokens"] == 12
+    assert r["usage"]["output_tokens_details"]["reasoning_tokens"] == 5
 
 
 def test_chat_response_length_is_incomplete():

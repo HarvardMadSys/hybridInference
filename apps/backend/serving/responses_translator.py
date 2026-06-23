@@ -169,6 +169,11 @@ def responses_input_to_messages(
 
         if itype in (None, "message"):
             role = item.get("role", "user")
+            # The Responses API allows a "developer" role (high-priority app
+            # instructions). The chat-completions schema only knows
+            # system/user/assistant/tool, so fold developer → system.
+            if role == "developer":
+                role = "system"
             content = _content_parts_to_text_or_blocks(item.get("content"))
             msg: dict[str, Any] = {"role": role, "content": content}
             messages.append(msg)
@@ -359,8 +364,16 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
     input_tokens = int(chat_usage.get("prompt_tokens", 0) or 0)
     output_tokens = int(chat_usage.get("completion_tokens", 0) or 0)
     total = int(chat_usage.get("total_tokens", input_tokens + output_tokens) or 0)
-    cached = int(chat_usage.get("cache_read_tokens", 0) or 0)
-    reasoning = int(chat_usage.get("reasoning_tokens", 0) or 0)
+    # Accept both the gateway-normalised flat keys and the raw OpenAI nested
+    # shapes (prompt_tokens_details.cached_tokens /
+    # completion_tokens_details.reasoning_tokens) so cache/reasoning tokens are
+    # not under-reported for providers that emit the nested form.
+    prompt_details = chat_usage.get("prompt_tokens_details") or {}
+    completion_details = chat_usage.get("completion_tokens_details") or {}
+    cached = int(chat_usage.get("cache_read_tokens") or prompt_details.get("cached_tokens") or 0)
+    reasoning = int(
+        chat_usage.get("reasoning_tokens") or completion_details.get("reasoning_tokens") or 0
+    )
     return {
         "input_tokens": input_tokens,
         "input_tokens_details": {"cached_tokens": cached},

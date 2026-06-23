@@ -256,6 +256,20 @@ async def test_instructions_become_system_message(responses_client):
 
 
 @pytest.mark.asyncio
+async def test_developer_role_input_does_not_400(responses_client):
+    r = await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": [{"type": "message", "role": "developer", "content": "be terse"}],
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert _rc(TextAdapter.last_messages)[0] == ("system", "be terse")
+
+
+@pytest.mark.asyncio
 async def test_max_output_tokens_mapped(responses_client):
     await responses_client.post(
         "/v1/responses",
