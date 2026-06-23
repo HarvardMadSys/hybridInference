@@ -1,7 +1,5 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { BroadcastsTab } from '@/components/features/admin/BroadcastsTab';
-
-export default function Page() {
-  return <BroadcastsTab />;
+export default function BroadcastAdminPage() {
+  redirect('/dashboard/admin/announcements?tab=email');
 }

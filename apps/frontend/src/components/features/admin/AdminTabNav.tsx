@@ -10,8 +10,7 @@ const TABS = [
   { slug: 'routing', label: 'Routing' },
   { slug: 'token-usage', label: 'Token Usage' },
   { slug: 'audit', label: 'Audit Log' },
-  { slug: 'broadcast', label: 'Broadcast Email' },
-  { slug: 'updates', label: 'Updates' },
+  { slug: 'announcements', label: 'Announcements' },
   { slug: 'analytics', label: 'Analytics' },
   { slug: 'settings', label: 'Settings' },
 ] as const;
