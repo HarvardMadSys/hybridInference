@@ -332,7 +332,11 @@ async def _stream_response(
                 if translator.final_response is not None:
                     aborted = translator.final_response
                     aborted["status"] = "incomplete"
-                    aborted.setdefault("incomplete_details", {"reason": "interrupted"})
+                    # finalize() already set incomplete_details (to None for a
+                    # non-truncated finish), so setdefault would be a no-op —
+                    # assign explicitly when it is unset.
+                    if not aborted.get("incomplete_details"):
+                        aborted["incomplete_details"] = {"reason": "interrupted"}
                     _schedule(
                         _persist(
                             response_store,
