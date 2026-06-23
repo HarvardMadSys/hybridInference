@@ -436,16 +436,22 @@ async def get_user_detail(
     avg_turns: float | None = None
     avg_user_turns: float | None = None
 
-    if has_key and log_store:
+    # Usage detail is keyed by user_id in api_logs, so historical stats survive
+    # key revocation (suspended / soft-deleted users). Read it whenever the log
+    # store exists. Cost/usage fields stay gated on an active key to preserve
+    # existing detail-panel behavior; the turn averages are always surfaced so
+    # they stay consistent with the bulk list endpoint.
+    if log_store:
         detail = await log_store.get_user_detail_usage(user_id)
-        usage_today_usd = detail.get("usage_today_usd", 0.0)
-        usage_today_req = detail.get("usage_today_requests", 0)
-        usage_month_usd = detail.get("usage_month_usd", 0.0)
-        usage_month_req = detail.get("usage_month_requests", 0)
-        models_used = detail.get("models_used", [])
-        last_request_at = detail.get("last_request_at")
         avg_turns = detail.get("avg_turns")
         avg_user_turns = detail.get("avg_user_turns")
+        if has_key:
+            usage_today_usd = detail.get("usage_today_usd", 0.0)
+            usage_today_req = detail.get("usage_today_requests", 0)
+            usage_month_usd = detail.get("usage_month_usd", 0.0)
+            usage_month_req = detail.get("usage_month_requests", 0)
+            models_used = detail.get("models_used", [])
+            last_request_at = detail.get("last_request_at")
 
     return UserDetailResponse(
         id=user_row["id"],
