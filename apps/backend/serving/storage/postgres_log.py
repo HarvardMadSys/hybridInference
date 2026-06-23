@@ -484,6 +484,17 @@ class PostgresLogStore(LogStore):
                 "SELECT MAX(timestamp) AS ts FROM api_logs WHERE user_id = $1",
                 user_id,
             )
+            # AVG ignores the NULL num_turns / num_user_turns of non-chat
+            # requests, so these average over chat-style requests only.
+            turns = await conn.fetchrow(
+                """
+                SELECT AVG(num_turns) AS avg_turns,
+                       AVG(num_user_turns) AS avg_user_turns
+                FROM api_logs
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
@@ -492,6 +503,46 @@ class PostgresLogStore(LogStore):
             "usage_month_requests": int(month["reqs"]) if month else 0,
             "models_used": [r["model_id"] for r in models_rows],
             "last_request_at": last_req["ts"] if last_req and last_req["ts"] else None,
+            "avg_turns": float(turns["avg_turns"])
+            if turns and turns["avg_turns"] is not None
+            else None,
+            "avg_user_turns": float(turns["avg_user_turns"])
+            if turns and turns["avg_user_turns"] is not None
+            else None,
+        }
+
+    async def get_bulk_user_turn_averages(
+        self, user_ids: list[str]
+    ) -> dict[str, dict[str, float | None]]:
+        """Return per-user all-time average turn counts for many users.
+
+        Maps ``user_id`` → ``{"avg_turns": float|None, "avg_user_turns": float|None}``
+        for users with chat-style requests; users with no chat logs are omitted
+        (the caller fills a default). AVG ignores the NULL turn counts of
+        non-chat requests.
+        """
+        if not user_ids:
+            return {}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id,
+                       AVG(num_turns) AS avg_turns,
+                       AVG(num_user_turns) AS avg_user_turns
+                FROM api_logs
+                WHERE user_id = ANY($1)
+                GROUP BY user_id
+                """,
+                user_ids,
+            )
+        return {
+            r["user_id"]: {
+                "avg_turns": float(r["avg_turns"]) if r["avg_turns"] is not None else None,
+                "avg_user_turns": float(r["avg_user_turns"])
+                if r["avg_user_turns"] is not None
+                else None,
+            }
+            for r in rows
         }
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:

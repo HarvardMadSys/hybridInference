@@ -18,6 +18,7 @@ from serving.schemas_admin import (
     ApproveUserResponse,
     AuditLogEntry,
     BulkUserCostHistoryResponse,
+    BulkUserTurnAveragesResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     HardDeleteUserRequest,
@@ -38,6 +39,7 @@ from serving.schemas_admin import (
     UserDetailResponse,
     UserListItem,
     UsersSummaryResponse,
+    UserTurnAverages,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
@@ -198,6 +200,40 @@ async def admin_get_bulk_user_cost_history(
         for uid, points in raw.items()
     }
     return BulkUserCostHistoryResponse(days=days, histories=histories)
+
+
+@router.get("/users/turn-averages", response_model=BulkUserTurnAveragesResponse)
+async def admin_get_bulk_user_turn_averages(
+    user_ids: str = "",  # comma-separated
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> BulkUserTurnAveragesResponse:
+    """Bulk all-time average turn counts for many users (one round-trip per page).
+
+    Query params:
+    - ``user_ids``: comma-separated user IDs (max 200)
+
+    Returns a map of user_id → {avg_turns, avg_user_turns}. Users with no
+    chat-style requests are omitted by the store; the frontend renders ``—``.
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+
+    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
+    if not ids:
+        return BulkUserTurnAveragesResponse(averages={})
+    if len(ids) > 200:
+        raise HTTPException(422, "Maximum 200 user_ids per request")
+
+    raw = await log_store.get_bulk_user_turn_averages(ids)
+    averages = {
+        uid: UserTurnAverages(
+            avg_turns=vals.get("avg_turns"),
+            avg_user_turns=vals.get("avg_user_turns"),
+        )
+        for uid, vals in raw.items()
+    }
+    return BulkUserTurnAveragesResponse(averages=averages)
 
 
 @router.get("/users/summary", response_model=UsersSummaryResponse)
@@ -397,6 +433,8 @@ async def get_user_detail(
     usage_month_req = 0
     models_used: list[str] = []
     last_request_at = None
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
 
     if has_key and log_store:
         detail = await log_store.get_user_detail_usage(user_id)
@@ -406,6 +444,8 @@ async def get_user_detail(
         usage_month_req = detail.get("usage_month_requests", 0)
         models_used = detail.get("models_used", [])
         last_request_at = detail.get("last_request_at")
+        avg_turns = detail.get("avg_turns")
+        avg_user_turns = detail.get("avg_user_turns")
 
     return UserDetailResponse(
         id=user_row["id"],
@@ -432,6 +472,8 @@ async def get_user_detail(
         disabled_models=get_disabled_models_from_preferences(user_row.get("preferences")),
         last_request_at=last_request_at,
         max_concurrent_requests=user_row.get("max_concurrent_requests"),
+        avg_turns=avg_turns,
+        avg_user_turns=avg_user_turns,
     )
 
 
