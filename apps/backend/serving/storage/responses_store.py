@@ -136,6 +136,20 @@ class ResponseStore:
         except (ValueError, AttributeError):
             return False
 
+    async def delete_user_responses(self, user_id: str) -> int:
+        """Delete every stored response owned by a user; return the row count.
+
+        Used by the admin hard-delete flow to purge a user's conversation data
+        (full ``response`` + cumulative ``messages`` JSONB) from this table,
+        which is owned neither by the ``OperationalStore`` nor the ``LogStore``.
+        """
+        async with self._pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM openai_responses WHERE user_id = $1", user_id)
+        try:
+            return int(result.rsplit(" ", 1)[-1])
+        except (ValueError, AttributeError):
+            return 0
+
 
 def _load_json(value: Any) -> Any:
     """Decode a JSONB column that asyncpg may hand back as str or object."""

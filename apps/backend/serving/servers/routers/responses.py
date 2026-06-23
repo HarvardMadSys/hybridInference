@@ -322,18 +322,23 @@ async def _stream_response(
             # Early client disconnect / cancellation interrupts the loop before
             # the synchronous persist above runs. Force-finalize and persist
             # best-effort (fire-and-forget — the client is gone) so the partial
-            # turn is still stored for ``previous_response_id`` chaining.
+            # turn is still stored for ``previous_response_id`` chaining, but
+            # mark it ``incomplete`` so an aborted stream is never recorded as a
+            # normal completion.
             if not persisted and store and response_store is not None and not translator.failed:
                 if translator.final_response is None:
                     for _ in translator.finalize():
                         pass
                 if translator.final_response is not None:
+                    aborted = translator.final_response
+                    aborted["status"] = "incomplete"
+                    aborted.setdefault("incomplete_details", {"reason": "interrupted"})
                     _schedule(
                         _persist(
                             response_store,
                             response_id=response_id,
                             user_id=user_id or "anonymous",
-                            response=translator.final_response,
+                            response=aborted,
                             messages=_persist_messages(),
                             previous_response_id=previous_response_id,
                             model=model,

@@ -45,6 +45,7 @@ from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_log_store,
     get_operational_store,
+    get_response_store,
     get_router,
     verify_admin_access,
 )
@@ -757,6 +758,7 @@ async def hard_delete_user(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    response_store=Depends(get_response_store),
 ) -> HardDeleteUserResponse:
     """Permanently delete a user and all linked rows.
 
@@ -806,6 +808,12 @@ async def hard_delete_user(
     # audit are untouched and the admin can retry.
     if log_store is not None:
         await log_store.hard_delete_user_data(user_id)
+
+    # Purge stored Responses API rows (openai_responses) — owned by neither the
+    # log store nor the operational store, but containing the user's full
+    # conversation JSONB, so it must be wiped here too.
+    if response_store is not None:
+        await response_store.delete_user_responses(user_id)
 
     # Wipe operational rows + write the new hard-delete audit row, atomically.
     await op_store.hard_delete_user(
