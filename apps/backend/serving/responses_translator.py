@@ -305,6 +305,9 @@ def responses_request_to_chat_params(body: dict[str, Any]) -> tuple[dict[str, An
 
     if body.get("max_output_tokens") is not None:
         params["max_tokens"] = body["max_output_tokens"]
+    # ``parallel_tool_calls`` is intentionally NOT forwarded: the chat-completions
+    # request schema does not model it, so it would be silently dropped before
+    # reaching any provider. It is still echoed in the Responses object.
     for key in (
         "temperature",
         "top_p",
@@ -312,7 +315,6 @@ def responses_request_to_chat_params(body: dict[str, Any]) -> tuple[dict[str, An
         "seed",
         "frequency_penalty",
         "presence_penalty",
-        "parallel_tool_calls",
         "stream",
     ):
         if body.get(key) is not None:

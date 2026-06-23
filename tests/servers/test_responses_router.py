@@ -400,6 +400,28 @@ async def test_store_and_get_roundtrip(responses_client, responses_store):
 
 
 @pytest.mark.asyncio
+async def test_streaming_response_persisted_by_stream_close(responses_client, responses_store):
+    """A stored streaming response must be persisted before the terminal events,
+    so an immediate GET after the stream closes cannot race the write."""
+    body = {"model": TEXT_MODEL, "input": "hi", "stream": True}
+    collected = b""
+    async with responses_client.stream("POST", "/v1/responses", json=body, headers=_auth()) as r:
+        assert r.status_code == 200
+        async for chunk in r.aiter_bytes():
+            collected += chunk
+    resp_id = None
+    for line in collected.decode().splitlines():
+        if line.startswith("data: ") and '"response.created"' in line:
+            resp_id = json.loads(line[len("data: ") :])["response"]["id"]
+            break
+    assert resp_id is not None
+    # Persisted synchronously before the stream closed — no background race.
+    assert resp_id in responses_store.data
+    g = await responses_client.get(f"/v1/responses/{resp_id}", headers=_auth())
+    assert g.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_store_false_not_persisted(responses_client, responses_store):
     r = await responses_client.post(
         "/v1/responses",

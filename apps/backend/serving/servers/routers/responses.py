@@ -283,40 +283,58 @@ async def _stream_response(
 
     body_iterator = getattr(delegate, "body_iterator", None)
 
+    def _persist_messages() -> list[dict[str, Any]]:
+        assistant_msg = translator.assistant_message
+        return [*convo_messages, assistant_msg] if assistant_msg else list(convo_messages)
+
     async def _gen() -> Any:
+        persisted = False
         try:
-            if body_iterator is None:
-                # Defensive: delegate returned something unexpected.
-                for event in translator.finalize():
-                    yield event.encode()
-                return
-            async for chunk in body_iterator:
-                if isinstance(chunk, bytes):
-                    chunk = chunk.decode("utf-8", errors="replace")
-                for event in translator.feed(chunk):
-                    yield event.encode()
-            for event in translator.finalize():
+            if body_iterator is not None:
+                async for chunk in body_iterator:
+                    if isinstance(chunk, bytes):
+                        chunk = chunk.decode("utf-8", errors="replace")
+                    for event in translator.feed(chunk):
+                        yield event.encode()
+            # Build the terminal events, then persist *before* emitting them so a
+            # client that issues GET / previous_response_id immediately after
+            # ``response.completed`` cannot race the store write and 404.
+            closing = list(translator.finalize())
+            if (
+                store
+                and response_store is not None
+                and translator.final_response is not None
+                and not translator.failed
+            ):
+                await _persist(
+                    response_store,
+                    response_id=response_id,
+                    user_id=user_id or "anonymous",
+                    response=translator.final_response,
+                    messages=_persist_messages(),
+                    previous_response_id=previous_response_id,
+                    model=model,
+                )
+            persisted = True
+            for event in closing:
                 yield event.encode()
         finally:
-            # On early client disconnect / cancellation the loop above is
-            # interrupted before ``finalize()`` runs, leaving ``final_response``
-            # unset. Force-finalize here (consuming the events, which we no
-            # longer forward) so the partial turn is still persisted and
-            # ``previous_response_id`` chaining keeps working.
-            if store and response_store is not None and not translator.failed:
+            # Early client disconnect / cancellation interrupts the loop before
+            # the synchronous persist above runs. Force-finalize and persist
+            # best-effort (fire-and-forget — the client is gone) so the partial
+            # turn is still stored for ``previous_response_id`` chaining.
+            if not persisted and store and response_store is not None and not translator.failed:
                 if translator.final_response is None:
                     for _ in translator.finalize():
                         pass
                 if translator.final_response is not None:
-                    assistant_msg = translator.assistant_message
-                    messages = convo_messages + ([assistant_msg] if assistant_msg else [])
                     _schedule(
                         _persist(
                             response_store,
                             response_id=response_id,
                             user_id=user_id or "anonymous",
                             response=translator.final_response,
-                            messages=messages,
+                            messages=_persist_messages(),
                             previous_response_id=previous_response_id,
                             model=model,
                         )
