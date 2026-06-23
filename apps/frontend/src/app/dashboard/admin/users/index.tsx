@@ -20,6 +20,7 @@ import { UserTable } from './UserTable';
 import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
 import { useBulkCostHistory } from './hooks/useUserCostHistory';
+import { useBulkTurnAverages } from './hooks/useUserTurnAverages';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
 import { getViewById } from './lib/views';
 import type { Density, FilterState, UserRow } from './types';
@@ -142,6 +143,8 @@ export default function UsersTab() {
   const userIds = users.map((u) => u.id);
   const histQuery = useBulkCostHistory(userIds, 7, density === 'comfortable');
   const costHistories = histQuery.data ?? {};
+  const turnQuery = useBulkTurnAverages(userIds);
+  const turnAverages = turnQuery.data ?? {};
 
   // Card click → apply built-in view filter
   const onCardClick = (cardId: SummaryCardId) => {
@@ -252,6 +255,7 @@ export default function UsersTab() {
           <UserTable
             users={userRows}
             costHistories={costHistories}
+            turnAverages={turnAverages}
             density={density}
             filterState={filterState}
             onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}

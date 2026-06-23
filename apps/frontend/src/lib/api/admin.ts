@@ -177,11 +177,29 @@ export interface UserDetail {
   disabled_models: string[];
   last_request_at: string | null;
   max_concurrent_requests: number | null;
+  avg_turns: number | null;
+  avg_user_turns: number | null;
 }
 
 export async function getUserDetail(userId: string): Promise<UserDetail> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/detail`);
   return jsonOrThrow<UserDetail>(resp);
+}
+
+export interface UserTurnAverages {
+  avg_turns: number | null;
+  avg_user_turns: number | null;
+}
+
+export interface BulkTurnAveragesResponse {
+  averages: Record<string, UserTurnAverages>;
+}
+
+export async function getBulkTurnAverages(userIds: string[]): Promise<BulkTurnAveragesResponse> {
+  if (userIds.length === 0) return { averages: {} };
+  const params = new URLSearchParams({ user_ids: userIds.join(',') });
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/turn-averages?${params.toString()}`);
+  return jsonOrThrow<BulkTurnAveragesResponse>(resp);
 }
 
 export interface UpdateUserData {

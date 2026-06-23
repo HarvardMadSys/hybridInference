@@ -122,6 +122,57 @@ async def test_log_request_persists_cost_and_usage(db_logger: DatabaseLogger):
 
 
 @pytest.mark.asyncio
+async def test_user_turn_averages(db_logger: DatabaseLogger):
+    """Per-user avg turns: detail + bulk average num_turns / num_user_turns.
+
+    AVG ignores the NULL turn counts of non-chat (string-prompt) requests, so a
+    user with only non-chat rows reports None, and a user with no rows at all is
+    omitted from the bulk result.
+    """
+    usage: dict[str, Any] = {"prompt_tokens": 1, "completion_tokens": 1}
+    pricing = {"prompt": "0", "completion": "0"}
+
+    async def _log(rid: str, user_id: str, prompt: Any) -> None:
+        await db_logger.log_request(
+            request_id=rid,
+            model_id="m",
+            provider="p",
+            prompt=prompt,
+            response={"message": "ok"},
+            usage=usage,
+            latency_ms=10,
+            status_code=200,
+            params={},
+            metadata={"user_id": user_id},
+            pricing=pricing,
+        )
+
+    # user A: turns 3 (2 user) then 1 (1 user) -> avg_turns 2.0, avg_user_turns 1.5
+    await _log("a1", "u-A", [{"role": "user"}, {"role": "assistant"}, {"role": "user"}])
+    await _log("a2", "u-A", [{"role": "user"}])
+    # user B: a single non-chat (raw string) request -> NULL turn counts
+    await _log("b1", "u-B", "raw completion prompt")
+
+    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
+
+    detail_a = await log_store.get_user_detail_usage("u-A")
+    assert detail_a["avg_turns"] == pytest.approx(2.0)
+    assert detail_a["avg_user_turns"] == pytest.approx(1.5)
+
+    detail_b = await log_store.get_user_detail_usage("u-B")
+    assert detail_b["avg_turns"] is None
+    assert detail_b["avg_user_turns"] is None
+
+    bulk = await log_store.get_bulk_user_turn_averages(["u-A", "u-B", "u-missing"])
+    assert bulk["u-A"]["avg_turns"] == pytest.approx(2.0)
+    assert bulk["u-A"]["avg_user_turns"] == pytest.approx(1.5)
+    # u-B has a row, but only NULL turn counts -> averages are None.
+    assert bulk["u-B"]["avg_turns"] is None
+    # u-missing has no rows at all -> omitted entirely.
+    assert "u-missing" not in bulk
+
+
+@pytest.mark.asyncio
 async def test_log_request_normalizes_nested_cached_tokens(db_logger: DatabaseLogger):
     usage: dict[str, Any] = {
         "prompt_tokens": 13528,

@@ -511,12 +511,17 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 @pytest.mark.asyncio
 async def test_get_user_detail_returns_disabled_models(admin_client):
     """GET /admin/users/{id}/detail exposes normalized disabled_models."""
-    client, op_store, _log_store, _log = admin_client
+    client, op_store, log_store, _log = admin_client
     op_store.get_user_by_id.return_value = {
         **_user_row(),
         "preferences": {"disabled_models": ["z-model", "a-model", "a-model", 123]},
     }
     op_store.get_active_key_by_account.return_value = None
+    # Detail usage is read whenever the log store exists (even without an active
+    # key), so the turn averages stay consistent with the bulk list endpoint.
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={"avg_turns": None, "avg_user_turns": None}
+    )
 
     response = await client.get("/admin/users/u1/detail", headers=AUTH)
 

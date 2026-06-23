@@ -219,6 +219,24 @@ class BulkUserCostHistoryResponse(BaseModel):
     histories: dict[str, list[UserCostHistoryPoint]]  # keyed by user_id
 
 
+class UserTurnAverages(BaseModel):
+    """Mean conversation depth across a user's chat requests (all-time).
+
+    ``avg_turns`` is the average message count per chat request and
+    ``avg_user_turns`` the average user-message count. Both are ``None`` when
+    the user has no chat-style requests logged.
+    """
+
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
+
+
+class BulkUserTurnAveragesResponse(BaseModel):
+    """Per-user average turn counts for many users (one round-trip per page)."""
+
+    averages: dict[str, UserTurnAverages]  # keyed by user_id
+
+
 class SummaryUserItem(BaseModel):
     """User entry inside a summary card (sub-set of UserListItem)."""
 
@@ -305,6 +323,11 @@ class UserDetailResponse(BaseModel):
     disabled_models: list[str] = Field(default_factory=list)
     last_request_at: datetime | None = None
     max_concurrent_requests: int | None = None
+    # Mean conversation depth across this user's chat requests (all-time).
+    # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
+    # user-message count; both None when the user has no chat-style requests.
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
 
 
 class UpdateUserRequest(BaseModel):

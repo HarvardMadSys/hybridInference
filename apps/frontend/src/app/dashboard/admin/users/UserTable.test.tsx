@@ -40,6 +40,7 @@ function renderTable(user: UserRow = baseUser) {
     <UserTable
       users={[user]}
       costHistories={{}}
+      turnAverages={{}}
       density="comfortable"
       filterState={{
         status: null,
@@ -97,6 +98,8 @@ describe('UserTable disabled models editing', () => {
         disabled_models: ['claude-3-5-sonnet'],
         last_request_at: null,
         max_concurrent_requests: null,
+        avg_turns: null,
+        avg_user_turns: null,
       })
       .mockResolvedValueOnce({
         id: 'user-1',
@@ -119,6 +122,8 @@ describe('UserTable disabled models editing', () => {
         disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
         last_request_at: null,
         max_concurrent_requests: null,
+        avg_turns: null,
+        avg_user_turns: null,
       });
     vi.mocked(listModelVisibility).mockResolvedValue({
       models: [
@@ -184,6 +189,8 @@ describe('UserTable disabled models editing', () => {
       disabled_models: [],
       last_request_at: null,
       max_concurrent_requests: null,
+      avg_turns: null,
+      avg_user_turns: null,
     });
     vi.mocked(listModelVisibility).mockResolvedValue({
       models: [
@@ -267,6 +274,8 @@ describe('UserTable disabled models editing', () => {
       disabled_models: [],
       last_request_at: null,
       max_concurrent_requests: null,
+      avg_turns: null,
+      avg_user_turns: null,
     });
     vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
 

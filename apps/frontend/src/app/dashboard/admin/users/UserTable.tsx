@@ -1,7 +1,12 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import type {
+  AdminModelVisibilityItem,
+  AdminUser,
+  UserDetail,
+  UserTurnAverages,
+} from '@/lib/api/admin';
 import { getUserDetail, listModelVisibility, updateUser as apiUpdateUser } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
 import { UserRow } from './UserRow';
@@ -10,6 +15,7 @@ import { UserDetailPanel } from './UserDetailPanel';
 interface UserTableProps {
   users: UserRowType[];
   costHistories: Record<string, CostHistoryPoint[]>;
+  turnAverages: Record<string, UserTurnAverages>;
   density: Density;
   filterState: FilterState;
   onSortChange: (sortBy: FilterState['sortBy']) => void;
@@ -39,7 +45,7 @@ function median(nums: number[]): number {
 }
 
 export function UserTable(props: UserTableProps) {
-  const { users, costHistories, density, filterState, onSortChange } = props;
+  const { users, costHistories, turnAverages, density, filterState, onSortChange } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -57,7 +63,7 @@ export function UserTable(props: UserTableProps) {
   );
 
   const showSparkline = density === 'comfortable';
-  const colSpan = showSparkline ? 10 : 9;
+  const colSpan = showSparkline ? 12 : 11;
 
   const sortIndicator = (col: FilterState['sortBy']) => (filterState.sortBy === col ? ' ↓' : '');
   const ariaSortFor = (col: FilterState['sortBy']): 'ascending' | 'none' =>
@@ -268,6 +274,12 @@ export function UserTable(props: UserTableProps) {
                   All-time{sortIndicator('cost_alltime')}
                 </button>
               </th>
+              <th className="px-2 py-2" title="Average messages per chat request (all-time)">
+                Avg turns
+              </th>
+              <th className="px-2 py-2" title="Average user messages per chat request (all-time)">
+                Avg user turns
+              </th>
               <th className="px-2 py-2">Status</th>
               <th className="w-8 px-2 py-2" />
               <th className="px-2 py-2">Actions</th>
@@ -308,6 +320,7 @@ export function UserTable(props: UserTableProps) {
                   <UserRow
                     user={u}
                     history={costHistories[u.id]}
+                    turns={turnAverages[u.id]}
                     pageMedianToday={pageMedianToday}
                     density={density}
                     expanded={isExpanded}

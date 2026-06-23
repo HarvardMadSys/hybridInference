@@ -122,6 +122,20 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             {detail.quota_daily_usd ? `$${detail.quota_daily_usd}/d` : '-'}
           </div>
         </div>
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Avg turns</div>
+          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+            {detail.avg_turns != null ? detail.avg_turns.toFixed(1) : '—'}
+          </div>
+          <div className="text-[11px] text-gray-400">per request</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Avg user turns</div>
+          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+            {detail.avg_user_turns != null ? detail.avg_user_turns.toFixed(1) : '—'}
+          </div>
+          <div className="text-[11px] text-gray-400">per request</div>
+        </div>
       </div>
 
       {/* Models */}
