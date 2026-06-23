@@ -413,6 +413,18 @@ def test_tool_choice_function_not_a_dict_does_not_raise():
     assert "tool_choice" in params
 
 
+def test_stream_length_finish_emits_incomplete_terminal():
+    chunks = [
+        'data: {"choices":[{"index":0,"delta":{"content":"partial"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}\n\n',
+    ]
+    t, joined = _collect(chunks)
+    assert "event: response.incomplete" in joined
+    assert "event: response.completed" not in joined
+    assert t.final_response["status"] == "incomplete"
+    assert t.final_response["incomplete_details"] == {"reason": "max_output_tokens"}
+
+
 def test_stream_error_emits_failed():
     t, joined = _collect(['data: {"error":{"message":"boom","code":500}}\n\n'])
     assert "event: response.failed" in joined

@@ -868,7 +868,11 @@ class ResponsesStreamTranslator:
             assistant_msg["tool_calls"] = tool_calls_for_msg
         self._assistant_message = assistant_msg
 
-        yield self._emit("response.completed", {"response": final})
+        # Truncated responses (length / content_filter) terminate with
+        # ``response.incomplete``, not ``response.completed`` — clients dispatch
+        # on the terminal event type.
+        terminal = "response.incomplete" if status == "incomplete" else "response.completed"
+        yield self._emit(terminal, {"response": final})
 
     def _build_text_item(self) -> dict[str, Any] | None:
         item_id = getattr(self, "_text_done_item_id", None)
