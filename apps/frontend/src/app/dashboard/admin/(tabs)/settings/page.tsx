@@ -6,13 +6,8 @@ interface PageProps {
 
 export default async function Page({ searchParams }: PageProps) {
   const params = await searchParams;
+  const tab = params?.tab;
   const initialSubtab: SettingsSubtab =
-    params?.tab === 'updates'
-      ? 'updates'
-      : params?.tab === 'routing'
-        ? 'routing'
-        : params?.tab === 'routewise'
-          ? 'routewise'
-          : 'general';
+    tab === 'updates' || tab === 'routing' || tab === 'routewise' ? tab : 'general';
   return <SettingsTab initialSubtab={initialSubtab} />;
 }
