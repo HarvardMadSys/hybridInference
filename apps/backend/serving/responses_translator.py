@@ -247,7 +247,8 @@ def _convert_tool_choice(tool_choice: Any) -> Any:
         return tool_choice  # "auto" | "none" | "required"
     if isinstance(tool_choice, dict):
         if tool_choice.get("type") == "function":
-            name = tool_choice.get("name") or (tool_choice.get("function") or {}).get("name")
+            func = tool_choice.get("function")
+            name = tool_choice.get("name") or (func.get("name") if isinstance(func, dict) else None)
             if name:
                 return {"type": "function", "function": {"name": name}}
         return tool_choice
@@ -518,10 +519,14 @@ class ResponsesStreamTranslator:
 
         self._seq = 0
         self._created_emitted = False
-        self._output_index = 0
+        # Position in the response ``output`` array, assigned-then-incremented
+        # per output item so the first emitted item is always index 0 (whether
+        # it is text or a tool call).
+        self._next_output_index = 0
 
         # Open text message item state.
         self._text_item_id: str | None = None
+        self._text_output_index: int | None = None
         self._text_accum = ""
 
         # Tool call accumulation, keyed by chat delta index.
@@ -646,6 +651,8 @@ class ResponsesStreamTranslator:
     def _feed_text(self, content: str) -> Iterator[str]:
         if self._text_item_id is None:
             self._text_item_id = _msg_item_id()
+            self._text_output_index = self._next_output_index
+            self._next_output_index += 1
             item = {
                 "type": "message",
                 "id": self._text_item_id,
@@ -655,13 +662,13 @@ class ResponsesStreamTranslator:
             }
             yield self._emit(
                 "response.output_item.added",
-                {"output_index": self._output_index, "item": item},
+                {"output_index": self._text_output_index, "item": item},
             )
             yield self._emit(
                 "response.content_part.added",
                 {
                     "item_id": self._text_item_id,
-                    "output_index": self._output_index,
+                    "output_index": self._text_output_index,
                     "content_index": 0,
                     "part": {"type": "output_text", "text": "", "annotations": []},
                 },
@@ -671,7 +678,7 @@ class ResponsesStreamTranslator:
             "response.output_text.delta",
             {
                 "item_id": self._text_item_id,
-                "output_index": self._output_index,
+                "output_index": self._text_output_index,
                 "content_index": 0,
                 "delta": content,
             },
@@ -689,14 +696,14 @@ class ResponsesStreamTranslator:
             fn = tc.get("function") or {}
             is_new = idx not in self._tool_calls
             if is_new:
-                self._output_index += 1
                 self._tool_calls[idx] = {
                     "item_id": _fc_item_id(),
-                    "output_index": self._output_index,
+                    "output_index": self._next_output_index,
                     "call_id": "",
                     "name": "",
                     "arguments": "",
                 }
+                self._next_output_index += 1
                 self._tool_order.append(idx)
             state = self._tool_calls[idx]
             # Capture id/name fragments (name may arrive in pieces) before
@@ -737,11 +744,12 @@ class ResponsesStreamTranslator:
         if item_id is None:
             return
         self._text_item_id = None  # mark closed so we don't double-close
+        text_oi = self._text_output_index
         yield self._emit(
             "response.output_text.done",
             {
                 "item_id": item_id,
-                "output_index": self._output_index,
+                "output_index": text_oi,
                 "content_index": 0,
                 "text": self._text_accum,
             },
@@ -751,7 +759,7 @@ class ResponsesStreamTranslator:
             "response.content_part.done",
             {
                 "item_id": item_id,
-                "output_index": self._output_index,
+                "output_index": text_oi,
                 "content_index": 0,
                 "part": part,
             },
@@ -759,7 +767,7 @@ class ResponsesStreamTranslator:
         yield self._emit(
             "response.output_item.done",
             {
-                "output_index": self._output_index,
+                "output_index": text_oi,
                 "item": {
                     "type": "message",
                     "id": item_id,

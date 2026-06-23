@@ -31,6 +31,7 @@ from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
+from serving.storage.responses_store import ResponseStore
 from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
 
@@ -553,8 +554,6 @@ async def initialize() -> AppServices:
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
         )
-        from serving.storage.responses_store import ResponseStore
-
         responses_store = ResponseStore(db_logger.pool)
         await responses_store.initialize()
         logger.info("Operational store initialized (Postgres + in-memory cache)")

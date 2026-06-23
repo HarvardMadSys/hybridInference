@@ -289,6 +289,36 @@ async def test_tool_call_response(responses_client):
 
 
 @pytest.mark.asyncio
+async def test_json_schema_structured_output_reaches_adapter(responses_client):
+    """text.format json_schema must survive ChatCompletionRequest validation and
+    reach the adapter as response_format with the nested schema intact."""
+    await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": "hi",
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": "Foo",
+                    "schema": {"type": "object", "properties": {"x": {"type": "string"}}},
+                    "strict": True,
+                }
+            },
+        },
+        headers=_auth(),
+    )
+    rf = TextAdapter.last_params.get("response_format")
+    assert rf is not None
+    assert rf["type"] == "json_schema"
+    assert rf["json_schema"]["name"] == "Foo"
+    assert rf["json_schema"]["schema"] == {
+        "type": "object",
+        "properties": {"x": {"type": "string"}},
+    }
+
+
+@pytest.mark.asyncio
 async def test_unknown_model_returns_404_error_envelope(responses_client):
     r = await responses_client.post(
         "/v1/responses",

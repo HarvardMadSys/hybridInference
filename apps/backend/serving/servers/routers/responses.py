@@ -85,7 +85,7 @@ async def _load_prior_messages(
     if response_store is None:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
     row = await response_store.get(previous_response_id)
-    if not row or (user_id is not None and row.get("user_id") != user_id):
+    if not row or row.get("user_id") != user_id:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
     msgs = row.get("messages")
     return msgs if isinstance(msgs, list) else []
@@ -121,7 +121,9 @@ async def create_response(
     if "input" not in body and "previous_response_id" not in body:
         raise HTTPException(400, "Missing required parameter: 'input'")
 
-    user_id = user_ctx.get("user_id")
+    # Normalise the owner key so anonymous/auth-disabled callers share a stable,
+    # non-None identity — never let a None user_id bypass ownership scoping.
+    user_id = user_ctx.get("user_id") or "anonymous"
     previous_response_id = body.get("previous_response_id")
     prior_messages: list[dict[str, Any]] = []
     if previous_response_id:
@@ -296,25 +298,29 @@ async def _stream_response(
             for event in translator.finalize():
                 yield event.encode()
         finally:
-            if (
-                store
-                and response_store is not None
-                and translator.final_response is not None
-                and not translator.failed
-            ):
-                assistant_msg = translator.assistant_message
-                messages = convo_messages + ([assistant_msg] if assistant_msg else [])
-                _schedule(
-                    _persist(
-                        response_store,
-                        response_id=response_id,
-                        user_id=user_id or "anonymous",
-                        response=translator.final_response,
-                        messages=messages,
-                        previous_response_id=previous_response_id,
-                        model=model,
+            # On early client disconnect / cancellation the loop above is
+            # interrupted before ``finalize()`` runs, leaving ``final_response``
+            # unset. Force-finalize here (consuming the events, which we no
+            # longer forward) so the partial turn is still persisted and
+            # ``previous_response_id`` chaining keeps working.
+            if store and response_store is not None and not translator.failed:
+                if translator.final_response is None:
+                    for _ in translator.finalize():
+                        pass
+                if translator.final_response is not None:
+                    assistant_msg = translator.assistant_message
+                    messages = convo_messages + ([assistant_msg] if assistant_msg else [])
+                    _schedule(
+                        _persist(
+                            response_store,
+                            response_id=response_id,
+                            user_id=user_id or "anonymous",
+                            response=translator.final_response,
+                            messages=messages,
+                            previous_response_id=previous_response_id,
+                            model=model,
+                        )
                     )
-                )
 
     return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
 
@@ -353,8 +359,8 @@ async def get_response(
     if response_store is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
     row = await response_store.get(response_id)
-    user_id = user_ctx.get("user_id")
-    if not row or (user_id is not None and row.get("user_id") != user_id):
+    owner = user_ctx.get("user_id") or "anonymous"
+    if not row or row.get("user_id") != owner:
         raise HTTPException(404, f"Response '{response_id}' not found")
     return JSONResponse(content=row.get("response") or {})
 
@@ -368,7 +374,8 @@ async def delete_response(
     """Delete a stored response by id."""
     if response_store is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
-    deleted = await response_store.delete(response_id, user_id=user_ctx.get("user_id"))
+    owner = user_ctx.get("user_id") or "anonymous"
+    deleted = await response_store.delete(response_id, user_id=owner)
     if not deleted:
         raise HTTPException(404, f"Response '{response_id}' not found")
     return JSONResponse(content={"id": response_id, "object": "response.deleted", "deleted": True})

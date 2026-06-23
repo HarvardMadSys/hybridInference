@@ -343,6 +343,51 @@ def test_stream_split_tool_name_accumulates():
     assert t.final_response["output"][0]["name"] == "get_weather"
 
 
+def _output_item_added_events(joined: str) -> list[dict]:
+    return [
+        json.loads(line[len("data: ") :])
+        for line in joined.splitlines()
+        if line.startswith("data: ") and '"response.output_item.added"' in line
+    ]
+
+
+def test_stream_tool_only_first_item_at_output_index_0():
+    chunks = [
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1",'
+        '"type":"function","function":{"name":"f","arguments":"{}"}}]}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+    ]
+    t, joined = _collect(chunks)
+    added = _output_item_added_events(joined)
+    assert added and added[0]["output_index"] == 0
+    assert added[0]["item"]["type"] == "function_call"
+    assert t.final_response["output"][0]["type"] == "function_call"
+
+
+def test_stream_text_then_tool_indices_are_sequential():
+    chunks = [
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c",'
+        '"type":"function","function":{"name":"f","arguments":"{}"}}]}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+    ]
+    t, joined = _collect(chunks)
+    added = _output_item_added_events(joined)
+    assert added[0]["output_index"] == 0
+    assert added[0]["item"]["type"] == "message"
+    assert added[1]["output_index"] == 1
+    assert added[1]["item"]["type"] == "function_call"
+    assert [o["type"] for o in t.final_response["output"]] == ["message", "function_call"]
+
+
+def test_tool_choice_function_not_a_dict_does_not_raise():
+    # A malformed nested tool_choice (function is a string) must not AttributeError.
+    params, _ = responses_request_to_chat_params(
+        {"tool_choice": {"type": "function", "function": "f"}}
+    )
+    assert "tool_choice" in params
+
+
 def test_stream_error_emits_failed():
     t, joined = _collect(['data: {"error":{"message":"boom","code":500}}\n\n'])
     assert "event: response.failed" in joined
