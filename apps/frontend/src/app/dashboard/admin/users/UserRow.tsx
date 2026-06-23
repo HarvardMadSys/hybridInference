@@ -2,11 +2,13 @@
 
 import { Sparkline } from './Sparkline';
 import { isAnomalous } from './lib/anomaly';
+import type { UserTurnAverages } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, UserRow as User } from './types';
 
 interface UserRowProps {
   user: User;
   history: CostHistoryPoint[] | undefined; // 7d
+  turns: UserTurnAverages | undefined;
   pageMedianToday: number;
   density: Density;
   expanded: boolean;
@@ -34,6 +36,7 @@ function todayCostBucket(cost: number, median: number): string {
 export function UserRow({
   user,
   history,
+  turns,
   pageMedianToday,
   density,
   expanded,
@@ -89,6 +92,12 @@ export function UserRow({
       <td className="px-2 font-mono text-sm">${Number(user.usage_month_usd).toFixed(2)}</td>
       <td className="px-2 font-mono text-sm text-gray-600">
         ${Number(user.usage_alltime_usd).toFixed(2)}
+      </td>
+      <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
+        {turns?.avg_turns != null ? turns.avg_turns.toFixed(1) : '—'}
+      </td>
+      <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
+        {turns?.avg_user_turns != null ? turns.avg_user_turns.toFixed(1) : '—'}
       </td>
       <td className="px-2 text-xs">{user.status.replace('_', ' ')}</td>
       <td className="px-2 text-center">
