@@ -14,7 +14,7 @@ export function LogTab() {
           type="button"
           id={AUDIT_TAB_ID}
           role="tab"
-          aria-selected
+          aria-selected="true"
           aria-controls={AUDIT_PANEL_ID}
           className="rounded-md bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white transition"
         >
