@@ -156,8 +156,9 @@ async def create_response(
 
     is_stream = bool(body.get("stream"))
     # store defaults to true; only an explicit ``false`` disables persistence
-    # (missing or null → true).
-    store = body.get("store") is not False
+    # (missing or null → true). When no store is configured (privacy mode / no
+    # DB) nothing is persisted, so the echoed value reflects that truthfully.
+    store = body.get("store") is not False and response_store is not None
     response_id = new_response_id()
     created_at = now_ts()
 

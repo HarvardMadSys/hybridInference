@@ -363,9 +363,10 @@ def test_stream_sequence_numbers_monotonic_from_zero():
     assert seqs[0] == 0
 
 
-def test_stream_keepalive_comment_swallowed():
+def test_stream_keepalive_comment_forwarded():
+    # Upstream keepalive comments are forwarded so idle streams stay alive.
     t = ResponsesStreamTranslator(response_id="r", created_at=1, model="m", request_body={})
-    assert list(t.feed(": keepalive\n\n")) == []
+    assert list(t.feed(": keepalive\n\n")) == [": keepalive\n\n"]
 
 
 def test_stream_tool_call():

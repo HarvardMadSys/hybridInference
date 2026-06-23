@@ -554,11 +554,22 @@ async def initialize() -> AppServices:
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
         )
-        responses_store = ResponseStore(db_logger.pool)
-        await responses_store.initialize()
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
-        logger.info("Responses store initialized (Postgres)")
+        # Responses API statefulness persists full response + conversation
+        # content, so it is gated on the same privacy switch as prompt/response
+        # logging. In privacy mode (the default) the store stays absent and
+        # statefulness degrades gracefully (store no-op; GET / previous_response_id
+        # → 404).
+        if settings.db_store_full_content:
+            responses_store = ResponseStore(db_logger.pool)
+            await responses_store.initialize()
+            logger.info("Responses store initialized (Postgres)")
+        else:
+            logger.info(
+                "Responses store disabled (db_store_full_content=false; "
+                "stateful /v1/responses requires full-content storage)"
+            )
 
     # Wire the operational store into the global Slack-alert snooze so admins
     # can pause alerting from the dashboard. Safe with a None store (no-op).

@@ -619,8 +619,14 @@ class ResponsesStreamTranslator:
         """Process one upstream SSE chunk; yield Responses SSE events."""
         for line in chunk.splitlines():
             line = line.strip()
-            if not line or line.startswith(":"):
-                continue  # SSE comment / keepalive — swallowed.
+            if not line:
+                continue
+            if line.startswith(":"):
+                # Forward the delegate's keepalive comments so idle Responses
+                # streams aren't dropped by proxies/clients, matching the chat
+                # surface's behavior.
+                yield ": keepalive\n\n"
+                continue
             if not line.startswith("data:"):
                 continue
             data = line[len("data:") :].strip()

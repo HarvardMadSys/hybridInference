@@ -95,6 +95,10 @@ emit `function_call_arguments.delta`/`.done`. Upstream errors emit
   are owner-scoped.
 - No DB → statefulness degrades gracefully: `store` is a no-op, `previous_response_id`
   and `GET` return 404.
+- Statefulness is gated on `db_store_full_content` (the same privacy switch as
+  prompt/response logging): in privacy mode (the default) the Responses store is
+  not created, persistence no-ops, and the echoed `store` field is `false`.
+  Operators opt into stateful `/v1/responses` by enabling full-content storage.
 
 ## 7. Errors
 
