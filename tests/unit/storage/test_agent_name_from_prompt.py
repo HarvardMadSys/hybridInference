@@ -119,9 +119,14 @@ def test_codex_phrase_only_matched_in_first_sentence() -> None:
 
 
 def test_codex_marker_requires_word_boundary() -> None:
-    # "codex" as a substring of a larger word must not match the phrase marker.
-    prompt = [{"role": "system", "content": "You are a tool for codexcli-style configs."}]
-    assert agent_name_from_prompt(prompt) is None
+    # The marker as part of a larger token must not match. "codex-cli-style"
+    # contains "codex-cli" (separator present) but is bounded by name
+    # characters, so the trailing lookaround rejects it; "codexcli" lacks the
+    # required separator between "codex" and "cli".
+    bounded = [{"role": "system", "content": "You are a tool for codex-cli-style configs."}]
+    assert agent_name_from_prompt(bounded) is None
+    no_separator = [{"role": "system", "content": "You are a tool for codexcli configs."}]
+    assert agent_name_from_prompt(no_separator) is None
 
 
 def test_ignores_non_system_messages() -> None:
