@@ -122,11 +122,15 @@ def test_routewise_probe_sample_signatures():
         "model_id",
         "endpoint_id",
         "since",
+        "after_id",
+        "newest_first",
         "limit",
     ]
     assert list(
-        inspect.signature(OperationalStore.purge_routewise_probe_samples_older_than).parameters
+        inspect.signature(OperationalStore.try_acquire_routewise_probe_lease).parameters
     ) == [
         "self",
-        "days",
+        "lease_key",
+        "holder_id",
+        "ttl_sec",
     ]

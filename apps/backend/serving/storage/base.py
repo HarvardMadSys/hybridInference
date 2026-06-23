@@ -855,8 +855,8 @@ class OperationalStore(ABC):
         error: str | None,
         cost_usd: float | None,
         checked_at: datetime | None = None,
-    ) -> None:
-        """Persist one active RouteWise latency probe outcome."""
+    ) -> int | None:
+        """Persist one active RouteWise latency probe outcome and return its row id."""
 
     @abstractmethod
     async def list_routewise_probe_samples(
@@ -865,13 +865,21 @@ class OperationalStore(ABC):
         model_id: str | None = None,
         endpoint_id: str | None = None,
         since: datetime | None = None,
+        after_id: int | None = None,
+        newest_first: bool = False,
         limit: int = 1000,
     ) -> list[Row]:
-        """Return RouteWise probe samples ordered oldest-to-newest."""
+        """Return RouteWise probe samples, oldest-first by id unless newest_first is set."""
 
     @abstractmethod
-    async def purge_routewise_probe_samples_older_than(self, days: int) -> int:
-        """Delete old RouteWise probe samples and return affected row count."""
+    async def try_acquire_routewise_probe_lease(
+        self,
+        *,
+        lease_key: str,
+        holder_id: str,
+        ttl_sec: float,
+    ) -> bool:
+        """Acquire or renew the active RouteWise probe lease for a router scope."""
 
     # -- role quota ----------------------------------------------------------
 

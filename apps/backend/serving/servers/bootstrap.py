@@ -225,11 +225,23 @@ async def _bootstrap_routewise_from_probe_samples(
                     await operational_store.list_routewise_probe_samples(
                         model_id=model_id,
                         since=now - dt.timedelta(seconds=history_sec),
+                        newest_first=True,
                         limit=per_model_limit,
                     )
                 )
             rows.sort(key=lambda row: row.get("checked_at") or now)
             counts = rw.bootstrap_from_probe_rows(rows[-max_rows:])
+            max_probe_id = max(
+                (
+                    int(row["id"])
+                    for row in rows
+                    if row.get("id") is not None
+                ),
+                default=0,
+            )
+            set_probe_sample_watermark = getattr(rw, "set_probe_sample_watermark", None)
+            if callable(set_probe_sample_watermark):
+                set_probe_sample_watermark(max_probe_id)
             logger.info(
                 "RouteWise probe bootstrap replayed rows=%d latency_events=%d "
                 "latency_prior_samples=%d model_ids=%s",

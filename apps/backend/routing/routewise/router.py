@@ -102,6 +102,8 @@ RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
 _PREFIX_CACHE_PENDING_MAX: int = 10_000
 _EXCLUDED_ENDPOINTS_CONTEXT_KEY = "_routewise_excluded_endpoint_ids"
 _RETRYABLE_ROUTEWISE_STATUS_CODES = frozenset({408, 429})
+_PROBE_READBACK_MAX_ROWS = 10_000
+_PROBE_SELF_SAMPLE_ID_CAP = 10_000
 _AIOHTTP_RETRYABLE_ERRORS = tuple(
     cls
     for cls in (
@@ -330,6 +332,9 @@ class RouteWiseRouter(BaseRouter):
         self._probe_task: asyncio.Task[None] | None = None
         self._operational_store: Any | None = None
         self._last_probe_results: list[RouteWiseProbeResult] = []
+        self._probe_holder_id = f"{os.getpid()}:{uuid.uuid4().hex}"
+        self._probe_sample_watermark_id = 0
+        self._probe_self_sample_ids: set[int] = set()
         # Last LP state retained for tests and diagnostics.
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
@@ -642,7 +647,7 @@ class RouteWiseRouter(BaseRouter):
         try:
             while True:
                 try:
-                    await self.run_probe_once(idle_only=True)
+                    await self._run_probe_cycle()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -654,6 +659,99 @@ class RouteWiseRouter(BaseRouter):
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             return
+
+    async def _run_probe_cycle(self) -> list[RouteWiseProbeResult]:
+        """Run one background probe cycle with DB-backed leader election."""
+        await self.sync_probe_samples_once()
+        if not await self._try_acquire_probe_lease():
+            self._last_probe_results = []
+            return []
+        return await self.run_probe_once(idle_only=None)
+
+    async def _try_acquire_probe_lease(self) -> bool:
+        store = self._operational_store
+        if store is None:
+            return True
+        acquire = getattr(store, "try_acquire_routewise_probe_lease", None)
+        if not callable(acquire):
+            return True
+        interval = max(float(self.config.routewise_probe_interval_sec), 1.0)
+        timeout = max(float(self.config.routewise_probe_timeout_sec), 1.0)
+        ttl_sec = max(interval * 2.0, timeout + 1.0, 5.0)
+        try:
+            return bool(
+                await acquire(
+                    lease_key=self._probe_lease_key(),
+                    holder_id=self._probe_holder_id,
+                    ttl_sec=ttl_sec,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "routewise_probe_lease_acquire_failed",
+                extra={"event": "routewise_probe_lease_acquire_failed"},
+                exc_info=True,
+            )
+            return False
+
+    def _probe_lease_key(self) -> str:
+        model_ids = sorted(
+            {
+                model_id
+                for endpoint_models in self._endpoint_models.values()
+                for model_id in endpoint_models
+            }
+        )
+        if model_ids:
+            return "routewise-probe:" + ",".join(model_ids)
+        return "routewise-probe:endpoints:" + ",".join(sorted(self._endpoint_adapter))
+
+    async def sync_probe_samples_once(self) -> dict[str, int]:
+        """Replay probe samples persisted by another worker into local memory."""
+        store = self._operational_store
+        if store is None:
+            return {"rows": 0, "applied_rows": 0, "latency_events": 0}
+        try:
+            rows = await store.list_routewise_probe_samples(
+                after_id=self._probe_sample_watermark_id,
+                limit=_PROBE_READBACK_MAX_ROWS,
+            )
+        except Exception:
+            logger.warning(
+                "routewise_probe_sample_sync_failed",
+                extra={"event": "routewise_probe_sample_sync_failed"},
+                exc_info=True,
+            )
+            return {"rows": 0, "applied_rows": 0, "latency_events": 0}
+        if not rows:
+            return {"rows": 0, "applied_rows": 0, "latency_events": 0}
+
+        max_seen_id = self._probe_sample_watermark_id
+        replay_rows: list[Mapping[str, Any]] = []
+        for row in sorted(rows, key=lambda item: self._int_or_zero(item.get("id"))):
+            sample_id = self._int_or_zero(row.get("id"))
+            if sample_id > max_seen_id:
+                max_seen_id = sample_id
+            if sample_id and sample_id in self._probe_self_sample_ids:
+                self._probe_self_sample_ids.discard(sample_id)
+                continue
+            replay_rows.append(row)
+
+        counts = self.bootstrap_from_probe_rows(replay_rows)
+        self._probe_sample_watermark_id = max_seen_id
+        return {
+            "rows": len(rows),
+            "applied_rows": len(replay_rows),
+            "latency_events": counts["latency_events"],
+        }
+
+    def set_probe_sample_watermark(self, sample_id: int | None) -> None:
+        """Mark persisted probe rows through *sample_id* as already replayed."""
+        if sample_id is not None:
+            self._probe_sample_watermark_id = max(
+                self._probe_sample_watermark_id,
+                max(int(sample_id), 0),
+            )
 
     async def run_probe_once(
         self,
@@ -729,7 +827,7 @@ class RouteWiseRouter(BaseRouter):
                 error=error,
             )
             self._record_probe_result(result)
-            await self._persist_probe_result(result)
+            self._remember_self_probe_sample_id(await self._persist_probe_result(result))
             return result
 
         result = RouteWiseProbeResult(
@@ -740,7 +838,7 @@ class RouteWiseRouter(BaseRouter):
             error=None,
         )
         self._record_probe_result(result)
-        await self._persist_probe_result(result)
+        self._remember_self_probe_sample_id(await self._persist_probe_result(result))
         return result
 
     @staticmethod
@@ -784,12 +882,12 @@ class RouteWiseRouter(BaseRouter):
         else:
             self._latency_history_priors_ms[endpoint_id] = (prior + ttft_ms) / 2.0
 
-    async def _persist_probe_result(self, result: RouteWiseProbeResult) -> None:
+    async def _persist_probe_result(self, result: RouteWiseProbeResult) -> int | None:
         store = self._operational_store
         if store is None:
-            return
+            return None
         try:
-            await store.insert_routewise_probe_sample(
+            return await store.insert_routewise_probe_sample(
                 model_id=result.model_id,
                 endpoint_id=result.endpoint_id,
                 ttft_ms=result.ttft_ms,
@@ -807,6 +905,16 @@ class RouteWiseRouter(BaseRouter):
                 },
                 exc_info=True,
             )
+        return None
+
+    def _remember_self_probe_sample_id(self, sample_id: int | None) -> None:
+        if not isinstance(sample_id, int) or isinstance(sample_id, bool):
+            return
+        if sample_id <= 0:
+            return
+        self._probe_self_sample_ids.add(sample_id)
+        while len(self._probe_self_sample_ids) > _PROBE_SELF_SAMPLE_ID_CAP:
+            self._probe_self_sample_ids.pop()
 
     # ------------------------------------------------------------------
     # Classification and helpers

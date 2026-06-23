@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import itertools
 import json
 import logging
@@ -1180,6 +1181,106 @@ class TestRouteWiseLayer2:
         assert len(results) == 1
         assert results[0].ok is False
         assert router._mean_ttft_sec("test-model:api-a", time.time()) == pytest.approx(60.0)
+
+    async def test_probe_cycle_without_lease_syncs_shared_samples_only(self):
+        """A non-leader worker should consume DB probe samples without probing upstream."""
+        router, api_a, _api_b = _make_router_with_two_api()
+        api_a.stream_chat_completion = AsyncMock(side_effect=AssertionError("should not probe"))
+        checked_at = dt.datetime.now(dt.timezone.utc)
+        store = MagicMock()
+        store.list_routewise_probe_samples = AsyncMock(
+            return_value=[
+                {
+                    "id": 7,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": 123.0,
+                    "ok": True,
+                    "error": None,
+                    "checked_at": checked_at,
+                }
+            ]
+        )
+        store.try_acquire_routewise_probe_lease = AsyncMock(return_value=False)
+        router.attach_operational_store(store)
+
+        results = await router._run_probe_cycle()
+
+        assert results == []
+        assert router._last_probe_results == []
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+        store.list_routewise_probe_samples.assert_awaited_once_with(after_id=0, limit=10_000)
+        store.try_acquire_routewise_probe_lease.assert_awaited_once()
+
+    async def test_probe_cycle_leader_tracks_self_sample_ids(self):
+        """A leader records its own probe immediately and skips DB replay of the same row."""
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            yield "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+        store = MagicMock()
+        store.list_routewise_probe_samples = AsyncMock(return_value=[])
+        store.try_acquire_routewise_probe_lease = AsyncMock(return_value=True)
+        store.insert_routewise_probe_sample = AsyncMock(return_value=9)
+        router.attach_operational_store(store)
+
+        results = await router._run_probe_cycle()
+
+        assert len(results) == 1
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+
+        store.list_routewise_probe_samples = AsyncMock(
+            return_value=[
+                {
+                    "id": 9,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": results[0].ttft_ms,
+                    "ok": True,
+                    "error": None,
+                    "checked_at": dt.datetime.now(dt.timezone.utc),
+                }
+            ]
+        )
+
+        counts = await router.sync_probe_samples_once()
+
+        assert counts["rows"] == 1
+        assert counts["applied_rows"] == 0
+        assert router._probe_sample_watermark_id == 9
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+
+    async def test_sync_probe_samples_applies_external_rows_once(self):
+        """Persisted probe samples from another worker update this worker's profile once."""
+        router, _api_a, _api_b = _make_router_with_two_api()
+        checked_at = dt.datetime.now(dt.timezone.utc)
+        store = MagicMock()
+        store.list_routewise_probe_samples = AsyncMock(
+            return_value=[
+                {
+                    "id": 3,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": 250.0,
+                    "ok": True,
+                    "error": None,
+                    "checked_at": checked_at,
+                }
+            ]
+        )
+        router.attach_operational_store(store)
+
+        counts = await router.sync_probe_samples_once()
+
+        assert counts["rows"] == 1
+        assert counts["applied_rows"] == 1
+        assert counts["latency_events"] == 1
+        assert router._probe_sample_watermark_id == 3
+        assert router._mean_ttft_sec("test-model:api-a", time.time()) == pytest.approx(0.25)
 
     def test_bootstrap_from_log_rows_warms_latency_and_envelope(self):
         """Startup history replay warms profiles with the same online semantics."""

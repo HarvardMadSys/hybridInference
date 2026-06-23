@@ -14,8 +14,8 @@ from serving.config.runtime_settings import (
     get_runtime_settings,
 )
 from serving.schemas_admin import (
-    ListRoutewiseSettingsResponse,
     ListRoutewiseProbeSamplesResponse,
+    ListRoutewiseSettingsResponse,
     RoutewiseProbeRunResult,
     RoutewiseProbeSampleItem,
     RoutewiseSettingItem,
@@ -236,6 +236,7 @@ async def list_routewise_probe_samples_endpoint(
         model_id=model_id,
         endpoint_id=endpoint_id,
         since=since,
+        newest_first=True,
         limit=max(min(int(limit), 1000), 1),
     )
     return ListRoutewiseProbeSamplesResponse(
