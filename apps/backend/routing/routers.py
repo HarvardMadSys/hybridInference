@@ -14,6 +14,7 @@ import os
 import random
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -35,6 +36,13 @@ logger = get_logger(__name__)
 # mid-flight (e.g. when the breaker that scheduled it is dropped). Tasks
 # remove themselves via add_done_callback once they finish.
 _ALERT_TASKS: set[asyncio.Task[bool]] = set()
+
+# Bound on the number of distinct users tracked per circuit breaker for a
+# single failure streak. Caps memory when a long outage spans many callers;
+# users already being tracked keep accumulating their failure counts.
+_MAX_TRACKED_OFFENDERS = 50
+# How many of the top offenders to name explicitly in the circuit-open alert.
+_OFFENDERS_IN_ALERT = 10
 
 # ============================================================================
 # Exceptions
@@ -317,6 +325,27 @@ def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
 
 
+def _offender_str() -> str | None:
+    """Identify the user behind the current request for failure attribution.
+
+    Reads the request-scoped context populated by the completions handler.
+    Prefers a human-readable ``user_name`` when present but always pins the
+    stable ``user_id`` so operators can act on the alert. Returns ``None`` when
+    no identity is available (e.g. health probes or background tasks running
+    outside a request).
+    """
+    ctx = req_ctx.get()
+    user_id = ctx.get("user_id")
+    user_name = ctx.get("user_name")
+    if user_id and user_name:
+        return f"{user_name} ({user_id})"
+    if user_id:
+        return str(user_id)
+    if user_name:
+        return str(user_name)
+    return None
+
+
 # ============================================================================
 # Health Tracking
 # ============================================================================
@@ -393,6 +422,10 @@ class _CircuitBreaker:
         )
         self.consecutive_failures = 0
         self.last_opened: float | None = None
+        # Users whose requests contributed to the current failure streak,
+        # keyed by identity with a per-user failure count. Cleared whenever the
+        # streak resets on success so it always reflects the live outage.
+        self._offenders: Counter[str] = Counter()
         self._lock = threading.Lock()
 
     def allow_request(self) -> bool:
@@ -413,6 +446,9 @@ class _CircuitBreaker:
     def on_success(self) -> None:
         with self._lock:
             self.consecutive_failures = 0
+            # The failure streak is broken — drop the offenders accumulated for
+            # it so a later trip only names users behind the new streak.
+            self._offenders.clear()
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
                 # Capture how long the circuit stayed open before clearing the
                 # timestamp, so the recovery log carries the outage duration.
@@ -438,9 +474,17 @@ class _CircuitBreaker:
         availability: float | None = None,
         reason: str = "error",
         detail: str | None = None,
+        offender: str | None = None,
     ) -> None:
         with self._lock:
             self.consecutive_failures += 1
+            # Attribute the failure to its user. Already-tracked offenders keep
+            # accumulating; only the number of *distinct* users is capped so a
+            # long, broad outage can't grow this counter without limit.
+            if offender and (
+                offender in self._offenders or len(self._offenders) < _MAX_TRACKED_OFFENDERS
+            ):
+                self._offenders[offender] += 1
             trip = False
             if self.consecutive_failures >= self.failure_threshold:
                 trip = True
@@ -464,6 +508,12 @@ class _CircuitBreaker:
                     # the alert is actionable without grepping logs.
                     if detail:
                         context["upstream_error"] = detail
+                    # Name the users whose requests drove this failure streak so
+                    # operators can see who is affected (and who may be abusing
+                    # a provider, as with coding-only upstream restrictions).
+                    offenders = self._format_offenders()
+                    if offenders:
+                        context["offending_users"] = offenders
                     # Emit a structured log record for the circuit-open
                     # transition. The Slack alert is fire-and-forget and writes
                     # no log line, so without this the event is invisible in the
@@ -477,6 +527,7 @@ class _CircuitBreaker:
                             "availability": availability,
                             "reason": reason or "unknown",
                             "upstream_error": detail,
+                            "offending_users": offenders,
                         },
                     )
                     try:
@@ -498,6 +549,21 @@ class _CircuitBreaker:
                         # the GC cannot cancel it mid-flight.
                         _ALERT_TASKS.add(task)
                         task.add_done_callback(_ALERT_TASKS.discard)
+
+    def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
+        """Render the failure-streak offenders for an alert, busiest first.
+
+        Caller must hold ``self._lock``. Returns ``None`` when no offenders were
+        attributed (e.g. failures raised outside any request context).
+        """
+        if not self._offenders:
+            return None
+        named = self._offenders.most_common(top)
+        parts = [f"{user} x{count}" for user, count in named]
+        remaining = len(self._offenders) - len(named)
+        if remaining > 0:
+            parts.append(f"+{remaining} more")
+        return ", ".join(parts)
 
 
 # ============================================================================
@@ -544,7 +610,10 @@ class BaseRouter:
             self._health[endpoint_id].record(False)
             avail = self._health[endpoint_id].availability
             self._circuits[endpoint_id].on_failure(
-                availability=avail, reason=_reason_str(reason), detail=_detail_str(detail)
+                availability=avail,
+                reason=_reason_str(reason),
+                detail=_detail_str(detail),
+                offender=_offender_str(),
             )
 
     def _drop_affinity(self, model_id: str) -> None:

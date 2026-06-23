@@ -571,6 +571,10 @@ async def chat_completions(
             "request_id": request_id,
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
+            # User identity for failure attribution — the routing layer reads
+            # these to name the offending users in circuit-breaker alerts.
+            "user_id": user_id,
+            "user_name": user_ctx.get("user_name"),
         }
     )
 
