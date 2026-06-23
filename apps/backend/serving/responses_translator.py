@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -45,20 +46,14 @@ __all__ = [
 
 def new_response_id() -> str:
     """Return a fresh Responses object id (``resp_...``)."""
-    import uuid
-
     return f"resp_{uuid.uuid4().hex}"
 
 
 def _msg_item_id() -> str:
-    import uuid
-
     return f"msg_{uuid.uuid4().hex}"
 
 
 def _fc_item_id() -> str:
-    import uuid
-
     return f"fc_{uuid.uuid4().hex}"
 
 
@@ -542,6 +537,9 @@ class ResponsesStreamTranslator:
         # Open text message item state.
         self._text_item_id: str | None = None
         self._text_output_index: int | None = None
+        # Id of the text item once its block is closed (used to rebuild the
+        # final message item); set in ``_close_text_block``.
+        self._text_done_item_id: str | None = None
         self._text_accum = ""
 
         # Tool call accumulation, keyed by chat delta index.
@@ -875,7 +873,7 @@ class ResponsesStreamTranslator:
         yield self._emit(terminal, {"response": final})
 
     def _build_text_item(self) -> dict[str, Any] | None:
-        item_id = getattr(self, "_text_done_item_id", None)
+        item_id = self._text_done_item_id
         if item_id is None or not self._text_accum:
             return None
         return {

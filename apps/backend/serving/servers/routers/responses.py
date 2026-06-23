@@ -155,7 +155,9 @@ async def create_response(
     request._body = json.dumps(chat_body).encode()  # type: ignore[attr-defined]
 
     is_stream = bool(body.get("stream"))
-    store = body.get("store", True) is not False
+    # store defaults to true; only an explicit ``false`` disables persistence
+    # (missing or null → true).
+    store = body.get("store") is not False
     response_id = new_response_id()
     created_at = now_ts()
 
@@ -281,6 +283,8 @@ async def _stream_response(
         store=store,
     )
 
+    # ``body_iterator`` is Starlette's StreamingResponse stream attribute — the
+    # same access compat.py relies on to re-wrap a delegated streaming response.
     body_iterator = getattr(delegate, "body_iterator", None)
 
     def _persist_messages() -> list[dict[str, Any]]:
@@ -373,7 +377,9 @@ async def _persist(
             model=model,
         )
     except Exception:
-        logger.debug("Failed to persist response %s", response_id, exc_info=True)
+        # Visible at default log level: the request still succeeded, but the
+        # response was not stored (GET / previous_response_id will 404).
+        logger.warning("Failed to persist response %s", response_id, exc_info=True)
 
 
 @router.get("/v1/responses/{response_id}", response_model=None)

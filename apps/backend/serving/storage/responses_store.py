@@ -157,5 +157,8 @@ def _load_json(value: Any) -> Any:
         try:
             return json.loads(value)
         except (json.JSONDecodeError, ValueError):
+            # Invalid JSON in a JSONB column signals data corruption (manual
+            # edit / migration bug); surface it rather than silently dropping.
+            logger.warning("Failed to decode openai_responses JSON column", exc_info=True)
             return None
     return value
