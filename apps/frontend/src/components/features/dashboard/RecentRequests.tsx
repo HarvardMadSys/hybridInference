@@ -97,7 +97,12 @@ function RequestRow({ req }: { req: RecentRequestItem }) {
       >
         <td className="py-3 pl-4 pr-3 text-sm">
           <div className="flex items-center gap-2">
-            <span className="font-medium text-gray-900 whitespace-nowrap">{req.model_id}</span>
+            <span
+              className="block max-w-[180px] truncate font-medium text-gray-900 sm:max-w-[260px]"
+              title={req.model_id}
+            >
+              {req.model_id}
+            </span>
             {isEmbedding && (
               <span className="inline-flex items-center rounded-md bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700 ring-1 ring-inset ring-violet-600/20">
                 embedding
