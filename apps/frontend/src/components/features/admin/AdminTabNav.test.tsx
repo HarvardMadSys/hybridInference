@@ -45,4 +45,14 @@ describe('AdminTabNav', () => {
     expect(screen.queryByRole('link', { name: 'Updates' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Broadcast Email' })).not.toBeInTheDocument();
   });
+
+  it('renames the audit tab to a top-level Log tab', () => {
+    render(<AdminTabNav />);
+
+    expect(screen.getByRole('link', { name: 'Log' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/log',
+    );
+    expect(screen.queryByRole('link', { name: 'Audit Log' })).not.toBeInTheDocument();
+  });
 });
