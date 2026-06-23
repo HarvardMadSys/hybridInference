@@ -138,6 +138,7 @@ class _FakeResponseStore:
 
     def __init__(self) -> None:
         self.data: dict[str, dict[str, Any]] = {}
+        self.persist_enabled = True
 
     async def save(
         self,
@@ -253,6 +254,66 @@ async def test_instructions_become_system_message(responses_client):
     )
     assert _rc(TextAdapter.last_messages)[0] == ("system", "you are a pirate")
     assert _rc(TextAdapter.last_messages)[1] == ("user", "hi")
+
+
+@pytest.mark.asyncio
+async def test_strict_reasoning_header_stripped_so_reasoning_persists(
+    responses_client, responses_store
+):
+    """An inbound X-Reasoning-Passthrough:false must not strip reasoning_content
+    before it is persisted for chaining."""
+
+    class _ReasoningAdapter(BaseAdapter):
+        async def chat_completion(self, messages, **params):
+            return {
+                "id": "c",
+                "object": "chat.completion",
+                "created": 1,
+                "model": self.config.id,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "ok",
+                            "reasoning_content": "deliberation",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+        async def stream_chat_completion(self, messages, **params):  # pragma: no cover
+            if False:
+                yield ""
+
+    router = responses_client._transport.app.state.services.router
+    router.register_route("reasoning-model", [(_ReasoningAdapter(_cfg("reasoning-model")), 1.0)])
+
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": "reasoning-model", "input": "hi"},
+        headers={**_auth(), "X-Reasoning-Passthrough": "false"},
+    )
+    assert r.status_code == 200
+    stored = responses_store.data[r.json()["id"]]
+    assert stored["messages"][-1]["reasoning_content"] == "deliberation"
+
+
+@pytest.mark.asyncio
+async def test_privacy_mode_store_disabled_not_persisted(responses_client, responses_store):
+    """When the store has persistence disabled (privacy mode), nothing is saved
+    and the echoed store flag is false."""
+    responses_store.persist_enabled = False
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hi"},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert r.json()["store"] is False
+    assert responses_store.data == {}
 
 
 @pytest.mark.asyncio

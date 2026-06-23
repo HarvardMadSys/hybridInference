@@ -24,6 +24,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from starlette.datastructures import Headers
 
 from serving.responses_translator import (
     ResponsesStreamTranslator,
@@ -70,6 +71,22 @@ def _schedule(coro: Any) -> None:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+def _force_reasoning_passthrough(request: Request) -> None:
+    """Drop ``X-Reasoning-Passthrough`` before delegating to chat completions.
+
+    The Responses surface never exposes reasoning text, but ``reasoning_content``
+    must survive into the persisted assistant turn for ``previous_response_id``
+    chaining (some providers require the reasoning history echoed back). A
+    strict-mode header on the inbound request would otherwise make the delegated
+    handler strip reasoning before the translator can capture it.
+    """
+    raw = request.scope.get("headers") or []
+    filtered = [(k, v) for (k, v) in raw if k.lower() != b"x-reasoning-passthrough"]
+    if len(filtered) != len(raw):
+        request.scope["headers"] = filtered
+        request._headers = Headers(scope=request.scope)  # type: ignore[attr-defined]
 
 
 async def _load_prior_messages(
@@ -153,12 +170,20 @@ async def create_response(
     # raw `_body`). This is the same delegation pattern used by compat.py.
     request._json = chat_body  # type: ignore[attr-defined]
     request._body = json.dumps(chat_body).encode()  # type: ignore[attr-defined]
+    # Keep reasoning_content available for persisted chaining regardless of any
+    # strict-reasoning header on the inbound request.
+    _force_reasoning_passthrough(request)
 
     is_stream = bool(body.get("stream"))
     # store defaults to true; only an explicit ``false`` disables persistence
-    # (missing or null → true). When no store is configured (privacy mode / no
-    # DB) nothing is persisted, so the echoed value reflects that truthfully.
-    store = body.get("store") is not False and response_store is not None
+    # (missing or null → true). Persistence also requires a write-enabled store
+    # (privacy mode disables writes), so the echoed value reflects whether the
+    # response is actually stored.
+    store = (
+        body.get("store") is not False
+        and response_store is not None
+        and getattr(response_store, "persist_enabled", True)
+    )
     response_id = new_response_id()
     created_at = now_ts()
 

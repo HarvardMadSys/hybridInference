@@ -34,9 +34,15 @@ logger = get_logger(__name__)
 class ResponseStore:
     """Postgres-backed store for Responses API objects."""
 
-    def __init__(self, pool: Any) -> None:
-        """Wrap an asyncpg pool."""
+    def __init__(self, pool: Any, *, persist_enabled: bool = True) -> None:
+        """Wrap an asyncpg pool.
+
+        ``persist_enabled`` gates *writes* only: when False (DB privacy mode)
+        :meth:`save` is a no-op, but reads, deletes and the hard-delete purge
+        still operate so existing rows remain retrievable and wipeable.
+        """
         self._pool = pool
+        self.persist_enabled = persist_enabled
 
     async def initialize(self) -> None:
         """Create the ``openai_responses`` table and indexes (idempotent)."""
@@ -70,6 +76,8 @@ class ResponseStore:
         model: str | None = None,
     ) -> None:
         """Persist (or replace) a response and its cumulative conversation."""
+        if not self.persist_enabled:
+            return
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
