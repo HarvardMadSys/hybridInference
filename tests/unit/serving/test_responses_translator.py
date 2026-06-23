@@ -471,6 +471,27 @@ def test_stream_tool_before_text_orders_final_output_by_index():
     assert [o["type"] for o in t.final_response["output"]] == ["function_call", "message"]
 
 
+def test_stream_text_tool_text_keeps_both_messages():
+    # text -> tool call -> more text: two distinct message items plus the tool,
+    # each attributed to its own output_index and id.
+    chunks = [
+        'data: {"choices":[{"index":0,"delta":{"content":"first"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c",'
+        '"type":"function","function":{"name":"f","arguments":"{}"}}]}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"content":"second"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+    ]
+    t, _ = _collect(chunks)
+    out = t.final_response["output"]
+    assert [o["type"] for o in out] == ["message", "function_call", "message"]
+    assert out[0]["content"][0]["text"] == "first"
+    assert out[2]["content"][0]["text"] == "second"
+    # Distinct message item ids.
+    assert out[0]["id"] != out[2]["id"]
+    # Persisted assistant content is the full concatenated text.
+    assert t.assistant_message["content"] == "firstsecond"
+
+
 def test_stream_error_emits_failed():
     t, joined = _collect(['data: {"error":{"message":"boom","code":500}}\n\n'])
     assert "event: response.failed" in joined

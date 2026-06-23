@@ -538,13 +538,13 @@ class ResponsesStreamTranslator:
         # it is text or a tool call).
         self._next_output_index = 0
 
-        # Open text message item state.
-        self._text_item_id: str | None = None
-        self._text_output_index: int | None = None
-        # Id of the text item once its block is closed (used to rebuild the
-        # final message item); set in ``_close_text_block``.
-        self._text_done_item_id: str | None = None
-        self._text_accum = ""
+        # Currently-open text message item (a stream may open several, e.g.
+        # text → tool call → text). Each is tracked as its own output item.
+        self._cur_text_id: str | None = None
+        self._cur_text_index: int | None = None
+        self._cur_text = ""
+        # Completed text segments: {"item_id", "output_index", "text"}.
+        self._text_segments: list[dict[str, Any]] = []
         # Accumulated reasoning_content (not emitted as Responses output, but
         # carried into the persisted assistant message for chaining — some
         # providers require it echoed in thinking-mode tool flows).
@@ -680,36 +680,37 @@ class ResponsesStreamTranslator:
             yield from self._feed_tool_calls(tool_calls)
 
     def _feed_text(self, content: str) -> Iterator[str]:
-        if self._text_item_id is None:
-            self._text_item_id = _msg_item_id()
-            self._text_output_index = self._next_output_index
+        if self._cur_text_id is None:
+            self._cur_text_id = _msg_item_id()
+            self._cur_text_index = self._next_output_index
             self._next_output_index += 1
+            self._cur_text = ""
             item = {
                 "type": "message",
-                "id": self._text_item_id,
+                "id": self._cur_text_id,
                 "status": "in_progress",
                 "role": "assistant",
                 "content": [],
             }
             yield self._emit(
                 "response.output_item.added",
-                {"output_index": self._text_output_index, "item": item},
+                {"output_index": self._cur_text_index, "item": item},
             )
             yield self._emit(
                 "response.content_part.added",
                 {
-                    "item_id": self._text_item_id,
-                    "output_index": self._text_output_index,
+                    "item_id": self._cur_text_id,
+                    "output_index": self._cur_text_index,
                     "content_index": 0,
                     "part": {"type": "output_text", "text": "", "annotations": []},
                 },
             )
-        self._text_accum += content
+        self._cur_text += content
         yield self._emit(
             "response.output_text.delta",
             {
-                "item_id": self._text_item_id,
-                "output_index": self._text_output_index,
+                "item_id": self._cur_text_id,
+                "output_index": self._cur_text_index,
                 "content_index": 0,
                 "delta": content,
             },
@@ -717,7 +718,7 @@ class ResponsesStreamTranslator:
 
     def _feed_tool_calls(self, tool_calls: list[dict[str, Any]]) -> Iterator[str]:
         # Close an open text block before any tool call opens.
-        if self._text_item_id is not None:
+        if self._cur_text_id is not None:
             yield from self._close_text_block()
 
         for tc in tool_calls:
@@ -771,21 +772,25 @@ class ResponsesStreamTranslator:
                 )
 
     def _close_text_block(self) -> Iterator[str]:
-        item_id = self._text_item_id
+        item_id = self._cur_text_id
         if item_id is None:
             return
-        self._text_item_id = None  # mark closed so we don't double-close
-        text_oi = self._text_output_index
+        text_oi = self._cur_text_index
+        text = self._cur_text
+        # Reset current-item state so a later text run opens a fresh item.
+        self._cur_text_id = None
+        self._cur_text_index = None
+        self._cur_text = ""
         yield self._emit(
             "response.output_text.done",
             {
                 "item_id": item_id,
                 "output_index": text_oi,
                 "content_index": 0,
-                "text": self._text_accum,
+                "text": text,
             },
         )
-        part = {"type": "output_text", "text": self._text_accum, "annotations": []}
+        part = {"type": "output_text", "text": text, "annotations": []}
         yield self._emit(
             "response.content_part.done",
             {
@@ -808,7 +813,9 @@ class ResponsesStreamTranslator:
                 },
             },
         )
-        self._text_done_item_id = item_id
+        self._text_segments.append(
+            {"item_id": item_id, "output_index": text_oi, "text": text}
+        )
 
     def finalize(self) -> Iterator[str]:
         """Emit the closing events and the terminal ``response.completed``.
@@ -817,8 +824,7 @@ class ResponsesStreamTranslator:
         instead. Populates :attr:`final_response` / :attr:`assistant_message`.
         """
         # Close a still-open text block (no tool call followed it).
-        had_open_text = self._text_item_id is not None
-        if had_open_text:
+        if self._cur_text_id is not None:
             yield from self._close_text_block()
 
         if self._failed:
@@ -832,12 +838,26 @@ class ResponsesStreamTranslator:
 
         # Finalize items. Collect each with its streamed ``output_index`` so the
         # terminal ``output`` array can be ordered to match the live events
-        # (a tool call may precede text, taking index 0).
+        # (a tool call may precede text, taking index 0; text may resume after a
+        # tool call as a second message item).
         indexed_output: list[tuple[int, dict[str, Any]]] = []
-        text_item = self._build_text_item()
-        if text_item is not None:
-            text_oi = self._text_output_index if self._text_output_index is not None else 0
-            indexed_output.append((text_oi, text_item))
+        for seg in self._text_segments:
+            if not seg["text"]:
+                continue
+            indexed_output.append(
+                (
+                    seg["output_index"],
+                    {
+                        "type": "message",
+                        "id": seg["item_id"],
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            {"type": "output_text", "text": seg["text"], "annotations": []}
+                        ],
+                    },
+                )
+            )
         tool_calls_for_msg: list[dict[str, Any]] = []
         for idx in self._tool_order:
             st = self._tool_calls[idx]
@@ -881,9 +901,10 @@ class ResponsesStreamTranslator:
             final["usage"] = usage
         self._final_response = final
 
+        full_text = "".join(seg["text"] for seg in self._text_segments)
         assistant_msg: dict[str, Any] = {
             "role": "assistant",
-            "content": self._text_accum or None,
+            "content": full_text or None,
         }
         if tool_calls_for_msg:
             assistant_msg["tool_calls"] = tool_calls_for_msg
@@ -896,18 +917,6 @@ class ResponsesStreamTranslator:
         # on the terminal event type.
         terminal = "response.incomplete" if status == "incomplete" else "response.completed"
         yield self._emit(terminal, {"response": final})
-
-    def _build_text_item(self) -> dict[str, Any] | None:
-        item_id = self._text_done_item_id
-        if item_id is None or not self._text_accum:
-            return None
-        return {
-            "type": "message",
-            "id": item_id,
-            "status": "completed",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": self._text_accum, "annotations": []}],
-        }
 
 
 def now_ts() -> int:
