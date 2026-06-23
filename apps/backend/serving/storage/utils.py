@@ -248,25 +248,26 @@ def _wrapper_client_from_first_sentence(text: str) -> str | None:
     return None
 
 
-# Clients that announce themselves with a descriptive phrase in their opening
-# sentence rather than a ``"You are <Name>"`` opener, so the opener yields a
-# generic filler. Each marker maps to the canonical client label used by the
-# frontend ``parseClientTool`` (e.g. ``codex-cli/…`` → ``"codex"``), so the
-# admin UI shows the same name whether the client is identified by its system
-# prompt or its ``User-Agent``. Each marker matches the agent's self-description
-# phrase, not a bare product name: matching the product name alone would label a
-# prompt that merely *mentions* the tool (e.g. ``"You are a helpful assistant for
-# Codex CLI users"``) as the client, and since the admin UI prefers ``agent``
-# over ``User-Agent`` that would suppress the User-Agent fallback and corrupt
-# other clients' labels. Markers are bounded by ``_NAME_CHARS`` so they do not
-# match inside a larger word, and matched case-insensitively. ``Codex`` opens
-# with ``"You are a coding agent running in the Codex CLI"``, whose first token
-# after ``"You are"`` is the filler ``"a"``; the ``"running in"`` prefix (with an
-# optional ``"the"``) is required so only that self-description matches.
+# Clients that announce themselves with a descriptive opener rather than a
+# ``"You are <Name>"`` opener, so ``_name_from_opener`` yields a generic filler.
+# Each marker maps to the canonical client label used by the frontend
+# ``parseClientTool`` (e.g. ``codex-cli/…`` → ``"codex"``), so the admin UI shows
+# the same name whether the client is identified by its system prompt or its
+# ``User-Agent``. Each pattern is anchored (``^``) to the client's own opener
+# self-description, not merely an occurrence of the phrase: an unanchored match
+# would label any prompt that *mentions* the tool — e.g. ``"You are a helpful
+# assistant for Codex CLI users"`` or the instruction ``"When running in the
+# Codex CLI, keep outputs concise"`` — as the client, and since the admin UI
+# prefers ``agent`` over ``User-Agent`` that would suppress the User-Agent
+# fallback and corrupt other clients' labels. The trailing ``_NAME_CHARS``
+# lookaround keeps the marker from matching inside a larger token, and matching
+# is case-insensitive. ``Codex`` opens with ``"You are a coding agent running in
+# the Codex CLI"``, whose first token after ``"You are"`` is the filler ``"a"``.
 _PHRASE_CLIENT_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(
-            rf"(?<![{_NAME_CHARS}])running\s+in\s+(?:the\s+)?codex[\s_-]+cli(?![{_NAME_CHARS}])",
+            r"^\s*you\s+are\s+a\s+coding\s+agent\s+running\s+in\s+"
+            rf"(?:the\s+)?codex[\s_-]+cli(?![{_NAME_CHARS}])",
             re.IGNORECASE,
         ),
         "codex",
@@ -275,13 +276,14 @@ _PHRASE_CLIENT_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
 
 
 def _phrase_client_from_first_sentence(text: str) -> str | None:
-    """Return a client label when a known phrase marker is in the opening sentence.
+    """Return a client label when a known opener self-description starts the first sentence.
 
     A fallback for clients whose opener does not declare a name (see
-    ``_PHRASE_CLIENT_MARKERS``). Matching is scoped to the first sentence so a
-    marker buried in pasted content or later prose does not mislabel the client,
-    and is consulted only after the ``"You are <Name>"`` opener yields no usable
-    name, so a genuinely declared identity still wins.
+    ``_PHRASE_CLIENT_MARKERS``). Each marker is anchored to the start of the
+    opening sentence, so only the client's own opener matches — an incidental
+    mention of the tool later in the sentence (or in pasted content) does not.
+    Consulted only after the ``"You are <Name>"`` opener yields no usable name,
+    so a genuinely declared identity still wins.
     """
     sentence = _first_sentence(text)
     for pattern, name in _PHRASE_CLIENT_MARKERS:

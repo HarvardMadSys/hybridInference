@@ -118,13 +118,23 @@ def test_codex_phrase_only_matched_in_first_sentence() -> None:
     assert agent_name_from_prompt(prompt) is None
 
 
-def test_codex_marker_requires_self_description_phrase() -> None:
-    # A prompt that merely mentions the product name rather than the agent's own
-    # "running in the Codex CLI" self-description must not be labeled codex, so
-    # the User-Agent fallback is preserved for other clients (the admin UI
-    # prefers ``agent`` over ``User-Agent``).
-    prompt = [{"role": "system", "content": "You are a helpful assistant for Codex CLI users."}]
-    assert agent_name_from_prompt(prompt) is None
+@pytest.mark.parametrize(
+    "content",
+    [
+        # A bare product mention, not the agent's own opener self-description.
+        "You are a helpful assistant for Codex CLI users.",
+        # The marker is anchored to the opener, so a mid-sentence instruction
+        # that references the tool must not match even when the agent describes
+        # its behaviour "running in the Codex CLI".
+        "When running in the Codex CLI, keep outputs concise.",
+        "You are a helpful assistant for users running in the Codex CLI.",
+    ],
+)
+def test_codex_marker_requires_opener_self_description(content: str) -> None:
+    # Only Codex's own opener ("You are a coding agent running in the Codex CLI")
+    # should be labeled codex, so the User-Agent fallback is preserved for other
+    # clients (the admin UI prefers ``agent`` over ``User-Agent``).
+    assert agent_name_from_prompt([{"role": "system", "content": content}]) is None
 
 
 def test_codex_marker_requires_word_boundary() -> None:
