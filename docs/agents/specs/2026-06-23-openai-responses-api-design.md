@@ -108,6 +108,7 @@ special-casing (unlike the Anthropic surface, which needed its own envelope).
 - Background mode (`background: true`), `response.output_text.annotation.*`, reasoning summary items.
 - `GET /v1/responses/{id}/input_items` listing endpoint.
 - A separate `surface: "responses"` tag in `api_logs` (the delegated request is logged as a chat request).
+- `truncation: "auto"` context-window trimming — the request value is echoed but not honored (full auto-truncation needs token accounting + per-model context budgets). An over-long chained conversation surfaces the provider's context-length error rather than being silently truncated.
 
 ## 9. Testing
 

@@ -425,6 +425,19 @@ def test_stream_length_finish_emits_incomplete_terminal():
     assert t.final_response["incomplete_details"] == {"reason": "max_output_tokens"}
 
 
+def test_stream_tool_before_text_orders_final_output_by_index():
+    # Tool-call delta arrives before any text: function_call takes output_index
+    # 0, the later message takes 1 — the final output must match that order.
+    chunks = [
+        'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c",'
+        '"type":"function","function":{"name":"f","arguments":"{}"}}]}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+    ]
+    t, _ = _collect(chunks)
+    assert [o["type"] for o in t.final_response["output"]] == ["function_call", "message"]
+
+
 def test_stream_error_emits_failed():
     t, joined = _collect(['data: {"error":{"message":"boom","code":500}}\n\n'])
     assert "event: response.failed" in joined

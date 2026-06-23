@@ -812,11 +812,14 @@ class ResponsesStreamTranslator:
             yield self._emit("error", dict(err))
             return
 
-        # Finalize function-call items.
-        output: list[dict[str, Any]] = []
+        # Finalize items. Collect each with its streamed ``output_index`` so the
+        # terminal ``output`` array can be ordered to match the live events
+        # (a tool call may precede text, taking index 0).
+        indexed_output: list[tuple[int, dict[str, Any]]] = []
         text_item = self._build_text_item()
         if text_item is not None:
-            output.append(text_item)
+            text_oi = self._text_output_index if self._text_output_index is not None else 0
+            indexed_output.append((text_oi, text_item))
         tool_calls_for_msg: list[dict[str, Any]] = []
         for idx in self._tool_order:
             st = self._tool_calls[idx]
@@ -840,7 +843,7 @@ class ResponsesStreamTranslator:
                 "response.output_item.done",
                 {"output_index": st["output_index"], "item": item},
             )
-            output.append(item)
+            indexed_output.append((st["output_index"], item))
             tool_calls_for_msg.append(
                 {
                     "id": st["call_id"],
@@ -848,6 +851,8 @@ class ResponsesStreamTranslator:
                     "function": {"name": st["name"], "arguments": st["arguments"]},
                 }
             )
+
+        output = [item for _, item in sorted(indexed_output, key=lambda pair: pair[0])]
 
         status, incomplete = _map_status(self._finish_reason)
         final = self._skeleton(status)
