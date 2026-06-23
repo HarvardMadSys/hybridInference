@@ -466,11 +466,15 @@ export async function listRecentRequests(
   userId?: string,
   modelId?: string,
   errorsOnly = false,
+  requestType?: 'chat' | 'embedding',
+  days?: number,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
   if (modelId) params.set('model_id', modelId);
   if (errorsOnly) params.set('errors_only', 'true');
+  if (requestType) params.set('request_type', requestType);
+  if (days != null) params.set('days', String(days));
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
@@ -677,6 +681,7 @@ export interface ExportRequestsParams {
   userId?: string;
   modelId?: string;
   errorsOnly?: boolean;
+  requestType?: 'chat' | 'embedding';
   includeContent?: boolean;
 }
 
@@ -688,6 +693,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   if (params.userId) qs.set('user_id', params.userId);
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.errorsOnly) qs.set('errors_only', 'true');
+  if (params.requestType) qs.set('request_type', params.requestType);
   if (params.includeContent) qs.set('include_content', 'true');
 
   const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
