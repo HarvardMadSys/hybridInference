@@ -1,19 +1,70 @@
-"""Multi-key API rotation with per-user session affinity.
+"""Multi-key API rotation with sequential (use-one-until-it-errors) selection.
 
 Each adapter that opts into multi-key holds a KeyPool. The pool exposes
 ``acquire(affinity_key)`` and ``release(lease, outcome)``. State is
 in-process, behind a single ``threading.Lock``.
 
-See docs/agents/specs/2026-04-30-multi-key-rotation-design.md
+Selection is **sequential**: the pool always hands out the earliest usable
+key and only advances to a later key once an earlier one is muted. A key is
+muted for ``MUTE_SECONDS`` (5 minutes) on upstream failures that are
+key-specific or transient — rate limit/quota (429), auth/permission
+(401/402/403), request-timeout / too-early (408/425), any 5xx, and non-HTTP
+failures such as timeouts and connection errors. Request-scoped client errors
+(other 4xx like 400/404/422) do *not* mute: they fail identically on every
+key, so muting would take the whole pool down. The net effect is "use one key
+until it runs out of quota or errors, then move to the next".
+
+See docs/agents/specs/archive/2026-04-30-multi-key-rotation-design.md for the
+original (least-loaded) design this supersedes.
 """
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
+
+# 4xx statuses that are key-specific (not request-scoped) and so should mute the
+# key and trigger rotation: auth/permission, payment, request-timeout/too-early,
+# and rate limit/quota. All other 4xx are treated as request-scoped.
+_MUTABLE_4XX = frozenset({401, 402, 403, 408, 425, 429})
+
+# The subset of mutable statuses where the *key itself* is the problem — quota
+# exhausted (429) or auth/payment rejected (401/402/403). These mute the key
+# even when it is the only usable one, since retrying the same key cannot
+# succeed. Every other mutable status (408/425, 5xx, network sentinel 0) is
+# transient / provider-side: muting the sole remaining key on a blip would take
+# the route offline for no reason, so the last usable key is kept for those.
+_KEY_SPECIFIC_STATUSES = frozenset({401, 402, 403, 429})
+
+
+def should_mute_status(status_code: int) -> bool:
+    """Whether an upstream outcome should mute the key and trigger rotation.
+
+    Mutes on failures that are key-specific or transient: rate limit/quota
+    (429), auth/permission (401/402/403), request-timeout / too-early
+    (408/425), any 5xx, and non-HTTP failures (``status_code == 0`` for
+    timeouts / connection errors). A 2xx response and request-scoped client
+    errors (other 4xx such as 400/404/422) do not mute — a bad request fails
+    identically on every key, so muting it would disable the whole pool.
+    """
+    if 200 <= status_code < 300:
+        return False
+    if status_code == 0:
+        return True
+    if status_code in _MUTABLE_4XX:
+        return True
+    return 500 <= status_code <= 599
+
+
+def is_key_specific_status(status_code: int) -> bool:
+    """Whether the status means the key itself is unusable (quota/auth/payment).
+
+    Key-specific failures mute the key even when it is the only one left.
+    Transient / provider-side failures (408/425, 5xx, network) instead keep the
+    last usable key alive so a single blip cannot take a sole-key route offline.
+    """
+    return status_code in _KEY_SPECIFIC_STATUSES
 
 
 class KeyPoolExhausted(Exception):
@@ -43,11 +94,10 @@ class Lease:
 
 
 class KeyPool:
-    """Rotates API keys with per-user TTL affinity and 429 cooldowns."""
+    """Hands out API keys sequentially, muting a key for 5 minutes on a key error."""
 
     AFFINITY_TTL_SECONDS: float = 300.0  # 5 minutes
-    DEFAULT_COOLDOWN_SECONDS: float = 120.0  # 2 minutes for 429 w/o Retry-After
-    MAX_COOLDOWN_SECONDS: float = 3600.0  # 1 hour cap on Retry-After
+    MUTE_SECONDS: float = 300.0  # 5 minutes — key-specific/transient errors mute the key
     SWEEP_THRESHOLD: int = 1000
 
     def __init__(self, keys: list[str], provider_label: str) -> None:
@@ -126,11 +176,10 @@ class KeyPool:
                 # Drop stale or unusable affinity; we'll re-pick below.
                 del self._affinity[affinity_key]
 
-            idx = self._pick_least_loaded_locked(now)
+            idx = self._pick_first_available_locked(now)
             if idx is None:
                 raise KeyPoolExhausted(
-                    f"All {len(self._keys)} keys for provider "
-                    f"{self._provider_label!r} are in cooldown"
+                    f"All {len(self._keys)} keys for provider {self._provider_label!r} are muted"
                 )
 
             self._affinity[affinity_key] = _Affinity(
@@ -140,19 +189,21 @@ class KeyPool:
             self._keys[idx].request_count += 1
             return self._keys[idx].key, Lease(idx, affinity_key)
 
-    def _pick_least_loaded_locked(self, now: float) -> int | None:
-        """Return the index of the lowest-request_count non-cooled key, or None."""
-        best_idx: int | None = None
-        best_count: int | None = None
+    def _pick_first_available_locked(self, now: float) -> int | None:
+        """Return the index of the lowest-index key that is usable, or None.
+
+        Sequential selection: traffic concentrates on the earliest key that is
+        neither removed nor muted, and only advances to a later key once the
+        earlier ones are muted. ``request_count`` is no longer a selection
+        signal — it is retained purely for telemetry.
+        """
         for i, state in enumerate(self._keys):
             if state.removed:
                 continue
             if state.cooldown_until > now:
                 continue
-            if best_count is None or state.request_count < best_count:
-                best_idx = i
-                best_count = state.request_count
-        return best_idx
+            return i
+        return None
 
     def _maybe_sweep_locked(self, now: float) -> None:
         """Drop expired affinity entries when the dict grows past threshold."""
@@ -162,50 +213,48 @@ class KeyPool:
         for k in expired:
             del self._affinity[k]
 
-    def release(
-        self,
-        lease: Lease,
-        *,
-        status_code: int,
-        retry_after: str | None,
-    ) -> None:
-        """Report the request outcome so cooldowns can be updated.
+    def release(self, lease: Lease, *, status_code: int) -> bool:
+        """Report the request outcome; return True iff the key was muted.
+
+        Mutes the leased key for ``MUTE_SECONDS`` (5 minutes) when
+        ``should_mute_status(status_code)`` is true — i.e. for key-specific or
+        transient failures (429, 401/402/403, 408/425, 5xx, and non-HTTP
+        failures signalled by ``status_code == 0``). A 2xx response and
+        request-scoped client errors (other 4xx) leave the key usable.
+
+        Guard: a transient / provider-side failure never mutes the *last*
+        usable key, so a single upstream blip cannot take a sole-key route
+        offline (subsequent requests would otherwise hit KeyPoolExhausted
+        without even attempting the provider). Key-specific failures
+        (quota/auth/payment) always mute, since retrying that key cannot help.
 
         Args:
             lease: the lease returned by ``acquire``.
-            status_code: HTTP status code (or 0 for non-HTTP failures, which
-                cause no cooldown change).
-            retry_after: raw ``Retry-After`` header value if any.
+            status_code: HTTP status code, or 0 for non-HTTP failures
+                (timeouts / network errors).
+
+        Returns:
+            True if the key was muted (caller should rotate to another key),
+            False otherwise (caller should propagate the error).
         """
-        if status_code != 429:
-            # Only 429 triggers cooldown. 2xx, other 4xx, 5xx, and network
-            # errors do not flag the key.
-            return
+        if not should_mute_status(status_code):
+            return False
         with self._lock:
             now = time.monotonic()
-            cooldown = self._compute_cooldown_seconds(retry_after)
-            self._keys[lease.key_index].cooldown_until = now + cooldown
+            if not is_key_specific_status(status_code) and not self._has_other_usable_key_locked(
+                lease.key_index, now
+            ):
+                # Transient error on the only usable key — keep it in service.
+                return False
+            self._keys[lease.key_index].cooldown_until = now + self.MUTE_SECONDS
+            return True
 
-    def _compute_cooldown_seconds(self, retry_after: str | None) -> float:
-        """Parse Retry-After per RFC 7231; clamp to [0, MAX_COOLDOWN_SECONDS]."""
-        if retry_after is None:
-            return self.DEFAULT_COOLDOWN_SECONDS
-
-        # Try integer seconds first
-        seconds: float | None
-        try:
-            seconds = float(retry_after.strip())
-        except (TypeError, ValueError, AttributeError):
-            seconds = None
-
-        # Fall back to HTTP-date
-        if seconds is None:
-            try:
-                dt = parsedate_to_datetime(retry_after)
-                seconds = dt.timestamp() - time.time()
-            except (TypeError, ValueError, IndexError):
-                return self.DEFAULT_COOLDOWN_SECONDS
-
-        if seconds is None or not math.isfinite(seconds) or seconds < 0:
-            return self.DEFAULT_COOLDOWN_SECONDS
-        return min(seconds, self.MAX_COOLDOWN_SECONDS)
+    def _has_other_usable_key_locked(self, exclude_idx: int, now: float) -> bool:
+        """Whether any key other than ``exclude_idx`` is active and not muted."""
+        for i, state in enumerate(self._keys):
+            if i == exclude_idx or state.removed:
+                continue
+            if state.cooldown_until > now:
+                continue
+            return True
+        return False

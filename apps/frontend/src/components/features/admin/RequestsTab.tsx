@@ -31,7 +31,7 @@ function relTime(s: string | null): string {
   return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-function parseClientTool(ua: string | null | undefined): string | null {
+export function parseClientTool(ua: string | null | undefined): string | null {
   if (!ua) return null;
   const s = ua.trim();
   if (!s) return null;
@@ -45,7 +45,13 @@ function parseClientTool(ua: string | null | undefined): string | null {
     [/continue\//i, 'continue'],
     [/codex[-_ ]?cli\//i, 'codex'],
     [/openai[-_ ]?python\/|openai\/python/i, 'openai-python'],
-    [/openai[-_ ]?node\/|openai\/javascript/i, 'openai-node'],
+    // The official OpenAI Node SDK sends `User-Agent: OpenAI/JS x.y.z` — match
+    // that real-world form (`OpenAI/JS`) as well as the explicit `openai-node`/
+    // `openai/javascript` shapes. Without the `OpenAI/JS` branch, SDK-based
+    // agents that don't override the User-Agent (e.g. the Pi coding agent, which
+    // wraps the OpenAI Node SDK) miss every rule and fall through to the generic
+    // catch-all below, which mislabels them as the bare `openai`.
+    [/openai[-_ ]?node\/|openai\/(?:javascript|js)\b/i, 'openai-node'],
     [/anthropic[-_ ]?python\//i, 'anthropic-python'],
     [/anthropic[-_ ]?(sdk|ts|js)\//i, 'anthropic-sdk'],
     [/postmanruntime\//i, 'postman'],
@@ -673,7 +679,9 @@ export function RequestsTab() {
                         </td>
                         <td className="px-3 py-2.5 text-[12px] text-gray-600">
                           {(() => {
-                            const tool = parseClientTool(req.user_agent);
+                            // Prefer the agent's self-declared identity from the
+                            // system prompt; fall back to User-Agent parsing.
+                            const tool = req.agent || parseClientTool(req.user_agent);
                             if (tool) {
                               return (
                                 <span

@@ -131,7 +131,7 @@ class Settings(BaseSettings):
     failed_request_alert_window_minutes: int = Field(default=5, ge=1)
     failed_request_alert_cooldown_minutes: int = Field(default=5, ge=0)
 
-    # Alerting framework (replaces Prometheus)
+    # Alerting framework
     alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")
     slack_alerts_webhook_url: str = Field(default="", alias="SLACK_ALERTS_WEBHOOK_URL")
     alerts_config_path: str = Field(default="config/alerts.yaml", alias="ALERTS_CONFIG_PATH")

@@ -1,5 +1,7 @@
-import { redirect } from 'next/navigation';
+'use client';
 
-export default function UpdatesAdminPage() {
-  redirect('/dashboard/admin/settings?tab=updates');
+import { SiteUpdatesTab } from '@/components/features/admin/SiteUpdatesTab';
+
+export default function Page() {
+  return <SiteUpdatesTab />;
 }

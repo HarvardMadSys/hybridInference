@@ -87,13 +87,13 @@ Centralized configuration management:
 Deployment and observability:
 
 - Docker Compose service definitions and Dockerfiles
-- Alertmanager and alert logger
+- In-process Slack alert engine (`config/alerts.yaml`)
 
 ## Key Design Principles
 
 1. **Modularity**: Clear separation between serving, routing, and provider layers
 2. **Extensibility**: Easy to add new providers and routing strategies
-3. **Observability**: Comprehensive logging and metrics at every layer
+3. **Observability**: Comprehensive structured logging at every layer
 4. **Performance**: Optimized for low-latency, high-throughput inference
 5. **Reliability**: Health checks, retries, and fallback mechanisms
 

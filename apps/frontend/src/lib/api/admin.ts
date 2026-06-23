@@ -391,6 +391,10 @@ export interface AdminRecentRequestItem {
   ip_source?: string | null;
   x_forwarded_for?: string | null;
   user_agent?: string | null;
+  // Calling agent's self-declared name, parsed backend-side from the system
+  // prompt's "You are <Name>" opener. Preferred over user_agent for the client
+  // column when present.
+  agent?: string | null;
   session_id?: string | null;
   request_surface?: string | null;
   model_id: string;
@@ -509,6 +513,10 @@ export interface AnalyticsBreakdownEntry {
 export interface AdminAnalyticsResponse {
   period: AnalyticsPeriod;
   active_users: number;
+  // Mean conversation depth per chat request; null when the period has no
+  // chat-style requests.
+  avg_turns: number | null;
+  avg_user_turns: number | null;
   sparkline: SparklineBucket[];
   top_users: AnalyticsUserEntry[];
   by_model: AnalyticsBreakdownEntry[];
@@ -1120,6 +1128,273 @@ export async function updateRoutewiseSetting(
 }
 
 // ========================================
+// Provider Routes (admin-managed runtime route targets)
+// ========================================
+
+export type ProviderRouteKeySource = 'default' | 'db' | 'env' | 'missing';
+export type ProviderRouteSource = 'yaml' | 'override' | 'runtime';
+
+export interface ProviderRouteApiKeyRef {
+  id: string | null;
+  provider: string;
+  label: string | null;
+  key_prefix: string | null;
+  source: ProviderRouteKeySource;
+}
+
+export interface ProviderRouteOption {
+  provider: string;
+  label: string;
+  kind: string;
+  key_provider: string;
+  default_base_url: string;
+}
+
+export interface OpenRouterProviderOption {
+  provider: string;
+  label: string;
+}
+
+export type OpenRouterSortPolicy = 'price' | 'throughput' | 'latency';
+
+export interface ProviderRoute {
+  model_id: string;
+  strategy: string;
+  route_id: string;
+  route_type: string;
+  provider: string;
+  upstream_provider: string;
+  openrouter_provider?: string | null;
+  openrouter_sort?: OpenRouterSortPolicy | null;
+  key_provider: string;
+  base_url: string;
+  api_key_id: string | null;
+  api_key: ProviderRouteApiKeyRef;
+  provider_model_id: string | null;
+  quota_limit: number | null;
+  endpoint_id: string;
+  yaml_weight: number;
+  effective_weight: number;
+  source: ProviderRouteSource;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export interface ListProviderRoutesResponse {
+  model_id?: string;
+  strategy?: string;
+  provider_options: ProviderRouteOption[];
+  openrouter_provider_options?: OpenRouterProviderOption[];
+  routes: ProviderRoute[];
+}
+
+export interface ListOpenRouterProviderOptionsResponse {
+  provider_model_id: string;
+  providers: OpenRouterProviderOption[];
+}
+
+export interface UpdateProviderRoutePayload {
+  upstream_provider: string;
+  openrouter_provider?: string | null;
+  openrouter_sort?: OpenRouterSortPolicy | null;
+  base_url: string;
+  api_key_id?: string | null;
+  provider_model_id?: string | null;
+  quota_limit?: number | null;
+}
+
+export type ProviderRouteStrategy = 'fixed' | 'routewise';
+export type ProviderRouteType = 'quota' | 'concurrency' | 'on_demand';
+
+export interface CreateProviderRoutePayload {
+  route_type: ProviderRouteType;
+  upstream_provider: string;
+  openrouter_provider?: string | null;
+  openrouter_sort?: OpenRouterSortPolicy | null;
+  base_url: string;
+  api_key_id?: string | null;
+  provider_model_id: string;
+  quota_limit?: number | null;
+  concurrency_limit?: number | null;
+  weight: number;
+}
+
+export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
+  model_id: string;
+  strategy: ProviderRouteStrategy;
+  required_role?: Role;
+  pricing: Record<string, string>;
+}
+
+export interface VerifyProviderRouteResponse {
+  ok: boolean;
+}
+
+export async function listProviderRoutes(modelId?: string): Promise<ListProviderRoutesResponse> {
+  const path = modelId
+    ? `/admin/routing/provider-routes/${encodeURIComponent(modelId)}`
+    : '/admin/routing/provider-routes';
+  const resp = await fetchWithAuth(API_BASE, path);
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+export async function listOpenRouterProviderOptions(
+  providerModelId: string,
+): Promise<ListOpenRouterProviderOptionsResponse> {
+  const params = new URLSearchParams({ provider_model_id: providerModelId });
+  const resp = await fetchWithAuth(API_BASE, `/admin/routing/openrouter-providers?${params}`);
+  return jsonOrThrow<ListOpenRouterProviderOptionsResponse>(resp);
+}
+
+export async function updateProviderRouteStrategy(
+  modelId: string,
+  strategy: ProviderRouteStrategy,
+): Promise<ListProviderRoutesResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-strategies/${encodeURIComponent(modelId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy }),
+    },
+  );
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+export async function createProviderRouteModel(
+  payload: CreateProviderRouteModelPayload,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routing/provider-route-models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function verifyProviderRouteModel(
+  payload: CreateProviderRouteModelPayload,
+): Promise<VerifyProviderRouteResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/routing/provider-route-model-verifications', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow<VerifyProviderRouteResponse>(resp);
+}
+
+export async function updateProviderRoute(
+  modelId: string,
+  routeId: string,
+  payload: UpdateProviderRoutePayload,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-routes/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream_provider: payload.upstream_provider,
+        openrouter_provider: payload.openrouter_provider ?? null,
+        openrouter_sort: payload.openrouter_sort ?? null,
+        base_url: payload.base_url,
+        api_key_id: payload.api_key_id ?? null,
+        provider_model_id: payload.provider_model_id ?? null,
+        quota_limit: payload.quota_limit ?? null,
+      }),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function verifyProviderRoute(
+  modelId: string,
+  routeId: string,
+  payload: UpdateProviderRoutePayload,
+): Promise<VerifyProviderRouteResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-verifications/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upstream_provider: payload.upstream_provider,
+        openrouter_provider: payload.openrouter_provider ?? null,
+        openrouter_sort: payload.openrouter_sort ?? null,
+        base_url: payload.base_url,
+        api_key_id: payload.api_key_id ?? null,
+        provider_model_id: payload.provider_model_id ?? null,
+        quota_limit: payload.quota_limit ?? null,
+      }),
+    },
+  );
+  return jsonOrThrow<VerifyProviderRouteResponse>(resp);
+}
+
+export async function createProviderRouteCandidate(
+  modelId: string,
+  payload: CreateProviderRoutePayload,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-candidates/${encodeURIComponent(modelId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function verifyProviderRouteCandidate(
+  modelId: string,
+  payload: CreateProviderRoutePayload,
+): Promise<VerifyProviderRouteResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-candidate-verifications/${encodeURIComponent(modelId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<VerifyProviderRouteResponse>(resp);
+}
+
+export async function deleteProviderRoute(
+  modelId: string,
+  routeId: string,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-routes/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function deleteProviderRouteCandidate(
+  modelId: string,
+  routeId: string,
+): Promise<ListProviderRoutesResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-candidates/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+  return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+// ========================================
 // Provider API Keys (admin-managed runtime credentials)
 // ========================================
 
@@ -1140,6 +1415,10 @@ export interface ListProviderApiKeysResponse {
   keys: ProviderApiKeyItem[];
 }
 
+export interface ListProviderApiKeyProvidersResponse {
+  providers: string[];
+}
+
 export interface AddProviderApiKeyResponse {
   key: ProviderApiKeyItem;
   pools_updated: number;
@@ -1157,6 +1436,23 @@ export interface DisableProviderEnvKeyResponse {
   pools_updated: number;
 }
 
+export interface EnableProviderEnvKeyResponse {
+  id: string;
+  provider: string;
+  pools_updated: number;
+}
+
+export interface SetProviderApiKeyStatusResponse {
+  id: string;
+  provider: string;
+  status: 'active' | 'disabled';
+  pools_updated: number;
+}
+
+export interface VerifyProviderApiKeyResponse {
+  ok: boolean;
+}
+
 export async function listProviderKeys(provider?: string): Promise<ListProviderApiKeysResponse> {
   const params = new URLSearchParams();
   if (provider) params.set('provider', provider);
@@ -1164,6 +1460,11 @@ export async function listProviderKeys(provider?: string): Promise<ListProviderA
   const path = qs ? `/admin/provider-keys?${qs}` : '/admin/provider-keys';
   const resp = await fetchWithAuth(API_BASE, path);
   return jsonOrThrow<ListProviderApiKeysResponse>(resp);
+}
+
+export async function listProviderKeyProviders(): Promise<ListProviderApiKeyProvidersResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/providers');
+  return jsonOrThrow<ListProviderApiKeyProvidersResponse>(resp);
 }
 
 export async function addProviderKey(
@@ -1183,6 +1484,18 @@ export async function addProviderKey(
   return jsonOrThrow<AddProviderApiKeyResponse>(resp);
 }
 
+export async function verifyProviderKey(
+  provider: string,
+  apiKey: string,
+): Promise<VerifyProviderApiKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  });
+  return jsonOrThrow<VerifyProviderApiKeyResponse>(resp);
+}
+
 export async function deleteProviderKey(id: string): Promise<DeleteProviderApiKeyResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/provider-keys/${encodeURIComponent(id)}`, {
     method: 'DELETE',
@@ -1200,6 +1513,31 @@ export async function disableProviderEnvKey(
     body: JSON.stringify({ provider, env_key_id: envKeyId }),
   });
   return jsonOrThrow<DisableProviderEnvKeyResponse>(resp);
+}
+
+export async function enableProviderEnvKey(
+  provider: string,
+  envKeyId: string,
+): Promise<EnableProviderEnvKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/enable-env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, env_key_id: envKeyId }),
+  });
+  return jsonOrThrow<EnableProviderEnvKeyResponse>(resp);
+}
+
+export async function setProviderKeyStatus(
+  id: string,
+  enabled: boolean,
+): Promise<SetProviderApiKeyStatusResponse> {
+  const action = enabled ? 'enable' : 'disable';
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/provider-keys/${encodeURIComponent(id)}/${action}`,
+    { method: 'POST' },
+  );
+  return jsonOrThrow<SetProviderApiKeyStatusResponse>(resp);
 }
 
 // ========================================

@@ -13,12 +13,6 @@ from fastapi import Depends, Header, HTTPException, Request
 
 from serving.config.settings import get_settings
 from serving.model_access import get_disabled_models_from_preferences
-from serving.observability.metrics import (
-    API_MODEL_REQUESTS,
-    DATABASE_CONNECTED,
-    normalize_model_label,
-    normalize_provider_label,
-)
 from serving.observability.rejection_log import log_rejection
 from serving.servers.deps import get_db_logger, get_log_store, get_operational_store
 from serving.utils.logging import get_logger
@@ -116,11 +110,6 @@ async def verify_api_key(
 
     if not api_key:
         ip_info = get_client_ip_info(request)
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label("unknown"),
-            provider=normalize_provider_label("system"),
-            status_code="401",
-        ).inc()
         logger.warning(
             "auth_failure",
             extra={
@@ -148,35 +137,14 @@ async def verify_api_key(
 
     # Validate key against database
     if not op_store:
-        DATABASE_CONNECTED.set(0)
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label("unknown"),
-            provider=normalize_provider_label("system"),
-            status_code="500",
-        ).inc()
         raise HTTPException(status_code=500, detail="Database not available for authentication")
 
     key_hash = hash_api_key(api_key)
 
-    try:
-        user = await op_store.get_auth_context_by_key_hash(key_hash)
-        DATABASE_CONNECTED.set(1)
-    except Exception:
-        DATABASE_CONNECTED.set(0)
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label("unknown"),
-            provider=normalize_provider_label("system"),
-            status_code="500",
-        ).inc()
-        raise
+    user = await op_store.get_auth_context_by_key_hash(key_hash)
 
     if not user:
         ip_info = get_client_ip_info(request)
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label("unknown"),
-            provider=normalize_provider_label("system"),
-            status_code="401",
-        ).inc()
         logger.warning(
             "auth_failure",
             extra={
@@ -214,11 +182,6 @@ async def verify_api_key(
             f"falling back to env: {exc}"
         )
     if require_verification and user.get("email") and not user.get("email_verified"):
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label("unknown"),
-            provider=normalize_provider_label("system"),
-            status_code="403",
-        ).inc()
         raise HTTPException(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",
@@ -240,11 +203,6 @@ async def verify_api_key(
     if cost_spent + estimated_cost > quota_daily_cost_usd:
         seconds_until_midnight_utc = _seconds_until_utc_midnight()
         quota_reset_at = _next_utc_midnight()
-        API_MODEL_REQUESTS.labels(
-            model=normalize_model_label("unknown"),
-            provider=normalize_provider_label("system"),
-            status_code="429",
-        ).inc()
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
             log_rejection(
                 request=request,
