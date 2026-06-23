@@ -543,6 +543,7 @@ async def initialize() -> AppServices:
     # Build store abstractions
     operational_store = None
     log_store = None
+    responses_store = None
 
     if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
@@ -552,8 +553,13 @@ async def initialize() -> AppServices:
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
         )
+        from serving.storage.responses_store import ResponseStore
+
+        responses_store = ResponseStore(db_logger.pool)
+        await responses_store.initialize()
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
+        logger.info("Responses store initialized (Postgres)")
 
     # Wire the operational store into the global Slack-alert snooze so admins
     # can pause alerting from the dashboard. Safe with a None store (no-op).
@@ -828,6 +834,7 @@ async def initialize() -> AppServices:
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        responses_store=responses_store,
         weight_override_refresh_task=weight_override_refresh_task,
     )
 
