@@ -417,6 +417,7 @@ The `kind` field in each route entry selects the backend adapter. All kinds mark
 | Kind | Category | Notes |
 |------|----------|-------|
 | `openai_compat` | OpenAI-compat | Generic OpenAI-compatible endpoint; use when no specific kind fits |
+| `staging` | OpenAI-compat | Alias of `openai_compat` with identical behavior; use to track a staging upstream under its own `provider` label / `endpoint_id` cohort |
 | `vllm` | OpenAI-compat | Local vLLM inference server |
 | `sglang` | OpenAI-compat | Local SGLang inference server |
 | `ollama` | OpenAI-compat | Local or remote Ollama server |

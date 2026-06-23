@@ -150,7 +150,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     Args:
         kind: Adapter kind (``"vllm"``, ``"sglang"``, ``"claude"``, ``"deepseek"``, ``"gemini"``, ``"zai"``,
               ``"kimi"``, ``"kimi_coding"``, ``"minimax"``, ``"chutes"``, ``"featherless"``, ``"ollama"``,
-              ``"cliproxy"``, ``"openai_compat"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
+              ``"cliproxy"``, ``"openai_compat"``, ``"staging"``, ``"openrouter"``, ``"openrouter[<slug>]"``).
         cfg: ``ModelConfig`` keyword arguments.
 
     Returns:
@@ -198,7 +198,10 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
     if kind in ("kimi_coding", "zai"):
         return CodingIdentityAdapter(model_cfg)
 
-    # All OpenAI-compatible services use the same adapter
+    # All OpenAI-compatible services use the same adapter. ``staging`` is a plain
+    # alias of ``openai_compat`` (identical behavior, no provider profile); it
+    # exists only so a staging upstream can carry its own ``provider`` label and
+    # ``endpoint_id`` cohort (see _make_provider_id) for separate tracking.
     if kind in (
         "vllm",
         "sglang",
@@ -207,6 +210,7 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         "ollama",
         "cliproxy",
         "openai_compat",
+        "staging",
         "deepseek",
         "kimi",
         "minimax",

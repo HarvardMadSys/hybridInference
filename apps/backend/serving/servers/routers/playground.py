@@ -46,6 +46,7 @@ _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "ollama": "Ollama",
     "zai": "ZAI",
     "openai_compat": "OpenAI Compatible",
+    "staging": "Staging",
     "sglang": "SGLang",
     "deepseek": "DeepSeek",
     "minimax": "Minimax",
