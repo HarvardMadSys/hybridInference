@@ -19,16 +19,20 @@ import { getErrorMessage } from '@/lib/utils/errors';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { validateSignupDomainInput } from './signupDomainValidation';
+import { SiteUpdatesTab } from '@/components/features/admin/SiteUpdatesTab';
+
 import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
 import { RoutewiseTab } from './RoutewiseTab';
 import { RoutingTab } from './RoutingTab';
 
-export type SettingsSubtab = 'general' | 'routing' | 'routewise';
+export type SettingsSubtab = 'general' | 'updates' | 'routing' | 'routewise';
 
 const GENERAL_TAB_ID = 'admin-settings-general-tab';
 const GENERAL_PANEL_ID = 'admin-settings-general-panel';
+const UPDATES_TAB_ID = 'admin-settings-updates-tab';
+const UPDATES_PANEL_ID = 'admin-settings-updates-panel';
 const ROUTING_TAB_ID = 'admin-settings-routing-tab';
 const ROUTING_PANEL_ID = 'admin-settings-routing-panel';
 const ROUTEWISE_TAB_ID = 'admin-settings-routewise-tab';
@@ -277,6 +281,21 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
         </button>
         <button
           type="button"
+          id={UPDATES_TAB_ID}
+          role="tab"
+          aria-selected={activeSubtab === 'updates'}
+          aria-controls={UPDATES_PANEL_ID}
+          onClick={() => onSelectSubtab('updates')}
+          className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition ${
+            activeSubtab === 'updates'
+              ? 'bg-gray-900 text-white'
+              : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'
+          }`}
+        >
+          Updates
+        </button>
+        <button
+          type="button"
           id={ROUTING_TAB_ID}
           role="tab"
           aria-selected={activeSubtab === 'routing'}
@@ -307,7 +326,11 @@ export function SettingsTab({ initialSubtab }: SettingsTabProps = {}) {
         </button>
       </div>
 
-      {activeSubtab === 'routing' ? (
+      {activeSubtab === 'updates' ? (
+        <div id={UPDATES_PANEL_ID} role="tabpanel" aria-labelledby={UPDATES_TAB_ID}>
+          <SiteUpdatesTab />
+        </div>
+      ) : activeSubtab === 'routing' ? (
         <div id={ROUTING_PANEL_ID} role="tabpanel" aria-labelledby={ROUTING_TAB_ID}>
           <RoutingTab />
         </div>

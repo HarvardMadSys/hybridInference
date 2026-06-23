@@ -23,4 +23,10 @@ describe('AdminTabNav', () => {
     );
     expect(screen.queryByRole('link', { name: 'Routing' })).not.toBeInTheDocument();
   });
+
+  it('keeps updates out of the top-level admin navigation', () => {
+    render(<AdminTabNav />);
+
+    expect(screen.queryByRole('link', { name: 'Updates' })).not.toBeInTheDocument();
+  });
 });
