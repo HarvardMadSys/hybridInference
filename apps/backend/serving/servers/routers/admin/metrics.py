@@ -576,6 +576,7 @@ async def admin_list_recent_requests(
     model_id: str | None = None,
     status_code: int | None = None,
     errors_only: bool = False,
+    request_type: str | None = None,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> AdminRecentRequestsResponse:
@@ -589,6 +590,8 @@ async def admin_list_recent_requests(
     - model_id: Filter by model ID
     - status_code: Filter by HTTP status code
     - errors_only: If true, only show requests with errors
+    - request_type: ``"embedding"`` to show only embedding requests, ``"chat"``
+      to exclude them; any other value (or omission) applies no type filter
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -631,6 +634,19 @@ async def admin_list_recent_requests(
             "(l.error IS NOT NULL OR l.status_code IS NULL "
             "OR l.status_code < 200 OR l.status_code >= 400)"
         )
+
+    # Optional request-type filter so admins can isolate embedding traffic
+    # (tagged ``metadata.request_type = "embedding"``) from chat/completions,
+    # which carry no such tag. Embedding rows are interleaved with much
+    # higher-volume chat traffic and ordered by time, so without this filter
+    # they are easily pushed past the first page — the reason they looked
+    # "missing" from the admin dashboard while still visible in a user's own
+    # (low-volume) Recent Requests view. Bound as a constant predicate (no new
+    # parameter) so the LIMIT/OFFSET placeholder indices stay correct.
+    if request_type == "embedding":
+        where_clauses.append("(l.metadata->>'request_type') = 'embedding'")
+    elif request_type == "chat":
+        where_clauses.append("(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'")
 
     where_sql = "WHERE " + " AND ".join(where_clauses)
 

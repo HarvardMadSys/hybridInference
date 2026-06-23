@@ -323,3 +323,33 @@ def test_export_applies_errors_only_filter():
     assert call_args is not None
     query = call_args[0][0]
     assert "l.error IS NOT NULL" in query
+
+
+def test_export_request_type_filters_and_is_audited():
+    """request_type adds the embedding predicate and is recorded in the audit log."""
+    from serving.servers.app import app
+    from serving.servers.deps import get_db_logger, verify_admin_access
+
+    row = _make_mock_row()
+    db = _make_mock_db([[row], []])
+    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_db_logger] = lambda: db
+    try:
+        client = TestClient(app)
+        resp = client.get(
+            "/admin/export/requests"
+            "?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
+            "&request_type=embedding",
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    # SQL predicate applied.
+    mock_conn = db.pool.acquire.return_value.__aenter__.return_value
+    query = mock_conn.fetch.call_args[0][0]
+    assert "(l.metadata->>'request_type') = 'embedding'" in query
+    # Audit-log details record the filter for compliance.
+    db.log_admin_action.assert_awaited_once()
+    details = db.log_admin_action.await_args.kwargs["details"]
+    assert details["request_type"] == "embedding"
