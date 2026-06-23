@@ -175,6 +175,18 @@ _EMOJI = {
 }
 
 
+def escape_slack_text(text: str) -> str:
+    """Escape Slack mrkdwn control characters in untrusted text.
+
+    Slack interprets ``<...>`` sequences specially (e.g. ``<!channel>`` pings a
+    channel, ``<@U…>`` mentions a user). Any caller-controlled value that is
+    interpolated into an alert must escape ``&``, ``<`` and ``>`` per Slack's
+    guidelines so it renders literally instead of injecting mentions or links.
+    ``&`` is escaped first to avoid double-encoding the others.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _format_message(severity: AlertSeverity, title: str, context: dict[str, Any]) -> str:
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     info = server_info()

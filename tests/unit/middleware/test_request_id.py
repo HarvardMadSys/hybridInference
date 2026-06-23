@@ -52,3 +52,16 @@ async def test_absent_user_agent_overwrites_previous() -> None:
     assert captured.get("client_user_agent") == "first/1.0"
     await _drive([], captured)
     assert captured.get("client_user_agent") is None
+
+
+@pytest.mark.asyncio
+async def test_identity_keys_reset_between_requests() -> None:
+    # A prior authenticated completion leaves user_id/user_name in the context.
+    # The middleware must clear them so a later route that doesn't authenticate
+    # (e.g. the admin playground) can't have a circuit-breaker alert
+    # misattributed to the earlier caller.
+    req_ctx.update({"user_id": "01PREVUSER", "user_name": "prev-user"})
+    captured: dict = {}
+    await _drive([], captured)
+    assert captured.get("user_id") is None
+    assert captured.get("user_name") is None
