@@ -53,6 +53,7 @@ function pct(fraction: number): string {
 }
 
 function fmtBucketTime(iso: string): string {
+  if (!iso) return '';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleString(undefined, {
@@ -106,6 +107,7 @@ function ActiveUsersCard({
             <XAxis dataKey="t" hide />
             <Tooltip
               cursor={{ fill: 'rgba(59,130,246,0.08)' }}
+              separator=""
               formatter={(value) => [`${fmtCount(value as number)} requests`, '']}
               labelFormatter={(label) => fmtBucketTime(label as string)}
               contentStyle={TOOLTIP_STYLE}
@@ -222,14 +224,17 @@ function DonutCard({
 }
 
 function TopUsersCard({ entries }: { entries: AdminAnalyticsResponse['top_users'] }) {
-  const chartData = entries.map((e) => ({
-    email: e.email.length > 32 ? `${e.email.slice(0, 30)}…` : e.email,
-    fullEmail: e.email,
-    requests: e.requests,
-    pct: parseFloat((e.fraction * 100).toFixed(1)),
-  }));
+  const chartData = entries.map((e) => {
+    const email = e.email || '';
+    return {
+      email: email.length > 32 ? `${email.slice(0, 30)}…` : email,
+      fullEmail: email,
+      requests: e.requests,
+      pct: parseFloat((e.fraction * 100).toFixed(1)),
+    };
+  });
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5">
+    <div className="rounded-xl border border-gray-200 bg-white p-5 sm:col-span-2">
       <CardTitle className="mb-4">Top Users by Requests</CardTitle>
       {entries.length === 0 ? (
         <p className="text-sm text-gray-400">No data</p>
