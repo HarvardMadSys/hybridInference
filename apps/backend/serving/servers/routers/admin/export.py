@@ -197,6 +197,7 @@ async def admin_export_requests(
                     "user_id": user_id,
                     "model_id": model_id,
                     "errors_only": errors_only,
+                    "request_type": request_type,
                 },
             )
 
