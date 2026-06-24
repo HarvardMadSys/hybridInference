@@ -104,6 +104,16 @@ class FallbackEmbeddingAdapter:
                         exc,
                     )
                 continue
+            # A non-raising response counts as served. Fallback is scoped to
+            # transport-level failures (connection errors, HTTP 5xx/4xx,
+            # timeouts) — i.e. "this backend is down". A backend that returns
+            # HTTP 200 with a malformed body (missing usage, NaN/inf vectors) is
+            # NOT treated as a route failure here: the endpoint validates the
+            # response after we return and surfaces a 500, rather than falling
+            # through to the next route. This keeps the hot path free of a second
+            # full EmbeddingResponse validation per request and avoids coupling
+            # this wrapper to the response schema; revisit if degraded-but-200
+            # backends become a real failure mode.
             _serving_config.set(getattr(adapter, "config", self.config))
             return response
         # The loop always runs at least once (non-empty adapters), so a failure
