@@ -24,7 +24,7 @@ remote_deployment:
   - endpoint: ${KIMI_CODING_BASE_URL}
     models:
       - kimi-k2.7-code
-  - endpoint: ${CHUTES_BASE_URL}
+  - endpoint:  http://research-data-opt-in-proxy.chutes.ai
     models:
       - moonshotai/Kimi-K2.6-TEE
       - zai-org/GLM-5-Turbo
