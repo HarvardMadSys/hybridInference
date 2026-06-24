@@ -10,7 +10,8 @@
 # units' WantedBy=multi-user.target bring everything back after a reboot.
 #
 # Usage (run on the GPU box, as root):
-#   sudo ./local_deployment_proxy/install.sh
+#   sudo ./local_deployment_proxy/install.sh              # install + start
+#   sudo ./local_deployment_proxy/install.sh --uninstall  # stop + remove proxy + tunnels
 #
 # The units are rendered from deploy/systemd/ with the __REPO_ROOT__ placeholder
 # replaced by this checkout's path, so the repo can live anywhere (not just
@@ -44,6 +45,23 @@ TUNNEL_UNIT="local_deployment_tunnel@.service"
 if [[ "$(id -u)" -ne 0 ]]; then
   echo "ERROR: must run as root (use sudo)." >&2
   exit 1
+fi
+
+# ── Uninstall ─────────────────────────────────────────────────────────────────
+if [[ "${1:-}" == "--uninstall" ]]; then
+  echo "Stopping and removing ${PROXY_UNIT} + all tunnel instances …"
+  systemctl disable --now "${PROXY_UNIT}" 2>/dev/null || true
+  # Disable every tunnel instance of the template (any host/user), then drop the
+  # unit files and any port/user drop-ins.
+  while read -r unit; do
+    [[ -n "$unit" ]] && systemctl disable --now "$unit" 2>/dev/null || true
+  done < <(systemctl list-units --all --plain --no-legend 'local_deployment_tunnel@*.service' 2>/dev/null | awk '{print $1}')
+  rm -f "${SYSTEMD_DST}/${PROXY_UNIT}" "${SYSTEMD_DST}/${TUNNEL_UNIT}"
+  rm -rf "${SYSTEMD_DST}"/local_deployment_tunnel@*.service.d
+  systemctl daemon-reload
+  systemctl reset-failed 2>/dev/null || true
+  echo "Done."
+  exit 0
 fi
 
 # ── autossh dependency ────────────────────────────────────────────────────────
