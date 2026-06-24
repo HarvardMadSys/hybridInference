@@ -12,11 +12,18 @@
 # Usage (run on the GPU box, as root):
 #   sudo ./local_deployment_proxy/install.sh
 #
-# Override the router hosts and tunnel ports before calling:
-#   sudo SSH_HOST='internal.freeinference.org|spark2' REMOTE_PORT=8001 \
+# The units are rendered from deploy/systemd/ with the __REPO_ROOT__ placeholder
+# replaced by this checkout's path, so the repo can live anywhere (not just
+# /srv/hybridInference).
+#
+# Override the router hosts and tunnel ports before calling. Each SSH_HOST entry
+# is an ssh destination and may include a user (user@host); the tunnel connects
+# as that user — defaulting to root, the unit's service user — using root's key.
+# Replace 'user' with the router account that authorizes this box's root key:
+#   sudo SSH_HOST='user@internal.freeinference.org|user@spark2' REMOTE_PORT=8001 \
 #        ./local_deployment_proxy/install.sh
 #
-# Re-running is safe (idempotent): it re-copies the units, reloads systemd, and
+# Re-running is safe (idempotent): it re-renders the units, reloads systemd, and
 # re-enables the services.
 
 set -euo pipefail
@@ -56,9 +63,27 @@ if ! command -v autossh >/dev/null 2>&1; then
 fi
 
 # ── Install unit files ────────────────────────────────────────────────────────
-echo "Installing systemd units into ${SYSTEMD_DST} …"
-install -m 0644 "${SYSTEMD_SRC}/${PROXY_UNIT}" "${SYSTEMD_DST}/${PROXY_UNIT}"
-install -m 0644 "${SYSTEMD_SRC}/${TUNNEL_UNIT}" "${SYSTEMD_DST}/${TUNNEL_UNIT}"
+# Render a checked-in unit into ${SYSTEMD_DST}, substituting the __REPO_ROOT__
+# placeholder with this checkout's path so the installed unit points at wherever
+# the repo actually lives. Units with no placeholder are copied unchanged.
+render_unit() {
+  local name="$1" content tmp
+  if [[ ! -f "${SYSTEMD_SRC}/${name}" ]]; then
+    echo "ERROR: unit not found: ${SYSTEMD_SRC}/${name}" >&2
+    echo "       Run from the repo, or check REPO_ROOT=${REPO_ROOT}." >&2
+    exit 1
+  fi
+  content="$(cat "${SYSTEMD_SRC}/${name}")"
+  content="${content//__REPO_ROOT__/$REPO_ROOT}"
+  tmp="$(mktemp)"
+  printf '%s\n' "$content" >"$tmp"
+  install -m 0644 "$tmp" "${SYSTEMD_DST}/${name}"
+  rm -f "$tmp"
+}
+
+echo "Installing systemd units into ${SYSTEMD_DST} (REPO_ROOT=${REPO_ROOT}) …"
+render_unit "$PROXY_UNIT"
+render_unit "$TUNNEL_UNIT"
 
 # Apply port/bind overrides via a drop-in only when they differ from the unit's
 # built-in defaults (8001 / 8001 / 0.0.0.0), so the common case stays untouched.
@@ -100,6 +125,9 @@ echo
 echo "Logs:  journalctl -u ${PROXY_UNIT} -f"
 echo "       journalctl -u 'local_deployment_tunnel@*' -f"
 echo
-echo "NOTE: root on this box needs an SSH key authorized on each router host,"
-echo "      and the routers need 'GatewayPorts clientspecified' in sshd_config"
+echo "NOTE: each tunnel connects to its router as the user in the SSH_HOST entry"
+echo "      (the part before '@'; defaults to root) using this box's root SSH key"
+echo "      in /root/.ssh — the unit runs as root. That key must be authorized in"
+echo "      the target account's ~/.ssh/authorized_keys on the router, and the"
+echo "      router needs 'GatewayPorts clientspecified' (or yes) in sshd_config"
 echo "      for the ${REMOTE_BIND} bind to accept Docker traffic."

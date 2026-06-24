@@ -8,8 +8,8 @@ Requires=docker.service
 Type=simple
 User=root
 Group=root
-WorkingDirectory=/srv/hybridInference/ops/spark_idle_proxy
-ExecStart=/srv/hybridInference/.venv/bin/python3 /srv/hybridInference/ops/spark_idle_proxy/spark_idle_proxy.py
+WorkingDirectory=__REPO_ROOT__/ops/spark_idle_proxy
+ExecStart=__REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/spark_idle_proxy/spark_idle_proxy.py
 
 Restart=on-failure
 RestartSec=10s
