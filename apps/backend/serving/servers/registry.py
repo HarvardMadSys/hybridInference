@@ -26,6 +26,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
+from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -537,12 +538,20 @@ def register_from_models_yaml(
             aliases = (top_cfg.get("aliases") or []) or []
 
             if model_type == "embedding" and embedding_adapters is not None:
-                # Embedding models use a simple adapter dict (no weighted routing)
+                # Embedding models bypass the weighted RouteExecutor. Register
+                # the routes (in YAML order) as an ordered fallback chain: the
+                # /v1/embeddings endpoint tries the primary first and falls
+                # through to later routes (e.g. a staging canary) only when an
+                # earlier one fails. A single-route model keeps using its plain
+                # adapter so behavior is unchanged when there is no fallback.
                 if adapters_with_weights:
-                    adapter = adapters_with_weights[0][0]
-                    embedding_adapters[model_id] = adapter
+                    ordered = [adapter for adapter, _ in adapters_with_weights]
+                    emb_adapter = (
+                        ordered[0] if len(ordered) == 1 else FallbackEmbeddingAdapter(ordered)
+                    )
+                    embedding_adapters[model_id] = emb_adapter
                     for alias in aliases:
-                        embedding_adapters[alias] = adapter
+                        embedding_adapters[alias] = emb_adapter
                 count += 1 + len(aliases)
             else:
                 # Chat models go through the full RouteExecutor
