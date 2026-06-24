@@ -228,6 +228,14 @@ async def create_embeddings(
 
     try:
         response = await adapter.embeddings(request.input, **params)
+        # Attribute the log row and cost increment to whichever backend actually
+        # served. For a fallback chain (FallbackEmbeddingAdapter) this may be the
+        # staging canary rather than the primary when the primary is down; plain
+        # single-route adapters expose no ``serving_config`` so this is a no-op.
+        serving_cfg = getattr(adapter, "serving_config", None)
+        if serving_cfg is not None:
+            provider = getattr(serving_cfg, "provider", None) or provider
+            pricing = getattr(serving_cfg, "pricing", None)
         # Validate against the response schema *before* recording any success
         # side effects. ``response_model=EmbeddingResponse`` is only enforced
         # after the handler returns, so a malformed (but non-raising) upstream

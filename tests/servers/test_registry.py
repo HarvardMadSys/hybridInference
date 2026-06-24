@@ -804,3 +804,94 @@ models:
     assert second.provider_type == "concurrency"
     assert second.concurrency_pool == "featherless-glm"
     assert second.concurrency == {"limit": 4}
+
+
+@pytest.mark.unit
+def test_embedding_model_multi_route_uses_fallback_adapter(tmp_path, monkeypatch):
+    """An embedding model with >1 route is registered as a FallbackEmbeddingAdapter
+    (primary first, staging canary as fallback), shared across aliases, and is not
+    placed on the chat RouteExecutor.
+    """
+    from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
+
+    yaml_text = (
+        "models:\n"
+        "  - id: emb-model\n"
+        "    name: Emb Model\n"
+        "    type: embedding\n"
+        "    provider: sglang\n"
+        "    context_length: 8192\n"
+        "    max_output_length: 0\n"
+        '    aliases: ["emb-alias"]\n'
+        "    route:\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        base_url: http://local.test/v1\n"
+        '        provider_model_id: "BAAI/emb"\n'
+        "      - kind: staging\n"
+        "        optional: true\n"
+        "        base_url: https://staging.test/v1\n"
+        "        api_keys:\n"
+        "          - ${STAGING_API_KEY}\n"
+        '        provider_model_id: "emb-model"\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    monkeypatch.setenv("STAGING_API_KEY", "sk-staging")
+
+    exe = RouteExecutor()
+    emb: dict = {}
+    count, _infos = registry.register_from_models_yaml(exe, Path(p), embedding_adapters=emb)
+
+    assert count == 2  # canonical id + alias
+    assert "emb-model" in emb and "emb-alias" in emb
+    wrapper = emb["emb-model"]
+    assert isinstance(wrapper, FallbackEmbeddingAdapter)
+    # Catalog/metadata surfaces the primary route; staging is the fallback.
+    assert wrapper.config.provider == "sglang"
+    # The alias shares the same wrapper instance.
+    assert emb["emb-alias"] is wrapper
+    # Embedding models never land on the weighted chat executor.
+    assert "emb-model" not in exe.routes
+
+
+@pytest.mark.unit
+def test_embedding_model_single_route_uses_plain_adapter(tmp_path, monkeypatch):
+    """When the optional staging route is skipped (key unset), the embedding
+    model is left with a single route and keeps using its plain adapter — no
+    fallback wrapper, preserving prior behavior.
+    """
+    from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
+
+    yaml_text = (
+        "models:\n"
+        "  - id: emb-solo\n"
+        "    name: Emb Solo\n"
+        "    type: embedding\n"
+        "    provider: sglang\n"
+        "    context_length: 8192\n"
+        "    max_output_length: 0\n"
+        "    route:\n"
+        "      - kind: sglang\n"
+        "        weight: 1.0\n"
+        "        base_url: http://local.test/v1\n"
+        '        provider_model_id: "BAAI/emb"\n'
+        "      - kind: staging\n"
+        "        optional: true\n"
+        "        base_url: https://staging.test/v1\n"
+        "        api_keys:\n"
+        "          - ${STAGING_API_KEY}\n"
+        '        provider_model_id: "emb-solo"\n'
+    )
+    p = tmp_path / "models.yaml"
+    p.write_text(yaml_text)
+    # Unset STAGING_API_KEY -> the optional staging route is dropped at load.
+    monkeypatch.delenv("STAGING_API_KEY", raising=False)
+
+    exe = RouteExecutor()
+    emb: dict = {}
+    registry.register_from_models_yaml(exe, Path(p), embedding_adapters=emb)
+
+    adapter = emb["emb-solo"]
+    assert not isinstance(adapter, FallbackEmbeddingAdapter)
+    assert adapter.config.provider == "sglang"

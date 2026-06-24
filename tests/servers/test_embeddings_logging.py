@@ -24,6 +24,7 @@ from serving.servers.deps import (
     get_log_store,
     get_operational_store,
 )
+from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 from serving.servers.routers import embeddings
 
 # A prompt price of 1.0 USD / 1M tokens.
@@ -430,3 +431,52 @@ async def test_non_probe_request_still_logged():
     assert resp.status_code == 200
     assert len(logger.calls) == 1
     assert "synthetic_probe" not in logger.calls[0][1]["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_embeddings_falls_back_and_logs_serving_provider():
+    """When the primary embedding backend fails, the request is served by the
+    fallback (e.g. the staging canary) and the log row is attributed to the
+    backend that actually served — not the primary.
+    """
+    primary = _FakeAdapter(raises=RuntimeError("primary down"), pricing=_FREE_PRICING)
+    primary.config.provider = "sglang"
+    secondary = _FakeAdapter(response=_ok_response(), pricing=_FREE_PRICING)
+    secondary.config.provider = "staging"
+    wrapper = FallbackEmbeddingAdapter([primary, secondary])
+
+    logger = _CapturingLogger()
+    app = _build_app(wrapper, logger)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 200
+
+    assert len(logger.calls) == 1
+    _, log_data = logger.calls[0]
+    assert log_data["status_code"] == 200
+    # Attributed to the backend that actually served (the fallback), not primary.
+    assert log_data["provider"] == "staging"
+
+
+@pytest.mark.asyncio
+async def test_embeddings_all_backends_fail_is_500():
+    """When every backend in the fallback chain fails, the endpoint returns 500
+    and logs the last error.
+    """
+    primary = _FakeAdapter(raises=RuntimeError("primary down"))
+    primary.config.provider = "sglang"
+    secondary = _FakeAdapter(raises=RuntimeError("staging down"))
+    secondary.config.provider = "staging"
+    wrapper = FallbackEmbeddingAdapter([primary, secondary])
+
+    logger = _CapturingLogger()
+    app = _build_app(wrapper, logger)
+
+    resp = await _post(app, {"model": "emb-model", "input": "hello"})
+    assert resp.status_code == 500
+
+    assert len(logger.calls) == 1
+    _, log_data = logger.calls[0]
+    assert log_data["status_code"] == 500
+    # The last backend's error is what surfaces.
+    assert "staging down" in log_data["error"]

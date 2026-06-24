@@ -154,7 +154,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -203,7 +203,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -242,7 +242,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -318,7 +318,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -366,7 +366,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -517,7 +517,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -568,7 +568,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -609,7 +609,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -656,7 +656,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -705,7 +705,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -753,7 +753,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -829,9 +829,22 @@ models:
         provider_model_id: "BAAI/bge-m3"
         api_keys:
           - ${LOCAL_API_KEY}
-      # NOTE: no staging canary here. Embedding models bypass weighted routing
-      # (the loader registers only the first route), so a fallback route would be
-      # dead config — see registry.register_from_models_yaml.
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      #
+      # Embedding models don't use weighted routing: the loader registers every
+      # route in YAML order and the /v1/embeddings endpoint tries them as an
+      # ordered fallback chain (primary first, this canary last), so `weight` is
+      # ignored here. See registry.register_from_models_yaml and
+      # FallbackEmbeddingAdapter.
+      - kind: staging
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "bge-m3"
 
   # ── Anthropic direct (kind: anthropic) ─────────────────────
   # These models route directly to api.anthropic.com via the AnthropicAdapter.
