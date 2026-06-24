@@ -40,6 +40,10 @@ class ResponseFormat(BaseModel):  # type: ignore[no-any-unimported]
     type: str | None = None
     # Some providers carry a JSON schema for guided decoding
     schema_: dict[str, Any] | None = Field(default=None, alias="schema")
+    # OpenAI structured-output schema, nested under ``json_schema`` for
+    # ``type: "json_schema"`` (name / schema / strict). Preserved so structured
+    # outputs survive validation when forwarded to the provider.
+    json_schema: dict[str, Any] | None = None
 
 
 class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]

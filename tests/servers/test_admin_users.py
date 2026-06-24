@@ -84,11 +84,15 @@ async def admin_client(monkeypatch, mock_stores):
             ],
         )
 
+    response_store = MagicMock()
+    response_store.delete_user_responses = AsyncMock(return_value=0)
+
     services = AppServices(
         router=router,
         db_logger=MagicMock(),
         operational_store=op_store,
         log_store=log_store,
+        responses_store=response_store,
         routing_manager=None,
     )
     app.state.services = services  # type: ignore[attr-defined]
@@ -511,12 +515,17 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 @pytest.mark.asyncio
 async def test_get_user_detail_returns_disabled_models(admin_client):
     """GET /admin/users/{id}/detail exposes normalized disabled_models."""
-    client, op_store, _log_store, _log = admin_client
+    client, op_store, log_store, _log = admin_client
     op_store.get_user_by_id.return_value = {
         **_user_row(),
         "preferences": {"disabled_models": ["z-model", "a-model", "a-model", 123]},
     }
     op_store.get_active_key_by_account.return_value = None
+    # Detail usage is read whenever the log store exists (even without an active
+    # key), so the turn averages stay consistent with the bulk list endpoint.
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={"avg_turns": None, "avg_user_turns": None}
+    )
 
     response = await client.get("/admin/users/u1/detail", headers=AUTH)
 
@@ -1062,6 +1071,10 @@ async def test_hard_delete_user_wipes_data(admin_client):
 
     # LogStore wipe was issued with the user_id
     log_store.hard_delete_user_data.assert_awaited_once_with("u1")
+
+    # Stored Responses API rows for the user are purged too.
+    response_store = client._transport.app.state.services.responses_store
+    response_store.delete_user_responses.assert_awaited_once_with("u1")
 
     # LogStore wipe must run BEFORE the op_store wipe.
     call_names = [c[0] for c in manager.mock_calls]

@@ -1051,7 +1051,20 @@ class LogStore(ABC):
 
         Returns dict with keys: ``usage_today_usd``, ``usage_today_requests``,
         ``usage_month_usd``, ``usage_month_requests``, ``models_used``,
-        ``last_request_at``.
+        ``last_request_at``, ``avg_turns``, ``avg_user_turns``. The two
+        averages are the all-time mean message / user-message count across the
+        user's chat-style requests (``None`` when they have none).
+        """
+
+    @abstractmethod
+    async def get_bulk_user_turn_averages(
+        self, user_ids: list[str]
+    ) -> dict[str, dict[str, float | None]]:
+        """Return per-user all-time average turn counts for a batch of users.
+
+        Maps ``user_id`` → ``{"avg_turns", "avg_user_turns"}`` (each float or
+        None). Users with no chat-style requests are omitted. Used by the admin
+        list endpoint to avoid N+1 queries.
         """
 
     @abstractmethod

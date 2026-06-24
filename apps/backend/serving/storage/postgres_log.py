@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving.storage.base import LogStore, Row
 from serving.storage.utils import (
+    agent_name_from_prompt,
     calculate_cost,
     conversation_shape,
     json_safe,
@@ -248,6 +249,18 @@ class PostgresLogStore(LogStore):
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
         num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
+        # Agent identity declared in the system prompt (e.g. "You are Claude
+        # Code, ..."). Stored in metadata so the admin list query can label the
+        # client by its declared name, falling back to User-Agent parsing when
+        # absent. Derived from the original inbound prompt, like conversation
+        # shape, so it is recorded independent of full-content storage. The
+        # Anthropic /v1/messages surface carries the system prompt as a
+        # top-level ``system`` field (outside ``messages``), preserved in
+        # request_payload — pass it so that surface is covered too.
+        system_field = request_payload.get("system") if isinstance(request_payload, dict) else None
+        agent = agent_name_from_prompt(prompt, system=system_field)
+        if agent is not None:
+            sanitized_metadata = {**(sanitized_metadata or {}), "agent": agent}
 
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -471,6 +484,17 @@ class PostgresLogStore(LogStore):
                 "SELECT MAX(timestamp) AS ts FROM api_logs WHERE user_id = $1",
                 user_id,
             )
+            # AVG ignores the NULL num_turns / num_user_turns of non-chat
+            # requests, so these average over chat-style requests only.
+            turns = await conn.fetchrow(
+                """
+                SELECT AVG(num_turns) AS avg_turns,
+                       AVG(num_user_turns) AS avg_user_turns
+                FROM api_logs
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
@@ -479,6 +503,46 @@ class PostgresLogStore(LogStore):
             "usage_month_requests": int(month["reqs"]) if month else 0,
             "models_used": [r["model_id"] for r in models_rows],
             "last_request_at": last_req["ts"] if last_req and last_req["ts"] else None,
+            "avg_turns": float(turns["avg_turns"])
+            if turns and turns["avg_turns"] is not None
+            else None,
+            "avg_user_turns": float(turns["avg_user_turns"])
+            if turns and turns["avg_user_turns"] is not None
+            else None,
+        }
+
+    async def get_bulk_user_turn_averages(
+        self, user_ids: list[str]
+    ) -> dict[str, dict[str, float | None]]:
+        """Return per-user all-time average turn counts for many users.
+
+        Maps ``user_id`` → ``{"avg_turns": float|None, "avg_user_turns": float|None}``
+        for users with chat-style requests; users with no chat logs are omitted
+        (the caller fills a default). AVG ignores the NULL turn counts of
+        non-chat requests.
+        """
+        if not user_ids:
+            return {}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id,
+                       AVG(num_turns) AS avg_turns,
+                       AVG(num_user_turns) AS avg_user_turns
+                FROM api_logs
+                WHERE user_id = ANY($1)
+                GROUP BY user_id
+                """,
+                user_ids,
+            )
+        return {
+            r["user_id"]: {
+                "avg_turns": float(r["avg_turns"]) if r["avg_turns"] is not None else None,
+                "avg_user_turns": float(r["avg_user_turns"])
+                if r["avg_user_turns"] is not None
+                else None,
+            }
+            for r in rows
         }
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:

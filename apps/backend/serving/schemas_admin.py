@@ -219,6 +219,24 @@ class BulkUserCostHistoryResponse(BaseModel):
     histories: dict[str, list[UserCostHistoryPoint]]  # keyed by user_id
 
 
+class UserTurnAverages(BaseModel):
+    """Mean conversation depth across a user's chat requests (all-time).
+
+    ``avg_turns`` is the average message count per chat request and
+    ``avg_user_turns`` the average user-message count. Both are ``None`` when
+    the user has no chat-style requests logged.
+    """
+
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
+
+
+class BulkUserTurnAveragesResponse(BaseModel):
+    """Per-user average turn counts for many users (one round-trip per page)."""
+
+    averages: dict[str, UserTurnAverages]  # keyed by user_id
+
+
 class SummaryUserItem(BaseModel):
     """User entry inside a summary card (sub-set of UserListItem)."""
 
@@ -305,6 +323,11 @@ class UserDetailResponse(BaseModel):
     disabled_models: list[str] = Field(default_factory=list)
     last_request_at: datetime | None = None
     max_concurrent_requests: int | None = None
+    # Mean conversation depth across this user's chat requests (all-time).
+    # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
+    # user-message count; both None when the user has no chat-style requests.
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -536,6 +559,11 @@ class AdminRecentRequestItem(BaseModel):
     ip_source: str | None = None
     x_forwarded_for: str | None = None
     user_agent: str | None = None
+    # Calling agent's self-declared identity, parsed from the opening "You are
+    # <Name>" line of the system prompt (e.g. "Claude" from Claude Code). None
+    # when no such opener is present; the dashboard then falls back to deriving
+    # a client label from user_agent.
+    agent: str | None = None
     session_id: str | None = None
     request_surface: str | None = None
     model_id: str
@@ -624,6 +652,12 @@ class AdminAnalyticsResponse(BaseModel):
 
     period: str = Field(..., pattern="^(hour|day|week|month)$")
     active_users: int
+    # Mean conversation depth per chat request in the period. ``avg_turns`` is
+    # the average message count and ``avg_user_turns`` the average user-message
+    # count; both are None when the period has no chat-style requests (non-chat
+    # requests such as embeddings have NULL turn columns and are excluded).
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
     sparkline: list[SparklineBucket]
     top_users: list[AnalyticsUserEntry]
     by_model: list[AnalyticsBreakdownEntry]
@@ -700,6 +734,25 @@ class UpdateSettingRequest(BaseModel):
     """Request payload for updating a runtime setting."""
 
     value: Any
+
+
+class SnoozeAlertsRequest(BaseModel):
+    """Request payload for snoozing Slack alerts for a duration."""
+
+    duration_seconds: int = Field(
+        ...,
+        gt=0,
+        le=7 * 24 * 60 * 60,
+        description="How long to suppress Slack alerts, in seconds (max 7 days).",
+    )
+
+
+class AlertSnoozeStatus(BaseModel):
+    """Current Slack-alert snooze state."""
+
+    snoozed: bool
+    snooze_until: float | None = None
+    seconds_remaining: int = 0
 
 
 class RoutewiseSettingItem(BaseModel):

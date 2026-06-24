@@ -555,7 +555,9 @@ async def chat_completions(
     if payload.tool_choice is not None:
         params["tool_choice"] = payload.tool_choice
     if payload.response_format is not None:
-        params["response_format"] = payload.response_format.model_dump(by_alias=True)
+        params["response_format"] = payload.response_format.model_dump(
+            by_alias=True, exclude_none=True
+        )
     if session_id:
         params["session_id"] = session_id
 
@@ -571,6 +573,10 @@ async def chat_completions(
             "request_id": request_id,
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
+            # User identity for failure attribution — the routing layer reads
+            # these to name the offending users in circuit-breaker alerts.
+            "user_id": user_id,
+            "user_name": user_ctx.get("user_name"),
         }
     )
 

@@ -175,6 +175,18 @@ _EMOJI = {
 }
 
 
+def escape_slack_text(text: str) -> str:
+    """Escape Slack mrkdwn control characters in untrusted text.
+
+    Slack interprets ``<...>`` sequences specially (e.g. ``<!channel>`` pings a
+    channel, ``<@U…>`` mentions a user). Any caller-controlled value that is
+    interpolated into an alert must escape ``&``, ``<`` and ``>`` per Slack's
+    guidelines so it renders literally instead of injecting mentions or links.
+    ``&`` is escaped first to avoid double-encoding the others.
+    """
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _format_message(severity: AlertSeverity, title: str, context: dict[str, Any]) -> str:
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     info = server_info()
@@ -228,6 +240,15 @@ async def alert_slack(
     )
     if not webhook_url:
         return False
+
+    # Admin-controlled global snooze: pause all alerts until a deadline.
+    try:
+        from serving.observability.alert_snooze import is_snoozed
+
+        if await is_snoozed():
+            return False
+    except Exception:
+        log.debug("alert snooze check failed; sending alert", exc_info=True)
 
     key = dedupe_key or f"{severity.value}:{title}"
     now = _monotonic()

@@ -31,6 +31,7 @@ from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
+from serving.storage.responses_store import ResponseStore
 from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
 
@@ -543,6 +544,7 @@ async def initialize() -> AppServices:
     # Build store abstractions
     operational_store = None
     log_store = None
+    responses_store = None
 
     if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
@@ -554,6 +556,26 @@ async def initialize() -> AppServices:
         )
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
+        # The Responses store is always constructed so reads, deletes and the
+        # hard-delete purge work on any pre-existing rows. *Writing* new
+        # responses is gated on the same privacy switch as prompt/response
+        # logging: in privacy mode (the default) ``persist_enabled`` is False, so
+        # ``save`` no-ops and stateful /v1/responses degrades gracefully while
+        # existing data stays purgeable.
+        responses_store = ResponseStore(
+            db_logger.pool, persist_enabled=settings.db_store_full_content
+        )
+        await responses_store.initialize()
+        logger.info(
+            "Responses store initialized (Postgres; persist_enabled=%s)",
+            settings.db_store_full_content,
+        )
+
+    # Wire the operational store into the global Slack-alert snooze so admins
+    # can pause alerting from the dashboard. Safe with a None store (no-op).
+    from serving.observability.alert_snooze import init_alert_snooze
+
+    init_alert_snooze(operational_store)
 
     await _bootstrap_routewise_from_logs(
         log_store,
@@ -822,6 +844,7 @@ async def initialize() -> AppServices:
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
+        responses_store=responses_store,
         weight_override_refresh_task=weight_override_refresh_task,
     )
 

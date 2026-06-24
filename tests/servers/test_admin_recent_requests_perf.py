@@ -124,6 +124,7 @@ async def test_list_default_days_is_seven(admin_client_capture):
     assert "l.metadata->>'ip' AS user_ip" in select_query
     assert "l.metadata->>'peer_ip' AS peer_ip" in select_query
     assert "l.metadata->>'user_agent' AS user_agent" in select_query
+    assert "l.metadata->>'agent' AS agent" in select_query
 
 
 @pytest.mark.asyncio
@@ -254,6 +255,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "ip_source": None,
                 "x_forwarded_for": None,
                 "user_agent": None,
+                "agent": None,
                 "session_id": None,
                 "request_surface": None,
                 "routewise": None,
@@ -283,6 +285,7 @@ async def test_list_model_filter_returns_matching_rows_only(admin_client_capture
                 "ip_source": None,
                 "x_forwarded_for": None,
                 "user_agent": None,
+                "agent": None,
                 "session_id": None,
                 "request_surface": None,
                 "routewise": None,
@@ -357,6 +360,7 @@ async def test_list_response_omits_prompt_and_response(admin_client_capture):
                     "ip_source": "x-forwarded-for",
                     "x_forwarded_for": "203.0.113.8",
                     "user_agent": "pytest-client",
+                    "agent": None,
                     "session_id": "sess-1",
                     "request_surface": "openai_chat_completions",
                     "routewise": None,
@@ -446,3 +450,80 @@ async def test_content_requires_admin_auth():
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get("/admin/recent-requests/anything/content")
     assert resp.status_code in (401, 403), resp.text
+
+
+# ---------------------------------------------------------------------------
+# /admin/recent-requests — request_type filter
+# ---------------------------------------------------------------------------
+
+
+# The list SELECT always projects ``metadata->>'request_type' AS request_type``
+# regardless of filtering, so "no filter applied" is asserted against the WHERE
+# predicates rather than the bare column name.
+_EMBEDDING_PREDICATE = "(l.metadata->>'request_type') = 'embedding'"
+_CHAT_PREDICATE = "(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'"
+
+
+@pytest.mark.asyncio
+async def test_list_no_request_type_filter_by_default(admin_client_capture):
+    """Without request_type, neither query carries a request_type predicate."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests")
+    assert resp.status_code == 200, resp.text
+
+    count_query, _ = calls["fetchrow"][0]
+    select_query, _ = calls["fetch"][0]
+    for query in (count_query, select_query):
+        assert _EMBEDDING_PREDICATE not in query
+        assert _CHAT_PREDICATE not in query
+
+
+@pytest.mark.asyncio
+async def test_list_request_type_embedding_filters_both_queries(admin_client_capture):
+    """request_type=embedding adds an equality predicate to COUNT and SELECT.
+
+    The predicate is a constant (no bind param), so the existing positional
+    parameters (days, limit, offset) keep their indices.
+    """
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests?request_type=embedding")
+    assert resp.status_code == 200, resp.text
+
+    expected = "(l.metadata->>'request_type') = 'embedding'"
+    count_query, count_args = calls["fetchrow"][0]
+    select_query, select_args = calls["fetch"][0]
+    assert expected in count_query
+    assert expected in select_query
+    # No new bind param introduced: days is still $1 and the only arg on COUNT.
+    assert count_args == (7,)
+    # SELECT carries (days, limit, offset) — embedding filter added no param.
+    assert select_args[0] == 7
+    assert len(select_args) == 3
+
+
+@pytest.mark.asyncio
+async def test_list_request_type_chat_excludes_embeddings(admin_client_capture):
+    """request_type=chat adds an IS DISTINCT FROM 'embedding' predicate."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests?request_type=chat")
+    assert resp.status_code == 200, resp.text
+
+    expected = "(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'"
+    count_query, _ = calls["fetchrow"][0]
+    select_query, _ = calls["fetch"][0]
+    assert expected in count_query
+    assert expected in select_query
+
+
+@pytest.mark.asyncio
+async def test_list_request_type_unknown_value_applies_no_filter(admin_client_capture):
+    """An unrecognized request_type is ignored rather than 500ing or filtering."""
+    client, calls, _logger = admin_client_capture
+    resp = await client.get("/admin/recent-requests?request_type=bogus")
+    assert resp.status_code == 200, resp.text
+
+    count_query, _ = calls["fetchrow"][0]
+    select_query, _ = calls["fetch"][0]
+    for query in (count_query, select_query):
+        assert _EMBEDDING_PREDICATE not in query
+        assert _CHAT_PREDICATE not in query

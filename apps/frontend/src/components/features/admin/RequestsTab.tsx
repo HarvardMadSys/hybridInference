@@ -206,6 +206,14 @@ export function RequestsTab() {
   const [debouncedUserFilter, setDebouncedUserFilter] = useState('');
   const [debouncedModelFilter, setDebouncedModelFilter] = useState('');
   const [reqErrorsOnly, setReqErrorsOnly] = useState(false);
+  // Request-type and lookback-window filters. The admin view is a global,
+  // time-ordered stream dominated by chat traffic, so sparse embedding requests
+  // (tagged request_type="embedding") are easily buried below the first page —
+  // this is why they appear "missing" here while still visible in a user's own
+  // low-volume Recent Requests. The type filter surfaces them; the lookback
+  // exposes the backend's existing `days` window (default 7, max 90).
+  const [reqType, setReqType] = useState<'all' | 'chat' | 'embedding'>('all');
+  const [reqDays, setReqDays] = useState(7);
   const [reqExpandedId, setReqExpandedId] = useState<string | null>(null);
   const [reqContentCache, setReqContentCache] = useState<
     Map<
@@ -248,6 +256,8 @@ export function RequestsTab() {
           userFilter || undefined,
           modelFilter || undefined,
           reqErrorsOnly,
+          reqType === 'all' ? undefined : reqType,
+          reqDays,
         );
         if (seq !== reqSeqRef.current) return;
         setReqEntries(d.requests);
@@ -258,7 +268,7 @@ export function RequestsTab() {
         if (seq === reqSeqRef.current) setReqLoading(false);
       }
     },
-    [reqOffset, reqErrorsOnly],
+    [reqOffset, reqErrorsOnly, reqType, reqDays],
   );
 
   // Debounce text-filter changes into the values that drive the fetch. Offset
@@ -442,6 +452,39 @@ export function RequestsTab() {
           />
           Errors only
         </label>
+        <label className="flex select-none items-center gap-1.5 text-[13px] text-gray-600">
+          Type
+          <select
+            value={reqType}
+            onChange={(e) => {
+              setReqType(e.target.value as 'all' | 'chat' | 'embedding');
+              setReqOffset(0);
+            }}
+            aria-label="Filter by request type"
+            className="rounded-lg border border-gray-200 bg-white py-1.5 pl-2 pr-7 text-[13px] text-gray-700 focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
+          >
+            <option value="all">All</option>
+            <option value="chat">Chat</option>
+            <option value="embedding">Embedding</option>
+          </select>
+        </label>
+        <label className="flex select-none items-center gap-1.5 text-[13px] text-gray-600">
+          Last
+          <select
+            value={reqDays}
+            onChange={(e) => {
+              setReqDays(Number(e.target.value));
+              setReqOffset(0);
+            }}
+            aria-label="Lookback window"
+            className="rounded-lg border border-gray-200 bg-white py-1.5 pl-2 pr-7 text-[13px] text-gray-700 focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-900/5"
+          >
+            <option value={1}>24h</option>
+            <option value={7}>7d</option>
+            <option value={30}>30d</option>
+            <option value={90}>90d</option>
+          </select>
+        </label>
         <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
           {reqTotal.toLocaleString()} entries
         </span>
@@ -524,6 +567,7 @@ export function RequestsTab() {
                       userId: reqUserFilter || undefined,
                       modelId: reqModelFilter || undefined,
                       errorsOnly: reqErrorsOnly || undefined,
+                      requestType: reqType === 'all' ? undefined : reqType,
                       includeContent: exportIncludeContent || undefined,
                     });
                     setShowExportPanel(false);
@@ -679,7 +723,9 @@ export function RequestsTab() {
                         </td>
                         <td className="px-3 py-2.5 text-[12px] text-gray-600">
                           {(() => {
-                            const tool = parseClientTool(req.user_agent);
+                            // Prefer the agent's self-declared identity from the
+                            // system prompt; fall back to User-Agent parsing.
+                            const tool = req.agent || parseClientTool(req.user_agent);
                             if (tool) {
                               return (
                                 <span

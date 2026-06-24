@@ -2,11 +2,13 @@
 
 import { Sparkline } from './Sparkline';
 import { isAnomalous } from './lib/anomaly';
+import type { UserTurnAverages } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, UserRow as User } from './types';
 
 interface UserRowProps {
   user: User;
   history: CostHistoryPoint[] | undefined; // 7d
+  turns: UserTurnAverages | undefined;
   pageMedianToday: number;
   density: Density;
   expanded: boolean;
@@ -34,6 +36,7 @@ function todayCostBucket(cost: number, median: number): string {
 export function UserRow({
   user,
   history,
+  turns,
   pageMedianToday,
   density,
   expanded,
@@ -67,10 +70,14 @@ export function UserRow({
           {statusMark.glyph}
         </span>
       </td>
-      <td className="px-2">
-        <div className="font-medium text-gray-900">{user.email}</div>
+      <td className="max-w-[12rem] px-2">
+        <div className="truncate font-medium text-gray-900" title={user.email}>
+          {user.email}
+        </div>
         {density === 'comfortable' && user.user_name && (
-          <div className="text-xs text-gray-500">{user.user_name}</div>
+          <div className="truncate text-xs text-gray-500" title={user.user_name}>
+            {user.user_name}
+          </div>
         )}
       </td>
       <td className="px-2 text-xs uppercase text-gray-600">
@@ -85,6 +92,12 @@ export function UserRow({
       <td className="px-2 font-mono text-sm">${Number(user.usage_month_usd).toFixed(2)}</td>
       <td className="px-2 font-mono text-sm text-gray-600">
         ${Number(user.usage_alltime_usd).toFixed(2)}
+      </td>
+      <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
+        {turns?.avg_turns != null ? turns.avg_turns.toFixed(1) : '—'}
+      </td>
+      <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
+        {turns?.avg_user_turns != null ? turns.avg_user_turns.toFixed(1) : '—'}
       </td>
       <td className="px-2 text-xs">{user.status.replace('_', ' ')}</td>
       <td className="px-2 text-center">

@@ -177,11 +177,29 @@ export interface UserDetail {
   disabled_models: string[];
   last_request_at: string | null;
   max_concurrent_requests: number | null;
+  avg_turns: number | null;
+  avg_user_turns: number | null;
 }
 
 export async function getUserDetail(userId: string): Promise<UserDetail> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/detail`);
   return jsonOrThrow<UserDetail>(resp);
+}
+
+export interface UserTurnAverages {
+  avg_turns: number | null;
+  avg_user_turns: number | null;
+}
+
+export interface BulkTurnAveragesResponse {
+  averages: Record<string, UserTurnAverages>;
+}
+
+export async function getBulkTurnAverages(userIds: string[]): Promise<BulkTurnAveragesResponse> {
+  if (userIds.length === 0) return { averages: {} };
+  const params = new URLSearchParams({ user_ids: userIds.join(',') });
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/turn-averages?${params.toString()}`);
+  return jsonOrThrow<BulkTurnAveragesResponse>(resp);
 }
 
 export interface UpdateUserData {
@@ -391,6 +409,10 @@ export interface AdminRecentRequestItem {
   ip_source?: string | null;
   x_forwarded_for?: string | null;
   user_agent?: string | null;
+  // Calling agent's self-declared name, parsed backend-side from the system
+  // prompt's "You are <Name>" opener. Preferred over user_agent for the client
+  // column when present.
+  agent?: string | null;
   session_id?: string | null;
   request_surface?: string | null;
   model_id: string;
@@ -444,11 +466,15 @@ export async function listRecentRequests(
   userId?: string,
   modelId?: string,
   errorsOnly = false,
+  requestType?: 'chat' | 'embedding',
+  days?: number,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
   if (modelId) params.set('model_id', modelId);
   if (errorsOnly) params.set('errors_only', 'true');
+  if (requestType) params.set('request_type', requestType);
+  if (days != null) params.set('days', String(days));
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
@@ -509,6 +535,10 @@ export interface AnalyticsBreakdownEntry {
 export interface AdminAnalyticsResponse {
   period: AnalyticsPeriod;
   active_users: number;
+  // Mean conversation depth per chat request; null when the period has no
+  // chat-style requests.
+  avg_turns: number | null;
+  avg_user_turns: number | null;
   sparkline: SparklineBucket[];
   top_users: AnalyticsUserEntry[];
   by_model: AnalyticsBreakdownEntry[];
@@ -651,6 +681,7 @@ export interface ExportRequestsParams {
   userId?: string;
   modelId?: string;
   errorsOnly?: boolean;
+  requestType?: 'chat' | 'embedding';
   includeContent?: boolean;
 }
 
@@ -662,6 +693,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   if (params.userId) qs.set('user_id', params.userId);
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.errorsOnly) qs.set('errors_only', 'true');
+  if (params.requestType) qs.set('request_type', params.requestType);
   if (params.includeContent) qs.set('include_content', 'true');
 
   const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
@@ -902,6 +934,35 @@ export async function updateRuntimeSetting(
     body: JSON.stringify({ value }),
   });
   return jsonOrThrow<RuntimeSettingItem>(resp);
+}
+
+// ========================================
+// Slack Alert Snooze
+// ========================================
+
+export interface AlertSnoozeStatus {
+  snoozed: boolean;
+  snooze_until: number | null;
+  seconds_remaining: number;
+}
+
+export async function getAlertSnooze(): Promise<AlertSnoozeStatus> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/snooze');
+  return jsonOrThrow<AlertSnoozeStatus>(resp);
+}
+
+export async function snoozeAlerts(durationSeconds: number): Promise<AlertSnoozeStatus> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/snooze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ duration_seconds: durationSeconds }),
+  });
+  return jsonOrThrow<AlertSnoozeStatus>(resp);
+}
+
+export async function clearAlertSnooze(): Promise<AlertSnoozeStatus> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/alerts/snooze', { method: 'DELETE' });
+  return jsonOrThrow<AlertSnoozeStatus>(resp);
 }
 
 // ========================================

@@ -2,8 +2,9 @@
 
 import { hasRole } from '@/components/providers/AuthProvider';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import { UserRecentRequests } from './UserRecentRequests';
 
-function relTime(s: string | null): string {
+export function relTime(s: string | null): string {
   if (!s) return 'Never';
   const ms = Date.now() - new Date(s).getTime();
   const m = Math.floor(ms / 60000);
@@ -120,6 +121,20 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           <div className="mt-0.5 text-[16px] font-bold text-gray-900">
             {detail.quota_daily_usd ? `$${detail.quota_daily_usd}/d` : '-'}
           </div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Avg turns</div>
+          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+            {detail.avg_turns != null ? detail.avg_turns.toFixed(1) : '—'}
+          </div>
+          <div className="text-[11px] text-gray-400">per request</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Avg user turns</div>
+          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+            {detail.avg_user_turns != null ? detail.avg_user_turns.toFixed(1) : '—'}
+          </div>
+          <div className="text-[11px] text-gray-400">per request</div>
         </div>
       </div>
 
@@ -312,6 +327,10 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           </div>
         </div>
       )}
+
+      {/* Recent requests made by this user. key={u.id} remounts the component
+          on user switch so its paging/expansion/cache state resets cleanly. */}
+      <UserRecentRequests key={u.id} userId={u.id} />
     </div>
   );
 }

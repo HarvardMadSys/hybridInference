@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 
 
@@ -67,6 +68,324 @@ def conversation_shape(
     if num_turns == 0:
         return None, None, None
     return num_turns, num_user_turns, num_tool_calls
+
+
+# Leading "You are <token>" opener, captured from the start of a system prompt.
+_YOU_ARE_RE = re.compile(r"^\s*you\s+are\s+(?P<name>\S+)", re.IGNORECASE)
+# A plausible agent name: starts with a letter, then letters/digits/.-_ only.
+_AGENT_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
+# Generic fillers that follow "You are" in non-agent prompts (e.g. "You are a
+# helpful assistant"). These are rejected so the column carries real agent
+# identities rather than noise.
+_GENERIC_AGENT_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "my",
+        "your",
+        "our",
+        "his",
+        "her",
+        "its",
+        "their",
+        "this",
+        "that",
+        "one",
+        "no",
+        "not",
+        "only",
+        "just",
+        "also",
+        "now",
+        "here",
+        "currently",
+        "being",
+        "going",
+        "to",
+        "in",
+        "on",
+        "at",
+        "about",
+        "very",
+        "really",
+        "always",
+        "never",
+        # Verbs/adjectives that commonly follow "You are" in generic prompts
+        # ("You are designed to ...", "You are a helpful assistant"). None are
+        # plausible agent names, so filtering them avoids false positives.
+        "designed",
+        "programmed",
+        "trained",
+        "built",
+        "created",
+        "developed",
+        "made",
+        "powered",
+        "tasked",
+        "meant",
+        "supposed",
+        "expected",
+        "required",
+        "allowed",
+        "able",
+        "capable",
+        "responsible",
+        "running",
+        "working",
+        "operating",
+        "acting",
+        "helping",
+        "assisting",
+        "chatting",
+        "talking",
+        "interacting",
+        "part",
+        "helpful",
+        "harmless",
+        "honest",
+        "friendly",
+        "knowledgeable",
+        "free",
+        "welcome",
+        "encouraged",
+        "instructed",
+        "authorized",
+        "permitted",
+        "forbidden",
+        "prohibited",
+        "representing",
+        "professional",
+        "specialized",
+        "expert",
+        "assistant",
+        "concise",
+        "accurate",
+        "precise",
+        "thorough",
+        "polite",
+        "patient",
+        "reliable",
+        "efficient",
+        "smart",
+        "intelligent",
+    }
+)
+
+
+def _message_text(content: Any) -> str | None:
+    """Flatten a message ``content`` field to plain text, or None if empty.
+
+    Handles both the plain-string form and the structured content-block form
+    (OpenAI/Anthropic), concatenating the textual blocks.
+    """
+    if isinstance(content, str):
+        return content or None
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        joined = " ".join(parts).strip()
+        return joined or None
+    return None
+
+
+def _first_sentence(text: str) -> str:
+    """Return the leading sentence of ``text`` (up to the first sentence end or newline).
+
+    Leading whitespace is ignored first, so a prompt that begins with a blank
+    line (common in triple-quoted templates) does not yield an empty sentence.
+    A ``.`` ends the sentence only when followed by whitespace or end-of-text,
+    so an intra-name dot (e.g. ``"openClaw.beta"``) does not split the name.
+    """
+    text = text.lstrip()
+    match = re.search(r"[!?\n]|\.(?=\s|$)", text)
+    return text[: match.start()] if match else text
+
+
+# Agent-name characters (per ``_AGENT_NAME_RE``); used to bound wrapper markers
+# so a declared name that merely starts with a marker (e.g. ``"Hermes-2"``,
+# ``"openClaw.beta"``) is not collapsed to the wrapper label.
+_NAME_CHARS = "A-Za-z0-9._-"
+
+
+def _wrapper_client_from_first_sentence(text: str) -> str | None:
+    r"""Return a wrapper client's canonical name if its marker is in the first sentence.
+
+    Wrapper clients (openClaw/Hermes/pi) name themselves by a distinctive marker
+    in the opening sentence and typically embed the opener of the agent they
+    wrap (e.g. ``"You are Claude Code, running under openClaw"``), so they are
+    matched ahead of the ``"You are <Name>"`` opener and reported instead of the
+    wrapped agent. Only these unambiguous markers are matched here — common
+    agents are left to the opener so an incidental mention does not override a
+    genuinely declared identity. Matching is case-insensitive and scoped to the
+    opening sentence, so a marker deeper in a long prompt does not match.
+
+    Markers are bounded by ``_NAME_CHARS`` rather than ``\b`` so a declared name
+    that merely starts with a marker followed by a name separator — e.g.
+    ``"Hermes-2"`` or ``"openClaw.beta"`` — is left to the opener and preserved
+    in full. ``pi`` is additionally too short and ambiguous for a bare match (it
+    would catch ``"explains pi"``), so it requires the wrapper phrase
+    ``"inside pi"``.
+    """
+    sentence = _first_sentence(text).lower()
+
+    def has(marker: str) -> bool:
+        pattern = rf"(?<![{_NAME_CHARS}]){re.escape(marker)}(?![{_NAME_CHARS}])"
+        return re.search(pattern, sentence) is not None
+
+    if has("openclaw"):
+        return "openClaw"
+    if has("hermes"):
+        return "Hermes"
+    if re.search(rf"(?<![{_NAME_CHARS}])inside\s+pi(?![{_NAME_CHARS}])", sentence):
+        return "pi"
+    return None
+
+
+# Clients that announce themselves with a descriptive opener rather than a
+# ``"You are <Name>"`` opener, so ``_name_from_opener`` yields a generic filler.
+# Each marker maps to the canonical client label used by the frontend
+# ``parseClientTool`` (e.g. ``codex-cli/…`` → ``"codex"``), so the admin UI shows
+# the same name whether the client is identified by its system prompt or its
+# ``User-Agent``. Each pattern is anchored (``^``) to the client's own opener
+# self-description, not merely an occurrence of the phrase: an unanchored match
+# would label any prompt that *mentions* the tool — e.g. ``"You are a helpful
+# assistant for Codex CLI users"`` or the instruction ``"When running in the
+# Codex CLI, keep outputs concise"`` — as the client, and since the admin UI
+# prefers ``agent`` over ``User-Agent`` that would suppress the User-Agent
+# fallback and corrupt other clients' labels. The trailing ``_NAME_CHARS``
+# lookaround keeps the marker from matching inside a larger token, and matching
+# is case-insensitive. ``Codex`` opens with ``"You are a coding agent running in
+# the Codex CLI"``, whose first token after ``"You are"`` is the filler ``"a"``.
+_PHRASE_CLIENT_MARKERS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(
+            r"^\s*you\s+are\s+a\s+coding\s+agent\s+running\s+in\s+"
+            rf"(?:the\s+)?codex[\s_-]+cli(?![{_NAME_CHARS}])",
+            re.IGNORECASE,
+        ),
+        "codex",
+    ),
+)
+
+
+def _phrase_client_from_first_sentence(text: str) -> str | None:
+    """Return a client label when a known opener self-description starts the first sentence.
+
+    A fallback for clients whose opener does not declare a name (see
+    ``_PHRASE_CLIENT_MARKERS``). Each marker is anchored to the start of the
+    opening sentence, so only the client's own opener matches — an incidental
+    mention of the tool later in the sentence (or in pasted content) does not.
+    Consulted only after the ``"You are <Name>"`` opener yields no usable name,
+    so a genuinely declared identity still wins.
+    """
+    sentence = _first_sentence(text)
+    for pattern, name in _PHRASE_CLIENT_MARKERS:
+        if pattern.search(sentence):
+            return name
+    return None
+
+
+def _name_from_opener(text: str) -> str | None:
+    """Return the name declared by a ``"You are <Name>"`` opener, or None.
+
+    Only the first token after ``"You are"`` is taken, it must look like a name
+    (leading letter; letters/digits/``.-_``; at most 32 chars) and must not be a
+    generic filler such as ``"a"``/``"the"`` or a common role verb/adjective
+    such as ``"helpful"``/``"designed"``.
+    """
+    match = _YOU_ARE_RE.match(text)
+    if match is None:
+        return None
+    name = match.group("name").strip("\"'`*.,;:!?()[]{}<>")
+    if not name or len(name) > 32:
+        return None
+    if name.lower() in _GENERIC_AGENT_WORDS:
+        return None
+    if not _AGENT_NAME_RE.match(name):
+        return None
+    return name
+
+
+def _agent_name_from_text(text: str | None) -> str | None:
+    """Return the agent name for a system prompt, or None.
+
+    A wrapper client named in the opening sentence (see
+    ``_wrapper_client_from_first_sentence``) takes precedence, since those
+    clients wrap another agent and would otherwise be mislabeled by the generic
+    opener. Otherwise the name declared by a ``"You are <Name>"`` opener is used
+    (see ``_name_from_opener``). When the opener yields no usable name, a known
+    phrase marker in the opening sentence (see
+    ``_phrase_client_from_first_sentence``) is used as a fallback — covering
+    clients such as Codex that announce themselves descriptively
+    (``"You are a coding agent running in the Codex CLI"``) rather than by a
+    ``"You are <Name>"`` opener.
+    """
+    if not isinstance(text, str):
+        return None
+    wrapper_name = _wrapper_client_from_first_sentence(text)
+    if wrapper_name is not None:
+        return wrapper_name
+    name = _name_from_opener(text)
+    if name is not None:
+        return name
+    return _phrase_client_from_first_sentence(text)
+
+
+def agent_name_from_prompt(
+    prompt: list[dict[str, Any]] | str | None,
+    system: Any = None,
+) -> str | None:
+    """Extract the calling agent's self-declared name from a system prompt.
+
+    Several coding agents announce themselves in the opening of their system
+    prompt — e.g. ``"You are Claude Code, ..."`` or ``"You are Cline, ..."``.
+    When that pattern is present in a system (or ``developer``) message, the
+    leading token after ``"You are"`` is returned so the admin dashboard can
+    label the client by its declared identity instead of the ``User-Agent``
+    header. Returns ``None`` when no system prompt carries a recognizable
+    opener, so callers fall back to User-Agent parsing.
+
+    Wrapper clients (e.g. ``openClaw``/``Hermes``/``pi``) carry the opener of
+    the agent they wrap, so a distinctive wrapper marker in the opening sentence
+    (see ``_wrapper_client_from_first_sentence``) is matched first and reported
+    as the wrapper rather than the wrapped agent. All other agents are taken
+    from the ``"You are <Name>"`` opener, so an incidental mention of an agent
+    does not override a genuinely declared identity. Clients that announce
+    themselves descriptively instead of by a ``"You are <Name>"`` opener — e.g.
+    Codex (``"You are a coding agent running in the Codex CLI"``) — are matched
+    by a phrase marker in the opening sentence only after the opener yields no
+    usable name, and reported by their canonical label (``"codex"``).
+
+    ``system`` is the optional top-level system field used by the Anthropic
+    ``/v1/messages`` surface (Claude Code), where the system prompt is carried
+    outside the ``messages`` list as a string or a list of text blocks. It is
+    consulted only when the ``messages`` themselves yield no name.
+
+    Guardrails: only the first token after ``"You are"`` is taken, it must look
+    like a name (leading letter; letters/digits/``.-_``; at most 32 chars) and
+    must not be a generic filler such as ``"a"``/``"the"``/``"your"`` or a
+    common role word such as ``"helpful"`` — so a prompt like ``"You are a
+    helpful assistant"`` yields ``None`` rather than ``"a"``.
+    """
+    if isinstance(prompt, list):
+        for message in prompt:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") not in ("system", "developer"):
+                continue
+            name = _agent_name_from_text(_message_text(message.get("content")))
+            if name is not None:
+                return name
+    if system is not None:
+        return _agent_name_from_text(_message_text(system))
+    return None
 
 
 def strip_null_bytes(value: Any) -> Any:
