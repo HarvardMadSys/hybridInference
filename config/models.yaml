@@ -55,56 +55,6 @@ models:
   #         - ${FEATHERLESS_API_KEY}
   #       provider_model_id: "zai-org/GLM-4.7"
 
-  # - id: glm-5
-  #   name: GLM-5 (please use GLM-5.1 or GLM-5 Turbo if possible; GLM-5 is an older version that may be less cost-effective)
-  #   provider: zai
-  #   quantization: "fp8"
-  #   context_length: 200000
-  #   max_output_length: 128000
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   aliases: ["freeinference-glm-5"]
-  #   # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
-  #   pricing:
-  #     prompt: "1.0"
-  #     completion: "3.2"
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.2"
-  #     input_cache_writes: "0"
-  #   route:
-  #     - kind: zai
-  #       weight: 0.64
-  #       base_url: ${ZAI_BASE_URL}
-  #       api_keys:
-  #         - ${ZAI_API_KEY}
-  #         - ${ZAI_API_KEY2}
-  #       provider_model_id: "glm-5"
-  #     # Ollama Cloud fallback
-  #     - kind: ollama
-  #       weight: 0.64
-  #       base_url: ${OLLAMA_BASE_URL}
-  #       api_keys:
-  #         - ${OLLAMA_API_KEY}
-  #       provider_model_id: "glm-5"
-  #     # # Chutes fallback
-  #     - kind: chutes
-  #       weight: 0.64
-  #       base_url: ${CHUTES_BASE_URL}
-  #       api_keys:
-  #         - ${CHUTES_API_KEY}
-  #       provider_model_id: "zai-org/GLM-5-TEE"
-  #     # Featherless fallback
-  #     - kind: featherless
-  #       weight: 0.64
-  #       base_url: ${FEATHERLESS_BASE_URL}
-  #       api_keys:
-  #         - ${FEATHERLESS_API_KEY}
-  #       provider_model_id: "zai-org/GLM-5"
-
   - id: glm-5.1
     name: GLM-5.1
     provider: zai
@@ -119,7 +69,7 @@ models:
     aliases: ["freeinference-glm-5.1"]
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "2"
+      prompt: "2.8"
       completion: "6.4"
       image: "0"
       request: "0"
@@ -136,16 +86,16 @@ models:
       # optional: route is skipped at load when RC_DEPLOYMENT_URL is unset/blank,
       # so the rest of the model stays available instead of registering a dead
       # "glm-5.1:unknown-api" endpoint that streams to a host-less URL.
-      - kind: sglang
-        weight: 1.0
-        optional: true
-        base_url: ${RC_DEPLOYMENT_URL}
-        provider_model_id: "/n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2"
-        # api_keys:
-        #   - ${LOCAL_API_KEY}
+      # - kind: sglang
+      #   weight: 1.0
+      #   optional: true
+      #   base_url: ${RC_DEPLOYMENT_URL}
+      #   provider_model_id: "/n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2"
+      #   # api_keys:
+      #   #   - ${LOCAL_API_KEY}
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
@@ -160,7 +110,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -200,7 +150,7 @@ models:
         provider_model_id: "glm-5.2"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
@@ -215,7 +165,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -237,7 +187,7 @@ models:
     aliases: ["freeinference-glm-5-turbo"]
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "1.2"
+      prompt: "1.6"
       completion: "4.0"
       image: "0"
       request: "0"
@@ -254,7 +204,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -267,13 +217,6 @@ models:
         api_keys:
           - ${CHUTES_API_KEY}
         provider_model_id: "zai-org/GLM-5-TEE"
-      # # Featherless fallback
-      # - kind: featherless
-      #   weight: 0
-      #   base_url: ${FEATHERLESS_BASE_URL}
-      #   api_keys:
-      #     - ${FEATHERLESS_API_KEY}
-      #   provider_model_id: "MiniMaxAI/MiniMax-M2.5"
 
 
   - id: minimax-m2.5
@@ -307,14 +250,14 @@ models:
         provider_model_id: "MiniMax-M2.5"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.5"
       # Chutes fallback
       - kind: chutes
-        weight: 0.00
+        weight: 0.01
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
@@ -330,7 +273,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -344,7 +287,7 @@ models:
     quantization: "bf16"
     input_modalities: ["text", "image"]
     output_modalities: ["text"]
-    context_length: 204800
+    context_length: 1048576merge
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
@@ -369,7 +312,7 @@ models:
         provider_model_id: "MiniMax-M3"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
@@ -378,7 +321,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -520,7 +463,7 @@ models:
         provider_model_id: "MiniMax-M2.7"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
@@ -529,7 +472,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -586,7 +529,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -627,7 +570,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -667,7 +610,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -716,7 +659,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -764,7 +707,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
