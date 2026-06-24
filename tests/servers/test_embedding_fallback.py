@@ -42,6 +42,26 @@ class _StubAdapter:
         return self._response
 
 
+class _RoutingStub:
+    """Adapter stub that raises for inputs in ``fail_inputs`` and otherwise
+    echoes which backend served — used to route concurrent requests to
+    different backends through the same wrapper.
+    """
+
+    def __init__(self, *, provider: str, fail_inputs: frozenset[str] = frozenset()) -> None:
+        self.config = SimpleNamespace(
+            provider=provider,
+            pricing={"prompt": "0", "completion": "0"},
+            endpoint_id=f"emb:{provider}",
+        )
+        self._fail = set(fail_inputs)
+
+    async def embeddings(self, input_data, **params):
+        if input_data in self._fail:
+            raise RuntimeError(f"{self.config.provider} refuses {input_data}")
+        return {"served_by": self.config.provider, "input": input_data}
+
+
 def test_requires_at_least_one_adapter():
     with pytest.raises(ValueError):
         FallbackEmbeddingAdapter([])
@@ -109,3 +129,38 @@ async def test_cancellation_is_not_swallowed():
         await wrapper.embeddings("hello")
 
     assert secondary.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_get_isolated_serving_config():
+    """Two concurrent requests through the same shared wrapper, routed to
+    different backends, must each see their own serving_config — even when the
+    attribution is read after a further await (where a shared instance attribute
+    would be clobbered by the other request).
+    """
+    primary = _RoutingStub(provider="primary", fail_inputs=frozenset({"to-staging"}))
+    staging = _RoutingStub(provider="staging")
+    wrapper = FallbackEmbeddingAdapter([primary, staging])
+
+    both_served = asyncio.Event()
+    pending = {"count": 2}
+
+    async def call(text):
+        resp = await wrapper.embeddings(text)
+        served = resp["served_by"]
+        # Force an await between serving and reading attribution: wait until
+        # BOTH requests have served (and thus both have written their served
+        # config) before either reads it back.
+        pending["count"] -= 1
+        if pending["count"] == 0:
+            both_served.set()
+        await both_served.wait()
+        return served, wrapper.serving_config.provider
+
+    results = await asyncio.gather(call("to-staging"), call("normal"))
+
+    # "to-staging" is refused by primary and served by staging; "normal" is
+    # served by primary. Each request's attribution must match who served it.
+    for served_by, attributed in results:
+        assert served_by == attributed, (served_by, attributed)
+    assert sorted(served for served, _ in results) == ["primary", "staging"]
