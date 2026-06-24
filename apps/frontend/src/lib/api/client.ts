@@ -176,7 +176,7 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
       if (lowerMessage.includes('already registered')) {
         errorCode = 'USER_ALREADY_EXISTS';
       } else if (
-        lowerMessage.includes('not verified') ||
+        (lowerMessage.includes('email') && lowerMessage.includes('not verified')) ||
         lowerMessage.includes('verify your email')
       ) {
         // Login raises a plain HTTPException ({ detail: "Email not verified..." }),

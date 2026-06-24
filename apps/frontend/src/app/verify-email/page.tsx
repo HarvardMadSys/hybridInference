@@ -113,8 +113,17 @@ function VerifyEmailContent(): JSX.Element {
             {status === 'error' &&
               (resendDone ? (
                 <div className="w-full rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                  A new verification email is on its way to {resendEmail.trim()}. Please check your
-                  inbox (and spam folder), then follow the link to finish verifying.
+                  <p>
+                    A new verification email is on its way to {resendEmail.trim()}. Please check
+                    your inbox (and spam folder), then follow the link to finish verifying.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setResendDone(false)}
+                    className="mt-2 text-xs font-medium text-green-800 underline hover:text-green-900"
+                  >
+                    Entered the wrong email? Try another one
+                  </button>
                 </div>
               ) : (
                 <form onSubmit={handleResend} className="w-full space-y-3">

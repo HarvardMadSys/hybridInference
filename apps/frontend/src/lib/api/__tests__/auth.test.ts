@@ -65,4 +65,17 @@ describe('login error mapping', () => {
     expect(err).toBeInstanceOf(APIError);
     expect((err as APIError).code).toBe('EMAIL_NOT_VERIFIED');
   });
+
+  it('does not map unrelated "not verified" details to EMAIL_NOT_VERIFIED', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: 'Signature not verified.' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const err = await login({ email: 'user@example.com', password: 'pw' }).catch((e) => e);
+    expect(err).toBeInstanceOf(APIError);
+    expect((err as APIError).code).toBe('UNKNOWN_ERROR');
+  });
 });
