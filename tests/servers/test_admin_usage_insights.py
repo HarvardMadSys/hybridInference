@@ -279,6 +279,23 @@ class TestAdminUsageInsightsSettings:
         )
 
     @pytest.mark.asyncio
+    async def test_put_rejects_whitespace_model(self, app_with_store):
+        """A whitespace-only model passes min_length=1 but must not be stored as ''."""
+        store = _make_op_store()
+        app = app_with_store(store)
+        app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.put(
+                "/admin/usage-insights/settings",
+                json={"api_key": "sk-keep", "model": "   "},
+            )
+        assert resp.status_code == 400
+        # The model is rejected before any write, so the api_key is not half-applied.
+        store.set_setting.assert_not_called()
+        store.delete_setting.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_put_empty_key_clears(self, app_with_store):
         store = _make_op_store()
         app = app_with_store(store)

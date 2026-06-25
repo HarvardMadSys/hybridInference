@@ -48,11 +48,16 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
   }, [load]);
 
   const onSave = async () => {
+    const trimmedModel = model.trim();
+    if (!trimmedModel) {
+      onToast('Model name cannot be empty');
+      return;
+    }
     setBusy(true);
     try {
       const patch: { api_key?: string; model?: string } = {};
       if (apiKey.trim()) patch.api_key = apiKey.trim();
-      if (model.trim() && model.trim() !== settings?.model) patch.model = model.trim();
+      if (trimmedModel !== settings?.model) patch.model = trimmedModel;
       if (patch.api_key === undefined && patch.model === undefined) {
         onToast('Nothing to save');
         setBusy(false);

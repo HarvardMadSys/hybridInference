@@ -316,14 +316,23 @@ async def update_usage_insights_settings(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
+    # Validate before any writes so a rejected model can't leave the api_key
+    # half-applied. A whitespace-only model passes Field(min_length=1) but
+    # strips to "", which we must not persist.
+    model_value: str | None = None
+    if payload.model is not None:
+        model_value = payload.model.strip()
+        if not model_value:
+            raise HTTPException(400, "Model name cannot be empty or whitespace only.")
+
     if payload.api_key is not None:
         key = payload.api_key.strip()
         if key:
             await op_store.set_setting(_SETTING_API_KEY, key, "str", admin_id)
         else:
             await op_store.delete_setting(_SETTING_API_KEY)
-    if payload.model is not None:
-        await op_store.set_setting(_SETTING_MODEL, payload.model.strip(), "str", admin_id)
+    if model_value is not None:
+        await op_store.set_setting(_SETTING_MODEL, model_value, "str", admin_id)
 
     await log_admin_action(
         op_store,

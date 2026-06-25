@@ -18,7 +18,10 @@ export function UsageInsightsReport({ result }: { result: UsageInsightsResponse 
       <div className={MARKDOWN_CLASS}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.analysis}</ReactMarkdown>
       </div>
-      <p className="mt-5 border-t border-gray-100 pt-3 text-[11px] text-gray-400">
+      <p
+        className="mt-5 border-t border-gray-100 pt-3 text-[11px] text-gray-400"
+        suppressHydrationWarning
+      >
         Generated {new Date(result.generated_at).toLocaleString()} · model {result.model} ·{' '}
         {result.sampled_requests} sampled request(s) · scope {result.scope}
       </p>
