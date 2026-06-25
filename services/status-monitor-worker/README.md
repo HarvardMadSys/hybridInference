@@ -31,6 +31,22 @@ survives Worker restarts and is never raced (alert evaluation runs while the
 cycle holds its lock). Leave `SLACK_WEBHOOK_URL` unset to disable alerting
 entirely.
 
+Every page is committed to the alert state only **after** its Slack POST is
+confirmed delivered, so a transient webhook failure (rate limit, network blip)
+is retried on the next cron cycle rather than being silently dropped.
+
+Two whole-deployment cases are also covered:
+
+- **Gateway-level outage.** If the gateway is unreachable (model discovery
+  fails) or the prober key is rejected account-wide (expired key, unverified,
+  over quota), no model can be probed — so a single **"Monitoring cycle
+  failing"** page is sent (edge-triggered, with a matching recovery notice)
+  instead of nothing.
+- **Mass outage (storm cap).** When more than `ALERT_STORM_THRESHOLD` models
+  (default **5**) change state in the same cycle — e.g. a provider-wide blip —
+  the individual pages collapse into one **"N models down"** / **"N models
+  recovered"** summary so the channel isn't flooded.
+
 ## Endpoints
 
 | Path | Description |
@@ -59,7 +75,9 @@ working without JavaScript).
 `wrangler.toml` `[vars]`: `GATEWAY_BASE_URL`, `PROBE_PROMPT`, `PROBE_MAX_TOKENS`,
 `MAX_CONCURRENCY` (keep at/below the prober account's gateway concurrency cap —
 3 free/pro, 10 internal/admin), `PROBE_HEADER`, `RETENTION_DAYS`,
-`ALERT_FAILURE_THRESHOLD` (consecutive failed probes before a model pages Slack).
+`ALERT_FAILURE_THRESHOLD` (consecutive failed probes before a model pages Slack),
+`ALERT_STORM_THRESHOLD` (models changing state in one cycle before pages collapse
+into a summary).
 
 `PROBER_API_KEY` is a **secret**, not a var. `SLACK_WEBHOOK_URL` is an optional
 **secret** — set it to enable Slack alerting (see above), leave it unset to

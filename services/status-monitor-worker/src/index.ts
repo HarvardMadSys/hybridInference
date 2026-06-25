@@ -1,7 +1,8 @@
-import { runAlerts } from "./alerts";
+import { runAlerts, runCycleAlert } from "./alerts";
 import { renderDashboard } from "./dashboard";
 import {
   acquireCycleLock,
+  type CycleStatus,
   getSnapshot,
   prune,
   reconcileModels,
@@ -10,9 +11,25 @@ import {
   renewCycleLock,
   setCycleStatus,
 } from "./db";
-import { loadConfig, type Env } from "./env";
+import { type Config, loadConfig, type Env } from "./env";
 import { discoverModels } from "./models";
 import { probeModel, type ProbeResult } from "./probe";
+
+/**
+ * Records the cycle's health and, edge-triggered, pages Slack when the whole
+ * cycle fails (gateway unreachable / key rejected account-wide) or recovers.
+ * Called at every cycle-status write so a gateway-level outage — which returns
+ * before the per-model alerter — is not silent. The Slack/D1 work is contained
+ * so it can never break the cycle.
+ */
+async function finalizeCycle(env: Env, config: Config, status: CycleStatus): Promise<void> {
+  await setCycleStatus(env.DB, status);
+  try {
+    await runCycleAlert(env, config, status);
+  } catch (err) {
+    console.error("cycle alert failed", err);
+  }
+}
 
 // Lock lease TTL. A live cycle renews well within this window; only a crashed
 // invocation lets it lapse so a successor can take over.
@@ -45,7 +62,7 @@ async function runProbeCycle(env: Env): Promise<void> {
   const now = () => new Date().toISOString();
   if (!env.PROBER_API_KEY) {
     console.error("PROBER_API_KEY is not set; skipping probe cycle.");
-    await setCycleStatus(env.DB, { ok: false, checkedAt: now(), error: "PROBER_API_KEY not set" });
+    await finalizeCycle(env, config, { ok: false, checkedAt: now(), error: "PROBER_API_KEY not set" });
     return;
   }
 
@@ -92,7 +109,7 @@ async function runProbeCycle(env: Env): Promise<void> {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`model discovery failed: ${message}`);
-      await setCycleStatus(env.DB, { ok: false, checkedAt: now(), error: message });
+      await finalizeCycle(env, config, { ok: false, checkedAt: now(), error: message });
       return;
     }
 
@@ -105,7 +122,7 @@ async function runProbeCycle(env: Env): Promise<void> {
     // instead of recording every model as a false outage.
     if (isAccountLevelFailure(results)) {
       console.error("all probes rejected at account level (401/403/429).");
-      await setCycleStatus(env.DB, {
+      await finalizeCycle(env, config, {
         ok: false,
         checkedAt: now(),
         error: "probes rejected account-wide (401/403/429); check PROBER_API_KEY, verification, and quota",
@@ -119,7 +136,9 @@ async function runProbeCycle(env: Env): Promise<void> {
       results.map((r) => r.modelId),
     );
     await prune(env.DB, config.retentionDays);
-    await setCycleStatus(env.DB, { ok: true, checkedAt: now(), error: null });
+    // finalizeCycle records health and, if the cycle was previously failing at
+    // the gateway level, pages a recovery notice.
+    await finalizeCycle(env, config, { ok: true, checkedAt: now(), error: null });
     // Page Slack for models that crossed the consecutive-failure threshold. A
     // webhook/D1 hiccup here must not fail the cycle or leak the lock, so it is
     // contained — the recorded results above are the source of truth regardless.

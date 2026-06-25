@@ -4,10 +4,12 @@ import {
   decideAlerts,
   deriveEnvironment,
   escapeSlackText,
+  formatCycleDownAlert,
   formatModelDownAlert,
   formatModelRecoveredAlert,
   postSlack,
   runAlerts,
+  runCycleAlert,
 } from "../src/alerts";
 import type { Config, Env } from "../src/env";
 import type { ProbeResult } from "../src/probe";
@@ -21,6 +23,7 @@ const config = {
   retentionDays: 7,
   probeDeadlineMs: 1000,
   alertFailureThreshold: 2,
+  alertStormThreshold: 5,
 } as Config;
 
 function result(modelId: string, ok: boolean, error: string | null = ok ? null : "boom"): ProbeResult {
@@ -163,6 +166,10 @@ class FakeStmt {
       this.db.meta.set(this.args[0] as string, this.args[1] as string);
       return { meta: { changes: 1 } };
     }
+    if (/DELETE FROM meta WHERE key = \?/.test(this.sql)) {
+      const existed = this.db.meta.delete(this.args[0] as string);
+      return { meta: { changes: existed ? 1 : 0 } };
+    }
     throw new Error(`unhandled run(): ${this.sql}`);
   }
   async all<T>(): Promise<{ results: T[] }> {
@@ -213,8 +220,8 @@ function stubFetch(): Array<{ text: string }> {
   return posts;
 }
 
-function cfg(threshold: number): Config {
-  return { ...config, alertFailureThreshold: threshold };
+function cfg(threshold: number, storm: number = config.alertStormThreshold): Config {
+  return { ...config, alertFailureThreshold: threshold, alertStormThreshold: storm };
 }
 
 /** Records one cycle's results into the fake DB (reconciling as the worker does) and evaluates alerts. */
@@ -413,5 +420,128 @@ describe("runAlerts", () => {
     await runAlerts(env, config, []);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(db.meta.has("alert_state")).toBe(false);
+  });
+
+  it("collapses a mass outage into a single summary page above the storm threshold", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+    const conf = cfg(2, 3); // summarize when more than 3 models change state
+    const down = { a: false, b: false, c: false, d: false, e: false }; // 5 > 3
+
+    await cycle(db, env, down, conf);
+    await cycle(db, env, down, conf); // all five cross the threshold this cycle
+    expect(posts).toHaveLength(1); // one summary, not five
+    expect(posts[0].text).toContain("5 models down");
+    expect(posts[0].text).toContain("`a`");
+    // Every summarized model is recorded as alerted, so none re-pages next cycle.
+    const state = JSON.parse(db.meta.get("alert_state")!);
+    expect(Object.keys(state).sort()).toEqual(["a", "b", "c", "d", "e"]);
+
+    await cycle(db, env, down, conf);
+    expect(posts).toHaveLength(1); // sustained outage doesn't repeat
+  });
+
+  it("pages individually at or below the storm threshold", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+    const conf = cfg(2, 3);
+    const down = { a: false, b: false, c: false }; // 3, not > 3
+
+    await cycle(db, env, down, conf);
+    await cycle(db, env, down, conf);
+    expect(posts).toHaveLength(3); // one message per model
+    expect(posts.every((p) => p.text.includes("Model down"))).toBe(true);
+  });
+});
+
+describe("formatCycleDownAlert", () => {
+  it("describes the gateway-level failure with the escaped error", () => {
+    const msg = formatCycleDownAlert(config, {
+      ok: false,
+      checkedAt: "2026-06-25T00:00:00Z",
+      error: "models discovery failed: HTTP 503 <x>",
+    });
+    expect(msg).toContain("Monitoring cycle failing");
+    expect(msg).toContain("HTTP 503 &lt;x&gt;");
+    expect(msg).toContain("no models could be probed");
+  });
+});
+
+describe("runCycleAlert", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function envWith(db: FakeD1, webhook: string | undefined): Env {
+    return { SLACK_WEBHOOK_URL: webhook, DB: db as unknown as D1Database } as unknown as Env;
+  }
+  const failing = { ok: false, checkedAt: "2026-06-25T00:00:00Z", error: "gateway down" };
+  const healthy = { ok: true, checkedAt: "2026-06-25T00:20:00Z", error: null };
+
+  it("pages once when the cycle starts failing and not again while it stays down", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await runCycleAlert(env, config, failing);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toContain("Monitoring cycle failing");
+    expect(db.meta.get("cycle_alert")).toBeTruthy();
+
+    await runCycleAlert(env, config, failing); // still down → no repeat
+    expect(posts).toHaveLength(1);
+  });
+
+  it("pages a recovery and clears state when the cycle succeeds again", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await runCycleAlert(env, config, failing); // down (1)
+    await runCycleAlert(env, config, healthy); // recovered (2)
+    expect(posts).toHaveLength(2);
+    expect(posts[1].text).toContain("Monitoring cycle recovered");
+    expect(db.meta.has("cycle_alert")).toBe(false);
+  });
+
+  it("does not record the cycle as alerted when the POST fails (retries next cycle)", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    let status = 500;
+    const posts: Array<{ text: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        posts.push(JSON.parse(String(init.body)));
+        return new Response("x", { status });
+      }),
+    );
+
+    await runCycleAlert(env, config, failing); // POST 500 → not committed
+    expect(db.meta.has("cycle_alert")).toBe(false);
+
+    status = 200;
+    await runCycleAlert(env, config, failing); // retried → delivered
+    expect(posts).toHaveLength(2);
+    expect(db.meta.get("cycle_alert")).toBeTruthy();
+  });
+
+  it("never pages a recovery for a cycle that was never alerted down", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await runCycleAlert(env, config, healthy);
+    expect(posts).toHaveLength(0);
+  });
+
+  it("is disabled without a webhook", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, undefined);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runCycleAlert(env, config, failing);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

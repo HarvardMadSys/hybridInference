@@ -131,6 +131,34 @@ export async function writeAlertState(db: D1Database, state: Record<string, stri
     .run();
 }
 
+const CYCLE_ALERT_KEY = "cycle_alert";
+
+/**
+ * Reads the cycle-level (gateway-down) alert marker: the ISO time we last paged
+ * that the whole probe cycle is failing, or `null` if no such alert is open. Its
+ * presence is what makes the cycle alert edge-triggered — paged once on the
+ * transition to unhealthy, not every failing cron.
+ */
+export async function readCycleAlertState(db: D1Database): Promise<string | null> {
+  const row = await db
+    .prepare(`SELECT value FROM meta WHERE key = ?`)
+    .bind(CYCLE_ALERT_KEY)
+    .first<{ value: string }>();
+  return row?.value || null;
+}
+
+/** Sets (non-empty `value`) or clears (`null`) the cycle-level alert marker. */
+export async function writeCycleAlertState(db: D1Database, value: string | null): Promise<void> {
+  if (value) {
+    await db
+      .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+      .bind(CYCLE_ALERT_KEY, value)
+      .run();
+  } else {
+    await db.prepare(`DELETE FROM meta WHERE key = ?`).bind(CYCLE_ALERT_KEY).run();
+  }
+}
+
 /** Deletes probe rows older than `retentionDays`. */
 export async function prune(db: D1Database, retentionDays: number): Promise<void> {
   const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();

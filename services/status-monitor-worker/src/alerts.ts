@@ -1,4 +1,11 @@
-import { modelsFailingStreak, readAlertState, writeAlertState } from "./db";
+import {
+  type CycleStatus,
+  modelsFailingStreak,
+  readAlertState,
+  readCycleAlertState,
+  writeAlertState,
+  writeCycleAlertState,
+} from "./db";
 import type { Config, Env } from "./env";
 import type { ProbeResult } from "./probe";
 
@@ -57,6 +64,56 @@ export function formatModelRecoveredAlert(config: Config, result: ProbeResult): 
   const modelId = result.modelId.replace(/`/g, "");
   return [
     ...header("✅", `Model recovered: \`${modelId}\``, config, result.checkedAt),
+    `• *Gateway:* ${config.gatewayBaseUrl}`,
+  ].join("\n");
+}
+
+// Cap on model ids spelled out in a storm summary; the rest are counted as "+N more".
+const SUMMARY_LIST_LIMIT = 25;
+
+function summaryList(results: ProbeResult[]): string {
+  const shown = results.slice(0, SUMMARY_LIST_LIMIT).map((r) => `\`${r.modelId.replace(/`/g, "")}\``);
+  const extra = results.length - shown.length;
+  return extra > 0 ? `${shown.join(", ")} (+${extra} more)` : shown.join(", ");
+}
+
+/** One Slack message for a batch of models that went down in the same cycle. */
+export function formatModelsDownSummary(
+  config: Config,
+  results: ProbeResult[],
+  threshold: number,
+): string {
+  return [
+    ...header("\u{1F6A8}", `${results.length} models down`, config, results[0]?.checkedAt ?? ""),
+    `• *Failed the last ${threshold} probes in a row:* ${summaryList(results)}`,
+    `• *Gateway:* ${config.gatewayBaseUrl}`,
+  ].join("\n");
+}
+
+/** One Slack message for a batch of models that recovered in the same cycle. */
+export function formatModelsRecoveredSummary(config: Config, results: ProbeResult[]): string {
+  return [
+    ...header("✅", `${results.length} models recovered`, config, results[0]?.checkedAt ?? ""),
+    `• ${summaryList(results)}`,
+    `• *Gateway:* ${config.gatewayBaseUrl}`,
+  ].join("\n");
+}
+
+/** Slack message when the whole probe cycle fails (gateway down / key rejected). */
+export function formatCycleDownAlert(config: Config, status: CycleStatus): string {
+  const error = status.error ? escapeSlackText(status.error) : "(no error message)";
+  return [
+    ...header("\u{1F6A8}", "Monitoring cycle failing", config, status.checkedAt ?? ""),
+    `• *Error:* ${error}`,
+    `• *Impact:* no models could be probed this cycle.`,
+    `• *Gateway:* ${config.gatewayBaseUrl}`,
+  ].join("\n");
+}
+
+/** Slack message when the probe cycle succeeds again after a cycle-down alert. */
+export function formatCycleRecoveredAlert(config: Config, status: CycleStatus): string {
+  return [
+    ...header("✅", "Monitoring cycle recovered", config, status.checkedAt ?? ""),
     `• *Gateway:* ${config.gatewayBaseUrl}`,
   ].join("\n");
 }
@@ -158,35 +215,67 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   const { down, recovered, baseState } = decideAlerts(results, failing, prevState);
 
   const nextState: Record<string, string> = { ...baseState };
+  const storm = config.alertStormThreshold;
 
-  // Send pages concurrently so a batch of simultaneous outages doesn't hold the
-  // cycle lock for (count × per-request timeout). Each state transition is
-  // committed only for a page that actually delivered: a failed POST leaves a
-  // down model un-alerted (retried next cycle) and keeps a recovering model's
-  // down state (recovery retried next cycle), so a Slack hiccup never drops an
-  // alert instead of just delaying it.
-  const downSent = await Promise.all(
-    down.map(async (r) => ({
-      modelId: r.modelId,
-      checkedAt: r.checkedAt,
-      ok: await postSlack(webhookUrl, formatModelDownAlert(config, r, threshold)),
-    })),
-  );
-  for (const r of downSent) {
-    if (r.ok) nextState[r.modelId] = r.checkedAt;
+  // A provider-wide blip can take down many models at once. Past `storm`, collapse
+  // them into one summary message so the channel isn't flooded with one page per
+  // model; below it, page individually (concurrently, so a batch doesn't hold the
+  // cycle lock for count × per-request timeout). Either way a model's state
+  // transition is committed only once its page is confirmed delivered, so a failed
+  // POST retries next cycle instead of dropping the alert.
+  if (down.length > storm) {
+    if (await postSlack(webhookUrl, formatModelsDownSummary(config, down, threshold))) {
+      for (const r of down) nextState[r.modelId] = r.checkedAt;
+    }
+  } else {
+    const sent = await Promise.all(
+      down.map(async (r) => ({
+        modelId: r.modelId,
+        checkedAt: r.checkedAt,
+        ok: await postSlack(webhookUrl, formatModelDownAlert(config, r, threshold)),
+      })),
+    );
+    for (const r of sent) if (r.ok) nextState[r.modelId] = r.checkedAt;
   }
 
-  const recoveredSent = await Promise.all(
-    recovered.map(async (r) => ({
-      modelId: r.modelId,
-      ok: await postSlack(webhookUrl, formatModelRecoveredAlert(config, r)),
-    })),
-  );
-  for (const r of recoveredSent) {
-    if (r.ok) delete nextState[r.modelId];
+  if (recovered.length > storm) {
+    if (await postSlack(webhookUrl, formatModelsRecoveredSummary(config, recovered))) {
+      for (const r of recovered) delete nextState[r.modelId];
+    }
+  } else {
+    const sent = await Promise.all(
+      recovered.map(async (r) => ({
+        modelId: r.modelId,
+        ok: await postSlack(webhookUrl, formatModelRecoveredAlert(config, r)),
+      })),
+    );
+    for (const r of sent) if (r.ok) delete nextState[r.modelId];
   }
 
   if (JSON.stringify(nextState) !== JSON.stringify(prevState)) {
     await writeAlertState(env.DB, nextState);
+  }
+}
+
+/**
+ * Edge-triggered Slack alert for a *cycle-level* failure — the gateway being
+ * unreachable (model discovery failed) or the prober key being rejected
+ * account-wide. These paths return before any model is probed, so the per-model
+ * alerter never runs; without this, the most severe outages would be silent on
+ * Slack. Pages once on the transition to unhealthy and once on recovery, with
+ * the same deliver-before-commit guarantee as the per-model path. No-op when
+ * `SLACK_WEBHOOK_URL` is unset.
+ */
+export async function runCycleAlert(env: Env, config: Config, status: CycleStatus): Promise<void> {
+  const webhookUrl = env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl) return;
+
+  const alerted = (await readCycleAlertState(env.DB)) != null;
+  if (!status.ok) {
+    if (!alerted && (await postSlack(webhookUrl, formatCycleDownAlert(config, status)))) {
+      await writeCycleAlertState(env.DB, status.checkedAt || "alerted");
+    }
+  } else if (alerted && (await postSlack(webhookUrl, formatCycleRecoveredAlert(config, status)))) {
+    await writeCycleAlertState(env.DB, null);
   }
 }
