@@ -23,6 +23,7 @@ export interface AdminUser {
   reviewed_at: string | null;
   reviewed_by: string | null;
   signup_reason: string | null;
+  admin_note: string | null;
   created_at: string;
   last_login_at: string | null;
   has_key: boolean;
@@ -177,6 +178,7 @@ export interface UserDetail {
   disabled_models: string[];
   last_request_at: string | null;
   max_concurrent_requests: number | null;
+  admin_note: string | null;
   avg_turns: number | null;
   avg_user_turns: number | null;
 }
@@ -209,6 +211,7 @@ export interface UpdateUserData {
   quota_monthly_cost_usd?: number;
   disabled_models?: string[];
   max_concurrent_requests?: number | null;
+  admin_note?: string | null;
 }
 
 export async function updateUser(

@@ -139,6 +139,7 @@ async def list_users(
                 reviewed_at=row.get("reviewed_at"),
                 reviewed_by=row.get("reviewed_by"),
                 signup_reason=row.get("signup_reason"),
+                admin_note=row.get("admin_note"),
                 created_at=row["created_at"],
                 last_login_at=row.get("last_login_at"),
                 has_key=row.get("key_prefix") is not None,
@@ -479,6 +480,7 @@ async def get_user_detail(
         disabled_models=get_disabled_models_from_preferences(user_row.get("preferences")),
         last_request_at=last_request_at,
         max_concurrent_requests=user_row.get("max_concurrent_requests"),
+        admin_note=user_row.get("admin_note"),
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
     )
@@ -550,6 +552,15 @@ async def update_user(
     if "max_concurrent_requests" in payload_dict:
         user_table_updates["max_concurrent_requests"] = payload_dict["max_concurrent_requests"]
         updated.append("max_concurrent_requests")
+    if "admin_note" in payload_dict:
+        note = payload_dict["admin_note"]
+        # Normalize blank/whitespace-only notes to NULL so "clear the note"
+        # works regardless of whether the client sends "" or null.
+        if isinstance(note, str):
+            note = note.strip() or None
+        user_table_updates["admin_note"] = note
+        payload_dict["admin_note"] = note
+        updated.append("admin_note")
     if user_table_updates:
         await op_store.update_user_fields(user_id, **user_table_updates)
 

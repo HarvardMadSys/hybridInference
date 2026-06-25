@@ -53,8 +53,10 @@ export function UserTable(props: UserTableProps) {
   const [editQuota, setEditQuota] = useState('');
   const [editDisabledModels, setEditDisabledModels] = useState<string[]>([]);
   const [editMaxConcurrent, setEditMaxConcurrent] = useState('');
+  const [editNote, setEditNote] = useState('');
   const [availableModels, setAvailableModels] = useState<AdminModelVisibilityItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [savingNote, setSavingNote] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const pageMedianToday = useMemo(
@@ -85,6 +87,7 @@ export function UserTable(props: UserTableProps) {
       setEditQuota(d.quota_daily_usd?.toString() ?? '100');
       setEditDisabledModels(d.disabled_models ?? []);
       setEditMaxConcurrent(d.max_concurrent_requests?.toString() ?? '');
+      setEditNote(d.admin_note ?? '');
       setAvailableModels(visibility.models);
     } catch {
       setExpandedId(null);
@@ -119,6 +122,23 @@ export function UserTable(props: UserTableProps) {
       await props.onUpdate(expandedId, patch);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Admin note has its own save so it can be edited for users of any status,
+  // independent of the active-only role/quota editor below it.
+  const doSaveNote = async () => {
+    if (!expandedId || !detail) return;
+    const next = editNote.trim() ? editNote.trim() : null;
+    if (next === (detail.admin_note ?? null)) return;
+    setSavingNote(true);
+    try {
+      await props.onUpdate(expandedId, { admin_note: next });
+      const refreshed = await getUserDetail(expandedId);
+      setDetail(refreshed);
+      setEditNote(refreshed.admin_note ?? '');
+    } finally {
+      setSavingNote(false);
     }
   };
 
@@ -305,6 +325,7 @@ export function UserTable(props: UserTableProps) {
                 reviewed_at: u.reviewed_at,
                 reviewed_by: u.reviewed_by,
                 signup_reason: u.signup_reason,
+                admin_note: u.admin_note,
                 created_at: u.created_at,
                 last_login_at: u.last_login_at,
                 has_key: u.has_key,
@@ -349,14 +370,18 @@ export function UserTable(props: UserTableProps) {
                             editQuota={editQuota}
                             editDisabledModels={editDisabledModels}
                             editMaxConcurrent={editMaxConcurrent}
+                            editNote={editNote}
                             availableModels={availableModels}
                             saving={saving}
+                            savingNote={savingNote}
                             busy={busy}
                             onChangeRole={setEditRole}
                             onChangeQuota={setEditQuota}
                             onChangeDisabledModels={setEditDisabledModels}
                             onChangeMaxConcurrent={setEditMaxConcurrent}
+                            onChangeNote={setEditNote}
                             onSave={doSave}
+                            onSaveNote={doSaveNote}
                             onSuspend={doSuspend}
                             onReactivate={doReactivate}
                             onResume={doResume}
