@@ -27,69 +27,77 @@ dump_diagnostics() {
 
 trap dump_diagnostics EXIT
 
-cd "$APP_DIR"
+# Wrap body in a function so bash parses the entire script into memory before
+# executing any command. The script self-modifies via `git reset --hard` below;
+# without this guard, bash continues reading the disk file at the byte offset
+# it stopped at, which silently desynchronizes once line counts shift.
+main() {
+  cd "$APP_DIR"
 
-if [[ ! -f .env ]]; then
-  log "Missing ${APP_DIR}/.env; staging secrets must stay on the server."
-  exit 1
-fi
-
-# The canonical-commit reset below (git reset --hard) discards any tracked
-# local changes regardless, so refusing here only ever bricked the deploy:
-# innocuous working-tree drift on the server (e.g. a tracked file deleted
-# out-of-band) blocked the very reset that would have healed it. Back any
-# local changes up to a timestamped patch first, so an uncommitted operator
-# hotfix stays recoverable, then proceed.
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  backup="${APP_DIR}/.deploy-local-changes-$(date -u +%Y%m%dT%H%M%SZ).patch"
-  log "Tracked local changes detected; backing up to ${backup} before reset."
-  git status --short --untracked-files=no
-  git diff HEAD > "$backup" || true
-fi
-
-log "Fetching origin/${TARGET_BRANCH}."
-git fetch --prune origin "$TARGET_BRANCH"
-
-if [[ -n "$DEPLOY_SHA" ]]; then
-  # Only origin/${TARGET_BRANCH} was fetched above, so a SHA from any other
-  # branch won't exist in this repo. Guard rev-parse so that case fails with a
-  # clear message instead of a raw "unknown revision" git error (exit 128).
-  if ! target_sha="$(git rev-parse --verify --quiet --end-of-options "${DEPLOY_SHA}^{commit}")"; then
-    log "Refusing to deploy ${DEPLOY_SHA}; it is not on origin/${TARGET_BRANCH}."
-    log "Staging only deploys commits on '${TARGET_BRANCH}'. If you dispatched"
-    log "Deploy Staging against another branch, re-run it against '${TARGET_BRANCH}'."
+  if [[ ! -f .env ]]; then
+    log "Missing ${APP_DIR}/.env; staging secrets must stay on the server."
     exit 1
   fi
-  if ! git merge-base --is-ancestor "$target_sha" "origin/${TARGET_BRANCH}"; then
-    log "Refusing to deploy ${target_sha}; it is not on origin/${TARGET_BRANCH}."
-    exit 1
+
+  # The canonical-commit reset below (git reset --hard) discards any tracked
+  # local changes regardless, so refusing here only ever bricked the deploy:
+  # innocuous working-tree drift on the server (e.g. a tracked file deleted
+  # out-of-band) blocked the very reset that would have healed it. Back any
+  # local changes up to a timestamped patch first, so an uncommitted operator
+  # hotfix stays recoverable, then proceed.
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    backup="${APP_DIR}/.deploy-local-changes-$(date -u +%Y%m%dT%H%M%SZ).patch"
+    log "Tracked local changes detected; backing up to ${backup} before reset."
+    git status --short --untracked-files=no
+    git diff HEAD > "$backup" || true
   fi
-else
-  target_sha="$(git rev-parse "origin/${TARGET_BRANCH}")"
-fi
 
-current_sha="$(git rev-parse HEAD)"
-log "Deploying ${target_sha} (current ${current_sha})."
+  log "Fetching origin/${TARGET_BRANCH}."
+  git fetch --prune origin "$TARGET_BRANCH"
 
-git reset --hard "$target_sha"
-git submodule update --init --recursive
+  if [[ -n "$DEPLOY_SHA" ]]; then
+    # Only origin/${TARGET_BRANCH} was fetched above, so a SHA from any other
+    # branch won't exist in this repo. Guard rev-parse so that case fails with a
+    # clear message instead of a raw "unknown revision" git error (exit 128).
+    if ! target_sha="$(git rev-parse --verify --quiet --end-of-options "${DEPLOY_SHA}^{commit}")"; then
+      log "Refusing to deploy ${DEPLOY_SHA}; it is not on origin/${TARGET_BRANCH}."
+      log "Staging only deploys commits on '${TARGET_BRANCH}'. If you dispatched"
+      log "Deploy Staging against another branch, re-run it against '${TARGET_BRANCH}'."
+      exit 1
+    fi
+    if ! git merge-base --is-ancestor "$target_sha" "origin/${TARGET_BRANCH}"; then
+      log "Refusing to deploy ${target_sha}; it is not on origin/${TARGET_BRANCH}."
+      exit 1
+    fi
+  else
+    target_sha="$(git rev-parse "origin/${TARGET_BRANCH}")"
+  fi
 
-export BUILD_SHA="$target_sha"
-export BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-log "Build metadata: SHA=${BUILD_SHA} TIMESTAMP=${BUILD_TIMESTAMP}."
+  current_sha="$(git rev-parse HEAD)"
+  log "Deploying ${target_sha} (current ${current_sha})."
 
-log "Rebuilding and restarting Docker Compose services."
-make build
+  git reset --hard "$target_sha"
+  git submodule update --init --recursive
 
-log "Current service state:"
-"${COMPOSE[@]}" ps
+  export BUILD_SHA="$target_sha"
+  export BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  log "Build metadata: SHA=${BUILD_SHA} TIMESTAMP=${BUILD_TIMESTAMP}."
 
-log "Checking backend health at ${HEALTH_URL}."
-curl -fsS --retry 30 --retry-delay 5 --retry-connrefused "$HEALTH_URL"
-printf '\n'
+  log "Rebuilding and restarting Docker Compose services."
+  make build
 
-log "Checking frontend health at ${FRONTEND_HEALTH_URL}."
-curl -fsS --retry 30 --retry-delay 5 --retry-connrefused --retry-all-errors --output /dev/null \
-  "$FRONTEND_HEALTH_URL"
+  log "Current service state:"
+  "${COMPOSE[@]}" ps
 
-log "Staging deployment completed."
+  log "Checking backend health at ${HEALTH_URL}."
+  curl -fsS --retry 30 --retry-delay 5 --retry-connrefused "$HEALTH_URL"
+  printf '\n'
+
+  log "Checking frontend health at ${FRONTEND_HEALTH_URL}."
+  curl -fsS --retry 30 --retry-delay 5 --retry-connrefused --retry-all-errors --output /dev/null \
+    "$FRONTEND_HEALTH_URL"
+
+  log "Staging deployment completed."
+}
+
+main "$@"
