@@ -78,6 +78,9 @@ sudo ./local_deployment_proxy/install.sh
 # box's root SSH key (the tunnel runs as root):
 sudo SSH_HOST='user@internal.freeinference.org|user@spark2' REMOTE_PORT=8001 \
      ./local_deployment_proxy/install.sh
+
+# Remove everything (proxy + all tunnel instances + drop-ins):
+sudo ./local_deployment_proxy/install.sh --uninstall
 ```
 
 Equivalent manual steps, if you'd rather not use the script. The proxy unit
