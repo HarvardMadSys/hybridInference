@@ -34,10 +34,17 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
+# The canonical-commit reset below (git reset --hard) discards any tracked
+# local changes regardless, so refusing here only ever bricked the deploy:
+# innocuous working-tree drift on the server (e.g. a tracked file deleted
+# out-of-band) blocked the very reset that would have healed it. Back any
+# local changes up to a timestamped patch first, so an uncommitted operator
+# hotfix stays recoverable, then proceed.
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  log "Refusing to deploy because tracked local changes exist."
+  backup="${APP_DIR}/.deploy-local-changes-$(date -u +%Y%m%dT%H%M%SZ).patch"
+  log "Tracked local changes detected; backing up to ${backup} before reset."
   git status --short --untracked-files=no
-  exit 1
+  git diff HEAD > "$backup" || true
 fi
 
 log "Fetching origin/${TARGET_BRANCH}."

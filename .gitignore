@@ -340,3 +340,6 @@ storybook-static/
 .kilo/workspaces
 api_log*.jsonl
 api_log*.jsonl.zst
+
+# Backups the deploy scripts write before `git reset --hard` (server-side only)
+.deploy-local-changes-*.patch
