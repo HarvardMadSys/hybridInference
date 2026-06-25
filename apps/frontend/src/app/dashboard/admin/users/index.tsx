@@ -166,6 +166,15 @@ export default function UsersTab() {
     if (scoreQuery.error) toast.error(getErrorMessage(scoreQuery.error));
   }, [scoreQuery.error]);
 
+  // Re-gate scoring whenever the visible set of users changes (pagination,
+  // page-size, or filters). Without this, a single header click would leave
+  // `scoreRun` true and auto-fire the comparatively expensive bulk scoring on
+  // every subsequent page, defeating the on-demand gate.
+  useEffect(() => {
+    setScoreRun(false);
+    setScoreSortDir(null);
+  }, [page, pageSize, filterState]);
+
   const onScoreHeader = () => {
     if (!scoreRun) {
       setScoreRun(true);
