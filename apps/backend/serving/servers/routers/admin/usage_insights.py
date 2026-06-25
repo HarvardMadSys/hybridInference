@@ -79,12 +79,24 @@ async def _resolve_user_id(conn, payload: UsageInsightsRequest) -> str | None:
 
 async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsRequest) -> list[dict]:
     """Pull recent api_logs rows (optionally scoped to one user) with payloads."""
+    # Exclude rows that carry no chat content or that would pollute the report:
+    #  - embeddings (metadata.request_type = "embedding") have a payload but no
+    #    messages/system, so they render as "<none captured>" and can crowd out
+    #    real prompts (same exclusion the request-metrics/export queries use).
+    #  - this feature's own analysis calls, which we mark as synthetic probes so
+    #    the gateway skips logging them; the metadata.synthetic_probe filter is a
+    #    belt-and-braces guard for when log_synthetic_probes is enabled.
+    _content_filter = (
+        "request_payload IS NOT NULL"
+        " AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'"
+        " AND (metadata->>'synthetic_probe') IS DISTINCT FROM 'true'"
+    )
     if user_id:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT timestamp, model_id, provider, metadata, request_payload
             FROM api_logs
-            WHERE user_id = $1 AND request_payload IS NOT NULL
+            WHERE user_id = $1 AND {_content_filter}
             ORDER BY timestamp DESC
             LIMIT $2
             """,
@@ -93,10 +105,10 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
         )
     else:
         rows = await conn.fetch(
-            """
+            f"""
             SELECT timestamp, model_id, provider, metadata, request_payload
             FROM api_logs
-            WHERE request_payload IS NOT NULL AND user_id IS NOT NULL
+            WHERE user_id IS NOT NULL AND {_content_filter}
             ORDER BY timestamp DESC
             LIMIT $1
             """,
@@ -169,6 +181,11 @@ async def _call_analysis_model(payload: UsageInsightsRequest, content: str) -> s
     headers = {
         "Authorization": f"Bearer {payload.api_key}",
         "Content-Type": "application/json",
+        # When base_url is the gateway itself (the default), this marks the call
+        # as a synthetic probe so it is not persisted to api_logs (and not
+        # re-sampled by a later report) or counted against the admin's quota.
+        "X-Probe": "synthetic",
+        "User-Agent": "freeinference-usage-insights/1.0",
     }
     try:
         data = await AsyncHTTPClient.shared().json_post(

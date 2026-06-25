@@ -188,3 +188,36 @@ class TestRenderSamples:
         rendered, used = usage_insights._render_samples(samples)
         assert used < 50
         assert len(rendered) <= usage_insights._MAX_PROMPT_CHARS + 5000
+
+
+class TestCallAnalysisModel:
+    @pytest.mark.asyncio
+    async def test_marks_synthetic_probe_and_builds_url(self, monkeypatch):
+        """The outbound call targets <base>/chat/completions and is a synthetic probe.
+
+        The synthetic-probe header keeps the gateway from logging (and later
+        re-sampling) this feature's own analysis requests.
+        """
+        from serving.schemas_admin import UsageInsightsRequest
+
+        captured: dict = {}
+
+        class _FakeClient:
+            async def json_post(self, url, *, json, headers, timeout):
+                captured["url"] = url
+                captured["headers"] = headers
+                captured["json"] = json
+                return {"choices": [{"message": {"content": "  report  "}}]}
+
+        monkeypatch.setattr(usage_insights.AsyncHTTPClient, "shared", lambda: _FakeClient())
+
+        payload = UsageInsightsRequest(
+            api_key="sk-x", model="glm-5.2", base_url="https://freeinference.org/v1"
+        )
+        text = await usage_insights._call_analysis_model(payload, "the content")
+
+        assert text == "report"
+        assert captured["url"] == "https://freeinference.org/v1/chat/completions"
+        assert captured["headers"]["X-Probe"] == "synthetic"
+        assert captured["headers"]["Authorization"] == "Bearer sk-x"
+        assert captured["json"]["model"] == "glm-5.2"
