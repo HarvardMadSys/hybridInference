@@ -44,3 +44,16 @@ async def test_verify_email_used_token_repairs_unverified_user() -> None:
     assert store.email_verified is True
     assert store.marked_verified is True
     assert store.marked_token_used is False
+
+
+@pytest.mark.asyncio
+async def test_verify_email_used_token_skips_repair_for_verified_user() -> None:
+    """A used token for an already-verified user should remain read-only."""
+    store = _UsedTokenStore(email_verified=True)
+
+    response = await verify_email("already-used-token", op_store=store)
+
+    assert response.email_verified is True
+    assert store.email_verified is True
+    assert store.marked_verified is False
+    assert store.marked_token_used is False
