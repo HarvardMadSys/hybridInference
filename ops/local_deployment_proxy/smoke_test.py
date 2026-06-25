@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 
 # Model ids that look like embedding models (served via /v1/embeddings, no chat).
-EMBED_RE = re.compile(r"bge|embed|e5|gte|nomic|minilm", re.I)
+EMBED_RE = re.compile(r"bge|embed|\be5\b|\bgte\b|nomic|minilm", re.I)
 
 _COLOR = sys.stdout.isatty()
 
@@ -68,7 +68,11 @@ def request(method, url, api_key, payload=None, timeout=30):
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.status, resp.read().decode("utf-8", "replace"), time.time() - start
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace"), time.time() - start
+        try:
+            body = exc.read().decode("utf-8", "replace")
+        except Exception as read_exc:  # e.g. connection reset mid-read
+            body = f"<failed to read error body: {read_exc}>"
+        return exc.code, body, time.time() - start
     except Exception as exc:  # URLError, timeout, OSError, ...
         return None, f"{type(exc).__name__}: {exc}", time.time() - start
 
@@ -98,6 +102,9 @@ def check_models(base, timeout):
     except Exception as exc:
         _failed(f"GET /v1/models -> 200 but unparseable: {exc}")
         return None
+    if not ids:
+        _failed(f"GET /v1/models -> 200 but no models are being served ({dt:.2f}s)")
+        return ids
     _passed(f"GET /v1/models -> 200, {len(ids)} model(s) ({dt:.2f}s)")
     for model_id in ids:
         _note(f"- {model_id}")
@@ -204,9 +211,9 @@ def main():
     results = []
     results.append(check_health(base, min(args.timeout, 15)))
     ids = check_models(base, min(args.timeout, 15))
-    results.append(ids is not None)
+    results.append(bool(ids))
 
-    if ids is not None:
+    if ids:
         embed_ids = [i for i in ids if EMBED_RE.search(i)]
         chat_ids = [i for i in ids if not EMBED_RE.search(i)]
 
@@ -220,7 +227,10 @@ def main():
                         check_chat(base, args.api_key, model, args.timeout, args.thinking)
                     )
             else:
-                _note("no chat model found to test (use --chat-model)")
+                _failed(
+                    "chat check enabled but no chat model is served (use --chat-model or --no-chat)"
+                )
+                results.append(False)
 
         if not args.no_embed:
             targets = (
@@ -232,7 +242,10 @@ def main():
                 for model in targets:
                     results.append(check_embed(base, args.api_key, model, args.timeout))
             else:
-                _note("no embedding model found to test (use --embed-model)")
+                _failed(
+                    "embedding check enabled but no embedding model is served (use --embed-model or --no-embed)"
+                )
+                results.append(False)
 
     passes, total = sum(results), len(results)
     print()
