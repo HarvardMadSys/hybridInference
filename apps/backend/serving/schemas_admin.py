@@ -4,6 +4,7 @@ import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -668,6 +669,62 @@ class AdminAnalyticsResponse(BaseModel):
     top_users: list[AnalyticsUserEntry]
     by_model: list[AnalyticsBreakdownEntry]
     by_provider: list[AnalyticsBreakdownEntry]
+    generated_at: datetime
+
+
+# ========================================
+# Usage Insights (LLM-powered request analysis)
+# ========================================
+
+
+class UsageInsightsRequest(BaseModel):
+    """Request body for POST /admin/usage-insights/analyze.
+
+    The admin supplies a freeinference.org (OpenAI-compatible) API key; the
+    backend samples stored request payloads and asks the chosen model to
+    summarize *how* people are using the gateway.
+    """
+
+    api_key: str = Field(..., min_length=1, description="freeinference.org API key (Bearer)")
+    model: str = Field("glm-5.2", min_length=1, description="Model id to run the analysis with")
+    base_url: str = Field(
+        "https://freeinference.org/v1",
+        min_length=1,
+        description="OpenAI-compatible base URL of the analysis provider",
+    )
+    # Optional scope: analyze one user (by id or email) instead of the whole site.
+    user_id: str | None = Field(None, description="Limit the sample to this user id")
+    user_email: str | None = Field(None, description="Limit the sample to this user's email")
+    limit: int = Field(40, ge=1, le=200, description="Number of recent requests to sample")
+    max_chars: int = Field(
+        800, ge=100, le=4000, description="Truncate each sampled message to this many characters"
+    )
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str) -> str:
+        """Constrain the outbound target to https freeinference.org hosts.
+
+        The admin's API key and a sample of other users' prompt content are sent
+        to ``base_url``, so an unconstrained value would be an SSRF / credential-
+        and data-exfiltration vector. Only the gateway's own domain is allowed.
+        """
+        parsed = urlparse(v)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https":
+            raise ValueError("base_url must use https")
+        if not (host == "freeinference.org" or host.endswith(".freeinference.org")):
+            raise ValueError("base_url host must be freeinference.org")
+        return v
+
+
+class UsageInsightsResponse(BaseModel):
+    """Response for POST /admin/usage-insights/analyze."""
+
+    analysis: str  # Markdown narrative produced by the model
+    model: str
+    sampled_requests: int
+    scope: str  # "all users" or the resolved user email/id
     generated_at: datetime
 
 

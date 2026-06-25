@@ -12,6 +12,7 @@ const TABS = [
   { slug: 'log', label: 'Log' },
   { slug: 'announcements', label: 'Announcements' },
   { slug: 'analytics', label: 'Analytics' },
+  { slug: 'usage-insights', label: 'Usage Insights' },
   { slug: 'settings', label: 'Settings' },
 ] as const;
 
