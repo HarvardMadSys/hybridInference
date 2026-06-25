@@ -595,6 +595,12 @@ async def verify_email(
             raise HTTPException(status_code=400, detail="Invalid verification token.")
 
         if not user_row["email_verified"]:
+            if token_row["expires_at"] < datetime.now(timezone.utc):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Verification token has expired. Please request a new one.",
+                )
+
             await op_store.mark_user_email_verified(token_row["user_id"])
             logger.warning(
                 "Repaired email_verified for user %s from already-used verification token",
