@@ -370,13 +370,13 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           the admin switches to a different user. */}
       <UserAutomationPanel key={u.id} userId={u.id} />
 
-      {/* Recent requests made by this user. key={u.id} remounts the component
-          on user switch so its paging/expansion/cache state resets cleanly. */}
-      <UserRecentRequests key={u.id} userId={u.id} />
-
       {/* LLM analysis of this user's requests. key={u.id} resets the report when
           switching between users. */}
       <UserUsageInsights key={u.id} userId={u.id} />
+
+      {/* Recent requests made by this user. key={u.id} remounts the component
+          on user switch so its paging/expansion/cache state resets cleanly. */}
+      <UserRecentRequests key={u.id} userId={u.id} />
     </div>
   );
 }
