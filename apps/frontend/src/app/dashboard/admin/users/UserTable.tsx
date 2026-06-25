@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import type {
   AdminModelVisibilityItem,
   AdminUser,
+  UserAutomationScore,
   UserDetail,
   UserTurnAverages,
 } from '@/lib/api/admin';
@@ -16,6 +17,10 @@ interface UserTableProps {
   users: UserRowType[];
   costHistories: Record<string, CostHistoryPoint[]>;
   turnAverages: Record<string, UserTurnAverages>;
+  automationScores: Record<string, UserAutomationScore>;
+  scoreState: 'idle' | 'loading' | 'loaded';
+  scoreSortDir: 'desc' | 'asc' | null;
+  onScoreHeader: () => void;
   density: Density;
   filterState: FilterState;
   onSortChange: (sortBy: FilterState['sortBy']) => void;
@@ -45,7 +50,18 @@ function median(nums: number[]): number {
 }
 
 export function UserTable(props: UserTableProps) {
-  const { users, costHistories, turnAverages, density, filterState, onSortChange } = props;
+  const {
+    users,
+    costHistories,
+    turnAverages,
+    automationScores,
+    scoreState,
+    scoreSortDir,
+    onScoreHeader,
+    density,
+    filterState,
+    onSortChange,
+  } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -65,7 +81,16 @@ export function UserTable(props: UserTableProps) {
   );
 
   const showSparkline = density === 'comfortable';
-  const colSpan = showSparkline ? 12 : 11;
+  const colSpan = showSparkline ? 13 : 12;
+
+  const scoreIndicator =
+    scoreState === 'loaded'
+      ? scoreSortDir === 'desc'
+        ? ' ↓'
+        : scoreSortDir === 'asc'
+          ? ' ↑'
+          : ''
+      : '';
 
   const sortIndicator = (col: FilterState['sortBy']) => (filterState.sortBy === col ? ' ↓' : '');
   const ariaSortFor = (col: FilterState['sortBy']): 'ascending' | 'none' =>
@@ -300,6 +325,19 @@ export function UserTable(props: UserTableProps) {
               <th className="px-2 py-2" title="Average user messages per chat request (all-time)">
                 Avg user turns
               </th>
+              <th className="px-2 py-2">
+                <button
+                  type="button"
+                  onClick={onScoreHeader}
+                  className="inline-flex cursor-pointer items-center gap-1"
+                  title="Automation score (human vs. script). Click to compute for this page, then click again to sort."
+                >
+                  <span>{scoreState === 'idle' ? 'Score ▸' : `Automation${scoreIndicator}`}</span>
+                  {scoreState === 'loading' && (
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                  )}
+                </button>
+              </th>
               <th className="px-2 py-2">Status</th>
               <th className="w-8 px-2 py-2" />
               <th className="px-2 py-2">Actions</th>
@@ -342,6 +380,8 @@ export function UserTable(props: UserTableProps) {
                     user={u}
                     history={costHistories[u.id]}
                     turns={turnAverages[u.id]}
+                    automation={automationScores[u.id]}
+                    scoreState={scoreState}
                     pageMedianToday={pageMedianToday}
                     density={density}
                     expanded={isExpanded}

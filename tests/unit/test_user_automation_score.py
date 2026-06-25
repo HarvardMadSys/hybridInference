@@ -1,4 +1,4 @@
-"""Unit tests for the pure scoring functions in ``user_automation_score``.
+"""Unit tests for the pure scoring functions in ``serving.analytics.automation_score``.
 
 These exercise only the database-free helpers (client classification, hour-shape
 statistics, and the per-user scorer), so they run in the default ``make test``
@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from ops.db.analysis.user_automation_score import (
+from serving.analytics.automation_score import (
     band_for,
     clamp01,
     classify_client,

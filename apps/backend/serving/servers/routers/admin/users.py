@@ -17,6 +17,8 @@ from serving.schemas_admin import (
     ApproveUserRequest,
     ApproveUserResponse,
     AuditLogEntry,
+    AutomationSignal,
+    BulkUserAutomationScoresResponse,
     BulkUserCostHistoryResponse,
     BulkUserTurnAveragesResponse,
     DeleteUserRequest,
@@ -34,6 +36,7 @@ from serving.schemas_admin import (
     SummaryUserItem,
     UpdateUserRequest,
     UpdateUserResponse,
+    UserAutomationScore,
     UserCostHistoryPoint,
     UserCostHistoryResponse,
     UserDetailResponse,
@@ -238,6 +241,57 @@ async def admin_get_bulk_user_turn_averages(
     return BulkUserTurnAveragesResponse(averages=averages)
 
 
+def _automation_score_item(rec: dict) -> UserAutomationScore:
+    """Map a stored automation-score record to its response schema."""
+    return UserAutomationScore(
+        user_id=rec["user_id"],
+        days=rec["days"],
+        score=rec["score"],
+        confidence=rec["confidence"],
+        band=rec["band"],
+        insufficient_data=rec["insufficient_data"],
+        n_req=rec["n_req"],
+        agent_share=rec["agent_share"],
+        signals={name: AutomationSignal(**sig) for name, sig in rec["signals"].items()},
+        detail=dict(rec["detail"]),
+    )
+
+
+@router.get("/users/automation-scores", response_model=BulkUserAutomationScoresResponse)
+async def admin_get_bulk_user_automation_scores(
+    user_ids: str = "",  # comma-separated
+    days: int = 30,
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> BulkUserAutomationScoresResponse:
+    """Bulk human-vs-script automation scores for many users (one round-trip).
+
+    Computing the score per user is comparatively expensive (per-user hour
+    histograms, inter-arrival gaps, and user-agent breakdowns), so the admin UI
+    triggers this on demand from a button rather than auto-loading it.
+
+    Query params:
+    - ``user_ids``: comma-separated user IDs (max 200)
+    - ``days``: 1..90 inclusive (default 30)
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+    if days < 1 or days > 90:
+        raise HTTPException(422, "days must be between 1 and 90")
+
+    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
+    if not ids:
+        return BulkUserAutomationScoresResponse(days=days, scores={})
+    if len(ids) > 200:
+        raise HTTPException(422, "Maximum 200 user_ids per request")
+
+    raw = await log_store.get_bulk_user_automation_scores(ids, days=days)
+    return BulkUserAutomationScoresResponse(
+        days=days,
+        scores={uid: _automation_score_item(rec) for uid, rec in raw.items()},
+    )
+
+
 @router.get("/users/summary", response_model=UsersSummaryResponse)
 async def admin_get_users_summary(
     admin_id: str = Depends(verify_admin_access),
@@ -406,6 +460,43 @@ async def reject_user(
         status="rejected",
         message=f"User {user_row['email']} has been rejected.",
     )
+
+
+@router.get("/users/{user_id}/automation-score", response_model=UserAutomationScore)
+async def admin_get_user_automation_score(
+    user_id: str,
+    days: int = 30,
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> UserAutomationScore:
+    """Human-vs-script automation score for a single user (1..90 days, default 30).
+
+    HIGH (→1) means the user's traffic looks script/batch/cron-driven, LOW (→0)
+    interactive-human. A user with no requests in the window returns a neutral,
+    ``insufficient_data`` score rather than a 404.
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+    if days < 1 or days > 90:
+        raise HTTPException(422, "days must be between 1 and 90")
+
+    rec = await log_store.get_user_automation_score(user_id, days=days)
+    if rec is None:
+        # No traffic in the window — report a neutral, low-confidence verdict so
+        # the dashboard renders "insufficient data" instead of erroring.
+        return UserAutomationScore(
+            user_id=user_id,
+            days=days,
+            score=0.5,
+            confidence=0.0,
+            band="mixed_or_uncertain",
+            insufficient_data=True,
+            n_req=0,
+            agent_share=0.0,
+            signals={},
+            detail={},
+        )
+    return _automation_score_item(rec)
 
 
 @router.get("/users/{user_id}/detail", response_model=UserDetailResponse)

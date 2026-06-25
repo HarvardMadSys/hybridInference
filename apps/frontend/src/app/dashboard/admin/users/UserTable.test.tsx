@@ -46,6 +46,10 @@ function renderTable(
       users={[user]}
       costHistories={{}}
       turnAverages={{}}
+      automationScores={{}}
+      scoreState="idle"
+      scoreSortDir={null}
+      onScoreHeader={vi.fn()}
       density="comfortable"
       filterState={{
         status: null,

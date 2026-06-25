@@ -6,6 +6,7 @@ import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving.analytics.automation_score import score_users_from_logs
 from serving.storage.base import LogStore, Row
 from serving.storage.utils import (
     agent_name_from_prompt,
@@ -544,6 +545,34 @@ class PostgresLogStore(LogStore):
             }
             for r in rows
         }
+
+    async def get_user_automation_score(
+        self, user_id: str, *, days: int = 30
+    ) -> dict[str, Any] | None:
+        """Return the automation score for one user, or ``None`` with no traffic.
+
+        See :mod:`serving.analytics.automation_score`: HIGH (→1) means the user's
+        ``api_logs`` over the trailing ``days`` look script/batch/cron-driven, LOW
+        (→0) interactive-human (incl. human-driven coding agents).
+        """
+        async with self.pool.acquire() as conn:
+            records = await score_users_from_logs(conn, days=days, user_ids=[user_id])
+        return records[0] if records else None
+
+    async def get_bulk_user_automation_scores(
+        self, user_ids: list[str], *, days: int = 30
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{user_id: automation-score record}`` for many users.
+
+        One round-trip scores every requested user over the trailing ``days``
+        window. Users with no traffic in the window are omitted (the caller
+        renders a placeholder). See :mod:`serving.analytics.automation_score`.
+        """
+        if not user_ids:
+            return {}
+        async with self.pool.acquire() as conn:
+            records = await score_users_from_logs(conn, days=days, user_ids=user_ids)
+        return {r["user_id"]: r for r in records}
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:
         """Return usage detail for admin key-detail view."""
