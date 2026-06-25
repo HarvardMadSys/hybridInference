@@ -49,7 +49,13 @@ main() {
     backup="${APP_DIR}/.deploy-local-changes-$(date -u +%Y%m%dT%H%M%SZ).patch"
     log "Tracked local changes detected; backing up to ${backup} before reset."
     git status --short --untracked-files=no
-    git diff HEAD > "$backup" || true
+    # Fail closed: if the backup can't be written (full disk, permissions, a
+    # git error), refuse rather than let the git reset --hard below silently
+    # destroy the local changes this block promises are recoverable.
+    if ! git diff HEAD > "$backup"; then
+      log "Failed to write local-changes backup to ${backup}; refusing to reset."
+      exit 1
+    fi
   fi
 
   log "Fetching origin/${TARGET_BRANCH}."
