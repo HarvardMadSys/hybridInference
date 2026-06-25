@@ -1069,6 +1069,28 @@ class LogStore(ABC):
         """
 
     @abstractmethod
+    async def get_user_automation_score(
+        self, user_id: str, *, days: int = 30
+    ) -> dict[str, Any] | None:
+        """Return one user's human-vs-script automation score, or None with no traffic.
+
+        See :mod:`serving.analytics.automation_score`: the record's ``score`` in
+        ``[0, 1]`` is HIGH (→1) for script/batch/cron-driven ``api_logs`` over the
+        trailing ``days`` and LOW (→0) for interactive-human usage.
+        """
+
+    @abstractmethod
+    async def get_bulk_user_automation_scores(
+        self, user_ids: list[str], *, days: int = 30
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{user_id: automation-score record}`` for a batch of users.
+
+        Scores every requested user over the trailing ``days`` window in one
+        round-trip; users with no traffic in the window are omitted. Used by the
+        admin Users tab to score a page on demand.
+        """
+
+    @abstractmethod
     async def get_key_detail_usage(
         self,
         user_id: str,

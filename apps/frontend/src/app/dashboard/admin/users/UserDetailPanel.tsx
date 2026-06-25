@@ -2,6 +2,7 @@
 
 import { hasRole } from '@/components/providers/AuthProvider';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import { UserAutomationPanel } from './UserAutomationPanel';
 import { UserRecentRequests } from './UserRecentRequests';
 
 export function relTime(s: string | null): string {
@@ -363,6 +364,10 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           </div>
         </div>
       )}
+
+      {/* On-demand automation score. key={u.id} resets its computed state when
+          the admin switches to a different user. */}
+      <UserAutomationPanel key={u.id} userId={u.id} />
 
       {/* Recent requests made by this user. key={u.id} remounts the component
           on user switch so its paging/expansion/cache state resets cleanly. */}

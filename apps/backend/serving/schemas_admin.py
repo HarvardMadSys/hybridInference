@@ -240,6 +240,48 @@ class BulkUserTurnAveragesResponse(BaseModel):
     averages: dict[str, UserTurnAverages]  # keyed by user_id
 
 
+class AutomationSignal(BaseModel):
+    """One signal's contribution to a user's automation score.
+
+    ``sub`` is the signal's automation sub-score in ``[0, 1]`` (``None`` when the
+    signal lacked enough data and was dropped); ``weight`` is its default weight;
+    ``available`` is whether it contributed to the blended score.
+    """
+
+    sub: float | None = None
+    weight: float
+    available: bool
+
+
+class UserAutomationScore(BaseModel):
+    """Per-user human-vs-script automation score with its signal breakdown.
+
+    ``score`` in ``[0, 1]``: HIGH means script/batch/cron-driven, LOW means an
+    interactive human (incl. human-driven coding agents). ``confidence`` reflects
+    how much data backed the verdict; ``insufficient_data`` flags low-volume
+    users whose score is shrunk toward the neutral 0.5 prior. ``detail`` exposes
+    the raw metrics behind the sub-scores so a verdict is auditable.
+    """
+
+    user_id: str
+    days: int
+    score: float
+    confidence: float
+    band: str
+    insufficient_data: bool
+    n_req: int
+    agent_share: float
+    signals: dict[str, AutomationSignal]
+    detail: dict[str, float | None]
+
+
+class BulkUserAutomationScoresResponse(BaseModel):
+    """Per-user automation scores for many users (one round-trip per page)."""
+
+    days: int
+    scores: dict[str, UserAutomationScore]  # keyed by user_id
+
+
 class SummaryUserItem(BaseModel):
     """User entry inside a summary card (sub-set of UserListItem)."""
 
