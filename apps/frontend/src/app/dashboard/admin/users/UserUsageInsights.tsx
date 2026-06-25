@@ -8,7 +8,7 @@ import {
   UsageInsightsReportSkeleton,
 } from '@/components/features/admin/UsageInsightsReport';
 
-const SAMPLE_LIMIT = 40;
+const SAMPLE_LIMIT = 25;
 
 /**
  * On-demand LLM analysis of a single user's recent requests, shown in the admin

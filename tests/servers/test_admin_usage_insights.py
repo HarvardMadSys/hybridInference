@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from serving.servers.deps import AppServices, verify_admin_access
@@ -361,6 +361,22 @@ class TestCallAnalysisModel:
         assert captured["headers"]["X-Probe"] == "synthetic"
         assert captured["headers"]["Authorization"] == "Bearer sk-x"
         assert captured["json"]["model"] == "glm-5.1"
+        # Output is bounded so a slow report can't exceed the edge proxy timeout.
+        assert captured["json"]["max_tokens"] == usage_insights._MAX_OUTPUT_TOKENS
+
+    @pytest.mark.asyncio
+    async def test_timeout_returns_clean_504(self, monkeypatch):
+        """An upstream timeout becomes a JSON 504 (not an edge "Network error")."""
+
+        class _SlowClient:
+            async def json_post(self, url, *, json, headers, timeout):
+                raise TimeoutError
+
+        monkeypatch.setattr(usage_insights.AsyncHTTPClient, "shared", lambda: _SlowClient())
+        with pytest.raises(HTTPException) as exc:
+            await usage_insights._call_analysis_model("k", "m", "c")
+        assert exc.value.status_code == 504
+        assert "too long" in exc.value.detail
 
     @pytest.mark.asyncio
     async def test_extracts_list_content_and_reasoning_fallback(self, monkeypatch):

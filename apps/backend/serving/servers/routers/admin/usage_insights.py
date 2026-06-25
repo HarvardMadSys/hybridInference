@@ -15,6 +15,7 @@ from that user's admin detail panel.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -85,6 +86,17 @@ _SYSTEM_PROMPT = (
 # Cap how much text we ship to the analysis model regardless of per-message
 # truncation, so a handful of giant prompts can't blow the context window.
 _MAX_PROMPT_CHARS = 60_000
+
+# Bound the analysis report length. Unbounded generation is the dominant source
+# of latency and is what made a slow report exceed the edge proxy timeout (the
+# browser then sees an HTML 5xx as a generic "Network error"). A concise report
+# fits comfortably under this.
+_MAX_OUTPUT_TOKENS = 1024
+
+# Keep the upstream call well under the edge/proxy timeout (Cloudflare ~100s,
+# some reverse proxies 60s) so a slow model yields a clean JSON 504 from us
+# rather than an edge HTML error page surfaced to the client as "Network error".
+_ANALYSIS_TIMEOUT_SEC = 55
 
 
 def _mask_key(key: str) -> str:
@@ -247,6 +259,7 @@ async def _call_analysis_model(api_key: str, model: str, content: str) -> str:
             {"role": "user", "content": content},
         ],
         "temperature": 0.3,
+        "max_tokens": _MAX_OUTPUT_TOKENS,
         "stream": False,
     }
     headers = {
@@ -263,7 +276,7 @@ async def _call_analysis_model(api_key: str, model: str, content: str) -> str:
             url,
             json=body,
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=120),
+            timeout=aiohttp.ClientTimeout(total=_ANALYSIS_TIMEOUT_SEC),
         )
     except aiohttp.ClientResponseError as e:
         # The upstream is the gateway's own trusted domain; surface a bounded
@@ -275,7 +288,18 @@ async def _call_analysis_model(api_key: str, model: str, content: str) -> str:
         raise HTTPException(
             502, f"Analysis model returned an error (HTTP {e.status}): {snippet}"
         ) from e
-    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as e:
+    except (TimeoutError, asyncio.TimeoutError) as e:
+        # aiohttp raises asyncio.TimeoutError, which is the builtin TimeoutError
+        # only on Python 3.11+ — catch both so this works on 3.10 too. Return a
+        # clean JSON 504 before the edge proxy would cut the request with a
+        # non-JSON 5xx (which the client shows as a generic "Network error").
+        logger.warning("usage-insights analysis timed out after %ss", _ANALYSIS_TIMEOUT_SEC)
+        raise HTTPException(
+            504,
+            "The analysis model took too long to respond. Try a smaller sample "
+            "size, or pick a faster model in Settings → Usage Insights.",
+        ) from e
+    except (aiohttp.ClientError, json.JSONDecodeError) as e:
         logger.warning("usage-insights analysis call failed: %s", e)
         raise HTTPException(502, "Could not reach the analysis model.") from e
 
