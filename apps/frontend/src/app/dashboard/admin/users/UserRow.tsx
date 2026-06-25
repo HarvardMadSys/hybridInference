@@ -71,8 +71,19 @@ export function UserRow({
         </span>
       </td>
       <td className="max-w-[12rem] px-2">
-        <div className="truncate font-medium text-gray-900" title={user.email}>
-          {user.email}
+        <div className="flex items-center gap-1 font-medium text-gray-900">
+          <span className="truncate" title={user.email}>
+            {user.email}
+          </span>
+          {user.admin_note && (
+            <span
+              className="shrink-0 text-amber-500"
+              title={`Admin note: ${user.admin_note}`}
+              aria-label="Has admin note"
+            >
+              📝
+            </span>
+          )}
         </div>
         {density === 'comfortable' && user.user_name && (
           <div className="truncate text-xs text-gray-500" title={user.user_name}>

@@ -161,6 +161,8 @@ class UserListItem(BaseModel):
     reviewed_by: str | None = None
     # Free-text use case submitted at signup; helps admins review pending users.
     signup_reason: str | None = None
+    # Free-text admin-only annotation about the user (any status).
+    admin_note: str | None = None
     created_at: datetime
     last_login_at: datetime | None = None
     # API key info (populated via LEFT JOIN)
@@ -323,6 +325,8 @@ class UserDetailResponse(BaseModel):
     disabled_models: list[str] = Field(default_factory=list)
     last_request_at: datetime | None = None
     max_concurrent_requests: int | None = None
+    # Free-text admin-only annotation about the user (any status).
+    admin_note: str | None = None
     # Mean conversation depth across this user's chat requests (all-time).
     # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
     # user-message count; both None when the user has no chat-style requests.
@@ -343,6 +347,8 @@ class UpdateUserRequest(BaseModel):
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
     disabled_models: list[str] | None = None
     max_concurrent_requests: int | None = Field(None, ge=1)
+    # Free-text admin-only note. Send "" or null to clear it.
+    admin_note: str | None = Field(None, max_length=2000)
 
 
 class UpdateUserResponse(BaseModel):

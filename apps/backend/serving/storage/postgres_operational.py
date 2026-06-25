@@ -101,7 +101,8 @@ class PostgresOperationalStore(OperationalStore):
                 signup_reason TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 last_login_at TIMESTAMPTZ,
-                max_concurrent_requests INT DEFAULT NULL
+                max_concurrent_requests INT DEFAULT NULL,
+                admin_note TEXT
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
@@ -130,6 +131,8 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS max_concurrent_requests INT DEFAULT NULL"
         )
+        # Free-text admin-only annotation about a user (any status).
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT")
 
         # Status constraint rebuild
         try:
@@ -622,7 +625,7 @@ class PostgresOperationalStore(OperationalStore):
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
                 "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
-                "signup_reason "
+                "signup_reason, admin_note "
                 "FROM users WHERE id = $1",
                 user_id,
             )
@@ -634,7 +637,7 @@ class PostgresOperationalStore(OperationalStore):
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
                 "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
-                "signup_reason "
+                "signup_reason, admin_note "
                 "FROM users WHERE email = $1",
                 email.lower(),
             )
@@ -1074,7 +1077,7 @@ class PostgresOperationalStore(OperationalStore):
                 f"filtered_users AS ("
                 f"  SELECT u.id, u.email, u.user_name, u.role, u.status, "
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
-                f"  u.signup_reason, "
+                f"  u.signup_reason, u.admin_note, "
                 f"  u.created_at, u.last_login_at, "
                 f"  k.key_prefix, k.status AS key_status "
                 f"  FROM users u "

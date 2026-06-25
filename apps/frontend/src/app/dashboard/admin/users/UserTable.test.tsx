@@ -13,6 +13,7 @@ vi.mock('@/lib/api/admin', () => ({
 }));
 
 import { getUserDetail, listModelVisibility, updateUser as apiUpdateUser } from '@/lib/api/admin';
+import type { UserDetail } from '@/lib/api/admin';
 
 const baseUser: UserRow = {
   id: 'user-1',
@@ -25,6 +26,7 @@ const baseUser: UserRow = {
   reviewed_at: null,
   reviewed_by: null,
   signup_reason: null,
+  admin_note: null,
   created_at: '2024-01-01T00:00:00Z',
   last_login_at: null,
   has_key: true,
@@ -35,7 +37,10 @@ const baseUser: UserRow = {
   usage_alltime_usd: '0',
 };
 
-function renderTable(user: UserRow = baseUser) {
+function renderTable(
+  user: UserRow = baseUser,
+  overrides: Partial<Parameters<typeof UserTable>[0]> = {},
+) {
   return render(
     <UserTable
       users={[user]}
@@ -62,6 +67,7 @@ function renderTable(user: UserRow = baseUser) {
       onResume={vi.fn(async () => undefined)}
       onDelete={vi.fn(async () => undefined)}
       onHardDelete={vi.fn(async () => undefined)}
+      {...overrides}
     />,
   );
 }
@@ -98,6 +104,7 @@ describe('UserTable disabled models editing', () => {
         disabled_models: ['claude-3-5-sonnet'],
         last_request_at: null,
         max_concurrent_requests: null,
+        admin_note: null,
         avg_turns: null,
         avg_user_turns: null,
       })
@@ -122,6 +129,7 @@ describe('UserTable disabled models editing', () => {
         disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
         last_request_at: null,
         max_concurrent_requests: null,
+        admin_note: null,
         avg_turns: null,
         avg_user_turns: null,
       });
@@ -189,6 +197,7 @@ describe('UserTable disabled models editing', () => {
       disabled_models: [],
       last_request_at: null,
       max_concurrent_requests: null,
+      admin_note: null,
       avg_turns: null,
       avg_user_turns: null,
     });
@@ -274,6 +283,7 @@ describe('UserTable disabled models editing', () => {
       disabled_models: [],
       last_request_at: null,
       max_concurrent_requests: null,
+      admin_note: null,
       avg_turns: null,
       avg_user_turns: null,
     });
@@ -285,5 +295,129 @@ describe('UserTable disabled models editing', () => {
 
     expect(await screen.findByText('Signup reason')).toBeInTheDocument();
     expect(screen.getByText('Building a course assistant for CS50.')).toBeInTheDocument();
+  });
+});
+
+function detailFixture(overrides: Partial<UserDetail> = {}): UserDetail {
+  return {
+    id: 'user-1',
+    email: 'user@example.com',
+    user_name: 'User',
+    role: 'free',
+    status: 'active',
+    email_verified: true,
+    created_at: '2024-01-01T00:00:00Z',
+    last_login_at: null,
+    has_key: true,
+    key_prefix: 'hyi_123',
+    quota_daily_usd: 100,
+    quota_monthly_usd: null,
+    usage_today_usd: 0,
+    usage_today_requests: 0,
+    usage_month_usd: 0,
+    usage_month_requests: 0,
+    models_used: [],
+    disabled_models: [],
+    last_request_at: null,
+    max_concurrent_requests: null,
+    admin_note: null,
+    avg_turns: null,
+    avg_user_turns: null,
+    ...overrides,
+  };
+}
+
+describe('UserTable admin note', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(apiUpdateUser).mockResolvedValue({
+      user_id: 'user-1',
+      updated_fields: ['admin_note'],
+      message: 'ok',
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('saves a trimmed admin note via onUpdate and refreshes the detail', async () => {
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture({ admin_note: null }))
+      .mockResolvedValueOnce(detailFixture({ admin_note: 'VIP customer' }));
+    const onUpdate = vi.fn(async () => undefined);
+
+    renderTable(baseUser, { onUpdate });
+
+    fireEvent.click(screen.getByText('user@example.com'));
+
+    const textarea = await screen.findByLabelText('Admin note');
+    // Save is disabled until the note actually changes.
+    const saveBtn = screen.getByRole('button', { name: 'Save note' });
+    expect(saveBtn).toBeDisabled();
+
+    fireEvent.change(textarea, { target: { value: '  VIP customer  ' } });
+    expect(saveBtn).not.toBeDisabled();
+    fireEvent.click(saveBtn);
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: 'VIP customer' });
+    });
+    // Detail is refetched so the panel reflects the persisted value.
+    expect(getUserDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears an existing note by saving an empty value', async () => {
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture({ admin_note: 'old note' }))
+      .mockResolvedValueOnce(detailFixture({ admin_note: null }));
+    const onUpdate = vi.fn(async () => undefined);
+
+    renderTable(baseUser, { onUpdate });
+
+    fireEvent.click(screen.getByText('user@example.com'));
+
+    const textarea = await screen.findByLabelText('Admin note');
+    expect(textarea).toHaveValue('old note');
+
+    fireEvent.change(textarea, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save note' }));
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: null });
+    });
+  });
+
+  it('shows a note indicator in the table row when a user has an admin note', () => {
+    renderTable({ ...baseUser, admin_note: 'keep an eye on this one' });
+    const indicator = screen.getByLabelText('Has admin note');
+    expect(indicator).toBeInTheDocument();
+    expect(indicator).toHaveAttribute('title', 'Admin note: keep an eye on this one');
+  });
+
+  it('omits the note indicator when a user has no admin note', () => {
+    renderTable({ ...baseUser, admin_note: null });
+    expect(screen.queryByLabelText('Has admin note')).not.toBeInTheDocument();
+  });
+
+  it('lets an admin note be edited for a non-active (suspended) user', async () => {
+    const suspendedUser: UserRow = { ...baseUser, status: 'suspended' };
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture({ status: 'suspended', admin_note: null }))
+      .mockResolvedValueOnce(detailFixture({ status: 'suspended', admin_note: 'spam risk' }));
+    const onUpdate = vi.fn(async () => undefined);
+
+    renderTable(suspendedUser, { onUpdate });
+
+    fireEvent.click(screen.getByText('user@example.com'));
+
+    const textarea = await screen.findByLabelText('Admin note');
+    fireEvent.change(textarea, { target: { value: 'spam risk' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save note' }));
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: 'spam risk' });
+    });
   });
 });

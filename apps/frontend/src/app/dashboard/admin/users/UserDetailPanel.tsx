@@ -24,14 +24,18 @@ export interface UserDetailPanelProps {
   editQuota: string;
   editDisabledModels: string[];
   editMaxConcurrent: string;
+  editNote: string;
   availableModels: AdminModelVisibilityItem[];
   saving: boolean;
+  savingNote: boolean;
   busy: string | null;
   onChangeRole: (role: string) => void;
   onChangeQuota: (quota: string) => void;
   onChangeDisabledModels: (modelIds: string[]) => void;
   onChangeMaxConcurrent: (val: string) => void;
+  onChangeNote: (val: string) => void;
   onSave: () => void;
+  onSaveNote: () => void;
   onSuspend: (userId: string) => void;
   onReactivate: (userId: string) => void;
   onResume: (user: AdminUser) => void;
@@ -47,14 +51,18 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     editQuota,
     editDisabledModels,
     editMaxConcurrent,
+    editNote,
     availableModels,
     saving,
+    savingNote,
     busy,
     onChangeRole,
     onChangeQuota,
     onChangeDisabledModels,
     onChangeMaxConcurrent,
+    onChangeNote,
     onSave,
+    onSaveNote,
     onSuspend,
     onReactivate,
     onResume,
@@ -89,6 +97,34 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           </p>
         </div>
       )}
+
+      {/* Admin note — internal annotation editable for every user status. */}
+      <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
+            Admin note
+          </div>
+          <span className="text-[10px] text-gray-400">Visible to admins only</span>
+        </div>
+        <textarea
+          value={editNote}
+          onChange={(e) => onChangeNote(e.target.value)}
+          rows={2}
+          maxLength={2000}
+          placeholder="Add an internal note about this user…"
+          aria-label="Admin note"
+          className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={onSaveNote}
+            disabled={savingNote || editNote.trim() === (detail.admin_note ?? '')}
+            className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-gray-800 transition disabled:opacity-50"
+          >
+            {savingNote ? 'Saving…' : 'Save note'}
+          </button>
+        </div>
+      </div>
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-3 text-[13px]">
