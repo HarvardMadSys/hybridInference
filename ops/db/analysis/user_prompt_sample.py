@@ -22,11 +22,25 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 import dotenv
+
+# Make the ``serving`` package importable when running from a source checkout
+# without an editable install (apps/backend is the package root).
+_BACKEND_ROOT = Path(__file__).resolve().parents[3] / "apps" / "backend"
+if _BACKEND_ROOT.is_dir() and str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+
+from serving.utils.prompt_sampling import (
+    as_payload_dict,
+    system_opener,
+    user_agent_from_metadata,
+    user_messages,
+)
 
 
 def _load_env(env_path: str | None = None) -> None:
@@ -53,66 +67,6 @@ def _dsn() -> str:
         f"@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}"
         f"/{os.environ.get('DB_NAME', 'freeinference_db')}"
     )
-
-
-def _as_dict(payload: Any) -> dict[str, Any]:
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError:
-            return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _system_opener(payload: dict[str, Any], max_chars: int) -> str | None:
-    """Pull the start of the system prompt (OpenAI system message or Anthropic ``system``)."""
-    sysval = payload.get("system")
-    if isinstance(sysval, str) and sysval.strip():
-        return sysval.strip()[:max_chars]
-    if isinstance(sysval, list):
-        parts = [b.get("text", "") for b in sysval if isinstance(b, dict)]
-        joined = "\n".join(p for p in parts if p).strip()
-        if joined:
-            return joined[:max_chars]
-    for msg in payload.get("messages", []) or []:
-        if isinstance(msg, dict) and msg.get("role") == "system":
-            content = msg.get("content")
-            if isinstance(content, str) and content.strip():
-                return content.strip()[:max_chars]
-            if isinstance(content, list):
-                parts = [
-                    b.get("text", "")
-                    for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
-                joined = "\n".join(p for p in parts if p).strip()
-                if joined:
-                    return joined[:max_chars]
-    return None
-
-
-def _user_messages(payload: dict[str, Any], max_chars: int) -> list[str]:
-    """Pull user-turn text out of a payload (OpenAI or Anthropic shape)."""
-    out: list[str] = []
-    for msg in payload.get("messages", []) or []:
-        if not isinstance(msg, dict) or msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            parts = [
-                b.get("text", "")
-                for b in content
-                if isinstance(b, dict) and b.get("type") == "text"
-            ]
-            text = "\n".join(p for p in parts if p)
-        else:
-            text = json.dumps(content, default=str)
-        text = (text or "").strip()
-        if text:
-            out.append(text[:max_chars])
-    return out
 
 
 async def _sample(
@@ -143,16 +97,6 @@ async def _sample(
     return {"email": email, "found": True, "rows": rows}
 
 
-def _meta_ua(metadata: Any) -> str | None:
-    md = metadata
-    if isinstance(md, str):
-        try:
-            md = json.loads(md)
-        except json.JSONDecodeError:
-            md = {}
-    return md.get("user_agent") if isinstance(md, dict) else None
-
-
 async def main(email: str, model: str | None, limit: int, max_chars: int, as_json: bool) -> int:
     """Sample a user's request payloads and print or emit them."""
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2)
@@ -168,7 +112,7 @@ async def main(email: str, model: str | None, limit: int, max_chars: int, as_jso
 
     samples = []
     for r in res["rows"]:
-        payload = _as_dict(r["request_payload"])
+        payload = as_payload_dict(r["request_payload"])
         samples.append(
             {
                 "timestamp": r["timestamp"].isoformat(),
@@ -176,9 +120,9 @@ async def main(email: str, model: str | None, limit: int, max_chars: int, as_jso
                 "model_id": r["model_id"],
                 "provider": r["provider"],
                 "status_code": r["status_code"],
-                "user_agent": _meta_ua(r["metadata"]),
-                "system_opener": _system_opener(payload, max_chars),
-                "user_messages": _user_messages(payload, max_chars),
+                "user_agent": user_agent_from_metadata(r["metadata"]),
+                "system_opener": system_opener(payload, max_chars),
+                "user_messages": user_messages(payload, max_chars),
             }
         )
 

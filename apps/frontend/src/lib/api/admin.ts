@@ -552,6 +552,39 @@ export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyt
 }
 
 // ========================================
+// Usage Insights (LLM-powered request analysis)
+// ========================================
+
+export interface UsageInsightsRequest {
+  api_key: string;
+  model?: string;
+  base_url?: string;
+  user_id?: string;
+  user_email?: string;
+  limit?: number;
+  max_chars?: number;
+}
+
+export interface UsageInsightsResponse {
+  analysis: string; // Markdown narrative
+  model: string;
+  sampled_requests: number;
+  scope: string;
+  generated_at: string;
+}
+
+export async function analyzeUsageInsights(
+  req: UsageInsightsRequest,
+): Promise<UsageInsightsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return jsonOrThrow<UsageInsightsResponse>(resp);
+}
+
+// ========================================
 // Broadcast Email
 // ========================================
 

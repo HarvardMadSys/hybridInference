@@ -666,6 +666,45 @@ class AdminAnalyticsResponse(BaseModel):
 
 
 # ========================================
+# Usage Insights (LLM-powered request analysis)
+# ========================================
+
+
+class UsageInsightsRequest(BaseModel):
+    """Request body for POST /admin/usage-insights/analyze.
+
+    The admin supplies a freeinference.org (OpenAI-compatible) API key; the
+    backend samples stored request payloads and asks the chosen model to
+    summarize *how* people are using the gateway.
+    """
+
+    api_key: str = Field(..., min_length=1, description="freeinference.org API key (Bearer)")
+    model: str = Field("glm-5.2", min_length=1, description="Model id to run the analysis with")
+    base_url: str = Field(
+        "https://freeinference.org/v1",
+        min_length=1,
+        description="OpenAI-compatible base URL of the analysis provider",
+    )
+    # Optional scope: analyze one user (by id or email) instead of the whole site.
+    user_id: str | None = Field(None, description="Limit the sample to this user id")
+    user_email: str | None = Field(None, description="Limit the sample to this user's email")
+    limit: int = Field(40, ge=1, le=200, description="Number of recent requests to sample")
+    max_chars: int = Field(
+        800, ge=100, le=4000, description="Truncate each sampled message to this many characters"
+    )
+
+
+class UsageInsightsResponse(BaseModel):
+    """Response for POST /admin/usage-insights/analyze."""
+
+    analysis: str  # Markdown narrative produced by the model
+    model: str
+    sampled_requests: int
+    scope: str  # "all users" or the resolved user email/id
+    generated_at: datetime
+
+
+# ========================================
 # Provider Quotas (Admin Dashboard)
 # ========================================
 
