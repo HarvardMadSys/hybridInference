@@ -4,6 +4,7 @@ import math
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -692,6 +693,23 @@ class UsageInsightsRequest(BaseModel):
     max_chars: int = Field(
         800, ge=100, le=4000, description="Truncate each sampled message to this many characters"
     )
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str) -> str:
+        """Constrain the outbound target to https freeinference.org hosts.
+
+        The admin's API key and a sample of other users' prompt content are sent
+        to ``base_url``, so an unconstrained value would be an SSRF / credential-
+        and data-exfiltration vector. Only the gateway's own domain is allowed.
+        """
+        parsed = urlparse(v)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https":
+            raise ValueError("base_url must use https")
+        if not (host == "freeinference.org" or host.endswith(".freeinference.org")):
+            raise ValueError("base_url host must be freeinference.org")
+        return v
 
 
 class UsageInsightsResponse(BaseModel):

@@ -156,6 +156,19 @@ class TestAdminUsageInsightsRoute:
         # Empty api_key violates the min_length=1 constraint → 422.
         assert resp.status_code == 422
 
+    @pytest.mark.asyncio
+    async def test_analyze_rejects_foreign_base_url(self, admin_app, _patch_llm):
+        """base_url is constrained to freeinference.org to block SSRF/exfiltration."""
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/admin/usage-insights/analyze",
+                json={"api_key": "sk-test", "base_url": "http://169.254.169.254/v1"},
+            )
+        admin_app.dependency_overrides.clear()
+        assert resp.status_code == 422
+
 
 class TestRenderSamples:
     def test_render_budget_truncates(self):

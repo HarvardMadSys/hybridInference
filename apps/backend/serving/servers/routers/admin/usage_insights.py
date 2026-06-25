@@ -178,8 +178,11 @@ async def _call_analysis_model(payload: UsageInsightsRequest, content: str) -> s
             timeout=aiohttp.ClientTimeout(total=120),
         )
     except aiohttp.ClientResponseError as e:
+        # base_url is constrained to freeinference.org (see UsageInsightsRequest),
+        # so the upstream is trusted; surface a bounded snippet of its error to
+        # help the admin diagnose (e.g. bad key, unknown model). The api_key is a
+        # request header, not part of the response body, so it is not echoed here.
         detail = getattr(e, "error_body", "") or e.message
-        # Scrub the upstream URL/key out of any echoed error.
         snippet = str(detail)[:500]
         logger.warning("usage-insights analysis upstream error: status=%s", e.status)
         raise HTTPException(
