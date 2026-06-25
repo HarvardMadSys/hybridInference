@@ -9,6 +9,13 @@ export interface Env {
   PROBE_HEADER?: string;
   RETENTION_DAYS?: string;
   PROBE_DEADLINE_MS?: string;
+  // Slack incoming-webhook URL (a secret, not a var). Unset disables alerting.
+  SLACK_WEBHOOK_URL?: string;
+  // Consecutive failed probes before a model pages Slack. Defaults to 2.
+  ALERT_FAILURE_THRESHOLD?: string;
+  // More than this many models changing state in one cycle collapses into a
+  // single summary Slack message instead of one per model. Defaults to 5.
+  ALERT_STORM_THRESHOLD?: string;
 }
 
 /** Normalized configuration derived from {@link Env}. */
@@ -20,6 +27,8 @@ export interface Config {
   probeHeader: string | null;
   retentionDays: number;
   probeDeadlineMs: number;
+  alertFailureThreshold: number;
+  alertStormThreshold: number;
 }
 
 function intOr(value: string | undefined, fallback: number): number {
@@ -42,5 +51,11 @@ export function loadConfig(env: Env): Config {
     // Absolute per-probe deadline; SSE keepalives can otherwise keep a stalled
     // stream open indefinitely with no per-read timeout to trip.
     probeDeadlineMs: intOr(env.PROBE_DEADLINE_MS, 60_000),
+    // Consecutive failed probes that page Slack. Two suppresses a single
+    // transient blip from alerting; intOr floors invalid/≤0 values at the default.
+    alertFailureThreshold: intOr(env.ALERT_FAILURE_THRESHOLD, 2),
+    // Above this many models changing state in one cycle, pages collapse into a
+    // single summary message so a provider-wide blip doesn't flood the channel.
+    alertStormThreshold: intOr(env.ALERT_STORM_THRESHOLD, 5),
   };
 }

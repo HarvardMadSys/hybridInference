@@ -204,6 +204,56 @@ export async function getBulkTurnAverages(userIds: string[]): Promise<BulkTurnAv
   return jsonOrThrow<BulkTurnAveragesResponse>(resp);
 }
 
+// One signal's contribution to a user's automation score. `sub` is the signal's
+// automation sub-score in [0,1] (null when the signal was dropped for lack of data).
+export interface AutomationSignal {
+  sub: number | null;
+  weight: number;
+  available: boolean;
+}
+
+// Per-user human-vs-script automation score. `score` in [0,1]: HIGH means the
+// traffic looks script/batch/cron-driven, LOW means an interactive human.
+export interface UserAutomationScore {
+  user_id: string;
+  days: number;
+  score: number;
+  confidence: number;
+  band: string;
+  insufficient_data: boolean;
+  n_req: number;
+  agent_share: number;
+  signals: Record<string, AutomationSignal>;
+  detail: Record<string, number | null>;
+}
+
+export interface BulkAutomationScoresResponse {
+  days: number;
+  scores: Record<string, UserAutomationScore>;
+}
+
+export async function getUserAutomationScore(
+  userId: string,
+  days = 30,
+): Promise<UserAutomationScore> {
+  const params = new URLSearchParams({ days: String(days) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/automation-score?${params.toString()}`,
+  );
+  return jsonOrThrow<UserAutomationScore>(resp);
+}
+
+export async function getBulkAutomationScores(
+  userIds: string[],
+  days = 30,
+): Promise<BulkAutomationScoresResponse> {
+  if (userIds.length === 0) return { days, scores: {} };
+  const params = new URLSearchParams({ user_ids: userIds.join(','), days: String(days) });
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/automation-scores?${params.toString()}`);
+  return jsonOrThrow<BulkAutomationScoresResponse>(resp);
+}
+
 export interface UpdateUserData {
   role?: string;
   status?: string;

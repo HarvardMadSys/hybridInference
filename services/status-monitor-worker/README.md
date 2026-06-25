@@ -17,6 +17,36 @@ Targets are discovered from the gateway's authenticated `/models` catalog, which
 already applies role and runtime visibility rules — so the Worker probes exactly
 what the prober key can actually call.
 
+## Slack alerts
+
+When the optional `SLACK_WEBHOOK_URL` secret is set, each cron cycle pages a
+Slack incoming webhook for any model that has failed `ALERT_FAILURE_THRESHOLD`
+**consecutive** probes (default **2**, i.e. ~two 20-minute cycles — enough to
+distinguish a sustained outage from a single transient blip). Alerts are
+**edge-triggered**: a model pages once when it crosses the threshold and again
+only after it recovers and fails anew, so a multi-hour outage doesn't repeat the
+page every 20 minutes. A short recovery notice is posted when the model's next
+probe succeeds. The per-model alert state lives in the D1 `meta` table, so it
+survives Worker restarts and is never raced (alert evaluation runs while the
+cycle holds its lock). Leave `SLACK_WEBHOOK_URL` unset to disable alerting
+entirely.
+
+Every page is committed to the alert state only **after** its Slack POST is
+confirmed delivered, so a transient webhook failure (rate limit, network blip)
+is retried on the next cron cycle rather than being silently dropped.
+
+Two whole-deployment cases are also covered:
+
+- **Gateway-level outage.** If the gateway is unreachable (model discovery
+  fails) or the prober key is rejected account-wide (expired key, unverified,
+  over quota), no model can be probed — so a single **"Monitoring cycle
+  failing"** page is sent (edge-triggered, with a matching recovery notice)
+  instead of nothing.
+- **Mass outage (storm cap).** When more than `ALERT_STORM_THRESHOLD` models
+  (default **5**) change state in the same cycle — e.g. a provider-wide blip —
+  the individual pages collapse into one **"N models down"** / **"N models
+  recovered"** summary so the channel isn't flooded.
+
 ## Endpoints
 
 | Path | Description |
@@ -44,9 +74,14 @@ working without JavaScript).
 
 `wrangler.toml` `[vars]`: `GATEWAY_BASE_URL`, `PROBE_PROMPT`, `PROBE_MAX_TOKENS`,
 `MAX_CONCURRENCY` (keep at/below the prober account's gateway concurrency cap —
-3 free/pro, 10 internal/admin), `PROBE_HEADER`, `RETENTION_DAYS`.
+3 free/pro, 10 internal/admin), `PROBE_HEADER`, `RETENTION_DAYS`,
+`ALERT_FAILURE_THRESHOLD` (consecutive failed probes before a model pages Slack),
+`ALERT_STORM_THRESHOLD` (models changing state in one cycle before pages collapse
+into a summary).
 
-`PROBER_API_KEY` is a **secret**, not a var.
+`PROBER_API_KEY` is a **secret**, not a var. `SLACK_WEBHOOK_URL` is an optional
+**secret** — set it to enable Slack alerting (see above), leave it unset to
+disable.
 
 ## Deploy
 
@@ -75,7 +110,10 @@ npx wrangler d1 migrations apply freeinference-monitor --remote
 # 3. Set the prober API key (internal/admin key recommended).
 npx wrangler secret put PROBER_API_KEY
 
-# 4. Deploy (registers the Worker and its 5-minute cron trigger).
+# 3a. (Optional) Set the Slack incoming-webhook URL to enable failure alerts.
+npx wrangler secret put SLACK_WEBHOOK_URL
+
+# 4. Deploy (registers the Worker and its 20-minute cron trigger).
 npx wrangler deploy
 ```
 
