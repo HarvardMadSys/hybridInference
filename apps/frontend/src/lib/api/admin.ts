@@ -558,10 +558,9 @@ export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyt
 // Usage Insights (LLM-powered request analysis)
 // ========================================
 
+// The analysis provider (API key + model) is configured server-side in Admin →
+// Settings; the request only chooses the scope and sample size.
 export interface UsageInsightsRequest {
-  api_key: string;
-  model?: string;
-  base_url?: string;
   user_id?: string;
   user_email?: string;
   limit?: number;
@@ -577,7 +576,7 @@ export interface UsageInsightsResponse {
 }
 
 export async function analyzeUsageInsights(
-  req: UsageInsightsRequest,
+  req: UsageInsightsRequest = {},
 ): Promise<UsageInsightsResponse> {
   const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/analyze', {
     method: 'POST',
@@ -585,6 +584,36 @@ export async function analyzeUsageInsights(
     body: JSON.stringify(req),
   });
   return jsonOrThrow<UsageInsightsResponse>(resp);
+}
+
+// Stored analysis-provider config. The raw key is never returned — only whether
+// one is set and a masked tail hint.
+export interface UsageInsightsSettings {
+  configured: boolean;
+  api_key_hint: string | null;
+  model: string;
+}
+
+export interface UsageInsightsSettingsUpdate {
+  // Omit api_key to keep the current one; '' clears it; any other value replaces it.
+  api_key?: string;
+  model?: string;
+}
+
+export async function getUsageInsightsSettings(): Promise<UsageInsightsSettings> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/settings');
+  return jsonOrThrow<UsageInsightsSettings>(resp);
+}
+
+export async function updateUsageInsightsSettings(
+  patch: UsageInsightsSettingsUpdate,
+): Promise<UsageInsightsSettings> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow<UsageInsightsSettings>(resp);
 }
 
 // ========================================

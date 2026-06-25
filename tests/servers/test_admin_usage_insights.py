@@ -1,4 +1,10 @@
-"""Tests for the POST /admin/usage-insights/analyze endpoint."""
+"""Tests for the admin Usage Insights endpoints.
+
+Covers POST /admin/usage-insights/analyze plus the GET/PUT
+/admin/usage-insights/settings provider configuration. The analysis provider
+(API key + model) is stored server-side in site_settings and read via the
+operational store, so the tests wire a mock store alongside the mock db logger.
+"""
 
 from __future__ import annotations
 
@@ -19,7 +25,7 @@ def _sample_rows():
     return [
         {
             "timestamp": datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc),
-            "model_id": "glm-5.2",
+            "model_id": "glm-5.1",
             "provider": "zhipu",
             "metadata": {"user_agent": "claude-cli/1.2.0"},
             "request_payload": {
@@ -42,15 +48,33 @@ def _sample_rows():
     ]
 
 
-class TestAdminUsageInsightsRoute:
+def _make_op_store(api_key: str | None = "sk-configured-key", model: str | None = "glm-5.1"):
+    """A mock operational store that serves the usage-insights settings."""
+
+    async def _get_setting(key):
+        if key == usage_insights._SETTING_API_KEY and api_key is not None:
+            return {"value": api_key, "value_type": "str"}
+        if key == usage_insights._SETTING_MODEL and model is not None:
+            return {"value": model, "value_type": "str"}
+        return None
+
+    store = MagicMock()
+    store.get_setting = AsyncMock(side_effect=_get_setting)
+    store.set_setting = AsyncMock()
+    store.delete_setting = AsyncMock()
+    store.log_admin_action = AsyncMock()
+    return store
+
+
+class TestAdminUsageInsightsAnalyze:
     @pytest.fixture
     def admin_app(self, mock_db_logger):
-        """Minimal FastAPI app with the admin router and a usable mock pool."""
+        """Minimal FastAPI app with the admin router, mock pool, and configured store."""
         mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
         mock_conn.fetch = AsyncMock(return_value=_sample_rows())
         mock_conn.fetchrow = AsyncMock(return_value={"id": "user-123"})
-        # log_admin_action falls back to the legacy pool path (DatabaseLogger has
-        # no log_admin_action), so conn.execute must be awaitable.
+        # log_admin_action falls back to the legacy pool path for the db logger
+        # (DatabaseLogger has no log_admin_action), so conn.execute must be awaitable.
         mock_conn.execute = AsyncMock()
 
         app = FastAPI(title="Usage Insights Test")
@@ -59,6 +83,7 @@ class TestAdminUsageInsightsRoute:
             db_logger=mock_db_logger,
             routing_manager=None,
         )
+        services.operational_store = _make_op_store()
         app.state.services = services  # type: ignore[attr-defined]
         app.include_router(admin_router.router)
         return app
@@ -67,8 +92,9 @@ class TestAdminUsageInsightsRoute:
     def _patch_llm(self, monkeypatch):
         called = {}
 
-        async def _fake(payload, content):
-            called["model"] = payload.model
+        async def _fake(api_key, model, content):
+            called["api_key"] = api_key
+            called["model"] = model
             called["content"] = content
             return "## Client tools\nClaude Code and Kilo Code dominate."
 
@@ -79,7 +105,7 @@ class TestAdminUsageInsightsRoute:
     async def test_route_requires_admin_auth(self, admin_app):
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/admin/usage-insights/analyze", json={"api_key": "sk-test"})
+            resp = await client.post("/admin/usage-insights/analyze", json={})
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
@@ -87,19 +113,19 @@ class TestAdminUsageInsightsRoute:
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post(
-                "/admin/usage-insights/analyze",
-                json={"api_key": "sk-test", "model": "glm-5.2"},
-            )
+            resp = await client.post("/admin/usage-insights/analyze", json={})
         admin_app.dependency_overrides.clear()
 
         assert resp.status_code == 200
         body = resp.json()
         assert "Claude Code" in body["analysis"]
-        assert body["model"] == "glm-5.2"
+        # Model comes from the server-side setting, not the request body.
+        assert body["model"] == "glm-5.1"
         assert body["sampled_requests"] == 2
         assert body["scope"] == "all users"
         assert "generated_at" in body
+        # The stored key is the one handed to the analysis model.
+        assert _patch_llm["api_key"] == "sk-configured-key"
         # The rendered content handed to the LLM includes harness identifiers.
         assert "Kilo Code agent" in _patch_llm["content"]
 
@@ -110,12 +136,48 @@ class TestAdminUsageInsightsRoute:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
                 "/admin/usage-insights/analyze",
-                json={"api_key": "sk-test", "user_email": "heavy@user.com"},
+                json={"user_email": "heavy@user.com"},
             )
         admin_app.dependency_overrides.clear()
 
         assert resp.status_code == 200
         assert resp.json()["scope"] == "heavy@user.com"
+
+    @pytest.mark.asyncio
+    async def test_analyze_scopes_to_user_id(self, admin_app, _patch_llm):
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/admin/usage-insights/analyze",
+                json={"user_id": "user-999", "limit": 10},
+            )
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["scope"] == "user-999"
+
+    @pytest.mark.asyncio
+    async def test_analyze_400_when_not_configured(self, mock_db_logger, _patch_llm):
+        """No stored API key → 400 directing the admin to Settings."""
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        mock_conn.fetch = AsyncMock(return_value=_sample_rows())
+
+        app = FastAPI()
+        services = AppServices(router=MagicMock(), db_logger=mock_db_logger, routing_manager=None)
+        services.operational_store = _make_op_store(api_key=None)
+        app.state.services = services  # type: ignore[attr-defined]
+        app.include_router(admin_router.router)
+        app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/admin/usage-insights/analyze", json={})
+
+        assert resp.status_code == 400
+        # Error-body shape varies (detail vs error.message) by handler; the text
+        # must point the admin at Settings either way.
+        assert "Settings" in resp.text
 
     @pytest.mark.asyncio
     async def test_analyze_404_when_no_samples(self, admin_app, mock_db_logger, _patch_llm):
@@ -125,7 +187,7 @@ class TestAdminUsageInsightsRoute:
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/admin/usage-insights/analyze", json={"api_key": "sk-test"})
+            resp = await client.post("/admin/usage-insights/analyze", json={})
         admin_app.dependency_overrides.clear()
 
         assert resp.status_code == 404
@@ -140,34 +202,100 @@ class TestAdminUsageInsightsRoute:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
                 "/admin/usage-insights/analyze",
-                json={"api_key": "sk-test", "user_email": "nobody@x.com"},
+                json={"user_email": "nobody@x.com"},
             )
         admin_app.dependency_overrides.clear()
 
         assert resp.status_code == 404
 
-    @pytest.mark.asyncio
-    async def test_analyze_requires_api_key(self, admin_app, _patch_llm):
-        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
-        transport = ASGITransport(app=admin_app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/admin/usage-insights/analyze", json={"api_key": ""})
-        admin_app.dependency_overrides.clear()
-        # Empty api_key violates the min_length=1 constraint → 422.
-        assert resp.status_code == 422
+
+class TestAdminUsageInsightsSettings:
+    @pytest.fixture
+    def app_with_store(self, mock_db_logger):
+        def _build(store):
+            app = FastAPI()
+            services = AppServices(
+                router=MagicMock(), db_logger=mock_db_logger, routing_manager=None
+            )
+            services.operational_store = store
+            app.state.services = services  # type: ignore[attr-defined]
+            app.include_router(admin_router.router)
+            return app
+
+        return _build
 
     @pytest.mark.asyncio
-    async def test_analyze_rejects_foreign_base_url(self, admin_app, _patch_llm):
-        """base_url is constrained to freeinference.org to block SSRF/exfiltration."""
-        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
-        transport = ASGITransport(app=admin_app)
+    async def test_get_requires_admin(self, app_with_store):
+        app = app_with_store(_make_op_store())
+        transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post(
-                "/admin/usage-insights/analyze",
-                json={"api_key": "sk-test", "base_url": "http://169.254.169.254/v1"},
+            resp = await client.get("/admin/usage-insights/settings")
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_get_returns_masked_hint(self, app_with_store):
+        app = app_with_store(_make_op_store(api_key="sk-abcd1234", model="minimax-m3"))
+        app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/admin/usage-insights/settings")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["configured"] is True
+        assert body["api_key_hint"] == "…1234"  # only a tail, never the full key
+        assert body["model"] == "minimax-m3"
+
+    @pytest.mark.asyncio
+    async def test_get_unconfigured_uses_default_model(self, app_with_store):
+        app = app_with_store(_make_op_store(api_key=None, model=None))
+        app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/admin/usage-insights/settings")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["configured"] is False
+        assert body["api_key_hint"] is None
+        assert body["model"] == usage_insights._DEFAULT_MODEL
+
+    @pytest.mark.asyncio
+    async def test_put_sets_key_and_model(self, app_with_store):
+        store = _make_op_store(api_key=None, model=None)
+        app = app_with_store(store)
+        app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.put(
+                "/admin/usage-insights/settings",
+                json={"api_key": "  sk-new-key  ", "model": "minimax-m3"},
             )
-        admin_app.dependency_overrides.clear()
-        assert resp.status_code == 422
+        assert resp.status_code == 200
+        # Key is trimmed and stored under the API-key setting; model is stored too.
+        store.set_setting.assert_any_call(
+            usage_insights._SETTING_API_KEY, "sk-new-key", "str", "admin@test"
+        )
+        store.set_setting.assert_any_call(
+            usage_insights._SETTING_MODEL, "minimax-m3", "str", "admin@test"
+        )
+
+    @pytest.mark.asyncio
+    async def test_put_empty_key_clears(self, app_with_store):
+        store = _make_op_store()
+        app = app_with_store(store)
+        app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.put("/admin/usage-insights/settings", json={"api_key": ""})
+        assert resp.status_code == 200
+        store.delete_setting.assert_called_once_with(usage_insights._SETTING_API_KEY)
+
+    @pytest.mark.asyncio
+    async def test_put_requires_admin(self, app_with_store):
+        app = app_with_store(_make_op_store())
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.put("/admin/usage-insights/settings", json={"model": "glm-5.1"})
+        assert resp.status_code == 401
 
 
 class TestRenderSamples:
@@ -198,8 +326,6 @@ class TestCallAnalysisModel:
         The synthetic-probe header keeps the gateway from logging (and later
         re-sampling) this feature's own analysis requests.
         """
-        from serving.schemas_admin import UsageInsightsRequest
-
         captured: dict = {}
 
         class _FakeClient:
@@ -211,13 +337,28 @@ class TestCallAnalysisModel:
 
         monkeypatch.setattr(usage_insights.AsyncHTTPClient, "shared", lambda: _FakeClient())
 
-        payload = UsageInsightsRequest(
-            api_key="sk-x", model="glm-5.2", base_url="https://freeinference.org/v1"
-        )
-        text = await usage_insights._call_analysis_model(payload, "the content")
+        text = await usage_insights._call_analysis_model("sk-x", "glm-5.1", "the content")
 
         assert text == "report"
         assert captured["url"] == "https://freeinference.org/v1/chat/completions"
         assert captured["headers"]["X-Probe"] == "synthetic"
         assert captured["headers"]["Authorization"] == "Bearer sk-x"
-        assert captured["json"]["model"] == "glm-5.2"
+        assert captured["json"]["model"] == "glm-5.1"
+
+    @pytest.mark.asyncio
+    async def test_extracts_list_content_and_reasoning_fallback(self, monkeypatch):
+        """Content as a block list is joined; empty content falls back to reasoning."""
+
+        class _ListClient:
+            async def json_post(self, url, *, json, headers, timeout):
+                return {"choices": [{"message": {"content": [{"type": "text", "text": "hi"}]}}]}
+
+        monkeypatch.setattr(usage_insights.AsyncHTTPClient, "shared", lambda: _ListClient())
+        assert await usage_insights._call_analysis_model("k", "m", "c") == "hi"
+
+        class _ReasoningClient:
+            async def json_post(self, url, *, json, headers, timeout):
+                return {"choices": [{"message": {"content": "", "reasoning_content": "thought"}}]}
+
+        monkeypatch.setattr(usage_insights.AsyncHTTPClient, "shared", lambda: _ReasoningClient())
+        assert await usage_insights._call_analysis_model("k", "m", "c") == "thought"

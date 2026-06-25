@@ -3,6 +3,7 @@
 import { hasRole } from '@/components/providers/AuthProvider';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
 import { UserRecentRequests } from './UserRecentRequests';
+import { UserUsageInsights } from './UserUsageInsights';
 
 export function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -367,6 +368,10 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
       {/* Recent requests made by this user. key={u.id} remounts the component
           on user switch so its paging/expansion/cache state resets cleanly. */}
       <UserRecentRequests key={u.id} userId={u.id} />
+
+      {/* LLM analysis of this user's requests. key={u.id} resets the report when
+          switching between users. */}
+      <UserUsageInsights key={u.id} userId={u.id} />
     </div>
   );
 }

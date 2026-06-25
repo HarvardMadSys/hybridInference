@@ -6,9 +6,11 @@ payloads (system-prompt openers + user turns + client user-agents) and asks an
 LLM to summarize which harnesses/agents people run, what kinds of tasks they
 work on, and any notable usage patterns.
 
-The analysis model is reached over an OpenAI-compatible API. By default that is
-freeinference.org itself, with an API key the admin supplies in the request
-(never stored server-side).
+The analysis provider is an OpenAI-compatible API — freeinference.org itself by
+default. The API key and model are configured once in Admin → Settings (stored
+in ``site_settings`` and read server-side), not supplied per request. The
+analyze action runs site-wide from the Usage Insights tab or scoped to one user
+from that user's admin detail panel.
 """
 
 from __future__ import annotations
@@ -20,9 +22,18 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.http import AsyncHTTPClient
-from serving.schemas_admin import UsageInsightsRequest, UsageInsightsResponse
+from serving.schemas_admin import (
+    UsageInsightsRequest,
+    UsageInsightsResponse,
+    UsageInsightsSettings,
+    UsageInsightsSettingsUpdate,
+)
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_db_logger, verify_admin_access
+from serving.servers.deps import (
+    get_db_logger,
+    get_operational_store,
+    verify_admin_access,
+)
 from serving.utils.logging import get_logger
 from serving.utils.prompt_sampling import (
     as_payload_dict,
@@ -35,6 +46,20 @@ from serving.utils.request_ip import get_client_ip
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/admin")
+
+# site_settings keys for the analysis provider config.
+_SETTING_API_KEY = "usage_insights_api_key"
+_SETTING_MODEL = "usage_insights_model"
+
+# Default analysis model. Must be a chat model that freeinference.org actually
+# serves (see GET https://freeinference.org/v1/models) — an unserved id makes the
+# upstream return "model not found" and the analysis fails.
+_DEFAULT_MODEL = "glm-5.1"
+
+# The analysis call always targets the gateway's own OpenAI-compatible API. It is
+# a fixed, trusted host (not user-supplied) so the admin's stored key and the
+# sampled prompt content can't be redirected to an arbitrary/internal endpoint.
+_BASE_URL = "https://freeinference.org/v1"
 
 _SYSTEM_PROMPT = (
     "You are a product analyst for an LLM inference gateway. You are given a "
@@ -60,6 +85,28 @@ _SYSTEM_PROMPT = (
 # Cap how much text we ship to the analysis model regardless of per-message
 # truncation, so a handful of giant prompts can't blow the context window.
 _MAX_PROMPT_CHARS = 60_000
+
+
+def _mask_key(key: str) -> str:
+    """Return a non-reversible tail hint of an API key for UI recognition."""
+    tail = key[-4:] if len(key) >= 4 else key
+    return f"…{tail}"
+
+
+async def _read_setting(op_store, key: str) -> str | None:
+    """Return a non-empty string site_settings value, or None when unset."""
+    row = await op_store.get_setting(key)
+    if not row:
+        return None
+    value = row.get("value")
+    return value if isinstance(value, str) and value != "" else None
+
+
+async def _load_provider(op_store) -> tuple[str | None, str]:
+    """Resolve the configured (api_key, model). model falls back to the default."""
+    api_key = await _read_setting(op_store, _SETTING_API_KEY)
+    model = await _read_setting(op_store, _SETTING_MODEL) or _DEFAULT_MODEL
+    return api_key, model
 
 
 async def _resolve_user_id(conn, payload: UsageInsightsRequest) -> str | None:
@@ -166,11 +213,35 @@ def _render_samples(samples: list[dict]) -> tuple[str, int]:
     return "\n\n".join(blocks), used
 
 
-async def _call_analysis_model(payload: UsageInsightsRequest, content: str) -> str:
+def _message_text(message: dict) -> str:
+    """Extract assistant text from an OpenAI-shape message.
+
+    Handles plain string ``content``, a list of content blocks, and reasoning
+    models that leave ``content`` empty but populate ``reasoning_content``.
+    """
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, list):
+        parts = [
+            b.get("text", "")
+            for b in content
+            if isinstance(b, dict) and b.get("type") in (None, "text")
+        ]
+        joined = "\n".join(p for p in parts if p)
+        if joined.strip():
+            return joined
+    reasoning = message.get("reasoning_content")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning
+    return ""
+
+
+async def _call_analysis_model(api_key: str, model: str, content: str) -> str:
     """Call the OpenAI-compatible chat-completions endpoint and return the text."""
-    url = payload.base_url.rstrip("/") + "/chat/completions"
+    url = _BASE_URL.rstrip("/") + "/chat/completions"
     body = {
-        "model": payload.model,
+        "model": model,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": content},
@@ -179,11 +250,11 @@ async def _call_analysis_model(payload: UsageInsightsRequest, content: str) -> s
         "stream": False,
     }
     headers = {
-        "Authorization": f"Bearer {payload.api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        # When base_url is the gateway itself (the default), this marks the call
-        # as a synthetic probe so it is not persisted to api_logs (and not
-        # re-sampled by a later report) or counted against the admin's quota.
+        # The analysis call is handled by the gateway itself. Marking it a
+        # synthetic probe keeps it out of api_logs (so a later report can't
+        # re-sample it) and off the admin's quota.
         "X-Probe": "synthetic",
         "User-Agent": "freeinference-usage-insights/1.0",
     }
@@ -195,10 +266,9 @@ async def _call_analysis_model(payload: UsageInsightsRequest, content: str) -> s
             timeout=aiohttp.ClientTimeout(total=120),
         )
     except aiohttp.ClientResponseError as e:
-        # base_url is constrained to freeinference.org (see UsageInsightsRequest),
-        # so the upstream is trusted; surface a bounded snippet of its error to
-        # help the admin diagnose (e.g. bad key, unknown model). The api_key is a
-        # request header, not part of the response body, so it is not echoed here.
+        # The upstream is the gateway's own trusted domain; surface a bounded
+        # snippet of its error to help the admin diagnose (e.g. bad key, unknown
+        # model). The api_key is a request header, not echoed in the body.
         detail = getattr(e, "error_body", "") or e.message
         snippet = str(detail)[:500]
         logger.warning("usage-insights analysis upstream error: status=%s", e.status)
@@ -210,12 +280,67 @@ async def _call_analysis_model(payload: UsageInsightsRequest, content: str) -> s
         raise HTTPException(502, "Could not reach the analysis model.") from e
 
     try:
-        text = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as e:
         raise HTTPException(502, "Analysis model returned an unexpected response shape.") from e
-    if not isinstance(text, str) or not text.strip():
+    text = _message_text(message) if isinstance(message, dict) else ""
+    if not text.strip():
         raise HTTPException(502, "Analysis model returned an empty response.")
     return text.strip()
+
+
+@router.get("/usage-insights/settings", response_model=UsageInsightsSettings)
+async def get_usage_insights_settings(
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> UsageInsightsSettings:
+    """Return the stored analysis-provider config (never the raw API key)."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    api_key, model = await _load_provider(op_store)
+    return UsageInsightsSettings(
+        configured=bool(api_key),
+        api_key_hint=_mask_key(api_key) if api_key else None,
+        model=model,
+    )
+
+
+@router.put("/usage-insights/settings", response_model=UsageInsightsSettings)
+async def update_usage_insights_settings(
+    request: Request,
+    payload: UsageInsightsSettingsUpdate,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> UsageInsightsSettings:
+    """Set or clear the analysis API key and/or model."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    if payload.api_key is not None:
+        key = payload.api_key.strip()
+        if key:
+            await op_store.set_setting(_SETTING_API_KEY, key, "str", admin_id)
+        else:
+            await op_store.delete_setting(_SETTING_API_KEY)
+    if payload.model is not None:
+        await op_store.set_setting(_SETTING_MODEL, payload.model.strip(), "str", admin_id)
+
+    await log_admin_action(
+        op_store,
+        get_client_ip(request),
+        "usage_insights_settings_update",
+        details={
+            "api_key_changed": payload.api_key is not None,
+            "model_changed": payload.model is not None,
+        },
+    )
+
+    api_key, model = await _load_provider(op_store)
+    return UsageInsightsSettings(
+        configured=bool(api_key),
+        api_key_hint=_mask_key(api_key) if api_key else None,
+        model=model,
+    )
 
 
 @router.post("/usage-insights/analyze", response_model=UsageInsightsResponse)
@@ -224,10 +349,21 @@ async def admin_analyze_usage(
     payload: UsageInsightsRequest,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
+    op_store=Depends(get_operational_store),
 ) -> UsageInsightsResponse:
     """Sample stored request payloads and summarize how users use the gateway."""
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    api_key, model = await _load_provider(op_store)
+    if not api_key:
+        raise HTTPException(
+            400,
+            "No analysis API key configured. Add a freeinference.org API key in "
+            "Admin → Settings → Usage Insights.",
+        )
 
     async with db_logger.pool.acquire() as conn:
         user_id = await _resolve_user_id(conn, payload)
@@ -243,19 +379,19 @@ async def admin_analyze_usage(
         f"(scope: {scope}). Analyze how the gateway is being used.\n\n{rendered}"
     )
 
-    analysis = await _call_analysis_model(payload, content)
+    analysis = await _call_analysis_model(api_key, model, content)
 
     await log_admin_action(
         db_logger,
         get_client_ip(request),
         "usage_insights_analyze",
         target_user_id=user_id,
-        details={"sampled_requests": used, "model": payload.model, "scope": scope},
+        details={"sampled_requests": used, "model": model, "scope": scope},
     )
 
     return UsageInsightsResponse(
         analysis=analysis,
-        model=payload.model,
+        model=model,
         sampled_requests=used,
         scope=scope,
         generated_at=datetime.now(timezone.utc),
