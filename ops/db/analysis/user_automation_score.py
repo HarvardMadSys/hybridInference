@@ -424,7 +424,9 @@ def _dsn() -> str:
 
 def _scope(user_id: str | None) -> tuple[str, tuple[Any, ...]]:
     """Return the shared WHERE clause and params for the window (+ optional user)."""
-    clause = "timestamp >= now() - make_interval(days => $1) AND user_id IS NOT NULL"
+    # Cast the day count explicitly so the make_interval(days => ...) argument
+    # binds as int4 regardless of how the driver infers the parameter type.
+    clause = "timestamp >= now() - make_interval(days => $1::int) AND user_id IS NOT NULL"
     params: tuple[Any, ...] = ()
     if user_id is not None:
         clause += " AND user_id = $2"
