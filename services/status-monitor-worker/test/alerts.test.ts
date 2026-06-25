@@ -42,6 +42,8 @@ describe("deriveEnvironment", () => {
     expect(deriveEnvironment("https://freeinference.org")).toBe("production");
     expect(deriveEnvironment("http://localhost:8787")).toBe("local");
     expect(deriveEnvironment("http://127.0.0.1:8080")).toBe("local");
+    expect(deriveEnvironment("http://[::1]:8787")).toBe("local"); // IPv6 loopback
+    expect(deriveEnvironment("https://freeinference.org:8443")).toBe("production"); // host w/ port
     expect(deriveEnvironment("https://example.com")).toBe("unknown");
     expect(deriveEnvironment("not a url")).toBe("unknown");
   });
@@ -81,10 +83,9 @@ describe("decideAlerts", () => {
   it("alerts down only on the transition into the failing set", () => {
     const first = decideAlerts([result("a", false)], new Set(["a"]), {});
     expect(first.down.map((r) => r.modelId)).toEqual(["a"]);
-    expect(first.nextState.a).toBe("2026-06-25T00:00:00Z");
 
-    // Already alerted — a sustained outage must not page again.
-    const second = decideAlerts([result("a", false)], new Set(["a"]), first.nextState);
+    // Already alerted (state present) — a sustained outage must not page again.
+    const second = decideAlerts([result("a", false)], new Set(["a"]), { a: "2026-06-25T00:00:00Z" });
     expect(second.down).toEqual([]);
     expect(second.recovered).toEqual([]);
   });
@@ -93,18 +94,20 @@ describe("decideAlerts", () => {
     // Failing this cycle but not in the >=threshold set yet.
     const d = decideAlerts([result("a", false)], new Set(), {});
     expect(d.down).toEqual([]);
-    expect(d.nextState).toEqual({});
+    expect(d.baseState).toEqual({});
   });
 
-  it("emits a recovery alert and clears state when a down model succeeds", () => {
+  it("emits a recovery alert when a down model succeeds (state cleared by caller on send)", () => {
     const d = decideAlerts([result("a", true)], new Set(), { a: "2026-06-25T00:00:00Z" });
     expect(d.recovered.map((r) => r.modelId)).toEqual(["a"]);
-    expect(d.nextState.a).toBeUndefined();
+    // decideAlerts is pure: it does not clear state — runAlerts does, only once
+    // the recovery POST is confirmed delivered.
+    expect(d.baseState.a).toBe("2026-06-25T00:00:00Z");
   });
 
-  it("drops state for models no longer probed this cycle", () => {
+  it("drops base state for models no longer probed this cycle", () => {
     const d = decideAlerts([result("a", true)], new Set(), { gone: "2026-06-25T00:00:00Z" });
-    expect(d.nextState.gone).toBeUndefined();
+    expect(d.baseState.gone).toBeUndefined();
   });
 });
 
@@ -190,6 +193,12 @@ class FakeD1 {
   record(modelId: string, ok: boolean): void {
     this.probe.push({ id: ++this.seq, model_id: modelId, ok: ok ? 1 : 0 });
   }
+
+  /** Mirrors reconcileModels: drops rows for models not probed this cycle. */
+  reconcile(activeIds: string[]): void {
+    const active = new Set(activeIds);
+    this.probe = this.probe.filter((r) => active.has(r.model_id));
+  }
 }
 
 function stubFetch(): Array<{ text: string }> {
@@ -204,11 +213,21 @@ function stubFetch(): Array<{ text: string }> {
   return posts;
 }
 
-/** Records one cycle's results into the fake DB and evaluates alerts. */
-async function cycle(db: FakeD1, env: Env, perModel: Record<string, boolean>): Promise<void> {
+function cfg(threshold: number): Config {
+  return { ...config, alertFailureThreshold: threshold };
+}
+
+/** Records one cycle's results into the fake DB (reconciling as the worker does) and evaluates alerts. */
+async function cycle(
+  db: FakeD1,
+  env: Env,
+  perModel: Record<string, boolean>,
+  conf: Config = config,
+): Promise<void> {
   const results = Object.entries(perModel).map(([id, ok]) => result(id, ok));
   for (const r of results) db.record(r.modelId, r.ok);
-  await runAlerts(env, config, results);
+  db.reconcile(results.map((r) => r.modelId));
+  await runAlerts(env, conf, results);
 }
 
 describe("runAlerts", () => {
@@ -264,6 +283,32 @@ describe("runAlerts", () => {
     expect(posts[0].text).toContain("`a`");
   });
 
+  it("does not commit alert state when the Slack POST fails, and retries next cycle", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    let status = 500;
+    const posts: Array<{ text: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        posts.push(JSON.parse(String(init.body)));
+        return new Response("x", { status });
+      }),
+    );
+
+    await cycle(db, env, { a: false });
+    await cycle(db, env, { a: false }); // 2nd failure → POST attempted but 500
+    expect(posts).toHaveLength(1);
+    // A failed page must not be recorded as sent, or the outage would never re-page.
+    const stateAfterFail = db.meta.has("alert_state") ? JSON.parse(db.meta.get("alert_state")!) : {};
+    expect(stateAfterFail.a).toBeUndefined();
+
+    status = 200;
+    await cycle(db, env, { a: false }); // retried → delivered this time
+    expect(posts).toHaveLength(2);
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty("a");
+  });
+
   it("does nothing when no webhook is configured", async () => {
     const db = new FakeD1();
     const env = envWith(db, undefined);
@@ -272,6 +317,101 @@ describe("runAlerts", () => {
     await cycle(db, env, { a: false });
     await cycle(db, env, { a: false });
     expect(posts).toHaveLength(0);
+    expect(db.meta.has("alert_state")).toBe(false);
+  });
+
+  it("honors a threshold of 1 (page on the first failure)", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await cycle(db, env, { a: false }, cfg(1));
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toContain("Failed the last 1 probes");
+  });
+
+  it("honors a threshold of 3 (no page until the third consecutive failure)", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await cycle(db, env, { a: false }, cfg(3));
+    await cycle(db, env, { a: false }, cfg(3));
+    expect(posts).toHaveLength(0); // only two in a row
+    await cycle(db, env, { a: false }, cfg(3));
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toContain("Failed the last 3 probes");
+  });
+
+  it("re-arms cleanly from a corrupt alert_state value", async () => {
+    const db = new FakeD1();
+    db.meta.set("alert_state", "{not valid json"); // e.g. a half-written row
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await cycle(db, env, { a: false });
+    await cycle(db, env, { a: false }); // corrupt state treated as empty → still pages
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty("a");
+  });
+
+  it("recovers one model while another stays down (multi-model partial recovery)", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await cycle(db, env, { a: false, b: false });
+    await cycle(db, env, { a: false, b: false }); // both page down (2)
+    expect(posts).toHaveLength(2);
+
+    await cycle(db, env, { a: true, b: false }); // a recovers, b still down
+    expect(posts).toHaveLength(3);
+    expect(posts[2].text).toContain("Model recovered: `a`");
+    const state = JSON.parse(db.meta.get("alert_state")!);
+    expect(state).not.toHaveProperty("a");
+    expect(state).toHaveProperty("b"); // b's down state persists, not re-paged
+  });
+
+  it("never pages recovery for a model that was never down", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await cycle(db, env, { a: true });
+    await cycle(db, env, { a: false }); // single failure, below threshold
+    await cycle(db, env, { a: true }); // back up — but never alerted down
+    expect(posts).toHaveLength(0);
+  });
+
+  it("clears state without a false recovery when a down model leaves the catalog", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const posts = stubFetch();
+
+    await cycle(db, env, { a: false });
+    await cycle(db, env, { a: false }); // a paged down (1)
+    expect(posts).toHaveLength(1);
+
+    await cycle(db, env, { b: true }); // a absent from the catalog this cycle
+    expect(posts).toHaveLength(1); // no recovery page for the departed model
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+
+    // a returns and fails once: its history was reconciled away, so it's not yet
+    // a confirmed streak and must not page until it fails twice anew.
+    await cycle(db, env, { a: false });
+    expect(posts).toHaveLength(1);
+    await cycle(db, env, { a: false });
+    expect(posts).toHaveLength(2);
+  });
+
+  it("is a no-op for an empty result set", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await runAlerts(env, config, []);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(db.meta.has("alert_state")).toBe(false);
   });
 });

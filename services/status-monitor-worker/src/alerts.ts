@@ -10,16 +10,17 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"
  * derived from its host (mirrors the backend's alert environment detection).
  */
 export function deriveEnvironment(gatewayBaseUrl: string): string {
-  let host: string;
+  let hostname: string;
   try {
-    host = new URL(gatewayBaseUrl).host.toLowerCase();
+    // `.hostname` (not `.host`) excludes the port and keeps IPv6 brackets intact,
+    // so `freeinference.org:8443` still matches and `[::1]` isn't truncated.
+    hostname = new URL(gatewayBaseUrl).hostname.toLowerCase();
   } catch {
     return "unknown";
   }
-  const hostname = host.split(":")[0];
   if (!hostname || LOCAL_HOSTS.has(hostname)) return "local";
-  if (host.includes("staging")) return "staging";
-  if (host.endsWith("freeinference.org")) return "production";
+  if (hostname.includes("staging")) return "staging";
+  if (hostname.endsWith("freeinference.org")) return "production";
   return "unknown";
 }
 
@@ -79,11 +80,18 @@ export async function postSlack(webhookUrl: string, message: string): Promise<bo
   }
 }
 
-/** The set of alerts to send this cycle plus the alert state to persist. */
+/** Which models to page this cycle, plus the carried-over alert state. */
 export interface AlertDecision {
+  /** Models that newly crossed the failure threshold and should page as down. */
   down: ProbeResult[];
+  /** Models that came back up after a down alert and should page as recovered. */
   recovered: ProbeResult[];
-  nextState: Record<string, string>;
+  /**
+   * `prevState` minus any model no longer probed this cycle (so state can't grow
+   * without bound). The down/recovery transitions are intentionally NOT applied
+   * here — the caller commits them only after a confirmed Slack delivery.
+   */
+  baseState: Record<string, string>;
 }
 
 /**
@@ -92,36 +100,37 @@ export interface AlertDecision {
  * `failing` holds the models whose most recent `threshold` probes were all
  * failures. `prevState` maps a model to the ISO time we last alerted it is down;
  * its presence means we've already paged for the current outage. A model is
- * alerted *down* only on the transition into the failing set (so a sustained
- * outage pages once, not every 20-minute cron), and alerted *recovered* only
- * when a probe succeeds after a down alert. State for models no longer probed
- * this cycle is dropped so it can't grow without bound.
+ * paged *down* only on the transition into the failing set (so a sustained
+ * outage pages once, not every 20-minute cron), and *recovered* only when a
+ * probe succeeds after a down alert.
+ *
+ * This function is pure: it decides *what* to send but does not record that it
+ * was sent. {@link runAlerts} applies the state transition only for an alert
+ * whose POST actually succeeded, so a Slack outage retries next cycle instead of
+ * silently dropping the page.
  */
 export function decideAlerts(
   results: ProbeResult[],
   failing: Set<string>,
   prevState: Record<string, string>,
 ): AlertDecision {
-  const nextState: Record<string, string> = { ...prevState };
+  const baseState: Record<string, string> = { ...prevState };
+  const present = new Set(results.map((r) => r.modelId));
+  for (const id of Object.keys(baseState)) {
+    if (!present.has(id)) delete baseState[id];
+  }
+
   const down: ProbeResult[] = [];
   const recovered: ProbeResult[] = [];
   for (const r of results) {
-    const alerted = nextState[r.modelId] != null;
+    const alerted = baseState[r.modelId] != null;
     if (failing.has(r.modelId)) {
-      if (!alerted) {
-        down.push(r);
-        nextState[r.modelId] = r.checkedAt;
-      }
+      if (!alerted) down.push(r);
     } else if (r.ok && alerted) {
       recovered.push(r);
-      delete nextState[r.modelId];
     }
   }
-  const present = new Set(results.map((r) => r.modelId));
-  for (const id of Object.keys(nextState)) {
-    if (!present.has(id)) delete nextState[id];
-  }
-  return { down, recovered, nextState };
+  return { down, recovered, baseState };
 }
 
 /**
@@ -132,6 +141,9 @@ export function decideAlerts(
  *
  * Runs inside the probe cycle while it holds the cycle lock, so the
  * read-modify-write of the alert state is never raced by an overlapping cron.
+ * A model is only recorded as alerted once its page is confirmed delivered, and
+ * its state is only cleared once its recovery notice is delivered — so a Slack
+ * webhook outage causes a retry on the next cycle rather than a lost alert.
  */
 export async function runAlerts(env: Env, config: Config, results: ProbeResult[]): Promise<void> {
   const webhookUrl = env.SLACK_WEBHOOK_URL;
@@ -143,13 +155,35 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   const failedNow = results.filter((r) => !r.ok).map((r) => r.modelId);
   const failing = await modelsFailingStreak(env.DB, failedNow, threshold);
   const prevState = await readAlertState(env.DB);
-  const { down, recovered, nextState } = decideAlerts(results, failing, prevState);
+  const { down, recovered, baseState } = decideAlerts(results, failing, prevState);
 
-  for (const r of down) {
-    await postSlack(webhookUrl, formatModelDownAlert(config, r, threshold));
+  const nextState: Record<string, string> = { ...baseState };
+
+  // Send pages concurrently so a batch of simultaneous outages doesn't hold the
+  // cycle lock for (count × per-request timeout). Each state transition is
+  // committed only for a page that actually delivered: a failed POST leaves a
+  // down model un-alerted (retried next cycle) and keeps a recovering model's
+  // down state (recovery retried next cycle), so a Slack hiccup never drops an
+  // alert instead of just delaying it.
+  const downSent = await Promise.all(
+    down.map(async (r) => ({
+      modelId: r.modelId,
+      checkedAt: r.checkedAt,
+      ok: await postSlack(webhookUrl, formatModelDownAlert(config, r, threshold)),
+    })),
+  );
+  for (const r of downSent) {
+    if (r.ok) nextState[r.modelId] = r.checkedAt;
   }
-  for (const r of recovered) {
-    await postSlack(webhookUrl, formatModelRecoveredAlert(config, r));
+
+  const recoveredSent = await Promise.all(
+    recovered.map(async (r) => ({
+      modelId: r.modelId,
+      ok: await postSlack(webhookUrl, formatModelRecoveredAlert(config, r)),
+    })),
+  );
+  for (const r of recoveredSent) {
+    if (r.ok) delete nextState[r.modelId];
   }
 
   if (JSON.stringify(nextState) !== JSON.stringify(prevState)) {

@@ -95,7 +95,7 @@ npx wrangler secret put PROBER_API_KEY
 # 3a. (Optional) Set the Slack incoming-webhook URL to enable failure alerts.
 npx wrangler secret put SLACK_WEBHOOK_URL
 
-# 4. Deploy (registers the Worker and its 5-minute cron trigger).
+# 4. Deploy (registers the Worker and its 20-minute cron trigger).
 npx wrangler deploy
 ```
 
