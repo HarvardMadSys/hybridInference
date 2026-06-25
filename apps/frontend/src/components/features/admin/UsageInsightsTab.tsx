@@ -13,6 +13,17 @@ const KEY_STORAGE = 'usage_insights_api_key';
 const MODEL_STORAGE = 'usage_insights_model';
 const DEFAULT_MODEL = 'glm-5.2';
 const DEFAULT_BASE_URL = 'https://freeinference.org/v1';
+const DEFAULT_LIMIT = 40;
+const MIN_LIMIT = 1;
+const MAX_LIMIT = 200;
+
+// Parse the free-form limit input into a valid sample size, falling back to the
+// default when it's blank or non-numeric.
+function clampLimit(raw: string): number {
+  const n = parseInt(raw, 10);
+  if (Number.isNaN(n)) return DEFAULT_LIMIT;
+  return Math.max(MIN_LIMIT, Math.min(MAX_LIMIT, n));
+}
 
 const MARKDOWN_CLASS =
   'text-[13px] leading-relaxed text-gray-700 [&_a]:text-blue-600 [&_a]:underline ' +
@@ -25,7 +36,9 @@ export function UsageInsightsTab() {
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [userEmail, setUserEmail] = useState('');
-  const [limit, setLimit] = useState(40);
+  // Kept as a string so the field can be cleared / edited freely; clamped to a
+  // valid number on blur and when the request is built.
+  const [limit, setLimit] = useState(String(DEFAULT_LIMIT));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<UsageInsightsResponse | null>(null);
@@ -61,7 +74,7 @@ export function UsageInsightsTab() {
         model: model.trim() || DEFAULT_MODEL,
         base_url: DEFAULT_BASE_URL,
         user_email: userEmail.trim() || undefined,
-        limit,
+        limit: clampLimit(limit),
       });
       setResult(res);
     } catch (e) {
@@ -111,10 +124,11 @@ export function UsageInsightsTab() {
             <label className="block text-[12px] font-medium text-gray-600 mb-1">Sample size</label>
             <input
               type="number"
-              min={1}
-              max={200}
+              min={MIN_LIMIT}
+              max={MAX_LIMIT}
               value={limit}
-              onChange={(e) => setLimit(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
+              onChange={(e) => setLimit(e.target.value)}
+              onBlur={() => setLimit(String(clampLimit(limit)))}
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
             />
           </div>

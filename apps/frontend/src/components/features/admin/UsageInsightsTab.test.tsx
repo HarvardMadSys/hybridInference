@@ -55,6 +55,28 @@ describe('UsageInsightsTab', () => {
     expect(window.localStorage.getItem('usage_insights_api_key')).toBe('sk-secret');
   });
 
+  it('falls back to the default sample size when the limit field is cleared', async () => {
+    mockAnalyze.mockResolvedValue({
+      analysis: 'ok',
+      model: 'glm-5.2',
+      sampled_requests: 1,
+      scope: 'all users',
+      generated_at: '2026-06-25T12:00:00Z',
+    });
+
+    render(<UsageInsightsTab />);
+    fireEvent.change(screen.getByPlaceholderText('sk-...'), {
+      target: { value: 'sk-secret' },
+    });
+    // Clearing the field must not block the user; the request still gets a valid
+    // limit (the default, 40) rather than 0/NaN.
+    fireEvent.change(screen.getByRole('spinbutton'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: /analyze usage/i }));
+
+    await waitFor(() => expect(mockAnalyze).toHaveBeenCalledTimes(1));
+    expect(mockAnalyze).toHaveBeenCalledWith(expect.objectContaining({ limit: 40 }));
+  });
+
   it('surfaces API errors', async () => {
     mockAnalyze.mockRejectedValue(new Error('Analysis model returned an error'));
 
