@@ -29,6 +29,10 @@ RETENTION_DAYS = "1024"
 # Absolute per-probe deadline (ms); aborts a stalled stream that keeps sending
 # SSE keepalives so one bad model can't wedge the cycle.
 PROBE_DEADLINE_MS = "60000"
+# Consecutive failed probes before a model pages Slack. Two consecutive failures
+# (~20 min apart) confirms a sustained outage and suppresses a single transient
+# blip. Only fires when the SLACK_WEBHOOK_URL secret is set.
+ALERT_FAILURE_THRESHOLD = "2"
 
 # D1 database binding. `database_id` is filled in after the database is created
 # (see README); the binding name `DB` is what the Worker code uses.
@@ -40,3 +44,8 @@ migrations_dir = "migrations"
 
 # PROBER_API_KEY is a secret, not a var. Set it with:
 #   wrangler secret put PROBER_API_KEY
+#
+# SLACK_WEBHOOK_URL is an optional secret. When set, a model that fails
+# ALERT_FAILURE_THRESHOLD consecutive probes pages this Slack incoming webhook
+# (and posts a recovery notice when it comes back). Unset disables alerting.
+#   wrangler secret put SLACK_WEBHOOK_URL

@@ -1,3 +1,4 @@
+import { runAlerts } from "./alerts";
 import { renderDashboard } from "./dashboard";
 import {
   acquireCycleLock,
@@ -119,6 +120,14 @@ async function runProbeCycle(env: Env): Promise<void> {
     );
     await prune(env.DB, config.retentionDays);
     await setCycleStatus(env.DB, { ok: true, checkedAt: now(), error: null });
+    // Page Slack for models that crossed the consecutive-failure threshold. A
+    // webhook/D1 hiccup here must not fail the cycle or leak the lock, so it is
+    // contained — the recorded results above are the source of truth regardless.
+    try {
+      await runAlerts(env, config, results);
+    } catch (err) {
+      console.error("alert evaluation failed", err);
+    }
     const down = results.filter((r) => !r.ok).length;
     console.log(`probe cycle complete: ${results.length} models, ${down} down`);
   } finally {

@@ -63,6 +63,74 @@ export async function recordResults(db: D1Database, results: ProbeResult[]): Pro
   );
 }
 
+/**
+ * Returns the subset of `modelIds` whose most recent `threshold` probes were
+ * *all* failures — i.e. models that have failed `threshold` consecutive cycles.
+ *
+ * Reads at most `threshold` rows per model via the `(model_id, id DESC)` index,
+ * so the cost is `threshold × modelIds.length` rows regardless of retention. A
+ * model with fewer than `threshold` recorded probes is never reported (not yet
+ * enough history to confirm a sustained outage). Call after the current cycle's
+ * results are recorded so the newest row reflects this cycle.
+ */
+export async function modelsFailingStreak(
+  db: D1Database,
+  modelIds: string[],
+  threshold: number,
+): Promise<Set<string>> {
+  const failing = new Set<string>();
+  if (modelIds.length === 0 || threshold < 1) return failing;
+  const stmt = db.prepare(
+    `SELECT ok FROM probe_results WHERE model_id = ? ORDER BY id DESC LIMIT ?`,
+  );
+  const batched = await db.batch<{ ok: number }>(modelIds.map((id) => stmt.bind(id, threshold)));
+  for (let i = 0; i < modelIds.length; i++) {
+    const rows = batched[i].results ?? [];
+    if (rows.length >= threshold && rows.every((r) => r.ok === 0)) {
+      failing.add(modelIds[i]);
+    }
+  }
+  return failing;
+}
+
+const ALERT_STATE_KEY = "alert_state";
+
+/**
+ * Reads the per-model down-alert state: a map of model id → ISO time it was last
+ * alerted as down. A model's presence means an alert has already fired for its
+ * current outage, so the next cron doesn't re-page. Returns `{}` when unset or
+ * corrupt (a corrupt value simply re-arms alerting rather than wedging it).
+ */
+export async function readAlertState(db: D1Database): Promise<Record<string, string>> {
+  const row = await db
+    .prepare(`SELECT value FROM meta WHERE key = ?`)
+    .bind(ALERT_STATE_KEY)
+    .first<{ value: string }>();
+  if (row?.value != null) {
+    try {
+      const parsed = JSON.parse(row.value);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const out: Record<string, string> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === "string") out[k] = v;
+        }
+        return out;
+      }
+    } catch {
+      // Corrupt value: fall through to an empty (re-armed) state.
+    }
+  }
+  return {};
+}
+
+/** Persists the per-model down-alert state. */
+export async function writeAlertState(db: D1Database, state: Record<string, string>): Promise<void> {
+  await db
+    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .bind(ALERT_STATE_KEY, JSON.stringify(state))
+    .run();
+}
+
 /** Deletes probe rows older than `retentionDays`. */
 export async function prune(db: D1Database, retentionDays: number): Promise<void> {
   const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
