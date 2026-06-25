@@ -16,8 +16,8 @@ interface UsageInsightsSettingsSectionProps {
 /**
  * Configures the provider used by the admin Usage Insights analysis: a
  * freeinference.org API key (stored server-side, never returned in full) and the
- * model to run the report with. The Analyze action lives on the Usage Insights
- * tab and on each user's detail panel; this section only manages credentials.
+ * model to run the report with. The Analyze action lives on each user's detail
+ * panel; this section only manages credentials.
  */
 export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsSectionProps) {
   const [settings, setSettings] = useState<UsageInsightsSettings | null>(null);
@@ -97,8 +97,8 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
         <h2 className="text-[14px] font-semibold text-gray-900">Usage Insights</h2>
         <p className="mt-1 text-[12px] text-gray-500">
           API key and model for the LLM-powered Usage Insights analysis (via freeinference.org). The
-          key is stored server-side and never shown again. Run the analysis from the Usage Insights
-          tab or from a user&apos;s detail panel.
+          key is stored server-side and never shown again. Run the analysis from a user&apos;s
+          detail panel using the &ldquo;Analyze usage&rdquo; button.
         </p>
       </div>
 
