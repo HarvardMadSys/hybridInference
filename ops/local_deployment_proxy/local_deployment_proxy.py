@@ -107,7 +107,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 logging.basicConfig(
@@ -1013,6 +1013,28 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     _copy_stream(resp, self.wfile)
                 else:
                     self.wfile.write(resp.read())
+        except HTTPError as exc:
+            # The backend returned a real HTTP response with an error status
+            # (e.g. vLLM's 400 for an over-long prompt). Forward it verbatim —
+            # status and body — instead of masking it as a 502. Masking hid the
+            # real cause from the client and made a plain bad request look like a
+            # backend outage to the gateway's circuit breaker, so one user's
+            # over-context request tripped the breaker for everyone. HTTPError is
+            # a URLError subclass, so this branch must precede the one below.
+            # urlopen raises before any client bytes are written, so forwarding
+            # a fresh response here is safe.
+            try:
+                body = exc.read()
+            except Exception:
+                body = b""
+            self.send_response(exc.code)
+            for key, val in exc.headers.items() if exc.headers else []:
+                if key.lower() in ("transfer-encoding", "connection", "content-length"):
+                    continue
+                self.send_header(key, val)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         except URLError as exc:
             # A connection error here means the backend port is dead. A backend
             # can die outside the proxy's control (crash, OOM, the sglang

@@ -10,6 +10,7 @@ from routing.routers import (
     BaseRouter,
     _CircuitBreaker,
     _CircuitState,
+    _is_client_error,
     _offender_str,
 )
 
@@ -345,3 +346,65 @@ async def test_base_router_attributes_offender_from_request_context(monkeypatch)
         mock_alert.assert_awaited_once()
         context = mock_alert.await_args.args[2]
         assert context["offending_users"] == "alice (01ABC) x2"
+
+
+def test_is_client_error_classification():
+    # Request-content faults: provider is healthy, must not trip.
+    assert _is_client_error(400)
+    assert _is_client_error(413)
+    assert _is_client_error(422)
+    # Excluded on purpose: rate limit, auth, timeout, and any 5xx still trip.
+    assert not _is_client_error(429)
+    assert not _is_client_error(401)
+    assert not _is_client_error(403)
+    assert not _is_client_error(408)
+    assert not _is_client_error(500)
+    assert not _is_client_error(503)
+
+
+def test_client_4xx_does_not_trip_circuit(monkeypatch):
+    monkeypatch.delenv("CIRCUIT_FAILURE_THRESHOLD", raising=False)
+    monkeypatch.delenv("CIRCUIT_MIN_AVAILABILITY", raising=False)
+    router = BaseRouter()
+    endpoint_id = "openai"
+    router._on_success(endpoint_id)  # seed health so availability is tracked
+
+    # Far more client 4xx failures than the trip threshold: the provider answered
+    # every time, so the circuit must stay closed and availability untouched.
+    for _ in range(10):
+        router._on_failure(endpoint_id, reason="stream_exception", status=400)
+
+    status = router.get_provider_status()[endpoint_id]
+    assert status["circuit_state"] == _CircuitState.CLOSED
+    assert status["availability"] == 1.0
+
+
+def test_server_5xx_still_trips_circuit(monkeypatch):
+    monkeypatch.delenv("CIRCUIT_FAILURE_THRESHOLD", raising=False)
+    monkeypatch.delenv("CIRCUIT_MIN_AVAILABILITY", raising=False)
+    router = BaseRouter()
+    endpoint_id = "openai"
+    for _ in range(3):
+        router._on_failure(endpoint_id, reason="stream_exception", status=500)
+    assert router.get_provider_status()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
+
+
+def test_client_error_recovered_from_active_exception(monkeypatch):
+    # When status isn't passed, _on_failure recovers it from the in-flight
+    # exception (every caller runs inside an except block).
+    monkeypatch.delenv("CIRCUIT_FAILURE_THRESHOLD", raising=False)
+    monkeypatch.delenv("CIRCUIT_MIN_AVAILABILITY", raising=False)
+    router = BaseRouter()
+    endpoint_id = "openai"
+    router._on_success(endpoint_id)
+
+    err = type("FakeClientResponseError", (Exception,), {"status": 400})()
+    for _ in range(10):
+        try:
+            raise err
+        except Exception:
+            router._on_failure(endpoint_id, reason="stream_exception")
+
+    status = router.get_provider_status()[endpoint_id]
+    assert status["circuit_state"] == _CircuitState.CLOSED
+    assert status["availability"] == 1.0

@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import random
+import sys
 import threading
 import time
 from collections import Counter
@@ -305,6 +306,42 @@ def _has_non_empty_content(chunk: Any) -> bool:
 
 def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
+
+
+def _error_status(exc: BaseException | None) -> int | None:
+    """Best-effort HTTP status code from an upstream adapter exception.
+
+    Adapters surface upstream failures as ``aiohttp.ClientResponseError``
+    (carrying ``.status``) or SDK errors carrying ``.status_code`` / a
+    ``.response`` object. Returns ``None`` for connection errors, timeouts, and
+    anything without a response — i.e. genuine provider faults rather than a
+    status the upstream deliberately returned.
+    """
+    if exc is None:
+        return None
+    for attr in ("status", "status_code"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int):
+            return val
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def _is_client_error(status: int) -> bool:
+    """Return True if an upstream HTTP status is the *client's* fault.
+
+    A client error means the request itself was bad (e.g. too long, malformed),
+    so the provider is healthy and retrying elsewhere is pointless — the circuit
+    breaker must NOT count it against provider availability. A provider/server
+    fault, or any ambiguous status, must return False so the breaker still trips.
+
+    Scope is deliberately narrow: only request-content faults, where the
+    upstream rejected *this* request as malformed or too large. Auth (401/403),
+    request timeout (408), and rate limit (429) are excluded — they either have
+    their own handling (the key pool rotates on auth failures) or signal real
+    provider trouble (overload), so they must still trip the breaker.
+    """
+    return status in (400, 413, 414, 422, 431)
 
 
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
@@ -613,8 +650,23 @@ class BaseRouter:
             self._circuits[endpoint_id].on_success()
 
     def _on_failure(
-        self, endpoint_id: str, *, reason: str = "error", detail: str | None = None
+        self,
+        endpoint_id: str,
+        *,
+        reason: str = "error",
+        detail: str | None = None,
+        status: int | None = None,
     ) -> None:
+        # A client-side error (e.g. a 400 for an over-long request) means the
+        # provider is healthy and answered — it just rejected this request. It
+        # must not decrement availability or trip the circuit, otherwise one
+        # user's bad request takes the endpoint down for everyone. Every caller
+        # invokes this from inside an ``except`` block, so when the status isn't
+        # passed explicitly we recover it from the in-flight exception.
+        if status is None:
+            status = _error_status(sys.exc_info()[1])
+        if status is not None and _is_client_error(status):
+            return
         with self._lock:
             self._ensure_health(endpoint_id)
             self._health[endpoint_id].record(False)
