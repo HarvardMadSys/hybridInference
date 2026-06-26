@@ -307,6 +307,43 @@ def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
 
 
+def _http_status_of(exc: BaseException) -> int | None:
+    """Best-effort extract of an upstream HTTP status code from an exception.
+
+    Adapters surface upstream HTTP errors as exceptions that carry the status on
+    one of a few attributes depending on the client library (aiohttp's
+    ``ClientResponseError`` uses ``.status``; others use ``.status_code`` or
+    ``.code``). Duck-type rather than importing the HTTP client into the routing
+    layer. Returns ``None`` when no status is present (e.g. a timeout or
+    connection error, which is a genuine upstream fault).
+    """
+    for attr in ("status", "status_code", "code"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int) and 100 <= val <= 599:
+            return val
+    return None
+
+
+def _is_client_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` is an upstream client error that must NOT trip the breaker.
+
+    A client (4xx) error means the upstream is healthy and correctly rejected a
+    bad request (e.g. vLLM's 400 "max context length exceeded"). Counting it as
+    an upstream fault lets one user's bad request open the circuit for everyone.
+    A 5xx / timeout / connection error is a genuine fault and returns False.
+    """
+    status = _http_status_of(exc)
+    if status is None or not (400 <= status < 500):
+        # No status, or a 5xx — a genuine upstream fault. Count it.
+        return False
+    # 408 (Request Timeout) and 429 (Too Many Requests) are 4xx but signal the
+    # upstream is slow/overloaded, not that the request was malformed. Let those
+    # trip the breaker so it sheds load. Every other 4xx (400 bad request, 401/403
+    # auth, 404, 413 payload too large, 422) is a per-request/config error: the
+    # upstream is healthy and correctly rejected it, so spare the breaker.
+    return status not in (408, 429)
+
+
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     """Normalize an upstream error message for inclusion in alerts.
 
@@ -613,8 +650,28 @@ class BaseRouter:
             self._circuits[endpoint_id].on_success()
 
     def _on_failure(
-        self, endpoint_id: str, *, reason: str = "error", detail: str | None = None
+        self,
+        endpoint_id: str,
+        *,
+        reason: str = "error",
+        detail: str | None = None,
+        exc: BaseException | None = None,
     ) -> None:
+        if exc is not None and _is_client_error(exc):
+            # Upstream returned a client (4xx) error: it is healthy and correctly
+            # rejected a bad request. Do not penalize availability or trip the
+            # circuit breaker — otherwise one user's bad request opens the
+            # circuit for every user of this model.
+            logger.info(
+                "client_error_skip_breaker",
+                extra={
+                    "event": "client_error_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "status": _http_status_of(exc),
+                    "detail": _detail_str(detail),
+                },
+            )
+            return
         with self._lock:
             self._ensure_health(endpoint_id)
             self._health[endpoint_id].record(False)
@@ -752,6 +809,7 @@ class BaseRouter:
                     _get_endpoint_id(primary),
                     reason=primary_error.__class__.__name__,
                     detail=operator_safe_error(primary_error),
+                    exc=primary_error,
                 )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
@@ -776,6 +834,7 @@ class BaseRouter:
                             _get_endpoint_id(adapter),
                             reason="chat_exception",
                             detail=operator_safe_error(fallback_error),
+                            exc=fallback_error,
                         )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
@@ -828,6 +887,7 @@ class BaseRouter:
                     _get_endpoint_id(primary),
                     reason="stream_exception",
                     detail=operator_safe_error(primary_error),
+                    exc=primary_error,
                 )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 # Once provider bytes have reached the client, the SSE response
@@ -855,6 +915,7 @@ class BaseRouter:
                             _get_endpoint_id(adapter),
                             reason="stream_exception",
                             detail=operator_safe_error(fallback_error),
+                            exc=fallback_error,
                         )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
@@ -1134,6 +1195,7 @@ class FixedRouter(BaseRouter):
                 _get_endpoint_id(primary),
                 reason="chat_exception",
                 detail=operator_safe_error(primary_error),
+                exc=primary_error,
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — the caller explicitly requested this
@@ -1165,6 +1227,7 @@ class FixedRouter(BaseRouter):
                         _get_endpoint_id(adapter),
                         reason="chat_exception",
                         detail=operator_safe_error(fallback_error),
+                        exc=fallback_error,
                     )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
@@ -1225,6 +1288,7 @@ class FixedRouter(BaseRouter):
                 _get_endpoint_id(primary),
                 reason="stream_exception",
                 detail=operator_safe_error(primary_error),
+                exc=primary_error,
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — re-raise immediately.
@@ -1263,6 +1327,7 @@ class FixedRouter(BaseRouter):
                         adapter_endpoint_id,
                         reason="stream_exception",
                         detail=operator_safe_error(fallback_error),
+                        exc=fallback_error,
                     )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
