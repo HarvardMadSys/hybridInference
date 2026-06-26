@@ -31,6 +31,14 @@ def test_http_status_of_reads_common_attributes():
         status_code = 422
 
     assert _http_status_of(_CodeError()) == 422
+
+    class _ResponseStatusError(Exception):
+        class _Resp:
+            status_code = 403
+
+        response = _Resp()
+
+    assert _http_status_of(_ResponseStatusError()) == 403
     assert _http_status_of(Exception("no status")) is None
     assert _http_status_of(TimeoutError()) is None
 
@@ -55,14 +63,20 @@ def test_repeated_4xx_never_opens_circuit(monkeypatch):
     router = BaseRouter()
     endpoint_id = "qwen3.6-35b:local-8001"
 
-    # Far more 400s than the failure threshold — the breaker must stay closed.
+    # Register the endpoint with a healthy baseline so we can prove the 4xx
+    # failures leave its state (and availability) untouched, rather than the
+    # endpoint simply never appearing.
+    router._on_success(endpoint_id)
+    baseline = router.get_provider_status()[endpoint_id]["availability"]
+
+    # Far more 400s than the failure threshold — the breaker must stay closed
+    # and availability must not drop.
     for _ in range(10):
         router._on_failure(endpoint_id, reason="stream_exception", exc=_StatusError(400))
 
-    status = router.get_provider_status().get(endpoint_id)
-    # A breaker-exempt failure never even registers the endpoint's health.
-    if status is not None:
-        assert status["circuit_state"] == _CircuitState.CLOSED
+    status = router.get_provider_status()[endpoint_id]
+    assert status["circuit_state"] == _CircuitState.CLOSED
+    assert status["availability"] == baseline
 
 
 def test_5xx_still_opens_circuit(monkeypatch):

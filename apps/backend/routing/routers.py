@@ -321,6 +321,13 @@ def _http_status_of(exc: BaseException) -> int | None:
         val = getattr(exc, attr, None)
         if isinstance(val, int) and 100 <= val <= 599:
             return val
+    # httpx / requests carry the status on a nested response object.
+    response = getattr(exc, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            val = getattr(response, attr, None)
+            if isinstance(val, int) and 100 <= val <= 599:
+                return val
     return None
 
 
