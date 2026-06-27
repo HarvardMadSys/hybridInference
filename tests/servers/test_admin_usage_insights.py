@@ -342,8 +342,9 @@ class TestFetchSamples:
         """A randomly-ordered draw is re-sorted so the report reads chronologically."""
 
         async def _fetch(query, *params):
-            # Return rows out of chronological order (older first).
-            return list(reversed(_sample_rows()))
+            # _sample_rows() is oldest-first (12:00 then 12:05); return it as-is so
+            # the re-sort has to actually reorder it (random() yields no order).
+            return _sample_rows()
 
         conn = MagicMock()
         conn.fetch = AsyncMock(side_effect=_fetch)
@@ -352,7 +353,9 @@ class TestFetchSamples:
         samples = await usage_insights._fetch_samples(conn, None, payload)
 
         timestamps = [s["timestamp"] for s in samples]
+        # Newest-first, and genuinely reordered from the oldest-first input.
         assert timestamps == sorted(timestamps, reverse=True)
+        assert samples[0]["model_id"] == "minimax-m3"  # the 12:05 row, now first
 
 
 class TestRenderSamples:
