@@ -657,6 +657,10 @@ tools, e.g. `user_usage_pattern.py`). Each user gets an `automation_score` in `[
 **HIGH means mostly automatic scripts / batch / cron** and **LOW means an interactive human**
 (a chat UI, or a human-driven coding agent such as Claude Code).
 
+> The exact signals, normalization formulas, weighting, and combination are documented in
+> [docs/developer/automation-score.md](../../../docs/developer/automation-score.md). This CLI and
+> the admin dashboard share that one implementation (`serving.analytics.automation_score`).
+
 The score blends the four requested signals — plus two small supporting human tells — each mapped
 to a `[0, 1]` automation sub-score and combined with re-normalized weights:
 

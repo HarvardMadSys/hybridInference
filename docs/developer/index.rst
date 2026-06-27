@@ -18,6 +18,7 @@ see the `FreeInference docs <https://doc.freeinference.org/>`_.
    adding-models
    configuration
    database
+   automation-score
    openrouter
    freeinference
    claude-code-setup
