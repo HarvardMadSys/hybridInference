@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { APIError, ERROR_MESSAGES, getErrorMessage } from './errors';
+import { APIError, ERROR_MESSAGES, getErrorMessage, httpStatusToErrorCode } from './errors';
 
 describe('getErrorMessage', () => {
   it('maps APIError codes to product copy', () => {
@@ -33,5 +33,35 @@ describe('getErrorMessage', () => {
     const err = new Error('boom from backend') as Error & { code?: string };
     err.code = 'UNKNOWN_ERROR';
     expect(getErrorMessage(err)).toBe('boom from backend');
+  });
+});
+
+describe('httpStatusToErrorCode', () => {
+  it('maps gateway-timeout statuses to TIMEOUT_ERROR', () => {
+    for (const status of [408, 504, 522, 524, 598]) {
+      expect(httpStatusToErrorCode(status)).toBe('TIMEOUT_ERROR');
+    }
+  });
+
+  it('maps bad-gateway / unavailable statuses to SERVICE_UNAVAILABLE', () => {
+    for (const status of [502, 503, 521, 523]) {
+      expect(httpStatusToErrorCode(status)).toBe('SERVICE_UNAVAILABLE');
+    }
+  });
+
+  it('maps other 5xx statuses to SERVER_ERROR', () => {
+    for (const status of [500, 520, 525]) {
+      expect(httpStatusToErrorCode(status)).toBe('SERVER_ERROR');
+    }
+  });
+
+  it('never returns NETWORK_ERROR (a response was received)', () => {
+    for (const status of [400, 404, 413, 500, 502, 504]) {
+      expect(httpStatusToErrorCode(status)).not.toBe('NETWORK_ERROR');
+    }
+  });
+
+  it('falls back to UNKNOWN_ERROR for non-JSON 4xx pages', () => {
+    expect(httpStatusToErrorCode(413)).toBe('UNKNOWN_ERROR');
   });
 });
