@@ -83,10 +83,15 @@ is not branded a script.
 
 ### 2. `prompt_size_dispersion` — length of user turn
 
-Templated automation assembles prompts from a fixed template, so `prompt_tokens`
-clusters tightly; humans vary message length wildly. The discriminator is the
-**robust relative dispersion** (IQR / median), which is scale-free and resistant
-to a single huge pasted prompt:
+This uses `prompt_tokens`, which (OpenAI semantics) is the **total input** for the
+request — the system prompt + the whole conversation history resent that turn +
+tool definitions + the latest user message — not the user message in isolation
+(`api_logs` has no per-role token breakdown). It is the only available proxy for
+"length of user turn". Templated automation assembles each request from a fixed
+template, so its total prompt size clusters tightly; an interactive human's
+requests vary widely (a one-word follow-up, then a long paste). The discriminator
+is therefore the **robust relative dispersion** (IQR / median) of that total size,
+which is scale-free and resistant to a single huge pasted prompt:
 
 ```text
 rcv = (p75 - p25) / median        # over positive prompt_tokens
