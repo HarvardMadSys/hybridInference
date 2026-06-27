@@ -366,17 +366,21 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
         </div>
       )}
 
-      {/* On-demand automation score. key={u.id} resets its computed state when
-          the admin switches to a different user. */}
-      <UserAutomationPanel key={u.id} userId={u.id} />
+      {/* These three panels are siblings, so their keys must be unique relative
+          to each other — keying them all on `u.id` collides and makes React
+          duplicate them on re-render (e.g. after a quota save), stacking extra
+          copies of each box. Each key is prefixed so it stays unique here while
+          still changing per user, which remounts the panels (resetting their
+          computed state) when the admin switches to a different user. */}
 
-      {/* LLM analysis of this user's requests. key={u.id} resets the report when
-          switching between users. */}
-      <UserUsageInsights key={u.id} userId={u.id} />
+      {/* On-demand automation score. */}
+      <UserAutomationPanel key={`automation-${u.id}`} userId={u.id} />
 
-      {/* Recent requests made by this user. key={u.id} remounts the component
-          on user switch so its paging/expansion/cache state resets cleanly. */}
-      <UserRecentRequests key={u.id} userId={u.id} />
+      {/* LLM analysis of this user's requests. */}
+      <UserUsageInsights key={`insights-${u.id}`} userId={u.id} />
+
+      {/* Recent requests made by this user. */}
+      <UserRecentRequests key={`recent-${u.id}`} userId={u.id} />
     </div>
   );
 }
