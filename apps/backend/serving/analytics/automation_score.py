@@ -52,8 +52,12 @@ NEUTRAL_PRIOR = 0.5
 # N == SHRINK_K.
 SHRINK_K = 30
 
-# Default relative weights per signal (re-normalized over the signals that are
-# actually available for a given user). They sum to 1.0.
+# Default relative weights per signal. The blend is always re-normalized over the
+# signals actually available for a user, so these need not sum to 1.0; the total
+# is used only to scale ``confidence`` into ``[0, 1]``. ``user_message_shape`` was
+# added later at weight 0.15 without disturbing the original six, so a user
+# lacking the (newer) user-message columns drops it and gets the same blended raw
+# score as before — only a slightly lower confidence.
 SIGNAL_WEIGHTS: dict[str, float] = {
     "turn_pattern": 0.24,
     "prompt_size_dispersion": 0.17,
@@ -61,7 +65,9 @@ SIGNAL_WEIGHTS: dict[str, float] = {
     "daily_activity_shape": 0.27,
     "tool_call_human_tell": 0.08,
     "agent_opener_override": 0.08,
+    "user_message_shape": 0.15,
 }
+TOTAL_WEIGHT = sum(SIGNAL_WEIGHTS.values())
 
 # Classification bands over the final score: (label, lower_inclusive).
 SCORE_BANDS: tuple[tuple[str, float], ...] = (
@@ -335,11 +341,37 @@ def score_user(stats: dict[str, Any]) -> dict[str, Any]:
     else:
         record("agent_opener_override", None, False)
 
+    # 7. user_message_shape -- size and entropy of the user's OWN messages (the
+    #    newest user turn per request), as opposed to prompt_size_dispersion which
+    #    covers the whole input. Fuses three parts, re-normalized over whichever
+    #    pass their floors: templated automation sends near-constant-length user
+    #    messages (low size dispersion), low-entropy structured content, and
+    #    resends the same message repeatedly (low distinct ratio).
+    msg_parts: list[tuple[float, float]] = []
+    msg_median = stats["p50_umsg"]
+    if stats["n_umsg_sz"] >= 8 and msg_median and msg_median > 0:
+        size_rcv = (stats["p75_umsg"] - stats["p25_umsg"]) / msg_median
+        msg_parts.append((clamp01(1.0 - size_rcv / 0.5), 0.40))
+        detail["user_msg_size_rcv"] = size_rcv
+    mean_entropy = stats["mean_umsg_entropy"]
+    if stats["n_umsg_ent"] >= 5 and mean_entropy is not None:
+        msg_parts.append((clamp01(1.0 - mean_entropy / 4.0), 0.25))
+        detail["user_msg_entropy"] = mean_entropy
+    if stats["n_umsg_hash"] >= 8:
+        distinct_ratio = stats["n_distinct_umsg"] / stats["n_umsg_hash"]
+        msg_parts.append((clamp01((1.0 - distinct_ratio) / 0.5), 0.35))
+        detail["user_msg_distinct_ratio"] = distinct_ratio
+    if msg_parts:
+        msg_wsum = sum(w for _, w in msg_parts)
+        record("user_message_shape", sum(s * w for s, w in msg_parts) / msg_wsum, True)
+    else:
+        record("user_message_shape", None, False)
+
     available = {
         name: (sig["sub"], sig["weight"]) for name, sig in signals.items() if sig["available"]
     }
     if not available:
-        raw, confidence = NEUTRAL_PRIOR, 0.0
+        raw, coverage = NEUTRAL_PRIOR, 0.0
     else:
         weight_sum = sum(w for _, w in available.values())
         raw = sum(sub * w for sub, w in available.values()) / weight_sum
@@ -347,12 +379,12 @@ def score_user(stats: dict[str, Any]) -> dict[str, Any]:
         # rest gap can never be branded above "mixed" on volume alone.
         if agent_share >= 0.3 and restgap_score is not None and restgap_score < 0.5:
             raw = min(raw, 0.5)
-        # Coverage = share of total weight that was actually available.
-        confidence = weight_sum
+        # Coverage = share of the total signal weight that was available.
+        coverage = weight_sum / TOTAL_WEIGHT
 
     alpha = n_req / (n_req + SHRINK_K)
     final = clamp01(alpha * raw + (1.0 - alpha) * NEUTRAL_PRIOR)
-    confidence = alpha * confidence
+    confidence = alpha * coverage
 
     return {
         "score": final,
@@ -422,6 +454,14 @@ async def score_users_from_logs(
                percentile_cont(0.5)  WITHIN GROUP (ORDER BY nullif(prompt_tokens, 0)) AS p50_sz,
                percentile_cont(0.75) WITHIN GROUP (ORDER BY nullif(prompt_tokens, 0)) AS p75_sz,
                count(*) FILTER (WHERE metadata->>'agent' IS NOT NULL) AS n_agent,
+               count(*) FILTER (WHERE last_user_msg_chars > 0) AS n_umsg_sz,
+               percentile_cont(0.25) WITHIN GROUP (ORDER BY nullif(last_user_msg_chars, 0)) AS p25_umsg,
+               percentile_cont(0.5)  WITHIN GROUP (ORDER BY nullif(last_user_msg_chars, 0)) AS p50_umsg,
+               percentile_cont(0.75) WITHIN GROUP (ORDER BY nullif(last_user_msg_chars, 0)) AS p75_umsg,
+               avg(last_user_msg_entropy) AS mean_umsg_entropy,
+               count(*) FILTER (WHERE last_user_msg_entropy IS NOT NULL) AS n_umsg_ent,
+               count(*) FILTER (WHERE last_user_msg_hash IS NOT NULL) AS n_umsg_hash,
+               count(DISTINCT last_user_msg_hash) AS n_distinct_umsg,
                min(timestamp) AS first_seen,
                max(timestamp) AS last_seen,
                sum(total_tokens) AS total_tokens
@@ -503,6 +543,14 @@ async def score_users_from_logs(
             "n_gap": gap["n_gap"] if gap else 0,
             "ua_base": ua_base_from_breakdown(ua_by_uid.get(uid, [])),
             "agent_share": row["n_agent"] / n_req if n_req else 0.0,
+            "n_umsg_sz": row["n_umsg_sz"],
+            "p25_umsg": row["p25_umsg"],
+            "p50_umsg": row["p50_umsg"],
+            "p75_umsg": row["p75_umsg"],
+            "mean_umsg_entropy": row["mean_umsg_entropy"],
+            "n_umsg_ent": row["n_umsg_ent"],
+            "n_umsg_hash": row["n_umsg_hash"],
+            "n_distinct_umsg": row["n_distinct_umsg"],
         }
         record = {
             "user_id": uid,

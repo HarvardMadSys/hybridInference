@@ -19,6 +19,7 @@ from serving.storage.utils import (
     conversation_shape,
     json_safe,
     strip_null_bytes,
+    user_message_stats,
 )
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
@@ -115,7 +116,12 @@ class DatabaseLogger:
                     -- Conversation shape (derived from prompt at log time)
                     num_turns INTEGER,
                     num_user_turns INTEGER,
-                    num_tool_calls INTEGER
+                    num_tool_calls INTEGER,
+
+                    -- Newest user message fingerprint (derived from prompt at log time)
+                    last_user_msg_chars INTEGER,
+                    last_user_msg_entropy REAL,
+                    last_user_msg_hash BIGINT
                 )
             """)
 
@@ -231,6 +237,21 @@ class DatabaseLogger:
             await conn.execute("""
                 ALTER TABLE api_logs
                 ADD COLUMN IF NOT EXISTS num_tool_calls INTEGER
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS last_user_msg_chars INTEGER
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS last_user_msg_entropy REAL
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS last_user_msg_hash BIGINT
             """)
 
             # Aggregated stats table
@@ -966,6 +987,10 @@ class DatabaseLogger:
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
         num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
+        # Size / entropy / repetition fingerprint of the newest user message,
+        # derived from the inbound prompt like conversation shape so it is
+        # recorded independent of full-content storage.
+        last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash = user_message_stats(prompt)
 
         async with self.pool.acquire() as conn:
             await conn.execute(
@@ -979,7 +1004,8 @@ class DatabaseLogger:
                     prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd,
-                    num_turns, num_user_turns, num_tool_calls
+                    num_turns, num_user_turns, num_tool_calls,
+                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash
                 )
                 VALUES (
                     $1, $2, $3,
@@ -990,7 +1016,8 @@ class DatabaseLogger:
                     $18, $19, $20::jsonb,
                     $21, $22, $23, $24, $25::jsonb,
                     $26::jsonb, $27,
-                    $28, $29, $30
+                    $28, $29, $30,
+                    $31, $32, $33
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -1031,6 +1058,10 @@ class DatabaseLogger:
                 num_turns,
                 num_user_turns,
                 num_tool_calls,
+                # Newest user message fingerprint
+                last_user_msg_chars,
+                last_user_msg_entropy,
+                last_user_msg_hash,
             )
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
