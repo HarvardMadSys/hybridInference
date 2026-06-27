@@ -38,7 +38,7 @@ following per-user aggregates are gathered:
 - tool-call counts (`num_tool_calls IS NOT NULL`, and `> 0`);
 - the 25/50/75th percentiles of positive `prompt_tokens`;
 - the share of requests carrying a coding-agent opener (`metadata->>'agent'`
-  present — see [below](#user-agent-and-the-coding-agent-opener));
+  present — see the `agent_opener_override` signal below);
 - a request-weighted breakdown of `metadata->>'user_agent'`;
 - a UTC hour-of-day histogram (24 buckets);
 - the 25/50/75th percentiles of the inter-arrival gaps between consecutive
