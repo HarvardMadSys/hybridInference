@@ -64,4 +64,8 @@ describe('httpStatusToErrorCode', () => {
   it('falls back to UNKNOWN_ERROR for non-JSON 4xx pages', () => {
     expect(httpStatusToErrorCode(413)).toBe('UNKNOWN_ERROR');
   });
+
+  it('maps 429 to RATE_LIMIT_EXCEEDED', () => {
+    expect(httpStatusToErrorCode(429)).toBe('RATE_LIMIT_EXCEEDED');
+  });
 });

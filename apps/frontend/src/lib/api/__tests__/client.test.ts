@@ -70,4 +70,11 @@ describe('safeFetch', () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(original));
     await expect(safeFetch('https://example.test/x')).rejects.toBe(original);
   });
+
+  it('does not wrap an AbortError (intentional cancellation)', async () => {
+    const abortError = new Error('The user aborted a request.');
+    abortError.name = 'AbortError';
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValueOnce(abortError));
+    await expect(safeFetch('https://example.test/x')).rejects.toBe(abortError);
+  });
 });

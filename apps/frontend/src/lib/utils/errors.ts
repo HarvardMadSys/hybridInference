@@ -43,6 +43,7 @@ const TIMEOUT_STATUSES = new Set([408, 504, 522, 524, 598]);
 const UNAVAILABLE_STATUSES = new Set([502, 503, 521, 523]);
 
 export function httpStatusToErrorCode(status: number): string {
+  if (status === 429) return 'RATE_LIMIT_EXCEEDED';
   if (TIMEOUT_STATUSES.has(status)) return 'TIMEOUT_ERROR';
   if (UNAVAILABLE_STATUSES.has(status)) return 'SERVICE_UNAVAILABLE';
   if (status >= 500) return 'SERVER_ERROR';

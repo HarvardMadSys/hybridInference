@@ -17,6 +17,10 @@ export async function safeFetch(input: string, init?: RequestInit): Promise<Resp
     return await fetch(input, init);
   } catch (err) {
     if (err instanceof APIError) throw err;
+    // An intentional abort (AbortController on unmount, debounced search, etc.)
+    // isn't a connectivity failure — let it propagate so callers can ignore it
+    // rather than surface "check your connection".
+    if (err instanceof Error && err.name === 'AbortError') throw err;
     const message = err instanceof Error ? err.message : 'Network request failed';
     throw new APIError('NETWORK_ERROR', message);
   }
