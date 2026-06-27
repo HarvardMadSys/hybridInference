@@ -405,6 +405,44 @@ describe('UserTable admin note', () => {
     expect(screen.queryByLabelText('Has admin note')).not.toBeInTheDocument();
   });
 
+  it('does not duplicate the insight panels after repeated quota saves', async () => {
+    // Regression: the automation/insights/recent-requests panels were keyed on
+    // the same `u.id`, colliding among siblings. React then duplicated them on
+    // each re-render (every quota save refetches the detail), stacking a new
+    // copy of each box. Each panel must keep a single instance across saves.
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 100 }))
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 200 }))
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 300 }))
+      .mockResolvedValueOnce(detailFixture({ quota_daily_usd: 400 }));
+    vi.mocked(apiUpdateUser).mockResolvedValue({
+      user_id: 'user-1',
+      updated_fields: ['quota_daily_cost_usd'],
+      message: 'ok',
+    });
+
+    renderTable(baseUser);
+
+    fireEvent.click(screen.getByText('user@example.com'));
+    await screen.findByText('Usage insights');
+
+    for (const value of ['200', '300', '400']) {
+      // The quota field is the first number input in the edit row.
+      const quotaInput = screen.getAllByRole('spinbutton')[0];
+      fireEvent.change(quotaInput, { target: { value } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => {
+        expect(apiUpdateUser).toHaveBeenCalledWith('user-1', {
+          quota_daily_cost_usd: Number(value),
+        });
+      });
+    }
+
+    expect(screen.getAllByText('Usage insights')).toHaveLength(1);
+    expect(screen.getAllByText('Automation score')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: /Analyze usage|Re-analyze/ })).toBeInTheDocument();
+  });
+
   it('lets an admin note be edited for a non-active (suspended) user', async () => {
     const suspendedUser: UserRow = { ...baseUser, status: 'suspended' };
     vi.mocked(getUserDetail)
