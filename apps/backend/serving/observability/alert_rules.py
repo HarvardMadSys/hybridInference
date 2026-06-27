@@ -41,7 +41,14 @@ _REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
 # stops admin/refresh sequences from tripping the alert.
 # 429 covers quota-exceeded and concurrency-limit rejections — expected user-facing
 # rate limiting, not service failures, so excluded from the failure-rate alert.
-_FAILED_REQUEST_IGNORED_STATUSES = frozenset({401, 429})
+# 404 is a client-driven "not found" — a request for an unknown or unauthorized
+# model (``Model '<id>' not found``), user, API key, or session. Every gateway
+# 404 originates from one of these client errors, not a service fault; genuine
+# upstream/all-upstreams-down failures surface as 503 (see completions handler),
+# so they still count. This mirrors the DB-query alerter, which excludes the
+# model-not-found error strings from FAILURE_PREDICATE_SQL. Excluding 404 here
+# keeps model-not-found bursts from paging Slack.
+_FAILED_REQUEST_IGNORED_STATUSES = frozenset({401, 404, 429})
 
 
 class _Rule(Protocol):
