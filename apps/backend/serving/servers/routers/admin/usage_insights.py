@@ -105,7 +105,7 @@ _SAMPLE_POOL = 5_000
 # of latency and is what made a slow report exceed the edge proxy timeout (the
 # browser then sees an HTML 5xx as a generic "Network error"). A concise report
 # fits comfortably under this.
-_MAX_OUTPUT_TOKENS = 1024
+_MAX_OUTPUT_TOKENS = 8192
 
 # Keep the upstream call well under the edge/proxy timeout (Cloudflare ~100s,
 # some reverse proxies 60s) so a slow model yields a clean JSON 504 from us
