@@ -1,10 +1,12 @@
 """Admin Usage Insights endpoint — LLM-powered analysis of how users prompt.
 
 The admin analytics tab answers *how much* traffic flows through the gateway.
-This endpoint answers *what for*: it samples stored ``api_logs`` request
-payloads (system-prompt openers + user turns + client user-agents) and asks an
-LLM to summarize which harnesses/agents people run, what kinds of tasks they
-work on, and any notable usage patterns.
+This endpoint answers *what for*: it randomly samples stored ``api_logs``
+request payloads (system-prompt openers + user turns + client user-agents) and
+asks an LLM to summarize which harnesses/agents people run, what kinds of tasks
+they work on, and any notable usage patterns. Sampling at random (rather than
+taking the latest N) keeps the report from being dominated by whatever a user
+happened to be doing in their most recent session.
 
 The analysis provider is an OpenAI-compatible API — freeinference.org itself by
 default. The API key and model are configured once in Admin → Settings (stored
@@ -87,6 +89,18 @@ _SYSTEM_PROMPT = (
 # truncation, so a handful of giant prompts can't blow the context window.
 _MAX_PROMPT_CHARS = 60_000
 
+# Size of the candidate window the sample is drawn from. We randomly sample the
+# requested number of rows out of (at most) this many of the user's most recent
+# requests, rather than just taking the latest N. Sampling at random gives a
+# more representative picture of how someone uses the gateway over time — the
+# absolute-latest requests are often one in-progress session and overweight
+# whatever that user happened to be doing in the last few minutes. We cap the
+# pool instead of randomizing over all of api_logs because an unbounded
+# ``ORDER BY random()`` forces a full table scan + sort that gets slow as the
+# log grows; for a user with fewer requests than the cap this samples their
+# entire history.
+_SAMPLE_POOL = 5_000
+
 # Bound the analysis report length. Unbounded generation is the dominant source
 # of latency and is what made a slow report exceed the edge proxy timeout (the
 # browser then sees an HTML 5xx as a generic "Network error"). A concise report
@@ -137,7 +151,12 @@ async def _resolve_user_id(conn, payload: UsageInsightsRequest) -> str | None:
 
 
 async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsRequest) -> list[dict]:
-    """Pull recent api_logs rows (optionally scoped to one user) with payloads."""
+    """Randomly sample api_logs rows (optionally scoped to one user) with payloads.
+
+    Draws ``payload.limit`` rows uniformly at random from the user's most recent
+    ``_SAMPLE_POOL`` requests instead of taking the latest N, so the report
+    reflects varied behavior across many sessions rather than just the last one.
+    """
     # Exclude rows that carry no chat content or that would pollute the report:
     #  - embeddings (metadata.request_type = "embedding") have a payload but no
     #    messages/system, so they render as "<none captured>" and can crowd out
@@ -150,29 +169,49 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
         " AND (metadata->>'request_type') IS DISTINCT FROM 'embedding'"
         " AND (metadata->>'synthetic_probe') IS DISTINCT FROM 'true'"
     )
+    # Two-stage: bound a recent candidate window (the inner query, cheap thanks
+    # to the timestamp index), then draw the random sample from it.
     if user_id:
         rows = await conn.fetch(
             f"""
             SELECT timestamp, model_id, provider, metadata, request_payload
-            FROM api_logs
-            WHERE user_id = $1 AND {_content_filter}
-            ORDER BY timestamp DESC
-            LIMIT $2
+            FROM (
+                SELECT timestamp, model_id, provider, metadata, request_payload
+                FROM api_logs
+                WHERE user_id = $1 AND {_content_filter}
+                ORDER BY timestamp DESC
+                LIMIT $2
+            ) pool
+            ORDER BY random()
+            LIMIT $3
             """,
             user_id,
+            _SAMPLE_POOL,
             payload.limit,
         )
     else:
         rows = await conn.fetch(
             f"""
             SELECT timestamp, model_id, provider, metadata, request_payload
-            FROM api_logs
-            WHERE user_id IS NOT NULL AND {_content_filter}
-            ORDER BY timestamp DESC
-            LIMIT $1
+            FROM (
+                SELECT timestamp, model_id, provider, metadata, request_payload
+                FROM api_logs
+                WHERE user_id IS NOT NULL AND {_content_filter}
+                ORDER BY timestamp DESC
+                LIMIT $1
+            ) pool
+            ORDER BY random()
+            LIMIT $2
             """,
+            _SAMPLE_POOL,
             payload.limit,
         )
+    # The random draw returns rows in arbitrary order; sort newest-first so the
+    # rendered "Request N" blocks and their timestamps read chronologically.
+    dated = [r for r in rows if r["timestamp"] is not None]
+    undated = [r for r in rows if r["timestamp"] is None]
+    dated.sort(key=lambda r: r["timestamp"], reverse=True)
+    rows = dated + undated
     samples: list[dict] = []
     for r in rows:
         body = as_payload_dict(r["request_payload"])
