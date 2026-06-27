@@ -32,6 +32,7 @@ def _fake_record(
     model: str = "gpt-4",
     duration_ms: int = 100,
     path: str | None = None,
+    client_error_kind: str | None = None,
 ) -> logging.LogRecord:
     rec = logging.LogRecord(
         name="serving.servers.middleware.request_log",
@@ -47,6 +48,7 @@ def _fake_record(
     rec.model = model
     rec.duration_ms = duration_ms
     rec.path = path
+    rec.client_error_kind = client_error_kind
     return rec
 
 
@@ -157,6 +159,101 @@ async def test_failed_request_rate_ignores_401(monkeypatch):
             for _ in range(20):
                 await asyncio.sleep(0.01)
             assert mock_alert.await_count == 0
+        finally:
+            await engine.stop()
+
+
+async def test_failed_request_rate_ignores_model_not_found_404(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.failed_request_rate.window_sec = 60
+    cfg.rules.failed_request_rate.threshold_pct = 5.0
+    cfg.rules.failed_request_rate.min_samples = 10
+    cfg.rules.failed_request_rate.cooldown_sec = 1
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            # 19 OK + 3 gateway model-not-found 404s = 13.6% would fire on the
+            # old >=400 predicate; tagged model-not-found 404s are ignored
+            # (user asked for an unknown model), so no alert.
+            for _ in range(19):
+                handler.queue.put_nowait(_fake_record(200, path="/v1/chat/completions"))
+            for _ in range(3):
+                handler.queue.put_nowait(
+                    _fake_record(
+                        404,
+                        path="/v1/chat/completions",
+                        client_error_kind="model_not_found",
+                    )
+                )
+            for _ in range(20):
+                await asyncio.sleep(0.01)
+            assert mock_alert.await_count == 0
+        finally:
+            await engine.stop()
+
+
+async def test_failed_request_rate_counts_upstream_404(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+
+    cfg = AlertConfig()
+    cfg.rules.failed_request_rate.window_sec = 60
+    cfg.rules.failed_request_rate.threshold_pct = 5.0
+    cfg.rules.failed_request_rate.min_samples = 10
+    cfg.rules.failed_request_rate.cooldown_sec = 1
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            # Untagged 404s are upstream provider 404s (bad provider model id /
+            # endpoint) — a genuine provider/config regression that must alert.
+            # 19 OK + 3 untagged 404s = 13.6% > 5% threshold.
+            for _ in range(19):
+                handler.queue.put_nowait(_fake_record(200, path="/v1/chat/completions"))
+            for _ in range(3):
+                handler.queue.put_nowait(
+                    _fake_record(404, provider="openai", path="/v1/chat/completions")
+                )
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count >= 1
+            ctx = mock_alert.await_args.args[2]
+            assert "404" in ctx["top_status_codes"]
         finally:
             await engine.stop()
 

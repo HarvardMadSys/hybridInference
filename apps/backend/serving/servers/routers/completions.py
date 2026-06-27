@@ -466,6 +466,7 @@ async def chat_completions(
                     "request_payload": body,
                 },
             )
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
@@ -501,6 +502,7 @@ async def chat_completions(
                     "request_payload": body,
                 },
             )
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model}' not found")
     if is_model_disabled_for_user(
         route.adapters[0][0].config.id if route.adapters else model, user_ctx
@@ -524,6 +526,7 @@ async def chat_completions(
                     "request_payload": body,
                 },
             )
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model}' not found")
 
     # Extract parameters

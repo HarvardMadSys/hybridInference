@@ -35,6 +35,7 @@ from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip_info
 
@@ -134,14 +135,17 @@ async def _resolve(
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
     if route is None:
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = (user_ctx or {}).get("role", "free")
     if model_visibility_resolver is not None:
         required = await model_visibility_resolver.get_effective_required_role(canonical, required)
     if not has_role(user_role, required):
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     if is_model_disabled_for_user(canonical, user_ctx):
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
         raise HTTPException(404, f"Model '{model_id}' has no adapters")

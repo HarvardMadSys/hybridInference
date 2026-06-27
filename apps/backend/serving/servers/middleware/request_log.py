@@ -80,6 +80,9 @@ class RequestLogMiddleware:
             "referer": referer,
             "request_id": request_id,
             "session_id": canonical_session_id,
+            # Gateway-generated client-error tag (e.g. model-not-found), set by the
+            # handler via req_ctx so failure-rate alerts can exclude user-driven 404s.
+            "client_error_kind": ctx.get(req_ctx.CLIENT_ERROR_KIND),
         }
         is_quiet_path = request.url.path in _QUIET_PATHS
         is_synthetic_probe = request.headers.get("x-probe", "").lower() == "synthetic"
