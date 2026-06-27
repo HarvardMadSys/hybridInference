@@ -6,9 +6,11 @@ without constructing storage clients.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+from collections import Counter
 from typing import Any
 
 
@@ -193,6 +195,53 @@ def _message_text(content: Any) -> str | None:
         joined = " ".join(parts).strip()
         return joined or None
     return None
+
+
+def _shannon_entropy(text: str) -> float:
+    """Return the Shannon entropy (bits per character) of ``text``.
+
+    ``0.0`` for empty text. A single repeated character is ``0.0``; varied
+    natural-language text runs ~4 bits/char, so a low value flags structured or
+    repetitive machine-generated content.
+    """
+    if not text:
+        return 0.0
+    n = len(text)
+    return -sum((c / n) * math.log2(c / n) for c in Counter(text).values())
+
+
+def user_message_stats(
+    prompt: list[dict[str, Any]] | str | None,
+) -> tuple[int | None, float | None, int | None]:
+    """Derive ``(chars, entropy, hash)`` for the latest user message in a prompt.
+
+    Computed once at log time (like :func:`conversation_shape`) so the automation
+    score can read cheap columns instead of de-TOASTing the full payload per row.
+    The metrics describe the **newest user-role message** -- the actual new input
+    that request carries, since each chat request resends the prior history:
+
+    * ``chars`` -- character length of the flattened message text;
+    * ``entropy`` -- Shannon entropy (bits/char) of that text;
+    * ``hash`` -- a stable signed 64-bit BLAKE2b hash of the stripped text, used
+      to detect a user resending the same/near-identical message across requests.
+
+    Returns ``(None, None, None)`` when ``prompt`` is not a chat-style messages
+    list or carries no non-empty user message (e.g. embeddings, raw completions).
+    """
+    if not isinstance(prompt, list):
+        return None, None, None
+    text: str | None = None
+    for message in reversed(prompt):
+        if isinstance(message, dict) and message.get("role") == "user":
+            text = _message_text(message.get("content"))
+            break
+    if not text:
+        return None, None, None
+    normalized = text.strip()
+    if not normalized:
+        return None, None, None
+    digest = hashlib.blake2b(normalized.encode("utf-8", "ignore"), digest_size=8).digest()
+    return len(normalized), _shannon_entropy(normalized), int.from_bytes(digest, "big", signed=True)
 
 
 def _first_sentence(text: str) -> str:

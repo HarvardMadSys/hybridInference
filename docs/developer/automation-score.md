@@ -44,26 +44,33 @@ following per-user aggregates are gathered:
 - the 25/50/75th percentiles of the inter-arrival gaps between consecutive
   requests.
 
-## The six signals
+## The signals
 
-The score blends six signals. Each maps its raw metric to an **automation
+The score blends seven signals. Each maps its raw metric to an **automation
 sub-score** in `[0, 1]` (HIGH = looks automated), and has a default weight. The
 four signals the feature was originally specified around are *user turns*, *turn
 length*, *user-agent*, and *daily activity*; two small supporting signals
-disambiguate the main confounder (a high-volume but human-driven coding agent).
+disambiguate the main confounder (a high-volume but human-driven coding agent);
+and `user_message_shape` measures the user's own messages specifically.
 
 | Signal | Axis | Default weight | Available when |
 |---|---|---|---|
 | `turn_pattern` | user turns | 0.24 | `n_chat ≥ 5` |
-| `prompt_size_dispersion` | turn length | 0.17 | `n_sz ≥ 8` and median > 0 |
+| `prompt_size_dispersion` | total prompt size | 0.17 | `n_sz ≥ 8` and median > 0 |
+| `user_message_shape` | user-message size & entropy | 0.15 | ≥ 1 part below |
 | `client_tool_prior` | user-agent | 0.16 | always (≥ 1 request) |
 | `daily_activity_shape` | daily activity | 0.27 | ≥ 1 timing part below |
 | `tool_call_human_tell` | (support) | 0.08 | `n_chat ≥ 5` and some tool use |
 | `agent_opener_override` | (support) | 0.08 | `agent_share ≥ 0.05` |
 
-Weights sum to `1.0`. A signal that lacks enough data for a user is **dropped**,
-and the remaining weights are re-normalized over the survivors — a missing signal
-is never imputed as `0` (which would falsely pull the score toward "human").
+A signal that lacks enough data for a user is **dropped**, and the remaining
+weights are re-normalized over the survivors — a missing signal is never imputed
+as `0` (which would falsely pull the score toward "human"). The weights need not
+sum to `1.0` (they total `1.15`); the runtime always divides by the available
+weight. `user_message_shape` was added later at weight `0.15` **without changing
+the original six**, so a user lacking the (newer) user-message columns — e.g.
+traffic logged before the migration — drops it and gets the **same blended score
+as before**, only a slightly lower `confidence`.
 
 ### 1. `turn_pattern` — user turns
 
@@ -165,6 +172,31 @@ sub = clamp01(0.15 - agent_share)     # opener pervasive -> ~0 (human)
 
 It also drives the **hard human clamp** in the combination step.
 
+### 7. `user_message_shape` — user-message size & entropy
+
+Where `prompt_size_dispersion` looks at the *whole* input, this signal looks at
+the **user's own messages**. Three properties of the **newest user-role message**
+per request are precomputed at log time (in `user_message_stats`, alongside
+`conversation_shape`) as cheap columns — char length, Shannon character entropy
+(bits/char), and a stable 64-bit hash of the stripped text — so the score never
+de-TOASTs the prompt. Three parts are fused and re-normalized over whichever pass
+their floors, each HIGH = automation:
+
+| Part | Weight | Formula | Floor |
+|---|---|---|---|
+| Size dispersion | 0.40 | `clamp01(1 - size_rcv / 0.5)`, `size_rcv = (p75 - p25)/median` of `last_user_msg_chars` | `≥ 8 sized msgs` |
+| Per-message entropy | 0.25 | `clamp01(1 - mean_entropy / 4.0)` (natural language ≈ 4 bits/char) | `≥ 5 msgs` |
+| Cross-message repetition | 0.35 | `clamp01((1 - distinct_ratio) / 0.5)`, `distinct_ratio = distinct(hash)/count` | `≥ 8 hashed msgs` |
+
+Templated automation sends near-constant-length user messages (low size
+dispersion), low-entropy structured payloads, and resends the same message over
+and over (low distinct ratio → high repetition); an interactive human varies all
+three. Because the columns are populated only for new traffic, the signal is
+simply unavailable (dropped) for users whose requests all predate the migration.
+
+This signal isolates the user input, which the metadata in `metadata->>'agent'`
+and the per-message hash make hard to spoof without actually varying the content.
+
 ## Combining the signals
 
 ```text
@@ -181,7 +213,8 @@ if agent_share >= 0.3 and rest_gap_part_available and rest_gap_score < 0.5:
 alpha = N / (N + 30)
 score = clamp01(alpha * raw + (1 - alpha) * 0.5)
 
-confidence = alpha * weight_sum
+# coverage = available weight / total signal weight, so confidence stays in [0,1].
+confidence = alpha * (weight_sum / TOTAL_WEIGHT)
 ```
 
 - **Re-normalization** (`raw`) makes the blend depend only on the signals that
@@ -190,9 +223,10 @@ confidence = alpha * weight_sum
 - **Shrinkage** (`alpha = N / (N + 30)`) pulls users with little traffic toward
   the neutral `0.5` prior. Data outweighs the prior at `N = 30` (`alpha = 0.5`);
   at `N = 5`, `alpha ≈ 0.14` (the score is pulled ~86% to `0.5`).
-- **`confidence`** combines the request volume (`alpha`) with the share of total
-  weight that was actually available (`weight_sum`), so sparse verdicts read as
-  low-confidence.
+- **`confidence`** combines the request volume (`alpha`) with the share of the
+  total signal weight that was actually available (`weight_sum / TOTAL_WEIGHT`),
+  so sparse verdicts — and users missing the newer signals — read as
+  lower-confidence.
 - Users with `N < 5` requests are flagged **`insufficient_data`**.
 
 ## Bands

@@ -20,6 +20,7 @@ from serving.analytics.automation_score import (
     ua_automation_value,
     ua_base_from_breakdown,
 )
+from serving.storage.utils import user_message_stats
 
 
 def _stats(**overrides: Any) -> dict[str, Any]:
@@ -42,6 +43,15 @@ def _stats(**overrides: Any) -> dict[str, Any]:
         "n_gap": 0,
         "ua_base": None,
         "agent_share": 0.0,
+        # user_message_shape inputs (default: signal unavailable)
+        "n_umsg_sz": 0,
+        "p25_umsg": None,
+        "p50_umsg": None,
+        "p75_umsg": None,
+        "mean_umsg_entropy": None,
+        "n_umsg_ent": 0,
+        "n_umsg_hash": 0,
+        "n_distinct_umsg": 0,
     }
     base.update(overrides)
     return base
@@ -152,7 +162,9 @@ def test_script_profile_scores_high() -> None:
     assert result["score"] > 0.8
     assert result["band"] == "scripted_batch"
     assert result["insufficient_data"] is False
-    assert result["confidence"] > 0.75
+    # This profile lacks the user-message signal, so confidence is scaled by the
+    # full signal weight (incl. that missing signal) and lands a bit lower.
+    assert result["confidence"] > 0.6
 
 
 def test_human_profile_scores_low() -> None:
@@ -271,3 +283,126 @@ def test_clamp_and_band_helpers() -> None:
     assert band_for(0.7) == "likely_automated"
     assert band_for(0.5) == "mixed_or_uncertain"
     assert band_for(0.1) == "likely_human"
+
+
+# --- user-message stats (precomputed at log time) ----------------------------
+
+
+def test_user_message_stats_non_chat_is_none() -> None:
+    assert user_message_stats(None) == (None, None, None)
+    assert user_message_stats("raw completion string") == (None, None, None)
+    assert user_message_stats([]) == (None, None, None)
+    assert user_message_stats([{"role": "system", "content": "x"}]) == (None, None, None)
+
+
+def test_user_message_stats_uses_latest_user_message() -> None:
+    prompt = [
+        {"role": "system", "content": "You are a bot"},
+        {"role": "user", "content": "first question"},
+        {"role": "assistant", "content": "an answer"},
+        {"role": "user", "content": "the newest user turn"},
+    ]
+    chars, entropy, h = user_message_stats(prompt)
+    assert chars == len("the newest user turn")
+    assert entropy > 0
+    assert isinstance(h, int)
+    # Signed 64-bit range (Postgres BIGINT).
+    assert -(2**63) <= h < 2**63
+
+
+def test_user_message_stats_hash_is_stable_and_size_independent() -> None:
+    a = user_message_stats([{"role": "user", "content": "  same text  "}])
+    b = user_message_stats([{"role": "user", "content": "same text"}])
+    assert a[2] == b[2]  # stripped before hashing
+    c = user_message_stats([{"role": "user", "content": "different text"}])
+    assert c[2] != a[2]
+
+
+def test_user_message_stats_low_entropy_for_repeated_char() -> None:
+    chars, entropy, _ = user_message_stats([{"role": "user", "content": "aaaaaaaa"}])
+    assert chars == 8
+    assert entropy == pytest.approx(0.0)
+
+
+# --- user_message_shape signal -----------------------------------------------
+
+
+def test_user_message_shape_flags_templated_repetitive_input() -> None:
+    """Uniform size + low entropy + heavy repetition -> automated sub-score."""
+    stats = _stats(
+        n_req=200,
+        n_umsg_sz=200,
+        p25_umsg=300.0,
+        p50_umsg=300.0,
+        p75_umsg=300.0,  # zero size dispersion
+        mean_umsg_entropy=1.0,  # low per-message entropy
+        n_umsg_ent=200,
+        n_umsg_hash=200,
+        n_distinct_umsg=4,  # nearly all requests resend the same message
+    )
+    result = score_user(stats)
+    sig = result["signals"]["user_message_shape"]
+    assert sig["available"] is True
+    assert sig["sub"] > 0.8
+
+
+def test_user_message_shape_reads_human_input_as_low() -> None:
+    """Varied size + high entropy + all-distinct messages -> human sub-score."""
+    stats = _stats(
+        n_req=200,
+        n_umsg_sz=200,
+        p25_umsg=20.0,
+        p50_umsg=200.0,
+        p75_umsg=2000.0,  # wide size dispersion
+        mean_umsg_entropy=4.3,  # natural-language entropy
+        n_umsg_ent=200,
+        n_umsg_hash=200,
+        n_distinct_umsg=200,  # every message distinct
+    )
+    result = score_user(stats)
+    sig = result["signals"]["user_message_shape"]
+    assert sig["available"] is True
+    assert sig["sub"] < 0.2
+
+
+def test_user_message_shape_dropped_without_data() -> None:
+    """No user-message columns (e.g. pre-migration history) -> signal dropped."""
+    result = score_user(_stats(n_req=300, ua_base=0.85))
+    assert result["signals"]["user_message_shape"]["available"] is False
+
+
+def test_confidence_stays_in_unit_range_with_all_signals() -> None:
+    """confidence is normalized by the total weight, so it never exceeds 1.0."""
+    hist = [0] * 24
+    for hour in range(9, 18):
+        hist[hour] = 20
+    stats = _stats(
+        n_req=5000,
+        n_chat=5000,
+        n_oneshot=5000,
+        p90_depth=1,
+        n_toolrows=5000,
+        n_toolpos=10,
+        n_sz=5000,
+        p25_sz=1000.0,
+        p50_sz=1000.0,
+        p75_sz=1000.0,
+        hour_hist=[200] * 24,
+        gap_p25=300.0,
+        gap_p50=300.0,
+        gap_p75=300.0,
+        n_gap=4999,
+        ua_base=0.85,
+        agent_share=0.06,  # makes agent_opener_override available too
+        n_umsg_sz=5000,
+        p25_umsg=300.0,
+        p50_umsg=300.0,
+        p75_umsg=300.0,
+        mean_umsg_entropy=1.0,
+        n_umsg_ent=5000,
+        n_umsg_hash=5000,
+        n_distinct_umsg=2,
+    )
+    result = score_user(stats)
+    assert all(s["available"] for s in result["signals"].values())
+    assert 0.0 <= result["confidence"] <= 1.0

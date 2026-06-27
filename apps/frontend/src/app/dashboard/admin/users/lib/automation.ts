@@ -42,7 +42,8 @@ export function bandStyle(band: string): BandStyle {
 // Human-readable labels for the signals (keys match the backend signal names).
 export const SIGNAL_LABELS: Record<string, string> = {
   turn_pattern: 'User turns',
-  prompt_size_dispersion: 'Turn length',
+  prompt_size_dispersion: 'Prompt size',
+  user_message_shape: 'User messages',
   client_tool_prior: 'User-agent',
   daily_activity_shape: 'Daily activity',
   tool_call_human_tell: 'Tool use',
@@ -61,6 +62,9 @@ export const DETAIL_LABELS: Record<string, string> = {
   max_quiet_gap_hours: 'Longest quiet gap (h)',
   interarrival_rcv: 'Inter-arrival IQR/median',
   toolcall_share: 'Tool-call request share',
+  user_msg_size_rcv: 'User-msg size IQR/median',
+  user_msg_entropy: 'User-msg entropy (bits/char)',
+  user_msg_distinct_ratio: 'User-msg distinct ratio',
 };
 
 // Sort comparator for ranking users by automation score. Users without a score

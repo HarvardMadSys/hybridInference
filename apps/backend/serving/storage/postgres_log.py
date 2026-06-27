@@ -14,6 +14,7 @@ from serving.storage.utils import (
     conversation_shape,
     json_safe,
     strip_null_bytes,
+    user_message_stats,
 )
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
@@ -96,7 +97,10 @@ class PostgresLogStore(LogStore):
                     upstream_cost_usd DECIMAL(12, 8),
                     num_turns INTEGER,
                     num_user_turns INTEGER,
-                    num_tool_calls INTEGER
+                    num_tool_calls INTEGER,
+                    last_user_msg_chars INTEGER,
+                    last_user_msg_entropy REAL,
+                    last_user_msg_hash BIGINT
                 )
             """)
 
@@ -132,6 +136,9 @@ class PostgresLogStore(LogStore):
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_turns INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_user_turns INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_tool_calls INTEGER",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_chars INTEGER",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_entropy REAL",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_hash BIGINT",
             ]:
                 await conn.execute(col_ddl)
 
@@ -250,6 +257,11 @@ class PostgresLogStore(LogStore):
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
         num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
+        # Size / entropy / repetition fingerprint of the newest user message,
+        # derived from the inbound prompt like conversation shape so it is
+        # recorded independent of full-content storage and lets the automation
+        # score read cheap columns instead of de-TOASTing the payload per row.
+        last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash = user_message_stats(prompt)
         # Agent identity declared in the system prompt (e.g. "You are Claude
         # Code, ..."). Stored in metadata so the admin list query can label the
         # client by its declared name, falling back to User-Agent parsing when
@@ -275,7 +287,8 @@ class PostgresLogStore(LogStore):
                     prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd,
-                    num_turns, num_user_turns, num_tool_calls
+                    num_turns, num_user_turns, num_tool_calls,
+                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash
                 )
                 VALUES (
                     $1, $2, $3,
@@ -286,7 +299,8 @@ class PostgresLogStore(LogStore):
                     $18, $19, $20::jsonb,
                     $21, $22, $23, $24, $25::jsonb,
                     $26::jsonb, $27,
-                    $28, $29, $30
+                    $28, $29, $30,
+                    $31, $32, $33
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -320,6 +334,9 @@ class PostgresLogStore(LogStore):
                 num_turns,
                 num_user_turns,
                 num_tool_calls,
+                last_user_msg_chars,
+                last_user_msg_entropy,
+                last_user_msg_hash,
             )
 
     # -- usage / cost queries ------------------------------------------------
