@@ -44,12 +44,16 @@ class RequestIdMiddleware:
         # ``user_name`` are reset here so a route that invokes the router
         # without authenticating (e.g. the admin playground) can't have a
         # circuit-breaker alert misattributed to an earlier completions caller.
+        # ``client_error_kind`` is reset for the same reason: a stale
+        # model-not-found tag from a prior request must not cling to a later
+        # upstream 404 and wrongly exclude it from the failed-request alert.
         req_ctx.update(
             {
                 "request_id": req_id,
                 "client_user_agent": user_agent or None,
                 "user_id": None,
                 "user_name": None,
+                req_ctx.CLIENT_ERROR_KIND: None,
             }
         )
 

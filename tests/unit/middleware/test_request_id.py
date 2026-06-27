@@ -65,3 +65,15 @@ async def test_identity_keys_reset_between_requests() -> None:
     await _drive([], captured)
     assert captured.get("user_id") is None
     assert captured.get("user_name") is None
+
+
+@pytest.mark.asyncio
+async def test_client_error_kind_reset_between_requests() -> None:
+    # A prior model-not-found request leaves the marker in the context. The
+    # middleware must clear it so a later request's upstream 404 isn't logged
+    # with the stale tag and wrongly excluded from the failed-request alert.
+    req_ctx.mark_model_not_found()
+    assert req_ctx.get().get(req_ctx.CLIENT_ERROR_KIND) == req_ctx.MODEL_NOT_FOUND
+    captured: dict = {}
+    await _drive([], captured)
+    assert captured.get(req_ctx.CLIENT_ERROR_KIND) is None
