@@ -728,7 +728,7 @@ class UsageInsightsRequest(BaseModel):
 
     user_id: str | None = Field(None, description="Limit the sample to this user id")
     user_email: str | None = Field(None, description="Limit the sample to this user's email")
-    limit: int = Field(40, ge=1, le=200, description="Number of recent requests to sample")
+    limit: int = Field(40, ge=1, le=200, description="Number of requests to randomly sample")
     max_chars: int = Field(
         800, ge=100, le=4000, description="Truncate each sampled message to this many characters"
     )

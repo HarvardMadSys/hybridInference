@@ -315,6 +315,49 @@ class TestAdminUsageInsightsSettings:
         assert resp.status_code == 401
 
 
+class TestFetchSamples:
+    @pytest.mark.asyncio
+    async def test_randomly_samples_from_recent_pool(self):
+        """The query draws a random sample from a bounded recent window, not the latest N."""
+        captured: dict = {}
+
+        async def _fetch(query, *params):
+            captured["query"] = query
+            captured["params"] = params
+            return _sample_rows()
+
+        conn = MagicMock()
+        conn.fetch = AsyncMock(side_effect=_fetch)
+        payload = usage_insights.UsageInsightsRequest(user_id="user-1", limit=100)
+
+        samples = await usage_insights._fetch_samples(conn, "user-1", payload)
+
+        # Randomized draw, bounded to the recent candidate pool then the limit.
+        assert "random()" in captured["query"]
+        assert captured["params"] == ("user-1", usage_insights._SAMPLE_POOL, 100)
+        assert len(samples) == 2
+
+    @pytest.mark.asyncio
+    async def test_samples_rendered_newest_first(self):
+        """A randomly-ordered draw is re-sorted so the report reads chronologically."""
+
+        async def _fetch(query, *params):
+            # _sample_rows() is oldest-first (12:00 then 12:05); return it as-is so
+            # the re-sort has to actually reorder it (random() yields no order).
+            return _sample_rows()
+
+        conn = MagicMock()
+        conn.fetch = AsyncMock(side_effect=_fetch)
+        payload = usage_insights.UsageInsightsRequest(limit=50)
+
+        samples = await usage_insights._fetch_samples(conn, None, payload)
+
+        timestamps = [s["timestamp"] for s in samples]
+        # Newest-first, and genuinely reordered from the oldest-first input.
+        assert timestamps == sorted(timestamps, reverse=True)
+        assert samples[0]["model_id"] == "minimax-m3"  # the 12:05 row, now first
+
+
 class TestRenderSamples:
     def test_render_budget_truncates(self):
         """_render_samples stops adding requests once the char budget is hit."""

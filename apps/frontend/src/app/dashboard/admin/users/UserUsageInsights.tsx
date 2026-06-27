@@ -8,7 +8,7 @@ import {
   UsageInsightsReportSkeleton,
 } from '@/components/features/admin/UsageInsightsReport';
 
-const SAMPLE_LIMIT = 25;
+const SAMPLE_LIMIT = 100;
 
 /**
  * On-demand LLM analysis of a single user's recent requests, shown in the admin
@@ -51,8 +51,8 @@ export function UserUsageInsights({ userId }: { userId: string }) {
       </div>
 
       <p className="text-[12px] text-gray-500">
-        Summarize how this user uses the gateway (which harness, what tasks) from their last{' '}
-        {SAMPLE_LIMIT} requests, via an LLM.
+        Summarize how this user uses the gateway (which harness, what tasks) from a random sample of
+        up to {SAMPLE_LIMIT} of their requests, via an LLM.
       </p>
 
       {error && (
