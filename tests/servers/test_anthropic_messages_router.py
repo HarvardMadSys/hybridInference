@@ -1136,3 +1136,243 @@ async def test_streaming_client_response_error_logs_upstream_status(
     assert captured.get("status_code") == 503
     assert captured.get("error") is not None
     assert len(captured["error"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Streaming usage recovery (client disconnect before usage_sink flush)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_stream_usage_trusts_real_usage():
+    """A completed stream (adapter flushed usage_sink) is used verbatim."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    req = {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    usage, estimated = amod._resolve_stream_usage(req, {"usage": {"input_tokens": 999}}, None)
+    assert usage["input_tokens"] == 12
+    assert usage["output_tokens"] == 5
+    assert estimated is False
+
+
+def test_resolve_stream_usage_recovers_partial_from_response_acc():
+    """Disconnect after message_start: real input_tokens recovered, output estimated.
+
+    The message_start usage carries output_tokens=1 (the real Anthropic
+    placeholder); the accumulated-content estimate must win over it.
+    """
+    from serving.servers.routers import anthropic_messages as amod
+
+    empty = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    acc = {
+        "usage": {"input_tokens": 37, "output_tokens": 1, "cache_read_input_tokens": 4},
+        "content": [{"type": "text", "text": "partial answer here " * 10}],
+    }
+    payload = {"messages": [{"role": "user", "content": "hello"}]}
+    usage, estimated = amod._resolve_stream_usage(empty, acc, payload)
+    assert usage["input_tokens"] == 37  # real, from message_start
+    assert usage["cache_read_input_tokens"] == 4
+    assert usage["output_tokens"] > 1  # estimate beats the message_start placeholder
+    assert estimated is True
+
+
+def test_resolve_stream_usage_placeholder_output_does_not_suppress_estimate():
+    """Regression: a long native partial response must not log output_tokens=1.
+
+    Anthropic's message_start reports a placeholder output_tokens (e.g. 1); the
+    terminal message_delta with the real count never arrives on a disconnect.
+    """
+    from serving.servers.routers import anthropic_messages as amod
+
+    empty = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    acc = {
+        "usage": {"input_tokens": 50, "output_tokens": 1},
+        "content": [{"type": "text", "text": "word " * 500}],
+    }
+    usage, estimated = amod._resolve_stream_usage(empty, acc, None)
+    assert usage["input_tokens"] == 50
+    assert usage["output_tokens"] > 100  # ~500 words estimated, not the placeholder 1
+    assert estimated is True
+
+
+def test_resolve_stream_usage_keeps_real_observed_output_over_estimate():
+    """When a real (large) output count was observed, don't downgrade to an estimate."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    empty = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    acc = {
+        "usage": {"input_tokens": 20, "output_tokens": 999},  # real, e.g. late message_delta
+        "content": [{"type": "text", "text": "short"}],
+    }
+    usage, _ = amod._resolve_stream_usage(empty, acc, None)
+    assert usage["output_tokens"] == 999
+
+
+def test_bounded_text_tokens_uses_heuristic_above_cap():
+    """Oversized text skips tiktoken and uses the cheap char heuristic."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    big = "x" * (amod._ESTIMATE_CHAR_CAP + 8)
+    assert amod._bounded_text_tokens(big) == max(1, len(big) // 4)
+    assert amod._bounded_text_tokens("hello world") > 0
+
+
+def test_resolve_stream_usage_estimates_input_on_pure_hang():
+    """Disconnect before any byte: nothing in response_acc, estimate input from request."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    empty = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    payload = {
+        "system": "You are a helpful coding assistant.",
+        "messages": [{"role": "user", "content": "Write a function to sort a list."}],
+    }
+    usage, estimated = amod._resolve_stream_usage(empty, None, payload)
+    assert usage["input_tokens"] > 0  # estimated from system + messages
+    assert usage["output_tokens"] == 0  # nothing was produced
+    assert estimated is True
+
+
+def test_resolve_stream_usage_zero_when_nothing_available():
+    """No usage, no response, no payload -> stays zero, not flagged estimated."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    empty = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+    usage, estimated = amod._resolve_stream_usage(empty, None, None)
+    assert usage["input_tokens"] == 0
+    assert usage["output_tokens"] == 0
+    assert estimated is False
+
+
+def test_estimate_request_input_tokens_folds_system_and_tools():
+    """system prompt and tool schemas both contribute to the input estimate."""
+    from serving.servers.routers import anthropic_messages as amod
+
+    base = amod._estimate_request_input_tokens({"messages": [{"role": "user", "content": "hi"}]})
+    with_system = amod._estimate_request_input_tokens(
+        {
+            "system": "a much longer system prompt " * 20,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+    )
+    with_tools = amod._estimate_request_input_tokens(
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"name": "do_thing", "description": "x" * 200, "input_schema": {}}],
+        }
+    )
+    assert with_system > base
+    assert with_tools > base
+
+
+@pytest.mark.asyncio
+async def test_streaming_recovers_usage_on_client_disconnect(anthropic_test_client, monkeypatch):
+    """A mid-stream abort (no end-of-stream usage flush) must not log 0/0.
+
+    Simulates the production symptom: the upstream yields message_start (real
+    input_tokens) then the connection is cut before the adapter flushes
+    usage_sink. The router's finally must recover input_tokens from the
+    forwarded stream and flag the row as estimated.
+    """
+    import asyncio
+
+    # message_start carries the real Anthropic placeholder output_tokens=1; the
+    # forwarded content must drive the output estimate, not the placeholder.
+    upstream_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_d","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":41,"output_tokens":1}}}\n\n'
+        b"event: content_block_start\n"
+        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        b"event: content_block_delta\n"
+        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello there '
+        b'this is a fairly long partial assistant response that was cut off mid-stream"}}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield upstream_sse
+            # Client/upstream disconnect before message_delta + message_stop:
+            # the adapter never reaches its usage_sink.update().
+            raise asyncio.CancelledError()
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    try:
+        async with anthropic_test_client.stream(
+            "POST", "/v1/messages", json=body, headers=_auth()
+        ) as r:
+            async for _ in r.aiter_bytes():
+                pass
+    except Exception:
+        # Client may observe the truncated stream as a transport error; the
+        # server-side finally (and its log) is what we assert on.
+        pass
+
+    assert captured, "_schedule_log_store_task should still run via the finally"
+    usage = captured["usage"]
+    assert usage["input_tokens"] == 41  # recovered from message_start, not 0
+    assert usage["output_tokens"] > 1  # estimated from forwarded content, not the placeholder
+    assert captured["metadata"].get("usage_estimated") is True
