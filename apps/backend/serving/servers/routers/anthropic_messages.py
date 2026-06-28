@@ -44,6 +44,16 @@ from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 logger = get_logger(__name__)
 router = APIRouter()
 
+# Streaming keepalive. Anthropic clients (e.g. Claude Code) drop a streaming
+# request after ~30s of silence, but slow upstream backends can take longer to
+# emit a first token. During idle gaps the stream emits an SSE comment heartbeat
+# every _KEEPALIVE_INTERVAL seconds to keep the connection alive, giving the
+# upstream up to _MAX_STREAM_IDLE seconds to produce the next chunk before we
+# give up. _STREAM_SENTINEL marks end-of-upstream on the internal queue.
+_KEEPALIVE_INTERVAL = 15
+_MAX_STREAM_IDLE = 120
+_STREAM_SENTINEL: Any = object()
+
 
 # --- Anthropic-format error envelope ---------------------------------------
 
@@ -743,29 +753,90 @@ async def anthropic_messages(
             response_acc: dict | None = None
             sse_buffer = b""
             try:
-                async for chunk in adapter.stream_messages(
+                upstream = adapter.stream_messages(
                     body,
                     request_id=request_id,
                     usage_sink=request_usage,
                     extra_headers=forwarded_headers,
-                ):
-                    if isinstance(chunk, str):
-                        chunk = chunk.encode("utf-8")
-                    if ttft_ms is None:
-                        ttft_buffer += chunk
-                        nl = ttft_buffer.rfind(b"\n")
-                        if nl >= 0:
-                            head = ttft_buffer[: nl + 1]
-                            ttft_buffer = ttft_buffer[nl + 1 :]
-                            if b"event: content_block_delta" in head:
-                                ttft_ms = int((time.time() - start) * 1000)
+                )
+                # Consume the upstream via a queue + background reader so idle
+                # gaps can be filled with keepalive heartbeats without cancelling
+                # the upstream read (see _KEEPALIVE_INTERVAL / _MAX_STREAM_IDLE).
+                # The queue MUST stay unbounded: a bounded queue can wedge teardown
+                # -- if a fast upstream fills it while the client is gone, the
+                # reader parks on put(), and on cancel its finally sentinel-put
+                # blocks forever on the full queue, leaking the upstream connection.
+                chunk_queue: asyncio.Queue = asyncio.Queue()
+
+                async def _reader() -> None:
+                    try:
+                        async for c in upstream:
+                            await chunk_queue.put(c)
+                    except Exception as exc:
+                        # Forward upstream errors to the main loop to re-raise.
+                        await chunk_queue.put(exc)
+                    finally:
+                        await chunk_queue.put(_STREAM_SENTINEL)
+
+                reader_task = asyncio.create_task(_reader())
+                idle_seconds = 0.0
+                try:
+                    while True:
+                        try:
+                            item = await asyncio.wait_for(
+                                chunk_queue.get(), timeout=_KEEPALIVE_INTERVAL
+                            )
+                        except asyncio.TimeoutError:
+                            idle_seconds += _KEEPALIVE_INTERVAL
+                            if idle_seconds >= _MAX_STREAM_IDLE:
+                                stream_failed = True
+                                stream_status_code = 504
+                                stream_error_message = (
+                                    f"Upstream sent no data for {_MAX_STREAM_IDLE}s"
+                                )
+                                logger.warning(
+                                    f"[{request_id}] Stream idle timeout after "
+                                    f"{_MAX_STREAM_IDLE}s; aborting"
+                                )
+                                err = {
+                                    "type": "error",
+                                    "error": {
+                                        "type": "api_error",
+                                        "message": stream_error_message,
+                                    },
+                                }
+                                yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+                                break
+                            # Heartbeat so a slow stream isn't dropped by the client.
+                            yield b": keepalive\n\n"
+                            continue
+                        idle_seconds = 0.0
+                        if item is _STREAM_SENTINEL:
+                            break
+                        if isinstance(item, Exception):
+                            raise item
+                        chunk = item
+                        if isinstance(chunk, str):
+                            chunk = chunk.encode("utf-8")
+                        if ttft_ms is None:
+                            ttft_buffer += chunk
+                            nl = ttft_buffer.rfind(b"\n")
+                            if nl >= 0:
+                                head = ttft_buffer[: nl + 1]
+                                ttft_buffer = ttft_buffer[nl + 1 :]
+                                if b"event: content_block_delta" in head:
+                                    ttft_ms = int((time.time() - start) * 1000)
+                                    ttft_buffer = b""
+                            elif len(ttft_buffer) > 16384:
                                 ttft_buffer = b""
-                        elif len(ttft_buffer) > 16384:
-                            ttft_buffer = b""
-                    events, sse_buffer = _parse_sse_chunk(sse_buffer, chunk)
-                    for event_type, data in events:
-                        response_acc = _apply_sse_event(response_acc, event_type, data)
-                    yield chunk
+                        events, sse_buffer = _parse_sse_chunk(sse_buffer, chunk)
+                        for event_type, data in events:
+                            response_acc = _apply_sse_event(response_acc, event_type, data)
+                        yield chunk
+                finally:
+                    reader_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await reader_task
             except aiohttp.ClientResponseError as exc:
                 stream_failed = True
                 stream_status_code = exc.status
