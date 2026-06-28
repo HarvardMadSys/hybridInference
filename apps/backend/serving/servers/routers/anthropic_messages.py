@@ -30,7 +30,7 @@ from fastapi.responses import JSONResponse
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.config.settings import has_role
-from serving.exceptions import scrub_error_for_user
+from serving.exceptions import operator_safe_error, scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user
 from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
@@ -51,7 +51,7 @@ router = APIRouter()
 # upstream up to _MAX_STREAM_IDLE seconds to produce the next chunk before we
 # give up. _STREAM_SENTINEL marks end-of-upstream on the internal queue.
 _KEEPALIVE_INTERVAL = 15
-_MAX_STREAM_IDLE = 120
+_MAX_STREAM_IDLE = 60
 _STREAM_SENTINEL: Any = object()
 
 
@@ -236,8 +236,15 @@ def _schedule_log_store_task(
     request_payload: dict[str, Any] | None = None,
     ttft_ms: int | None = None,
     error: str | None = None,
+    operator_error: str | None = None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget).
+
+    ``error`` is the user-facing, scrubbed message (also returned to the
+    client). ``operator_error`` is the richer operator-facing cause (secrets and
+    provider URLs already removed) and is stored in ``metadata.operator_error``
+    -- a field no user-facing route returns -- so the real failure cause is
+    diagnosable without exposing it to the user.
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
@@ -250,6 +257,9 @@ def _schedule_log_store_task(
     subtracts the cached portion from ``prompt_tokens`` before applying
     ``prompt_price`` so cache is not double-billed.
     """
+    if operator_error:
+        # Operator-only: stored in metadata, never returned to the user.
+        metadata = {**(metadata or {}), "operator_error": operator_error}
     input_tokens = int(usage.get("input_tokens", 0) or 0)
     output_tokens = int(usage.get("output_tokens", 0) or 0)
     cache_read = int(usage.get("cache_read_input_tokens", 0) or 0)
@@ -569,6 +579,7 @@ def _log_failure(
     start: float,
     status_code: int,
     error_message: str,
+    operator_error: str | None = None,
 ) -> None:
     latency_ms = int((time.time() - start) * 1000)
     if log_store:
@@ -587,6 +598,7 @@ def _log_failure(
             response=None,
             error=error_message,
             request_payload=request_payload_for_log,
+            operator_error=operator_error,
         )
 
 
@@ -748,6 +760,7 @@ async def anthropic_messages(
             stream_failed = False
             stream_status_code: int = 200
             stream_error_message: str | None = None
+            stream_error_operator: str | None = None
             ttft_ms: int | None = None
             ttft_buffer = b""
             response_acc: dict | None = None
@@ -794,6 +807,7 @@ async def anthropic_messages(
                                 stream_error_message = (
                                     f"Upstream sent no data for {_MAX_STREAM_IDLE}s"
                                 )
+                                stream_error_operator = stream_error_message
                                 logger.warning(
                                     f"[{request_id}] Stream idle timeout after "
                                     f"{_MAX_STREAM_IDLE}s; aborting"
@@ -841,6 +855,7 @@ async def anthropic_messages(
                 stream_failed = True
                 stream_status_code = exc.status
                 stream_error_message = scrub_error_for_user(exc, request_id, exc.status)
+                stream_error_operator = operator_safe_error(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
                 err = {
                     "type": "error",
@@ -854,6 +869,7 @@ async def anthropic_messages(
                 stream_failed = True
                 stream_status_code = 502
                 stream_error_message = scrub_error_for_user(exc, request_id, 502)
+                stream_error_operator = operator_safe_error(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
                 err = {
                     "type": "error",
@@ -904,6 +920,7 @@ async def anthropic_messages(
                         request_payload=request_payload_for_log,
                         ttft_ms=ttft_ms,
                         error=stream_error_message if stream_failed else None,
+                        operator_error=stream_error_operator if stream_failed else None,
                     )
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
@@ -924,6 +941,7 @@ async def anthropic_messages(
             start=start,
             status_code=exc.status_code,
             error_message=error_message,
+            operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(exc.status_code, error_message)
     except aiohttp.ClientResponseError as exc:
@@ -941,6 +959,7 @@ async def anthropic_messages(
             start=start,
             status_code=exc.status,
             error_message=error_message,
+            operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(exc.status, error_message)
     except Exception as exc:
@@ -958,6 +977,7 @@ async def anthropic_messages(
             start=start,
             status_code=502,
             error_message=error_message,
+            operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(502, error_message)
 

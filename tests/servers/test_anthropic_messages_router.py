@@ -995,6 +995,48 @@ async def test_streaming_error_logs_non_empty_error_and_502(anthropic_test_clien
     assert captured.get("status_code") == 502
     assert captured.get("error") is not None
     assert len(captured["error"]) > 0
+    # The operator-facing cause is captured separately and preserves the real
+    # error text, while the user-facing `error` is the scrubbed generic message.
+    assert captured.get("operator_error") and "upstream exploded" in captured["operator_error"]
+    assert "upstream exploded" not in captured["error"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_log_store_merges_operator_error_into_metadata():
+    """operator_error lands in metadata.operator_error (operator-only), leaving the
+    user-facing `error` untouched and the original metadata preserved."""
+    import asyncio
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    captured: dict = {}
+
+    class _FakeStore:
+        async def log_request(self, **kw):
+            captured.update(kw)
+
+    amod._schedule_log_store_task(
+        _FakeStore(),
+        request_id="amsg_x",
+        model_id="glm-5.1",
+        provider="zai",
+        usage={},
+        latency_ms=1,
+        status_code=502,
+        pricing={},
+        metadata={"surface": "anthropic_messages"},
+        params={},
+        error="Internal server error (request_id: amsg_x)",
+        operator_error="zai upstream 500: model overloaded",
+    )
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if captured:
+            break
+
+    assert captured["error"] == "Internal server error (request_id: amsg_x)"
+    assert captured["metadata"]["operator_error"] == "zai upstream 500: model overloaded"
+    assert captured["metadata"]["surface"] == "anthropic_messages"  # original preserved
 
 
 @pytest.mark.asyncio
