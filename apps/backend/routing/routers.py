@@ -269,12 +269,12 @@ def _routing_chunk(
 
 
 def _has_non_empty_content(chunk: Any) -> bool:
-    r"""Return True if the SSE ``chunk`` carries a non-empty delta (content or tool_calls).
+    r"""Return True if the SSE ``chunk`` carries a non-empty delta.
 
     The streaming protocol emits lines like ``"data: {json}\n\n"`` and a
     terminal ``"data: [DONE]\n\n"``. We consider a chunk as having started
-    output when delta.content is a non-empty string **or** delta.tool_calls
-    is a non-empty list.
+    output when delta.content, delta.reasoning_content, or delta.reasoning is
+    a non-empty string **or** delta.tool_calls is a non-empty list.
     """
     try:
         if not isinstance(chunk, str | bytes):
@@ -295,6 +295,9 @@ def _has_non_empty_content(chunk: Any) -> bool:
         delta = choices[0].get("delta") or {}
         content = delta.get("content")
         if isinstance(content, str) and len(content) > 0:
+            return True
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if isinstance(reasoning, str) and len(reasoning) > 0:
             return True
         tool_calls = delta.get("tool_calls")
         return isinstance(tool_calls, list) and len(tool_calls) > 0

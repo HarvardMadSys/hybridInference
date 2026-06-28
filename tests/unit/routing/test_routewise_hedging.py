@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from routing.routewise import hedging as hedging_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
     HedgedAdapter,
@@ -1269,6 +1270,67 @@ class TestToolCallsWinnerDetection:
         combined = "".join(chunks)
         assert "thinking" in combined
         assert "reasoning-primary" in sink.successes
+
+    @pytest.mark.asyncio
+    async def test_reasoning_content_resolves_race_before_visible_content(self):
+        """The race should return on reasoning_content without waiting for visible content."""
+        sink = _FakeEventSink()
+        primary = _make_fake_adapter(provider="reasoning-primary")
+
+        async def _reasoning_then_hang(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            yield 'data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}\n\n'
+            await asyncio.Event().wait()
+
+        primary.stream_chat_completion = _reasoning_then_hang
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "think"}])
+        try:
+            first_chunk = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        finally:
+            await stream.aclose()
+
+        assert "thinking" in first_chunk
+        assert "reasoning-primary" in sink.successes
+
+    @pytest.mark.asyncio
+    async def test_stream_race_buffer_cap_resolves_pre_content_stream(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A stream that keeps emitting pre-content chunks cannot grow the race buffer forever."""
+        monkeypatch.setattr(hedging_module, "_STREAM_RACE_BUFFER_MAX_BYTES", 50)
+        sink = _FakeEventSink()
+        primary = _make_fake_adapter(provider="pre-content-primary")
+
+        async def _pre_content_then_hang(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            for _ in range(3):
+                yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            await asyncio.Event().wait()
+
+        primary.stream_chat_completion = _pre_content_then_hang
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        try:
+            first_chunk = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        finally:
+            await stream.aclose()
+
+        assert "assistant" in first_chunk
+        assert "pre-content-primary" in sink.successes
 
 
 # ===========================================================================

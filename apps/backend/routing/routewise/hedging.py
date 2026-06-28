@@ -19,6 +19,8 @@ from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+_STREAM_RACE_BUFFER_MAX_BYTES = 1_000_000
+
 
 class HedgeBackupUnavailable(RuntimeError):
     """Raised when a planned backup cannot reserve state at dispatch time."""
@@ -372,6 +374,8 @@ class HedgedAdapter(BaseAdapter):
         """
         primary_buffer: list[str] = []
         backup_buffer: list[str] = []
+        primary_buffer_bytes = 0
+        backup_buffer_bytes = 0
         primary_done = False
         backup_started = False
         backup_gen: AsyncGenerator[str, None] | None = None
@@ -449,7 +453,11 @@ class HedgedAdapter(BaseAdapter):
                     try:
                         chunk = primary_next_task.result()
                         primary_buffer.append(chunk)
-                        if _has_non_empty_content(chunk):
+                        primary_buffer_bytes += _chunk_buffer_size(chunk)
+                        if _has_non_empty_content(chunk) or _stream_race_buffer_cap_reached(
+                            primary_buffer_bytes,
+                            leg="primary",
+                        ):
                             primary_has_content = True
                     except StopAsyncIteration:
                         primary_done = True
@@ -480,7 +488,11 @@ class HedgedAdapter(BaseAdapter):
                     try:
                         chunk = backup_next_task.result()
                         backup_buffer.append(chunk)
-                        if _has_non_empty_content(chunk):
+                        backup_buffer_bytes += _chunk_buffer_size(chunk)
+                        if _has_non_empty_content(chunk) or _stream_race_buffer_cap_reached(
+                            backup_buffer_bytes,
+                            leg="backup",
+                        ):
                             backup_has_content = True
                     except StopAsyncIteration:
                         backup_next_task = None
@@ -555,6 +567,29 @@ async def _safe_aclose(gen: AsyncGenerator[Any, None]) -> None:
     """Close an async generator, suppressing errors."""
     with contextlib.suppress(Exception):
         await gen.aclose()
+
+
+def _chunk_buffer_size(chunk: Any) -> int:
+    if isinstance(chunk, bytes):
+        return len(chunk)
+    if isinstance(chunk, str):
+        return len(chunk.encode("utf-8"))
+    return 0
+
+
+def _stream_race_buffer_cap_reached(buffer_bytes: int, *, leg: str) -> bool:
+    if buffer_bytes < _STREAM_RACE_BUFFER_MAX_BYTES:
+        return False
+    logger.warning(
+        "routewise_stream_race_buffer_cap_reached",
+        extra={
+            "event": "routewise_stream_race_buffer_cap_reached",
+            "leg": leg,
+            "buffer_bytes": buffer_bytes,
+            "limit_bytes": _STREAM_RACE_BUFFER_MAX_BYTES,
+        },
+    )
+    return True
 
 
 def _cancel_task(task: asyncio.Task[Any] | None) -> None:

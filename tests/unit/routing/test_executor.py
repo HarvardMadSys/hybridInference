@@ -336,6 +336,16 @@ class TestHasNonEmptyContent:
         )
         assert _has_non_empty_content(chunk) is True
 
+    def test_reasoning_content_delta(self):
+        """reasoning_content should be treated as output for streaming TTFT/race gates."""
+        chunk = 'data: {"choices": [{"delta": {"reasoning_content": "thinking"}}]}\n\n'
+        assert _has_non_empty_content(chunk) is True
+
+    def test_reasoning_delta(self):
+        """Some providers use delta.reasoning instead of delta.reasoning_content."""
+        chunk = 'data: {"choices": [{"delta": {"reasoning": "thinking"}}]}\n\n'
+        assert _has_non_empty_content(chunk) is True
+
     def test_empty_tool_calls(self):
         chunk = 'data: {"choices": [{"delta": {"tool_calls": []}}]}\n\n'
         assert _has_non_empty_content(chunk) is False
