@@ -30,6 +30,7 @@ router = APIRouter(prefix="/admin")
 
 _PROVIDER_STATS_MAX_DAYS = 90
 _PROVIDER_STATS_DEFAULT_DAYS = 7
+_SYNTHETIC_PERFORMANCE_PROVIDERS = frozenset({"", "router"})
 
 _TOKEN_USAGE_RANGES: dict[str, timedelta] = {
     "1h": timedelta(hours=1),
@@ -42,6 +43,11 @@ _TOKEN_USAGE_RANGES: dict[str, timedelta] = {
 # serving/admin/provider_stats_rollup.py — the most recent hour bucket
 # is not guaranteed to exist until this many minutes past the hour.
 _ROLLUP_MINUTE_OFFSET = 5
+
+
+def _is_reportable_performance_provider(provider: str) -> bool:
+    """Return whether a provider label represents a real upstream provider."""
+    return provider not in _SYNTHETIC_PERFORMANCE_PROVIDERS
 
 
 @router.get("/provider-quotas", response_model=AdminProviderQuotasResponse)
@@ -168,6 +174,12 @@ async def admin_provider_stats(
             start,
             end,
         )
+
+    rows = [r for r in rows if _is_reportable_performance_provider(r["provider"])]
+    pairs = [r for r in pairs if _is_reportable_performance_provider(r["provider"])]
+    window_providers = [
+        r for r in window_providers if _is_reportable_performance_provider(r["provider"])
+    ]
 
     providers = sorted({r["provider"] for r in pairs})
     models = sorted({r["model_id"] for r in pairs})
