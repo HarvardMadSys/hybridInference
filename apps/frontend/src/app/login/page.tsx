@@ -7,7 +7,8 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import toast from 'react-hot-toast';
 import { loginSchema, LoginFormData } from '@/lib/schemas/auth';
 import { useAuth } from '@/components/providers';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { resendVerification } from '@/lib/api/auth';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
@@ -17,6 +18,11 @@ export default function LoginPage() {
   const { login, state } = useAuth();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Email of an unverified account that just failed to log in. When set, we
+  // surface a "resend verification email" action so the user isn't dead-ended.
+  const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
+  const [isResending, setIsResending] = useState(false);
+  const [resendDone, setResendDone] = useState(false);
 
   const {
     register,
@@ -35,6 +41,8 @@ export default function LoginPage() {
   const onSubmit = async (data: LoginFormData) => {
     setIsLoading(true);
     setError(null);
+    setUnverifiedEmail(null);
+    setResendDone(false);
 
     try {
       await login(data.email, data.password);
@@ -44,8 +52,25 @@ export default function LoginPage() {
       const errorMsg = getErrorMessage(err);
       setError(errorMsg);
       toast.error(errorMsg);
+      if (err instanceof APIError && err.code === 'EMAIL_NOT_VERIFIED') {
+        setUnverifiedEmail(data.email);
+      }
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleResend = async () => {
+    if (!unverifiedEmail) return;
+    setIsResending(true);
+    try {
+      await resendVerification(unverifiedEmail);
+      setResendDone(true);
+      toast.success('Verification email sent. Please check your inbox.');
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setIsResending(false);
     }
   };
 
@@ -71,6 +96,28 @@ export default function LoginPage() {
               {error}
             </div>
           )}
+
+          {unverifiedEmail &&
+            (resendDone ? (
+              <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                A new verification email is on its way to {unverifiedEmail}. Please check your inbox
+                (and spam folder).
+              </div>
+            ) : (
+              <div className="rounded border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                <p>Didn&apos;t get the verification email?</p>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="mt-2"
+                  isLoading={isResending}
+                  onClick={handleResend}
+                >
+                  Resend verification email
+                </Button>
+              </div>
+            ))}
 
           <InputField
             label="Email"
