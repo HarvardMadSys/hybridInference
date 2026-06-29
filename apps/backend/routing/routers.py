@@ -273,8 +273,9 @@ def _has_non_empty_content(chunk: Any) -> bool:
 
     The streaming protocol emits lines like ``"data: {json}\n\n"`` and a
     terminal ``"data: [DONE]\n\n"``. We consider a chunk as having started
-    output when delta.content, delta.reasoning_content, or delta.reasoning is
-    a non-empty string **or** delta.tool_calls is a non-empty list.
+    output when delta.content, delta.reasoning_content, delta.reasoning, or
+    delta.thinking is a non-empty string **or** delta.tool_calls is a non-empty
+    list.
     """
     try:
         if not isinstance(chunk, str | bytes):
@@ -296,7 +297,9 @@ def _has_non_empty_content(chunk: Any) -> bool:
         content = delta.get("content")
         if isinstance(content, str) and len(content) > 0:
             return True
-        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        reasoning = (
+            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+        )
         if isinstance(reasoning, str) and len(reasoning) > 0:
             return True
         tool_calls = delta.get("tool_calls")

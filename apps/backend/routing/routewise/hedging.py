@@ -20,10 +20,15 @@ from serving.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _STREAM_RACE_BUFFER_MAX_BYTES = 1_000_000
+_STREAM_RACE_DEADLINE_SECONDS = 60.0
 
 
 class HedgeBackupUnavailable(RuntimeError):
     """Raised when a planned backup cannot reserve state at dispatch time."""
+
+
+class HedgeStreamRaceTimeout(TimeoutError):
+    """Raised when no stream produces race-winning output before the deadline."""
 
 
 @runtime_checkable
@@ -64,6 +69,7 @@ class HedgedAdapter(BaseAdapter):
         primary: The primary adapter (launched immediately).
         backup: Optional fixed backup adapter for legacy/direct callers.
         hedge_threshold_sec: Delay for a fixed backup adapter.
+        stream_race_deadline_sec: Maximum time to wait for race-winning output.
         backup_release: Optional reservation release for fixed backup callers.
         event_sink: Callback for per-provider health reporting.
     """
@@ -78,6 +84,7 @@ class HedgedAdapter(BaseAdapter):
         backup_release: Callable[[], None] | None = None,
         checkpoint_backup_selector: CheckpointBackupSelector[BaseAdapter] | None = None,
         hedge_checkpoints_sec: Sequence[float] = (),
+        stream_race_deadline_sec: float | None = _STREAM_RACE_DEADLINE_SECONDS,
     ) -> None:
         if event_sink is None:
             raise TypeError("event_sink is required")
@@ -116,6 +123,9 @@ class HedgedAdapter(BaseAdapter):
         self.failed_attempts: list[dict[str, str]] = []
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
         self._stream_backup_gen: AsyncGenerator[str, None] | None = None
+        self.stream_race_deadline_sec = (
+            None if stream_race_deadline_sec is None else max(0.0, float(stream_race_deadline_sec))
+        )
 
     def _start_backup_at(
         self,
@@ -383,6 +393,7 @@ class HedgedAdapter(BaseAdapter):
         primary_error: BaseException | None = None
         checkpoint_index = 0
         schedule_start = asyncio.get_running_loop().time()
+        race_deadline_sec = self.stream_race_deadline_sec
 
         async def _checkpoint_timer(elapsed_sec: float) -> float:
             wait_remaining = schedule_start + elapsed_sec - asyncio.get_running_loop().time()
@@ -417,6 +428,11 @@ class HedgedAdapter(BaseAdapter):
         primary_next_task: asyncio.Task[str] | None = None
         backup_next_task: asyncio.Task[str] | None = None
         hedge_timer_task = _next_checkpoint_task()
+        race_deadline_task = (
+            asyncio.ensure_future(asyncio.sleep(race_deadline_sec))
+            if race_deadline_sec is not None
+            else None
+        )
 
         try:
             # Start pulling from primary immediately.
@@ -434,7 +450,11 @@ class HedgedAdapter(BaseAdapter):
                 if not wait_set:
                     break
 
+                if race_deadline_task is not None:
+                    wait_set.add(race_deadline_task)
+
                 done, _ = await asyncio.wait(wait_set, return_when=asyncio.FIRST_COMPLETED)
+                race_deadline_expired = race_deadline_task in done
 
                 # Process hedge timer.
                 if hedge_timer_task in done:
@@ -512,11 +532,13 @@ class HedgedAdapter(BaseAdapter):
                     # self.config stays as primary.config (already correct).
                     _cancel_task(backup_next_task)
                     _cancel_task(hedge_timer_task)
+                    _cancel_task(race_deadline_task)
                     return primary_gen, backup_gen, primary_buffer
                 elif primary_has_content:
                     self.event_sink.on_provider_success(primary_provider)
                     _cancel_task(backup_next_task)
                     _cancel_task(hedge_timer_task)
+                    _cancel_task(race_deadline_task)
                     return primary_gen, backup_gen, primary_buffer
                 elif backup_has_content:
                     provider = backup_provider or _provider_name_from_adapter(self.backup)
@@ -527,8 +549,36 @@ class HedgedAdapter(BaseAdapter):
                     self.backup_won = True
                     _cancel_task(primary_next_task)
                     _cancel_task(hedge_timer_task)
+                    _cancel_task(race_deadline_task)
                     assert backup_gen is not None
                     return backup_gen, primary_gen, backup_buffer
+
+                if race_deadline_expired:
+                    deadline_sec = race_deadline_sec if race_deadline_sec is not None else 0.0
+                    exc = HedgeStreamRaceTimeout(
+                        f"RouteWise stream race exceeded {deadline_sec:.3f}s before first output"
+                    )
+                    logger.warning(
+                        "routewise_stream_race_deadline_exceeded",
+                        extra={
+                            "event": "routewise_stream_race_deadline_exceeded",
+                            "deadline_sec": deadline_sec,
+                            "primary_provider": primary_provider,
+                            "backup_provider": backup_provider,
+                            "primary_buffer_bytes": primary_buffer_bytes,
+                            "backup_buffer_bytes": backup_buffer_bytes,
+                        },
+                    )
+                    if not primary_done:
+                        self.event_sink.on_provider_failure(
+                            primary_provider, reason=exc.__class__.__name__
+                        )
+                        self.failed_attempts.append(_failed_attempt(self.primary, exc))
+                    if backup_started and backup_next_task is not None:
+                        provider = backup_provider or _provider_name_from_adapter(self.backup)
+                        self.event_sink.on_provider_failure(provider, reason=exc.__class__.__name__)
+                        self.failed_attempts.append(_failed_attempt(self.backup, exc))
+                    raise exc
 
                 # No content yet; continue pulling from active streams.
                 if primary_next_task in done and not primary_done:
@@ -543,12 +593,22 @@ class HedgedAdapter(BaseAdapter):
 
             # Return primary's buffer (even if empty -- no content from either).
             self.event_sink.on_provider_success(primary_provider)
+            _cancel_task(race_deadline_task)
             return primary_gen, backup_gen, primary_buffer
 
         except BaseException:
             _cancel_task(primary_next_task)
             _cancel_task(backup_next_task)
             _cancel_task(hedge_timer_task)
+            _cancel_task(race_deadline_task)
+            for task in (
+                primary_next_task,
+                backup_next_task,
+                hedge_timer_task,
+                race_deadline_task,
+            ):
+                if task is not None:
+                    await _safe_await_task(task)
             raise
 
 
@@ -573,7 +633,7 @@ def _chunk_buffer_size(chunk: Any) -> int:
     if isinstance(chunk, bytes):
         return len(chunk)
     if isinstance(chunk, str):
-        return len(chunk.encode("utf-8"))
+        return len(chunk)
     return 0
 
 

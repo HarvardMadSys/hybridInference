@@ -346,6 +346,11 @@ class TestHasNonEmptyContent:
         chunk = 'data: {"choices": [{"delta": {"reasoning": "thinking"}}]}\n\n'
         assert _has_non_empty_content(chunk) is True
 
+    def test_thinking_delta(self):
+        """The real-eval transport also treats delta.thinking as output."""
+        chunk = 'data: {"choices": [{"delta": {"thinking": "thinking"}}]}\n\n'
+        assert _has_non_empty_content(chunk) is True
+
     def test_empty_tool_calls(self):
         chunk = 'data: {"choices": [{"delta": {"tool_calls": []}}]}\n\n'
         assert _has_non_empty_content(chunk) is False

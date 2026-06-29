@@ -15,6 +15,7 @@ from routing.routewise import hedging as hedging_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
     HedgedAdapter,
+    HedgeStreamRaceTimeout,
     ProviderEventSink,
 )
 
@@ -1305,7 +1306,7 @@ class TestToolCallsWinnerDetection:
         monkeypatch: pytest.MonkeyPatch,
     ):
         """A stream that keeps emitting pre-content chunks cannot grow the race buffer forever."""
-        monkeypatch.setattr(hedging_module, "_STREAM_RACE_BUFFER_MAX_BYTES", 50)
+        monkeypatch.setattr(hedging_module, "_STREAM_RACE_BUFFER_MAX_BYTES", 120)
         sink = _FakeEventSink()
         primary = _make_fake_adapter(provider="pre-content-primary")
 
@@ -1325,12 +1326,47 @@ class TestToolCallsWinnerDetection:
 
         stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
         try:
-            first_chunk = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+            buffered_chunks = [
+                await asyncio.wait_for(stream.__anext__(), timeout=0.2) for _ in range(3)
+            ]
         finally:
             await stream.aclose()
 
-        assert "assistant" in first_chunk
+        assert len(buffered_chunks) == 3
+        assert all("assistant" in chunk for chunk in buffered_chunks)
         assert "pre-content-primary" in sink.successes
+
+    @pytest.mark.asyncio
+    async def test_stream_race_deadline_fails_no_yield_stream(self):
+        """A stream hidden by a processor cannot keep the race pending forever."""
+        sink = _FakeEventSink()
+        primary = _make_fake_adapter(provider="hidden-think-primary")
+
+        async def _hidden_think_never_yields(
+            *args: Any,
+            **kwargs: Any,
+        ) -> AsyncGenerator[str, None]:
+            await asyncio.Event().wait()
+            yield "data: [DONE]\n\n"
+
+        primary.stream_chat_completion = _hidden_think_never_yields
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+            stream_race_deadline_sec=0.01,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "think"}])
+        try:
+            with pytest.raises(HedgeStreamRaceTimeout):
+                await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+        finally:
+            await stream.aclose()
+
+        assert ("hidden-think-primary", "HedgeStreamRaceTimeout") in sink.failures
 
 
 # ===========================================================================
