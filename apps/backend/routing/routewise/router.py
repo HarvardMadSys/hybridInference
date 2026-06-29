@@ -2256,6 +2256,11 @@ class RouteWiseRouter(BaseRouter):
         model_id: str,
         failed_adapter: BaseAdapter,
     ) -> list[BaseAdapter]:
+        # RouteWise does not use the BaseRouter fallback-list hook: it overrides
+        # chat_completion/stream_chat_completion and performs policy-aware
+        # re-solve fallback inline (re-running the LP over the remaining
+        # candidates), gated by ``config.fallback_mode``. This stub keeps the
+        # BaseRouter contract satisfied without introducing a second path.
         del model_id, failed_adapter
         return []
 
@@ -2616,7 +2621,9 @@ class RouteWiseRouter(BaseRouter):
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     self._rollback_selected_quota_attempt(request_id, endpoint_id)
-                    if not _is_routewise_retryable_error(exc):
+                    if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
+                        exc
+                    ):
                         raise
                     self._record_routewise_fallback_attempt(
                         request_id,
@@ -2730,7 +2737,11 @@ class RouteWiseRouter(BaseRouter):
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     if not chunks_yielded:
                         self._rollback_selected_quota_attempt(request_id, endpoint_id)
-                    if chunks_yielded or not _is_routewise_retryable_error(exc):
+                    if (
+                        chunks_yielded
+                        or self.config.fallback_mode != "policy"
+                        or not _is_routewise_retryable_error(exc)
+                    ):
                         raise
                     self._record_routewise_fallback_attempt(
                         request_id,

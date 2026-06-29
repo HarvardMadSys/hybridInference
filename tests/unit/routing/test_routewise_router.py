@@ -2399,6 +2399,60 @@ class TestRouteWiseDecisionMetadata:
         assert routing["routewise"]["fallback_policy"] is None
 
     @pytest.mark.asyncio
+    async def test_strict_fallback_mode_does_not_resolve_after_retryable_error(self):
+        """fallback_mode='strict' surfaces even a retryable failure without re-solving."""
+        quota = _make_adapter(
+            provider_type="quota",
+            endpoint_id="test-model:quota-provider",
+            quota={"limit": 10_000},
+        )
+        conc = _make_adapter(
+            provider_type="concurrency",
+            endpoint_id="test-model:conc-provider",
+            concurrency={"limit": 1},
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
+        router = RouteWiseRouter(
+            fixed_router=fr,
+            config=RouteWiseConfig(fallback_mode="strict"),
+        )
+        _seed_quota_snapshots(router)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:quota-provider") or by_id["test-model:conc-provider"]
+
+        router._sample_solution = _choose  # type: ignore[method-assign]
+        # A 429 is retryable; in policy mode it would re-solve onto conc, but
+        # strict mode must surface the failure and never touch the backup.
+        quota.chat_completion = AsyncMock(side_effect=_StatusError(429, "quota 429"))
+        conc.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "should not run"}}]}
+        )
+
+        with pytest.raises(_StatusError, match="quota 429") as exc_info:
+            await router.chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-strict",
+            )
+
+        assert quota.chat_completion.await_count == 1
+        assert conc.chat_completion.await_count == 0
+
+        routing = getattr(exc_info.value, "_routing", None)
+        assert routing is not None
+        assert routing["routewise"]["fallback_attempts"] == 0
+        assert routing["routewise"]["fallback_policy"] is None
+
+    def test_invalid_fallback_mode_rejected(self):
+        """RouteWiseConfig rejects an unknown fallback_mode at construction."""
+        with pytest.raises(ValueError, match="fallback_mode"):
+            RouteWiseConfig(fallback_mode="bogus")  # type: ignore[arg-type]
+
+    @pytest.mark.asyncio
     async def test_stream_injects_routewise_chunk(self):
         """stream_chat_completion() injects a routewise chunk before [DONE]."""
         router, quota, api = _make_router_with_quota_and_api()

@@ -12,6 +12,9 @@ from typing import Any, Literal
 LatencyHedgeMode = Literal["disabled", "probability_target"]
 VALID_LATENCY_HEDGE_MODES = frozenset(("disabled", "probability_target"))
 
+FallbackMode = Literal["policy", "strict"]
+VALID_FALLBACK_MODES = frozenset(("policy", "strict"))
+
 
 @dataclass
 class RouteWiseConfig:
@@ -85,6 +88,14 @@ class RouteWiseConfig:
     latency_unprofiled_ttft_ms: float = 5000.0
     latency_hedge_mode: LatencyHedgeMode = "disabled"
 
+    # On-demand fallback policy when a selected provider fails mid-request.
+    # Only RouteWise models honor this (FixedRouter has its own fallback path).
+    #   "policy": re-solve the RouteWise LP over the remaining candidates and
+    #       retry the request, excluding the failed endpoint (production default).
+    #   "strict": no on-demand fallback -- a provider failure surfaces directly,
+    #       so each request reflects a single provider outcome (benchmarking).
+    fallback_mode: FallbackMode = "policy"
+
     # Optional active probing for cold or idle RouteWise endpoints. Probes
     # request one token and feed the same latency profiles used by live traffic.
     routewise_probe_enabled: bool = False
@@ -106,4 +117,9 @@ class RouteWiseConfig:
             raise ValueError(
                 f"Unsupported latency_hedge_mode {self.latency_hedge_mode!r}; "
                 f"expected one of: {allowed}"
+            )
+        if self.fallback_mode not in VALID_FALLBACK_MODES:
+            allowed = ", ".join(sorted(VALID_FALLBACK_MODES))
+            raise ValueError(
+                f"Unsupported fallback_mode {self.fallback_mode!r}; expected one of: {allowed}"
             )
