@@ -1,21 +1,25 @@
 {
-    "openai/gpt-oss-20b": {
-        "container": "gpt-oss-20b-vllm",
+    "nvidia/diffusiongemma-26B-A4B-it-NVFP4": {
+        "container": "diffusiongemma-vllm",
         "gpu_index": "0",
-        "backend_port": 18003,
-        "model_dir": "/home/juncheng/.cache/huggingface",
-        "hf_repo": "openai/gpt-oss-20b",
+        "backend_port": 18004,
+        "hf_repo": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
         "hf_cache_dir": "/home/juncheng/.cache/huggingface",
         "serve_hf_repo": true,
-        "served_name": "openai/gpt-oss-20b",
-        "docker_image": "nvcr.io/nvidia/vllm:26.01-py3",
-        "max_model_len": 65536,
-        "gpu_memory_utilization": 0.64,
-        "max_num_seqs": 1,
+        "served_name": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
+        "docker_image": "vllm/vllm-openai:gemma",
+        "max_model_len": 262144,
+        "gpu_memory_utilization": 0.85,
+        "max_num_seqs": 4,
         "trust_remote_code": true,
         "enable_auto_tool_choice": true,
-        "tool_call_parser": "openai",
-        "reasoning_parser": "openai_gptoss",
-        "vllm_extra_args": ["--quantization", "mxfp4"]
+        "tool_call_parser": "gemma4",
+        "reasoning_parser": "gemma4",
+        "docker_env": {"VLLM_USE_V2_MODEL_RUNNER": "1"},
+        "vllm_extra_args": [
+            "--attention-backend", "TRITON_ATTN",
+            "--override-generation-config", "{\"max_new_tokens\": null}",
+            "--default-chat-template-kwargs", "{\"enable_thinking\": true}"
+        ]
     }
 }
