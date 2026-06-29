@@ -74,6 +74,16 @@ async function runProbeCycle(env: Env): Promise<void> {
     return;
   }
 
+  // Alerting is opt-in via the SLACK_WEBHOOK_URL secret; unset, runAlerts and
+  // runCycleAlert silently no-op. Log it once per cycle so a missing secret is
+  // visible in `wrangler tail` instead of looking identical to "all healthy".
+  if (!env.SLACK_WEBHOOK_URL) {
+    console.warn(
+      "SLACK_WEBHOOK_URL unset; Slack alerting disabled " +
+        "(enable with `wrangler secret put SLACK_WEBHOOK_URL`).",
+    );
+  }
+
   // Keep extending the lease while this cycle runs, so a slow-but-live cycle is
   // never seen as expired and taken over (which would overlap the pools). The
   // sleep is wakeable so the lock is released the instant the cycle finishes.
