@@ -62,9 +62,9 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
     - Drops chunks that were pure routing-metadata (no choices, no usage)
       so the synthetic ``_routing`` chunk emitted by FixedRouter never
       reaches the client.
-    - In strict mode: drops reasoning-only chunks, removes reasoning_content
+    - In strict mode: drops reasoning-only chunks, removes reasoning fields
       from mixed chunks.
-    - In passthrough mode: preserves reasoning_content as-is.
+    - In passthrough mode: preserves reasoning fields as-is.
 
     Returns metadata so completions.py can keep usage/routing/tool-call
     accumulation logic working.
@@ -103,7 +103,11 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
         )
 
     delta = choices[0].get("delta", {})
-    has_reasoning = bool(delta.get("reasoning_content"))
+    has_reasoning = (
+        bool(delta.get("reasoning_content"))
+        or bool(delta.get("reasoning"))
+        or bool(delta.get("thinking"))
+    )
     has_content = bool(delta.get("content"))
     has_tool_calls = bool(delta.get("tool_calls"))
 
@@ -116,7 +120,9 @@ def sanitize_chunk(chunk_json: dict, mode: SerializerMode) -> SanitizeResult:
         )
 
     if has_reasoning and (has_content or has_tool_calls):
-        del delta["reasoning_content"]
+        delta.pop("reasoning_content", None)
+        delta.pop("reasoning", None)
+        delta.pop("thinking", None)
 
     return SanitizeResult(
         chunk_json=chunk_json,
@@ -130,8 +136,8 @@ def sanitize_response(response_json: dict, mode: SerializerMode) -> SanitizeResp
     """Sanitize a non-streaming chat completion response for the public API.
 
     - Always strips `_routing`.
-    - In strict mode: removes `message.reasoning_content`.
-    - In passthrough mode: preserves `message.reasoning_content`.
+    - In strict mode: removes message reasoning fields.
+    - In passthrough mode: preserves message reasoning fields.
     """
     sanitized = dict(response_json)
     routing_info = sanitized.pop("_routing", None)
@@ -145,8 +151,10 @@ def sanitize_response(response_json: dict, mode: SerializerMode) -> SanitizeResp
 
     choice = dict(choices[0])
     message = dict(choice.get("message", {}))
-    if "reasoning_content" in message:
+    if any(key in message for key in ("reasoning_content", "reasoning", "thinking")):
         message.pop("reasoning_content", None)
+        message.pop("reasoning", None)
+        message.pop("thinking", None)
         new_choices = list(choices)
         choice["message"] = message
         new_choices[0] = choice
