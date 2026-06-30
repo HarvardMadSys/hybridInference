@@ -233,11 +233,7 @@ async def _bootstrap_routewise_from_probe_samples(
             rows.sort(key=lambda row: row.get("checked_at") or now)
             counts = rw.bootstrap_from_probe_rows(rows[-max_rows:])
             max_probe_id = max(
-                (
-                    int(row["id"])
-                    for row in rows
-                    if row.get("id") is not None
-                ),
+                (int(row["id"]) for row in rows if row.get("id") is not None),
                 default=0,
             )
             set_probe_sample_watermark = getattr(rw, "set_probe_sample_watermark", None)

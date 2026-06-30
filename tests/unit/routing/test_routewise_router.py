@@ -1147,7 +1147,7 @@ class TestRouteWiseLayer2:
         router, api_a, _api_b = _make_router_with_two_api()
 
         async def stream(_messages, **_params):
-            yield "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
 
         api_a.stream_chat_completion = stream
         router._endpoint_adapter = {"test-model:api-a": api_a}
@@ -1217,7 +1217,7 @@ class TestRouteWiseLayer2:
         router, api_a, _api_b = _make_router_with_two_api()
 
         async def stream(_messages, **_params):
-            yield "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n"
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
 
         api_a.stream_chat_completion = stream
         router._endpoint_adapter = {"test-model:api-a": api_a}

@@ -65,15 +65,10 @@ function formatCheckedAt(value: string) {
 }
 
 function sampleStatusClass(sample: RoutewiseProbeSampleItem) {
-  return sample.ok
-    ? 'bg-emerald-50 text-emerald-700'
-    : 'bg-red-50 text-red-700';
+  return sample.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700';
 }
 
-export function RoutewiseSettingsPanel({
-  modelId,
-  endpoints = [],
-}: RoutewiseSettingsPanelProps) {
+export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSettingsPanelProps) {
   const [settings, setSettings] = useState<RoutewiseSettingItem[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingKey, setSavingKey] = useState<string | null>(null);

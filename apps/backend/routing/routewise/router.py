@@ -770,7 +770,9 @@ class RouteWiseRouter(BaseRouter):
         endpoints = self._probe_targets(
             model_id=model_id,
             endpoint_id=endpoint_id,
-            idle_only=bool(self.config.routewise_probe_idle_only if idle_only is None else idle_only),
+            idle_only=bool(
+                self.config.routewise_probe_idle_only if idle_only is None else idle_only
+            ),
         )
         if not endpoints:
             self._last_probe_results = []
@@ -1708,9 +1710,7 @@ class RouteWiseRouter(BaseRouter):
                 if c.prefix_cache_expected_tokens > 0
             },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
-            "candidate_mean_ttft_sources": {
-                c.endpoint_id: c.mean_ttft_source for c in candidates
-            },
+            "candidate_mean_ttft_sources": {c.endpoint_id: c.mean_ttft_source for c in candidates},
             "candidate_provider_types": {c.endpoint_id: c.provider_type for c in candidates},
             "candidate_quota_used_fraction": {
                 c.endpoint_id: c.quota_used_fraction

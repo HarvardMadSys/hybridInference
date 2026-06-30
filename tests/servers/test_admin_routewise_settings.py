@@ -274,7 +274,7 @@ async def test_list_routewise_probe_samples(admin_client):
 
 @pytest.mark.asyncio
 async def test_run_routewise_probe_calls_live_router(admin_client):
-    client, op_store, _ = admin_client
+    client, _op_store, _ = admin_client
     router = RouteWiseRouter(config=RouteWiseConfig())
     router.run_probe_once = AsyncMock(
         return_value=[
