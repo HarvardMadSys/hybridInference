@@ -115,6 +115,8 @@ class PostgresLogStore(LogStore):
                 "CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity ON api_logs(timestamp DESC, model_id, provider) WHERE user_id IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS idx_api_logs_error ON api_logs(timestamp DESC) WHERE error IS NOT NULL",
                 "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost ON api_logs(user_id, timestamp, cost_usd)",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_served_endpoint "
+                "ON api_logs(served_endpoint_id, timestamp DESC) WHERE served_endpoint_id IS NOT NULL",
             ]:
                 await conn.execute(ddl)
 
@@ -139,6 +141,13 @@ class PostgresLogStore(LogStore):
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_chars INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_entropy REAL",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_hash BIGINT",
+                # Which model/endpoint actually SERVED the request, promoted from
+                # the routing metadata into queryable columns (the model the
+                # request resolved to after aliasing/rerouting, and the specific
+                # endpoint among the route's candidates). model_id remains the
+                # client-requested model. Feeds smart-router training queries.
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS served_model_id TEXT",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS served_endpoint_id TEXT",
             ]:
                 await conn.execute(col_ddl)
 
@@ -212,11 +221,17 @@ class PostgresLogStore(LogStore):
         pricing: dict[str, str] | None = None,
         upstream_cost_usd: float | None = None,
         request_payload: dict[str, Any] | None = None,
+        served_model_id: str | None = None,
     ) -> None:
         """Insert a single request log row.
 
         upstream_cost_usd: OpenRouter-reported per-request upstream cost (USD),
         or None for non-OpenRouter routes.
+
+        served_model_id: the model that actually served the request, when it
+        diverges from the client-requested ``model_id`` (aliasing / rerouting).
+        Defaults to ``model_id``. The served endpoint is recovered from the
+        routing ``metadata`` and stored alongside it.
         """
         usage = normalize_usage(usage) or usage
 
@@ -275,6 +290,26 @@ class PostgresLogStore(LogStore):
         if agent is not None:
             sanitized_metadata = {**(sanitized_metadata or {}), "agent": agent}
 
+        # Promote the served model/endpoint into queryable columns. served_model
+        # defaults to model_id (already the resolved model on the Anthropic
+        # surface; requested == served on completions); callers pass it
+        # explicitly when the served model diverges. served_endpoint is recovered
+        # from the routing metadata using the same fallback chain as the admin
+        # routing view (endpoint_id -> routewise primary -> base_url -> provider).
+        served_model = served_model_id or model_id
+        _served_md = _metadata_dict(sanitized_metadata)
+        _routewise_md = _served_md.get("routewise")
+        served_endpoint = (
+            _string_or_none(_served_md.get("endpoint_id"))
+            or (
+                _string_or_none(_routewise_md.get("primary_provider"))
+                if isinstance(_routewise_md, dict)
+                else None
+            )
+            or _string_or_none(_served_md.get("base_url"))
+            or _string_or_none(provider)
+        )
+
         async with self.pool.acquire() as conn:
             await conn.execute(
                 """
@@ -288,7 +323,8 @@ class PostgresLogStore(LogStore):
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd,
                     num_turns, num_user_turns, num_tool_calls,
-                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash
+                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
+                    served_model_id, served_endpoint_id
                 )
                 VALUES (
                     $1, $2, $3,
@@ -300,7 +336,8 @@ class PostgresLogStore(LogStore):
                     $21, $22, $23, $24, $25::jsonb,
                     $26::jsonb, $27,
                     $28, $29, $30,
-                    $31, $32, $33
+                    $31, $32, $33,
+                    $34, $35
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -337,6 +374,8 @@ class PostgresLogStore(LogStore):
                 last_user_msg_chars,
                 last_user_msg_entropy,
                 last_user_msg_hash,
+                served_model,
+                served_endpoint,
             )
 
     # -- usage / cost queries ------------------------------------------------
