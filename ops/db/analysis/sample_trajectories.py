@@ -1,28 +1,33 @@
 r"""Sample the longest agent trajectories per (model, harness) from ``api_logs``.
 
-A *trajectory* is one agent session: a time-ordered run of requests by a single
-user against a single (model, agent) pair. Because ``session_id`` is only
-populated for a minority of clients, trajectories are inferred by
-**gap-sessionization** -- a new trajectory starts whenever a user is idle on a
-(model, agent) pair for longer than ``--gap-min`` minutes.
+A *trajectory* is one agent session: a run of a user's requests against a single
+(model, agent) pair that share conversation context. ``session_id`` is only set
+by a minority of clients, so trajectories are inferred by **context overlap**:
+each request is fingerprinted by the content hashes of its first two and last
+five messages, and a request joins a recent open session when its fingerprint
+shares any hash with that session's recent requests. The anchor (first messages)
+links ordinary turns; the retained tail links across **compaction** -- when an
+agent replaces history with a summary it keeps the most recent messages, so the
+overlap (and thus the session) survives. A short-gap shrinking-context bridge
+covers summary-only compaction that retains nothing verbatim.
 
-For each (model, harness) pair with at least ``--min-trajs`` qualifying
-trajectories (each at least ``--min-len`` requests), the ``--top-n`` longest are
-written to ``<out-dir>/<model>__<agent>.json`` with per-request content
-truncated so the files stay analyzable. ``_index.json`` and ``_summary.json``
-hold the cross-pair manifest and quantitative summary.
+The script prints and saves per-(model, agent) statistics over *all* detected
+trajectories (counts, length/duration/token distributions, error and tool-call
+rates), then writes the ``--top-n`` longest trajectories per qualifying pair to
+``<out-dir>/<model>__<agent>.json``. Only the **last turn** of each request is
+stored (the new user/tool message plus the model's reply), since consecutive
+requests repeat history.
 
 Read-only. Connects to PostgreSQL via ``.env`` / ``DB_*`` env vars, like the
 other live-DB analysis scripts in this directory.
 
 Example::
 
-    uv run python ops/db/analysis/sample_trajectories.py \\
-        --top-n 20 --out-dir data/trajectories
+    uv run python ops/db/analysis/sample_trajectories.py --top-n 20
 
-The harness label is the prompt-derived ``metadata.agent`` (lowercased), e.g.
-``opencode``, ``kilo``, ``pi``, ``zcode``, ``claude``, ``codex``, ``cline``,
-``hermes``, ``openclaw``. Pass ``--agents`` to restrict to a subset.
+Harness = the prompt-derived ``metadata.agent`` (lowercased), e.g. ``opencode``,
+``kilo``, ``pi``, ``zcode``, ``claude``, ``codex``, ``cline``, ``hermes``,
+``openclaw``. Pass ``--agents`` to restrict to a subset.
 """
 
 from __future__ import annotations
@@ -32,6 +37,8 @@ import asyncio
 import json
 import os
 import statistics as st
+from collections import defaultdict, deque
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -111,15 +118,15 @@ def _summarize_content(content: Any, cap: int) -> str:
     return (" ".join(p for p in parts if p))[:cap]
 
 
-def _last_message(prompt: Any) -> tuple[str | None, str, int]:
-    """Return (role, truncated text, message count) for the prompt's last turn."""
+def _last_message(prompt: Any) -> tuple[str | None, str]:
+    """Return (role, truncated text) for the prompt's last (newest) turn."""
     msgs = _loads(prompt)
     if not isinstance(msgs, list) or not msgs:
-        return None, "", 0
+        return None, ""
     last = msgs[-1]
     if not isinstance(last, dict):
-        return None, str(last)[:CAP_LAST], len(msgs)
-    return last.get("role"), _summarize_content(last.get("content"), CAP_LAST), len(msgs)
+        return None, str(last)[:CAP_LAST]
+    return last.get("role"), _summarize_content(last.get("content"), CAP_LAST)
 
 
 def _assistant_from_response(response: Any) -> tuple[str, list[dict[str, Any]], Any]:
@@ -174,187 +181,281 @@ def _first_context(prompt: Any, request_payload: Any) -> tuple[str, list[str]]:
     return _summarize_content(sys, CAP_SYS), names[:80]
 
 
-# SQL that gap-sessionizes api_logs and ranks trajectories within each (model,
-# agent) pair. $1=agents filter (NULL = all), $2=gap minutes, $3=min length,
-# $4=min trajectories/pair, $5=top-n per pair.
-_SELECT_SQL = """
-WITH base AS (
-    SELECT timestamp, model_id, lower(metadata->>'agent') AS agent,
-           metadata->>'user_id' AS uid
+# Per-request fingerprint + telemetry, computed server-side so only small values
+# transfer. fp = content hashes of the first two and last five messages (the
+# anchor + recent tail). $1 = agents filter (NULL = all agents).
+_FP_SQL = """
+WITH p AS (
+    SELECT request_id, timestamp, model_id, lower(metadata->>'agent') AS agent,
+           metadata->>'user_id' AS uid, status_code, ttft_ms,
+           prompt_tokens, completion_tokens,
+           (response LIKE '%"tool_use"%' OR response LIKE '%"tool_calls"%') AS has_tool,
+           prompt::jsonb AS pj
     FROM api_logs
-    WHERE metadata->>'agent' IS NOT NULL
-      AND metadata->>'user_id' IS NOT NULL
-      AND model_id <> ''
+    WHERE metadata->>'agent' IS NOT NULL AND metadata->>'user_id' IS NOT NULL
+      AND model_id <> '' AND prompt IS NOT NULL
       AND ($1::text[] IS NULL OR lower(metadata->>'agent') = ANY($1::text[]))
-),
-flagged AS (
-    SELECT *, CASE
-        WHEN timestamp - lag(timestamp) OVER w > make_interval(mins => $2)
-             OR lag(timestamp) OVER w IS NULL THEN 1 ELSE 0 END AS nz
-    FROM base
-    WINDOW w AS (PARTITION BY uid, model_id, agent ORDER BY timestamp)
-),
-numbered AS (
-    SELECT *, sum(nz) OVER (PARTITION BY uid, model_id, agent ORDER BY timestamp) AS sn
-    FROM flagged
-),
-sess AS (
-    SELECT model_id, agent, uid, sn, count(*) AS n,
-           min(timestamp) AS t0, max(timestamp) AS t1
-    FROM numbered GROUP BY model_id, agent, uid, sn
-    HAVING count(*) >= $3
-),
-pair AS (SELECT model_id, agent, count(*) AS pair_trajs FROM sess GROUP BY model_id, agent),
-ranked AS (
-    SELECT s.*, p.pair_trajs,
-           row_number() OVER (PARTITION BY s.model_id, s.agent ORDER BY s.n DESC, s.t0) AS rnk
-    FROM sess s JOIN pair p USING (model_id, agent)
 )
-SELECT model_id, agent, uid, n, t0, t1, pair_trajs
-FROM ranked WHERE pair_trajs >= $4 AND rnk <= $5
-ORDER BY model_id, agent, n DESC
+SELECT request_id, timestamp, model_id, agent, uid, status_code, ttft_ms,
+       prompt_tokens, completion_tokens, has_tool,
+       CASE WHEN jsonb_typeof(pj) = 'array' THEN jsonb_array_length(pj) ELSE 0 END AS nmsg,
+       array_remove(ARRAY[
+           md5((pj -> 0)::text), md5((pj -> 1)::text), md5((pj -> -1)::text),
+           md5((pj -> -2)::text), md5((pj -> -3)::text), md5((pj -> -4)::text),
+           md5((pj -> -5)::text)], NULL) AS fp
+FROM p
+ORDER BY uid, model_id, agent, timestamp
 """
 
 
-async def _fetch_trajectory(conn: asyncpg.Connection, t: asyncpg.Record) -> dict[str, Any]:
-    """Fetch and shape one trajectory's requests (truncated) plus its stats."""
-    rows = await conn.fetch(
-        "SELECT timestamp, status_code, latency_ms, ttft_ms, prompt_tokens, completion_tokens, "
-        "error, prompt, response, request_payload, metadata->>'user_agent' ua "
-        "FROM api_logs WHERE metadata->>'user_id'=$1 AND model_id=$2 "
-        "AND lower(metadata->>'agent')=$3 AND timestamp BETWEEN $4 AND $5 ORDER BY timestamp ASC",
-        t["uid"],
-        t["model_id"],
-        t["agent"],
-        t["t0"],
-        t["t1"],
-    )
-    sys_txt, tool_names = _first_context(rows[0]["prompt"], rows[0]["request_payload"])
-    recs, tools_used, ttfts, n_err, n_5xx = [], set(), [], 0, 0
-    for i, r in enumerate(rows):
-        role, lastmsg, nmsg = _last_message(r["prompt"])
-        atext, tcalls, stop = _assistant_from_response(r["response"])
-        for tc in tcalls:
-            if tc.get("name"):
-                tools_used.add(tc["name"])
-        sc = r["status_code"] or 0
-        n_err += sc >= 400
-        n_5xx += sc >= 500
-        if r["ttft_ms"] is not None:
-            ttfts.append(r["ttft_ms"])
-        recs.append(
+def _sessionize(
+    rows: list[asyncpg.Record], roll: int, bridge_min: int, close_hours: int
+) -> tuple[list[dict[str, Any]], int]:
+    """Group fingerprinted requests into context-overlapping trajectories.
+
+    Returns (trajectories, n_compaction_bridges). Each trajectory is a dict with
+    ``model``/``agent``/``uid`` and an ordered ``reqs`` list of the source rows.
+    """
+    bridge = timedelta(minutes=bridge_min)
+    close = timedelta(hours=close_hours)
+    open_by_key: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
+    trajectories: list[dict[str, Any]] = []
+    n_bridge = 0
+
+    for row in rows:
+        key = (row["uid"], row["model_id"], row["agent"])
+        fp = set(row["fp"] or [])
+        ts, nmsg = row["timestamp"], row["nmsg"]
+        opens = [s for s in open_by_key[key] if ts - s["last_ts"] <= close]
+        open_by_key[key] = opens
+
+        best, best_score = None, 0
+        for s in opens:
+            score = len(fp & s["recent_union"])
+            if score > best_score:
+                best, best_score = s, score
+
+        if best is not None and best_score >= 1:
+            sess = best
+        elif (
+            best is not None
+            and ts - best["last_ts"] <= bridge
+            and best["last_nmsg"]
+            and nmsg < best["last_nmsg"]
+        ):
+            sess = best  # summary-only compaction: context shrank within a short gap
+            n_bridge += 1
+        else:
+            sess = {
+                "model": row["model_id"],
+                "agent": row["agent"],
+                "uid": row["uid"],
+                "reqs": [],
+                "recent_fps": deque(maxlen=roll),
+                "recent_union": set(),
+                "last_ts": ts,
+                "last_nmsg": nmsg,
+            }
+            opens.append(sess)
+            trajectories.append(sess)
+
+        sess["reqs"].append(row)
+        sess["recent_fps"].append(fp)
+        sess["recent_union"] = set().union(*sess["recent_fps"])
+        sess["last_ts"] = ts
+        sess["last_nmsg"] = nmsg
+
+    return trajectories, n_bridge
+
+
+def _pair_stats(trajectories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Compute per-(model, agent) statistics over all detected trajectories."""
+    bypair: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for t in trajectories:
+        bypair[(t["model"], t["agent"])].append(t)
+
+    out = []
+    for (model, agent), trajs in bypair.items():
+        lens = [len(t["reqs"]) for t in trajs]
+        reqs = [r for t in trajs for r in t["reqs"]]
+        n = len(reqs)
+        durs = [
+            (t["reqs"][-1]["timestamp"] - t["reqs"][0]["timestamp"]).total_seconds() / 60
+            for t in trajs
+        ]
+        ttfts = [r["ttft_ms"] for r in reqs if r["ttft_ms"] is not None]
+        out.append(
             {
-                "seq": i,
-                "ts": r["timestamp"].isoformat(),
-                "status": sc,
-                "latency_ms": r["latency_ms"],
-                "ttft_ms": r["ttft_ms"],
-                "prompt_tokens": r["prompt_tokens"],
-                "completion_tokens": r["completion_tokens"],
-                "n_messages": nmsg,
-                "last_role": role,
-                "last_msg": lastmsg,
-                "assistant_text": atext,
-                "tool_calls": tcalls,
-                "stop": stop,
-                "error": (r["error"] or "")[:200] or None,
+                "model": model,
+                "harness": agent,
+                "n_trajectories": len(trajs),
+                "n_requests": n,
+                "n_users": len({t["uid"] for t in trajs}),
+                "len_p50": int(st.median(lens)),
+                "len_p90": sorted(lens)[int(0.9 * (len(lens) - 1))],
+                "len_max": max(lens),
+                "dur_med_min": round(st.median(durs), 1),
+                "avg_prompt_tok": round(st.mean([r["prompt_tokens"] or 0 for r in reqs])),
+                "avg_compl_tok": round(st.mean([r["completion_tokens"] or 0 for r in reqs])),
+                "err_pct": round(
+                    100 * sum(1 for r in reqs if (r["status_code"] or 0) >= 400) / n, 1
+                ),
+                "toolcall_pct": round(100 * sum(1 for r in reqs if r["has_tool"]) / n, 1),
+                "median_ttft_ms": int(st.median(ttfts)) if ttfts else None,
             }
         )
-    dur = (rows[-1]["timestamp"] - rows[0]["timestamp"]).total_seconds()
-    return {
-        "user_id": t["uid"],
-        "n_requests": len(rows),
-        "user_agent": rows[0]["ua"],
-        "start": rows[0]["timestamp"].isoformat(),
-        "duration_s": round(dur, 1),
-        "system_excerpt": sys_txt,
-        "tools_offered": tool_names,
-        "stats": {
-            "total_prompt_tokens": sum((r["prompt_tokens"] or 0) for r in rows),
-            "total_completion_tokens": sum((r["completion_tokens"] or 0) for r in rows),
-            "n_errors": n_err,
-            "n_5xx": n_5xx,
-            "max_n_messages": max((rec["n_messages"] for rec in recs), default=0),
-            "distinct_tools_used": sorted(tools_used),
-            "median_ttft_ms": (sorted(ttfts)[len(ttfts) // 2] if ttfts else None),
-        },
-        "requests": recs,
-    }
+    return sorted(out, key=lambda r: -r["n_trajectories"])
+
+
+def _print_stats(stats: list[dict[str, Any]], n_bridge: int) -> str:
+    """Print the stats table to stdout and return it as a markdown string."""
+    cols = [
+        "model",
+        "harness",
+        "n_trajectories",
+        "n_requests",
+        "n_users",
+        "len_p50",
+        "len_p90",
+        "len_max",
+        "dur_med_min",
+        "avg_prompt_tok",
+        "avg_compl_tok",
+        "err_pct",
+        "toolcall_pct",
+        "median_ttft_ms",
+    ]
+    w = {c: max(len(c), *(len(str(r[c])) for r in stats)) for c in cols} if stats else {}
+    print(
+        f"\n=== per (model, harness) trajectory statistics "
+        f"({len(stats)} pairs; {n_bridge} compaction bridges) ==="
+    )
+    header = " | ".join(c.ljust(w[c]) for c in cols)
+    print(header)
+    print("-+-".join("-" * w[c] for c in cols))
+    for r in stats:
+        print(" | ".join(str(r[c]).ljust(w[c]) for c in cols))
+    md = ["| " + " | ".join(cols) + " |", "|" + "|".join("---" for _ in cols) + "|"]
+    md += ["| " + " | ".join(str(r[c]) for c in cols) + " |" for r in stats]
+    return "\n".join(md) + "\n"
+
+
+async def _build_pair_file(
+    conn: asyncpg.Connection, model: str, agent: str, trajs: list[dict[str, Any]], out: Path
+) -> list[int]:
+    """Fetch last-turn content for the chosen trajectories and write the pair file."""
+    out_trajs = []
+    for t in trajs:
+        ids = [r["request_id"] for r in t["reqs"]]
+        rows = await conn.fetch(
+            "SELECT request_id, timestamp, status_code, ttft_ms, prompt_tokens, completion_tokens, "
+            "prompt, response, request_payload, metadata->>'user_agent' ua "
+            "FROM api_logs WHERE request_id = ANY($1::text[]) ORDER BY timestamp ASC",
+            ids,
+        )
+        if not rows:
+            continue
+        sys_txt, tool_names = _first_context(rows[0]["prompt"], rows[0]["request_payload"])
+        recs, tools_used = [], set()
+        for i, r in enumerate(rows):
+            role, lastmsg = _last_message(r["prompt"])
+            atext, tcalls, stop = _assistant_from_response(r["response"])
+            for tc in tcalls:
+                if tc.get("name"):
+                    tools_used.add(tc["name"])
+            recs.append(
+                {  # last turn only: the new message + the model's reply
+                    "seq": i,
+                    "ts": r["timestamp"].isoformat(),
+                    "status": r["status_code"] or 0,
+                    "ttft_ms": r["ttft_ms"],
+                    "prompt_tokens": r["prompt_tokens"],
+                    "completion_tokens": r["completion_tokens"],
+                    "last_role": role,
+                    "last_msg": lastmsg,
+                    "assistant_text": atext,
+                    "tool_calls": tcalls,
+                    "stop": stop,
+                }
+            )
+        dur = (rows[-1]["timestamp"] - rows[0]["timestamp"]).total_seconds()
+        out_trajs.append(
+            {
+                "user_id": t["uid"],
+                "n_requests": len(rows),
+                "user_agent": rows[0]["ua"],
+                "start": rows[0]["timestamp"].isoformat(),
+                "duration_s": round(dur, 1),
+                "system_excerpt": sys_txt,
+                "tools_offered": tool_names,
+                "distinct_tools_used": sorted(tools_used),
+                "requests": recs,
+            }
+        )
+    fname = f"{model}__{agent}.json".replace("/", "_")
+    (out / fname).write_text(
+        json.dumps(
+            {
+                "model": model,
+                "harness": agent,
+                "method": "context-overlap",
+                "n_trajectories": len(out_trajs),
+                "trajectories": out_trajs,
+            },
+            indent=1,
+        )
+    )
+    return [t["n_requests"] for t in out_trajs]
 
 
 async def main(args: argparse.Namespace) -> int:
-    """Run the extraction and write per-pair trajectory files plus a summary."""
+    """Run sessionization, emit statistics, and write sampled trajectory files."""
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     agents = [a.strip().lower() for a in args.agents.split(",")] if args.agents else None
 
     conn = await asyncpg.connect(_dsn())
     try:
-        selected = await conn.fetch(
-            _SELECT_SQL, agents, args.gap_min, args.min_len, args.min_trajs, args.top_n
-        )
-        bypair: dict[tuple[str, str], list[asyncpg.Record]] = {}
-        for r in selected:
-            bypair.setdefault((r["model_id"], r["agent"]), []).append(r)
+        print("Fetching request fingerprints (server-side)...")
+        rows = await conn.fetch(_FP_SQL, agents)
+        print(f"  {len(rows)} agent-labeled requests")
 
-        index, summary = [], []
-        for (model, agent), trows in sorted(bypair.items(), key=lambda kv: -len(kv[1])):
-            trajs = [await _fetch_trajectory(conn, t) for t in trows]
-            fname = f"{model}__{agent}.json".replace("/", "_")
-            (out / fname).write_text(
-                json.dumps(
-                    {
-                        "model": model,
-                        "harness": agent,
-                        "method": f"gap-sessionized@{args.gap_min}min",
-                        "n_trajectories": len(trajs),
-                        "trajectories": trajs,
-                    },
-                    indent=1,
-                )
-            )
-            lens = [t["n_requests"] for t in trajs]
-            reqs = [r for t in trajs for r in t["requests"]]
-            n = len(reqs)
+        trajectories, n_bridge = _sessionize(rows, args.roll, args.bridge_min, args.close_hours)
+        trajectories = [t for t in trajectories if len(t["reqs"]) >= args.min_len]
+        print(f"  {len(trajectories)} trajectories (>= {args.min_len} requests)")
+
+        stats = _pair_stats(trajectories)
+        md = _print_stats(stats, n_bridge)
+        (out / "_stats.json").write_text(json.dumps(stats, indent=1))
+        (out / "_stats.md").write_text(md)
+
+        bypair: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for t in trajectories:
+            bypair[(t["model"], t["agent"])].append(t)
+
+        index = []
+        print("\nWriting sampled trajectory files...")
+        for (model, agent), trajs in sorted(bypair.items(), key=lambda kv: -len(kv[1])):
+            if len(trajs) < args.min_trajs:
+                continue
+            chosen = sorted(trajs, key=lambda t: -len(t["reqs"]))[: args.top_n]
+            lens = await _build_pair_file(conn, model, agent, chosen, out)
             index.append(
                 {
                     "model": model,
                     "harness": agent,
-                    "file": fname,
-                    "n_trajectories": len(trajs),
-                    "pair_trajs": trows[0]["pair_trajs"],
+                    "file": f"{model}__{agent}.json".replace("/", "_"),
+                    "pair_trajs": len(trajs),
+                    "n_sampled": len(lens),
                     "lengths": lens,
                 }
             )
-            summary.append(
-                {
-                    "pair": f"{model} / {agent}",
-                    "n_traj": len(trajs),
-                    "req_min_med_max": f"{min(lens)}/{int(st.median(lens))}/{max(lens)}",
-                    "avg_prompt_tok": round(st.mean([r["prompt_tokens"] or 0 for r in reqs]))
-                    if n
-                    else 0,
-                    "avg_compl_tok": round(st.mean([r["completion_tokens"] or 0 for r in reqs]))
-                    if n
-                    else 0,
-                    "err_pct": round(100 * sum(1 for r in reqs if r["status"] >= 400) / n, 1)
-                    if n
-                    else 0,
-                    "toolcall_pct": round(100 * sum(1 for r in reqs if r["tool_calls"]) / n, 1)
-                    if n
-                    else 0,
-                }
-            )
-            print(
-                f"  {fname}: {len(trajs)} trajectories (pair has {trows[0]['pair_trajs']}), "
-                f"lengths={lens}"
-            )
+            print(f"  {model}__{agent}.json: {len(lens)}/{len(trajs)} sampled, lengths={lens}")
 
         (out / "_index.json").write_text(json.dumps(index, indent=1))
-        (out / "_summary.json").write_text(json.dumps(summary, indent=1))
         print(
-            f"\nWrote {len(index)} (model, harness) files, "
-            f"{sum(x['n_trajectories'] for x in index)} trajectories to {out}"
+            f"\nWrote stats for {len(stats)} pairs; sampled {len(index)} pairs "
+            f"({sum(x['n_sampled'] for x in index)} trajectories) to {out}"
         )
     finally:
         await conn.close()
@@ -367,20 +468,33 @@ def cli() -> None:
         description="Sample longest agent trajectories per (model, harness)."
     )
     ap.add_argument("--out-dir", default="data/trajectories", help="Output directory.")
-    ap.add_argument("--top-n", type=int, default=20, help="Longest trajectories per pair.")
+    ap.add_argument("--top-n", type=int, default=20, help="Longest trajectories sampled per pair.")
     ap.add_argument("--min-len", type=int, default=5, help="Min requests for a trajectory.")
     ap.add_argument(
         "--min-trajs",
         type=int,
         default=5,
-        help="Min qualifying trajectories for a pair to be included.",
+        help="Min trajectories for a pair to be sampled to file.",
     )
     ap.add_argument(
-        "--gap-min", type=int, default=30, help="Idle minutes that start a new trajectory."
+        "--roll",
+        type=int,
+        default=3,
+        help="Recent requests whose fingerprints define a session's overlap window.",
     )
     ap.add_argument(
-        "--agents", default=None, help="Comma-separated agent labels to restrict to (default: all)."
+        "--bridge-min",
+        type=int,
+        default=3,
+        help="Max idle minutes for the summary-only compaction bridge.",
     )
+    ap.add_argument(
+        "--close-hours",
+        type=int,
+        default=3,
+        help="Idle hours after which an open session is closed.",
+    )
+    ap.add_argument("--agents", default=None, help="Comma-separated agent labels (default: all).")
     ap.add_argument("--env-file", default=None, help="Path to .env (default: auto-detect).")
     args = ap.parse_args()
     _load_env(args.env_file)

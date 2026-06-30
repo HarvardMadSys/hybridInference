@@ -20,9 +20,10 @@ These scripts are intended for one-off analysis work after exporting logs from `
 - `user_automation_score.py`
   - scores how script-driven vs. human-driven each user is, by querying the live DB
 - `sample_trajectories.py`
-  - samples the longest agent trajectories per (model, harness) by gap-sessionizing
-    the live DB (a new trajectory starts after an idle gap), writing truncated
-    per-pair JSON files for analysis
+  - infers agent trajectories from the live DB by message-context overlap
+    (robust to history compaction), prints per-(model, harness) statistics, and
+    writes the longest trajectories per pair to per-pair JSON files (last turn
+    of each request only)
 
 The last three connect directly to PostgreSQL (via `.env` / `DB_*` env vars) rather than reading a JSONL export.
 
