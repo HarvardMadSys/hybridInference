@@ -27,6 +27,8 @@ const VALID_SORT: ReadonlyArray<SortBy> = [
   'cost_month',
   'cost_alltime',
   'last_login',
+  'requests',
+  'tokens',
 ];
 
 const VALID_QUOTA: ReadonlyArray<QuotaStateFilter> = ['near', 'over', 'custom', 'default'];

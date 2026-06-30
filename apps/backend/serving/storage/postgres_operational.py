@@ -873,7 +873,13 @@ class PostgresOperationalStore(OperationalStore):
         status: str | None = None,
         search: str | None = None,
         sort_by: Literal[
-            "created", "cost_today", "cost_month", "cost_alltime", "last_login"
+            "created",
+            "cost_today",
+            "cost_month",
+            "cost_alltime",
+            "last_login",
+            "requests",
+            "tokens",
         ] = "created",
         limit: int = 100,
         offset: int = 0,
@@ -891,6 +897,12 @@ class PostgresOperationalStore(OperationalStore):
         pagination are consistent. Cost-based filters and sorts use CTEs that
         join against ``api_logs`` (which lives in the same Postgres instance
         for this implementation).
+
+        ``sort_by`` also supports ``requests`` (all-time request count from the
+        ``user_daily_cost`` rollup) and ``tokens`` (all-time ``total_tokens``
+        summed from ``api_logs``). Both metrics are always returned for the
+        visible page as ``usage_alltime_requests`` / ``usage_alltime_tokens``,
+        regardless of the active sort.
 
         Filters (all keyword-only):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose
@@ -983,6 +995,11 @@ class PostgresOperationalStore(OperationalStore):
         needs_today = needs_today_filter or needs_alltime_sort
         needs_month = needs_month_filter or needs_alltime_sort
         needs_alltime = needs_alltime_sort
+        # All-time request count (from the user_daily_cost rollup) and all-time
+        # token total (summed from api_logs, which has no daily rollup) — each
+        # only joined into the row query when that column is the sort key.
+        needs_requests_sort = sort_by == "requests"
+        needs_tokens_sort = sort_by == "tokens"
 
         # Cost-based scalar correlated subqueries — placed in WHERE so
         # filters apply before LIMIT/OFFSET.
@@ -1070,6 +1087,8 @@ class PostgresOperationalStore(OperationalStore):
             "cost_month": "COALESCE(um.cost, 0) DESC, fu.created_at DESC, fu.id",
             "cost_alltime": "COALESCE(ua.cost, 0) DESC, fu.created_at DESC, fu.id",
             "last_login": "fu.last_login_at DESC NULLS LAST, fu.created_at DESC, fu.id",
+            "requests": "COALESCE(ureq.n, 0) DESC, fu.created_at DESC, fu.id",
+            "tokens": "COALESCE(utok.n, 0) DESC, fu.created_at DESC, fu.id",
         }
         order_clause = _sort_clauses[sort_by]
 
@@ -1155,6 +1174,30 @@ class PostgresOperationalStore(OperationalStore):
                 join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
                 select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
 
+            if needs_requests_sort:
+                cte_parts.append(
+                    "usage_requests AS ("
+                    "  SELECT user_id, COALESCE(SUM(requests), 0) AS n"
+                    "  FROM user_daily_cost"
+                    "  WHERE user_id IN (SELECT id FROM filtered_users)"
+                    "  GROUP BY user_id"
+                    ")"
+                )
+                join_parts.append("LEFT JOIN usage_requests ureq ON ureq.user_id = fu.id")
+                select_extras.append("COALESCE(ureq.n, 0) AS usage_alltime_requests")
+
+            if needs_tokens_sort:
+                cte_parts.append(
+                    "usage_tokens AS ("
+                    "  SELECT user_id, COALESCE(SUM(total_tokens), 0) AS n"
+                    "  FROM api_logs"
+                    "  WHERE user_id IN (SELECT id FROM filtered_users)"
+                    "  GROUP BY user_id"
+                    ")"
+                )
+                join_parts.append("LEFT JOIN usage_tokens utok ON utok.user_id = fu.id")
+                select_extras.append("COALESCE(utok.n, 0) AS usage_alltime_tokens")
+
             extra_cols = ", " + ", ".join(select_extras) if select_extras else ""
             joins = " ".join(join_parts)
             ctes = ", ".join(cte_parts)
@@ -1212,6 +1255,35 @@ class PostgresOperationalStore(OperationalStore):
             else:
                 alltime_map = {}
 
+            # All-time request count — from the user_daily_cost rollup so it is
+            # cheap (no api_logs scan) and consistent with all-time cost.
+            if user_ids and not needs_requests_sort:
+                req_rows = await conn.fetch(
+                    "SELECT user_id, COALESCE(SUM(requests), 0) AS n "
+                    "FROM user_daily_cost "
+                    "WHERE user_id = ANY($1::text[]) "
+                    "GROUP BY user_id",
+                    user_ids,
+                )
+                requests_map = {r["user_id"]: r["n"] for r in req_rows}
+            else:
+                requests_map = {}
+
+            # All-time token total — summed from api_logs (no daily rollup
+            # exists). Bounded to the visible page's user_ids, so this is a
+            # cheap indexed lookup rather than a full table scan.
+            if user_ids and not needs_tokens_sort:
+                token_rows = await conn.fetch(
+                    "SELECT user_id, COALESCE(SUM(total_tokens), 0) AS n "
+                    "FROM api_logs "
+                    "WHERE user_id = ANY($1::text[]) "
+                    "GROUP BY user_id",
+                    user_ids,
+                )
+                tokens_map = {r["user_id"]: r["n"] for r in token_rows}
+            else:
+                tokens_map = {}
+
         # Assemble result rows with usage columns.
         result_rows: list[Row] = []
         for row in rows:
@@ -1219,6 +1291,10 @@ class PostgresOperationalStore(OperationalStore):
             r["usage_today"] = r.get("usage_today") or today_map.get(r["id"], 0)
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
             r["usage_alltime"] = r.get("usage_alltime") or alltime_map.get(r["id"], 0)
+            r["usage_alltime_requests"] = r.get("usage_alltime_requests") or requests_map.get(
+                r["id"], 0
+            )
+            r["usage_alltime_tokens"] = r.get("usage_alltime_tokens") or tokens_map.get(r["id"], 0)
             result_rows.append(r)
 
         return total, result_rows, status_counts

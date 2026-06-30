@@ -64,7 +64,13 @@ async def list_users(
     status: str | None = None,
     search: str | None = None,
     sort_by: Literal[
-        "created", "cost_today", "cost_month", "cost_alltime", "last_login"
+        "created",
+        "cost_today",
+        "cost_month",
+        "cost_alltime",
+        "last_login",
+        "requests",
+        "tokens",
     ] = "created",
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
@@ -83,7 +89,10 @@ async def list_users(
     Query Parameters:
     - status: Filter by status (pending_approval|active|suspended|rejected|deleted)
     - search: Search by email, user_name, user id prefix, or active key prefix
-    - sort_by: Sort order (created|cost_today|cost_month|cost_alltime|last_login)
+    - sort_by: Sort order
+      (created|cost_today|cost_month|cost_alltime|last_login|requests|tokens).
+      ``requests`` / ``tokens`` sort by the user's all-time request count and
+      total token usage, respectively.
     - limit: Max results (default: 100)
     - offset: Pagination offset
     - min_cost_today / min_cost_month: filter to users whose today/month spend
@@ -151,6 +160,8 @@ async def list_users(
                 usage_today_usd=Decimal(str(row.get("usage_today", 0))),
                 usage_month_usd=Decimal(str(row.get("usage_month", 0))),
                 usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
+                usage_alltime_requests=int(row.get("usage_alltime_requests", 0) or 0),
+                usage_alltime_tokens=int(row.get("usage_alltime_tokens", 0) or 0),
             )
         )
 

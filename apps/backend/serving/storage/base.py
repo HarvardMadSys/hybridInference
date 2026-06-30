@@ -224,7 +224,13 @@ class OperationalStore(ABC):
         status: str | None = None,
         search: str | None = None,
         sort_by: Literal[
-            "created", "cost_today", "cost_month", "cost_alltime", "last_login"
+            "created",
+            "cost_today",
+            "cost_month",
+            "cost_alltime",
+            "last_login",
+            "requests",
+            "tokens",
         ] = "created",
         limit: int = 100,
         offset: int = 0,
@@ -239,10 +245,11 @@ class OperationalStore(ABC):
         """Return ``(total_count, user_rows, status_counts_row)``.
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
-        ``cost_alltime``) require joining against ``api_logs`` which lives in
-        the **LogStore**.  Implementations that cannot access ``api_logs``
-        directly must accept an optional *usage_provider* callback or return
-        cost columns as zero and let the caller enrich them.
+        ``cost_alltime``) or usage (``tokens``) require joining against
+        ``api_logs`` which lives in the **LogStore**.  ``requests`` reads the
+        ``user_daily_cost`` rollup.  Implementations that cannot access
+        ``api_logs`` directly must accept an optional *usage_provider* callback
+        or return those columns as zero and let the caller enrich them.
 
         ``status_counts_row`` is a dict with keys ``all``, ``pending_approval``,
         ``active``, ``suspended``, ``rejected``, ``deleted``.

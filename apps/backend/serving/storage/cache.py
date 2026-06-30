@@ -365,7 +365,13 @@ class CachedOperationalStore(OperationalStore):
         status: str | None = None,
         search: str | None = None,
         sort_by: Literal[
-            "created", "cost_today", "cost_month", "cost_alltime", "last_login"
+            "created",
+            "cost_today",
+            "cost_month",
+            "cost_alltime",
+            "last_login",
+            "requests",
+            "tokens",
         ] = "created",
         limit: int = 100,
         offset: int = 0,

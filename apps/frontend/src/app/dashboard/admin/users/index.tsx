@@ -140,6 +140,8 @@ export default function UsersTab() {
     usage_today_usd: String(u.usage_today_usd),
     usage_month_usd: String(u.usage_month_usd),
     usage_alltime_usd: String(u.usage_alltime_usd),
+    usage_alltime_requests: u.usage_alltime_requests ?? 0,
+    usage_alltime_tokens: u.usage_alltime_tokens ?? 0,
   }));
 
   const userIds = users.map((u) => u.id);

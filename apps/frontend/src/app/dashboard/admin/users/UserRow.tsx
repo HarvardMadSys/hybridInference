@@ -28,6 +28,16 @@ const STATUS_GLYPH: Record<string, { glyph: string; color: string; title: string
   deleted: { glyph: '✕', color: 'text-gray-400', title: 'Deleted' },
 };
 
+// Token counts run large (millions–billions for heavy users); render them
+// compactly so the column stays narrow. Request counts are smaller, so they
+// use a plain grouped number.
+function formatCompact(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
 function todayCostBucket(cost: number, median: number): string {
   if (median <= 0 || cost < median) return '';
   const ratio = cost / median;
@@ -108,6 +118,18 @@ export function UserRow({
       <td className="px-2 font-mono text-sm">${Number(user.usage_month_usd).toFixed(2)}</td>
       <td className="px-2 font-mono text-sm text-gray-600">
         ${Number(user.usage_alltime_usd).toFixed(2)}
+      </td>
+      <td
+        className="px-2 font-mono text-sm text-gray-600 tabular-nums"
+        title={`${user.usage_alltime_requests.toLocaleString()} requests (all-time)`}
+      >
+        {user.usage_alltime_requests.toLocaleString()}
+      </td>
+      <td
+        className="px-2 font-mono text-sm text-gray-600 tabular-nums"
+        title={`${user.usage_alltime_tokens.toLocaleString()} tokens (all-time)`}
+      >
+        {formatCompact(user.usage_alltime_tokens)}
       </td>
       <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
         {turns?.avg_turns != null ? turns.avg_turns.toFixed(1) : '—'}

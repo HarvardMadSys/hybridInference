@@ -35,6 +35,8 @@ const baseUser: UserRow = {
   usage_today_usd: '0',
   usage_month_usd: '0',
   usage_alltime_usd: '0',
+  usage_alltime_requests: 0,
+  usage_alltime_tokens: 0,
 };
 
 function renderTable(

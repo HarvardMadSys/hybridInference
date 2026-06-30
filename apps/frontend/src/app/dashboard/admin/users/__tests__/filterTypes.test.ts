@@ -28,6 +28,11 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
     expect(filterStateToUrl(DEFAULT_FILTER_STATE)).toBe('');
   });
 
+  it.each(['requests', 'tokens'] as const)('round-trips sortBy=%s', (sortBy) => {
+    const url = filterStateToUrl({ ...DEFAULT_FILTER_STATE, sortBy });
+    expect(filterStateFromUrl(new URLSearchParams(url)).sortBy).toBe(sortBy);
+  });
+
   it('ignores unknown query params (forward compat)', () => {
     const params = new URLSearchParams('?status=active&future_param=42');
     const parsed = filterStateFromUrl(params);
