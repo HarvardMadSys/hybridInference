@@ -1,6 +1,16 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
+import {
+  Fragment,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 import toast from 'react-hot-toast';
 import {
   AdminRecentRequestItem,
@@ -17,6 +27,20 @@ import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { FoldedText } from './requestContent';
 
 const REQ_PAGE_SIZE = 50;
+const REQUEST_TABLE_DRAG_THRESHOLD_PX = 4;
+
+type RequestTableScrollMetrics = {
+  clientWidth: number;
+  scrollWidth: number;
+};
+
+type RequestTableDragState = {
+  active: boolean;
+  moved: boolean;
+  pointerId: number | null;
+  startScrollLeft: number;
+  startX: number;
+};
 
 function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -99,6 +123,157 @@ function formatLatency(ms?: number | null): string {
 
 function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
+}
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof Element &&
+    target.closest('a, button, input, select, textarea, summary, [role="button"]') !== null
+  );
+}
+
+function RequestTableScrollArea({ children }: { children: ReactNode }) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<RequestTableDragState>({
+    active: false,
+    moved: false,
+    pointerId: null,
+    startScrollLeft: 0,
+    startX: 0,
+  });
+  const [scrollMetrics, setScrollMetrics] = useState<RequestTableScrollMetrics>({
+    clientWidth: 0,
+    scrollWidth: 0,
+  });
+  const hasOverflow = scrollMetrics.scrollWidth > scrollMetrics.clientWidth + 1;
+
+  const updateScrollMetrics = useCallback(() => {
+    const scrollContainer = scrollRef.current;
+    if (!scrollContainer) return;
+
+    const table = scrollContainer.querySelector('table');
+    const scrollWidth = Math.max(scrollContainer.scrollWidth, table?.scrollWidth ?? 0);
+    const clientWidth = scrollContainer.clientWidth;
+    setScrollMetrics((prev) =>
+      prev.scrollWidth === scrollWidth && prev.clientWidth === clientWidth
+        ? prev
+        : { clientWidth, scrollWidth },
+    );
+  }, []);
+
+  const syncScroll = useCallback((source: HTMLDivElement) => {
+    const tableScroll = scrollRef.current;
+    const topScroll = topScrollRef.current;
+    const target = source === tableScroll ? topScroll : tableScroll;
+    if (!target) return;
+    if (Math.abs(target.scrollLeft - source.scrollLeft) > 1) {
+      target.scrollLeft = source.scrollLeft;
+    }
+  }, []);
+
+  const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || isInteractiveTarget(event.target)) return;
+
+    const scrollContainer = scrollRef.current;
+    if (!scrollContainer || scrollContainer.scrollWidth <= scrollContainer.clientWidth) return;
+
+    dragRef.current = {
+      active: true,
+      moved: false,
+      pointerId: event.pointerId,
+      startScrollLeft: scrollContainer.scrollLeft,
+      startX: event.clientX,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }, []);
+
+  const handlePointerMove = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag.active || drag.pointerId !== event.pointerId) return;
+
+      const scrollContainer = scrollRef.current;
+      if (!scrollContainer) return;
+
+      const deltaX = event.clientX - drag.startX;
+      if (Math.abs(deltaX) <= REQUEST_TABLE_DRAG_THRESHOLD_PX) return;
+
+      drag.moved = true;
+      scrollContainer.scrollLeft = drag.startScrollLeft - deltaX;
+      syncScroll(scrollContainer);
+      event.preventDefault();
+    },
+    [syncScroll],
+  );
+
+  const endDrag = useCallback((event: PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag.active || drag.pointerId !== event.pointerId) return;
+
+    drag.active = false;
+    drag.pointerId = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, []);
+
+  const handleClickCapture = useCallback((event: MouseEvent<HTMLDivElement>) => {
+    if (!dragRef.current.moved) return;
+    dragRef.current.moved = false;
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
+
+  useEffect(() => {
+    updateScrollMetrics();
+
+    const scrollContainer = scrollRef.current;
+    if (!scrollContainer) return undefined;
+
+    const table = scrollContainer.querySelector('table');
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateScrollMetrics) : null;
+    resizeObserver?.observe(scrollContainer);
+    if (table) resizeObserver?.observe(table);
+
+    window.addEventListener('resize', updateScrollMetrics);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', updateScrollMetrics);
+    };
+  }, [updateScrollMetrics]);
+
+  return (
+    <>
+      {hasOverflow && (
+        <div className="sticky top-0 z-20 border-b border-gray-100 bg-white/95 backdrop-blur">
+          <div
+            ref={topScrollRef}
+            className="h-4 overflow-x-auto [scrollbar-width:thin]"
+            onScroll={(event) => syncScroll(event.currentTarget)}
+            tabIndex={0}
+            aria-label="Scroll request columns horizontally"
+          >
+            <div aria-hidden="true" className="h-px" style={{ width: scrollMetrics.scrollWidth }} />
+          </div>
+        </div>
+      )}
+      <div
+        ref={scrollRef}
+        className={`overflow-x-auto ${hasOverflow ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        onScroll={(event) => syncScroll(event.currentTarget)}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onClickCapture={handleClickCapture}
+        aria-label="Recent requests table"
+      >
+        {children}
+      </div>
+    </>
+  );
 }
 
 function SearchInput({
@@ -589,7 +764,7 @@ export function RequestsTab() {
       )}
 
       {/* Table */}
-      <div className="mt-4 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
+      <div className="mt-4 rounded-2xl border border-gray-200 bg-white shadow-sm">
         {reqLoading ? (
           <div className="flex flex-col items-center justify-center gap-3 py-24">
             <span className="h-6 w-6 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
@@ -619,7 +794,7 @@ export function RequestsTab() {
             </p>
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <RequestTableScrollArea>
             <table className="min-w-full">
               <thead className="bg-gray-50/80">
                 <tr className="border-b border-gray-200">
@@ -955,7 +1130,7 @@ export function RequestsTab() {
                 })}
               </tbody>
             </table>
-          </div>
+          </RequestTableScrollArea>
         )}
 
         {/* Pagination */}
