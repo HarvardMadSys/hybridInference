@@ -64,6 +64,41 @@ function formatCheckedAt(value: string) {
   return date.toLocaleString();
 }
 
+function probeErrorMessage(error: string | null) {
+  if (!error) return 'error';
+  const text = error.trim();
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === 'object') {
+      const data = parsed as Record<string, unknown>;
+      const nested = data.error && typeof data.error === 'object' ? data.error : data;
+      const err = nested as Record<string, unknown>;
+      const metadata = err.metadata && typeof err.metadata === 'object' ? err.metadata : null;
+      const raw = metadata ? (metadata as Record<string, unknown>).raw : null;
+      const message = raw || err.message || data.message;
+      if (typeof message === 'string' && message.trim()) return shortenProbeError(message);
+    }
+  } catch {
+    // Fall through to regex/plain-text extraction for truncated JSON.
+  }
+
+  const rawMatch = text.match(/"raw"\s*:\s*"([^"]+)/);
+  if (rawMatch?.[1]) return shortenProbeError(rawMatch[1]);
+  const messageMatch = text.match(/"message"\s*:\s*"([^"]+)/);
+  if (messageMatch?.[1]) return shortenProbeError(messageMatch[1]);
+  return shortenProbeError(text);
+}
+
+function shortenProbeError(error: string) {
+  const cleaned = error
+    .replace(/\\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/All (\d+) keys for provider '' are muted/g, 'All $1 keys are muted')
+    .trim();
+  if (cleaned.length <= 96) return cleaned;
+  return `${cleaned.slice(0, 95).trimEnd()}...`;
+}
+
 function sampleStatusClass(sample: RoutewiseProbeSampleItem) {
   return sample.ok ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700';
 }
@@ -88,6 +123,16 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
     () => endpoints.filter((endpoint) => endpoint.endpointId),
     [endpoints],
   );
+  const latestProbeSamples = useMemo(() => {
+    const seen = new Set<string>();
+    const latest: RoutewiseProbeSampleItem[] = [];
+    for (const sample of probeSamples) {
+      if (seen.has(sample.endpoint_id)) continue;
+      seen.add(sample.endpoint_id);
+      latest.push(sample);
+    }
+    return latest;
+  }, [probeSamples]);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -115,7 +160,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
         modelId,
         endpointId: probeEndpointId || undefined,
         sinceSeconds: 86_400,
-        limit: 20,
+        limit: 100,
       });
       setProbeSamples(loaded.samples);
     } catch (e) {
@@ -384,7 +429,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
         )}
 
         <div className="mt-3 overflow-hidden rounded-lg border border-gray-100">
-          <div className="grid grid-cols-[minmax(0,1.3fr)_90px_90px_minmax(126px,.8fr)] gap-3 bg-gray-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+          <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(120px,.8fr)_90px_minmax(126px,.8fr)] gap-3 bg-gray-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
             <div>Endpoint</div>
             <div>Status</div>
             <div>TTFT</div>
@@ -394,27 +439,30 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
             <div className="px-3 py-6 text-center text-[12px] text-gray-400">
               Loading probe samples...
             </div>
-          ) : probeSamples.length === 0 ? (
+          ) : latestProbeSamples.length === 0 ? (
             <div className="px-3 py-6 text-center text-[12px] text-gray-400">
               No probe samples in the last 24 hours.
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
-              {probeSamples.map((sample, index) => (
+              {latestProbeSamples.map((sample, index) => (
                 <div
                   key={`${sample.endpoint_id}-${sample.checked_at}-${index}`}
-                  className="grid grid-cols-[minmax(0,1.3fr)_90px_90px_minmax(126px,.8fr)] gap-3 px-3 py-2 text-[12px]"
+                  className="grid grid-cols-[minmax(0,1.3fr)_minmax(120px,.8fr)_90px_minmax(126px,.8fr)] gap-3 px-3 py-2 text-[12px]"
                 >
                   <div className="min-w-0 break-all font-mono text-gray-600">
                     {sample.endpoint_id}
                   </div>
-                  <div>
+                  <div className="min-w-0">
                     <span
-                      className={`inline-flex rounded px-1.5 py-0.5 text-[11px] font-medium ${sampleStatusClass(
+                      title={sample.ok ? undefined : sample.error || undefined}
+                      className={`inline-flex max-w-full rounded px-1.5 py-0.5 text-[11px] font-medium ${sampleStatusClass(
                         sample,
                       )}`}
                     >
-                      {sample.ok ? 'ok' : sample.error || 'error'}
+                      <span className="break-words">
+                        {sample.ok ? 'ok' : probeErrorMessage(sample.error)}
+                      </span>
                     </span>
                   </div>
                   <div className="text-gray-700">{formatTtft(sample.ttft_ms)}</div>
