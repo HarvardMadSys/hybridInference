@@ -1002,7 +1002,8 @@ class PostgresOperationalStore(OperationalStore):
         # from api_logs rather than the user_daily_cost rollup: the rollup is
         # only incremented for billable (cost > 0) requests, so zero-priced /
         # free / local-model calls would be missed. Each is joined into the row
-        # query only when that column is the active sort key.
+        # query as a CTE only when that column is the active sort key; otherwise
+        # both are enriched per-page after the main query (like cost_alltime).
         needs_requests_sort = sort_by == "requests"
         needs_tokens_sort = sort_by == "tokens"
 

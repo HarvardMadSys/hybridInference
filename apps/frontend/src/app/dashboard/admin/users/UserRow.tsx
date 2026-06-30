@@ -34,6 +34,7 @@ const STATUS_GLYPH: Record<string, { glyph: string; color: string; title: string
 // grouped number instead.
 const compactTokenFormatter = new Intl.NumberFormat('en', {
   notation: 'compact',
+  minimumFractionDigits: 0,
   maximumFractionDigits: 1,
 });
 
