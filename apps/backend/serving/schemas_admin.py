@@ -1267,6 +1267,14 @@ class BroadcastPreviewRequest(BaseModel):
     # status — admin must opt in to who receives the broadcast.
     target_roles: list[str] = Field(..., min_length=1)
     target_statuses: list[str] = Field(..., min_length=1)
+    # Optional spend gate: when set, restrict recipients to users whose total
+    # cost today (UTC) is strictly greater than this many USD. None means no
+    # spend filter (the default).
+    min_spend_today_usd: Decimal | None = Field(
+        None,
+        ge=0,
+        description="Only include users who have spent more than this many USD today (UTC).",
+    )
 
 
 class BroadcastPreviewResponse(BaseModel):

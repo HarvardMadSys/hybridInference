@@ -679,6 +679,9 @@ export interface BroadcastPreviewRequest {
   body_text?: string;
   target_roles: string[];
   target_statuses: string[];
+  // When set, restrict recipients to users who have spent more than this many
+  // USD today (UTC). Omit/null for no spend filter.
+  min_spend_today_usd?: number | null;
 }
 
 export interface BroadcastPreviewResponse {
