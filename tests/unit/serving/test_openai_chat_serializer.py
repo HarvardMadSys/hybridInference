@@ -81,6 +81,19 @@ def test_sanitize_strict_drops_reasoning_only_chunks():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("field", ["reasoning", "thinking"])
+def test_sanitize_strict_drops_alternate_reasoning_only_chunks(field: str):
+    """Strict mode: alternate reasoning-only chunks are not forwarded."""
+    chunk = {
+        "id": "c1",
+        "choices": [{"delta": {field: "Let me think..."}, "finish_reason": None}],
+    }
+    result = sanitize_chunk(dict(chunk), SerializerMode.STRICT_OPENAI)
+    assert result.should_forward is False
+    assert result.chunk_json is None
+
+
+@pytest.mark.unit
 def test_sanitize_strict_removes_reasoning_from_mixed():
     """Strict mode: mixed chunks have reasoning_content removed."""
     chunk = {
@@ -91,6 +104,29 @@ def test_sanitize_strict_removes_reasoning_from_mixed():
     assert result.should_forward is True
     delta = result.chunk_json["choices"][0]["delta"]
     assert "reasoning_content" not in delta
+    assert delta["content"] == "answer"
+
+
+@pytest.mark.unit
+def test_sanitize_strict_removes_alternate_reasoning_from_mixed():
+    """Strict mode: mixed chunks have alternate reasoning fields removed."""
+    chunk = {
+        "id": "c1",
+        "choices": [
+            {
+                "delta": {
+                    "content": "answer",
+                    "reasoning": "because...",
+                    "thinking": "also private...",
+                }
+            }
+        ],
+    }
+    result = sanitize_chunk(dict(chunk), SerializerMode.STRICT_OPENAI)
+    assert result.should_forward is True
+    delta = result.chunk_json["choices"][0]["delta"]
+    assert "reasoning" not in delta
+    assert "thinking" not in delta
     assert delta["content"] == "answer"
 
 
@@ -207,6 +243,29 @@ def test_sanitize_response_strict_removes_reasoning_content():
     assert message["content"] == "answer"
     assert "_routing" not in result.response_json
     assert result.routing_info == {"provider": "zai"}
+
+
+@pytest.mark.unit
+def test_sanitize_response_strict_removes_alternate_reasoning_fields():
+    """Strict mode: non-stream response should not expose alternate reasoning fields."""
+    response = {
+        "id": "resp-1",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning": "private chain of thought",
+                    "thinking": "more private thought",
+                }
+            }
+        ],
+    }
+    result = sanitize_response(dict(response), SerializerMode.STRICT_OPENAI)
+    message = result.response_json["choices"][0]["message"]
+    assert "reasoning" not in message
+    assert "thinking" not in message
+    assert message["content"] == "answer"
 
 
 @pytest.mark.unit

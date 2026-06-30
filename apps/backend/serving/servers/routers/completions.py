@@ -159,7 +159,9 @@ async def _buffer_streaming_response_for_non_stream_client(
         content = delta.get("content")
         if isinstance(content, str) and content:
             content_parts.append(content)
-        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        reasoning = (
+            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+        )
         if isinstance(reasoning, str) and reasoning:
             reasoning_parts.append(reasoning)
         if delta.get("tool_calls"):
@@ -278,7 +280,9 @@ async def _streaming_response_with_keepalive(
             content = delta.get("content")
             if isinstance(content, str) and content:
                 content_parts.append(content)
-            reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+            reasoning = (
+                delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+            )
             if isinstance(reasoning, str) and reasoning:
                 reasoning_parts.append(reasoning)
             if delta.get("tool_calls"):
