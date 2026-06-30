@@ -121,6 +121,7 @@ class HedgedAdapter(BaseAdapter):
         self.hedge_delay_sec: float | None = None
         self.hedge_success_probability: float | None = None
         self.failed_attempts: list[dict[str, str]] = []
+        self.leg_first_content_ttft_ms: dict[str, float] = {}
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
         self._stream_backup_gen: AsyncGenerator[str, None] | None = None
         self.stream_race_deadline_sec = (
@@ -393,7 +394,20 @@ class HedgedAdapter(BaseAdapter):
         primary_error: BaseException | None = None
         checkpoint_index = 0
         schedule_start = asyncio.get_running_loop().time()
+        backup_start: float | None = None
         race_deadline_sec = self.stream_race_deadline_sec
+
+        def _record_first_content_ttft(
+            adapter: BaseAdapter | None,
+            started_at: float | None,
+        ) -> None:
+            if adapter is None or started_at is None:
+                return
+            endpoint_id = _endpoint_id_from_adapter(adapter)
+            self.leg_first_content_ttft_ms.setdefault(
+                endpoint_id,
+                max(0.0, (asyncio.get_running_loop().time() - started_at) * 1000.0),
+            )
 
         async def _checkpoint_timer(elapsed_sec: float) -> float:
             wait_remaining = schedule_start + elapsed_sec - asyncio.get_running_loop().time()
@@ -410,11 +424,12 @@ class HedgedAdapter(BaseAdapter):
             return asyncio.ensure_future(_checkpoint_timer(elapsed_sec))
 
         def _start_stream_backup(elapsed_sec: float) -> bool:
-            nonlocal backup_gen, backup_provider, backup_started, backup_next_task
+            nonlocal backup_gen, backup_provider, backup_started, backup_next_task, backup_start
             dispatch = self._start_backup_at(elapsed_sec)
             if dispatch is None:
                 return False
             backup_started = True
+            backup_start = asyncio.get_running_loop().time()
             self._stream_backup_dispatch = dispatch
             self._stream_backup_gen = dispatch.backup.stream_chat_completion(
                 messages,
@@ -473,8 +488,11 @@ class HedgedAdapter(BaseAdapter):
                     try:
                         chunk = primary_next_task.result()
                         primary_buffer.append(chunk)
+                        primary_content = _has_non_empty_content(chunk)
+                        if primary_content:
+                            _record_first_content_ttft(self.primary, schedule_start)
                         primary_buffer_bytes += _chunk_buffer_size(chunk)
-                        if _has_non_empty_content(chunk) or _stream_race_buffer_cap_reached(
+                        if primary_content or _stream_race_buffer_cap_reached(
                             primary_buffer_bytes,
                             leg="primary",
                         ):
@@ -508,8 +526,11 @@ class HedgedAdapter(BaseAdapter):
                     try:
                         chunk = backup_next_task.result()
                         backup_buffer.append(chunk)
+                        backup_content = _has_non_empty_content(chunk)
+                        if backup_content:
+                            _record_first_content_ttft(self.backup, backup_start)
                         backup_buffer_bytes += _chunk_buffer_size(chunk)
-                        if _has_non_empty_content(chunk) or _stream_race_buffer_cap_reached(
+                        if backup_content or _stream_race_buffer_cap_reached(
                             backup_buffer_bytes,
                             leg="backup",
                         ):

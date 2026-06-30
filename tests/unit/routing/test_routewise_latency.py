@@ -50,6 +50,26 @@ class TestProviderProfile:
         # F(0.5) = 0.8 * 1.0 = 0.8
         assert profile.cdf_at(0.5, now) == pytest.approx(0.8)
 
+    def test_cdf_ignores_success_with_nonpositive_ttft(self):
+        """A success recorded without a TTFT must not deflate the CDF."""
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
+        now = 100.0
+
+        # 3 timed successes within 0.5s, 2 timed successes above it.
+        for _ in range(3):
+            profile.record(now, 100.0)
+        for _ in range(2):
+            profile.record(now, 900.0)
+        # 2 errors.
+        profile.record(now, -1.0, error_type="timeout")
+        profile.record(now, -1.0, error_type="server_error")
+        # One success with no TTFT (instrumentation missing): must be ignored,
+        # not counted as a real outcome that drags the CDF down.
+        profile.record(now, 0.0)
+
+        # F(0.5) = within / (successes + errors) = 3 / (5 + 2).
+        assert profile.cdf_at(0.5, now) == pytest.approx(3 / 7)
+
     def test_window_pruning(self):
         """Old samples are excluded after the window."""
         profile = ProviderProfile(endpoint_id="ep1", window_sec=100.0)

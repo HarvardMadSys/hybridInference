@@ -165,7 +165,18 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "type": "int",
         "default": 10,
         "min": 1,
-        "description": "Minimum samples before Routewise latency LP warmup ends",
+        "description": "Legacy RouteWise latency sample threshold retained for compatibility",
+    },
+    "routewise_probe_enabled": {
+        "type": "bool",
+        "default": False,
+        "description": "Enable RouteWise background active latency probes",
+    },
+    "routewise_probe_interval_sec": {
+        "type": "float",
+        "default": 300.0,
+        "min": 10.0,
+        "description": "Seconds between RouteWise background probe cycles",
     },
 }
 

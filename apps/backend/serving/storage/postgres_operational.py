@@ -573,6 +573,35 @@ class PostgresOperationalStore(OperationalStore):
             "ALTER TABLE provider_route_candidates ADD COLUMN IF NOT EXISTS pricing JSONB"
         )
 
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS routewise_probe_samples (
+                id BIGSERIAL PRIMARY KEY,
+                model_id TEXT NOT NULL,
+                endpoint_id TEXT NOT NULL,
+                ttft_ms DOUBLE PRECISION,
+                ok BOOLEAN NOT NULL,
+                error TEXT,
+                cost_usd DOUBLE PRECISION,
+                checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rw_probe_endpoint_time "
+            "ON routewise_probe_samples(endpoint_id, checked_at DESC)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rw_probe_model_time "
+            "ON routewise_probe_samples(model_id, checked_at DESC)"
+        )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS routewise_probe_leases (
+                lease_key TEXT PRIMARY KEY,
+                holder_id TEXT NOT NULL,
+                expires_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
         # --- provider_api_keys ---
         # Runtime-managed upstream provider credentials added by admins
         # through the dashboard. Augments env-var-sourced keys at boot.
@@ -2263,6 +2292,99 @@ class PostgresOperationalStore(OperationalStore):
                 route_id,
             )
         return _parse_command_tag_count(tag) > 0
+
+    async def insert_routewise_probe_sample(
+        self,
+        *,
+        model_id: str,
+        endpoint_id: str,
+        ttft_ms: float | None,
+        ok: bool,
+        error: str | None,
+        cost_usd: float | None,
+        checked_at: datetime | None = None,
+    ) -> int | None:
+        """Persist one active RouteWise latency probe outcome."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO routewise_probe_samples "
+                "(model_id, endpoint_id, ttft_ms, ok, error, cost_usd, checked_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, NOW())) "
+                "RETURNING id",
+                model_id,
+                endpoint_id,
+                ttft_ms,
+                ok,
+                error,
+                cost_usd,
+                checked_at,
+            )
+        return int(row["id"]) if row is not None and row["id"] is not None else None
+
+    async def list_routewise_probe_samples(
+        self,
+        *,
+        model_id: str | None = None,
+        endpoint_id: str | None = None,
+        since: datetime | None = None,
+        after_id: int | None = None,
+        newest_first: bool = False,
+        limit: int = 1000,
+    ) -> list[Row]:
+        """Return RouteWise probe samples, oldest-first by id unless newest_first is set."""
+        limit = max(int(limit), 1)
+        order = "checked_at DESC, id DESC" if newest_first else "id ASC"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, model_id, endpoint_id, ttft_ms, ok, error, cost_usd, checked_at "
+                "FROM routewise_probe_samples "
+                "WHERE ($1::text IS NULL OR model_id = $1) "
+                "AND ($2::text IS NULL OR endpoint_id = $2) "
+                "AND ($3::timestamptz IS NULL OR checked_at >= $3) "
+                "AND ($4::bigint IS NULL OR id > $4) "
+                f"ORDER BY {order} "
+                "LIMIT $5",
+                model_id,
+                endpoint_id,
+                since,
+                after_id,
+                limit,
+            )
+        return [dict(r) for r in rows]
+
+    async def try_acquire_routewise_probe_lease(
+        self,
+        *,
+        lease_key: str,
+        holder_id: str,
+        ttl_sec: float,
+    ) -> bool:
+        """Acquire or renew a scoped RouteWise probe lease."""
+        ttl = max(float(ttl_sec), 1.0)
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO routewise_probe_leases
+                    (lease_key, holder_id, expires_at, updated_at)
+                VALUES (
+                    $1,
+                    $2,
+                    NOW() + ($3::double precision * INTERVAL '1 second'),
+                    NOW()
+                )
+                ON CONFLICT (lease_key) DO UPDATE
+                SET holder_id = EXCLUDED.holder_id,
+                    expires_at = EXCLUDED.expires_at,
+                    updated_at = NOW()
+                WHERE routewise_probe_leases.expires_at <= NOW()
+                   OR routewise_probe_leases.holder_id = EXCLUDED.holder_id
+                RETURNING holder_id
+                """,
+                lease_key,
+                holder_id,
+                ttl,
+            )
+        return bool(row is not None and row["holder_id"] == holder_id)
 
     # -- cost counters -------------------------------------------------------
 

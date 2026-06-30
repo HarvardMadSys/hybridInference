@@ -1293,7 +1293,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         </div>
       </div>
 
-      {showRoutewiseSettings && isRoutewise && <RoutewiseSettingsPanel />}
+      {showRoutewiseSettings && isRoutewise && (
+        <RoutewiseSettingsPanel
+          modelId={selectedModel}
+          endpoints={selectedRoutes.map((route) => ({
+            endpointId: route.endpoint_id,
+            label: `${route.route_type} · ${route.endpoint_id}`,
+          }))}
+        />
+      )}
 
       {loading && routes.length === 0 ? (
         <div className="flex justify-center py-24">

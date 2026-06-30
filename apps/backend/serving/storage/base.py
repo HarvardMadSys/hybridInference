@@ -843,6 +843,45 @@ class OperationalStore(ABC):
     ) -> bool:
         """Atomically delete a route candidate and any matching override row."""
 
+    # -- routewise probes ----------------------------------------------------
+
+    @abstractmethod
+    async def insert_routewise_probe_sample(
+        self,
+        *,
+        model_id: str,
+        endpoint_id: str,
+        ttft_ms: float | None,
+        ok: bool,
+        error: str | None,
+        cost_usd: float | None,
+        checked_at: datetime | None = None,
+    ) -> int | None:
+        """Persist one active RouteWise latency probe outcome and return its row id."""
+
+    @abstractmethod
+    async def list_routewise_probe_samples(
+        self,
+        *,
+        model_id: str | None = None,
+        endpoint_id: str | None = None,
+        since: datetime | None = None,
+        after_id: int | None = None,
+        newest_first: bool = False,
+        limit: int = 1000,
+    ) -> list[Row]:
+        """Return RouteWise probe samples, oldest-first by id unless newest_first is set."""
+
+    @abstractmethod
+    async def try_acquire_routewise_probe_lease(
+        self,
+        *,
+        lease_key: str,
+        holder_id: str,
+        ttl_sec: float,
+    ) -> bool:
+        """Acquire or renew the active RouteWise probe lease for a router scope."""
+
     # -- role quota ----------------------------------------------------------
 
     @abstractmethod

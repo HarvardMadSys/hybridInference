@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import json
 import os
 import random
@@ -51,6 +52,7 @@ from routing.routers import (
     RoutingObservation,
     _failed_attempt,
     _get_endpoint_id,
+    _has_non_empty_content,
     _routing_chunk,
 )
 from serving.exceptions import operator_safe_error
@@ -100,6 +102,8 @@ RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
 _PREFIX_CACHE_PENDING_MAX: int = 10_000
 _EXCLUDED_ENDPOINTS_CONTEXT_KEY = "_routewise_excluded_endpoint_ids"
 _RETRYABLE_ROUTEWISE_STATUS_CODES = frozenset({408, 429})
+_PROBE_READBACK_MAX_ROWS = 10_000
+_PROBE_SELF_SAMPLE_ID_CAP = 10_000
 _AIOHTTP_RETRYABLE_ERRORS = tuple(
     cls
     for cls in (
@@ -128,6 +132,7 @@ class FeasibleProviderCandidate:
     effective_cost_usd: float
     request_cost_usd: float
     mean_ttft_sec: float
+    mean_ttft_source: str
     cost_reason: str
     prefix_cache_discount_usd: float = 0.0
     prefix_cache_expected_tokens: float = 0.0
@@ -143,6 +148,17 @@ class HedgePlan:
     """In-flight checkpoint hedge schedule for one primary dispatch."""
 
     checkpoints_sec: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class RouteWiseProbeResult:
+    """Result of one active RouteWise latency probe."""
+
+    model_id: str
+    endpoint_id: str
+    ok: bool
+    ttft_ms: float | None
+    error: str | None = None
 
 
 @dataclass
@@ -281,6 +297,7 @@ class RouteWiseRouter(BaseRouter):
         self._adapter_provider_type: dict[int, ProviderType] = {}
         self._adapter_endpoint_ids: dict[int, str] = {}
         self._endpoint_adapter: dict[str, Any] = {}
+        self._endpoint_models: dict[str, set[str]] = {}
 
         self.predictor = BucketMeanOutputPredictor(
             default_output=self.config.output_default_tokens,
@@ -305,12 +322,19 @@ class RouteWiseRouter(BaseRouter):
         )
 
         self._latency_profiles: dict[str, ProviderProfile] = {}
+        self._latency_history_priors_ms: dict[str, float] = {}
         self._pending_decisions: dict[str, dict[str, Any]] = {}
         self._prefix_cache_pending: dict[str, tuple[Any, dict[str, Any]]] = {}
         self._primary_reservations: dict[str, ProviderReservation] = {}
         self._route_commit_lock = threading.RLock()
         self._sweep_task: asyncio.Task[None] | None = None
         self._quota_refresh_task: asyncio.Task[None] | None = None
+        self._probe_task: asyncio.Task[None] | None = None
+        self._operational_store: Any | None = None
+        self._last_probe_results: list[RouteWiseProbeResult] = []
+        self._probe_holder_id = f"{os.getpid()}:{uuid.uuid4().hex}"
+        self._probe_sample_watermark_id = 0
+        self._probe_self_sample_ids: set[int] = set()
         # Last LP state retained for tests and diagnostics.
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
@@ -331,12 +355,18 @@ class RouteWiseRouter(BaseRouter):
         self._last_lp_weights = {}
         self._rebuild_from_fixed_router()
 
+    def attach_operational_store(self, operational_store: Any | None) -> None:
+        """Bind the operational store used for persisted probe samples."""
+        self._operational_store = operational_store
+
     def apply_runtime_overrides(
         self,
         *,
         budget_alpha: float | None = None,
         latency_slo_sec: float | None = None,
         latency_min_samples: int | None = None,
+        routewise_probe_enabled: bool | None = None,
+        routewise_probe_interval_sec: float | None = None,
     ) -> None:
         """Apply live RouteWise runtime settings from the admin API.
 
@@ -349,6 +379,10 @@ class RouteWiseRouter(BaseRouter):
             self.config.latency_slo_sec = latency_slo_sec
         if latency_min_samples is not None:
             self.config.latency_min_samples = latency_min_samples
+        if routewise_probe_enabled is not None:
+            self.config.routewise_probe_enabled = routewise_probe_enabled
+        if routewise_probe_interval_sec is not None:
+            self.config.routewise_probe_interval_sec = routewise_probe_interval_sec
 
     def _rebuild_from_fixed_router(self) -> None:
         self.classified = {}
@@ -357,16 +391,19 @@ class RouteWiseRouter(BaseRouter):
         self._adapter_provider_type = {}
         self._adapter_endpoint_ids = {}
         self._endpoint_adapter = {}
+        self._endpoint_models = {}
         self._latency_profiles = {}
+        self._latency_history_priors_ms = {}
         self._classify_all()
         self._build_resource_pools()
-        for candidates in self.route_candidates.values():
+        for model_id, candidates in self.route_candidates.items():
             for candidate in candidates:
                 adapter = candidate.adapter
                 self._adapter_provider_type[id(adapter)] = candidate.provider_type
                 endpoint_id = candidate.endpoint_id
                 self._adapter_endpoint_ids[id(adapter)] = endpoint_id
                 self._endpoint_adapter[endpoint_id] = adapter
+                self._endpoint_models.setdefault(endpoint_id, set()).add(model_id)
                 if endpoint_id not in self._latency_profiles:
                     self._latency_profiles[endpoint_id] = ProviderProfile(
                         endpoint_id=endpoint_id,
@@ -399,12 +436,40 @@ class RouteWiseRouter(BaseRouter):
                 self._refresh_quota_snapshots_loop(),
                 name="RouteWiseRouter.refresh_quota_snapshots",
             )
+        if self.config.routewise_probe_enabled and (
+            self._probe_task is None or self._probe_task.done()
+        ):
+            self._probe_task = asyncio.create_task(
+                self._routewise_probe_loop(),
+                name="RouteWiseRouter.active_probe",
+            )
+
+    async def refresh_probe_task(self) -> None:
+        """Start or stop the active probe loop after runtime setting changes."""
+        if self.config.routewise_probe_enabled:
+            if self._probe_task is None or self._probe_task.done():
+                self._probe_task = asyncio.create_task(
+                    self._routewise_probe_loop(),
+                    name="RouteWiseRouter.active_probe",
+                )
+            return
+        task = self._probe_task
+        self._probe_task = None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
     async def stop(self) -> None:
         """Stop periodic maintenance tasks."""
-        tasks = [task for task in (self._sweep_task, self._quota_refresh_task) if task is not None]
+        tasks = [
+            task
+            for task in (self._sweep_task, self._quota_refresh_task, self._probe_task)
+            if task is not None
+        ]
         self._sweep_task = None
         self._quota_refresh_task = None
+        self._probe_task = None
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -577,6 +642,281 @@ class RouteWiseRouter(BaseRouter):
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             return
+
+    async def _routewise_probe_loop(self) -> None:
+        try:
+            while True:
+                try:
+                    await self._run_probe_cycle()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "routewise_probe_loop_failed",
+                        extra={"event": "routewise_probe_loop_failed"},
+                    )
+                interval = max(1.0, float(self.config.routewise_probe_interval_sec))
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            return
+
+    async def _run_probe_cycle(self) -> list[RouteWiseProbeResult]:
+        """Run one background probe cycle with DB-backed leader election."""
+        await self.sync_probe_samples_once()
+        if not await self._try_acquire_probe_lease():
+            self._last_probe_results = []
+            return []
+        return await self.run_probe_once(idle_only=None)
+
+    async def _try_acquire_probe_lease(self) -> bool:
+        store = self._operational_store
+        if store is None:
+            return True
+        acquire = getattr(store, "try_acquire_routewise_probe_lease", None)
+        if not callable(acquire):
+            return True
+        interval = max(float(self.config.routewise_probe_interval_sec), 1.0)
+        timeout = max(float(self.config.routewise_probe_timeout_sec), 1.0)
+        ttl_sec = max(interval * 2.0, timeout + 1.0, 5.0)
+        try:
+            return bool(
+                await acquire(
+                    lease_key=self._probe_lease_key(),
+                    holder_id=self._probe_holder_id,
+                    ttl_sec=ttl_sec,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "routewise_probe_lease_acquire_failed",
+                extra={"event": "routewise_probe_lease_acquire_failed"},
+                exc_info=True,
+            )
+            return False
+
+    def _probe_lease_key(self) -> str:
+        model_ids = sorted(
+            {
+                model_id
+                for endpoint_models in self._endpoint_models.values()
+                for model_id in endpoint_models
+            }
+        )
+        if model_ids:
+            return "routewise-probe:" + ",".join(model_ids)
+        return "routewise-probe:endpoints:" + ",".join(sorted(self._endpoint_adapter))
+
+    async def sync_probe_samples_once(self) -> dict[str, int]:
+        """Replay probe samples persisted by another worker into local memory."""
+        store = self._operational_store
+        if store is None:
+            return {"rows": 0, "applied_rows": 0, "latency_events": 0}
+        try:
+            rows = await store.list_routewise_probe_samples(
+                after_id=self._probe_sample_watermark_id,
+                limit=_PROBE_READBACK_MAX_ROWS,
+            )
+        except Exception:
+            logger.warning(
+                "routewise_probe_sample_sync_failed",
+                extra={"event": "routewise_probe_sample_sync_failed"},
+                exc_info=True,
+            )
+            return {"rows": 0, "applied_rows": 0, "latency_events": 0}
+        if not rows:
+            return {"rows": 0, "applied_rows": 0, "latency_events": 0}
+
+        max_seen_id = self._probe_sample_watermark_id
+        replay_rows: list[Mapping[str, Any]] = []
+        for row in sorted(rows, key=lambda item: self._int_or_zero(item.get("id"))):
+            sample_id = self._int_or_zero(row.get("id"))
+            if sample_id > max_seen_id:
+                max_seen_id = sample_id
+            if sample_id and sample_id in self._probe_self_sample_ids:
+                self._probe_self_sample_ids.discard(sample_id)
+                continue
+            replay_rows.append(row)
+
+        counts = self.bootstrap_from_probe_rows(replay_rows)
+        self._probe_sample_watermark_id = max_seen_id
+        return {
+            "rows": len(rows),
+            "applied_rows": len(replay_rows),
+            "latency_events": counts["latency_events"],
+        }
+
+    def set_probe_sample_watermark(self, sample_id: int | None) -> None:
+        """Mark persisted probe rows through *sample_id* as already replayed."""
+        if sample_id is not None:
+            self._probe_sample_watermark_id = max(
+                self._probe_sample_watermark_id,
+                max(int(sample_id), 0),
+            )
+
+    async def run_probe_once(
+        self,
+        *,
+        model_id: str | None = None,
+        endpoint_id: str | None = None,
+        idle_only: bool | None = None,
+    ) -> list[RouteWiseProbeResult]:
+        """Actively probe RouteWise endpoint TTFT and update latency profiles.
+
+        Probes are intentionally tiny (one output token) and bypass quota /
+        concurrency reservations; they only warm the latency layer used by the
+        LP. Provider failures are recorded as failed latency outcomes so they
+        receive the normal RouteWise 60s error penalty.
+        """
+        endpoints = self._probe_targets(
+            model_id=model_id,
+            endpoint_id=endpoint_id,
+            idle_only=bool(
+                self.config.routewise_probe_idle_only if idle_only is None else idle_only
+            ),
+        )
+        if not endpoints:
+            self._last_probe_results = []
+            return []
+
+        semaphore = asyncio.Semaphore(max(int(self.config.routewise_probe_max_concurrency), 1))
+
+        async def _guarded_probe(target_endpoint: str) -> RouteWiseProbeResult:
+            async with semaphore:
+                return await self._probe_endpoint(target_endpoint)
+
+        results = await asyncio.gather(*(_guarded_probe(endpoint) for endpoint in endpoints))
+        self._last_probe_results = list(results)
+        return list(results)
+
+    def _probe_targets(
+        self,
+        *,
+        model_id: str | None,
+        endpoint_id: str | None,
+        idle_only: bool,
+    ) -> list[str]:
+        now = time.time()
+        targets: list[str] = []
+        for current_endpoint in sorted(self._endpoint_adapter):
+            if endpoint_id and current_endpoint != endpoint_id:
+                continue
+            if model_id and model_id not in self._endpoint_models.get(current_endpoint, set()):
+                continue
+            if idle_only:
+                profile = self._latency_profiles.get(current_endpoint)
+                last_seen = profile.last_event_time(now) if profile is not None else None
+                idle_threshold = max(float(self.config.routewise_probe_idle_threshold_sec), 0.0)
+                if last_seen is not None and now - last_seen < idle_threshold:
+                    continue
+            targets.append(current_endpoint)
+        return targets
+
+    async def _probe_endpoint(self, endpoint_id: str) -> RouteWiseProbeResult:
+        adapter = self._endpoint_adapter[endpoint_id]
+        model_id = sorted(self._endpoint_models.get(endpoint_id) or {adapter.config.id})[0]
+        try:
+            ttft_ms = await asyncio.wait_for(
+                self._measure_probe_ttft_ms(adapter),
+                timeout=max(float(self.config.routewise_probe_timeout_sec), 1.0),
+            )
+        except Exception as exc:
+            error = exc.__class__.__name__
+            result = RouteWiseProbeResult(
+                model_id=model_id,
+                endpoint_id=endpoint_id,
+                ok=False,
+                ttft_ms=None,
+                error=error,
+            )
+            self._record_probe_result(result)
+            self._remember_self_probe_sample_id(await self._persist_probe_result(result))
+            return result
+
+        result = RouteWiseProbeResult(
+            model_id=model_id,
+            endpoint_id=endpoint_id,
+            ok=True,
+            ttft_ms=ttft_ms,
+            error=None,
+        )
+        self._record_probe_result(result)
+        self._remember_self_probe_sample_id(await self._persist_probe_result(result))
+        return result
+
+    @staticmethod
+    async def _measure_probe_ttft_ms(adapter: BaseAdapter) -> float:
+        messages = [{"role": "user", "content": "ping"}]
+        start = time.perf_counter()
+        stream = adapter.stream_chat_completion(
+            messages,
+            max_tokens=1,
+            temperature=0,
+        )
+        try:
+            async for chunk in stream:
+                if _has_non_empty_content(chunk):
+                    return (time.perf_counter() - start) * 1000.0
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if callable(aclose):
+                with contextlib.suppress(Exception):
+                    await aclose()
+        raise RuntimeError("probe_no_content")
+
+    def _record_probe_result(self, result: RouteWiseProbeResult) -> None:
+        profile = self._latency_profiles.get(result.endpoint_id)
+        if profile is None:
+            return
+        now = time.time()
+        if result.ok and result.ttft_ms is not None and result.ttft_ms > 0:
+            self._record_latency_success(result.endpoint_id, now, result.ttft_ms)
+            return
+        profile.record(now, -1.0, result.error or "probe_error")
+
+    def _record_latency_success(self, endpoint_id: str, now: float, ttft_ms: float) -> None:
+        profile = self._latency_profiles.get(endpoint_id)
+        if profile is None or ttft_ms <= 0:
+            return
+        profile.record(now, ttft_ms, None)
+        prior = self._latency_history_priors_ms.get(endpoint_id)
+        if prior is None:
+            self._latency_history_priors_ms[endpoint_id] = ttft_ms
+        else:
+            self._latency_history_priors_ms[endpoint_id] = (prior + ttft_ms) / 2.0
+
+    async def _persist_probe_result(self, result: RouteWiseProbeResult) -> int | None:
+        store = self._operational_store
+        if store is None:
+            return None
+        try:
+            return await store.insert_routewise_probe_sample(
+                model_id=result.model_id,
+                endpoint_id=result.endpoint_id,
+                ttft_ms=result.ttft_ms,
+                ok=result.ok,
+                error=result.error,
+                cost_usd=None,
+                checked_at=dt.datetime.now(dt.timezone.utc),
+            )
+        except Exception:
+            logger.warning(
+                "routewise_probe_sample_persist_failed",
+                extra={
+                    "event": "routewise_probe_sample_persist_failed",
+                    "endpoint_id": result.endpoint_id,
+                },
+                exc_info=True,
+            )
+        return None
+
+    def _remember_self_probe_sample_id(self, sample_id: int | None) -> None:
+        if not isinstance(sample_id, int) or isinstance(sample_id, bool):
+            return
+        if sample_id <= 0:
+            return
+        self._probe_self_sample_ids.add(sample_id)
+        while len(self._probe_self_sample_ids) > _PROBE_SELF_SAMPLE_ID_CAP:
+            self._probe_self_sample_ids.pop()
 
     # ------------------------------------------------------------------
     # Classification and helpers
@@ -883,19 +1223,22 @@ class RouteWiseRouter(BaseRouter):
             max_tokens=self._max_tokens_from_context(context),
         )
 
-    def _mean_ttft_sec(self, endpoint_id: str, now: float) -> float:
+    def _latency_estimate(self, endpoint_id: str, now: float) -> tuple[float, str]:
         profile = self._latency_profiles.get(endpoint_id)
-        if profile is None:
-            return self.config.latency_unprofiled_ttft_ms / 1000.0
-        if profile.total_count(now) <= 0:
-            return self.config.latency_unprofiled_ttft_ms / 1000.0
-        mean = profile.mean_with_errors_sec(
-            now,
-            error_penalty_ms=RATE_LIMIT_ERROR_PENALTY_MS,
-        )
-        if mean is None:
-            return self.config.latency_unprofiled_ttft_ms / 1000.0
-        return mean
+        if profile is not None and profile.total_count(now) > 0:
+            mean = profile.mean_with_errors_sec(
+                now,
+                error_penalty_ms=RATE_LIMIT_ERROR_PENALTY_MS,
+            )
+            if mean is not None:
+                return mean, "profile"
+        prior_ms = self._latency_history_priors_ms.get(endpoint_id)
+        if prior_ms is not None and prior_ms > 0:
+            return prior_ms / 1000.0, "history_prior"
+        return self.config.latency_unprofiled_ttft_ms / 1000.0, "fallback"
+
+    def _mean_ttft_sec(self, endpoint_id: str, now: float) -> float:
+        return self._latency_estimate(endpoint_id, now)[0]
 
     def _api_cost_for_adapter(
         self,
@@ -1087,6 +1430,7 @@ class RouteWiseRouter(BaseRouter):
             if route_candidate.provider_type is not ProviderType.CONCURRENCY:
                 concurrency_pool_id = None
 
+            mean_ttft_sec, mean_ttft_source = self._latency_estimate(endpoint_id, now)
             candidates.append(
                 FeasibleProviderCandidate(
                     endpoint_id=endpoint_id,
@@ -1095,7 +1439,8 @@ class RouteWiseRouter(BaseRouter):
                     weight=route_candidate.weight,
                     effective_cost_usd=cost,
                     request_cost_usd=request_cost,
-                    mean_ttft_sec=self._mean_ttft_sec(endpoint_id, now),
+                    mean_ttft_sec=mean_ttft_sec,
+                    mean_ttft_source=mean_ttft_source,
                     cost_reason=reason,
                     prefix_cache_discount_usd=prefix_discount,
                     prefix_cache_expected_tokens=prefix_expected,
@@ -1249,27 +1594,6 @@ class RouteWiseRouter(BaseRouter):
         if pool is not None:
             pool.release()
 
-    def _rollback_selected_quota_attempt(
-        self,
-        request_id: str | None,
-        endpoint_id: str | None,
-    ) -> None:
-        if not request_id:
-            return
-        meta = self._pending_decisions.get(request_id)
-        if not isinstance(meta, dict) or meta.get("selected_provider_type") != "quota":
-            return
-        if endpoint_id and meta.get("selected_endpoint") != endpoint_id:
-            return
-        quota_pool_id = meta.get("quota_pool")
-        if not isinstance(quota_pool_id, str):
-            return
-        pool = self.quota_pools.get(quota_pool_id)
-        if pool is None or not pool.refund():
-            return
-        meta["quota_remaining"] = pool.remaining
-        meta["quota_used_fraction"] = pool.used_fraction
-
     def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
         return ProviderReservation(router=self, candidate=candidate)
 
@@ -1386,6 +1710,7 @@ class RouteWiseRouter(BaseRouter):
                 if c.prefix_cache_expected_tokens > 0
             },
             "candidate_mean_ttft_sec": {c.endpoint_id: c.mean_ttft_sec for c in candidates},
+            "candidate_mean_ttft_sources": {c.endpoint_id: c.mean_ttft_source for c in candidates},
             "candidate_provider_types": {c.endpoint_id: c.provider_type for c in candidates},
             "candidate_quota_used_fraction": {
                 c.endpoint_id: c.quota_used_fraction
@@ -1470,13 +1795,6 @@ class RouteWiseRouter(BaseRouter):
         if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
             return None
 
-        primary_profile = self._latency_profiles.get(selected.endpoint_id)
-        if (
-            primary_profile is None
-            or primary_profile.sample_count(now) < self.config.latency_min_samples
-        ):
-            return None
-
         checkpoints = hedge_checkpoints_for_slo(self.config.latency_slo_sec * 1000.0)
         return HedgePlan(checkpoints_sec=checkpoints) if checkpoints else None
 
@@ -1524,10 +1842,7 @@ class RouteWiseRouter(BaseRouter):
         checkpoint_ts: float,
     ) -> CheckpointBackupDispatch | None:
         primary_profile = self._latency_profiles.get(selected.endpoint_id)
-        if (
-            primary_profile is None
-            or primary_profile.sample_count(checkpoint_ts) < self.config.latency_min_samples
-        ):
+        if primary_profile is None:
             return None
 
         candidates, _ = self._build_candidates(
@@ -1599,7 +1914,7 @@ class RouteWiseRouter(BaseRouter):
             if candidate.endpoint_id == selected.endpoint_id:
                 continue
             profile = self._latency_profiles.get(candidate.endpoint_id)
-            if profile is None or profile.sample_count(now) < self.config.latency_min_samples:
+            if profile is None:
                 continue
             success_probability = combined_success_probability(
                 lambda value_ms: primary_profile.cdf_at(value_ms / 1000.0, now),
@@ -1677,6 +1992,24 @@ class RouteWiseRouter(BaseRouter):
                     *failed_attempts,
                 ]
             )
+        self._record_hedge_explorer_samples(adapter)
+
+    def _record_hedge_explorer_samples(self, adapter: HedgedAdapter) -> None:
+        if not bool(getattr(adapter, "hedge_triggered", False)):
+            return
+        ttfts = getattr(adapter, "leg_first_content_ttft_ms", None)
+        if not isinstance(ttfts, dict) or not ttfts:
+            return
+        winner_endpoint = str(_get_endpoint_id(adapter))
+        now = time.time()
+        for endpoint_id, ttft_ms in ttfts.items():
+            if endpoint_id == winner_endpoint:
+                continue
+            try:
+                ttft = float(ttft_ms)
+            except (TypeError, ValueError):
+                continue
+            self._record_latency_success(str(endpoint_id), now, ttft)
 
     # ------------------------------------------------------------------
     # BaseRouter integration
@@ -1902,6 +2235,11 @@ class RouteWiseRouter(BaseRouter):
         model_id: str,
         failed_adapter: BaseAdapter,
     ) -> list[BaseAdapter]:
+        # RouteWise does not use the BaseRouter fallback-list hook: it overrides
+        # chat_completion/stream_chat_completion and performs policy-aware
+        # re-solve fallback inline (re-running the LP over the remaining
+        # candidates), gated by ``config.fallback_mode``. This stub keeps the
+        # BaseRouter contract satisfied without introducing a second path.
         del model_id, failed_adapter
         return []
 
@@ -1923,7 +2261,10 @@ class RouteWiseRouter(BaseRouter):
                 if obs.success
                 else -1.0
             )
-            self._latency_profiles[obs.endpoint_id].record(now, latency_ms, error_type)
+            if error_type is None and latency_ms > 0:
+                self._record_latency_success(obs.endpoint_id, now, latency_ms)
+            else:
+                self._latency_profiles[obs.endpoint_id].record(now, latency_ms, error_type)
 
         if obs.prompt_tokens > 0 and obs.completion_tokens > 0:
             sample_cost = self._reference_api_cost(
@@ -1957,7 +2298,14 @@ class RouteWiseRouter(BaseRouter):
         token counts, priced with the target model's routes and observed into
         the target model's pool (``envelope_bootstrap_donor_models``).
         """
-        counts = {"rows": 0, "latency_events": 0, "failed_attempts": 0, "envelope_samples": 0}
+        counts = {
+            "rows": 0,
+            "latency_events": 0,
+            "failed_attempts": 0,
+            "envelope_samples": 0,
+            "latency_prior_samples": 0,
+        }
+        prior_samples: dict[str, list[float]] = {}
         for row in rows:
             counts["rows"] += 1
             ts = self._timestamp_sec(row.get("timestamp"))
@@ -1976,6 +2324,9 @@ class RouteWiseRouter(BaseRouter):
                     error_type = None if success else self._bootstrap_error_type(row)
                     self._latency_profiles[endpoint_id].record(ts, latency_ms, error_type)
                     counts["latency_events"] += 1
+                    if success and latency_ms > 0:
+                        prior_samples.setdefault(endpoint_id, []).append(latency_ms)
+                        counts["latency_prior_samples"] += 1
 
                 for attempt in self._bootstrap_failed_attempts(row):
                     failed_endpoint = (
@@ -2006,6 +2357,45 @@ class RouteWiseRouter(BaseRouter):
                             now=ts,
                         )
                         counts["envelope_samples"] += 1
+        for endpoint_id, samples in prior_samples.items():
+            if samples:
+                self._latency_history_priors_ms[endpoint_id] = sum(samples) / len(samples)
+        return counts
+
+    def bootstrap_from_probe_rows(
+        self,
+        rows: Iterable[Mapping[str, Any]],
+    ) -> dict[str, int]:
+        """Warm latency profiles and history priors from persisted probe rows."""
+        counts = {"rows": 0, "latency_events": 0, "latency_prior_samples": 0}
+        prior_samples: dict[str, list[float]] = {}
+        for row in rows:
+            counts["rows"] += 1
+            ts = self._timestamp_sec(row.get("checked_at"))
+            if ts is None:
+                continue
+            endpoint_id = self._string_or_none(row.get("endpoint_id"))
+            if endpoint_id is None or endpoint_id not in self._latency_profiles:
+                continue
+            ok = bool(row.get("ok"))
+            ttft_ms = None
+            try:
+                raw_ttft = row.get("ttft_ms")
+                ttft_ms = float(raw_ttft) if raw_ttft is not None else None
+            except (TypeError, ValueError):
+                ttft_ms = None
+            if ok and ttft_ms is not None and ttft_ms > 0:
+                self._latency_profiles[endpoint_id].record(ts, ttft_ms, None)
+                prior_samples.setdefault(endpoint_id, []).append(ttft_ms)
+                counts["latency_events"] += 1
+                counts["latency_prior_samples"] += 1
+            elif not ok:
+                error_type = self._string_or_none(row.get("error")) or "probe_error"
+                self._latency_profiles[endpoint_id].record(ts, -1.0, error_type)
+                counts["latency_events"] += 1
+        for endpoint_id, samples in prior_samples.items():
+            if samples:
+                self._latency_history_priors_ms[endpoint_id] = sum(samples) / len(samples)
         return counts
 
     @staticmethod
@@ -2209,8 +2599,9 @@ class RouteWiseRouter(BaseRouter):
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
-                    self._rollback_selected_quota_attempt(request_id, endpoint_id)
-                    if not _is_routewise_retryable_error(exc):
+                    if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
+                        exc
+                    ):
                         raise
                     self._record_routewise_fallback_attempt(
                         request_id,
@@ -2322,9 +2713,11 @@ class RouteWiseRouter(BaseRouter):
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
-                    if not chunks_yielded:
-                        self._rollback_selected_quota_attempt(request_id, endpoint_id)
-                    if chunks_yielded or not _is_routewise_retryable_error(exc):
+                    if (
+                        chunks_yielded
+                        or self.config.fallback_mode != "policy"
+                        or not _is_routewise_retryable_error(exc)
+                    ):
                         raise
                     self._record_routewise_fallback_attempt(
                         request_id,

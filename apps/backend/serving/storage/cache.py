@@ -824,6 +824,62 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_provider_route_candidate_with_config(model_id, route_id)
 
+    async def insert_routewise_probe_sample(
+        self,
+        *,
+        model_id: str,
+        endpoint_id: str,
+        ttft_ms: float | None,
+        ok: bool,
+        error: str | None,
+        cost_usd: float | None,
+        checked_at: datetime | None = None,
+    ) -> int | None:
+        """Delegate to wrapped store."""
+        return await self._store.insert_routewise_probe_sample(
+            model_id=model_id,
+            endpoint_id=endpoint_id,
+            ttft_ms=ttft_ms,
+            ok=ok,
+            error=error,
+            cost_usd=cost_usd,
+            checked_at=checked_at,
+        )
+
+    async def list_routewise_probe_samples(
+        self,
+        *,
+        model_id: str | None = None,
+        endpoint_id: str | None = None,
+        since: datetime | None = None,
+        after_id: int | None = None,
+        newest_first: bool = False,
+        limit: int = 1000,
+    ) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_routewise_probe_samples(
+            model_id=model_id,
+            endpoint_id=endpoint_id,
+            since=since,
+            after_id=after_id,
+            newest_first=newest_first,
+            limit=limit,
+        )
+
+    async def try_acquire_routewise_probe_lease(
+        self,
+        *,
+        lease_key: str,
+        holder_id: str,
+        ttl_sec: float,
+    ) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.try_acquire_routewise_probe_lease(
+            lease_key=lease_key,
+            holder_id=holder_id,
+            ttl_sec=ttl_sec,
+        )
+
     # -- cost counters (pass-through) ----------------------------------------
 
     async def increment_user_cost(

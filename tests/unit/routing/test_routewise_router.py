@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import itertools
 import json
 import logging
@@ -1109,6 +1110,178 @@ class TestRouteWiseLayer2:
 
         assert router._mean_ttft_sec("test-model:api-a", now) == pytest.approx(30.05)
 
+    def test_latency_history_prior_used_when_live_window_empty(self):
+        """Cold endpoints use successful history before the configured fallback."""
+        config = RouteWiseConfig(
+            latency_window_sec=10.0,
+            latency_history_prior_window_sec=3600.0,
+            latency_unprofiled_ttft_ms=5000.0,
+        )
+        router, _api_a, _api_b = _make_router_with_two_api(config)
+
+        counts = router.bootstrap_from_log_rows(
+            [
+                {
+                    "timestamp": 100.0,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": 250,
+                    "latency_ms": 700,
+                    "status_code": 200,
+                    "prompt_tokens": 100,
+                    "completion_tokens": 10,
+                }
+            ],
+            include_envelope=False,
+        )
+
+        assert counts["latency_prior_samples"] == 1
+        assert router._mean_ttft_sec("test-model:api-a", 1000.0) == pytest.approx(0.25)
+        assert router._latency_estimate("test-model:api-a", 1000.0)[1] == "history_prior"
+        fallback_value, fallback_source = router._latency_estimate("test-model:api-b", 1000.0)
+        assert fallback_value == pytest.approx(5.0)
+        assert fallback_source == "fallback"
+
+    async def test_probe_success_updates_profile_and_store(self):
+        """Active probe successes warm the latency profile and persist samples."""
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+        store = MagicMock()
+        store.insert_routewise_probe_sample = AsyncMock()
+        router.attach_operational_store(store)
+
+        results = await router.run_probe_once(endpoint_id="test-model:api-a", idle_only=False)
+
+        assert len(results) == 1
+        assert results[0].ok is True
+        assert results[0].ttft_ms is not None
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+        store.insert_routewise_probe_sample.assert_awaited_once()
+
+    async def test_probe_failure_records_error_penalty(self):
+        """Active probe failures use the same 60s error penalty as traffic."""
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            raise TimeoutError("probe timed out")
+            yield ""  # pragma: no cover
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+
+        results = await router.run_probe_once(endpoint_id="test-model:api-a", idle_only=False)
+
+        assert len(results) == 1
+        assert results[0].ok is False
+        assert router._mean_ttft_sec("test-model:api-a", time.time()) == pytest.approx(60.0)
+
+    async def test_probe_cycle_without_lease_syncs_shared_samples_only(self):
+        """A non-leader worker should consume DB probe samples without probing upstream."""
+        router, api_a, _api_b = _make_router_with_two_api()
+        api_a.stream_chat_completion = AsyncMock(side_effect=AssertionError("should not probe"))
+        checked_at = dt.datetime.now(dt.timezone.utc)
+        store = MagicMock()
+        store.list_routewise_probe_samples = AsyncMock(
+            return_value=[
+                {
+                    "id": 7,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": 123.0,
+                    "ok": True,
+                    "error": None,
+                    "checked_at": checked_at,
+                }
+            ]
+        )
+        store.try_acquire_routewise_probe_lease = AsyncMock(return_value=False)
+        router.attach_operational_store(store)
+
+        results = await router._run_probe_cycle()
+
+        assert results == []
+        assert router._last_probe_results == []
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+        store.list_routewise_probe_samples.assert_awaited_once_with(after_id=0, limit=10_000)
+        store.try_acquire_routewise_probe_lease.assert_awaited_once()
+
+    async def test_probe_cycle_leader_tracks_self_sample_ids(self):
+        """A leader records its own probe immediately and skips DB replay of the same row."""
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            yield 'data: {"choices":[{"delta":{"content":"x"}}]}\n\n'
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+        store = MagicMock()
+        store.list_routewise_probe_samples = AsyncMock(return_value=[])
+        store.try_acquire_routewise_probe_lease = AsyncMock(return_value=True)
+        store.insert_routewise_probe_sample = AsyncMock(return_value=9)
+        router.attach_operational_store(store)
+
+        results = await router._run_probe_cycle()
+
+        assert len(results) == 1
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+
+        store.list_routewise_probe_samples = AsyncMock(
+            return_value=[
+                {
+                    "id": 9,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": results[0].ttft_ms,
+                    "ok": True,
+                    "error": None,
+                    "checked_at": dt.datetime.now(dt.timezone.utc),
+                }
+            ]
+        )
+
+        counts = await router.sync_probe_samples_once()
+
+        assert counts["rows"] == 1
+        assert counts["applied_rows"] == 0
+        assert router._probe_sample_watermark_id == 9
+        assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
+
+    async def test_sync_probe_samples_applies_external_rows_once(self):
+        """Persisted probe samples from another worker update this worker's profile once."""
+        router, _api_a, _api_b = _make_router_with_two_api()
+        checked_at = dt.datetime.now(dt.timezone.utc)
+        store = MagicMock()
+        store.list_routewise_probe_samples = AsyncMock(
+            return_value=[
+                {
+                    "id": 3,
+                    "model_id": "test-model",
+                    "endpoint_id": "test-model:api-a",
+                    "ttft_ms": 250.0,
+                    "ok": True,
+                    "error": None,
+                    "checked_at": checked_at,
+                }
+            ]
+        )
+        router.attach_operational_store(store)
+
+        counts = await router.sync_probe_samples_once()
+
+        assert counts["rows"] == 1
+        assert counts["applied_rows"] == 1
+        assert counts["latency_events"] == 1
+        assert router._probe_sample_watermark_id == 3
+        assert router._mean_ttft_sec("test-model:api-a", time.time()) == pytest.approx(0.25)
+
     def test_bootstrap_from_log_rows_warms_latency_and_envelope(self):
         """Startup history replay warms profiles with the same online semantics."""
         router, _api_a, _api_b = _make_router_with_two_api()
@@ -1156,6 +1329,7 @@ class TestRouteWiseLayer2:
             "latency_events": 2,
             "failed_attempts": 1,
             "envelope_samples": 1,
+            "latency_prior_samples": 1,
         }
         profile_a = router._latency_profiles["test-model:api-a"]
         profile_b = router._latency_profiles["test-model:api-b"]
@@ -2175,12 +2349,12 @@ class TestRouteWiseDecisionMetadata:
         assert rw["fallback_policy"] == "routewise_resolve"
         assert rw["fallback_attempts"] == 1
         assert rw["failed_attempts"][0]["endpoint_id"] == "test-model:quota-provider"
-        assert _quota_pool(router).remaining == 10000
+        assert _quota_pool(router).remaining == 9999
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
     async def test_chat_completion_does_not_resolve_after_nonretryable_error(self):
-        """Non-transient provider errors surface directly and refund S_Q attempts."""
+        """Non-transient provider errors surface directly but keep S_Q attempts charged."""
         quota = _make_adapter(
             provider_type="quota",
             endpoint_id="test-model:quota-provider",
@@ -2216,13 +2390,68 @@ class TestRouteWiseDecisionMetadata:
 
         assert quota.chat_completion.await_count == 1
         assert conc.chat_completion.await_count == 0
-        assert _quota_pool(router).remaining == 10000
+        assert _quota_pool(router).remaining == 9999
 
         routing = getattr(exc_info.value, "_routing", None)
         assert routing is not None
         assert "routewise" in routing
         assert routing["routewise"]["fallback_attempts"] == 0
         assert routing["routewise"]["fallback_policy"] is None
+
+    @pytest.mark.asyncio
+    async def test_strict_fallback_mode_does_not_resolve_after_retryable_error(self):
+        """fallback_mode='strict' surfaces even a retryable failure without re-solving."""
+        quota = _make_adapter(
+            provider_type="quota",
+            endpoint_id="test-model:quota-provider",
+            quota={"limit": 10_000},
+        )
+        conc = _make_adapter(
+            provider_type="concurrency",
+            endpoint_id="test-model:conc-provider",
+            concurrency={"limit": 1},
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
+        router = RouteWiseRouter(
+            fixed_router=fr,
+            config=RouteWiseConfig(fallback_mode="strict"),
+        )
+        _seed_quota_snapshots(router)
+        _warm_envelope(router, lower=0.0000001, upper=0.001)
+
+        def _choose(candidates, _solution):
+            by_id = {candidate.endpoint_id: candidate for candidate in candidates}
+            return by_id.get("test-model:quota-provider") or by_id["test-model:conc-provider"]
+
+        router._sample_solution = _choose  # type: ignore[method-assign]
+        # A 429 is retryable; in policy mode it would re-solve onto conc, but
+        # strict mode must surface the failure and never touch the backup.
+        quota.chat_completion = AsyncMock(side_effect=_StatusError(429, "quota 429"))
+        conc.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "should not run"}}]}
+        )
+
+        with pytest.raises(_StatusError, match="quota 429") as exc_info:
+            await router.chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-strict",
+            )
+
+        assert quota.chat_completion.await_count == 1
+        assert conc.chat_completion.await_count == 0
+        assert _quota_pool(router).remaining == 9999
+
+        routing = getattr(exc_info.value, "_routing", None)
+        assert routing is not None
+        assert routing["routewise"]["fallback_attempts"] == 0
+        assert routing["routewise"]["fallback_policy"] is None
+
+    def test_invalid_fallback_mode_rejected(self):
+        """RouteWiseConfig rejects an unknown fallback_mode at construction."""
+        with pytest.raises(ValueError, match="fallback_mode"):
+            RouteWiseConfig(fallback_mode="bogus")  # type: ignore[arg-type]
 
     @pytest.mark.asyncio
     async def test_stream_injects_routewise_chunk(self):

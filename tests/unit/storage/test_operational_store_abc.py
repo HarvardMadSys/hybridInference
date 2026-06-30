@@ -104,3 +104,33 @@ def test_provider_route_candidate_signatures():
         "model_id",
         "route_id",
     ]
+
+
+def test_routewise_probe_sample_signatures():
+    assert list(inspect.signature(OperationalStore.insert_routewise_probe_sample).parameters) == [
+        "self",
+        "model_id",
+        "endpoint_id",
+        "ttft_ms",
+        "ok",
+        "error",
+        "cost_usd",
+        "checked_at",
+    ]
+    assert list(inspect.signature(OperationalStore.list_routewise_probe_samples).parameters) == [
+        "self",
+        "model_id",
+        "endpoint_id",
+        "since",
+        "after_id",
+        "newest_first",
+        "limit",
+    ]
+    assert list(
+        inspect.signature(OperationalStore.try_acquire_routewise_probe_lease).parameters
+    ) == [
+        "self",
+        "lease_key",
+        "holder_id",
+        "ttl_sec",
+    ]
