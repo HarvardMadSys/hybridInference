@@ -706,9 +706,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 total_content += content
 
             reasoning = (
-                delta.get("reasoning_content")
-                or delta.get("reasoning")
-                or delta.get("thinking")
+                delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             )
             if isinstance(reasoning, str) and reasoning:
                 total_content += reasoning
@@ -732,9 +730,10 @@ class OpenAICompatAdapter(BaseAdapter):
                     chunk_copy["choices"] = new_choices
                 return f"data: {json.dumps(chunk_copy)}\n\n"
 
-            has_reasoning = any(
-                isinstance(delta.get(key), str) and bool(delta.get(key))
-                for key in ("reasoning_content", "reasoning", "thinking")
+            has_reasoning = (
+                bool(delta.get("reasoning_content"))
+                or bool(delta.get("reasoning"))
+                or bool(delta.get("thinking"))
             )
             has_tool_calls = isinstance(delta.get("tool_calls"), list) and bool(
                 delta.get("tool_calls")

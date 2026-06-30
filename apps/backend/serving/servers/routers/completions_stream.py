@@ -452,9 +452,10 @@ class StreamSession:
             delta_local = choices_local[0].get("delta", {})
             has_content = bool(delta_local.get("content"))
             has_tool_calls = bool(delta_local.get("tool_calls"))
-            has_reasoning = any(
-                bool(delta_local.get(key))
-                for key in ("reasoning_content", "reasoning", "thinking")
+            has_reasoning = (
+                bool(delta_local.get("reasoning_content"))
+                or bool(delta_local.get("reasoning"))
+                or bool(delta_local.get("thinking"))
             )
             self._ttft.maybe_record(has_content or has_tool_calls or has_reasoning)
         except Exception:
