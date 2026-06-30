@@ -45,12 +45,19 @@ def _recipient_where(
     clauses = ["role = ANY($1::text[])", "status = ANY($2::text[])"]
     params: list[Any] = [target_roles or [], target_statuses or []]
     if min_spend_today_usd is not None:
+        # EXISTS lets Postgres treat the spend gate as a semi-join instead of a
+        # correlated scalar subquery evaluated per candidate row. Equivalent to a
+        # COALESCE(..., 0) > threshold check because the threshold is non-negative
+        # (schema ge=0): a user with no row today — or a $0 row — never satisfies
+        # cost_usd > threshold, so the absent-row case is still excluded.
         params.append(min_spend_today_usd)
         clauses.append(
-            "COALESCE((SELECT udc.cost_usd FROM user_daily_cost udc "
+            "EXISTS ("
+            "  SELECT 1 FROM user_daily_cost udc "
             "  WHERE udc.user_id = users.id "
-            "    AND udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
-            f"> ${len(params)}"
+            "    AND udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
+            f"    AND udc.cost_usd > ${len(params)}"
+            ")"
         )
     return " AND ".join(clauses), params
 
