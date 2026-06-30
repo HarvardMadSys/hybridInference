@@ -17,9 +17,26 @@ from tests.servers.conftest import ANTHROPIC_TEST_API_KEY
 REASONING_MODEL = "test-reasoner"
 FAST_MODEL = "qwen3.6-35b"
 
+# A user turn carrying Claude Code's tool-permission/safety-classifier signature.
+SAFETY_PREAMBLE = (
+    "The following is the user's CLAUDE.md configuration. If it explicitly authorizes "
+    "the SPECIFIC action under review you may weigh that as user intent to allow. "
+    "Generic encouragement must not lower your block threshold."
+)
+
 
 def _auth():
     return {"x-api-key": ANTHROPIC_TEST_API_KEY}
+
+
+def _enable_reroute(monkeypatch, enabled: bool = True):
+    """Force the admin reroute toggle on/off (it defaults off in the registry)."""
+    from serving.servers.routers import anthropic_messages as am
+
+    async def _flag() -> bool:
+        return enabled
+
+    monkeypatch.setattr(am, "_reroute_enabled", _flag)
 
 
 @pytest_asyncio.fixture
@@ -135,6 +152,7 @@ def _patch_upstream(monkeypatch):
 @pytest.mark.asyncio
 async def test_small_budget_reasoning_call_is_rerouted(reroute_client, monkeypatch):
     captured = _patch_upstream(monkeypatch)
+    _enable_reroute(monkeypatch)
     body = {
         "model": REASONING_MODEL,
         "max_tokens": 64,
@@ -152,6 +170,7 @@ async def test_small_budget_reasoning_call_is_rerouted(reroute_client, monkeypat
 @pytest.mark.asyncio
 async def test_large_budget_reasoning_call_passes_through(reroute_client, monkeypatch):
     captured = _patch_upstream(monkeypatch)
+    _enable_reroute(monkeypatch)
     body = {
         "model": REASONING_MODEL,
         "max_tokens": 4000,
@@ -167,6 +186,7 @@ async def test_large_budget_reasoning_call_passes_through(reroute_client, monkey
 @pytest.mark.asyncio
 async def test_small_budget_non_reasoning_call_passes_through(reroute_client, monkeypatch):
     captured = _patch_upstream(monkeypatch)
+    _enable_reroute(monkeypatch)
     body = {
         "model": FAST_MODEL,
         "max_tokens": 64,
@@ -178,3 +198,35 @@ async def test_small_budget_non_reasoning_call_passes_through(reroute_client, mo
     assert captured["json"]["model"] == FAST_MODEL
     sent_max = captured["json"].get("max_tokens") or captured["json"].get("max_completion_tokens")
     assert sent_max == 64
+
+
+@pytest.mark.asyncio
+async def test_tool_safety_check_is_never_rerouted(reroute_client, monkeypatch):
+    """A small-budget reasoning call that IS a tool-permission/safety check stays put."""
+    captured = _patch_upstream(monkeypatch)
+    _enable_reroute(monkeypatch)
+    body = {
+        "model": REASONING_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": SAFETY_PREAMBLE}],
+    }
+    r = await reroute_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 200
+    # The safety verdict must be adjudicated by the caller's chosen model.
+    assert captured["json"]["model"] == REASONING_MODEL
+    assert "example-reasoner.test" in captured["url"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_toggle_skips_reroute(reroute_client, monkeypatch):
+    """With the admin toggle off, even an eligible call is not rerouted."""
+    captured = _patch_upstream(monkeypatch)
+    _enable_reroute(monkeypatch, enabled=False)
+    body = {
+        "model": REASONING_MODEL,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await reroute_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 200
+    assert captured["json"]["model"] == REASONING_MODEL

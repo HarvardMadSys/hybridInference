@@ -188,12 +188,76 @@ _SMALL_MAXTOK_FLOOR = int(os.environ.get("SMALL_MAXTOK_REASONING_FLOOR", "512"))
 # A model is treated as "reasoning" when it advertises a thinking/reasoning knob.
 _REASONING_PARAMS = ("thinking", "reasoning_effort")
 
+# Runtime kill-switch / opt-in. The reroute changes which model serves a class of
+# requests, so it is gated on an admin-toggleable runtime setting (default off).
+_REROUTE_SETTING_KEY = "reasoning_small_call_reroute_enabled"
+
+# Tool-permission / safety-check calls are deliberately EXCLUDED from the reroute:
+# the model that adjudicates "is this action safe to run?" must stay the model the
+# caller's agent chose, never silently swapped underneath them. Claude Code's
+# permission classifier ships a fixed preamble as its sole user turn; these phrases
+# are distinctive to it and do not appear in ordinary coding prompts. When a small
+# call carries this signature it is left on its original model. Matched
+# case-insensitively.
+_TOOL_SAFETY_SIGNATURES = (
+    "the specific action under review",
+    "must not lower your block threshold",
+)
+
+
+async def _reroute_enabled() -> bool:
+    """Return whether the small-budget reroute is enabled (admin runtime toggle).
+
+    Read defensively: if the runtime-settings singleton is not initialized (e.g.
+    in unit tests) or the lookup fails, fall back to the registry default.
+    """
+    from serving.config.runtime_settings import (
+        RUNTIME_SETTINGS_REGISTRY,
+        get_runtime_settings_instance,
+    )
+
+    default = bool(RUNTIME_SETTINGS_REGISTRY[_REROUTE_SETTING_KEY]["default"])
+    try:
+        return await get_runtime_settings_instance().get_bool(_REROUTE_SETTING_KEY)
+    except Exception:
+        return default
+
 
 def _is_reasoning_model(adapter) -> bool:
     """True when the adapter's model advertises a thinking/reasoning parameter."""
     cfg = getattr(adapter, "config", None)
     params = getattr(cfg, "supported_params", None) or ()
     return any(p in params for p in _REASONING_PARAMS)
+
+
+def _is_tool_safety_check(body: dict[str, Any]) -> bool:
+    """True when the request is Claude Code's tool-permission/safety classifier.
+
+    The classifier carries its preamble in the system prompt and/or the first user
+    turn; only those are scanned (and only their heads) to keep this cheap.
+    """
+    parts: list[str] = []
+    sysval = body.get("system")
+    if isinstance(sysval, str):
+        parts.append(sysval[:4000])
+    elif isinstance(sysval, list):
+        parts.append(" ".join(b.get("text", "") for b in sysval if isinstance(b, dict))[:4000])
+    for msg in body.get("messages", []) or []:
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str):
+                parts.append(content[:4000])
+            elif isinstance(content, list):
+                parts.append(
+                    " ".join(
+                        b.get("text", "")
+                        for b in content
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )[:4000]
+                )
+            break  # the classifier prompt is the first user turn
+    blob = " ".join(parts).lower()
+    return any(sig in blob for sig in _TOOL_SAFETY_SIGNATURES)
 
 
 async def _maybe_reroute_small_reasoning_call(
@@ -213,13 +277,20 @@ async def _maybe_reroute_small_reasoning_call(
     Any failure to resolve the target leaves everything unchanged.
     """
     max_tokens = body.get("max_tokens")
+    # Cheap, in-memory gates first (so ordinary traffic never reads the toggle):
+    # only tiny budgets, aimed at a reasoning model, that are NOT tool-safety
+    # checks. Safety verdicts are always left on the caller's chosen model.
     if (
         _SMALL_MAXTOK_THRESHOLD <= 0
         or not isinstance(max_tokens, int)
         or max_tokens > _SMALL_MAXTOK_THRESHOLD
         or canonical == _SMALL_MAXTOK_REROUTE_TARGET
         or not _is_reasoning_model(adapter)
+        or _is_tool_safety_check(body)
     ):
+        return canonical, route, adapter
+    # Master switch (admin runtime toggle), checked only once the cheap gates pass.
+    if not await _reroute_enabled():
         return canonical, route, adapter
     try:
         new_canonical, new_route, new_adapter = await _resolve(
