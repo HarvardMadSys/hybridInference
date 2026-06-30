@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import copy
 import json
+import os
 import time
 from typing import Any
 
@@ -163,6 +164,78 @@ async def _resolve(
         raise HTTPException(404, f"Model '{model_id}' has no adapters")
     adapter, _ = route.adapters[0]
     return canonical, route, adapter
+
+
+# --- Small-budget reasoning-call reroute -----------------------------------
+#
+# Agent harnesses (notably Claude Code) issue many tiny auxiliary calls --
+# conversation-title generation, topic detection, auto-compaction summaries --
+# with a very small ``max_tokens``. When such a call is routed to a *reasoning*
+# model, the model spends the entire budget on hidden chain-of-thought and is
+# truncated at ``max_tokens`` before emitting any visible content. The client
+# gets back ``content: []`` with ``stop_reason: "max_tokens"`` -- no usable
+# output -- while we still bill the full (often large) prompt, and the harness
+# typically retries, multiplying the waste.
+#
+# These calls are rerouted to a fast non-reasoning model with an output budget
+# large enough to actually answer. The reroute is best-effort: if the target is
+# unavailable (not configured, or not visible to the caller) the request is left
+# on its original model rather than failed. Set the threshold env var to 0 to
+# disable entirely.
+_SMALL_MAXTOK_REROUTE_TARGET = os.environ.get("SMALL_MAXTOK_REASONING_TARGET", "qwen3.6-35b")
+_SMALL_MAXTOK_THRESHOLD = int(os.environ.get("SMALL_MAXTOK_REASONING_THRESHOLD", "64"))
+_SMALL_MAXTOK_FLOOR = int(os.environ.get("SMALL_MAXTOK_REASONING_FLOOR", "512"))
+# A model is treated as "reasoning" when it advertises a thinking/reasoning knob.
+_REASONING_PARAMS = ("thinking", "reasoning_effort")
+
+
+def _is_reasoning_model(adapter) -> bool:
+    """True when the adapter's model advertises a thinking/reasoning parameter."""
+    cfg = getattr(adapter, "config", None)
+    params = getattr(cfg, "supported_params", None) or ()
+    return any(p in params for p in _REASONING_PARAMS)
+
+
+async def _maybe_reroute_small_reasoning_call(
+    canonical: str,
+    route,
+    adapter,
+    body: dict[str, Any],
+    router_exec,
+    user_ctx: dict | None,
+    model_visibility_resolver,
+    request_id: str,
+):
+    """Reroute a tiny-``max_tokens`` call aimed at a reasoning model to a fast model.
+
+    Returns a possibly-updated ``(canonical, route, adapter)``. When a reroute
+    applies, ``body["model"]`` and ``body["max_tokens"]`` are mutated in place.
+    Any failure to resolve the target leaves everything unchanged.
+    """
+    max_tokens = body.get("max_tokens")
+    if (
+        _SMALL_MAXTOK_THRESHOLD <= 0
+        or not isinstance(max_tokens, int)
+        or max_tokens > _SMALL_MAXTOK_THRESHOLD
+        or canonical == _SMALL_MAXTOK_REROUTE_TARGET
+        or not _is_reasoning_model(adapter)
+    ):
+        return canonical, route, adapter
+    try:
+        new_canonical, new_route, new_adapter = await _resolve(
+            _SMALL_MAXTOK_REROUTE_TARGET, router_exec, user_ctx, model_visibility_resolver
+        )
+    except HTTPException:
+        # Target not configured or not visible to this caller -- leave the
+        # request on its original model rather than failing it.
+        return canonical, route, adapter
+    body["model"] = new_canonical
+    body["max_tokens"] = max(max_tokens, _SMALL_MAXTOK_FLOOR)
+    logger.info(
+        f"[{request_id}] Rerouted small-budget reasoning call: {canonical} "
+        f"(max_tokens={max_tokens}) -> {new_canonical} (max_tokens={body['max_tokens']})"
+    )
+    return new_canonical, new_route, new_adapter
 
 
 # --- Inbound header forwarding to upstream ---------------------------------
@@ -691,6 +764,33 @@ async def anthropic_messages(
 
     body["model"] = canonical
 
+    # Reroute tiny-budget calls aimed at a reasoning model to a fast model so the
+    # request returns usable content instead of an empty max_tokens stop. Mutates
+    # body["model"]/["max_tokens"] in place; request_payload_for_log above keeps
+    # the original client request intact.
+    _orig_model, _orig_max_tokens = canonical, body.get("max_tokens")
+    canonical, _route, adapter = await _maybe_reroute_small_reasoning_call(
+        canonical,
+        _route,
+        adapter,
+        body,
+        router_exec,
+        user_ctx,
+        model_visibility_resolver,
+        request_id,
+    )
+    reroute_info = (
+        {
+            "from": _orig_model,
+            "to": canonical,
+            "reason": "small_max_tokens_reasoning",
+            "orig_max_tokens": _orig_max_tokens,
+            "new_max_tokens": body.get("max_tokens"),
+        }
+        if canonical != _orig_model
+        else None
+    )
+
     forwarded_headers = _extract_forwarded_headers(request)
 
     # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
@@ -716,6 +816,7 @@ async def anthropic_messages(
         "user_id": user_ctx.get("user_id"),
         "surface": "anthropic_messages",
         "alias_input": model_id if model_id != canonical else None,
+        "reroute": reroute_info,
     }
 
     params_for_log: dict[str, Any] = {"surface": "anthropic_messages"}
