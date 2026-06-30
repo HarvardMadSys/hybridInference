@@ -6,6 +6,7 @@ import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving.analytics.automation_score import score_users_from_logs
 from serving.storage.base import LogStore, Row
 from serving.storage.utils import (
     agent_name_from_prompt,
@@ -13,6 +14,7 @@ from serving.storage.utils import (
     conversation_shape,
     json_safe,
     strip_null_bytes,
+    user_message_stats,
 )
 from serving.utils.logging import get_logger
 from serving.utils.token_utils import normalize_usage
@@ -95,7 +97,10 @@ class PostgresLogStore(LogStore):
                     upstream_cost_usd DECIMAL(12, 8),
                     num_turns INTEGER,
                     num_user_turns INTEGER,
-                    num_tool_calls INTEGER
+                    num_tool_calls INTEGER,
+                    last_user_msg_chars INTEGER,
+                    last_user_msg_entropy REAL,
+                    last_user_msg_hash BIGINT
                 )
             """)
 
@@ -131,6 +136,9 @@ class PostgresLogStore(LogStore):
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_turns INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_user_turns INTEGER",
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_tool_calls INTEGER",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_chars INTEGER",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_entropy REAL",
+                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_hash BIGINT",
             ]:
                 await conn.execute(col_ddl)
 
@@ -249,6 +257,11 @@ class PostgresLogStore(LogStore):
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
         num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
+        # Size / entropy / repetition fingerprint of the newest user message,
+        # derived from the inbound prompt like conversation shape so it is
+        # recorded independent of full-content storage and lets the automation
+        # score read cheap columns instead of de-TOASTing the payload per row.
+        last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash = user_message_stats(prompt)
         # Agent identity declared in the system prompt (e.g. "You are Claude
         # Code, ..."). Stored in metadata so the admin list query can label the
         # client by its declared name, falling back to User-Agent parsing when
@@ -274,7 +287,8 @@ class PostgresLogStore(LogStore):
                     prompt, response, request_payload,
                     status_code, error, user_id, session_id, metadata,
                     tools, upstream_cost_usd,
-                    num_turns, num_user_turns, num_tool_calls
+                    num_turns, num_user_turns, num_tool_calls,
+                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash
                 )
                 VALUES (
                     $1, $2, $3,
@@ -285,7 +299,8 @@ class PostgresLogStore(LogStore):
                     $18, $19, $20::jsonb,
                     $21, $22, $23, $24, $25::jsonb,
                     $26::jsonb, $27,
-                    $28, $29, $30
+                    $28, $29, $30,
+                    $31, $32, $33
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -319,6 +334,9 @@ class PostgresLogStore(LogStore):
                 num_turns,
                 num_user_turns,
                 num_tool_calls,
+                last_user_msg_chars,
+                last_user_msg_entropy,
+                last_user_msg_hash,
             )
 
     # -- usage / cost queries ------------------------------------------------
@@ -484,6 +502,17 @@ class PostgresLogStore(LogStore):
                 "SELECT MAX(timestamp) AS ts FROM api_logs WHERE user_id = $1",
                 user_id,
             )
+            # AVG ignores the NULL num_turns / num_user_turns of non-chat
+            # requests, so these average over chat-style requests only.
+            turns = await conn.fetchrow(
+                """
+                SELECT AVG(num_turns) AS avg_turns,
+                       AVG(num_user_turns) AS avg_user_turns
+                FROM api_logs
+                WHERE user_id = $1
+                """,
+                user_id,
+            )
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
@@ -492,7 +521,75 @@ class PostgresLogStore(LogStore):
             "usage_month_requests": int(month["reqs"]) if month else 0,
             "models_used": [r["model_id"] for r in models_rows],
             "last_request_at": last_req["ts"] if last_req and last_req["ts"] else None,
+            "avg_turns": float(turns["avg_turns"])
+            if turns and turns["avg_turns"] is not None
+            else None,
+            "avg_user_turns": float(turns["avg_user_turns"])
+            if turns and turns["avg_user_turns"] is not None
+            else None,
         }
+
+    async def get_bulk_user_turn_averages(
+        self, user_ids: list[str]
+    ) -> dict[str, dict[str, float | None]]:
+        """Return per-user all-time average turn counts for many users.
+
+        Maps ``user_id`` → ``{"avg_turns": float|None, "avg_user_turns": float|None}``
+        for users with chat-style requests; users with no chat logs are omitted
+        (the caller fills a default). AVG ignores the NULL turn counts of
+        non-chat requests.
+        """
+        if not user_ids:
+            return {}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id,
+                       AVG(num_turns) AS avg_turns,
+                       AVG(num_user_turns) AS avg_user_turns
+                FROM api_logs
+                WHERE user_id = ANY($1)
+                GROUP BY user_id
+                """,
+                user_ids,
+            )
+        return {
+            r["user_id"]: {
+                "avg_turns": float(r["avg_turns"]) if r["avg_turns"] is not None else None,
+                "avg_user_turns": float(r["avg_user_turns"])
+                if r["avg_user_turns"] is not None
+                else None,
+            }
+            for r in rows
+        }
+
+    async def get_user_automation_score(
+        self, user_id: str, *, days: int = 30
+    ) -> dict[str, Any] | None:
+        """Return the automation score for one user, or ``None`` with no traffic.
+
+        See :mod:`serving.analytics.automation_score`: HIGH (→1) means the user's
+        ``api_logs`` over the trailing ``days`` look script/batch/cron-driven, LOW
+        (→0) interactive-human (incl. human-driven coding agents).
+        """
+        async with self.pool.acquire() as conn:
+            records = await score_users_from_logs(conn, days=days, user_ids=[user_id])
+        return records[0] if records else None
+
+    async def get_bulk_user_automation_scores(
+        self, user_ids: list[str], *, days: int = 30
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{user_id: automation-score record}`` for many users.
+
+        One round-trip scores every requested user over the trailing ``days``
+        window. Users with no traffic in the window are omitted (the caller
+        renders a placeholder). See :mod:`serving.analytics.automation_score`.
+        """
+        if not user_ids:
+            return {}
+        async with self.pool.acquire() as conn:
+            records = await score_users_from_logs(conn, days=days, user_ids=user_ids)
+        return {r["user_id"]: r for r in records}
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:
         """Return usage detail for admin key-detail view."""

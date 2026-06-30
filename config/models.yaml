@@ -55,56 +55,6 @@ models:
   #         - ${FEATHERLESS_API_KEY}
   #       provider_model_id: "zai-org/GLM-4.7"
 
-  # - id: glm-5
-  #   name: GLM-5 (please use GLM-5.1 or GLM-5 Turbo if possible; GLM-5 is an older version that may be less cost-effective)
-  #   provider: zai
-  #   quantization: "fp8"
-  #   context_length: 200000
-  #   max_output_length: 128000
-  #   supports_tools: true
-  #   supports_structured_output: true
-  #   supported_params: [temperature, top_p, max_tokens, stop, stream, tool_stream, thinking]
-  #   input_modalities: ["text"]
-  #   output_modalities: ["text"]
-  #   aliases: ["freeinference-glm-5"]
-  #   # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
-  #   pricing:
-  #     prompt: "1.0"
-  #     completion: "3.2"
-  #     image: "0"
-  #     request: "0"
-  #     input_cache_reads: "0.2"
-  #     input_cache_writes: "0"
-  #   route:
-  #     - kind: zai
-  #       weight: 0.64
-  #       base_url: ${ZAI_BASE_URL}
-  #       api_keys:
-  #         - ${ZAI_API_KEY}
-  #         - ${ZAI_API_KEY2}
-  #       provider_model_id: "glm-5"
-  #     # Ollama Cloud fallback
-  #     - kind: ollama
-  #       weight: 0.64
-  #       base_url: ${OLLAMA_BASE_URL}
-  #       api_keys:
-  #         - ${OLLAMA_API_KEY}
-  #       provider_model_id: "glm-5"
-  #     # # Chutes fallback
-  #     - kind: chutes
-  #       weight: 0.64
-  #       base_url: ${CHUTES_BASE_URL}
-  #       api_keys:
-  #         - ${CHUTES_API_KEY}
-  #       provider_model_id: "zai-org/GLM-5-TEE"
-  #     # Featherless fallback
-  #     - kind: featherless
-  #       weight: 0.64
-  #       base_url: ${FEATHERLESS_BASE_URL}
-  #       api_keys:
-  #         - ${FEATHERLESS_API_KEY}
-  #       provider_model_id: "zai-org/GLM-5"
-
   - id: glm-5.1
     name: GLM-5.1
     provider: zai
@@ -119,11 +69,11 @@ models:
     aliases: ["freeinference-glm-5.1"]
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "1.4"
-      completion: "4.4"
+      prompt: "2.8"
+      completion: "6.4"
       image: "0"
       request: "0"
-      input_cache_reads: "0.26"
+      input_cache_reads: "0.8"
       input_cache_writes: "0"
     route:
       - kind: zai
@@ -136,25 +86,31 @@ models:
       # optional: route is skipped at load when RC_DEPLOYMENT_URL is unset/blank,
       # so the rest of the model stays available instead of registering a dead
       # "glm-5.1:unknown-api" endpoint that streams to a host-less URL.
-      - kind: sglang
-        weight: 1.0
-        optional: true
-        base_url: ${RC_DEPLOYMENT_URL}
-        provider_model_id: "/n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2"
-        # api_keys:
-        #   - ${LOCAL_API_KEY}
+      # - kind: sglang
+      #   weight: 1.0
+      #   optional: true
+      #   base_url: ${RC_DEPLOYMENT_URL}
+      #   provider_model_id: "/n/netscratch/juncheng_lab/model/GLM-5.1-FP8-2"
+      #   # api_keys:
+      #   #   - ${LOCAL_API_KEY}
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5.1"
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "zai-org/GLM-5.1-TEE"
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -183,7 +139,7 @@ models:
       completion: "8.8"
       image: "0"
       request: "0"
-      input_cache_reads: "0.52"
+      input_cache_reads: "0.8"
       input_cache_writes: "0"
     route:
       - kind: zai
@@ -194,16 +150,22 @@ models:
         provider_model_id: "glm-5.2"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "glm-5.2"
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "zai-org/GLM-5.2-TEE"
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -225,7 +187,7 @@ models:
     aliases: ["freeinference-glm-5-turbo"]
     # Z.AI PAYG https://docs.z.ai/guides/overview/pricing
     pricing:
-      prompt: "1.2"
+      prompt: "1.6"
       completion: "4.0"
       image: "0"
       request: "0"
@@ -242,26 +204,19 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "glm-5-turbo"
-      # - kind: chutes
-      #   weight: 0.05
-      #   base_url: ${CHUTES_BASE_URL}
-      #   api_keys:
-      #     - ${CHUTES_API_KEY}
-      #   provider_model_id: "zai-org/GLM-5-Turbo"
-      # # Featherless fallback
-      # - kind: featherless
-      #   weight: 0
-      #   base_url: ${FEATHERLESS_BASE_URL}
-      #   api_keys:
-      #     - ${FEATHERLESS_API_KEY}
-      #   provider_model_id: "MiniMaxAI/MiniMax-M2.5"
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "zai-org/GLM-5-TEE"
 
 
   - id: minimax-m2.5
@@ -295,14 +250,14 @@ models:
         provider_model_id: "MiniMax-M2.5"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "minimax-m2.5"
       # Chutes fallback
       - kind: chutes
-        weight: 0.00
+        weight: 0.01
         base_url: ${CHUTES_BASE_URL}
         api_keys:
           - ${CHUTES_API_KEY}
@@ -318,7 +273,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -332,7 +287,7 @@ models:
     quantization: "bf16"
     input_modalities: ["text", "image"]
     output_modalities: ["text"]
-    context_length: 204800
+    context_length: 1048576
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
@@ -357,7 +312,7 @@ models:
         provider_model_id: "MiniMax-M3"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
@@ -366,7 +321,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -516,7 +471,7 @@ models:
         provider_model_id: "MiniMax-M2.7"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
@@ -525,7 +480,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -542,7 +497,7 @@ models:
   - id: kimi-k2.7-code
     name: Kimi K2.7 Code (only support coding agents)
     provider: kimi
-    quantization: "bf16"
+    quantization: "fp8"
     input_modalities: ["text"]
     output_modalities: ["text"]
     context_length: 262144
@@ -567,16 +522,22 @@ models:
         provider_model_id: "kimi-for-coding"
       # Ollama Cloud fallback
       - kind: ollama
-        weight: 0.24
+        weight: 0.01
         base_url: ${OLLAMA_BASE_URL}
         api_keys:
           - ${OLLAMA_API_KEY}
         provider_model_id: "kimi-k2.7-code"
+      - kind: chutes
+        weight: 0.01
+        base_url: ${CHUTES_BASE_URL}
+        api_keys:
+          - ${CHUTES_API_KEY}
+        provider_model_id: "moonshotai/Kimi-K2.6-TEE"
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -597,8 +558,8 @@ models:
     supported_params: [temperature, top_p, max_tokens, stop, stream]
     aliases: ["qwen3.6:35b"]
     pricing:
-      prompt: "0.01"
-      completion: "0.08"
+      prompt: "0.08"
+      completion: "0.28"
       image: "0"
       request: "0"
       input_cache_reads: "0.01"
@@ -617,60 +578,55 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "qwen3.6-35b"
-      # # Ollama Cloud fallback
-      # - kind: ollama
-      #   weight: 0.24
-      #   base_url: ${OLLAMA_BASE_URL}
-      #   api_keys:
-      #     - ${OLLAMA_API_KEY}
-      #   provider_model_id: "qwen-3.6:35b"
 
   # Served on DGX Spark by ops/spark_idle_proxy (vLLM + NVFP4 kernels).
-  - id: gpt-oss-20b
-    name: GPT-OSS 20B
+  # Discrete diffusion LLM (Gemma4 backbone); replaced gpt-oss-20b on Spark.
+  - id: diffusiongemma
+    name: DiffusionGemma 26B
     provider: vllm
     required_role: internal
-    provider_model_id: "openai/gpt-oss-20b"
+    provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
     quantization: "nvfp4"
+    aliases: ["freeinference-diffusiongemma"]
     input_modalities: ["text"]
     output_modalities: ["text"]
-    context_length: 65536
+    context_length: 262144
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice, thinking]
     pricing:
-      prompt: "0"
-      completion: "0"
+      prompt: "0.02"
+      completion: "0.08"
       image: "0"
       request: "0"
-      input_cache_reads: "0"
+      input_cache_reads: "0.01"
       input_cache_writes: "0"
     route:
       - kind: vllm
         weight: 1.0
         base_url: ${SPARK_DEPLOYMENT_URL}
-        provider_model_id: "openai/gpt-oss-20b"
+        provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
         api_keys:
           - ${LOCAL_API_KEY}
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
         api_keys:
           - ${STAGING_API_KEY}
-        provider_model_id: "gpt-oss-20b"
+        provider_model_id: "diffusiongemma"
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
   - id: deepseek-v4-flash
@@ -713,7 +669,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -761,7 +717,7 @@ models:
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
       # by simply not setting the key).
-      - kind: openai_compat
+      - kind: staging
         weight: 0.01
         optional: true
         base_url: https://staging.freeinference.org/v1
@@ -837,9 +793,22 @@ models:
         provider_model_id: "BAAI/bge-m3"
         api_keys:
           - ${LOCAL_API_KEY}
-      # NOTE: no staging canary here. Embedding models bypass weighted routing
-      # (the loader registers only the first route), so a fallback route would be
-      # dead config — see registry.register_from_models_yaml.
+      # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
+      # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
+      # so the rest of the model stays available (and staging avoids self-routing
+      # by simply not setting the key).
+      #
+      # Embedding models don't use weighted routing: the loader registers every
+      # route in YAML order and the /v1/embeddings endpoint tries them as an
+      # ordered fallback chain (primary first, this canary last), so `weight` is
+      # ignored here. See registry.register_from_models_yaml and
+      # FallbackEmbeddingAdapter.
+      - kind: staging
+        optional: true
+        base_url: https://staging.freeinference.org/v1
+        api_keys:
+          - ${STAGING_API_KEY}
+        provider_model_id: "bge-m3"
 
   # ── Anthropic direct (kind: anthropic) ─────────────────────
   # These models route directly to api.anthropic.com via the AnthropicAdapter.

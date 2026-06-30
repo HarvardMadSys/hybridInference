@@ -36,8 +36,15 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build ${{ matrix.image }} image
+        id: build
+        # A transient buildkit/runner recycle surfaces as
+        # "received prior goaway: graceful_stop" (or a dropped gRPC transport)
+        # and fails the build through no fault of the image. Don't fail the job
+        # on the first attempt — recreate the builder and build once more below,
+        # so an infra blip self-heals instead of needing a manual re-run.
+        continue-on-error: true
         uses: docker/build-push-action@v6
-        with:
+        with: &build_args
           context: .
           file: deploy/docker/Dockerfile.${{ matrix.image }}
           push: false
@@ -45,3 +52,15 @@ jobs:
             github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=min,scope=${{ matrix.image }}
+
+      # Fresh builder for the retry: a graceful_stop means the previous buildkit
+      # instance is gone, so reusing it would fail again. The gha cache lets this
+      # resume from where the first attempt left off rather than rebuilding cold.
+      - name: Set up Docker Buildx (retry)
+        if: steps.build.outcome == 'failure'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.image }} image (retry)
+        if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with: *build_args

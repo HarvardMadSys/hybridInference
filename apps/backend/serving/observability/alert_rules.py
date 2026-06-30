@@ -14,6 +14,7 @@ import time
 from typing import TYPE_CHECKING, Any, Protocol
 
 from serving.observability.alerts import AlertSeverity, alert_slack
+from serving.utils.context import MODEL_NOT_FOUND
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -41,7 +42,31 @@ _REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
 # stops admin/refresh sequences from tripping the alert.
 # 429 covers quota-exceeded and concurrency-limit rejections — expected user-facing
 # rate limiting, not service failures, so excluded from the failure-rate alert.
+#
+# 404 is NOT blanket-excluded: an upstream provider can return 404 for a routed
+# completion (bad provider model id / endpoint path), which the gateway re-raises
+# as a 404 — a genuine provider/config regression that must still alert. Only the
+# gateway's own model-not-found 404s (a user asking for an unknown/unauthorized
+# model) are excluded, via the per-record marker checked in ``_is_failed_request``.
 _FAILED_REQUEST_IGNORED_STATUSES = frozenset({401, 429})
+
+
+def _is_failed_request(item: dict) -> bool:
+    """Return True if a window item counts as a service-side failed request.
+
+    Excludes the client-driven statuses in ``_FAILED_REQUEST_IGNORED_STATUSES``
+    (401/429) and gateway model-not-found 404s (a request for an unknown or
+    unauthorized model — tagged via ``req_ctx.mark_model_not_found``). Genuine
+    upstream provider 404s carry no such tag and still count. This mirrors the
+    DB-query alerter, which excludes the model-not-found error strings (not all
+    404s) from ``FAILURE_PREDICATE_SQL``.
+    """
+    status = item["status"]
+    if status < 400:
+        return False
+    if status in _FAILED_REQUEST_IGNORED_STATUSES:
+        return False
+    return not (status == 404 and item.get("client_error_kind") == MODEL_NOT_FOUND)
 
 
 class _Rule(Protocol):
@@ -96,24 +121,17 @@ class FailedRequestRateRule:
                 "status": int(status),
                 "provider": getattr(record, "provider", None),
                 "path": getattr(record, "path", None),
+                "client_error_kind": getattr(record, "client_error_kind", None),
             },
         )
         items = self._window.items(now)
         if len(items) < self._cfg.min_samples:
             return
-        failed = sum(
-            1
-            for it in items
-            if it["status"] >= 400 and it["status"] not in _FAILED_REQUEST_IGNORED_STATUSES
-        )
+        failed = sum(1 for it in items if _is_failed_request(it))
         pct = (failed / len(items)) * 100.0
         if pct < self._cfg.threshold_pct:
             return
-        failed_items = [
-            it
-            for it in items
-            if it["status"] >= 400 and it["status"] not in _FAILED_REQUEST_IGNORED_STATUSES
-        ]
+        failed_items = [it for it in items if _is_failed_request(it)]
         status_counts: collections.Counter[int] = collections.Counter(
             it["status"] for it in failed_items
         )

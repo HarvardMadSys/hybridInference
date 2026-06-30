@@ -18,6 +18,9 @@
 # SSH reverse tunnel (expose to public LLM routers):
 #   SSH_HOST=router.example.com REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
 # This forwards router.example.com:REMOTE_PORT → localhost:LISTEN_PORT.
+# Tunnels use autossh when available so they auto-reconnect after a drop or a
+# router reboot; without autossh they fall back to plain ssh (no auto-recover)
+# and the script prints a warning. Install autossh for durable tunnels.
 #
 # Multiple hosts (pipe-separated):
 #   SSH_HOST="r1.example.com|r2.example.com" REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
@@ -65,6 +68,25 @@ case "$cmd" in
     fi
     # ── SSH reverse tunnel(s) ─────────────────────────────────────────────────
     if [[ -n "$SSH_HOST" && -n "$REMOTE_PORT" ]]; then
+      # Prefer autossh so a tunnel that drops (router reboot, network blip)
+      # reconnects on its own. Plain `ssh -R` does NOT recover: once the link
+      # dies the process exits and ${REMOTE_PORT} on the router is left with no
+      # listener until someone reruns this script — which is exactly how port
+      # 8001 went dark after a gateway reboot. autossh respawns ssh whenever it
+      # exits; with -M 0 it relies on ServerAliveInterval/CountMax (below) plus
+      # ExitOnForwardFailure to detect a dead link, and AUTOSSH_GATETIME=0 keeps
+      # it retrying even when the very first dial fails (e.g. router still
+      # booting).
+      if command -v autossh >/dev/null 2>&1; then
+        export AUTOSSH_GATETIME=0
+        TUNNEL_BIN=(autossh -M 0)
+        echo "Using autossh for self-healing reverse tunnel(s)."
+      else
+        TUNNEL_BIN=(ssh)
+        echo "WARNING: autossh not found — falling back to plain ssh. Tunnels will" >&2
+        echo "         NOT auto-reconnect after a drop/reboot. Install autossh" >&2
+        echo "         (e.g. 'apt-get install autossh') to make them durable." >&2
+      fi
       IFS='|' read -ra HOSTS <<< "$SSH_HOST"
       TUNNEL_PIDS=()
       TUNNEL_EXIT=0
@@ -72,18 +94,20 @@ case "$cmd" in
         host="${host// /}"
         [[ -z "$host" ]] && continue
         echo "Opening reverse tunnel: ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
-        ssh -N \
+        "${TUNNEL_BIN[@]}" -N \
           -R "${REMOTE_BIND}:${REMOTE_PORT}:localhost:${LISTEN_PORT}" \
           -o ServerAliveInterval=30 \
           -o ServerAliveCountMax=3 \
           -o ExitOnForwardFailure=yes \
           "$host" &
         TUNNEL_PID=$!
-        # Give ssh a moment to fail fast (bad host key, bad auth, port in use).
+        # Give the tunnel a moment to fail fast (bad host key, bad auth). With
+        # autossh the supervisor stays up and keeps retrying, so a live PID here
+        # means "supervised", not necessarily "already connected".
         sleep 1
         if kill -0 "$TUNNEL_PID" 2>/dev/null; then
           TUNNEL_PIDS+=("$TUNNEL_PID")
-          echo "Tunnel established (PID ${TUNNEL_PID}).  ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
+          echo "Tunnel up (PID ${TUNNEL_PID}).  ${host}:${REMOTE_BIND}:${REMOTE_PORT} → localhost:${LISTEN_PORT}"
         else
           echo "WARNING: tunnel to ${host} may have failed. Check SSH access." >&2
           TUNNEL_EXIT=1

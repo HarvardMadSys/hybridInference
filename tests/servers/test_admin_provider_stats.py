@@ -39,6 +39,33 @@ def _override_admin(app: FastAPI) -> None:
     app.dependency_overrides[verify_admin_access] = _fake_admin
 
 
+class _FakeAcquire:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakePool:
+    def __init__(self, responses):
+        self.conn = _FakeConnection(responses)
+
+    def acquire(self):
+        return _FakeAcquire(self.conn)
+
+
+class _FakeConnection:
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    async def fetch(self, *_args, **_kwargs):
+        return self.responses.pop(0)
+
+
 # ---------------------------------------------------------------------
 # Auth + range-cap tests (mocked db_logger)
 # ---------------------------------------------------------------------
@@ -148,6 +175,54 @@ class TestProviderStatsRangeCap:
             )
         app.dependency_overrides.clear()
         assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_router_provider_is_hidden_from_provider_performance():
+    """Synthetic failure rows are not reportable upstream provider stats."""
+    bucket = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    router_row = {
+        "hour_bucket": bucket,
+        "provider": "router",
+        "model_id": "missing-model",
+        "request_count": 8,
+        "error_count": 8,
+        "stream_count": 0,
+        "total_completion_tokens": 0,
+    }
+    empty_provider_row = {**router_row, "provider": "", "model_id": "rejected-model"}
+    fake_db_logger = MagicMock()
+    fake_db_logger.pool = _FakePool(
+        [
+            [router_row, empty_provider_row],
+            [
+                {"provider": "openrouter", "model_id": "qwen/qwen3-coder"},
+                {"provider": "router", "model_id": "missing-model"},
+                {"provider": "", "model_id": "rejected-model"},
+            ],
+            [{"provider": "openrouter"}, {"provider": "router"}, {"provider": ""}],
+        ]
+    )
+
+    app = _build_admin_app(db_logger=fake_db_logger)
+    _override_admin(app)
+    app.dependency_overrides[get_db_logger] = lambda: fake_db_logger
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/admin/api/provider-stats",
+            params={"provider": "router", "model_id": "__all__"},
+        )
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rows"] == []
+    assert body["providers"] == ["openrouter"]
+    assert body["models"] == ["qwen/qwen3-coder"]
+    assert body["pairs"] == [{"provider": "openrouter", "model_id": "qwen/qwen3-coder"}]
+    assert body["window_providers"] == ["openrouter"]
 
 
 # ---------------------------------------------------------------------

@@ -57,6 +57,9 @@ describe('RecentRequests', () => {
     fireEvent.click(screen.getAllByText('claude-sonnet')[0]);
 
     expect(screen.getByText('Request Details')).toBeInTheDocument();
+    // Full model ID is surfaced in the detail panel (row cell + DetailStat value)
+    // so touch users can read it even though the row tooltip is hover-only.
+    expect(screen.getAllByText('claude-sonnet')).toHaveLength(2);
     expect(screen.getByText('req_1234567890abcdefghijklmnop')).toBeInTheDocument();
     expect(screen.getByText('anthropic')).toBeInTheDocument();
     expect(screen.getByText('Latency')).toBeInTheDocument();

@@ -45,12 +45,15 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 84  # includes role-quota, provider-key verification/probe
+    expected = 90  # includes role-quota, provider-key verification/probe
     # (incl. disable/enable/enable-env), visibility, concurrency,
     # routewise settings/probes, routing-weight, provider-route,
     # recent-requests/clear-errors, provider-route model creation,
-    # alert-snooze GET/POST/DELETE, and site-updates CRUD routes
-    # (regenerate-api-key removed in #733)
+    # alert-snooze GET/POST/DELETE,
+    # site-updates CRUD routes (regenerate-api-key removed in #733),
+    # users/turn-averages, usage-insights/analyze,
+    # usage-insights/settings GET/PUT, and the per-user + bulk users
+    # automation-score routes
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

@@ -15,6 +15,12 @@ These scripts are intended for one-off analysis work after exporting logs from `
   - groups tokenized rows into inferred prompt sessions using prompt-prefix similarity
 - `interleave_per_session_requests.py`
   - merges per-session Qwen-trace files into a controlled-concurrency replay stream
+- `user_usage_pattern.py`
+  - profiles one user's traffic shape (per-day/hour, models, clients, sizes) by querying the live DB
+- `user_automation_score.py`
+  - scores how script-driven vs. human-driven each user is, by querying the live DB
+
+The last two connect directly to PostgreSQL (via `.env` / `DB_*` env vars) rather than reading a JSONL export.
 
 ## Typical workflows
 
@@ -642,6 +648,68 @@ uv run python ops/db/analysis/interleave_per_session_requests.py per_session_qwe
   --concurrency 32 \
   --output replay.jsonl
 ```
+
+## `user_automation_score.py`
+
+Scores how **script-driven vs. human-driven** each user's API usage is, by querying the live
+`api_logs` / `users` tables (it needs the same `DB_*` env vars / `.env` as the other live-DB
+tools, e.g. `user_usage_pattern.py`). Each user gets an `automation_score` in `[0, 1]` where
+**HIGH means mostly automatic scripts / batch / cron** and **LOW means an interactive human**
+(a chat UI, or a human-driven coding agent such as Claude Code).
+
+> The exact signals, normalization formulas, weighting, and combination are documented in
+> [docs/developer/automation-score.md](../../../docs/developer/automation-score.md). This CLI and
+> the admin dashboard share that one implementation (`serving.analytics.automation_score`).
+
+The score blends the four requested signals — plus two small supporting human tells — each mapped
+to a `[0, 1]` automation sub-score and combined with re-normalized weights:
+
+| Signal | Requested axis | What it measures |
+|---|---|---|
+| `turn_pattern` | user turns | fraction of one-shot (`num_user_turns = 1`) chat requests, dampened when the user holds deep multi-turn threads |
+| `prompt_size_dispersion` | length of user turn | robust dispersion (IQR / median) of `prompt_tokens` — templated scripts are near-constant |
+| `client_tool_prior` | user-agent | client class (interactive vs. raw HTTP lib vs. ambiguous SDK), overridable by the coding-agent opener |
+| `daily_activity_shape` | daily activity | hour coverage, hour entropy, longest nightly quiet gap, and inter-arrival regularity (24/7 + metronomic ⇒ cron) |
+| `tool_call_human_tell` | (support) | agentic tool use is a one-directional human tell |
+| `agent_opener_override` | (support) | a `metadata->>'agent'` coding-agent opener pulls toward human (with a hard clamp) |
+
+Signals lacking enough data for a user are **dropped and the remaining weights re-normalized**
+(never imputed as 0), and the final score is shrunk toward a neutral `0.5` prior for low-volume
+users, with a `confidence` reported alongside. Bands: `likely_human` (< 0.35),
+`mixed_or_uncertain` (< 0.6), `likely_automated` (< 0.8), `scripted_batch` (≥ 0.8).
+
+### Common commands
+
+Rank the most script-like users in the last 30 days:
+
+```bash
+python ops/db/analysis/user_automation_score.py --min-requests 20
+```
+
+Profile one user with a full per-signal breakdown:
+
+```bash
+python ops/db/analysis/user_automation_score.py --email a@x.com
+```
+
+Machine-readable output (one record per scored user):
+
+```bash
+python ops/db/analysis/user_automation_score.py --min-requests 20 --json
+```
+
+### CLI options
+
+- `--email EMAIL` — profile a single user instead of ranking all users
+- `-n, --days N` — trailing window in days (default: 30)
+- `--min-requests N` — only rank users with at least this many requests (default: 20)
+- `--top N` — show the top-N most script-like users (default: 40)
+- `--json` — emit JSON instead of the human-readable report
+- `--env-file PATH` — path to `.env` (default: auto-detect)
+
+The score is a heuristic for triage, not a verdict: always read it together with the reported
+`confidence` and per-signal sub-scores, and treat shared/team and `internal`/`admin` accounts
+(which legitimately mix human and automated traffic) with care.
 
 ## Limitations and notes
 

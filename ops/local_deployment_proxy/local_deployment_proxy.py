@@ -107,7 +107,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 logging.basicConfig(
@@ -1013,6 +1013,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     _copy_stream(resp, self.wfile)
                 else:
                     self.wfile.write(resp.read())
+        except HTTPError as exc:
+            # The backend returned an HTTP error response (it is alive and
+            # answered). Pass the upstream status and body through UNCHANGED.
+            # Remapping a client 4xx (e.g. vLLM's 400 "max context exceeded")
+            # to a generic 502 makes the gateway's circuit breaker treat a bad
+            # request as an upstream fault and open the circuit for everyone —
+            # one user's oversized prompt then DoSes the model globally.
+            try:
+                body_bytes = exc.read()
+            except Exception:  # body may be unreadable; fall back to message
+                body_bytes = str(exc).encode()
+            self.send_response(exc.code)
+            for key, val in exc.headers.items():
+                if key.lower() in ("transfer-encoding", "connection", "content-length"):
+                    continue
+                self.send_header(key, val)
+            self.send_header("Content-Length", str(len(body_bytes)))
+            self.end_headers()
+            self.wfile.write(body_bytes)
         except URLError as exc:
             # A connection error here means the backend port is dead. A backend
             # can die outside the proxy's control (crash, OOM, the sglang

@@ -17,7 +17,10 @@ from serving.schemas_admin import (
     ApproveUserRequest,
     ApproveUserResponse,
     AuditLogEntry,
+    AutomationSignal,
+    BulkUserAutomationScoresResponse,
     BulkUserCostHistoryResponse,
+    BulkUserTurnAveragesResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     HardDeleteUserRequest,
@@ -33,16 +36,19 @@ from serving.schemas_admin import (
     SummaryUserItem,
     UpdateUserRequest,
     UpdateUserResponse,
+    UserAutomationScore,
     UserCostHistoryPoint,
     UserCostHistoryResponse,
     UserDetailResponse,
     UserListItem,
     UsersSummaryResponse,
+    UserTurnAverages,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_log_store,
     get_operational_store,
+    get_response_store,
     get_router,
     verify_admin_access,
 )
@@ -136,6 +142,7 @@ async def list_users(
                 reviewed_at=row.get("reviewed_at"),
                 reviewed_by=row.get("reviewed_by"),
                 signup_reason=row.get("signup_reason"),
+                admin_note=row.get("admin_note"),
                 created_at=row["created_at"],
                 last_login_at=row.get("last_login_at"),
                 has_key=row.get("key_prefix") is not None,
@@ -198,6 +205,91 @@ async def admin_get_bulk_user_cost_history(
         for uid, points in raw.items()
     }
     return BulkUserCostHistoryResponse(days=days, histories=histories)
+
+
+@router.get("/users/turn-averages", response_model=BulkUserTurnAveragesResponse)
+async def admin_get_bulk_user_turn_averages(
+    user_ids: str = "",  # comma-separated
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> BulkUserTurnAveragesResponse:
+    """Bulk all-time average turn counts for many users (one round-trip per page).
+
+    Query params:
+    - ``user_ids``: comma-separated user IDs (max 200)
+
+    Returns a map of user_id → {avg_turns, avg_user_turns}. Users with no
+    chat-style requests are omitted by the store; the frontend renders ``—``.
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+
+    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
+    if not ids:
+        return BulkUserTurnAveragesResponse(averages={})
+    if len(ids) > 200:
+        raise HTTPException(422, "Maximum 200 user_ids per request")
+
+    raw = await log_store.get_bulk_user_turn_averages(ids)
+    averages = {
+        uid: UserTurnAverages(
+            avg_turns=vals.get("avg_turns"),
+            avg_user_turns=vals.get("avg_user_turns"),
+        )
+        for uid, vals in raw.items()
+    }
+    return BulkUserTurnAveragesResponse(averages=averages)
+
+
+def _automation_score_item(rec: dict) -> UserAutomationScore:
+    """Map a stored automation-score record to its response schema."""
+    return UserAutomationScore(
+        user_id=rec["user_id"],
+        days=rec["days"],
+        score=rec["score"],
+        confidence=rec["confidence"],
+        band=rec["band"],
+        insufficient_data=rec["insufficient_data"],
+        n_req=rec["n_req"],
+        agent_share=rec["agent_share"],
+        signals={name: AutomationSignal(**sig) for name, sig in rec["signals"].items()},
+        detail=dict(rec["detail"]),
+    )
+
+
+@router.get("/users/automation-scores", response_model=BulkUserAutomationScoresResponse)
+async def admin_get_bulk_user_automation_scores(
+    user_ids: str = "",  # comma-separated
+    days: int = 30,
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> BulkUserAutomationScoresResponse:
+    """Bulk human-vs-script automation scores for many users (one round-trip).
+
+    Computing the score per user is comparatively expensive (per-user hour
+    histograms, inter-arrival gaps, and user-agent breakdowns), so the admin UI
+    triggers this on demand from a button rather than auto-loading it.
+
+    Query params:
+    - ``user_ids``: comma-separated user IDs (max 200)
+    - ``days``: 1..90 inclusive (default 30)
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+    if days < 1 or days > 90:
+        raise HTTPException(422, "days must be between 1 and 90")
+
+    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
+    if not ids:
+        return BulkUserAutomationScoresResponse(days=days, scores={})
+    if len(ids) > 200:
+        raise HTTPException(422, "Maximum 200 user_ids per request")
+
+    raw = await log_store.get_bulk_user_automation_scores(ids, days=days)
+    return BulkUserAutomationScoresResponse(
+        days=days,
+        scores={uid: _automation_score_item(rec) for uid, rec in raw.items()},
+    )
 
 
 @router.get("/users/summary", response_model=UsersSummaryResponse)
@@ -370,6 +462,43 @@ async def reject_user(
     )
 
 
+@router.get("/users/{user_id}/automation-score", response_model=UserAutomationScore)
+async def admin_get_user_automation_score(
+    user_id: str,
+    days: int = 30,
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> UserAutomationScore:
+    """Human-vs-script automation score for a single user (1..90 days, default 30).
+
+    HIGH (→1) means the user's traffic looks script/batch/cron-driven, LOW (→0)
+    interactive-human. A user with no requests in the window returns a neutral,
+    ``insufficient_data`` score rather than a 404.
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+    if days < 1 or days > 90:
+        raise HTTPException(422, "days must be between 1 and 90")
+
+    rec = await log_store.get_user_automation_score(user_id, days=days)
+    if rec is None:
+        # No traffic in the window — report a neutral, low-confidence verdict so
+        # the dashboard renders "insufficient data" instead of erroring.
+        return UserAutomationScore(
+            user_id=user_id,
+            days=days,
+            score=0.5,
+            confidence=0.0,
+            band="mixed_or_uncertain",
+            insufficient_data=True,
+            n_req=0,
+            agent_share=0.0,
+            signals={},
+            detail={},
+        )
+    return _automation_score_item(rec)
+
+
 @router.get("/users/{user_id}/detail", response_model=UserDetailResponse)
 async def get_user_detail(
     user_id: str,
@@ -397,15 +526,25 @@ async def get_user_detail(
     usage_month_req = 0
     models_used: list[str] = []
     last_request_at = None
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
 
-    if has_key and log_store:
+    # Usage detail is keyed by user_id in api_logs, so historical stats survive
+    # key revocation (suspended / soft-deleted users). Read it whenever the log
+    # store exists. Cost/usage fields stay gated on an active key to preserve
+    # existing detail-panel behavior; the turn averages are always surfaced so
+    # they stay consistent with the bulk list endpoint.
+    if log_store:
         detail = await log_store.get_user_detail_usage(user_id)
-        usage_today_usd = detail.get("usage_today_usd", 0.0)
-        usage_today_req = detail.get("usage_today_requests", 0)
-        usage_month_usd = detail.get("usage_month_usd", 0.0)
-        usage_month_req = detail.get("usage_month_requests", 0)
-        models_used = detail.get("models_used", [])
-        last_request_at = detail.get("last_request_at")
+        avg_turns = detail.get("avg_turns")
+        avg_user_turns = detail.get("avg_user_turns")
+        if has_key:
+            usage_today_usd = detail.get("usage_today_usd", 0.0)
+            usage_today_req = detail.get("usage_today_requests", 0)
+            usage_month_usd = detail.get("usage_month_usd", 0.0)
+            usage_month_req = detail.get("usage_month_requests", 0)
+            models_used = detail.get("models_used", [])
+            last_request_at = detail.get("last_request_at")
 
     return UserDetailResponse(
         id=user_row["id"],
@@ -432,6 +571,9 @@ async def get_user_detail(
         disabled_models=get_disabled_models_from_preferences(user_row.get("preferences")),
         last_request_at=last_request_at,
         max_concurrent_requests=user_row.get("max_concurrent_requests"),
+        admin_note=user_row.get("admin_note"),
+        avg_turns=avg_turns,
+        avg_user_turns=avg_user_turns,
     )
 
 
@@ -501,6 +643,15 @@ async def update_user(
     if "max_concurrent_requests" in payload_dict:
         user_table_updates["max_concurrent_requests"] = payload_dict["max_concurrent_requests"]
         updated.append("max_concurrent_requests")
+    if "admin_note" in payload_dict:
+        note = payload_dict["admin_note"]
+        # Normalize blank/whitespace-only notes to NULL so "clear the note"
+        # works regardless of whether the client sends "" or null.
+        if isinstance(note, str):
+            note = note.strip() or None
+        user_table_updates["admin_note"] = note
+        payload_dict["admin_note"] = note
+        updated.append("admin_note")
     if user_table_updates:
         await op_store.update_user_fields(user_id, **user_table_updates)
 
@@ -709,6 +860,7 @@ async def hard_delete_user(
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    response_store=Depends(get_response_store),
 ) -> HardDeleteUserResponse:
     """Permanently delete a user and all linked rows.
 
@@ -758,6 +910,12 @@ async def hard_delete_user(
     # audit are untouched and the admin can retry.
     if log_store is not None:
         await log_store.hard_delete_user_data(user_id)
+
+    # Purge stored Responses API rows (openai_responses) — owned by neither the
+    # log store nor the operational store, but containing the user's full
+    # conversation JSONB, so it must be wiped here too.
+    if response_store is not None:
+        await response_store.delete_user_responses(user_id)
 
     # Wipe operational rows + write the new hard-delete audit row, atomically.
     await op_store.hard_delete_user(

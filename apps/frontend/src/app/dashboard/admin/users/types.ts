@@ -17,6 +17,7 @@ export interface UserRow {
   reviewed_at: string | null;
   reviewed_by: string | null;
   signup_reason: string | null;
+  admin_note: string | null;
   created_at: string;
   last_login_at: string | null;
   has_key: boolean;

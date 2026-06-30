@@ -2,11 +2,16 @@
 
 import { Sparkline } from './Sparkline';
 import { isAnomalous } from './lib/anomaly';
+import { bandStyle } from './lib/automation';
+import type { UserAutomationScore, UserTurnAverages } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, UserRow as User } from './types';
 
 interface UserRowProps {
   user: User;
   history: CostHistoryPoint[] | undefined; // 7d
+  turns: UserTurnAverages | undefined;
+  automation: UserAutomationScore | undefined;
+  scoreState: 'idle' | 'loading' | 'loaded';
   pageMedianToday: number;
   density: Density;
   expanded: boolean;
@@ -34,6 +39,9 @@ function todayCostBucket(cost: number, median: number): string {
 export function UserRow({
   user,
   history,
+  turns,
+  automation,
+  scoreState,
   pageMedianToday,
   density,
   expanded,
@@ -68,8 +76,19 @@ export function UserRow({
         </span>
       </td>
       <td className="max-w-[12rem] px-2">
-        <div className="truncate font-medium text-gray-900" title={user.email}>
-          {user.email}
+        <div className="flex items-center gap-1 font-medium text-gray-900">
+          <span className="truncate" title={user.email}>
+            {user.email}
+          </span>
+          {user.admin_note && (
+            <span
+              className="shrink-0 text-amber-500"
+              title={`Admin note: ${user.admin_note}`}
+              aria-label="Has admin note"
+            >
+              📝
+            </span>
+          )}
         </div>
         {density === 'comfortable' && user.user_name && (
           <div className="truncate text-xs text-gray-500" title={user.user_name}>
@@ -89,6 +108,26 @@ export function UserRow({
       <td className="px-2 font-mono text-sm">${Number(user.usage_month_usd).toFixed(2)}</td>
       <td className="px-2 font-mono text-sm text-gray-600">
         ${Number(user.usage_alltime_usd).toFixed(2)}
+      </td>
+      <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
+        {turns?.avg_turns != null ? turns.avg_turns.toFixed(1) : '—'}
+      </td>
+      <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
+        {turns?.avg_user_turns != null ? turns.avg_user_turns.toFixed(1) : '—'}
+      </td>
+      <td className="px-2 text-sm">
+        {automation ? (
+          <span
+            className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[11px] font-medium tabular-nums ring-1 ring-inset ${bandStyle(automation.band).chip}`}
+            title={`${bandStyle(automation.band).label} · score ${automation.score.toFixed(2)} · confidence ${automation.confidence.toFixed(2)}${automation.insufficient_data ? ' · insufficient data' : ''}`}
+          >
+            {automation.score.toFixed(2)}
+          </span>
+        ) : scoreState === 'loading' ? (
+          <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+        ) : scoreState === 'loaded' ? (
+          <span className="text-gray-300">—</span>
+        ) : null}
       </td>
       <td className="px-2 text-xs">{user.status.replace('_', ' ')}</td>
       <td className="px-2 text-center">

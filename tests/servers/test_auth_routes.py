@@ -758,10 +758,10 @@ class TestEmailVerification:
         assert response.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_verify_email_used_token(
+    async def test_verify_email_used_token_is_idempotent(
         self, auth_app_client: AsyncClient, test_user, auth_backend
     ):
-        """Test email verification with already used token fails."""
+        """Test email verification with already used token succeeds."""
         import secrets
 
         operational_store, _, _, _ = auth_backend
@@ -780,7 +780,35 @@ class TestEmailVerification:
 
         response = await auth_app_client.get(f"/auth/verify-email?token={token}")
 
-        assert response.status_code == 400
+        assert response.status_code == 200
+        assert response.json()["email_verified"] is True
+
+    @pytest.mark.asyncio
+    async def test_verify_email_used_token_repairs_unverified_user(
+        self, auth_app_client: AsyncClient, test_user, auth_backend
+    ):
+        """Regression: a used token should not leave the user stuck unverified."""
+        import secrets
+
+        operational_store, _, _, _ = auth_backend
+
+        token = secrets.token_urlsafe(32)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+
+        await operational_store.update_user_fields(test_user["id"], email_verified=False)
+        await operational_store.create_verification_token(
+            token=token,
+            user_id=test_user["id"],
+            expires_at=expires_at,
+        )
+        await operational_store.mark_verification_used(token)
+
+        response = await auth_app_client.get(f"/auth/verify-email?token={token}")
+
+        assert response.status_code == 200
+        assert response.json()["email_verified"] is True
+        user = await operational_store.get_user_by_id(test_user["id"])
+        assert user["email_verified"] is True or user["email_verified"] == 1
 
 
 class TestAuthFlow:

@@ -166,9 +166,15 @@ async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_record
     recorded: list[str] = []
     original_on_failure = exe._on_failure  # type: ignore[attr-defined]
 
-    def record_failure(endpoint_id: str, *, reason: str, detail: str | None = None) -> None:
+    def record_failure(
+        endpoint_id: str,
+        *,
+        reason: str,
+        detail: str | None = None,
+        exc: BaseException | None = None,
+    ) -> None:
         recorded.append(endpoint_id)
-        original_on_failure(endpoint_id, reason=reason, detail=detail)
+        original_on_failure(endpoint_id, reason=reason, detail=detail, exc=exc)
 
     original_push = routers_mod.req_ctx.push
 
@@ -328,6 +334,21 @@ class TestHasNonEmptyContent:
             'data: {"choices": [{"delta": {"tool_calls": '
             '[{"index": 0, "function": {"arguments": "{\\"x\\": 1}"}}]}}]}\n\n'
         )
+        assert _has_non_empty_content(chunk) is True
+
+    def test_reasoning_content_delta(self):
+        """reasoning_content should be treated as output for streaming TTFT/race gates."""
+        chunk = 'data: {"choices": [{"delta": {"reasoning_content": "thinking"}}]}\n\n'
+        assert _has_non_empty_content(chunk) is True
+
+    def test_reasoning_delta(self):
+        """Some providers use delta.reasoning instead of delta.reasoning_content."""
+        chunk = 'data: {"choices": [{"delta": {"reasoning": "thinking"}}]}\n\n'
+        assert _has_non_empty_content(chunk) is True
+
+    def test_thinking_delta(self):
+        """The real-eval transport also treats delta.thinking as output."""
+        chunk = 'data: {"choices": [{"delta": {"thinking": "thinking"}}]}\n\n'
         assert _has_non_empty_content(chunk) is True
 
     def test_empty_tool_calls(self):

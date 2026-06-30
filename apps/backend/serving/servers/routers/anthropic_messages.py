@@ -18,6 +18,7 @@ this router only owns:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import json
 import time
@@ -35,11 +36,23 @@ from serving.observability.rejection_log import log_rejection
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip_info
+from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Streaming keepalive. Anthropic clients (e.g. Claude Code) drop a streaming
+# request after ~30s of silence, but slow upstream backends can take longer to
+# emit a first token. During idle gaps the stream emits an SSE comment heartbeat
+# every _KEEPALIVE_INTERVAL seconds to keep the connection alive, giving the
+# upstream up to _MAX_STREAM_IDLE seconds to produce the next chunk before we
+# give up. _STREAM_SENTINEL marks end-of-upstream on the internal queue.
+_KEEPALIVE_INTERVAL = 15
+_MAX_STREAM_IDLE = 120
+_STREAM_SENTINEL: Any = object()
 
 
 # --- Anthropic-format error envelope ---------------------------------------
@@ -134,14 +147,17 @@ async def _resolve(
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
     if route is None:
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = (user_ctx or {}).get("role", "free")
     if model_visibility_resolver is not None:
         required = await model_visibility_resolver.get_effective_required_role(canonical, required)
     if not has_role(user_role, required):
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     if is_model_disabled_for_user(canonical, user_ctx):
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     if not route.adapters:
         raise HTTPException(404, f"Model '{model_id}' has no adapters")
@@ -393,6 +409,153 @@ def _finalize_response_acc(acc: dict | None) -> dict | None:
     return acc
 
 
+# Above this many characters, estimate with a cheap char heuristic instead of
+# tiktoken. Usage recovery runs in the streaming teardown path; coding agents
+# send very large contexts, and a full tiktoken encode of hundreds of KB would
+# block the event loop. ~400K chars is well past any real prompt's token cap.
+_ESTIMATE_CHAR_CAP = 400_000
+
+
+def _bounded_text_tokens(text: str) -> int:
+    """:func:`estimate_text_tokens` with a size cap for the teardown path."""
+    if len(text) > _ESTIMATE_CHAR_CAP:
+        return max(1, len(text) // 4)
+    return estimate_text_tokens(text)
+
+
+def _estimate_request_input_tokens(request_payload: dict[str, Any] | None) -> int:
+    """Estimate prompt tokens from a stored Anthropic request payload.
+
+    Folds the top-level ``system`` prompt into the message list (Anthropic keeps
+    it separate from ``messages``) and adds a coarse estimate for tool schemas,
+    since coding agents send large tool definitions. Used only as a fallback
+    when the upstream never reported usage (see :func:`_resolve_stream_usage`).
+    """
+    if not isinstance(request_payload, dict):
+        return 0
+    messages = request_payload.get("messages")
+    est_messages: list[dict[str, Any]] = list(messages) if isinstance(messages, list) else []
+    system = request_payload.get("system")
+    if system:
+        # ``system`` is a string or a list of content blocks; both shapes are
+        # handled by the content estimator via a synthetic system message.
+        est_messages = [{"role": "system", "content": system}, *est_messages]
+    # estimate_prompt_tokens is multimodal-safe (it flat-counts image/audio
+    # blocks rather than tokenizing base64 payloads), so it is used as-is.
+    total = estimate_prompt_tokens(est_messages)
+    tools = request_payload.get("tools")
+    if isinstance(tools, list) and tools:
+        with contextlib.suppress(TypeError, ValueError):
+            total += _bounded_text_tokens(json.dumps(tools))
+    return total
+
+
+def _accumulated_output_text(response_acc: dict | None) -> str:
+    """Concatenate assistant text/thinking/tool-call JSON from the accumulated response.
+
+    Used for an output-token estimate when the upstream omitted usage. Expects a
+    finalized accumulator (tool_use ``input`` already resolved).
+    """
+    if not isinstance(response_acc, dict):
+        return ""
+    parts: list[str] = []
+    for block in response_acc.get("content") or []:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+        elif btype == "thinking" and isinstance(block.get("thinking"), str):
+            parts.append(block["thinking"])
+        elif btype == "tool_use":
+            inp = block.get("input")
+            if isinstance(inp, str):
+                parts.append(inp)
+            elif inp:
+                with contextlib.suppress(TypeError, ValueError):
+                    parts.append(json.dumps(inp))
+    return "".join(parts)
+
+
+def _resolve_stream_usage(
+    request_usage: dict[str, int],
+    response_acc: dict | None,
+    request_payload: dict[str, Any] | None,
+) -> tuple[dict[str, int], bool]:
+    """Resolve the usage to log for a streaming request, recovering lost counts.
+
+    When the upstream stream is cut short before the adapter flushes
+    ``usage_sink``, the counts are recovered from the forwarded stream or
+    estimated rather than logged as zero.
+
+    On a normal completion the adapter populates ``request_usage`` (input +
+    output) at end of stream, so it is used verbatim. But when the client
+    disconnects mid-stream -- common with coding agents that abort slow requests
+    -- ``usage_sink`` is never flushed and ``request_usage`` stays all zero,
+    which previously logged 0 input / 0 output even though a prompt was sent and
+    tokens may already have been produced.
+
+    Recovery, applied only when ``request_usage`` is empty:
+      1. Real partial input/cache usage observed on the forwarded stream
+         (``response_acc``'s ``message_start`` -- the native passthrough
+         captures these even mid-stream).
+      2. Estimate input tokens from the request payload (messages + system).
+      3. Output: the larger of any observed count and an estimate from the
+         accumulated assistant content.
+
+    Returns ``(usage, estimated)`` where ``usage`` is the Anthropic-shaped dict
+    and ``estimated`` is True when any field was filled by estimation.
+    """
+    base = {
+        "input_tokens": int(request_usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(request_usage.get("output_tokens", 0) or 0),
+        "cache_read_input_tokens": int(request_usage.get("cache_read_input_tokens", 0) or 0),
+        "cache_creation_input_tokens": int(
+            request_usage.get("cache_creation_input_tokens", 0) or 0
+        ),
+    }
+    # Adapter flushed real usage (normal completion) -> trust it as-is.
+    if base["input_tokens"] or base["output_tokens"]:
+        return base, False
+
+    estimated = False
+
+    # 1. Real partial input/cache usage captured from the forwarded SSE. The
+    #    native passthrough fills message_start.input_tokens (and cache counts)
+    #    mid-stream; its output_tokens is only a placeholder, handled in step 3.
+    acc_usage = response_acc.get("usage") if isinstance(response_acc, dict) else None
+    if isinstance(acc_usage, dict):
+        for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+            value = acc_usage.get(key)
+            if isinstance(value, int) and value > 0:
+                base[key] = value
+
+    # 2. Estimate input from the request when still unknown (translator path, or
+    #    a disconnect before message_start was forwarded).
+    if base["input_tokens"] == 0:
+        est_in = _estimate_request_input_tokens(request_payload)
+        if est_in > 0:
+            base["input_tokens"] = est_in
+            estimated = True
+
+    # 3. Output tokens. message_start carries only a placeholder count (e.g. 1);
+    #    the real total arrives in the terminal message_delta, which never fires
+    #    on a mid-stream disconnect. Take the larger of any observed count and an
+    #    estimate from the accumulated content, so a long partial response is not
+    #    logged as ~1 output token.
+    observed_output = 0
+    if isinstance(acc_usage, dict):
+        value = acc_usage.get("output_tokens")
+        if isinstance(value, int) and value > 0:
+            observed_output = value
+    est_out = _bounded_text_tokens(_accumulated_output_text(response_acc))
+    base["output_tokens"] = max(observed_output, est_out)
+    if est_out > observed_output:
+        estimated = True
+
+    return base, estimated
+
+
 def _log_failure(
     log_store,
     *,
@@ -590,29 +753,90 @@ async def anthropic_messages(
             response_acc: dict | None = None
             sse_buffer = b""
             try:
-                async for chunk in adapter.stream_messages(
+                upstream = adapter.stream_messages(
                     body,
                     request_id=request_id,
                     usage_sink=request_usage,
                     extra_headers=forwarded_headers,
-                ):
-                    if isinstance(chunk, str):
-                        chunk = chunk.encode("utf-8")
-                    if ttft_ms is None:
-                        ttft_buffer += chunk
-                        nl = ttft_buffer.rfind(b"\n")
-                        if nl >= 0:
-                            head = ttft_buffer[: nl + 1]
-                            ttft_buffer = ttft_buffer[nl + 1 :]
-                            if b"event: content_block_delta" in head:
-                                ttft_ms = int((time.time() - start) * 1000)
+                )
+                # Consume the upstream via a queue + background reader so idle
+                # gaps can be filled with keepalive heartbeats without cancelling
+                # the upstream read (see _KEEPALIVE_INTERVAL / _MAX_STREAM_IDLE).
+                # The queue MUST stay unbounded: a bounded queue can wedge teardown
+                # -- if a fast upstream fills it while the client is gone, the
+                # reader parks on put(), and on cancel its finally sentinel-put
+                # blocks forever on the full queue, leaking the upstream connection.
+                chunk_queue: asyncio.Queue = asyncio.Queue()
+
+                async def _reader() -> None:
+                    try:
+                        async for c in upstream:
+                            await chunk_queue.put(c)
+                    except Exception as exc:
+                        # Forward upstream errors to the main loop to re-raise.
+                        await chunk_queue.put(exc)
+                    finally:
+                        await chunk_queue.put(_STREAM_SENTINEL)
+
+                reader_task = asyncio.create_task(_reader())
+                idle_seconds = 0.0
+                try:
+                    while True:
+                        try:
+                            item = await asyncio.wait_for(
+                                chunk_queue.get(), timeout=_KEEPALIVE_INTERVAL
+                            )
+                        except asyncio.TimeoutError:
+                            idle_seconds += _KEEPALIVE_INTERVAL
+                            if idle_seconds >= _MAX_STREAM_IDLE:
+                                stream_failed = True
+                                stream_status_code = 504
+                                stream_error_message = (
+                                    f"Upstream sent no data for {_MAX_STREAM_IDLE}s"
+                                )
+                                logger.warning(
+                                    f"[{request_id}] Stream idle timeout after "
+                                    f"{_MAX_STREAM_IDLE}s; aborting"
+                                )
+                                err = {
+                                    "type": "error",
+                                    "error": {
+                                        "type": "api_error",
+                                        "message": stream_error_message,
+                                    },
+                                }
+                                yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+                                break
+                            # Heartbeat so a slow stream isn't dropped by the client.
+                            yield b": keepalive\n\n"
+                            continue
+                        idle_seconds = 0.0
+                        if item is _STREAM_SENTINEL:
+                            break
+                        if isinstance(item, Exception):
+                            raise item
+                        chunk = item
+                        if isinstance(chunk, str):
+                            chunk = chunk.encode("utf-8")
+                        if ttft_ms is None:
+                            ttft_buffer += chunk
+                            nl = ttft_buffer.rfind(b"\n")
+                            if nl >= 0:
+                                head = ttft_buffer[: nl + 1]
+                                ttft_buffer = ttft_buffer[nl + 1 :]
+                                if b"event: content_block_delta" in head:
+                                    ttft_ms = int((time.time() - start) * 1000)
+                                    ttft_buffer = b""
+                            elif len(ttft_buffer) > 16384:
                                 ttft_buffer = b""
-                        elif len(ttft_buffer) > 16384:
-                            ttft_buffer = b""
-                    events, sse_buffer = _parse_sse_chunk(sse_buffer, chunk)
-                    for event_type, data in events:
-                        response_acc = _apply_sse_event(response_acc, event_type, data)
-                    yield chunk
+                        events, sse_buffer = _parse_sse_chunk(sse_buffer, chunk)
+                        for event_type, data in events:
+                            response_acc = _apply_sse_event(response_acc, event_type, data)
+                        yield chunk
+                finally:
+                    reader_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await reader_task
             except aiohttp.ClientResponseError as exc:
                 stream_failed = True
                 stream_status_code = exc.status
@@ -642,19 +866,41 @@ async def anthropic_messages(
             finally:
                 latency_ms = int((time.time() - start) * 1000)
                 if log_store:
+                    final_acc = _finalize_response_acc(response_acc)
+                    # A client disconnect (CancelledError) skips the adapter's
+                    # end-of-stream usage_sink flush, so request_usage is still
+                    # all zero here. Recover the best-available counts rather
+                    # than logging a 0-token row. Failed streams keep their
+                    # zeros: don't attribute usage/cost to an errored request.
+                    try:
+                        if stream_failed:
+                            resolved_usage, usage_estimated = request_usage, False
+                        else:
+                            resolved_usage, usage_estimated = _resolve_stream_usage(
+                                request_usage, final_acc, request_payload_for_log
+                            )
+                    except Exception:
+                        # Usage recovery must never cost us the log row itself.
+                        logger.debug(
+                            f"[{request_id}] stream usage resolution failed", exc_info=True
+                        )
+                        resolved_usage, usage_estimated = request_usage, False
+                    log_metadata = (
+                        {**metadata, "usage_estimated": True} if usage_estimated else metadata
+                    )
                     _schedule_log_store_task(
                         log_store,
                         request_id=request_id,
                         model_id=canonical,
                         provider=adapter.config.provider,
-                        usage=request_usage,
+                        usage=resolved_usage,
                         latency_ms=latency_ms,
                         status_code=stream_status_code,
                         pricing=adapter.config.pricing,
-                        metadata=metadata,
+                        metadata=log_metadata,
                         params=params_for_log,
                         prompt=messages_for_log,
-                        response=_finalize_response_acc(response_acc),
+                        response=final_acc,
                         request_payload=request_payload_for_log,
                         ttft_ms=ttft_ms,
                         error=stream_error_message if stream_failed else None,

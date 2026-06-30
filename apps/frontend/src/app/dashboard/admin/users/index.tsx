@@ -20,6 +20,9 @@ import { UserTable } from './UserTable';
 import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
 import { useBulkCostHistory } from './hooks/useUserCostHistory';
+import { useBulkTurnAverages } from './hooks/useUserTurnAverages';
+import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
+import { compareByScore } from './lib/automation';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
 import { getViewById } from './lib/views';
 import type { Density, FilterState, UserRow } from './types';
@@ -142,6 +145,48 @@ export default function UsersTab() {
   const userIds = users.map((u) => u.id);
   const histQuery = useBulkCostHistory(userIds, 7, density === 'comfortable');
   const costHistories = histQuery.data ?? {};
+  const turnQuery = useBulkTurnAverages(userIds);
+  const turnAverages = turnQuery.data ?? {};
+
+  // Automation score (human vs. script) is computed on demand: the admin clicks
+  // the "Automation" column header to run it for the current page, then can
+  // click again to sort the page by score (client-side, since it is a computed
+  // metric the server doesn't sort by).
+  const [scoreRun, setScoreRun] = useState(false);
+  const [scoreSortDir, setScoreSortDir] = useState<'desc' | 'asc' | null>(null);
+  const scoreQuery = useBulkAutomationScores(userIds, 30, scoreRun);
+  const automationScores = scoreQuery.data ?? {};
+  const scoreState: 'idle' | 'loading' | 'loaded' = scoreQuery.isFetching
+    ? 'loading'
+    : scoreRun
+      ? 'loaded'
+      : 'idle';
+
+  useEffect(() => {
+    if (scoreQuery.error) toast.error(getErrorMessage(scoreQuery.error));
+  }, [scoreQuery.error]);
+
+  // Re-gate scoring whenever the visible set of users changes (pagination,
+  // page-size, or filters). Without this, a single header click would leave
+  // `scoreRun` true and auto-fire the comparatively expensive bulk scoring on
+  // every subsequent page, defeating the on-demand gate.
+  useEffect(() => {
+    setScoreRun(false);
+    setScoreSortDir(null);
+  }, [page, pageSize, filterState]);
+
+  const onScoreHeader = () => {
+    if (!scoreRun) {
+      setScoreRun(true);
+      setScoreSortDir('desc');
+      return;
+    }
+    setScoreSortDir((d) => (d === 'desc' ? 'asc' : d === 'asc' ? null : 'desc'));
+  };
+
+  const byScore = (a: UserRow, b: UserRow) =>
+    compareByScore(automationScores[a.id], automationScores[b.id], scoreSortDir ?? 'desc');
+  const displayRows = scoreSortDir ? [...userRows].sort(byScore) : userRows;
 
   // Card click → apply built-in view filter
   const onCardClick = (cardId: SummaryCardId) => {
@@ -250,8 +295,13 @@ export default function UsersTab() {
       {!usersQuery.isLoading && (
         <>
           <UserTable
-            users={userRows}
+            users={displayRows}
             costHistories={costHistories}
+            turnAverages={turnAverages}
+            automationScores={automationScores}
+            scoreState={scoreState}
+            scoreSortDir={scoreSortDir}
+            onScoreHeader={onScoreHeader}
             density={density}
             filterState={filterState}
             onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}

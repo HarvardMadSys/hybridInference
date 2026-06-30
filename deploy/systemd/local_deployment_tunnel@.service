@@ -1,0 +1,46 @@
+[Unit]
+# Reverse SSH tunnel that exposes the local_deployment_proxy (port LISTEN_PORT
+# on this GPU box) to a public router, binding REMOTE_PORT there so the router's
+# backend container can reach the model at host.docker.internal:REMOTE_PORT.
+#
+# Templated per router host: the instance name (%i) is the SSH destination, e.g.
+#   systemctl enable --now local_deployment_tunnel@internal.freeinference.org
+#   systemctl enable --now local_deployment_tunnel@spark2
+#
+# Pairs with local_deployment_proxy.service (the local listener). autossh keeps
+# the tunnel alive across link drops; Restart=always plus WantedBy below also
+# bring it back after a reboot of this GPU box — the gap that left port 8001
+# dark after the gateway rebooted.
+Description=local deployment reverse tunnel to %i (autossh)
+Wants=network-online.target local_deployment_proxy.service
+After=network-online.target local_deployment_proxy.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# autossh respawns ssh whenever it exits; -M 0 disables the legacy monitoring
+# port and relies on ServerAliveInterval/CountMax + ExitOnForwardFailure to
+# detect a dead link. GATETIME=0 keeps retrying even if the first dial fails
+# (e.g. the router is still booting).
+Environment=AUTOSSH_GATETIME=0
+Environment=LISTEN_PORT=8001
+Environment=REMOTE_PORT=8001
+Environment=REMOTE_BIND=0.0.0.0
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -R ${REMOTE_BIND}:${REMOTE_PORT}:localhost:${LISTEN_PORT} \
+  %i
+
+Restart=always
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=local-deployment-tunnel@%i
+
+[Install]
+WantedBy=multi-user.target

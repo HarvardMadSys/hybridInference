@@ -161,6 +161,8 @@ class UserListItem(BaseModel):
     reviewed_by: str | None = None
     # Free-text use case submitted at signup; helps admins review pending users.
     signup_reason: str | None = None
+    # Free-text admin-only annotation about the user (any status).
+    admin_note: str | None = None
     created_at: datetime
     last_login_at: datetime | None = None
     # API key info (populated via LEFT JOIN)
@@ -217,6 +219,66 @@ class BulkUserCostHistoryResponse(BaseModel):
 
     days: int
     histories: dict[str, list[UserCostHistoryPoint]]  # keyed by user_id
+
+
+class UserTurnAverages(BaseModel):
+    """Mean conversation depth across a user's chat requests (all-time).
+
+    ``avg_turns`` is the average message count per chat request and
+    ``avg_user_turns`` the average user-message count. Both are ``None`` when
+    the user has no chat-style requests logged.
+    """
+
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
+
+
+class BulkUserTurnAveragesResponse(BaseModel):
+    """Per-user average turn counts for many users (one round-trip per page)."""
+
+    averages: dict[str, UserTurnAverages]  # keyed by user_id
+
+
+class AutomationSignal(BaseModel):
+    """One signal's contribution to a user's automation score.
+
+    ``sub`` is the signal's automation sub-score in ``[0, 1]`` (``None`` when the
+    signal lacked enough data and was dropped); ``weight`` is its default weight;
+    ``available`` is whether it contributed to the blended score.
+    """
+
+    sub: float | None = None
+    weight: float
+    available: bool
+
+
+class UserAutomationScore(BaseModel):
+    """Per-user human-vs-script automation score with its signal breakdown.
+
+    ``score`` in ``[0, 1]``: HIGH means script/batch/cron-driven, LOW means an
+    interactive human (incl. human-driven coding agents). ``confidence`` reflects
+    how much data backed the verdict; ``insufficient_data`` flags low-volume
+    users whose score is shrunk toward the neutral 0.5 prior. ``detail`` exposes
+    the raw metrics behind the sub-scores so a verdict is auditable.
+    """
+
+    user_id: str
+    days: int
+    score: float
+    confidence: float
+    band: str
+    insufficient_data: bool
+    n_req: int
+    agent_share: float
+    signals: dict[str, AutomationSignal]
+    detail: dict[str, float | None]
+
+
+class BulkUserAutomationScoresResponse(BaseModel):
+    """Per-user automation scores for many users (one round-trip per page)."""
+
+    days: int
+    scores: dict[str, UserAutomationScore]  # keyed by user_id
 
 
 class SummaryUserItem(BaseModel):
@@ -305,6 +367,13 @@ class UserDetailResponse(BaseModel):
     disabled_models: list[str] = Field(default_factory=list)
     last_request_at: datetime | None = None
     max_concurrent_requests: int | None = None
+    # Free-text admin-only annotation about the user (any status).
+    admin_note: str | None = None
+    # Mean conversation depth across this user's chat requests (all-time).
+    # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
+    # user-message count; both None when the user has no chat-style requests.
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
 
 
 class UpdateUserRequest(BaseModel):
@@ -320,6 +389,8 @@ class UpdateUserRequest(BaseModel):
     quota_monthly_cost_usd: Decimal | None = Field(None, ge=0)
     disabled_models: list[str] | None = None
     max_concurrent_requests: int | None = Field(None, ge=1)
+    # Free-text admin-only note. Send "" or null to clear it.
+    admin_note: str | None = Field(None, max_length=2000)
 
 
 class UpdateUserResponse(BaseModel):
@@ -629,10 +700,71 @@ class AdminAnalyticsResponse(BaseModel):
 
     period: str = Field(..., pattern="^(hour|day|week|month)$")
     active_users: int
+    # Mean conversation depth per chat request in the period. ``avg_turns`` is
+    # the average message count and ``avg_user_turns`` the average user-message
+    # count; both are None when the period has no chat-style requests (non-chat
+    # requests such as embeddings have NULL turn columns and are excluded).
+    avg_turns: float | None = None
+    avg_user_turns: float | None = None
     sparkline: list[SparklineBucket]
     top_users: list[AnalyticsUserEntry]
     by_model: list[AnalyticsBreakdownEntry]
     by_provider: list[AnalyticsBreakdownEntry]
+    generated_at: datetime
+
+
+# ========================================
+# Usage Insights (LLM-powered request analysis)
+# ========================================
+
+
+class UsageInsightsRequest(BaseModel):
+    """Request body for POST /admin/usage-insights/analyze.
+
+    The analysis provider (freeinference.org API key + model) is configured once
+    in Admin → Settings and read server-side; the request only chooses the scope
+    and sample size. Optionally analyze a single user (by id or email).
+    """
+
+    user_id: str | None = Field(None, description="Limit the sample to this user id")
+    user_email: str | None = Field(None, description="Limit the sample to this user's email")
+    limit: int = Field(40, ge=1, le=200, description="Number of requests to randomly sample")
+    max_chars: int = Field(
+        800, ge=100, le=4000, description="Truncate each sampled message to this many characters"
+    )
+
+
+class UsageInsightsSettings(BaseModel):
+    """Stored analysis-provider configuration (GET /admin/usage-insights/settings).
+
+    The raw API key is never returned; ``api_key_hint`` is a masked tail shown for
+    recognition only and ``configured`` reports whether a key is set.
+    """
+
+    configured: bool
+    api_key_hint: str | None = None
+    model: str
+
+
+class UsageInsightsSettingsUpdate(BaseModel):
+    """Body for PUT /admin/usage-insights/settings.
+
+    ``api_key`` semantics: ``None`` (omitted) keeps the stored key, an empty
+    string clears it, any other value replaces it. ``model`` updates the analysis
+    model when provided.
+    """
+
+    api_key: str | None = Field(None, description="New API key; '' clears it, omit to keep current")
+    model: str | None = Field(None, min_length=1, max_length=200, description="Analysis model id")
+
+
+class UsageInsightsResponse(BaseModel):
+    """Response for POST /admin/usage-insights/analyze."""
+
+    analysis: str  # Markdown narrative produced by the model
+    model: str
+    sampled_requests: int
+    scope: str  # "all users" or the resolved user email/id
     generated_at: datetime
 
 

@@ -1,10 +1,12 @@
 """Integration tests for multi-key rotation in OpenAICompatAdapter.
 
 Covers:
-- 429 on key K cools K down and the next call goes to a different key.
-- All keys returning 429 in one call propagates the last 429.
+- 429 on key K mutes K and the next call goes to a different key.
+- Other key-specific / transient errors (e.g. 500) and network errors also
+  mute K and rotate.
+- Request-scoped client errors (e.g. 400) propagate without muting or rotating.
+- All keys erroring in one call propagates the last error.
 - Single-`api_key` routes do NOT create a key pool (legacy path).
-- Non-429 errors (e.g. 500) never put a key in cooldown.
 
 The pool integration routes through ``OpenAICompatAdapter._post_with_pool``,
 which calls ``self.http.json_post`` (NOT ``json_post_with_retry``) when a pool
@@ -200,23 +202,149 @@ async def test_empty_pool_raises_keypool_exhausted_not_assertion():
         await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
 
-async def test_non_429_error_does_not_cooldown():
-    """A 500 error must not place a key in cooldown."""
+async def test_multi_key_rotates_on_non_429_error():
+    """First key 500s, second key returns 200; the 500 mutes only the first key."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
 
-    async def server_err(url, json, headers, timeout):
-        raise _make_response_error(500)
+    success_payload = {
+        "id": "x",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        "usage": {},
+    }
+
+    call_count = {"n": 0}
+
+    async def fake_json_post(url, json, headers, timeout):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            assert headers["Authorization"] == "Bearer k1"
+            raise _make_response_error(500)
+        assert headers["Authorization"] == "Bearer k2"
+        return success_payload
+
+    with patch.object(adapter.http, "json_post", side_effect=fake_json_post):
+        result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert call_count["n"] == 2
+    assert "choices" in result
+    # k1 was muted by the 500; k2 served the request and stayed clean.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_multi_key_rotates_on_network_error():
+    """A connection error (no HTTP status) mutes the key and rotates."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    success_payload = {
+        "id": "x",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}}],
+        "usage": {},
+    }
+
+    call_count = {"n": 0}
+
+    async def fake_json_post(url, json, headers, timeout):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            assert headers["Authorization"] == "Bearer k1"
+            raise aiohttp.ServerDisconnectedError("connection reset")
+        assert headers["Authorization"] == "Bearer k2"
+        return success_payload
+
+    with patch.object(adapter.http, "json_post", side_effect=fake_json_post):
+        result = await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert call_count["n"] == 2
+    assert "choices" in result
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_request_scoped_4xx_propagates_without_muting():
+    """A 400 fails fast: it does not mute the key or rotate to the others."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    call_count = {"n": 0}
+
+    async def bad_request(url, json, headers, timeout):
+        call_count["n"] += 1
+        raise _make_response_error(400)
 
     with (
-        patch.object(adapter.http, "json_post", side_effect=server_err),
-        pytest.raises(aiohttp.ClientResponseError),
+        patch.object(adapter.http, "json_post", side_effect=bad_request),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
     ):
         await adapter.chat_completion([{"role": "user", "content": "hi"}])
 
-    # Neither key entered cooldown.
+    assert exc_info.value.status == 400
+    # Only the first key was tried; no rotation, no muting.
+    assert call_count["n"] == 1
     assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until == 0
     assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_all_keys_500_keeps_last_key_usable():
+    """Every key 500s (transient) -> all but the last key muted; last 500 propagates."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    async def always_500(url, json, headers, timeout):
+        raise _make_response_error(500)
+
+    with (
+        patch.object(adapter.http, "json_post", side_effect=always_500),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.status == 500
+    # k1 was muted; k2 (the last usable key) is kept in service for a transient
+    # error so a provider blip can't take the whole route offline.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
+async def test_all_keys_429_mute_entire_pool():
+    """Every key 429s (key-specific) -> all keys muted, including the last."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    async def always_429(url, json, headers, timeout):
+        raise _make_response_error(429, retry_after="1")
+
+    with (
+        patch.object(adapter.http, "json_post", side_effect=always_429),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.status == 429
+    # Quota is key-specific, so even the last key is muted.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+    assert adapter._key_pool._keys[1].cooldown_until > 0
+
+
+async def test_single_key_transient_error_does_not_mute():
+    """A transient 5xx on a sole-key pool must not take the route offline."""
+    adapter = OpenAICompatAdapter(_make_config(["only"]))
+
+    async def always_500(url, json, headers, timeout):
+        raise _make_response_error(500)
+
+    with (
+        patch.object(adapter.http, "json_post", side_effect=always_500),
+        pytest.raises(aiohttp.ClientResponseError) as exc_info,
+    ):
+        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+
+    assert exc_info.value.status == 500
+    # The sole key stays usable so the next request still reaches the provider.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0
 
 
 def _make_stream_gen(
@@ -283,6 +411,40 @@ async def test_streaming_rotates_on_429_at_open():
     assert any("hi" in c for c in collected)
 
 
+async def test_streaming_open_io_error_does_not_replay_on_another_key():
+    """A non-status I/O failure while opening must not re-submit on another key.
+
+    The upstream may have returned 2xx and started streaming before the drop;
+    rotating would risk duplicate generation / double billing, so the error
+    propagates after a single attempt.
+    """
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    call_count = {"n": 0}
+
+    def stream_side_effect(*args, **kwargs):
+        call_count["n"] += 1
+
+        async def gen():
+            raise aiohttp.ServerDisconnectedError("body drop after 2xx")
+            yield  # pragma: no cover — makes this an async generator
+
+        return gen()
+
+    with (
+        patch.object(adapter.http, "stream_post", side_effect=stream_side_effect),
+        pytest.raises(aiohttp.ServerDisconnectedError),
+    ):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    # Only one upstream attempt — no replay on k2.
+    assert call_count["n"] == 1
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0
+    assert adapter._key_pool._keys[1].cooldown_until == 0
+
+
 async def test_streaming_pool_exhausted_propagates():
     """Every key 429s on stream open → final 429 propagates to the caller."""
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
@@ -302,3 +464,86 @@ async def test_streaming_pool_exhausted_propagates():
     assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until > 0
     assert adapter._key_pool._keys[1].cooldown_until > 0
+
+
+async def test_streaming_mid_stream_error_mutes_key():
+    """An error after the first chunk mutes the key via the error-status release."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    async def gen():
+        yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        yield 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+        raise aiohttp.ServerDisconnectedError("mid-stream drop")
+
+    with (
+        patch.object(adapter.http, "stream_post", return_value=gen()),
+        pytest.raises(aiohttp.ServerDisconnectedError),
+    ):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    # The committed key (k1) was muted by the mid-stream failure.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until > 0
+
+
+async def test_streaming_processor_error_does_not_mute_key():
+    """An adapter-side chunk-processing error is not key-specific, so no mute."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    sse_chunks = (
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        "data: [DONE]\n\n",
+    )
+
+    class _BoomProcessor:
+        def process_stream_chunk(self, data):
+            raise ValueError("bad chunk")
+
+        def flush(self):
+            return []
+
+    with (
+        patch.object(
+            adapter.http,
+            "stream_post",
+            side_effect=lambda *a, **k: _make_stream_gen(chunks=sse_chunks),
+        ),
+        patch(
+            "serving.adapters.openai_compat.get_processor",
+            return_value=_BoomProcessor(),
+        ),
+        pytest.raises(ValueError),
+    ):
+        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    # The processing error propagated, but the key was not muted.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0
+
+
+async def test_streaming_client_disconnect_does_not_mute_key():
+    """Client closing the stream early (GeneratorExit) must not mute the key."""
+    adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+
+    sse_chunks = (
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" there"}}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        "data: [DONE]\n\n",
+    )
+
+    with patch.object(
+        adapter.http, "stream_post", side_effect=lambda *a, **k: _make_stream_gen(chunks=sse_chunks)
+    ):
+        agen = adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+        # Pull the first chunk, then close the generator (simulated disconnect).
+        await agen.__anext__()
+        await agen.aclose()
+
+    # A client-side cancellation is not an upstream error — k1 stays usable.
+    assert adapter._key_pool is not None
+    assert adapter._key_pool._keys[0].cooldown_until == 0

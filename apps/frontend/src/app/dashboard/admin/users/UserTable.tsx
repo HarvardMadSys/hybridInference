@@ -1,7 +1,13 @@
 'use client';
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import type {
+  AdminModelVisibilityItem,
+  AdminUser,
+  UserAutomationScore,
+  UserDetail,
+  UserTurnAverages,
+} from '@/lib/api/admin';
 import { getUserDetail, listModelVisibility, updateUser as apiUpdateUser } from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
 import { UserRow } from './UserRow';
@@ -10,6 +16,11 @@ import { UserDetailPanel } from './UserDetailPanel';
 interface UserTableProps {
   users: UserRowType[];
   costHistories: Record<string, CostHistoryPoint[]>;
+  turnAverages: Record<string, UserTurnAverages>;
+  automationScores: Record<string, UserAutomationScore>;
+  scoreState: 'idle' | 'loading' | 'loaded';
+  scoreSortDir: 'desc' | 'asc' | null;
+  onScoreHeader: () => void;
   density: Density;
   filterState: FilterState;
   onSortChange: (sortBy: FilterState['sortBy']) => void;
@@ -39,7 +50,18 @@ function median(nums: number[]): number {
 }
 
 export function UserTable(props: UserTableProps) {
-  const { users, costHistories, density, filterState, onSortChange } = props;
+  const {
+    users,
+    costHistories,
+    turnAverages,
+    automationScores,
+    scoreState,
+    scoreSortDir,
+    onScoreHeader,
+    density,
+    filterState,
+    onSortChange,
+  } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -47,8 +69,10 @@ export function UserTable(props: UserTableProps) {
   const [editQuota, setEditQuota] = useState('');
   const [editDisabledModels, setEditDisabledModels] = useState<string[]>([]);
   const [editMaxConcurrent, setEditMaxConcurrent] = useState('');
+  const [editNote, setEditNote] = useState('');
   const [availableModels, setAvailableModels] = useState<AdminModelVisibilityItem[]>([]);
   const [saving, setSaving] = useState(false);
+  const [savingNote, setSavingNote] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const pageMedianToday = useMemo(
@@ -57,7 +81,16 @@ export function UserTable(props: UserTableProps) {
   );
 
   const showSparkline = density === 'comfortable';
-  const colSpan = showSparkline ? 10 : 9;
+  const colSpan = showSparkline ? 13 : 12;
+
+  const scoreIndicator =
+    scoreState === 'loaded'
+      ? scoreSortDir === 'desc'
+        ? ' ↓'
+        : scoreSortDir === 'asc'
+          ? ' ↑'
+          : ''
+      : '';
 
   const sortIndicator = (col: FilterState['sortBy']) => (filterState.sortBy === col ? ' ↓' : '');
   const ariaSortFor = (col: FilterState['sortBy']): 'ascending' | 'none' =>
@@ -79,6 +112,7 @@ export function UserTable(props: UserTableProps) {
       setEditQuota(d.quota_daily_usd?.toString() ?? '100');
       setEditDisabledModels(d.disabled_models ?? []);
       setEditMaxConcurrent(d.max_concurrent_requests?.toString() ?? '');
+      setEditNote(d.admin_note ?? '');
       setAvailableModels(visibility.models);
     } catch {
       setExpandedId(null);
@@ -113,6 +147,23 @@ export function UserTable(props: UserTableProps) {
       await props.onUpdate(expandedId, patch);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Admin note has its own save so it can be edited for users of any status,
+  // independent of the active-only role/quota editor below it.
+  const doSaveNote = async () => {
+    if (!expandedId || !detail) return;
+    const next = editNote.trim() ? editNote.trim() : null;
+    if (next === (detail.admin_note ?? null)) return;
+    setSavingNote(true);
+    try {
+      await props.onUpdate(expandedId, { admin_note: next });
+      const refreshed = await getUserDetail(expandedId);
+      setDetail(refreshed);
+      setEditNote(refreshed.admin_note ?? '');
+    } finally {
+      setSavingNote(false);
     }
   };
 
@@ -268,6 +319,25 @@ export function UserTable(props: UserTableProps) {
                   All-time{sortIndicator('cost_alltime')}
                 </button>
               </th>
+              <th className="px-2 py-2" title="Average messages per chat request (all-time)">
+                Avg turns
+              </th>
+              <th className="px-2 py-2" title="Average user messages per chat request (all-time)">
+                Avg user turns
+              </th>
+              <th className="px-2 py-2">
+                <button
+                  type="button"
+                  onClick={onScoreHeader}
+                  className="inline-flex cursor-pointer items-center gap-1"
+                  title="Automation score (human vs. script). Click to compute for this page, then click again to sort."
+                >
+                  <span>{scoreState === 'idle' ? 'Score ▸' : `Automation${scoreIndicator}`}</span>
+                  {scoreState === 'loading' && (
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
+                  )}
+                </button>
+              </th>
               <th className="px-2 py-2">Status</th>
               <th className="w-8 px-2 py-2" />
               <th className="px-2 py-2">Actions</th>
@@ -293,6 +363,7 @@ export function UserTable(props: UserTableProps) {
                 reviewed_at: u.reviewed_at,
                 reviewed_by: u.reviewed_by,
                 signup_reason: u.signup_reason,
+                admin_note: u.admin_note,
                 created_at: u.created_at,
                 last_login_at: u.last_login_at,
                 has_key: u.has_key,
@@ -308,6 +379,9 @@ export function UserTable(props: UserTableProps) {
                   <UserRow
                     user={u}
                     history={costHistories[u.id]}
+                    turns={turnAverages[u.id]}
+                    automation={automationScores[u.id]}
+                    scoreState={scoreState}
                     pageMedianToday={pageMedianToday}
                     density={density}
                     expanded={isExpanded}
@@ -336,14 +410,18 @@ export function UserTable(props: UserTableProps) {
                             editQuota={editQuota}
                             editDisabledModels={editDisabledModels}
                             editMaxConcurrent={editMaxConcurrent}
+                            editNote={editNote}
                             availableModels={availableModels}
                             saving={saving}
+                            savingNote={savingNote}
                             busy={busy}
                             onChangeRole={setEditRole}
                             onChangeQuota={setEditQuota}
                             onChangeDisabledModels={setEditDisabledModels}
                             onChangeMaxConcurrent={setEditMaxConcurrent}
+                            onChangeNote={setEditNote}
                             onSave={doSave}
+                            onSaveNote={doSaveNote}
                             onSuspend={doSuspend}
                             onReactivate={doReactivate}
                             onResume={doResume}

@@ -46,16 +46,31 @@ async def admin_get_analytics(
     # connections via asyncio.gather can starve the pool when two admin
     # analytics requests arrive concurrently (pool max_size is small).
     async with db_logger.pool.acquire() as conn:
-        active_users_row = await conn.fetchrow(
+        # active_users and the mean conversation depth share the same
+        # time-window scan over api_logs, so they run as a single query.
+        # COUNT(DISTINCT user_id) already ignores NULL user_ids, and AVG()
+        # ignores the NULL num_turns / num_user_turns of non-chat requests
+        # (embeddings, raw completions), so the averages cover chat requests
+        # only and are NULL when the period has none.
+        summary_row = await conn.fetchrow(
             """
-            SELECT COUNT(DISTINCT user_id) AS cnt
+            SELECT COUNT(DISTINCT user_id) AS active_users,
+                   AVG(num_turns) AS avg_turns,
+                   AVG(num_user_turns) AS avg_user_turns
             FROM api_logs
             WHERE timestamp >= NOW() - ($1 * interval '1 minute')
-              AND user_id IS NOT NULL
             """,
             lookback_minutes,
         )
-        active_users = int(active_users_row["cnt"] or 0)
+        active_users = int(summary_row["active_users"] or 0)
+        avg_turns = (
+            float(summary_row["avg_turns"]) if summary_row["avg_turns"] is not None else None
+        )
+        avg_user_turns = (
+            float(summary_row["avg_user_turns"])
+            if summary_row["avg_user_turns"] is not None
+            else None
+        )
 
         top_users_rows = await conn.fetch(
             """
@@ -214,6 +229,8 @@ async def admin_get_analytics(
     return AdminAnalyticsResponse(
         period=period,
         active_users=active_users,
+        avg_turns=avg_turns,
+        avg_user_turns=avg_user_turns,
         sparkline=[
             SparklineBucket(
                 start_time=row["bucket_start"],

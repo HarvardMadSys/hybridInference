@@ -84,11 +84,15 @@ async def admin_client(monkeypatch, mock_stores):
             ],
         )
 
+    response_store = MagicMock()
+    response_store.delete_user_responses = AsyncMock(return_value=0)
+
     services = AppServices(
         router=router,
         db_logger=MagicMock(),
         operational_store=op_store,
         log_store=log_store,
+        responses_store=response_store,
         routing_manager=None,
     )
     app.state.services = services  # type: ignore[attr-defined]
@@ -131,6 +135,7 @@ def _user_row(
         "reviewed_at": None,
         "reviewed_by": None,
         "signup_reason": None,
+        "admin_note": None,
         "created_at": _NOW,
         "last_login_at": None,
         "key_prefix": "hyi-abc",
@@ -509,14 +514,87 @@ async def test_patch_user_rejects_deleted_status(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_patch_user_sets_admin_note(admin_client):
+    """PATCH /admin/users/{id} persists a free-text admin note."""
+    client, op_store, _log_store, mock_log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"admin_note": "  VIP customer — handle with care  "},
+    )
+
+    assert response.status_code == 200
+    # Stored trimmed.
+    op_store.update_user_fields.assert_awaited_once_with(
+        "u1", admin_note="VIP customer — handle with care"
+    )
+    assert response.json()["updated_fields"] == ["admin_note"]
+    audit_payload = mock_log.await_args.args[4]
+    assert audit_payload["values"]["admin_note"] == "VIP customer — handle with care"
+
+
+@pytest.mark.asyncio
+async def test_patch_user_clears_admin_note_with_blank(admin_client):
+    """A blank/whitespace admin_note clears the note (stored as NULL)."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"admin_note": "   "},
+    )
+
+    assert response.status_code == 200
+    op_store.update_user_fields.assert_awaited_once_with("u1", admin_note=None)
+
+
+@pytest.mark.asyncio
+async def test_patch_user_rejects_overlong_admin_note(admin_client):
+    """admin_note longer than the schema limit is rejected (422)."""
+    client, _op_store, _log_store, _log = admin_client
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"admin_note": "x" * 2001},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_user_detail_returns_admin_note(admin_client):
+    """GET /admin/users/{id}/detail surfaces the stored admin note."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {**_user_row(), "admin_note": "watch this user"}
+    op_store.get_active_key_by_account.return_value = None
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={"avg_turns": None, "avg_user_turns": None}
+    )
+
+    response = await client.get("/admin/users/u1/detail", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["admin_note"] == "watch this user"
+
+
+@pytest.mark.asyncio
 async def test_get_user_detail_returns_disabled_models(admin_client):
     """GET /admin/users/{id}/detail exposes normalized disabled_models."""
-    client, op_store, _log_store, _log = admin_client
+    client, op_store, log_store, _log = admin_client
     op_store.get_user_by_id.return_value = {
         **_user_row(),
         "preferences": {"disabled_models": ["z-model", "a-model", "a-model", 123]},
     }
     op_store.get_active_key_by_account.return_value = None
+    # Detail usage is read whenever the log store exists (even without an active
+    # key), so the turn averages stay consistent with the bulk list endpoint.
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={"avg_turns": None, "avg_user_turns": None}
+    )
 
     response = await client.get("/admin/users/u1/detail", headers=AUTH)
 
@@ -1062,6 +1140,10 @@ async def test_hard_delete_user_wipes_data(admin_client):
 
     # LogStore wipe was issued with the user_id
     log_store.hard_delete_user_data.assert_awaited_once_with("u1")
+
+    # Stored Responses API rows for the user are purged too.
+    response_store = client._transport.app.state.services.responses_store
+    response_store.delete_user_responses.assert_awaited_once_with("u1")
 
     # LogStore wipe must run BEFORE the op_store wipe.
     call_names = [c[0] for c in manager.mock_calls]

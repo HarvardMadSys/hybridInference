@@ -1,4 +1,4 @@
-import { fetchWithAuth, jsonOrThrow, setAccessToken, getAccessToken } from './client';
+import { fetchWithAuth, jsonOrThrow, safeFetch, setAccessToken, getAccessToken } from './client';
 import { config } from '@/config/env';
 
 const API_BASE = config.apiBase;
@@ -42,7 +42,7 @@ export async function signup(data: SignupRequest): Promise<SignupResponse> {
     ...rest,
     ...(turnstileToken ? { turnstile_token: turnstileToken } : {}),
   };
-  const resp = await fetch(`${API_BASE}/auth/signup`, {
+  const resp = await safeFetch(`${API_BASE}/auth/signup`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -53,7 +53,7 @@ export async function signup(data: SignupRequest): Promise<SignupResponse> {
 }
 
 export async function login(data: LoginRequest): Promise<LoginResponse> {
-  const resp = await fetch(`${API_BASE}/auth/login`, {
+  const resp = await safeFetch(`${API_BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -79,7 +79,7 @@ export async function logout(): Promise<void> {
 }
 
 export async function verifyEmail(token: string): Promise<{ message: string }> {
-  const resp = await fetch(`${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`, {
+  const resp = await safeFetch(`${API_BASE}/auth/verify-email?token=${encodeURIComponent(token)}`, {
     method: 'GET',
     credentials: 'include',
   });
@@ -88,7 +88,7 @@ export async function verifyEmail(token: string): Promise<{ message: string }> {
 }
 
 export async function forgotPassword(email: string): Promise<{ message: string }> {
-  const resp = await fetch(`${API_BASE}/auth/forgot-password`, {
+  const resp = await safeFetch(`${API_BASE}/auth/forgot-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email }),
@@ -102,10 +102,21 @@ export async function resetPassword(
   token: string,
   newPassword: string,
 ): Promise<{ message: string }> {
-  const resp = await fetch(`${API_BASE}/auth/reset-password`, {
+  const resp = await safeFetch(`${API_BASE}/auth/reset-password`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, new_password: newPassword }),
+    credentials: 'include',
+  });
+
+  return jsonOrThrow(resp);
+}
+
+export async function resendVerification(email: string): Promise<{ message: string }> {
+  const resp = await fetch(`${API_BASE}/auth/resend-verification`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
     credentials: 'include',
   });
 

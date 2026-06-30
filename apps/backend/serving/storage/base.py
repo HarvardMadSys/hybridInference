@@ -59,6 +59,7 @@ USERS_MUTABLE_COLUMNS: dict[str, str] = {
     "reviewed_by": "reviewed_by",
     "last_login_at": "last_login_at",
     "max_concurrent_requests": "max_concurrent_requests",
+    "admin_note": "admin_note",
 }
 
 API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
@@ -1090,7 +1091,42 @@ class LogStore(ABC):
 
         Returns dict with keys: ``usage_today_usd``, ``usage_today_requests``,
         ``usage_month_usd``, ``usage_month_requests``, ``models_used``,
-        ``last_request_at``.
+        ``last_request_at``, ``avg_turns``, ``avg_user_turns``. The two
+        averages are the all-time mean message / user-message count across the
+        user's chat-style requests (``None`` when they have none).
+        """
+
+    @abstractmethod
+    async def get_bulk_user_turn_averages(
+        self, user_ids: list[str]
+    ) -> dict[str, dict[str, float | None]]:
+        """Return per-user all-time average turn counts for a batch of users.
+
+        Maps ``user_id`` → ``{"avg_turns", "avg_user_turns"}`` (each float or
+        None). Users with no chat-style requests are omitted. Used by the admin
+        list endpoint to avoid N+1 queries.
+        """
+
+    @abstractmethod
+    async def get_user_automation_score(
+        self, user_id: str, *, days: int = 30
+    ) -> dict[str, Any] | None:
+        """Return one user's human-vs-script automation score, or None with no traffic.
+
+        See :mod:`serving.analytics.automation_score`: the record's ``score`` in
+        ``[0, 1]`` is HIGH (→1) for script/batch/cron-driven ``api_logs`` over the
+        trailing ``days`` and LOW (→0) for interactive-human usage.
+        """
+
+    @abstractmethod
+    async def get_bulk_user_automation_scores(
+        self, user_ids: list[str], *, days: int = 30
+    ) -> dict[str, dict[str, Any]]:
+        """Return ``{user_id: automation-score record}`` for a batch of users.
+
+        Scores every requested user over the trailing ``days`` window in one
+        round-trip; users with no traffic in the window are omitted. Used by the
+        admin Users tab to score a page on demand.
         """
 
     @abstractmethod

@@ -40,6 +40,7 @@ async def admin_export_requests(
     user_id: str | None = None,
     model_id: str | None = None,
     errors_only: bool = False,
+    request_type: str | None = None,
     include_content: bool = False,
     admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
@@ -52,6 +53,8 @@ async def admin_export_requests(
     - user_id: Filter by user ID, name, or email (substring match)
     - model_id: Filter by model ID (substring match)
     - errors_only: If true, only include requests with errors
+    - request_type: ``"embedding"`` to export only embedding requests,
+      ``"chat"`` to exclude them; any other value (or omission) applies no filter
     - include_content: If true, include prompt and response fields
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
@@ -92,6 +95,14 @@ async def admin_export_requests(
             "(l.error IS NOT NULL OR l.status_code IS NULL "
             "OR l.status_code < 200 OR l.status_code >= 400)"
         )
+
+    # Mirror the /admin/recent-requests request-type filter. Constant predicate
+    # (no bind param), so it composes with the cursor/limit placeholders added
+    # per batch below.
+    if request_type == "embedding":
+        where_clauses.append("(l.metadata->>'request_type') = 'embedding'")
+    elif request_type == "chat":
+        where_clauses.append("(l.metadata->>'request_type') IS DISTINCT FROM 'embedding'")
 
     content_cols = (
         ", l.prompt, l.response, l.tools, l.metadata, l.request_payload" if include_content else ""
@@ -186,6 +197,7 @@ async def admin_export_requests(
                     "user_id": user_id,
                     "model_id": model_id,
                     "errors_only": errors_only,
+                    "request_type": request_type,
                 },
             )
 

@@ -23,6 +23,7 @@ export interface AdminUser {
   reviewed_at: string | null;
   reviewed_by: string | null;
   signup_reason: string | null;
+  admin_note: string | null;
   created_at: string;
   last_login_at: string | null;
   has_key: boolean;
@@ -177,11 +178,80 @@ export interface UserDetail {
   disabled_models: string[];
   last_request_at: string | null;
   max_concurrent_requests: number | null;
+  admin_note: string | null;
+  avg_turns: number | null;
+  avg_user_turns: number | null;
 }
 
 export async function getUserDetail(userId: string): Promise<UserDetail> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/detail`);
   return jsonOrThrow<UserDetail>(resp);
+}
+
+export interface UserTurnAverages {
+  avg_turns: number | null;
+  avg_user_turns: number | null;
+}
+
+export interface BulkTurnAveragesResponse {
+  averages: Record<string, UserTurnAverages>;
+}
+
+export async function getBulkTurnAverages(userIds: string[]): Promise<BulkTurnAveragesResponse> {
+  if (userIds.length === 0) return { averages: {} };
+  const params = new URLSearchParams({ user_ids: userIds.join(',') });
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/turn-averages?${params.toString()}`);
+  return jsonOrThrow<BulkTurnAveragesResponse>(resp);
+}
+
+// One signal's contribution to a user's automation score. `sub` is the signal's
+// automation sub-score in [0,1] (null when the signal was dropped for lack of data).
+export interface AutomationSignal {
+  sub: number | null;
+  weight: number;
+  available: boolean;
+}
+
+// Per-user human-vs-script automation score. `score` in [0,1]: HIGH means the
+// traffic looks script/batch/cron-driven, LOW means an interactive human.
+export interface UserAutomationScore {
+  user_id: string;
+  days: number;
+  score: number;
+  confidence: number;
+  band: string;
+  insufficient_data: boolean;
+  n_req: number;
+  agent_share: number;
+  signals: Record<string, AutomationSignal>;
+  detail: Record<string, number | null>;
+}
+
+export interface BulkAutomationScoresResponse {
+  days: number;
+  scores: Record<string, UserAutomationScore>;
+}
+
+export async function getUserAutomationScore(
+  userId: string,
+  days = 30,
+): Promise<UserAutomationScore> {
+  const params = new URLSearchParams({ days: String(days) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/automation-score?${params.toString()}`,
+  );
+  return jsonOrThrow<UserAutomationScore>(resp);
+}
+
+export async function getBulkAutomationScores(
+  userIds: string[],
+  days = 30,
+): Promise<BulkAutomationScoresResponse> {
+  if (userIds.length === 0) return { days, scores: {} };
+  const params = new URLSearchParams({ user_ids: userIds.join(','), days: String(days) });
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/automation-scores?${params.toString()}`);
+  return jsonOrThrow<BulkAutomationScoresResponse>(resp);
 }
 
 export interface UpdateUserData {
@@ -191,6 +261,7 @@ export interface UpdateUserData {
   quota_monthly_cost_usd?: number;
   disabled_models?: string[];
   max_concurrent_requests?: number | null;
+  admin_note?: string | null;
 }
 
 export async function updateUser(
@@ -448,11 +519,15 @@ export async function listRecentRequests(
   userId?: string,
   modelId?: string,
   errorsOnly = false,
+  requestType?: 'chat' | 'embedding',
+  days?: number,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
   if (modelId) params.set('model_id', modelId);
   if (errorsOnly) params.set('errors_only', 'true');
+  if (requestType) params.set('request_type', requestType);
+  if (days != null) params.set('days', String(days));
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
@@ -513,6 +588,10 @@ export interface AnalyticsBreakdownEntry {
 export interface AdminAnalyticsResponse {
   period: AnalyticsPeriod;
   active_users: number;
+  // Mean conversation depth per chat request; null when the period has no
+  // chat-style requests.
+  avg_turns: number | null;
+  avg_user_turns: number | null;
   sparkline: SparklineBucket[];
   top_users: AnalyticsUserEntry[];
   by_model: AnalyticsBreakdownEntry[];
@@ -523,6 +602,68 @@ export interface AdminAnalyticsResponse {
 export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyticsResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/analytics?period=${period}`);
   return jsonOrThrow<AdminAnalyticsResponse>(resp);
+}
+
+// ========================================
+// Usage Insights (LLM-powered request analysis)
+// ========================================
+
+// The analysis provider (API key + model) is configured server-side in Admin →
+// Settings; the request only chooses the scope and sample size.
+export interface UsageInsightsRequest {
+  user_id?: string;
+  user_email?: string;
+  limit?: number;
+  max_chars?: number;
+}
+
+export interface UsageInsightsResponse {
+  analysis: string; // Markdown narrative
+  model: string;
+  sampled_requests: number;
+  scope: string;
+  generated_at: string;
+}
+
+export async function analyzeUsageInsights(
+  req: UsageInsightsRequest = {},
+): Promise<UsageInsightsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+  return jsonOrThrow<UsageInsightsResponse>(resp);
+}
+
+// Stored analysis-provider config. The raw key is never returned — only whether
+// one is set and a masked tail hint.
+export interface UsageInsightsSettings {
+  configured: boolean;
+  api_key_hint: string | null;
+  model: string;
+}
+
+export interface UsageInsightsSettingsUpdate {
+  // Omit api_key to keep the current one; '' clears it; any other value replaces it.
+  api_key?: string;
+  model?: string;
+}
+
+export async function getUsageInsightsSettings(): Promise<UsageInsightsSettings> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/settings');
+  return jsonOrThrow<UsageInsightsSettings>(resp);
+}
+
+export async function updateUsageInsightsSettings(
+  patch: UsageInsightsSettingsUpdate,
+): Promise<UsageInsightsSettings> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/usage-insights/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  return jsonOrThrow<UsageInsightsSettings>(resp);
 }
 
 // ========================================
@@ -655,6 +796,7 @@ export interface ExportRequestsParams {
   userId?: string;
   modelId?: string;
   errorsOnly?: boolean;
+  requestType?: 'chat' | 'embedding';
   includeContent?: boolean;
 }
 
@@ -666,6 +808,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   if (params.userId) qs.set('user_id', params.userId);
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.errorsOnly) qs.set('errors_only', 'true');
+  if (params.requestType) qs.set('request_type', params.requestType);
   if (params.includeContent) qs.set('include_content', 'true');
 
   const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);

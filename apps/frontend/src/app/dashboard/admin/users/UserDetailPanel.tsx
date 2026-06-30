@@ -2,7 +2,9 @@
 
 import { hasRole } from '@/components/providers/AuthProvider';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
+import { UserAutomationPanel } from './UserAutomationPanel';
 import { UserRecentRequests } from './UserRecentRequests';
+import { UserUsageInsights } from './UserUsageInsights';
 
 export function relTime(s: string | null): string {
   if (!s) return 'Never';
@@ -24,14 +26,18 @@ export interface UserDetailPanelProps {
   editQuota: string;
   editDisabledModels: string[];
   editMaxConcurrent: string;
+  editNote: string;
   availableModels: AdminModelVisibilityItem[];
   saving: boolean;
+  savingNote: boolean;
   busy: string | null;
   onChangeRole: (role: string) => void;
   onChangeQuota: (quota: string) => void;
   onChangeDisabledModels: (modelIds: string[]) => void;
   onChangeMaxConcurrent: (val: string) => void;
+  onChangeNote: (val: string) => void;
   onSave: () => void;
+  onSaveNote: () => void;
   onSuspend: (userId: string) => void;
   onReactivate: (userId: string) => void;
   onResume: (user: AdminUser) => void;
@@ -47,14 +53,18 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     editQuota,
     editDisabledModels,
     editMaxConcurrent,
+    editNote,
     availableModels,
     saving,
+    savingNote,
     busy,
     onChangeRole,
     onChangeQuota,
     onChangeDisabledModels,
     onChangeMaxConcurrent,
+    onChangeNote,
     onSave,
+    onSaveNote,
     onSuspend,
     onReactivate,
     onResume,
@@ -90,6 +100,34 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
         </div>
       )}
 
+      {/* Admin note — internal annotation editable for every user status. */}
+      <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50/60 p-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
+            Admin note
+          </div>
+          <span className="text-[10px] text-gray-400">Visible to admins only</span>
+        </div>
+        <textarea
+          value={editNote}
+          onChange={(e) => onChangeNote(e.target.value)}
+          rows={2}
+          maxLength={2000}
+          placeholder="Add an internal note about this user…"
+          aria-label="Admin note"
+          className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+        />
+        <div className="flex justify-end">
+          <button
+            onClick={onSaveNote}
+            disabled={savingNote || editNote.trim() === (detail.admin_note ?? '')}
+            className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-gray-800 transition disabled:opacity-50"
+          >
+            {savingNote ? 'Saving…' : 'Save note'}
+          </button>
+        </div>
+      </div>
+
       {/* Stats */}
       <div className="grid grid-cols-4 gap-3 text-[13px]">
         <div>
@@ -121,6 +159,20 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           <div className="mt-0.5 text-[16px] font-bold text-gray-900">
             {detail.quota_daily_usd ? `$${detail.quota_daily_usd}/d` : '-'}
           </div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Avg turns</div>
+          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+            {detail.avg_turns != null ? detail.avg_turns.toFixed(1) : '—'}
+          </div>
+          <div className="text-[11px] text-gray-400">per request</div>
+        </div>
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Avg user turns</div>
+          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+            {detail.avg_user_turns != null ? detail.avg_user_turns.toFixed(1) : '—'}
+          </div>
+          <div className="text-[11px] text-gray-400">per request</div>
         </div>
       </div>
 
@@ -314,9 +366,21 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
         </div>
       )}
 
-      {/* Recent requests made by this user. key={u.id} remounts the component
-          on user switch so its paging/expansion/cache state resets cleanly. */}
-      <UserRecentRequests key={u.id} userId={u.id} />
+      {/* These three panels are siblings, so their keys must be unique relative
+          to each other — keying them all on `u.id` collides and makes React
+          duplicate them on re-render (e.g. after a quota save), stacking extra
+          copies of each box. Each key is prefixed so it stays unique here while
+          still changing per user, which remounts the panels (resetting their
+          computed state) when the admin switches to a different user. */}
+
+      {/* On-demand automation score. */}
+      <UserAutomationPanel key={`automation-${u.id}`} userId={u.id} />
+
+      {/* LLM analysis of this user's requests. */}
+      <UserUsageInsights key={`insights-${u.id}`} userId={u.id} />
+
+      {/* Recent requests made by this user. */}
+      <UserRecentRequests key={`recent-${u.id}`} userId={u.id} />
     </div>
   );
 }

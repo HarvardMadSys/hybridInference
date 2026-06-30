@@ -24,13 +24,15 @@ def test_spark_route_uses_spark_deployment_url() -> None:
     """Spark vLLM routes must use SPARK_DEPLOYMENT_URL, not LOCAL_DEPLOYMENT_URL."""
     models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
 
-    gpt_oss = next((model for model in models["models"] if model["id"] == "gpt-oss-20b"), None)
-    assert gpt_oss is not None, "Model 'gpt-oss-20b' not found in config/models.yaml"
-    vllm_route = next((route for route in gpt_oss["route"] if route["kind"] == "vllm"), None)
-    assert vllm_route is not None, "vLLM route not found for model 'gpt-oss-20b'"
+    spark_model = next(
+        (model for model in models["models"] if model["id"] == "diffusiongemma"), None
+    )
+    assert spark_model is not None, "Model 'diffusiongemma' not found in config/models.yaml"
+    vllm_route = next((route for route in spark_model["route"] if route["kind"] == "vllm"), None)
+    assert vllm_route is not None, "vLLM route not found for model 'diffusiongemma'"
 
     assert vllm_route["base_url"] == "${SPARK_DEPLOYMENT_URL}"
-    assert vllm_route["provider_model_id"] == "openai/gpt-oss-20b"
+    assert vllm_route["provider_model_id"] == "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
 
 
 def test_routing_local_deployment_uses_local_deployment_url() -> None:

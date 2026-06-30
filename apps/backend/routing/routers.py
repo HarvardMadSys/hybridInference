@@ -14,6 +14,7 @@ import os
 import random
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from serving.exceptions import operator_safe_error
-from serving.observability.alerts import AlertSeverity, alert_slack
+from serving.observability.alerts import AlertSeverity, alert_slack, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -35,6 +36,13 @@ logger = get_logger(__name__)
 # mid-flight (e.g. when the breaker that scheduled it is dropped). Tasks
 # remove themselves via add_done_callback once they finish.
 _ALERT_TASKS: set[asyncio.Task[bool]] = set()
+
+# Bound on the number of distinct users tracked per circuit breaker for a
+# single failure streak. Caps memory when a long outage spans many callers;
+# users already being tracked keep accumulating their failure counts.
+_MAX_TRACKED_OFFENDERS = 50
+# How many of the top offenders to name explicitly in the circuit-open alert.
+_OFFENDERS_IN_ALERT = 10
 
 # ============================================================================
 # Exceptions
@@ -261,12 +269,13 @@ def _routing_chunk(
 
 
 def _has_non_empty_content(chunk: Any) -> bool:
-    r"""Return True if the SSE ``chunk`` carries a non-empty delta (content or tool_calls).
+    r"""Return True if the SSE ``chunk`` carries a non-empty delta.
 
     The streaming protocol emits lines like ``"data: {json}\n\n"`` and a
     terminal ``"data: [DONE]\n\n"``. We consider a chunk as having started
-    output when delta.content is a non-empty string **or** delta.tool_calls
-    is a non-empty list.
+    output when delta.content, delta.reasoning_content, delta.reasoning, or
+    delta.thinking is a non-empty string **or** delta.tool_calls is a non-empty
+    list.
     """
     try:
         if not isinstance(chunk, str | bytes):
@@ -288,6 +297,11 @@ def _has_non_empty_content(chunk: Any) -> bool:
         content = delta.get("content")
         if isinstance(content, str) and len(content) > 0:
             return True
+        reasoning = (
+            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+        )
+        if isinstance(reasoning, str) and len(reasoning) > 0:
+            return True
         tool_calls = delta.get("tool_calls")
         return isinstance(tool_calls, list) and len(tool_calls) > 0
     except Exception:
@@ -297,6 +311,50 @@ def _has_non_empty_content(chunk: Any) -> bool:
 
 def _reason_str(s: str) -> str:
     return s if s and len(s) < 64 else "error"
+
+
+def _http_status_of(exc: BaseException) -> int | None:
+    """Best-effort extract of an upstream HTTP status code from an exception.
+
+    Adapters surface upstream HTTP errors as exceptions that carry the status on
+    one of a few attributes depending on the client library (aiohttp's
+    ``ClientResponseError`` uses ``.status``; others use ``.status_code`` or
+    ``.code``). Duck-type rather than importing the HTTP client into the routing
+    layer. Returns ``None`` when no status is present (e.g. a timeout or
+    connection error, which is a genuine upstream fault).
+    """
+    for attr in ("status", "status_code", "code"):
+        val = getattr(exc, attr, None)
+        if isinstance(val, int) and 100 <= val <= 599:
+            return val
+    # httpx / requests carry the status on a nested response object.
+    response = getattr(exc, "response", None)
+    if response is not None:
+        for attr in ("status_code", "status"):
+            val = getattr(response, attr, None)
+            if isinstance(val, int) and 100 <= val <= 599:
+                return val
+    return None
+
+
+def _is_client_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` is an upstream client error that must NOT trip the breaker.
+
+    A client (4xx) error means the upstream is healthy and correctly rejected a
+    bad request (e.g. vLLM's 400 "max context length exceeded"). Counting it as
+    an upstream fault lets one user's bad request open the circuit for everyone.
+    A 5xx / timeout / connection error is a genuine fault and returns False.
+    """
+    status = _http_status_of(exc)
+    if status is None or not (400 <= status < 500):
+        # No status, or a 5xx — a genuine upstream fault. Count it.
+        return False
+    # 408 (Request Timeout) and 429 (Too Many Requests) are 4xx but signal the
+    # upstream is slow/overloaded, not that the request was malformed. Let those
+    # trip the breaker so it sheds load. Every other 4xx (400 bad request, 401/403
+    # auth, 404, 413 payload too large, 422) is a per-request/config error: the
+    # upstream is healthy and correctly rejected it, so spare the breaker.
+    return status not in (408, 429)
 
 
 def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
@@ -315,6 +373,32 @@ def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
     if not cleaned:
         return None
     return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
+
+
+def _offender_str() -> str | None:
+    """Identify the user behind the current request for failure attribution.
+
+    Reads the request-scoped context populated by the completions handler.
+    Prefers a human-readable ``user_name`` when present but always pins the
+    stable ``user_id`` so operators can act on the alert. Returns ``None`` when
+    no identity is available (e.g. health probes or background tasks running
+    outside a request).
+
+    The (caller-controlled) display name has its whitespace collapsed so a
+    name containing newlines can't forge extra lines in an alert; Slack control
+    characters are escaped later, at format time.
+    """
+    ctx = req_ctx.get()
+    user_id = ctx.get("user_id")
+    raw_name = ctx.get("user_name")
+    user_name = " ".join(str(raw_name).split()) if raw_name else None
+    if user_id and user_name:
+        return f"{user_name} ({user_id})"
+    if user_id:
+        return str(user_id)
+    if user_name:
+        return user_name
+    return None
 
 
 # ============================================================================
@@ -393,6 +477,10 @@ class _CircuitBreaker:
         )
         self.consecutive_failures = 0
         self.last_opened: float | None = None
+        # Users whose requests contributed to the current failure streak,
+        # keyed by identity with a per-user failure count. Cleared whenever the
+        # streak resets on success so it always reflects the live outage.
+        self._offenders: Counter[str] = Counter()
         self._lock = threading.Lock()
 
     def allow_request(self) -> bool:
@@ -413,6 +501,9 @@ class _CircuitBreaker:
     def on_success(self) -> None:
         with self._lock:
             self.consecutive_failures = 0
+            # The failure streak is broken — drop the offenders accumulated for
+            # it so a later trip only names users behind the new streak.
+            self._offenders.clear()
             if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
                 # Capture how long the circuit stayed open before clearing the
                 # timestamp, so the recovery log carries the outage duration.
@@ -438,9 +529,17 @@ class _CircuitBreaker:
         availability: float | None = None,
         reason: str = "error",
         detail: str | None = None,
+        offender: str | None = None,
     ) -> None:
         with self._lock:
             self.consecutive_failures += 1
+            # Attribute the failure to its user. Already-tracked offenders keep
+            # accumulating; only the number of *distinct* users is capped so a
+            # long, broad outage can't grow this counter without limit.
+            if offender and (
+                offender in self._offenders or len(self._offenders) < _MAX_TRACKED_OFFENDERS
+            ):
+                self._offenders[offender] += 1
             trip = False
             if self.consecutive_failures >= self.failure_threshold:
                 trip = True
@@ -464,6 +563,12 @@ class _CircuitBreaker:
                     # the alert is actionable without grepping logs.
                     if detail:
                         context["upstream_error"] = detail
+                    # Name the users whose requests drove this failure streak so
+                    # operators can see who is affected (and who may be abusing
+                    # a provider, as with coding-only upstream restrictions).
+                    offenders = self._format_offenders()
+                    if offenders:
+                        context["offending_users"] = offenders
                     # Emit a structured log record for the circuit-open
                     # transition. The Slack alert is fire-and-forget and writes
                     # no log line, so without this the event is invisible in the
@@ -477,6 +582,10 @@ class _CircuitBreaker:
                             "availability": availability,
                             "reason": reason or "unknown",
                             "upstream_error": detail,
+                            # Log the raw {user: failure_count} mapping rather
+                            # than the pre-formatted alert string so log
+                            # aggregators can filter/aggregate by user.
+                            "offending_users": dict(self._offenders) or None,
                         },
                     )
                     try:
@@ -498,6 +607,23 @@ class _CircuitBreaker:
                         # the GC cannot cancel it mid-flight.
                         _ALERT_TASKS.add(task)
                         task.add_done_callback(_ALERT_TASKS.discard)
+
+    def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
+        """Render the failure-streak offenders for an alert, busiest first.
+
+        Caller must hold ``self._lock``. Returns ``None`` when no offenders were
+        attributed (e.g. failures raised outside any request context). User
+        identities are Slack-escaped here because they may include a
+        caller-controlled display name.
+        """
+        if not self._offenders:
+            return None
+        named = self._offenders.most_common(top)
+        parts = [f"{escape_slack_text(user)} x{count}" for user, count in named]
+        remaining = len(self._offenders) - len(named)
+        if remaining > 0:
+            parts.append(f"+{remaining} more")
+        return ", ".join(parts)
 
 
 # ============================================================================
@@ -537,14 +663,37 @@ class BaseRouter:
             self._circuits[endpoint_id].on_success()
 
     def _on_failure(
-        self, endpoint_id: str, *, reason: str = "error", detail: str | None = None
+        self,
+        endpoint_id: str,
+        *,
+        reason: str = "error",
+        detail: str | None = None,
+        exc: BaseException | None = None,
     ) -> None:
+        if exc is not None and _is_client_error(exc):
+            # Upstream returned a client (4xx) error: it is healthy and correctly
+            # rejected a bad request. Do not penalize availability or trip the
+            # circuit breaker — otherwise one user's bad request opens the
+            # circuit for every user of this model.
+            logger.info(
+                "client_error_skip_breaker",
+                extra={
+                    "event": "client_error_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "status": _http_status_of(exc),
+                    "detail": _detail_str(detail),
+                },
+            )
+            return
         with self._lock:
             self._ensure_health(endpoint_id)
             self._health[endpoint_id].record(False)
             avail = self._health[endpoint_id].availability
             self._circuits[endpoint_id].on_failure(
-                availability=avail, reason=_reason_str(reason), detail=_detail_str(detail)
+                availability=avail,
+                reason=_reason_str(reason),
+                detail=_detail_str(detail),
+                offender=_offender_str(),
             )
 
     def _drop_affinity(self, model_id: str) -> None:
@@ -673,6 +822,7 @@ class BaseRouter:
                     _get_endpoint_id(primary),
                     reason=primary_error.__class__.__name__,
                     detail=operator_safe_error(primary_error),
+                    exc=primary_error,
                 )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 fallback_adapters = self._get_fallback_adapters(model_id, primary)
@@ -697,6 +847,7 @@ class BaseRouter:
                             _get_endpoint_id(adapter),
                             reason="chat_exception",
                             detail=operator_safe_error(fallback_error),
+                            exc=fallback_error,
                         )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
@@ -749,6 +900,7 @@ class BaseRouter:
                     _get_endpoint_id(primary),
                     reason="stream_exception",
                     detail=operator_safe_error(primary_error),
+                    exc=primary_error,
                 )
                 failed_attempts.append(_failed_attempt(primary, primary_error))
                 # Once provider bytes have reached the client, the SSE response
@@ -776,6 +928,7 @@ class BaseRouter:
                             _get_endpoint_id(adapter),
                             reason="stream_exception",
                             detail=operator_safe_error(fallback_error),
+                            exc=fallback_error,
                         )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
                         continue
@@ -1055,6 +1208,7 @@ class FixedRouter(BaseRouter):
                 _get_endpoint_id(primary),
                 reason="chat_exception",
                 detail=operator_safe_error(primary_error),
+                exc=primary_error,
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — the caller explicitly requested this
@@ -1086,6 +1240,7 @@ class FixedRouter(BaseRouter):
                         _get_endpoint_id(adapter),
                         reason="chat_exception",
                         detail=operator_safe_error(fallback_error),
+                        exc=fallback_error,
                     )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue
@@ -1146,6 +1301,7 @@ class FixedRouter(BaseRouter):
                 _get_endpoint_id(primary),
                 reason="stream_exception",
                 detail=operator_safe_error(primary_error),
+                exc=primary_error,
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Pin mode: never fallback — re-raise immediately.
@@ -1184,6 +1340,7 @@ class FixedRouter(BaseRouter):
                         adapter_endpoint_id,
                         reason="stream_exception",
                         detail=operator_safe_error(fallback_error),
+                        exc=fallback_error,
                     )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
                     continue

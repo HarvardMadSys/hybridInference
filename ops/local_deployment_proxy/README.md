@@ -39,7 +39,10 @@ python local_deployment_proxy/local_deployment_proxy.py
 # Local only
 ./local_deployment_proxy/local_deployment_service.sh start
 
-# With SSH reverse tunnel to a public LLM router
+# With SSH reverse tunnel to a public LLM router.
+# Uses autossh when installed so the tunnel auto-reconnects after a drop or a
+# router reboot; falls back to plain ssh (no auto-recover) with a warning if
+# autossh is missing — install it for durable tunnels (`apt-get install autossh`).
 SSH_HOST='spark2|internal.freeinference.org' REMOTE_PORT=8001 ./local_deployment_proxy/local_deployment_service.sh start
 
 # With API key auth
@@ -51,6 +54,65 @@ LOCAL_API_KEY='your-secret-key' ./local_deployment_proxy/local_deployment_servic
 ```
 
 Logs are written to `/tmp/local_deployment_proxy_8001.log`.
+
+### Run as a systemd service (recommended for production)
+
+The background daemon above does not survive a reboot of this GPU box. For a
+durable setup, use the two units in [`deploy/systemd/`](../../deploy/systemd/):
+
+- `local_deployment_proxy.service` — the local listener (port 8001).
+- `local_deployment_tunnel@.service` — a **templated** reverse tunnel, one
+  instance per router host, run with `autossh` (`Restart=always`) so it
+  reconnects after a link drop **and** comes back after a reboot.
+
+`install.sh` installs autossh, **renders** both units (substituting the
+`__REPO_ROOT__` placeholder with this checkout's path, so the repo can live
+anywhere), and enables the proxy plus a tunnel instance per router host:
+
+```bash
+# Defaults to SSH_HOST='internal.freeinference.org|spark2', ports 8001.
+sudo ./local_deployment_proxy/install.sh
+
+# Override hosts/ports if needed. Each SSH_HOST entry may include a user
+# (user@host); replace 'user' with the router account that authorizes this
+# box's root SSH key (the tunnel runs as root):
+sudo SSH_HOST='user@internal.freeinference.org|user@spark2' REMOTE_PORT=8001 \
+     ./local_deployment_proxy/install.sh
+
+# Remove everything (proxy + all tunnel instances + drop-ins):
+sudo ./local_deployment_proxy/uninstall.sh
+```
+
+Equivalent manual steps, if you'd rather not use the script. The proxy unit
+carries a `__REPO_ROOT__` placeholder, so render it (the tunnel unit has no
+placeholder and is copied as-is):
+
+```bash
+REPO_ROOT="$(pwd)"   # run from the repo root
+sed "s#__REPO_ROOT__#${REPO_ROOT}#g" deploy/systemd/local_deployment_proxy.service \
+  | sudo tee /etc/systemd/system/local_deployment_proxy.service >/dev/null
+sudo cp deploy/systemd/local_deployment_tunnel@.service /etc/systemd/system/
+sudo apt-get install -y autossh        # required by the tunnel unit
+sudo systemctl daemon-reload
+sudo systemctl enable --now local_deployment_proxy.service
+# One instance per router host. The instance name is the SSH destination and may
+# include a user (user@host); the tunnel connects as that user (default root):
+sudo systemctl enable --now local_deployment_tunnel@user@internal.freeinference.org
+sudo systemctl enable --now local_deployment_tunnel@user@spark2
+```
+
+Requirements / knobs:
+
+- The tunnel unit runs as **root** and connects to each router as the user in
+  the instance name (the part before `@`; defaults to root) using this box's
+  root SSH key in `/root/.ssh`. That key must be in the target account's
+  `~/.ssh/authorized_keys` on the router. Override `LISTEN_PORT` / `REMOTE_PORT`
+  / `REMOTE_BIND` via a drop-in (`systemctl edit local_deployment_tunnel@…`) if
+  the defaults (`8001` / `8001` / `0.0.0.0`) don't apply.
+- Binding `REMOTE_BIND=0.0.0.0` on the router requires `GatewayPorts
+  clientspecified` (or `yes`) in the router's `sshd_config`, so its Docker
+  containers can reach the forwarded port via `host.docker.internal`.
+- Logs: `journalctl -u local_deployment_tunnel@internal.freeinference.org -f`.
 
 ## Usage with OpenAI-compatible clients
 

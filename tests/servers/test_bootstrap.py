@@ -57,6 +57,7 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap.DatabaseLogger") as MockDBLogger,
             patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
+            patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
         ):
             mock_logger = AsyncMock()
             MockDBLogger.return_value = mock_logger
@@ -88,6 +89,7 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
             patch("serving.servers.bootstrap.CachedOperationalStore") as MockCachedStore,
+            patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
         ):
             mock_pg_op = AsyncMock()
             MockPGOp.return_value = mock_pg_op
@@ -117,6 +119,7 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
             patch("serving.servers.bootstrap.PostgresOperationalStore") as MockPGOp,
             patch("serving.servers.bootstrap.CachedOperationalStore") as MockCachedStore,
+            patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
             patch(
                 "serving.servers.bootstrap.ModelVisibilityResolver",
                 side_effect=RuntimeError("boom"),
@@ -290,6 +293,7 @@ class TestBootstrapInitialization:
             patch("serving.servers.bootstrap.PostgresOperationalStore", return_value=pg_store),
             patch("serving.servers.bootstrap.CachedOperationalStore", return_value=cached_store),
             patch("serving.servers.bootstrap.PostgresLogStore", return_value=log_store),
+            patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
             patch("serving.servers.bootstrap.email_scheduler.start_scheduler"),
             patch(
                 "serving.servers.bootstrap.email_scheduler.rehydrate_scheduled_broadcasts",

@@ -23,6 +23,7 @@ from serving.servers.deps import (
     get_operational_store,
 )
 from serving.storage.utils import calculate_cost
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
@@ -214,6 +215,7 @@ async def create_embeddings(
             pricing=None,
             error=f"Embedding model '{model}' not found",
         )
+        req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Embedding model '{model}' not found")
 
     adapter = embedding_adapters[model]
@@ -228,6 +230,14 @@ async def create_embeddings(
 
     try:
         response = await adapter.embeddings(request.input, **params)
+        # Attribute the log row and cost increment to whichever backend actually
+        # served. For a fallback chain (FallbackEmbeddingAdapter) this may be the
+        # staging canary rather than the primary when the primary is down; plain
+        # single-route adapters expose no ``serving_config`` so this is a no-op.
+        serving_cfg = getattr(adapter, "serving_config", None)
+        if serving_cfg is not None:
+            provider = getattr(serving_cfg, "provider", None) or provider
+            pricing = getattr(serving_cfg, "pricing", None)
         # Validate against the response schema *before* recording any success
         # side effects. ``response_model=EmbeddingResponse`` is only enforced
         # after the handler returns, so a malformed (but non-raising) upstream

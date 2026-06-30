@@ -7,7 +7,8 @@
 
 set -euo pipefail
 
-REPO_DIR="${REPO_DIR:-/srv/hybridInference}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_DIR="${REPO_DIR:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 SERVICE_NAME="spark_idle_proxy"
 SERVICE_SRC="${REPO_DIR}/deploy/systemd/${SERVICE_NAME}.service"
 SERVICE_DST="/etc/systemd/system/${SERVICE_NAME}.service"
@@ -24,12 +25,18 @@ fi
 
 if [[ ! -f "$SERVICE_SRC" ]]; then
   echo "ERROR: Service file not found at ${SERVICE_SRC}" >&2
-  echo "       Run this script from the repo root or set REPO_DIR." >&2
+  echo "       Set REPO_DIR to the hybridInference checkout." >&2
   exit 1
 fi
 
-echo "Installing ${SERVICE_NAME} …"
-cp "$SERVICE_SRC" "$SERVICE_DST"
+# Render the unit, substituting the __REPO_ROOT__ placeholder with REPO_DIR so
+# the installed unit points at this checkout wherever it lives.
+echo "Installing ${SERVICE_NAME} (REPO_DIR=${REPO_DIR}) …"
+tmp="$(mktemp)"
+content="$(cat "$SERVICE_SRC")"
+printf '%s\n' "${content//__REPO_ROOT__/$REPO_DIR}" >"$tmp"
+install -m 0644 "$tmp" "$SERVICE_DST"
+rm -f "$tmp"
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}"
 systemctl restart "${SERVICE_NAME}"
