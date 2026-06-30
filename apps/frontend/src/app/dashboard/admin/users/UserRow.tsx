@@ -29,13 +29,16 @@ const STATUS_GLYPH: Record<string, { glyph: string; color: string; title: string
 };
 
 // Token counts run large (millions–billions for heavy users); render them
-// compactly so the column stays narrow. Request counts are smaller, so they
-// use a plain grouped number.
+// compactly so the column stays narrow. Intl handles clean rounding (1000 → 1K,
+// not 1.0K) and localization. Request counts are smaller and use a plain
+// grouped number instead.
+const compactTokenFormatter = new Intl.NumberFormat('en', {
+  notation: 'compact',
+  maximumFractionDigits: 1,
+});
+
 function formatCompact(n: number): string {
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(1)}B`;
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
+  return compactTokenFormatter.format(n);
 }
 
 function todayCostBucket(cost: number, median: number): string {
