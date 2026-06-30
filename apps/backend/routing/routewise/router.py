@@ -820,7 +820,7 @@ class RouteWiseRouter(BaseRouter):
                 timeout=max(float(self.config.routewise_probe_timeout_sec), 1.0),
             )
         except Exception as exc:
-            error = exc.__class__.__name__
+            error = self._probe_error_summary(exc)
             result = RouteWiseProbeResult(
                 model_id=model_id,
                 endpoint_id=endpoint_id,
@@ -845,11 +845,11 @@ class RouteWiseRouter(BaseRouter):
 
     @staticmethod
     async def _measure_probe_ttft_ms(adapter: BaseAdapter) -> float:
-        messages = [{"role": "user", "content": "ping"}]
+        messages = [{"role": "user", "content": "Write a one-sentence greeting."}]
         start = time.perf_counter()
         stream = adapter.stream_chat_completion(
             messages,
-            max_tokens=1,
+            max_tokens=8,
             temperature=0,
         )
         try:
@@ -862,6 +862,15 @@ class RouteWiseRouter(BaseRouter):
                 with contextlib.suppress(Exception):
                     await aclose()
         raise RuntimeError("probe_no_content")
+
+    @staticmethod
+    def _probe_error_summary(exc: BaseException) -> str:
+        detail = (operator_safe_error(exc) or "").strip()
+        if not detail:
+            detail = exc.__class__.__name__
+        if len(detail) > 240:
+            detail = detail[:237] + "..."
+        return detail
 
     def _record_probe_result(self, result: RouteWiseProbeResult) -> None:
         profile = self._latency_profiles.get(result.endpoint_id)

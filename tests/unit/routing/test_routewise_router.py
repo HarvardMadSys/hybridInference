@@ -1164,6 +1164,32 @@ class TestRouteWiseLayer2:
         assert router._latency_profiles["test-model:api-a"].sample_count(time.time()) == 1
         store.insert_routewise_probe_sample.assert_awaited_once()
 
+    async def test_probe_success_counts_reasoning_delta(self):
+        """Active probes match RouteWise real-eval TTFT semantics for reasoning models."""
+        router, api_a, _api_b = _make_router_with_two_api()
+        calls: list[dict[str, Any]] = []
+
+        async def stream(messages, **params):
+            calls.append({"messages": messages, "params": params})
+            yield 'data: {"choices":[{"delta":{"role":"assistant","content":""}}]}\n\n'
+            yield 'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}\n\n'
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+
+        results = await router.run_probe_once(endpoint_id="test-model:api-a", idle_only=False)
+
+        assert len(results) == 1
+        assert results[0].ok is True
+        assert results[0].ttft_ms is not None
+        assert calls == [
+            {
+                "messages": [{"role": "user", "content": "Write a one-sentence greeting."}],
+                "params": {"max_tokens": 8, "temperature": 0},
+            }
+        ]
+
     async def test_probe_failure_records_error_penalty(self):
         """Active probe failures use the same 60s error penalty as traffic."""
         router, api_a, _api_b = _make_router_with_two_api()
@@ -1180,6 +1206,7 @@ class TestRouteWiseLayer2:
 
         assert len(results) == 1
         assert results[0].ok is False
+        assert results[0].error == "probe timed out"
         assert router._mean_ttft_sec("test-model:api-a", time.time()) == pytest.approx(60.0)
 
     async def test_probe_cycle_without_lease_syncs_shared_samples_only(self):

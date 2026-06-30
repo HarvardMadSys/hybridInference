@@ -132,8 +132,9 @@ _ToolCallAccumulator = ToolCallAccumulator
 class _TTFTTracker:
     """Record the time-to-first-token measurement.
 
-    The first non-empty delta (content, tool_calls, or reasoning_content)
-    sets the value; subsequent deltas leave it untouched.
+    The first non-empty delta (content, tool_calls, reasoning_content,
+    reasoning, or thinking) sets the value; subsequent deltas leave it
+    untouched.
     """
 
     def __init__(self, start_time: float) -> None:
@@ -451,7 +452,10 @@ class StreamSession:
             delta_local = choices_local[0].get("delta", {})
             has_content = bool(delta_local.get("content"))
             has_tool_calls = bool(delta_local.get("tool_calls"))
-            has_reasoning = bool(delta_local.get("reasoning_content"))
+            has_reasoning = any(
+                bool(delta_local.get(key))
+                for key in ("reasoning_content", "reasoning", "thinking")
+            )
             self._ttft.maybe_record(has_content or has_tool_calls or has_reasoning)
         except Exception:
             # Swallow malformed-chunk parse errors; TTFT is best-effort.
@@ -476,6 +480,8 @@ class StreamSession:
         reasoning_piece = delta.get("reasoning_content")
         if not (isinstance(reasoning_piece, str) and reasoning_piece):
             reasoning_piece = delta.get("reasoning")
+        if not (isinstance(reasoning_piece, str) and reasoning_piece):
+            reasoning_piece = delta.get("thinking")
         if isinstance(reasoning_piece, str) and reasoning_piece:
             self._final_reasoning += reasoning_piece
 

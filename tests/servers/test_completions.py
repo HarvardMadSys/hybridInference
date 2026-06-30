@@ -1032,6 +1032,36 @@ class ReasoningOnlyAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class OpenRouterReasoningOnlyAdapter(BaseAdapter):
+    """Adapter that emits OpenRouter-style delta.reasoning before content."""
+
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="answer", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        reasoning_chunk = {
+            "id": "chatcmpl-or-reasoning",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"reasoning": "Thinking in OpenRouter field..."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(reasoning_chunk)}\n\n"
+        yield self.format_stream_chunk(model=self.config.id, content="answer")
+        yield make_final_usage_chunk(
+            model=self.config.id, messages=messages, total_content="answer"
+        )
+        yield done_sentinel()
+
+
 class SlowStartAdapter(BaseAdapter):
     """Adapter that stalls before the first visible chunk."""
 
@@ -1256,6 +1286,39 @@ async def test_ttft_recorded_for_reasoning_content(monkeypatch, mock_log_store):
     logged, ttft = await _get_db_log_ttft(mock_log_store)
     assert logged, "DB log_request should have been called"
     assert ttft is not None, "ttft_ms should be recorded when reasoning_content is in first delta"
+    assert ttft >= 0
+
+
+@pytest.mark.asyncio
+async def test_ttft_recorded_for_openrouter_reasoning(monkeypatch, mock_log_store):
+    """Streaming request where first delta has only reasoning should record ttft_ms."""
+    app = _build_ttft_app(
+        "minimax-m2.5",
+        OpenRouterReasoningOnlyAdapter(_mk_cfg("minimax-m2.5")),
+        mock_log_store,
+        monkeypatch,
+    )
+
+    transport = ASGITransport(app=app)
+    async with (
+        AsyncClient(transport=transport, base_url="http://test") as client,
+        client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "minimax-m2.5",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            },
+        ) as resp,
+    ):
+        assert resp.status_code == 200
+        async for _ in resp.aiter_lines():
+            pass
+
+    logged, ttft = await _get_db_log_ttft(mock_log_store)
+    assert logged, "DB log_request should have been called"
+    assert ttft is not None, "ttft_ms should be recorded when reasoning is in first delta"
     assert ttft >= 0
 
 
