@@ -214,7 +214,13 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
         // scroll area. Plain clicks never reach here, so their `click` event is
         // left untouched and row expansion keeps working.
         drag.moved = true;
-        scrollContainer.setPointerCapture(event.pointerId);
+        try {
+          scrollContainer.setPointerCapture(event.pointerId);
+        } catch {
+          // setPointerCapture throws if the pointer is no longer active (e.g.
+          // released between this move being queued and handled). Panning still
+          // works without capture, so there's nothing to recover from.
+        }
       }
       scrollContainer.scrollLeft = drag.startScrollLeft - deltaX;
       syncScroll(scrollContainer);

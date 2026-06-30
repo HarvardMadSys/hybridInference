@@ -59,19 +59,38 @@ function forceOverflow(el: HTMLElement): void {
 
 describe('RequestsTab row expansion', () => {
   let setPointerCaptureSpy: ReturnType<typeof vi.fn>;
+  let releasePointerCaptureSpy: ReturnType<typeof vi.fn>;
+
+  // jsdom does not implement the Pointer Capture API. Stash whatever is there
+  // (usually nothing) so we can restore it in afterEach and not leak our
+  // stand-ins onto Element.prototype for other test files.
+  const protoOriginal = Element.prototype as unknown as Partial<PointerCaptureProto>;
+  const original = {
+    setPointerCapture: protoOriginal.setPointerCapture,
+    hasPointerCapture: protoOriginal.hasPointerCapture,
+    releasePointerCapture: protoOriginal.releasePointerCapture,
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
 
-    // jsdom does not implement the Pointer Capture API; provide stand-ins so the
-    // component's calls don't throw and we can assert on capture behavior.
-    setPointerCaptureSpy = vi.fn();
+    // Track captured pointer ids so hasPointerCapture/releasePointerCapture
+    // behave realistically — this exercises the component's release path on
+    // drag end rather than stubbing it out.
+    const captured = new Set<number>();
+    setPointerCaptureSpy = vi.fn((pointerId: number) => {
+      captured.add(pointerId);
+    });
+    releasePointerCaptureSpy = vi.fn((pointerId: number) => {
+      captured.delete(pointerId);
+    });
     const proto = Element.prototype as unknown as PointerCaptureProto;
     proto.setPointerCapture =
       setPointerCaptureSpy as unknown as PointerCaptureProto['setPointerCapture'];
-    proto.hasPointerCapture = (() => false) as PointerCaptureProto['hasPointerCapture'];
+    proto.hasPointerCapture = ((pointerId: number) =>
+      captured.has(pointerId)) as PointerCaptureProto['hasPointerCapture'];
     proto.releasePointerCapture =
-      vi.fn() as unknown as PointerCaptureProto['releasePointerCapture'];
+      releasePointerCaptureSpy as unknown as PointerCaptureProto['releasePointerCapture'];
 
     vi.mocked(getRequestMetrics).mockResolvedValue({
       generated_at: '2026-06-30T12:00:00.000Z',
@@ -92,6 +111,22 @@ describe('RequestsTab row expansion', () => {
 
   afterEach(() => {
     cleanup();
+    const proto = Element.prototype as unknown as Partial<PointerCaptureProto>;
+    if (original.setPointerCapture) {
+      proto.setPointerCapture = original.setPointerCapture;
+    } else {
+      delete proto.setPointerCapture;
+    }
+    if (original.hasPointerCapture) {
+      proto.hasPointerCapture = original.hasPointerCapture;
+    } else {
+      delete proto.hasPointerCapture;
+    }
+    if (original.releasePointerCapture) {
+      proto.releasePointerCapture = original.releasePointerCapture;
+    } else {
+      delete proto.releasePointerCapture;
+    }
   });
 
   it('expands a row on a plain click without capturing the pointer', async () => {
@@ -116,6 +151,7 @@ describe('RequestsTab row expansion', () => {
     // retargets the trailing click to the scroll container, so the row's
     // onClick never fires and clicking a request stops showing its details.
     expect(setPointerCaptureSpy).not.toHaveBeenCalled();
+    expect(releasePointerCaptureSpy).not.toHaveBeenCalled();
   });
 
   it('pans on drag and swallows the trailing click instead of expanding', async () => {
@@ -133,6 +169,9 @@ describe('RequestsTab row expansion', () => {
     // A real drag captures the pointer (so panning keeps tracking even if it
     // leaves the table) and suppresses the click, so no row expands.
     expect(setPointerCaptureSpy).toHaveBeenCalledTimes(1);
+    // The capture is released when the drag ends (endDrag's hasPointerCapture
+    // guard sees the still-captured pointer).
+    expect(releasePointerCaptureSpy).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Request ID:')).not.toBeInTheDocument();
     expect(getRecentRequestContent).not.toHaveBeenCalled();
   });
