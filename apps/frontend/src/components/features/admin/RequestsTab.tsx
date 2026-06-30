@@ -135,6 +135,7 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 function RequestTableScrollArea({ children }: { children: ReactNode }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const topScrollRef = useRef<HTMLDivElement | null>(null);
+  const clearMovedTimerRef = useRef<number | null>(null);
   const dragRef = useRef<RequestTableDragState>({
     active: false,
     moved: false,
@@ -178,6 +179,10 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
     const scrollContainer = scrollRef.current;
     if (!scrollContainer || scrollContainer.scrollWidth <= scrollContainer.clientWidth) return;
 
+    if (clearMovedTimerRef.current !== null) {
+      window.clearTimeout(clearMovedTimerRef.current);
+      clearMovedTimerRef.current = null;
+    }
     dragRef.current = {
       active: true,
       moved: false,
@@ -216,10 +221,20 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (drag.moved) {
+      clearMovedTimerRef.current = window.setTimeout(() => {
+        dragRef.current.moved = false;
+        clearMovedTimerRef.current = null;
+      }, 300);
+    }
   }, []);
 
   const handleClickCapture = useCallback((event: MouseEvent<HTMLDivElement>) => {
     if (!dragRef.current.moved) return;
+    if (clearMovedTimerRef.current !== null) {
+      window.clearTimeout(clearMovedTimerRef.current);
+      clearMovedTimerRef.current = null;
+    }
     dragRef.current.moved = false;
     event.preventDefault();
     event.stopPropagation();
@@ -241,6 +256,10 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
     return () => {
       resizeObserver?.disconnect();
       window.removeEventListener('resize', updateScrollMetrics);
+      if (clearMovedTimerRef.current !== null) {
+        window.clearTimeout(clearMovedTimerRef.current);
+        clearMovedTimerRef.current = null;
+      }
     };
   }, [updateScrollMetrics]);
 
@@ -261,7 +280,7 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
       )}
       <div
         ref={scrollRef}
-        className={`overflow-x-auto ${hasOverflow ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        className={`overflow-x-auto touch-pan-y ${hasOverflow ? 'cursor-grab active:cursor-grabbing' : ''}`}
         onScroll={(event) => syncScroll(event.currentTarget)}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
