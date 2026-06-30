@@ -8,6 +8,7 @@ and admin auth is satisfied via the ADMIN_TOKEN env var.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -207,6 +208,85 @@ async def test_preview_returns_count_and_rendered(admin_client):
     assert body["recipient_count"] == 7
     assert body["rendered_subject"] == "Hello"
     assert body["rendered_body_html"] == "<p>Hi</p>"
+
+
+@pytest.mark.asyncio
+async def test_preview_applies_spend_filter(admin_client):
+    """min_spend_today_usd narrows the COUNT query with a user_daily_cost gate."""
+    client, conn, _log = admin_client
+    conn.fetchrow.return_value = {"cnt": 3}
+
+    resp = await client.post(
+        "/admin/broadcast-email/preview",
+        headers=_auth_header(),
+        json={
+            "subject": "Hi",
+            "body_html": "<p>Hi</p>",
+            "body_text": "Hi",
+            "target_roles": ["free"],
+            "target_statuses": ["active"],
+            "min_spend_today_usd": 5,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["recipient_count"] == 3
+
+    sql, *params = conn.fetchrow.await_args.args
+    assert "user_daily_cost" in sql
+    # roles ($1), statuses ($2), threshold ($3) passed positionally.
+    assert params == [["free"], ["active"], Decimal("5")]
+
+
+@pytest.mark.asyncio
+async def test_preview_rejects_negative_spend_filter(admin_client):
+    """A negative spend threshold must be a 422 (schema ge=0)."""
+    client, _conn, _log = admin_client
+
+    resp = await client.post(
+        "/admin/broadcast-email/preview",
+        headers=_auth_header(),
+        json={
+            "subject": "Hi",
+            "body_html": "<p>Hi</p>",
+            "body_text": "Hi",
+            "target_roles": ["free"],
+            "target_statuses": ["active"],
+            "min_spend_today_usd": -1,
+        },
+    )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_snapshots_recipients_with_spend_filter(admin_client, monkeypatch):
+    """The recipient snapshot query carries the spend gate and its bound param."""
+    client, conn, _log = admin_client
+    conn.fetch.return_value = [{"id": "u1", "email": "a@example.com"}]
+
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.broadcast.schedule_broadcast", lambda *a, **k: None
+    )
+
+    resp = await client.post(
+        "/admin/broadcast-email",
+        headers=_auth_header(),
+        json={
+            "subject": "Hi all",
+            "body_html": "<p>Hello</p>",
+            "body_text": "Hello",
+            "target_roles": ["free"],
+            "target_statuses": ["active"],
+            "min_spend_today_usd": 2.5,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["recipient_count"] == 1
+
+    snapshot_calls = [c for c in conn.fetch.await_args_list if "FROM users" in str(c.args[0])]
+    assert snapshot_calls, "expected the recipient snapshot query"
+    sql, *params = snapshot_calls[0].args
+    assert "user_daily_cost" in sql
+    assert params == [["free"], ["active"], Decimal("2.5")]
 
 
 @pytest.mark.asyncio

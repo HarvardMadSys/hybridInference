@@ -52,6 +52,17 @@ export function BroadcastsTab() {
   const [bcTestLoading, setBcTestLoading] = useState(false);
   const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
   const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
+  // Optional spend gate: only email users who have spent more than this many
+  // USD today (UTC). Empty string means no spend filter.
+  const [bcMinSpendToday, setBcMinSpendToday] = useState('');
+
+  // Parsed spend threshold sent to the API: null when blank/invalid (no filter).
+  const parsedMinSpend = (() => {
+    const trimmed = bcMinSpendToday.trim();
+    if (trimmed === '') return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  })();
 
   const loadBroadcasts = useCallback(async () => {
     setBroadcastLoading(true);
@@ -242,6 +253,29 @@ export function BroadcastsTab() {
             </div>
           </div>
 
+          {/* Spend filter */}
+          <div className="mb-4">
+            <label className="block text-[12px] font-medium text-gray-600 mb-1">
+              Minimum spend today (USD)
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
+              placeholder="e.g. 5 — only users who spent more than $5 today"
+              value={bcMinSpendToday}
+              onChange={(e) => {
+                setBcMinSpendToday(e.target.value);
+                setBcPreview(null);
+              }}
+            />
+            <p className="mt-1 text-[11px] text-gray-400">
+              Leave blank to email everyone matching the role/status filters. When set, only users
+              whose spend today (UTC) is more than this amount are included.
+            </p>
+          </div>
+
           {/* Schedule toggle */}
           <div className="mb-4">
             <label className="block text-[12px] font-medium text-gray-600 mb-2">Send Timing</label>
@@ -288,6 +322,7 @@ export function BroadcastsTab() {
                     body_text: '',
                     target_roles: bcTargetRoles,
                     target_statuses: bcTargetStatuses,
+                    min_spend_today_usd: parsedMinSpend,
                   });
                   setBcPreview(res);
                 } catch (err) {
@@ -314,6 +349,7 @@ export function BroadcastsTab() {
                     body_text: '',
                     target_roles: bcTargetRoles,
                     target_statuses: bcTargetStatuses,
+                    min_spend_today_usd: parsedMinSpend,
                   });
                   toast.success('Test email sent to your address');
                 } catch (err) {
@@ -384,6 +420,7 @@ export function BroadcastsTab() {
                         body_text: '',
                         target_roles: bcTargetRoles,
                         target_statuses: bcTargetStatuses,
+                        min_spend_today_usd: parsedMinSpend,
                         scheduled_at:
                           bcScheduleMode === 'later' && bcScheduledAt
                             ? new Date(bcScheduledAt).toISOString()

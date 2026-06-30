@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio as _asyncio
 import json as _json
 import uuid as _uuid
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -23,7 +24,35 @@ from serving.servers.deps import get_db_logger, verify_admin_access
 from serving.utils.email import render_broadcast_template, send_email
 from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
+if TYPE_CHECKING:
+    from decimal import Decimal
+
 router = APIRouter(prefix="/admin")
+
+
+def _recipient_where(
+    target_roles: list[str],
+    target_statuses: list[str],
+    min_spend_today_usd: Decimal | None,
+) -> tuple[str, list[Any]]:
+    """Build the recipient WHERE clause and bound params for a broadcast.
+
+    Shared by the preview COUNT and the create-time snapshot so the audience an
+    admin previews can't drift from who actually gets the email. The optional
+    spend gate reads today's (UTC) cost from the ``user_daily_cost`` counter
+    table; users with no row today count as $0 and are filtered out.
+    """
+    clauses = ["role = ANY($1::text[])", "status = ANY($2::text[])"]
+    params: list[Any] = [target_roles or [], target_statuses or []]
+    if min_spend_today_usd is not None:
+        params.append(min_spend_today_usd)
+        clauses.append(
+            "COALESCE((SELECT udc.cost_usd FROM user_daily_cost udc "
+            "  WHERE udc.user_id = users.id "
+            "    AND udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
+            f"> ${len(params)}"
+        )
+    return " AND ".join(clauses), params
 
 
 def _render_or_422(req: BroadcastPreviewRequest) -> dict[str, str]:
@@ -53,15 +82,13 @@ async def preview_broadcast(
 
     rendered = _render_or_422(req)
 
+    where_sql, params = _recipient_where(
+        req.target_roles, req.target_statuses, req.min_spend_today_usd
+    )
     async with db.pool.acquire() as conn:
         row = await conn.fetchrow(
-            """
-            SELECT COUNT(*) as cnt FROM users
-            WHERE role = ANY($1::text[])
-              AND status = ANY($2::text[])
-            """,
-            req.target_roles or [],
-            req.target_statuses or [],
+            f"SELECT COUNT(*) as cnt FROM users WHERE {where_sql}",
+            *params,
         )
     count = row["cnt"] if row else 0
 
@@ -152,14 +179,12 @@ async def create_broadcast(
 
         # Snapshot recipients at create time so the audience matches what the admin
         # previewed and can't drift between scheduling and execution.
+        where_sql, params = _recipient_where(
+            req.target_roles, req.target_statuses, req.min_spend_today_usd
+        )
         recipients = await conn.fetch(
-            """
-                SELECT id, email FROM users
-                WHERE role = ANY($1::text[])
-                  AND status = ANY($2::text[])
-                """,
-            req.target_roles or [],
-            req.target_statuses or [],
+            f"SELECT id, email FROM users WHERE {where_sql}",
+            *params,
         )
         if recipients:
             await conn.executemany(

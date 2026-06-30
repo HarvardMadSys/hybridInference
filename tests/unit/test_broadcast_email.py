@@ -266,6 +266,58 @@ def test_broadcast_preview_request_rejects_empty_filters():
     BroadcastPreviewRequest(target_roles=["free"], target_statuses=["active"])
 
 
+def test_broadcast_preview_request_rejects_negative_spend():
+    """A negative min_spend_today_usd makes no sense and must be rejected."""
+    from pydantic import ValidationError
+
+    from serving.schemas_admin import BroadcastPreviewRequest
+
+    with pytest.raises(ValidationError):
+        BroadcastPreviewRequest(
+            target_roles=["free"], target_statuses=["active"], min_spend_today_usd=-1
+        )
+    # Zero and positive thresholds, and an omitted threshold, are all accepted.
+    assert (
+        BroadcastPreviewRequest(
+            target_roles=["free"], target_statuses=["active"]
+        ).min_spend_today_usd
+        is None
+    )
+    BroadcastPreviewRequest(
+        target_roles=["free"], target_statuses=["active"], min_spend_today_usd=0
+    )
+    BroadcastPreviewRequest(
+        target_roles=["free"], target_statuses=["active"], min_spend_today_usd=5
+    )
+
+
+# ── Recipient WHERE-clause builder ────────────────────────────────────────
+
+
+def test_recipient_where_without_spend_filter():
+    """No spend gate → just role/status clauses with two bound params."""
+    from serving.servers.routers.admin.broadcast import _recipient_where
+
+    where, params = _recipient_where(["free", "admin"], ["active"], None)
+    assert "role = ANY($1::text[])" in where
+    assert "status = ANY($2::text[])" in where
+    assert "user_daily_cost" not in where
+    assert params == [["free", "admin"], ["active"]]
+
+
+def test_recipient_where_with_spend_filter():
+    """Spend gate → adds a user_daily_cost subquery comparing today's cost to $3."""
+    from decimal import Decimal
+
+    from serving.servers.routers.admin.broadcast import _recipient_where
+
+    where, params = _recipient_where(["free"], ["active"], Decimal("5"))
+    assert "user_daily_cost" in where
+    # Strictly greater than the threshold, bound as the third parameter.
+    assert "> $3" in where
+    assert params == [["free"], ["active"], Decimal("5")]
+
+
 @pytest.mark.asyncio
 async def test_execute_broadcast_offloads_smtp_to_thread():
     """SMTP send_email is dispatched via asyncio.to_thread so it doesn't block the loop."""
