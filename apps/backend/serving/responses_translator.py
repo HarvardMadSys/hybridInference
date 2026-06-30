@@ -671,7 +671,9 @@ class ResponsesStreamTranslator:
         if isinstance(content, str) and content:
             yield from self._feed_text(content)
 
-        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        reasoning = (
+            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+        )
         if isinstance(reasoning, str) and reasoning:
             self._reasoning_accum += reasoning
 

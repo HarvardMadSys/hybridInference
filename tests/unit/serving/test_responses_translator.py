@@ -254,6 +254,19 @@ def test_stream_accumulates_reasoning_into_assistant_message():
     assert "think" not in joined
 
 
+def test_stream_accumulates_thinking_into_assistant_message():
+    chunks = [
+        'data: {"choices":[{"index":0,"delta":{"thinking":"think "}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"reasoning":"more"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
+        'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n',
+    ]
+    t, joined = _collect(chunks)
+    assert t.assistant_message["reasoning_content"] == "think more"
+    assert t.assistant_message["content"] == "hi"
+    assert "think" not in joined
+
+
 def test_chat_response_nested_usage_details_preserved():
     chat = {
         "choices": [
