@@ -479,12 +479,15 @@ class TestListUsersNewFilters:
         assert rows[0]["usage_alltime_requests"] == 42
         assert rows[0]["usage_alltime_tokens"] == 123456
         all_sqls = [c.args[0] for c in pg_conn.fetch.call_args_list]
-        assert any("SUM(requests)" in sql and "FROM user_daily_cost" in sql for sql in all_sqls)
+        # Requests count comes from api_logs (COUNT of logged rows), NOT the
+        # billable-only user_daily_cost.requests rollup, so free/zero-cost
+        # requests are included.
+        assert any("COUNT(*) AS n" in sql and "FROM api_logs" in sql for sql in all_sqls)
         assert any("SUM(total_tokens)" in sql and "FROM api_logs" in sql for sql in all_sqls)
 
     async def test_sort_by_requests_orders_by_request_count(self, store, pg_conn):
-        # sort_by=requests joins the user_daily_cost request rollup as a CTE and
-        # orders by it; the per-page requests enrichment fetch is skipped.
+        # sort_by=requests joins an api_logs COUNT CTE and orders by it; the
+        # per-page requests enrichment fetch is skipped.
         pg_conn.fetchrow.return_value = {"total": 0}
         pg_conn.fetch.side_effect = [[], []]
 
@@ -492,7 +495,8 @@ class TestListUsersNewFilters:
 
         main_sql = pg_conn.fetch.call_args_list[-1].args[0]
         assert "usage_requests AS" in main_sql
-        assert "SUM(requests)" in main_sql
+        assert "COUNT(*) AS n" in main_sql
+        assert "FROM api_logs" in main_sql
         assert "ORDER BY COALESCE(ureq.n, 0) DESC" in main_sql
 
     async def test_sort_by_tokens_orders_by_token_total(self, store, pg_conn):

@@ -898,11 +898,13 @@ class PostgresOperationalStore(OperationalStore):
         join against ``api_logs`` (which lives in the same Postgres instance
         for this implementation).
 
-        ``sort_by`` also supports ``requests`` (all-time request count from the
-        ``user_daily_cost`` rollup) and ``tokens`` (all-time ``total_tokens``
-        summed from ``api_logs``). Both metrics are always returned for the
-        visible page as ``usage_alltime_requests`` / ``usage_alltime_tokens``,
-        regardless of the active sort.
+        ``sort_by`` also supports ``requests`` (all-time request count) and
+        ``tokens`` (all-time ``total_tokens`` total). Both are derived from
+        ``api_logs`` — the request count is ``COUNT(*)`` of logged rows rather
+        than ``user_daily_cost.requests``, which only tracks billable
+        (cost > 0) requests and would miss free/zero-cost calls. Both metrics
+        are always returned for the visible page as ``usage_alltime_requests`` /
+        ``usage_alltime_tokens``, regardless of the active sort.
 
         Filters (all keyword-only):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose
@@ -995,9 +997,12 @@ class PostgresOperationalStore(OperationalStore):
         needs_today = needs_today_filter or needs_alltime_sort
         needs_month = needs_month_filter or needs_alltime_sort
         needs_alltime = needs_alltime_sort
-        # All-time request count (from the user_daily_cost rollup) and all-time
-        # token total (summed from api_logs, which has no daily rollup) — each
-        # only joined into the row query when that column is the sort key.
+        # All-time request count and all-time token total — both derived from
+        # api_logs (one row per logged request). The request count must come
+        # from api_logs rather than the user_daily_cost rollup: the rollup is
+        # only incremented for billable (cost > 0) requests, so zero-priced /
+        # free / local-model calls would be missed. Each is joined into the row
+        # query only when that column is the active sort key.
         needs_requests_sort = sort_by == "requests"
         needs_tokens_sort = sort_by == "tokens"
 
@@ -1177,8 +1182,8 @@ class PostgresOperationalStore(OperationalStore):
             if needs_requests_sort:
                 cte_parts.append(
                     "usage_requests AS ("
-                    "  SELECT user_id, COALESCE(SUM(requests), 0) AS n"
-                    "  FROM user_daily_cost"
+                    "  SELECT user_id, COUNT(*) AS n"
+                    "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "  GROUP BY user_id"
                     ")"
@@ -1255,12 +1260,14 @@ class PostgresOperationalStore(OperationalStore):
             else:
                 alltime_map = {}
 
-            # All-time request count — from the user_daily_cost rollup so it is
-            # cheap (no api_logs scan) and consistent with all-time cost.
+            # All-time request count — COUNT of api_logs rows (one per logged
+            # request). Uses api_logs rather than user_daily_cost.requests so
+            # zero-cost / free / local-model calls are included; bounded to the
+            # visible page's user_ids, so it stays a cheap indexed lookup.
             if user_ids and not needs_requests_sort:
                 req_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(requests), 0) AS n "
-                    "FROM user_daily_cost "
+                    "SELECT user_id, COUNT(*) AS n "
+                    "FROM api_logs "
                     "WHERE user_id = ANY($1::text[]) "
                     "GROUP BY user_id",
                     user_ids,

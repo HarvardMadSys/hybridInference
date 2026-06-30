@@ -245,9 +245,10 @@ class OperationalStore(ABC):
         """Return ``(total_count, user_rows, status_counts_row)``.
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
-        ``cost_alltime``) or usage (``tokens``) require joining against
-        ``api_logs`` which lives in the **LogStore**.  ``requests`` reads the
-        ``user_daily_cost`` rollup.  Implementations that cannot access
+        ``cost_alltime``) or usage (``requests``, ``tokens``) require joining
+        against ``api_logs`` which lives in the **LogStore** — ``requests`` is
+        a ``COUNT(*)`` of logged rows (not the billable-only
+        ``user_daily_cost`` rollup).  Implementations that cannot access
         ``api_logs`` directly must accept an optional *usage_provider* callback
         or return those columns as zero and let the caller enrich them.
 
