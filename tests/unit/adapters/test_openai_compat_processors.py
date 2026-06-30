@@ -155,6 +155,32 @@ async def test_streaming_default_processor_preserves_openrouter_reasoning_delta(
     )
 
 
+@pytest.mark.asyncio
+async def test_streaming_think_block_processor_preserves_openrouter_reasoning_delta():
+    """MiniMax auto processor must not drop native OpenRouter reasoning fields."""
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"role": "assistant", "content": ""})
+        yield _make_chunk(delta={"reasoning": "Thinking..."})
+        yield _make_chunk(delta={"thinking": "Still thinking..."})
+        yield _make_chunk(delta={}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor="think_block")
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+    ]
+
+    payloads = [json.loads(chunk[6:]) for chunk in chunks[:-1]]
+    deltas = [
+        payload["choices"][0].get("delta", {}) for payload in payloads if payload.get("choices")
+    ]
+    assert any(delta.get("reasoning") == "Thinking..." for delta in deltas)
+    assert any(delta.get("thinking") == "Still thinking..." for delta in deltas)
+
+
 # --- include_usage_in_stream capability gate tests ---
 
 

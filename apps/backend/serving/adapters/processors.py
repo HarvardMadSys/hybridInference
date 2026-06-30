@@ -505,8 +505,11 @@ class ThinkBlockProcessor(BaseProcessor):
 
         delta = choices[0].get("delta", {})
 
-        # Pass through native tool_calls untouched (but ignore null/empty)
+        # Pass through native tool_calls and reasoning fields untouched (but ignore null/empty).
+        # This processor only strips literal <think> blocks embedded in content.
         if delta.get("tool_calls"):
+            return [chunk]
+        if delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking"):
             return [chunk]
 
         # Preserve terminal usage-bearing chunks even when they carry no text.

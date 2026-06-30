@@ -970,6 +970,19 @@ class TestThinkBlockProcessor:
         assert len(result) == 1
         assert result[0] is chunk
 
+    @pytest.mark.parametrize("field", ["reasoning_content", "reasoning", "thinking"])
+    def test_native_reasoning_fields_preserved(self, field: str):
+        """Native reasoning fields are structured deltas, not literal <think> content."""
+        proc = ThinkBlockProcessor()
+        chunk = {
+            "id": "test",
+            "choices": [{"finish_reason": None, "index": 0, "delta": {field: "thinking..."}}],
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert len(result) == 1
+        assert result[0] is chunk
+        assert result[0]["choices"][0]["delta"][field] == "thinking..."
+
     def test_empty_chunk_without_usage_dropped(self):
         """Chunk with empty content and no usage should still be dropped."""
         proc = ThinkBlockProcessor()
