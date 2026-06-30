@@ -1,0 +1,139 @@
+// @vitest-environment jsdom
+import '@testing-library/jest-dom/vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import type { AdminRecentRequestItem } from '@/lib/api/admin';
+import { RequestsTab } from './RequestsTab';
+
+vi.mock('react-hot-toast', () => ({
+  default: { error: vi.fn(), success: vi.fn() },
+}));
+
+vi.mock('@/lib/api/admin', () => ({
+  listRecentRequests: vi.fn(),
+  getRequestMetrics: vi.fn(),
+  getRecentRequestContent: vi.fn(),
+  clearErrorRequests: vi.fn(),
+  exportRequests: vi.fn(),
+}));
+
+import { getRecentRequestContent, getRequestMetrics, listRecentRequests } from '@/lib/api/admin';
+
+function makeRequest(overrides: Partial<AdminRecentRequestItem> = {}): AdminRecentRequestItem {
+  return {
+    request_id: 'req_abc123',
+    user_id: 'user_1',
+    user_name: 'Ada',
+    user_email: 'ada@example.com',
+    model_id: 'gpt-4o-mini',
+    provider: 'openai',
+    timestamp: '2026-06-30T12:00:00.000Z',
+    status_code: 200,
+    latency_ms: 1200,
+    prompt_tokens: 100,
+    completion_tokens: 50,
+    ...overrides,
+  };
+}
+
+type PointerCaptureProto = {
+  setPointerCapture: (pointerId: number) => void;
+  hasPointerCapture: (pointerId: number) => boolean;
+  releasePointerCapture: (pointerId: number) => void;
+};
+
+function getScrollContainer(): HTMLElement {
+  const el = document.querySelector<HTMLElement>('[aria-label="Recent requests table"]');
+  if (!el) throw new Error('request table scroll container not found');
+  return el;
+}
+
+// jsdom performs no layout, so scrollWidth/clientWidth are both 0 and the
+// drag-to-pan path in RequestTableScrollArea no-ops. Force the container to
+// report horizontal overflow so the pointer handlers actually engage.
+function forceOverflow(el: HTMLElement): void {
+  Object.defineProperty(el, 'scrollWidth', { configurable: true, value: 1000 });
+  Object.defineProperty(el, 'clientWidth', { configurable: true, value: 200 });
+}
+
+describe('RequestsTab row expansion', () => {
+  let setPointerCaptureSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // jsdom does not implement the Pointer Capture API; provide stand-ins so the
+    // component's calls don't throw and we can assert on capture behavior.
+    setPointerCaptureSpy = vi.fn();
+    const proto = Element.prototype as unknown as PointerCaptureProto;
+    proto.setPointerCapture =
+      setPointerCaptureSpy as unknown as PointerCaptureProto['setPointerCapture'];
+    proto.hasPointerCapture = (() => false) as PointerCaptureProto['hasPointerCapture'];
+    proto.releasePointerCapture =
+      vi.fn() as unknown as PointerCaptureProto['releasePointerCapture'];
+
+    vi.mocked(getRequestMetrics).mockResolvedValue({
+      generated_at: '2026-06-30T12:00:00.000Z',
+      windows: [],
+    });
+    vi.mocked(getRecentRequestContent).mockResolvedValue({
+      prompt: 'hello world',
+      response: 'hi there',
+      reasoning_content: null,
+    });
+    vi.mocked(listRecentRequests).mockResolvedValue({
+      requests: [makeRequest()],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('expands a row on a plain click without capturing the pointer', async () => {
+    render(<RequestsTab />);
+
+    const cell = await screen.findByText('gpt-4o-mini');
+    forceOverflow(getScrollContainer());
+
+    expect(screen.queryByText('Request ID:')).not.toBeInTheDocument();
+
+    // A real mouse click is pointerdown -> pointerup -> click with no movement.
+    fireEvent.pointerDown(cell, { button: 0, pointerId: 1, clientX: 40 });
+    fireEvent.pointerUp(cell, { pointerId: 1, clientX: 40 });
+    fireEvent.click(cell);
+
+    // The detail panel opens and the prompt/response content lazy-loads.
+    expect(screen.getByText('Request ID:')).toBeInTheDocument();
+    expect(await screen.findByText('Prompt:')).toBeInTheDocument();
+    expect(getRecentRequestContent).toHaveBeenCalledWith('req_abc123');
+
+    // Regression guard for PR #826: capturing the pointer on pointerdown
+    // retargets the trailing click to the scroll container, so the row's
+    // onClick never fires and clicking a request stops showing its details.
+    expect(setPointerCaptureSpy).not.toHaveBeenCalled();
+  });
+
+  it('pans on drag and swallows the trailing click instead of expanding', async () => {
+    render(<RequestsTab />);
+
+    const cell = await screen.findByText('gpt-4o-mini');
+    forceOverflow(getScrollContainer());
+
+    fireEvent.pointerDown(cell, { button: 0, pointerId: 1, clientX: 40 });
+    // Move well past the slop threshold: this is unambiguously a drag, not a tap.
+    fireEvent.pointerMove(cell, { pointerId: 1, clientX: 140 });
+    fireEvent.pointerUp(cell, { pointerId: 1, clientX: 140 });
+    fireEvent.click(cell);
+
+    // A real drag captures the pointer (so panning keeps tracking even if it
+    // leaves the table) and suppresses the click, so no row expands.
+    expect(setPointerCaptureSpy).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('Request ID:')).not.toBeInTheDocument();
+    expect(getRecentRequestContent).not.toHaveBeenCalled();
+  });
+});

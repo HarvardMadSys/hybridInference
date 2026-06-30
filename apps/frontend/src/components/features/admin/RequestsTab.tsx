@@ -183,6 +183,11 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
       window.clearTimeout(clearMovedTimerRef.current);
       clearMovedTimerRef.current = null;
     }
+    // Record the drag origin but do NOT capture the pointer yet. Capturing on
+    // pointerdown retargets the follow-up `click` to this container, so the
+    // row's onClick never fires and clicking a request stops expanding its
+    // details. Capture is deferred to handlePointerMove, once the gesture
+    // passes the slop threshold and is unambiguously a drag.
     dragRef.current = {
       active: true,
       moved: false,
@@ -190,7 +195,6 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
       startScrollLeft: scrollContainer.scrollLeft,
       startX: event.clientX,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   }, []);
 
   const handlePointerMove = useCallback(
@@ -204,7 +208,14 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
       const deltaX = event.clientX - drag.startX;
       if (Math.abs(deltaX) <= REQUEST_TABLE_DRAG_THRESHOLD_PX) return;
 
-      drag.moved = true;
+      if (!drag.moved) {
+        // First movement past the threshold: now that this is a real drag,
+        // capture the pointer so panning keeps tracking even if it leaves the
+        // scroll area. Plain clicks never reach here, so their `click` event is
+        // left untouched and row expansion keeps working.
+        drag.moved = true;
+        scrollContainer.setPointerCapture(event.pointerId);
+      }
       scrollContainer.scrollLeft = drag.startScrollLeft - deltaX;
       syncScroll(scrollContainer);
       event.preventDefault();
