@@ -24,14 +24,16 @@ repos:
       # - id: no-commit-to-branch
       #   args: ["--branch", "main", "--branch", "master"]
 
+  # Pin the same ruff version CI uses and lint the same files (whole repo) so
+  # local commits can't pass while CI's repo-wide `ruff check/format .` fails.
+  # Previously this hook pinned v0.5.6 and excluded ops/ + tests/, which let
+  # unformatted / lint-violating ops scripts land on dev and turn CI red.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.5.6
+    rev: v0.15.12
     hooks:
       - id: ruff
         args: ["--fix", "--exit-non-zero-on-fix"]
-        exclude: "^(tests|ops)/"
       - id: ruff-format
-        exclude: "^(tests|ops)/"
 
   - repo: https://github.com/pycqa/pydocstyle
     rev: 6.3.0
