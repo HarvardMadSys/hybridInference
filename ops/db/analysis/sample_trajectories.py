@@ -11,12 +11,13 @@ agent replaces history with a summary it keeps the most recent messages, so the
 overlap (and thus the session) survives. A short-gap shrinking-context bridge
 covers summary-only compaction that retains nothing verbatim.
 
-The script prints and saves per-(model, agent) statistics over *all* detected
-trajectories (counts, length/duration/token distributions, error and tool-call
-rates), then writes the ``--top-n`` longest trajectories per qualifying pair to
-``<out-dir>/<model>__<agent>.json``. Only the **last turn** of each request is
-stored (the new user/tool message plus the model's reply), since consecutive
-requests repeat history.
+The script prints (live) and saves per-(model, agent) statistics over *all*
+detected trajectories (counts, length/duration/token distributions, error and
+tool-call rates), then writes the ``--top-n`` longest trajectories per
+qualifying pair to ``<out-dir>/<model>__<agent>.json``. The full conversation
+history is kept compactly as per-request message deltas (only the messages added
+since the previous request), so compaction stays visible without storing the
+repeated prefix on every request.
 
 Read-only. Connects to PostgreSQL via ``.env`` / ``DB_*`` env vars, like the
 other live-DB analysis scripts in this directory.
@@ -34,10 +35,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import statistics as st
+import sys
 from collections import defaultdict, deque
+from contextlib import suppress
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -46,7 +50,7 @@ import asyncpg
 import dotenv
 
 # Truncation caps (characters) so trajectory files stay readable.
-CAP_LAST = 600
+CAP_HIST = 500
 CAP_ASSIST = 1000
 CAP_TOOLIN = 300
 CAP_SYS = 2000
@@ -118,15 +122,25 @@ def _summarize_content(content: Any, cap: int) -> str:
     return (" ".join(p for p in parts if p))[:cap]
 
 
-def _last_message(prompt: Any) -> tuple[str | None, str]:
-    """Return (role, truncated text) for the prompt's last (newest) turn."""
+def _messages_and_hashes(prompt: Any) -> tuple[list[Any], list[str]]:
+    """Return (messages, per-message content hashes) for a prompt."""
     msgs = _loads(prompt)
-    if not isinstance(msgs, list) or not msgs:
-        return None, ""
-    last = msgs[-1]
-    if not isinstance(last, dict):
-        return None, str(last)[:CAP_LAST]
-    return last.get("role"), _summarize_content(last.get("content"), CAP_LAST)
+    if not isinstance(msgs, list):
+        return [], []
+    hashes = [
+        hashlib.md5(json.dumps(m, sort_keys=True, default=str).encode()).hexdigest() for m in msgs
+    ]
+    return msgs, hashes
+
+
+def _common_prefix_len(a: list[str], b: list[str]) -> int:
+    """Length of the shared leading run between two hash lists."""
+    n = 0
+    for x, y in zip(a, b, strict=False):
+        if x != y:
+            break
+        n += 1
+    return n
 
 
 def _assistant_from_response(response: Any) -> tuple[str, list[dict[str, Any]], Any]:
@@ -343,7 +357,15 @@ def _print_stats(stats: list[dict[str, Any]], n_bridge: int) -> str:
 async def _build_pair_file(
     conn: asyncpg.Connection, model: str, agent: str, trajs: list[dict[str, Any]], out: Path
 ) -> list[int]:
-    """Fetch last-turn content for the chosen trajectories and write the pair file."""
+    """Fetch the chosen trajectories and write the pair file, keeping full history.
+
+    History is kept compactly as per-request message *deltas*: the first request
+    stores its whole message list, and each later request stores only the
+    messages added since the previous one (assistant turns excluded -- they are
+    captured in ``assistant_text``/``tool_calls``). When the leading messages
+    diverge (history compaction), ``reset`` is set and the delta carries the new
+    state (summary + retained tail), so the conversation stays reconstructable.
+    """
     out_trajs = []
     for t in trajs:
         ids = [r["request_id"] for r in t["reqs"]]
@@ -356,28 +378,42 @@ async def _build_pair_file(
         if not rows:
             continue
         sys_txt, tool_names = _first_context(rows[0]["prompt"], rows[0]["request_payload"])
-        recs, tools_used = [], set()
+        recs, tools_used, prev_hashes = [], set(), []
         for i, r in enumerate(rows):
-            role, lastmsg = _last_message(r["prompt"])
+            msgs, hashes = _messages_and_hashes(r["prompt"])
+            shared = _common_prefix_len(prev_hashes, hashes)
+            reset = shared < len(prev_hashes)  # leading messages diverged -> compaction
+            new_messages = [
+                {
+                    "role": m.get("role") if isinstance(m, dict) else None,
+                    "content": _summarize_content(
+                        m.get("content") if isinstance(m, dict) else m, CAP_HIST
+                    ),
+                }
+                for m in msgs[shared:]
+                if not (isinstance(m, dict) and m.get("role") == "assistant")
+            ]
             atext, tcalls, stop = _assistant_from_response(r["response"])
             for tc in tcalls:
                 if tc.get("name"):
                     tools_used.add(tc["name"])
             recs.append(
-                {  # last turn only: the new message + the model's reply
+                {
                     "seq": i,
                     "ts": r["timestamp"].isoformat(),
                     "status": r["status_code"] or 0,
                     "ttft_ms": r["ttft_ms"],
                     "prompt_tokens": r["prompt_tokens"],
                     "completion_tokens": r["completion_tokens"],
-                    "last_role": role,
-                    "last_msg": lastmsg,
+                    "n_messages": len(msgs),
+                    "reset": reset,
+                    "new_messages": new_messages,
                     "assistant_text": atext,
                     "tool_calls": tcalls,
                     "stop": stop,
                 }
             )
+            prev_hashes = hashes
         dur = (rows[-1]["timestamp"] - rows[0]["timestamp"]).total_seconds()
         out_trajs.append(
             {
@@ -410,6 +446,9 @@ async def _build_pair_file(
 
 async def main(args: argparse.Namespace) -> int:
     """Run sessionization, emit statistics, and write sampled trajectory files."""
+    # Print progress/stats live even when stdout is piped (block-buffered).
+    with suppress(Exception):
+        sys.stdout.reconfigure(line_buffering=True)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     agents = [a.strip().lower() for a in args.agents.split(",")] if args.agents else None
