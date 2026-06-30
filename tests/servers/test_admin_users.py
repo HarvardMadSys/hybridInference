@@ -689,6 +689,8 @@ def _user_row_with_usage(
     usage_today: Decimal = Decimal("0"),
     usage_month: Decimal = Decimal("0"),
     usage_alltime: Decimal = Decimal("0"),
+    usage_alltime_requests: int = 0,
+    usage_alltime_tokens: int = 0,
     key_prefix: str | None = "hyi-abc",
     last_login_at: datetime | None = None,
     signup_reason: str | None = None,
@@ -712,6 +714,8 @@ def _user_row_with_usage(
         "usage_today": usage_today,
         "usage_month": usage_month,
         "usage_alltime": usage_alltime,
+        "usage_alltime_requests": usage_alltime_requests,
+        "usage_alltime_tokens": usage_alltime_tokens,
     }
 
 
@@ -815,6 +819,68 @@ async def test_sort_by_cost_alltime(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_sort_by_requests(admin_client):
+    """sort_by=requests surfaces and orders by all-time request count."""
+    client, op_store, _log_store, _log = admin_client
+
+    sc = {**_EMPTY_SC, "all": 2, "active": 2}
+    rows = [
+        _user_row_with_usage(uid="u1", email="busy@e.com", usage_alltime_requests=4200),
+        _user_row_with_usage(uid="u2", email="quiet@e.com", usage_alltime_requests=7),
+    ]
+    op_store.list_users.return_value = (2, rows, sc)
+
+    response = await client.get("/admin/users?sort_by=requests", headers=AUTH)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert op_store.list_users.call_args.kwargs["sort_by"] == "requests"
+    assert data["users"][0]["usage_alltime_requests"] == 4200
+    assert data["users"][1]["usage_alltime_requests"] == 7
+
+
+@pytest.mark.asyncio
+async def test_sort_by_tokens(admin_client):
+    """sort_by=tokens surfaces and orders by all-time total tokens."""
+    client, op_store, _log_store, _log = admin_client
+
+    sc = {**_EMPTY_SC, "all": 2, "active": 2}
+    rows = [
+        _user_row_with_usage(uid="u1", email="whale@e.com", usage_alltime_tokens=9_000_000),
+        _user_row_with_usage(uid="u2", email="minnow@e.com", usage_alltime_tokens=512),
+    ]
+    op_store.list_users.return_value = (2, rows, sc)
+
+    response = await client.get("/admin/users?sort_by=tokens", headers=AUTH)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert op_store.list_users.call_args.kwargs["sort_by"] == "tokens"
+    assert data["users"][0]["usage_alltime_tokens"] == 9_000_000
+    assert data["users"][1]["usage_alltime_tokens"] == 512
+
+
+@pytest.mark.asyncio
+async def test_usage_totals_returned_by_default(admin_client):
+    """usage_alltime_requests/tokens are returned even without sorting by them."""
+    client, op_store, _log_store, _log = admin_client
+
+    sc = {**_EMPTY_SC, "all": 1, "active": 1}
+    op_store.list_users.return_value = (
+        1,
+        [_user_row_with_usage(usage_alltime_requests=12, usage_alltime_tokens=3456)],
+        sc,
+    )
+
+    response = await client.get("/admin/users", headers=AUTH)
+
+    assert response.status_code == 200
+    user = response.json()["users"][0]
+    assert user["usage_alltime_requests"] == 12
+    assert user["usage_alltime_tokens"] == 3456
+
+
+@pytest.mark.asyncio
 async def test_sort_by_last_login_no_cte(admin_client):
     """sort_by=last_login uses simple path (no CTEs)."""
     client, op_store, _log_store, _log = admin_client
@@ -864,7 +930,15 @@ async def test_sort_tie_breaker_in_order_clause(admin_client):
     """All sort options return 200."""
     client, op_store, _log_store, _log = admin_client
 
-    for sort_val in ("created", "cost_today", "cost_month", "cost_alltime", "last_login"):
+    for sort_val in (
+        "created",
+        "cost_today",
+        "cost_month",
+        "cost_alltime",
+        "last_login",
+        "requests",
+        "tokens",
+    ):
         op_store.list_users.return_value = (0, [], _EMPTY_SC)
         response = await client.get(f"/admin/users?sort_by={sort_val}", headers=AUTH)
         assert response.status_code == 200, f"Failed for sort_by={sort_val}"

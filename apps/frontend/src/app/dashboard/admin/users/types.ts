@@ -26,6 +26,8 @@ export interface UserRow {
   usage_today_usd: string; // Decimal serialised
   usage_month_usd: string;
   usage_alltime_usd: string;
+  usage_alltime_requests: number;
+  usage_alltime_tokens: number;
 }
 
 export interface CostHistoryPoint {
@@ -57,7 +59,14 @@ export interface UsersSummary {
   near_quota: SummaryCard;
 }
 
-export type SortBy = 'created' | 'cost_today' | 'cost_month' | 'cost_alltime' | 'last_login';
+export type SortBy =
+  | 'created'
+  | 'cost_today'
+  | 'cost_month'
+  | 'cost_alltime'
+  | 'last_login'
+  | 'requests'
+  | 'tokens';
 
 export type QuotaStateFilter = 'near' | 'over' | 'custom' | 'default';
 

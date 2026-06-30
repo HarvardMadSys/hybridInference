@@ -81,7 +81,7 @@ export function UserTable(props: UserTableProps) {
   );
 
   const showSparkline = density === 'comfortable';
-  const colSpan = showSparkline ? 13 : 12;
+  const colSpan = showSparkline ? 15 : 14;
 
   const scoreIndicator =
     scoreState === 'loaded'
@@ -319,6 +319,26 @@ export function UserTable(props: UserTableProps) {
                   All-time{sortIndicator('cost_alltime')}
                 </button>
               </th>
+              <th className="px-2 py-2" aria-sort={ariaSortFor('requests')}>
+                <button
+                  type="button"
+                  className="cursor-pointer"
+                  onClick={() => onSortChange('requests')}
+                  title="All-time request count"
+                >
+                  Requests{sortIndicator('requests')}
+                </button>
+              </th>
+              <th className="px-2 py-2" aria-sort={ariaSortFor('tokens')}>
+                <button
+                  type="button"
+                  className="cursor-pointer"
+                  onClick={() => onSortChange('tokens')}
+                  title="All-time total tokens"
+                >
+                  Tokens{sortIndicator('tokens')}
+                </button>
+              </th>
               <th className="px-2 py-2" title="Average messages per chat request (all-time)">
                 Avg turns
               </th>
@@ -372,6 +392,8 @@ export function UserTable(props: UserTableProps) {
                 usage_today_usd: Number(u.usage_today_usd),
                 usage_month_usd: Number(u.usage_month_usd),
                 usage_alltime_usd: Number(u.usage_alltime_usd),
+                usage_alltime_requests: u.usage_alltime_requests,
+                usage_alltime_tokens: u.usage_alltime_tokens,
               };
               const isExpanded = expandedId === u.id;
               return (

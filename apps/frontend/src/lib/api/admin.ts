@@ -32,9 +32,18 @@ export interface AdminUser {
   usage_today_usd: number;
   usage_month_usd: number;
   usage_alltime_usd: number;
+  usage_alltime_requests: number;
+  usage_alltime_tokens: number;
 }
 
-export type UserSortBy = 'created' | 'cost_today' | 'cost_month' | 'cost_alltime' | 'last_login';
+export type UserSortBy =
+  | 'created'
+  | 'cost_today'
+  | 'cost_month'
+  | 'cost_alltime'
+  | 'last_login'
+  | 'requests'
+  | 'tokens';
 
 export interface StatusCounts {
   all: number;

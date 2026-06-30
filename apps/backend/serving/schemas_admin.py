@@ -172,6 +172,9 @@ class UserListItem(BaseModel):
     usage_today_usd: Decimal = Field(default=Decimal("0"))
     usage_month_usd: Decimal = Field(default=Decimal("0"))
     usage_alltime_usd: Decimal = Field(default=Decimal("0"))
+    # All-time request count and token total (back the requests/tokens sorts).
+    usage_alltime_requests: int = 0
+    usage_alltime_tokens: int = 0
 
 
 class StatusCounts(BaseModel):
