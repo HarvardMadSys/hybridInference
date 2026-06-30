@@ -1592,27 +1592,6 @@ class RouteWiseRouter(BaseRouter):
         if pool is not None:
             pool.release()
 
-    def _rollback_selected_quota_attempt(
-        self,
-        request_id: str | None,
-        endpoint_id: str | None,
-    ) -> None:
-        if not request_id:
-            return
-        meta = self._pending_decisions.get(request_id)
-        if not isinstance(meta, dict) or meta.get("selected_provider_type") != "quota":
-            return
-        if endpoint_id and meta.get("selected_endpoint") != endpoint_id:
-            return
-        quota_pool_id = meta.get("quota_pool")
-        if not isinstance(quota_pool_id, str):
-            return
-        pool = self.quota_pools.get(quota_pool_id)
-        if pool is None or not pool.refund():
-            return
-        meta["quota_remaining"] = pool.remaining
-        meta["quota_used_fraction"] = pool.used_fraction
-
     def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
         return ProviderReservation(router=self, candidate=candidate)
 
@@ -2620,7 +2599,6 @@ class RouteWiseRouter(BaseRouter):
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
-                    self._rollback_selected_quota_attempt(request_id, endpoint_id)
                     if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
                         exc
                     ):
@@ -2735,8 +2713,6 @@ class RouteWiseRouter(BaseRouter):
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
-                    if not chunks_yielded:
-                        self._rollback_selected_quota_attempt(request_id, endpoint_id)
                     if (
                         chunks_yielded
                         or self.config.fallback_mode != "policy"

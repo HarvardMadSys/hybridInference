@@ -2349,12 +2349,12 @@ class TestRouteWiseDecisionMetadata:
         assert rw["fallback_policy"] == "routewise_resolve"
         assert rw["fallback_attempts"] == 1
         assert rw["failed_attempts"][0]["endpoint_id"] == "test-model:quota-provider"
-        assert _quota_pool(router).remaining == 10000
+        assert _quota_pool(router).remaining == 9999
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
     async def test_chat_completion_does_not_resolve_after_nonretryable_error(self):
-        """Non-transient provider errors surface directly and refund S_Q attempts."""
+        """Non-transient provider errors surface directly but keep S_Q attempts charged."""
         quota = _make_adapter(
             provider_type="quota",
             endpoint_id="test-model:quota-provider",
@@ -2390,7 +2390,7 @@ class TestRouteWiseDecisionMetadata:
 
         assert quota.chat_completion.await_count == 1
         assert conc.chat_completion.await_count == 0
-        assert _quota_pool(router).remaining == 10000
+        assert _quota_pool(router).remaining == 9999
 
         routing = getattr(exc_info.value, "_routing", None)
         assert routing is not None
@@ -2441,6 +2441,7 @@ class TestRouteWiseDecisionMetadata:
 
         assert quota.chat_completion.await_count == 1
         assert conc.chat_completion.await_count == 0
+        assert _quota_pool(router).remaining == 9999
 
         routing = getattr(exc_info.value, "_routing", None)
         assert routing is not None

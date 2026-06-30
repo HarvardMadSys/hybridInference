@@ -418,6 +418,7 @@ models:
       # latency_max_samples_per_profile: 5000
       # latency_min_samples: 10
       # latency_unprofiled_ttft_ms: 5000.0
+      # fallback_mode: policy
       # routewise_probe_enabled: false
       # routewise_probe_interval_sec: 300.0
       # routewise_probe_timeout_sec: 30.0
