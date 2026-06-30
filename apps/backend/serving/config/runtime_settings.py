@@ -78,6 +78,18 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
             "then buffer and return a normal non-streaming response to clients."
         ),
     },
+    "reasoning_small_call_reroute_enabled": {
+        "type": "bool",
+        "default": False,
+        "description": (
+            "Reroute tiny-max_tokens Anthropic Messages calls aimed at a reasoning "
+            "model to a fast non-reasoning model (qwen3.6-35b) with a larger output "
+            "budget. These calls (e.g. agent title/summary helpers) otherwise burn "
+            "the whole budget on hidden reasoning and return empty content. "
+            "Tool-permission/safety-check calls are never rerouted regardless of "
+            "this setting. Off by default."
+        ),
+    },
     "coding_identity_enabled": {
         "type": "bool",
         "default": True,
