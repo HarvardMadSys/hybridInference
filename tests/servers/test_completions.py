@@ -65,6 +65,36 @@ class DummyAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+class ThinkingDeltaAdapter(BaseAdapter):
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        return self.format_response(content="answer", model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params
+    ) -> AsyncGenerator[str, None]:
+        thinking_chunk = {
+            "id": "chatcmpl-thinking",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"thinking": "Thinking in alternate field..."},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(thinking_chunk)}\n\n"
+        yield self.format_stream_chunk(model=self.config.id, content="answer")
+        yield make_final_usage_chunk(
+            model=self.config.id,
+            messages=messages,
+            total_content="Thinking in alternate field...answer",
+        )
+        yield done_sentinel()
+
+
 class SplitToolCallNameAdapter(BaseAdapter):
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         raise RuntimeError("not implemented")
@@ -302,6 +332,45 @@ async def test_runtime_setting_streams_upstream_and_buffers_non_stream_response(
     body = resp.json()
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"]["content"] == "Test response"
+
+
+@pytest.mark.asyncio
+async def test_forced_streaming_buffers_thinking_delta_into_reasoning_content(monkeypatch):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    runtime_settings = MagicMock()
+    runtime_settings.get_bool = AsyncMock(return_value=True)
+
+    router = RouteExecutor()
+    router.register_route(
+        "thinking-model", [(ThinkingDeltaAdapter(_mk_cfg("thinking-model")), 1.0)]
+    )
+
+    app = FastAPI(title="Forced Streaming Thinking App")
+    app.state.services = AppServices(
+        router=router,
+        db_logger=None,
+        log_store=None,
+        runtime_settings=runtime_settings,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "thinking-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": False,
+            },
+        )
+
+    assert resp.status_code == status.HTTP_200_OK
+    body = resp.json()
+    message = body["choices"][0]["message"]
+    assert message["content"] == "answer"
+    assert message["reasoning_content"] == "Thinking in alternate field..."
 
 
 @pytest.mark.asyncio
