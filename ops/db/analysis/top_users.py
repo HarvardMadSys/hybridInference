@@ -114,7 +114,9 @@ def _fmt_dt(v: Any) -> str:
     return v.isoformat(sep=" ", timespec="minutes") if v else "—"
 
 
-def _print_report(rows: list[dict[str, Any]], days: int, order_by: str, model: str | None = None) -> None:
+def _print_report(
+    rows: list[dict[str, Any]], days: int, order_by: str, model: str | None = None
+) -> None:
     scope = f" of model~{model!r}" if model else ""
     print(f"Top {len(rows)} users by {order_by}{scope} over the last {days} day(s)\n")
     for i, r in enumerate(rows, 1):
@@ -137,7 +139,9 @@ def _print_report(rows: list[dict[str, Any]], days: int, order_by: str, model: s
         print()
 
 
-async def main(days: int, order_by: str, limit: int, as_json: bool, model: str | None = None) -> int:
+async def main(
+    days: int, order_by: str, limit: int, as_json: bool, model: str | None = None
+) -> int:
     """Rank top users and print or emit the leaderboard."""
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2)
     try:
@@ -147,7 +151,11 @@ async def main(days: int, order_by: str, limit: int, as_json: bool, model: str |
         await pool.close()
 
     if as_json:
-        print(json.dumps({"days": days, "by": order_by, "model": model, "users": rows}, indent=2, default=str))
+        print(
+            json.dumps(
+                {"days": days, "by": order_by, "model": model, "users": rows}, indent=2, default=str
+            )
+        )
     else:
         _print_report(rows, days, order_by, model)
     return 0

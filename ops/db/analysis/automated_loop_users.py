@@ -64,7 +64,9 @@ def _load_env(env_path: str | None = None) -> None:
 def _dsn() -> str:
     user = os.environ.get("DB_USER")
     if not user:
-        raise SystemExit("ERROR: DB_USER is not set. Load the .env file or set the environment variable.")
+        raise SystemExit(
+            "ERROR: DB_USER is not set. Load the .env file or set the environment variable."
+        )
     return (
         f"postgresql://{user}:{os.environ.get('DB_PASSWORD', '')}"
         f"@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}"
@@ -127,13 +129,17 @@ def _fmt_dt(v: Any) -> str:
 
 def _print_report(rows: list[dict[str, Any]], days: int, min_hits: int) -> None:
     shown = [r for r in rows if r["loop_hits"] >= min_hits]
-    print(f"Users showing automated-loop signatures over the last {days} day(s): "
-          f"{len(shown)} (min_hits={min_hits})\n")
+    print(
+        f"Users showing automated-loop signatures over the last {days} day(s): "
+        f"{len(shown)} (min_hits={min_hits})\n"
+    )
     for r in shown:
         email = r["email"] or "<no account>"
-        sigs = ", ".join(f"{k}×{v}" for k, v in sorted(r["matched"].items(), key=lambda kv: -kv[1]))
+        sigs = ", ".join(f"{k}x{v}" for k, v in sorted(r["matched"].items(), key=lambda kv: -kv[1]))
         print(f"  {email}  [{r['role'] or '?'}/{r['status'] or '?'}]")
-        print(f"    {r['loop_hits']} loop-hits of {r['total_reqs']} reqs   created={_fmt_dt(r['created_at'])}")
+        print(
+            f"    {r['loop_hits']} loop-hits of {r['total_reqs']} reqs   created={_fmt_dt(r['created_at'])}"
+        )
         print(f"    signatures: {sigs}")
         print(f"    (id={r['user_id']})")
         print()
@@ -149,7 +155,9 @@ async def main(days: int, min_hits: int, as_json: bool) -> int:
         await pool.close()
 
     if as_json:
-        print(json.dumps({"days": days, "min_hits": min_hits, "users": rows}, indent=2, default=str))
+        print(
+            json.dumps({"days": days, "min_hits": min_hits, "users": rows}, indent=2, default=str)
+        )
     else:
         _print_report(rows, days, min_hits)
     return 0
@@ -157,10 +165,21 @@ async def main(days: int, min_hits: int, as_json: bool) -> int:
 
 def cli() -> None:
     """Parse CLI args, load env, and run the scan."""
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("-n", "--days", type=int, default=7, help="Look back this many days (default: 7)")
-    parser.add_argument("--min-hits", type=int, default=1, help="Only show users with at least this many hits (default: 1)")
-    parser.add_argument("--json", action="store_true", help="Emit JSON instead of a human-readable report")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "-n", "--days", type=int, default=7, help="Look back this many days (default: 7)"
+    )
+    parser.add_argument(
+        "--min-hits",
+        type=int,
+        default=1,
+        help="Only show users with at least this many hits (default: 1)",
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="Emit JSON instead of a human-readable report"
+    )
     parser.add_argument("--env-file", default=None, help="Path to .env (default: auto-detect)")
     args = parser.parse_args()
     _load_env(args.env_file)

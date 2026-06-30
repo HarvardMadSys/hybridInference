@@ -43,7 +43,9 @@ def _load_env(env_path: str | None = None) -> None:
 def _dsn() -> str:
     user = os.environ.get("DB_USER")
     if not user:
-        raise SystemExit("ERROR: DB_USER is not set. Load the .env file or set the environment variable.")
+        raise SystemExit(
+            "ERROR: DB_USER is not set. Load the .env file or set the environment variable."
+        )
     return (
         f"postgresql://{user}:{os.environ.get('DB_PASSWORD', '')}"
         f"@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}"
@@ -76,8 +78,12 @@ def _payload_fingerprint(payload: Any) -> tuple[int, str, str]:
     return (len(msgs), first_user.strip()[:60], digest)
 
 
-async def _tail(conn: asyncpg.Connection, email: str, model: str | None, limit: int) -> dict[str, Any]:
-    user = await conn.fetchrow("SELECT id FROM users WHERE lower(trim(email)) = $1", email.strip().lower())
+async def _tail(
+    conn: asyncpg.Connection, email: str, model: str | None, limit: int
+) -> dict[str, Any]:
+    user = await conn.fetchrow(
+        "SELECT id FROM users WHERE lower(trim(email)) = $1", email.strip().lower()
+    )
     if user is None:
         return {"email": email, "found": False}
     uid = user["id"]
@@ -127,27 +133,39 @@ async def main(email: str, model: str | None, limit: int, dupes_only: bool) -> i
     dup_keys = {k for k, v in groups.items() if len(v) > 1}
 
     print(f"USER: {email}{f'  model~{model!r}' if model else ''}  —  {len(rows)} recent rows")
-    print(f"identical (prompt_tokens, completion_tokens) clusters: "
-          f"{len(dup_keys)} (covering {sum(len(groups[k]) for k in dup_keys)} rows)\n")
-    print(f"{'timestamp':<20} {'http':>4} {'prompt':>8} {'compl':>6} {'msgs':>4}  {'payload':>10}  first_user")
+    print(
+        f"identical (prompt_tokens, completion_tokens) clusters: "
+        f"{len(dup_keys)} (covering {sum(len(groups[k]) for k in dup_keys)} rows)\n"
+    )
+    print(
+        f"{'timestamp':<20} {'http':>4} {'prompt':>8} {'compl':>6} {'msgs':>4}  {'payload':>10}  first_user"
+    )
     for r, nmsg, first_user, digest in enriched:
         key = (r["prompt_tokens"], r["completion_tokens"])
         if dupes_only and key not in dup_keys:
             continue
         mark = "DUP" if key in dup_keys else "   "
         ts = r["timestamp"].isoformat(sep=" ", timespec="seconds")[:19]
-        print(f"{ts:<20} {r['status_code'] or 0:>4} {r['prompt_tokens'] or 0:>8} "
-              f"{r['completion_tokens'] or 0:>6} {nmsg:>4}  {digest:>10} {mark} {first_user!r}")
+        print(
+            f"{ts:<20} {r['status_code'] or 0:>4} {r['prompt_tokens'] or 0:>8} "
+            f"{r['completion_tokens'] or 0:>6} {nmsg:>4}  {digest:>10} {mark} {first_user!r}"
+        )
     return 0
 
 
 def cli() -> None:
     """Parse CLI args, load env, and run the tail."""
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("email", help="User email to inspect")
     parser.add_argument("-m", "--model", default=None, help="Only this model_id (substring)")
-    parser.add_argument("-l", "--limit", type=int, default=40, help="How many recent rows (default: 40)")
-    parser.add_argument("--dupes", action="store_true", help="Show only rows in an identical-token cluster")
+    parser.add_argument(
+        "-l", "--limit", type=int, default=40, help="How many recent rows (default: 40)"
+    )
+    parser.add_argument(
+        "--dupes", action="store_true", help="Show only rows in an identical-token cluster"
+    )
     parser.add_argument("--env-file", default=None, help="Path to .env (default: auto-detect)")
     args = parser.parse_args()
     _load_env(args.env_file)
