@@ -138,8 +138,8 @@ describe('RequestsTab row expansion', () => {
     expect(screen.queryByText('Request ID:')).not.toBeInTheDocument();
 
     // A real mouse click is pointerdown -> pointerup -> click with no movement.
-    fireEvent.pointerDown(cell, { button: 0, pointerId: 1, clientX: 40 });
-    fireEvent.pointerUp(cell, { pointerId: 1, clientX: 40 });
+    fireEvent.pointerDown(cell, { button: 0, pointerId: 1, pointerType: 'mouse', clientX: 40 });
+    fireEvent.pointerUp(cell, { pointerId: 1, pointerType: 'mouse', clientX: 40 });
     fireEvent.click(cell);
 
     // The detail panel opens and the prompt/response content lazy-loads.
@@ -154,16 +154,16 @@ describe('RequestsTab row expansion', () => {
     expect(releasePointerCaptureSpy).not.toHaveBeenCalled();
   });
 
-  it('pans on drag and swallows the trailing click instead of expanding', async () => {
+  it('pans on mouse drag and swallows the trailing click instead of expanding', async () => {
     render(<RequestsTab />);
 
     const cell = await screen.findByText('gpt-4o-mini');
     forceOverflow(getScrollContainer());
 
-    fireEvent.pointerDown(cell, { button: 0, pointerId: 1, clientX: 40 });
+    fireEvent.pointerDown(cell, { button: 0, pointerId: 1, pointerType: 'mouse', clientX: 40 });
     // Move well past the slop threshold: this is unambiguously a drag, not a tap.
-    fireEvent.pointerMove(cell, { pointerId: 1, clientX: 140 });
-    fireEvent.pointerUp(cell, { pointerId: 1, clientX: 140 });
+    fireEvent.pointerMove(cell, { pointerId: 1, pointerType: 'mouse', clientX: 140 });
+    fireEvent.pointerUp(cell, { pointerId: 1, pointerType: 'mouse', clientX: 140 });
     fireEvent.click(cell);
 
     // A real drag captures the pointer (so panning keeps tracking even if it
@@ -174,5 +174,20 @@ describe('RequestsTab row expansion', () => {
     expect(releasePointerCaptureSpy).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Request ID:')).not.toBeInTheDocument();
     expect(getRecentRequestContent).not.toHaveBeenCalled();
+  });
+
+  it('leaves touch gestures to native scrolling (no JS pan / pointer capture)', async () => {
+    render(<RequestsTab />);
+
+    const cell = await screen.findByText('gpt-4o-mini');
+    forceOverflow(getScrollContainer());
+
+    // A touch drag must NOT be hijacked by the JS pan handler — touch relies on
+    // the browser's native horizontal scrolling so it keeps inertial momentum.
+    fireEvent.pointerDown(cell, { button: 0, pointerId: 2, pointerType: 'touch', clientX: 40 });
+    fireEvent.pointerMove(cell, { pointerId: 2, pointerType: 'touch', clientX: 140 });
+    fireEvent.pointerUp(cell, { pointerId: 2, pointerType: 'touch', clientX: 140 });
+
+    expect(setPointerCaptureSpy).not.toHaveBeenCalled();
   });
 });
