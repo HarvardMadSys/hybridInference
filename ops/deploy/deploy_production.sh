@@ -39,7 +39,14 @@ main() {
     exit 1
   fi
 
-  if ! git diff --quiet || ! git diff --cached --quiet; then
+  # Refuse only when the working tree diverges from HEAD for tracked files,
+  # i.e. an operator left an uncommitted hotfix worth preserving. Comparing
+  # against HEAD (rather than also inspecting the staging index) is deliberate:
+  # the `git reset --hard` below unconditionally discards staged state, so a
+  # stray index entry -- e.g. a `git add`ed-then-deleted analysis script left
+  # on the box -- must not permanently wedge deploys that the reset would
+  # otherwise clean up on its own.
+  if ! git diff --quiet HEAD --; then
     log "Refusing to deploy because tracked local changes exist."
     git status --short --untracked-files=no
     exit 1
