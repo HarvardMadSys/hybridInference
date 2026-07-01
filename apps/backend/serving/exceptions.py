@@ -233,8 +233,10 @@ _UPSTREAM_QUOTA_MARKERS: tuple[str, ...] = (
     "usage limit",
     "purchase more",
 )
+# Word-boundary anchored so "quota" does not match "quotation"; a trailing "s?"
+# keeps plural forms ("quotas", "credits", "spending limits") matching.
 _UPSTREAM_QUOTA_RE = re.compile(
-    r"(?i)(?:" + "|".join(re.escape(m) for m in _UPSTREAM_QUOTA_MARKERS) + r")"
+    r"(?i)\b(?:" + "|".join(re.escape(m) + "s?" for m in _UPSTREAM_QUOTA_MARKERS) + r")\b"
 )
 
 

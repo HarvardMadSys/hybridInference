@@ -289,8 +289,15 @@ def test_user_quota_error_still_surfaces_own_message():
 def test_user_safe_upstream_error_suppresses_quota_text():
     assert user_safe_upstream_error("Insufficient Balance") is None
     assert user_safe_upstream_error("You exceeded your current quota") is None
+    # Plural marker forms are still caught.
+    assert user_safe_upstream_error("All monthly quotas exhausted") is None
     # Non-quota upstream messages still pass through.
     assert user_safe_upstream_error("Model is overloaded") == "Model is overloaded"
+    # Word boundaries: "quotation" must not trip the "quota" marker.
+    assert (
+        user_safe_upstream_error("Invalid quotation mark in prompt")
+        == "Invalid quotation mark in prompt"
+    )
 
 
 def test_upstream_error_without_body_drops_url():
