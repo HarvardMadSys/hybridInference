@@ -126,6 +126,28 @@ describe('RecentRequests', () => {
     expect(screen.getByTitle('913 cached tokens')).toHaveTextContent('C 913');
   });
 
+  it('keeps the horizontal scroll wrapper configured for smooth mobile scrolling', async () => {
+    const { useRecentRequests } = await import('@/lib/hooks');
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: {
+        requests: [makeRequest()],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+
+    const { container } = render(<RecentRequests />);
+
+    // The table scrolls horizontally on mobile; overscroll-x-contain stops the
+    // swipe from being hijacked by the browser's back/forward navigation gesture
+    // (the "each swipe only moves a bit" symptom). Guard against silent removal.
+    const scrollWrapper = container.querySelector('table')?.parentElement;
+    expect(scrollWrapper).toHaveClass('overflow-x-auto', 'overscroll-x-contain');
+  });
+
   it('rounds sub-second latencies consistently across metrics', async () => {
     const { useRecentRequests } = await import('@/lib/hooks');
     vi.mocked(useRecentRequests).mockReturnValue({
