@@ -219,17 +219,78 @@ def test_provider_pin_error_is_scrubbed():
 def test_upstream_json_body_message_is_surfaced():
     """A genuine upstream error surfaces the provider's human-readable message."""
     exc = _make_client_response_error(
-        402,
-        message="Payment Required",
+        503,
+        message="Service Unavailable",
         url="https://api.deepseek.com/v1/chat/completions",
-        error_body='{"error": {"message": "Insufficient Balance", "type": "quota"}}',
+        error_body='{"error": {"message": "Model is overloaded", "type": "server_error"}}',
     )
-    msg = scrub_error_for_user(exc, "req_u", 402)
-    assert "Insufficient Balance" in msg
+    msg = scrub_error_for_user(exc, "req_u", 503)
+    assert "Model is overloaded" in msg
     assert "(request_id: req_u)" in msg
     # Provider identity must not leak.
     for forbidden in FORBIDDEN_SUBSTRINGS:
         assert forbidden not in msg.lower(), msg
+
+
+# ----------------------------------------------------------------------
+# Upstream quota/balance suppression (never expose that OUR account is out
+# of quota/funds — fall back to the generic status-based message).
+# ----------------------------------------------------------------------
+
+# Realistic upstream quota/balance/billing bodies that must NOT reach the user.
+UPSTREAM_QUOTA_SAMPLES = [
+    '{"error": {"message": "Insufficient Balance", "type": "quota"}}',
+    '{"error": {"message": "You exceeded your current quota, please check your '
+    'plan and billing details.", "type": "insufficient_quota"}}',
+    '{"error": {"message": "This request would exceed your monthly spending '
+    'limit.", "type": "billing"}}',
+    '{"error": {"message": "Your credit balance is too low to access this model."}}',
+    '{"error": {"message": "Insufficient funds, please recharge your account."}}',
+]
+
+
+@pytest.mark.parametrize("body", UPSTREAM_QUOTA_SAMPLES)
+def test_upstream_quota_message_is_suppressed(body):
+    """Upstream quota/balance errors fall back to the generic status message."""
+    exc = _make_client_response_error(
+        402,
+        message="Payment Required",
+        url="https://api.deepseek.com/v1/chat/completions",
+        error_body=body,
+    )
+    msg = scrub_error_for_user(exc, "req_q1", 402)
+    # 402 has no dedicated generic message → falls back to "Request failed".
+    assert msg.startswith("Request failed"), msg
+    assert "(request_id: req_q1)" in msg
+    lowered = msg.lower()
+    for token in ("quota", "balance", "billing", "credit", "funds", "recharge"):
+        assert token not in lowered, f"quota token {token!r} leaked in {msg!r}"
+
+
+def test_upstream_quota_on_429_falls_back_to_rate_limit():
+    """A 429 quota body surfaces the generic rate-limit message, not the quota."""
+    exc = _make_client_response_error(
+        429,
+        message="Too Many Requests",
+        error_body='{"error": {"message": "You exceeded your current quota."}}',
+    )
+    msg = scrub_error_for_user(exc, "req_q2", 429)
+    assert msg.startswith("Rate limit exceeded"), msg
+    assert "quota" not in msg.lower()
+
+
+def test_user_quota_error_still_surfaces_own_message():
+    """Our own QuotaExceededError is user-facing and must still be shown."""
+    msg = scrub_error_for_user(QuotaExceededError(quota=5.0, spent=6.0), "req_q3", 402)
+    assert "Quota exceeded" in msg
+    assert "(request_id: req_q3)" in msg
+
+
+def test_user_safe_upstream_error_suppresses_quota_text():
+    assert user_safe_upstream_error("Insufficient Balance") is None
+    assert user_safe_upstream_error("You exceeded your current quota") is None
+    # Non-quota upstream messages still pass through.
+    assert user_safe_upstream_error("Model is overloaded") == "Model is overloaded"
 
 
 def test_upstream_error_without_body_drops_url():
