@@ -344,6 +344,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
     expect(screen.getByLabelText('Routing policy')).toHaveValue('fixed');
+    const routeTypeSelect = screen.getByLabelText('Route type');
+    expect(within(routeTypeSelect).getByRole('option', { name: 'on_demand' })).toBeInTheDocument();
+    expect(
+      within(routeTypeSelect).queryByRole('option', { name: 'concurrency' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(routeTypeSelect).queryByRole('option', { name: 'quota' }),
+    ).not.toBeInTheDocument();
     expect(screen.getByLabelText('Fixed weight')).toHaveValue(1);
   });
 
@@ -853,6 +861,11 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    const routeTypeSelect = screen.getByLabelText('Route type');
+    expect(within(routeTypeSelect).getByRole('option', { name: 'on_demand' })).toBeInTheDocument();
+    expect(
+      within(routeTypeSelect).queryByRole('option', { name: 'concurrency' }),
+    ).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
     });
@@ -1094,6 +1107,9 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
+      target: { value: 'routewise' },
+    });
     fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
 
     const providerSelect = screen.getByLabelText('Provider');

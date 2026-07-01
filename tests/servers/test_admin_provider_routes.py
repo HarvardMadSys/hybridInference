@@ -1015,6 +1015,39 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
 
 
 @pytest.mark.asyncio
+async def test_post_provider_route_candidate_rejects_resource_route_for_fixed_model(admin_client):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+
+    strategy_response = await client.patch(
+        "/admin/routing/provider-route-strategies/minimax-fast",
+        json={"strategy": "fixed"},
+        headers=AUTH,
+    )
+    assert strategy_response.status_code == 200, strategy_response.text
+    op_store.upsert_provider_route_candidate.reset_mock()
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "concurrency routes require routewise strategy"
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, monkeypatch):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     base_key = "sk-or-base111111111111111111"
@@ -1225,6 +1258,34 @@ async def test_post_provider_route_model_creates_openrouter_concurrency_model(ad
     assert runtime_adapter.config.concurrency == {"limit": 2}
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_rejects_resource_route_for_fixed_strategy(admin_client):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+            "pricing": RUNTIME_PRICING,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "concurrency routes require routewise strategy"
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

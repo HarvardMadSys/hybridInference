@@ -145,12 +145,13 @@ PROVIDER_MODEL_IDS: dict[str, dict[str, str]] = {
     },
 }
 
+RESOURCE_ROUTE_TYPES = {"quota", "concurrency"}
+
+# OpenRouter sub-provider pins validate through the primary "openrouter" key.
 PROVIDER_CREATE_ROUTE_TYPES: dict[str, set[str]] = {
     "chutes": {"quota"},
     "featherless": {"concurrency"},
-    "deepinfra": {"concurrency", "on_demand"},
     "openrouter": {"concurrency", "on_demand"},
-    "parasail": {"concurrency", "on_demand"},
 }
 
 
@@ -1115,6 +1116,15 @@ def _validate_create_route_type_for_provider(route_type: str, upstream_provider:
     )
 
 
+def _validate_route_type_for_strategy(route_type: str, strategy: str) -> None:
+    if route_type not in RESOURCE_ROUTE_TYPES or strategy == "routewise":
+        return
+    raise HTTPException(
+        status_code=422,
+        detail=f"{route_type} routes require routewise strategy",
+    )
+
+
 def _ensure_route_id_available(entries: list[tuple[object, float, str]], route_id: str) -> None:
     for adapter, _weight, endpoint_id in entries:
         if _route_id_for_entry(adapter, endpoint_id) == route_id:
@@ -1149,6 +1159,8 @@ async def _prepare_route_candidate(
     entries = _raw_route_entries(route)
     if route_type not in {"quota", "concurrency", "on_demand"}:
         raise HTTPException(status_code=422, detail="unknown route_type")
+    canonical_model_id = entries[0][0].config.id
+    _validate_route_type_for_strategy(route_type, _strategy_for_model(services, canonical_model_id))
     if route_type == "quota" and quota_limit is None:
         raise HTTPException(status_code=422, detail="quota_limit is required for quota routes")
     if route_type != "quota" and quota_limit is not None:
@@ -1264,11 +1276,13 @@ async def _prepare_model_route_candidate(
     concurrency_limit: int | None,
     weight: float,
     pricing: dict[str, str] | str | None,
+    strategy: str,
     route_id: str | None = None,
 ) -> PreparedRouteCandidate:
     model_id = _validate_new_model_id(services, model_id)
     if route_type not in {"quota", "concurrency", "on_demand"}:
         raise HTTPException(status_code=422, detail="unknown route_type")
+    _validate_route_type_for_strategy(route_type, strategy)
     if route_type == "quota" and quota_limit is None:
         raise HTTPException(status_code=422, detail="quota_limit is required for quota routes")
     if route_type != "quota" and quota_limit is not None:
@@ -1743,6 +1757,7 @@ async def _prepare_model_candidate_from_payload(
         concurrency_limit=payload.concurrency_limit,
         weight=payload.weight,
         pricing=payload.pricing,
+        strategy=payload.strategy,
         route_id=route_id,
     )
 
@@ -1981,12 +1996,6 @@ def _quota_limit_for_row(adapter, override_row: dict[str, Any] | None) -> int | 
     return _quota_limit_for_adapter(adapter)
 
 
-def _concurrency_limit_for_row(adapter) -> int | None:
-    if _route_type(adapter) != "concurrency":
-        return None
-    return _concurrency_limit_for_adapter(adapter)
-
-
 async def _route_row(
     services,
     op_store,
@@ -2058,7 +2067,7 @@ async def _route_row(
         api_key=api_key,
         provider_model_id=provider_model_id,
         quota_limit=_quota_limit_for_row(adapter, effective_override),
-        concurrency_limit=_concurrency_limit_for_row(adapter),
+        concurrency_limit=_concurrency_limit_for_adapter(adapter),
         endpoint_id=endpoint_id,
         yaml_weight=float(yaml_weight),
         effective_weight=_effective_weight(services, model_id, float(yaml_weight), endpoint_id),
@@ -2787,6 +2796,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                     concurrency_limit=row.get("concurrency_limit"),
                     weight=float(row["weight"]),
                     pricing=row.get("pricing"),
+                    strategy=strategy_overrides.get(model_id, "fixed"),
                 )
                 _install_provider_route_model(
                     services,
