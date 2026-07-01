@@ -1211,6 +1211,20 @@ class FixedRouter(BaseRouter):
                 exc=primary_error,
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
+            # Attach routing to the surfaced error so the error-log path can
+            # attribute the failure to the real upstream instead of the "router"
+            # sentinel — mirrors the success-path resp["_routing"] injection and
+            # BaseRouter's fallback handler. Covers both re-raise points below
+            # (pin mode and all-providers-failed); ``failed_attempts`` is stored
+            # by reference so it reflects any fallback attempts appended before
+            # ``primary_error`` is finally re-raised.
+            if not hasattr(primary_error, "_routing"):
+                primary_error._routing = {  # type: ignore[attr-defined]
+                    "provider": primary.config.provider,
+                    "base_url": primary.config.base_url,
+                    "endpoint_id": _get_endpoint_id(primary),
+                    "failed_attempts": failed_attempts,
+                }
             # Pin mode: never fallback — the caller explicitly requested this
             # provider, so a silent switch would produce misleading results.
             if pin_provider:

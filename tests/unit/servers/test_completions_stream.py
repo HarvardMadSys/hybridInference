@@ -410,8 +410,37 @@ async def test_error_log_includes_routewise_metadata_from_exception():
     await _consume(session.stream(_gen()))
 
     log_data = cl_logger.schedule_log.call_args.args[1]
+    # The real upstream provider from ``exc._routing`` must land on the provider
+    # column (not the "router" sentinel), else the error is hidden from the
+    # provider-performance aggregations.
+    assert log_data["provider"] == "openai"
     assert log_data["metadata"]["user_id"] == "user-1"
     assert log_data["metadata"]["routewise"] == {**routewise, "gain_c": None}
+
+
+@pytest.mark.asyncio
+async def test_error_provider_recovered_from_routing_chunk_when_exc_has_no_routing():
+    """A mid-stream failure without ``exc._routing`` still attributes the provider.
+
+    When a ``_routing`` chunk arrived before the failure, the provider captured
+    from it is used rather than the "router" sentinel.
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    routed_chunk = (
+        'data: {"id": "x", "object": "chat.completion.chunk", "created": 1, '
+        '"model": "gpt-4", "choices": [{"index": 0, "delta": {"content": "ok"}}], '
+        '"_routing": {"provider": "openai", "base_url": "https://api.openai.com/v1"}}\n\n'
+    )
+    session = _make_session(completions_logger=cl_logger)
+
+    async def _gen():
+        yield routed_chunk
+        raise RuntimeError("mid-stream boom")  # note: no exc._routing attached
+
+    await _consume(session.stream(_gen()))
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["provider"] == "openai"
 
 
 @pytest.mark.asyncio

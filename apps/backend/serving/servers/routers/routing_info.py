@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from serving.utils import context as req_ctx
+
 _ROUTEWISE_UNSET = object()
 
 
@@ -259,3 +261,29 @@ def _status_code_from_exception(exc: BaseException) -> int:
         return code
 
     return 500
+
+
+def _provider_for_error(exc_routing: Any) -> str:
+    """Resolve the provider label to record on an error log row.
+
+    Prefer the real upstream provider preserved on ``exc._routing`` by the
+    routing layer (``routers.py`` attaches ``{"provider": ...}`` when an
+    adapter call fails). The request-context ``provider`` is set only inside
+    the ``req_ctx.push`` scope wrapping the adapter call, and that scope has
+    already been reset by the time an exception reaches the error handler — so
+    reading it here yields no provider and a genuine upstream failure would be
+    misattributed to the ``"router"`` sentinel, then silently dropped by the
+    provider-performance aggregations (which exclude ``provider IN
+    ('', 'router')``). Fall back to the context only defensively, then to
+    ``"router"`` for genuine pre-routing failures where no upstream was ever
+    selected (``exc._routing`` absent, or explicitly set to ``"router"``).
+
+    Mirrors the success path, which already prefers ``routing.provider`` over
+    the context (see ``completions.py``).
+    """
+    if isinstance(exc_routing, dict):
+        provider = exc_routing.get("provider")
+        if provider:
+            return provider
+    ctx = req_ctx.get()
+    return ctx.get("provider", "router") if ctx else "router"

@@ -37,6 +37,7 @@ from serving.servers.deps import (
 from serving.servers.routers.completions_stream import StreamSession, ToolCallAccumulator
 from serving.servers.routers.routing_info import (
     RoutingInfo,
+    _provider_for_error,
     _status_code_from_exception,
     build_initial_routing_info,
     merge_adapter_routing,
@@ -960,9 +961,12 @@ async def chat_completions(
         # see that function for the per-library mapping.
         exc_status_code = _status_code_from_exception(exc)
 
-        # Background DB log on the error path; provider best-effort from context.
-        ctx = req_ctx.get()
-        provider_for_error = ctx.get("provider", "router") if ctx else "router"
+        # Background DB log on the error path. Prefer the real upstream provider
+        # preserved on ``exc._routing``; the req_ctx push scope has already been
+        # reset by the time we get here, so reading it would misattribute genuine
+        # upstream failures to the "router" sentinel and hide them from the
+        # provider-performance aggregations.
+        provider_for_error = _provider_for_error(exc_routing)
 
         if log_store and not suppress_synthetic_logging:
             metadata_for_error = metadata

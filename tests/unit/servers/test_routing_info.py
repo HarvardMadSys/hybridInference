@@ -9,10 +9,12 @@ import pytest
 from serving.servers.routers.routing_info import (
     Pricing,
     RoutingInfo,
+    _provider_for_error,
     _status_code_from_exception,
     build_initial_routing_info,
     merge_adapter_routing,
 )
+from serving.utils import context as req_ctx
 
 
 def test_pricing_frozen():
@@ -347,3 +349,35 @@ def test_status_code_from_exception_non_int_status_code_falls_through():
         status = 408
 
     assert _status_code_from_exception(_E()) == 408
+
+
+def test_provider_for_error_prefers_exc_routing_provider():
+    """The real upstream provider on ``exc._routing`` wins over the sentinel.
+
+    Regression: real-upstream failures (e.g. a kimi 400) were logged with
+    ``provider="router"`` and hidden from the provider-performance aggregations,
+    which exclude ``provider IN ('', 'router')``.
+    """
+    assert _provider_for_error({"provider": "kimi_coding"}) == "kimi_coding"
+
+
+def test_provider_for_error_defaults_to_router_when_routing_absent():
+    assert _provider_for_error(None) == "router"
+
+
+def test_provider_for_error_keeps_router_sentinel():
+    """A pre-routing failure explicitly tagged ``router`` stays ``router``."""
+    assert _provider_for_error({"provider": "router"}) == "router"
+
+
+def test_provider_for_error_ignores_empty_or_missing_provider():
+    assert _provider_for_error({"base_url": "https://x"}) == "router"
+    assert _provider_for_error({"provider": ""}) == "router"
+
+
+def test_provider_for_error_falls_back_to_live_request_context():
+    """With no routing block, use a provider still live in req_ctx, else sentinel."""
+    with req_ctx.push(provider="deepseek"):
+        assert _provider_for_error(None) == "deepseek"
+    # Outside the push scope the context is reset, so we fall back to "router".
+    assert _provider_for_error(None) == "router"
