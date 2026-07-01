@@ -4,6 +4,7 @@ import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
 import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
 import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
+import { UpdatesBanner } from '@/components/landing';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 
@@ -13,6 +14,9 @@ export function DashboardView() {
 
   return (
     <div className="mx-auto w-full max-w-5xl space-y-8">
+      {/* Same announcement banner as the landing page; dismissal is shared per-id. */}
+      <UpdatesBanner />
+
       <div className="mb-8">
         <div className="flex items-center justify-between">
           <div>
