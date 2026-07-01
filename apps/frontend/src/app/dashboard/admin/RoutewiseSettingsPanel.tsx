@@ -123,17 +123,29 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
     () => endpoints.filter((endpoint) => endpoint.endpointId),
     [endpoints],
   );
+  const liveEndpointIds = useMemo(
+    () => new Set(probeEndpointOptions.map((endpoint) => endpoint.endpointId)),
+    [probeEndpointOptions],
+  );
   const latestProbeSamples = useMemo(() => {
     const seen = new Set<string>();
     const latest: RoutewiseProbeSampleItem[] = [];
     const samples = Array.isArray(probeSamples) ? probeSamples : [];
     for (const sample of samples) {
+      // Drop persisted samples for endpoints that are no longer live route
+      // candidates (e.g. a provider replaced by a route override). Their last
+      // probe lingers in the 24h lookback and otherwise reads as a current
+      // failure. Fall back to showing everything when we have no live endpoint
+      // list to filter against.
+      if (liveEndpointIds.size > 0 && !liveEndpointIds.has(sample.endpoint_id)) {
+        continue;
+      }
       if (seen.has(sample.endpoint_id)) continue;
       seen.add(sample.endpoint_id);
       latest.push(sample);
     }
     return latest;
-  }, [probeSamples]);
+  }, [probeSamples, liveEndpointIds]);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
