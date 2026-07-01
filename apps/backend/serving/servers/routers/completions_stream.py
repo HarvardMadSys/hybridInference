@@ -34,7 +34,11 @@ from typing import TYPE_CHECKING, Any
 from routing.routers import AllCircuitsOpenError
 from serving.exceptions import scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
-from serving.servers.routers.routing_info import RoutingInfo, merge_adapter_routing
+from serving.servers.routers.routing_info import (
+    RoutingInfo,
+    _provider_for_error,
+    merge_adapter_routing,
+)
 from serving.storage.utils import json_safe
 from serving.stream import make_role_chunk
 from serving.utils import context as req_ctx
@@ -622,8 +626,15 @@ class StreamSession:
                 success=False,
             )
 
-        ctx = req_ctx.get()
-        provider_for_error = ctx.get("provider", "router") if ctx else "router"
+        # Prefer the real upstream provider preserved on ``exc._routing``; the
+        # req_ctx push scope has already been reset here, so a genuine upstream
+        # failure would otherwise be misattributed to the "router" sentinel and
+        # hidden from the provider-performance aggregations. When the exception
+        # carried no routing block, fall back to the provider captured mid-stream
+        # (before the scope was reset), mirroring _finalize_success.
+        provider_for_error = _provider_for_error(exc_routing)
+        if provider_for_error == "router":
+            provider_for_error = self._provider_from_ctx or self._routing.provider or "router"
         exc_status_code = _extract_exception_status_code(exc)
 
         if self._log_store and not self._suppress_synthetic_logging:
