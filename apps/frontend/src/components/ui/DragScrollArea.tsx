@@ -67,7 +67,11 @@ export function DragScrollArea({
   }, []);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || isInteractiveTarget(event.target)) return;
+    // Only drag-scroll for touch/pen. Emulating drag for mouse would break
+    // native text selection (copying request IDs, model names, errors), and
+    // mouse/trackpad users can already scroll horizontally natively.
+    if (event.pointerType === 'mouse' || event.button !== 0 || isInteractiveTarget(event.target))
+      return;
 
     const el = scrollRef.current;
     if (!el || el.scrollWidth <= el.clientWidth) return;
@@ -76,6 +80,11 @@ export function DragScrollArea({
       window.clearTimeout(clearMovedTimerRef.current);
       clearMovedTimerRef.current = null;
     }
+    // Record the drag origin but do NOT capture the pointer yet. Capturing on
+    // pointerdown retargets the follow-up `click` to this container, so a
+    // clickable child (e.g. an expandable row) never receives its click. Capture
+    // is deferred to handlePointerMove, once the gesture passes the slop
+    // threshold and is unambiguously a drag.
     dragRef.current = {
       active: true,
       moved: false,
@@ -83,7 +92,6 @@ export function DragScrollArea({
       startScrollLeft: el.scrollLeft,
       startX: event.clientX,
     };
-    event.currentTarget.setPointerCapture(event.pointerId);
   }, []);
 
   const handlePointerMove = useCallback((event: PointerEvent<HTMLDivElement>) => {
@@ -96,7 +104,20 @@ export function DragScrollArea({
     const deltaX = event.clientX - drag.startX;
     if (Math.abs(deltaX) <= DRAG_THRESHOLD_PX) return;
 
-    drag.moved = true;
+    if (!drag.moved) {
+      // First movement past the threshold: now that this is a real drag, capture
+      // the pointer so panning keeps tracking even if it leaves the scroll area.
+      // Plain taps never reach here, so their `click` is left untouched and
+      // child click handlers keep working.
+      drag.moved = true;
+      try {
+        el.setPointerCapture(event.pointerId);
+      } catch {
+        // setPointerCapture throws if the pointer is no longer active (e.g.
+        // released between this move being queued and handled). Panning still
+        // works without capture, so there's nothing to recover from.
+      }
+    }
     el.scrollLeft = drag.startScrollLeft - deltaX;
     event.preventDefault();
   }, []);
@@ -107,8 +128,13 @@ export function DragScrollArea({
 
     drag.active = false;
     drag.pointerId = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    try {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    } catch {
+      // These throw if the pointer is no longer active or the environment
+      // doesn't implement pointer capture; there's nothing to recover from.
     }
     if (drag.moved) {
       // Keep `moved` set briefly so the trailing click (fired after pointerup)
@@ -140,8 +166,10 @@ export function DragScrollArea({
     const resizeObserver =
       typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateOverflow) : null;
     resizeObserver?.observe(el);
-    const table = el.querySelector('table');
-    if (table) resizeObserver?.observe(table);
+    // Observe the scrollable content too so overflow is recomputed when it grows
+    // or shrinks. firstElementChild keeps this generic (table, list, grid, …).
+    const content = el.firstElementChild;
+    if (content) resizeObserver?.observe(content);
 
     window.addEventListener('resize', updateOverflow);
     return () => {
@@ -160,13 +188,16 @@ export function DragScrollArea({
       className={`touch-pan-y overflow-x-auto overscroll-x-contain ${
         hasOverflow ? 'cursor-grab active:cursor-grabbing' : ''
       } ${className}`}
-      onScroll={updateOverflow}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       onClickCapture={handleClickCapture}
       aria-label={ariaLabel}
+      // Make the scrollable region keyboard-focusable when it overflows so
+      // keyboard-only users can scroll it with the arrow keys (WCAG 2.1.1).
+      tabIndex={hasOverflow ? 0 : undefined}
+      role={hasOverflow ? 'region' : undefined}
     >
       {children}
     </div>
