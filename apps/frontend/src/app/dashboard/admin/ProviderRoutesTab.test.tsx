@@ -496,6 +496,40 @@ describe('ProviderRoutesTab', () => {
     expect(within(dialog).getByLabelText('Local concurrency limit')).toHaveValue(1);
   });
 
+  it('opens the add provider form in a dialog', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, strategy: 'fixed' }],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Add provider route' });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Route type')).toBeInTheDocument();
+  });
+
+  it('opens the create model form in a dialog', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [{ ...route, strategy: 'fixed' }],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Create model' });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Model ID')).toBeInTheDocument();
+  });
+
   it('updates provider route target', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,

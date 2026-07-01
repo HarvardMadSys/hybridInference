@@ -1757,474 +1757,502 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       )}
 
       {createFormOpen && (
-        <form onSubmit={onCreateSubmit} className="rounded-lg border border-gray-200 bg-white p-4">
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-[14px] font-semibold text-gray-900">
-                {creatingModel ? 'Create model' : 'Add provider route'}
-              </h3>
-              <p className="mt-1 font-mono text-[12px] text-gray-400">
-                {creatingModel ? 'New runtime model' : selectedModel}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setAddingRoute(false);
-                setCreatingModel(false);
-              }}
-              className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100"
-            >
-              Close
-            </button>
-          </div>
-
-          {creatingModel && (
-            <div className="mb-3 grid gap-3 sm:grid-cols-3">
-              <div>
-                <label className="text-[12px] font-medium text-gray-500" htmlFor="new-model-id">
-                  Model ID
-                </label>
-                <input
-                  id="new-model-id"
-                  type="text"
-                  value={newModelId}
-                  onChange={(event) => {
-                    setNewModelId(event.target.value);
-                    setVerifiedCreateSignature(null);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-                  placeholder="deepseek-v4-flash"
-                  required
-                />
-                {!newModelIdAvailable && (
-                  <p className="mt-1 text-[11px] leading-5 text-red-600">
-                    A model with this ID already exists.
-                  </p>
-                )}
-              </div>
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-model-strategy"
-                >
-                  Initial routing policy
-                </label>
-                <select
-                  id="new-model-strategy"
-                  value={newModelStrategy}
-                  onChange={(event) => {
-                    setNewModelStrategy(event.target.value as ProviderRouteStrategy);
-                    setVerifiedCreateSignature(null);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                >
-                  <option value="fixed">fixed</option>
-                  <option value="routewise">routewise</option>
-                </select>
-              </div>
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-model-required-role"
-                >
-                  Visibility
-                </label>
-                <select
-                  id="new-model-required-role"
-                  value={newModelRequiredRole}
-                  onChange={(event) => {
-                    setNewModelRequiredRole(event.target.value as Role);
-                    setVerifiedCreateSignature(null);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                >
-                  {MODEL_ROLE_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-
-          {creatingModel && (
-            <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-model-pricing-prompt"
-                >
-                  Prompt $/M
-                </label>
-                <input
-                  id="new-model-pricing-prompt"
-                  type="number"
-                  min="0"
-                  step="0.000001"
-                  value={createForm.pricingPrompt}
-                  onChange={(event) => {
-                    setCreateForm((current) => ({
-                      ...current,
-                      pricingPrompt: event.target.value,
-                    }));
-                    setVerifiedCreateSignature(null);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                  required
-                />
-              </div>
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-model-pricing-completion"
-                >
-                  Completion $/M
-                </label>
-                <input
-                  id="new-model-pricing-completion"
-                  type="number"
-                  min="0"
-                  step="0.000001"
-                  value={createForm.pricingCompletion}
-                  onChange={(event) => {
-                    setCreateForm((current) => ({
-                      ...current,
-                      pricingCompletion: event.target.value,
-                    }));
-                    setVerifiedCreateSignature(null);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                  required
-                />
-              </div>
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-model-pricing-cache-read"
-                >
-                  Cache read $/M
-                </label>
-                <input
-                  id="new-model-pricing-cache-read"
-                  type="number"
-                  min="0"
-                  step="0.000001"
-                  value={createForm.pricingCacheReads}
-                  onChange={(event) => {
-                    setCreateForm((current) => ({
-                      ...current,
-                      pricingCacheReads: event.target.value,
-                    }));
-                    setVerifiedCreateSignature(null);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label
-                  className="text-[12px] font-medium text-gray-500"
-                  htmlFor="new-model-pricing-cache-write"
-                >
-                  Cache write $/M
-                </label>
-                <input
-                  id="new-model-pricing-cache-write"
-                  type="number"
-                  min="0"
-                  step="0.000001"
-                  value={createForm.pricingCacheWrites}
-                  onChange={(event) => {
-                    setCreateForm((current) => ({
-                      ...current,
-                      pricingCacheWrites: event.target.value,
-                    }));
-                    setVerifiedCreateSignature(null);
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                />
-              </div>
-            </div>
-          )}
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-type">
-                Route type
-              </label>
-              <select
-                id="new-route-type"
-                value={createForm.routeType}
-                onChange={(event) =>
-                  onCreateRouteTypeChange(event.target.value as ProviderRouteType)
-                }
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-              >
-                {createRouteTypeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-provider">
-                Provider
-              </label>
-              <select
-                id="new-route-provider"
-                value={createForm.upstreamProvider}
-                onChange={(event) => onCreateProviderChange(event.target.value)}
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                required
-              >
-                {createProviderOptions.length === 0 && (
-                  <option value="">{noProviderOptionLabel(createForm.routeType)}</option>
-                )}
-                {createProviderOptions.map((option) => (
-                  <option key={option.provider} value={option.provider}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              {createProviderOptions.length === 0 && (
-                <p className="mt-1 text-[11px] leading-5 text-gray-400">
-                  {noProviderHelpText(createForm.routeType)}
-                </p>
-              )}
-            </div>
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-api-key">
-                API key
-              </label>
-              <select
-                id="new-route-api-key"
-                value={createForm.apiKeyId}
-                onChange={(event) =>
-                  setCreateForm((current) => ({ ...current, apiKeyId: event.target.value }))
-                }
-                disabled={createKeysLoading}
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-              >
-                <option value="">{defaultKeyOptionLabel(createKeyProvider)}</option>
-                {createKeyOptions.map((key) => (
-                  <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
-                    {key.label ? `${key.label} · ` : ''}
-                    {key.key_prefix} ({key.source})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-url">
-                Base URL
-              </label>
-              <input
-                id="new-route-url"
-                type="url"
-                value={createForm.baseUrl}
-                onChange={(event) =>
-                  setCreateForm((current) => ({ ...current, baseUrl: event.target.value }))
-                }
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                required
-              />
-            </div>
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-model-id">
-                Provider model ID
-              </label>
-              <input
-                id="new-route-model-id"
-                type="text"
-                value={createForm.providerModelId}
-                onChange={(event) =>
-                  setCreateForm((current) => ({
-                    ...current,
-                    providerModelId: event.target.value,
-                  }))
-                }
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-                required
-              />
-            </div>
-          </div>
-
-          {createForm.upstreamProvider === 'openrouter' && (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <label
-                    className="text-[12px] font-medium text-gray-500"
-                    htmlFor="new-route-openrouter-routing"
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/30 px-4 py-8">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="create-provider-route-title"
+            className="mx-auto w-full max-w-5xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
+          >
+            <form onSubmit={onCreateSubmit}>
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3
+                    id="create-provider-route-title"
+                    className="text-[14px] font-semibold text-gray-900"
                   >
-                    OpenRouter routing
-                  </label>
-                  {openRouterProvidersLoading && (
-                    <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
-                  )}
+                    {creatingModel ? 'Create model' : 'Add provider route'}
+                  </h3>
+                  <p className="mt-1 font-mono text-[12px] text-gray-400">
+                    {creatingModel ? 'New runtime model' : selectedModel}
+                  </p>
                 </div>
-                <select
-                  id="new-route-openrouter-routing"
-                  value={openRouterRoutingValue(
-                    createForm.openRouterProvider,
-                    createForm.openRouterSort,
-                  )}
-                  onChange={(event) => {
-                    const routingValue = event.target.value;
-                    const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
-                    setCreateForm((current) => ({
-                      ...current,
-                      openRouterProvider,
-                      openRouterSort: openRouterSortFromRoutingValue(routingValue),
-                      customOpenRouterProvider:
-                        openRouterProvider === OPENROUTER_PROVIDER_CUSTOM
-                          ? current.customOpenRouterProvider
-                          : '',
-                    }));
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddingRoute(false);
+                    setCreatingModel(false);
                   }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                  className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100"
                 >
-                  {createOpenRouterRoutingOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                  Close
+                </button>
               </div>
-              {createForm.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
+
+              {creatingModel && (
+                <div className="mb-3 grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label className="text-[12px] font-medium text-gray-500" htmlFor="new-model-id">
+                      Model ID
+                    </label>
+                    <input
+                      id="new-model-id"
+                      type="text"
+                      value={newModelId}
+                      onChange={(event) => {
+                        setNewModelId(event.target.value);
+                        setVerifiedCreateSignature(null);
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                      placeholder="deepseek-v4-flash"
+                      required
+                    />
+                    {!newModelIdAvailable && (
+                      <p className="mt-1 text-[11px] leading-5 text-red-600">
+                        A model with this ID already exists.
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <label
+                      className="text-[12px] font-medium text-gray-500"
+                      htmlFor="new-model-strategy"
+                    >
+                      Initial routing policy
+                    </label>
+                    <select
+                      id="new-model-strategy"
+                      value={newModelStrategy}
+                      onChange={(event) => {
+                        setNewModelStrategy(event.target.value as ProviderRouteStrategy);
+                        setVerifiedCreateSignature(null);
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    >
+                      <option value="fixed">fixed</option>
+                      <option value="routewise">routewise</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      className="text-[12px] font-medium text-gray-500"
+                      htmlFor="new-model-required-role"
+                    >
+                      Visibility
+                    </label>
+                    <select
+                      id="new-model-required-role"
+                      value={newModelRequiredRole}
+                      onChange={(event) => {
+                        setNewModelRequiredRole(event.target.value as Role);
+                        setVerifiedCreateSignature(null);
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    >
+                      {MODEL_ROLE_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {creatingModel && (
+                <div className="mb-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <label
+                      className="text-[12px] font-medium text-gray-500"
+                      htmlFor="new-model-pricing-prompt"
+                    >
+                      Prompt $/M
+                    </label>
+                    <input
+                      id="new-model-pricing-prompt"
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={createForm.pricingPrompt}
+                      onChange={(event) => {
+                        setCreateForm((current) => ({
+                          ...current,
+                          pricingPrompt: event.target.value,
+                        }));
+                        setVerifiedCreateSignature(null);
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label
+                      className="text-[12px] font-medium text-gray-500"
+                      htmlFor="new-model-pricing-completion"
+                    >
+                      Completion $/M
+                    </label>
+                    <input
+                      id="new-model-pricing-completion"
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={createForm.pricingCompletion}
+                      onChange={(event) => {
+                        setCreateForm((current) => ({
+                          ...current,
+                          pricingCompletion: event.target.value,
+                        }));
+                        setVerifiedCreateSignature(null);
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label
+                      className="text-[12px] font-medium text-gray-500"
+                      htmlFor="new-model-pricing-cache-read"
+                    >
+                      Cache read $/M
+                    </label>
+                    <input
+                      id="new-model-pricing-cache-read"
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={createForm.pricingCacheReads}
+                      onChange={(event) => {
+                        setCreateForm((current) => ({
+                          ...current,
+                          pricingCacheReads: event.target.value,
+                        }));
+                        setVerifiedCreateSignature(null);
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      className="text-[12px] font-medium text-gray-500"
+                      htmlFor="new-model-pricing-cache-write"
+                    >
+                      Cache write $/M
+                    </label>
+                    <input
+                      id="new-model-pricing-cache-write"
+                      type="number"
+                      min="0"
+                      step="0.000001"
+                      value={createForm.pricingCacheWrites}
+                      onChange={(event) => {
+                        setCreateForm((current) => ({
+                          ...current,
+                          pricingCacheWrites: event.target.value,
+                        }));
+                        setVerifiedCreateSignature(null);
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-type">
+                    Route type
+                  </label>
+                  <select
+                    id="new-route-type"
+                    value={createForm.routeType}
+                    onChange={(event) =>
+                      onCreateRouteTypeChange(event.target.value as ProviderRouteType)
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                  >
+                    {createRouteTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 <div>
                   <label
                     className="text-[12px] font-medium text-gray-500"
-                    htmlFor="new-route-custom-openrouter-provider"
+                    htmlFor="new-route-provider"
                   >
-                    Custom OpenRouter provider
+                    Provider
+                  </label>
+                  <select
+                    id="new-route-provider"
+                    value={createForm.upstreamProvider}
+                    onChange={(event) => onCreateProviderChange(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    required
+                  >
+                    {createProviderOptions.length === 0 && (
+                      <option value="">{noProviderOptionLabel(createForm.routeType)}</option>
+                    )}
+                    {createProviderOptions.map((option) => (
+                      <option key={option.provider} value={option.provider}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  {createProviderOptions.length === 0 && (
+                    <p className="mt-1 text-[11px] leading-5 text-gray-400">
+                      {noProviderHelpText(createForm.routeType)}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="new-route-api-key"
+                  >
+                    API key
+                  </label>
+                  <select
+                    id="new-route-api-key"
+                    value={createForm.apiKeyId}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({ ...current, apiKeyId: event.target.value }))
+                    }
+                    disabled={createKeysLoading}
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
+                  >
+                    <option value="">{defaultKeyOptionLabel(createKeyProvider)}</option>
+                    {createKeyOptions.map((key) => (
+                      <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
+                        {key.label ? `${key.label} · ` : ''}
+                        {key.key_prefix} ({key.source})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-[12px] font-medium text-gray-500" htmlFor="new-route-url">
+                    Base URL
                   </label>
                   <input
-                    id="new-route-custom-openrouter-provider"
+                    id="new-route-url"
+                    type="url"
+                    value={createForm.baseUrl}
+                    onChange={(event) =>
+                      setCreateForm((current) => ({ ...current, baseUrl: event.target.value }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="new-route-model-id"
+                  >
+                    Provider model ID
+                  </label>
+                  <input
+                    id="new-route-model-id"
                     type="text"
-                    value={createForm.customOpenRouterProvider}
+                    value={createForm.providerModelId}
                     onChange={(event) =>
                       setCreateForm((current) => ({
                         ...current,
-                        customOpenRouterProvider: event.target.value,
+                        providerModelId: event.target.value,
                       }))
                     }
                     className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-                    placeholder="provider-slug"
                     required
                   />
                 </div>
-              )}
-            </div>
-          )}
+              </div>
 
-          {showCreateLimits && (
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
-              {createForm.routeType === 'quota' && (
-                <div>
-                  <label
-                    className="text-[12px] font-medium text-gray-500"
-                    htmlFor="new-route-quota"
-                  >
-                    Local daily quota
-                  </label>
-                  <input
-                    id="new-route-quota"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={createForm.quotaLimit}
-                    onChange={(event) =>
-                      setCreateForm((current) => ({ ...current, quotaLimit: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  />
+              {createForm.upstreamProvider === 'openrouter' && (
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-route-openrouter-routing"
+                      >
+                        OpenRouter routing
+                      </label>
+                      {openRouterProvidersLoading && (
+                        <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
+                      )}
+                    </div>
+                    <select
+                      id="new-route-openrouter-routing"
+                      value={openRouterRoutingValue(
+                        createForm.openRouterProvider,
+                        createForm.openRouterSort,
+                      )}
+                      onChange={(event) => {
+                        const routingValue = event.target.value;
+                        const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
+                        setCreateForm((current) => ({
+                          ...current,
+                          openRouterProvider,
+                          openRouterSort: openRouterSortFromRoutingValue(routingValue),
+                          customOpenRouterProvider:
+                            openRouterProvider === OPENROUTER_PROVIDER_CUSTOM
+                              ? current.customOpenRouterProvider
+                              : '',
+                        }));
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    >
+                      {createOpenRouterRoutingOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {createForm.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-route-custom-openrouter-provider"
+                      >
+                        Custom OpenRouter provider
+                      </label>
+                      <input
+                        id="new-route-custom-openrouter-provider"
+                        type="text"
+                        value={createForm.customOpenRouterProvider}
+                        onChange={(event) =>
+                          setCreateForm((current) => ({
+                            ...current,
+                            customOpenRouterProvider: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                        placeholder="provider-slug"
+                        required
+                      />
+                    </div>
+                  )}
                 </div>
               )}
-              {createForm.routeType === 'concurrency' && (
-                <div>
-                  <label
-                    className="text-[12px] font-medium text-gray-500"
-                    htmlFor="new-route-concurrency"
-                  >
-                    Concurrency limit
-                  </label>
-                  <input
-                    id="new-route-concurrency"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={createForm.concurrencyLimit}
-                    onChange={(event) =>
-                      setCreateForm((current) => ({
-                        ...current,
-                        concurrencyLimit: event.target.value,
-                      }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  />
-                </div>
-              )}
-              {showCreateWeight && (
-                <div>
-                  <label
-                    className="text-[12px] font-medium text-gray-500"
-                    htmlFor="new-route-weight"
-                  >
-                    Fixed weight
-                  </label>
-                  <input
-                    id="new-route-weight"
-                    type="number"
-                    min={0.001}
-                    step={0.001}
-                    value={createForm.weight}
-                    onChange={(event) =>
-                      setCreateForm((current) => ({ ...current, weight: event.target.value }))
-                    }
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                    required
-                  />
-                </div>
-              )}
-            </div>
-          )}
 
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onCreateVerify}
-              disabled={verifyingCreateRoute || creatingRoute || !createFormValid}
-              className={
-                createRouteVerified
-                  ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
-                  : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
-              }
-            >
-              {verifyingCreateRoute ? 'Verifying…' : createRouteVerified ? 'Verified' : 'Verify'}
-            </button>
-            <button
-              type="submit"
-              disabled={creatingRoute || !createFormValid}
-              className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {creatingRoute
-                ? creatingModel
-                  ? 'Creating…'
-                  : 'Adding…'
-                : creatingModel
-                  ? 'Create'
-                  : 'Add'}
-            </button>
+              {showCreateLimits && (
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  {createForm.routeType === 'quota' && (
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-route-quota"
+                      >
+                        Local daily quota
+                      </label>
+                      <input
+                        id="new-route-quota"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={createForm.quotaLimit}
+                        onChange={(event) =>
+                          setCreateForm((current) => ({
+                            ...current,
+                            quotaLimit: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                        required
+                      />
+                    </div>
+                  )}
+                  {createForm.routeType === 'concurrency' && (
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-route-concurrency"
+                      >
+                        Concurrency limit
+                      </label>
+                      <input
+                        id="new-route-concurrency"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={createForm.concurrencyLimit}
+                        onChange={(event) =>
+                          setCreateForm((current) => ({
+                            ...current,
+                            concurrencyLimit: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                        required
+                      />
+                    </div>
+                  )}
+                  {showCreateWeight && (
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="new-route-weight"
+                      >
+                        Fixed weight
+                      </label>
+                      <input
+                        id="new-route-weight"
+                        type="number"
+                        min={0.001}
+                        step={0.001}
+                        value={createForm.weight}
+                        onChange={(event) =>
+                          setCreateForm((current) => ({ ...current, weight: event.target.value }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                        required
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onCreateVerify}
+                  disabled={verifyingCreateRoute || creatingRoute || !createFormValid}
+                  className={
+                    createRouteVerified
+                      ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
+                      : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+                  }
+                >
+                  {verifyingCreateRoute
+                    ? 'Verifying…'
+                    : createRouteVerified
+                      ? 'Verified'
+                      : 'Verify'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingRoute || !createFormValid}
+                  className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {creatingRoute
+                    ? creatingModel
+                      ? 'Creating…'
+                      : 'Adding…'
+                    : creatingModel
+                      ? 'Create'
+                      : 'Add'}
+                </button>
+              </div>
+            </form>
           </div>
-        </form>
+        </div>
       )}
 
       {editingRoute && (
