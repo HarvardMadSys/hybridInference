@@ -211,42 +211,60 @@ _API_KEY_TOKEN_RE = re.compile(
 # operational detail. When an upstream message matches, the user-facing path
 # suppresses it in favour of a generic status-based message; operators still get
 # the full text via ``operator_safe_error`` / ``api_logs.error``.
+# Plural forms are enumerated explicitly (rather than via a regex ``s?`` suffix,
+# which produces malformed patterns on multi-word markers). ``billing`` is kept
+# specific ("billing hard limit" / "billing limit") so ordinary billing-related
+# messages ("Invalid billing address") are not suppressed; ``quota`` is left bare
+# on purpose — providers phrase exhaustion many ways ("exceeded your current
+# quota", "monthly quota depleted") and missing one would leak the very fact we
+# must hide, whereas an occasional false positive only yields a safe generic
+# message.
 _UPSTREAM_QUOTA_MARKERS: tuple[str, ...] = (
     "quota",
+    "quotas",
     "insufficient balance",
+    "insufficient balances",
     "insufficient funds",
     "insufficient credit",
+    "insufficient credits",
     "not enough balance",
     "balance is too low",
     "account balance",
+    "account balances",
     "out of credit",
+    "out of credits",
     "no credit",
+    "no credits",
     "credit balance",
-    "billing",
+    "credit balances",
+    "billing hard limit",
+    "billing limit",
     "payment required",
     "add funds",
     "top up",
-    "top-up",
     "recharge",
     "arrearage",
     "spending limit",
+    "spending limits",
     "usage limit",
+    "usage limits",
     "purchase more",
 )
-# Word-boundary anchored so "quota" does not match "quotation"; a trailing "s?"
-# keeps plural forms ("quotas", "credits", "spending limits") matching.
+# Word-boundary anchored so "quota" does not match "quotation".
 _UPSTREAM_QUOTA_RE = re.compile(
-    r"(?i)\b(?:" + "|".join(re.escape(m) + "s?" for m in _UPSTREAM_QUOTA_MARKERS) + r")\b"
+    r"(?i)\b(?:" + "|".join(re.escape(m) for m in _UPSTREAM_QUOTA_MARKERS) + r")\b"
 )
 
 
 def _reveals_upstream_quota(text: str) -> bool:
     """Return True if ``text`` exposes an upstream quota/balance/billing limit."""
-    # ``_`` is a regex word character, so the ``\b`` anchored markers never match
-    # across a machine-style token like ``insufficient_quota`` / ``payment_required``
-    # / ``billing_hard_limit_reached``. Treat underscores as separators for the
-    # detection pass (the surfaced message itself is left untouched).
-    return bool(_UPSTREAM_QUOTA_RE.search(text.replace("_", " ")))
+    # ``_`` is a regex word character (and multi-word markers are space-separated),
+    # so the ``\b`` anchored markers never match across machine-style tokens like
+    # ``insufficient_quota`` / ``payment-required`` / ``billing_hard_limit_reached``.
+    # Fold ``_`` and ``-`` separators to spaces for the detection pass (the
+    # surfaced message itself is left untouched).
+    normalized = text.replace("_", " ").replace("-", " ")
+    return bool(_UPSTREAM_QUOTA_RE.search(normalized))
 
 
 # Upstream error string shapes we know how to unwrap into a bare message.
@@ -392,7 +410,7 @@ def user_safe_error_for_log(raw: str | None, status_code: int | None) -> str | N
     when the message is empty or would reveal an upstream quota/balance limit —
     so a failed row never renders with blank error text.
     """
-    if not raw:
+    if not raw or not raw.strip():
         return None
     msg = user_safe_upstream_error(raw)
     if msg:

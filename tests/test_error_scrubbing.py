@@ -305,13 +305,29 @@ def test_user_safe_upstream_error_suppresses_quota_text():
     [
         "insufficient_quota",
         "payment_required",
+        "payment-required",
+        "insufficient-quota",
         "billing_hard_limit_reached",
+        "billing-hard-limit-reached",
         '{"error": {"code": "insufficient_quota", "message": "insufficient_quota"}}',
     ],
 )
 def test_machine_style_quota_tokens_are_suppressed(body):
-    """Underscore-separated machine tokens must still trip the quota filter."""
+    """Underscore- and hyphen-separated machine tokens must trip the quota filter."""
     assert user_safe_upstream_error(body) is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # "billing" is narrowed to "billing (hard) limit"; ordinary billing text
+        # is a legitimate message, not a quota/balance limit, so it must surface.
+        "Invalid billing address",
+        "Billing info updated successfully",
+    ],
+)
+def test_non_quota_billing_text_is_not_suppressed(body):
+    assert user_safe_upstream_error(body) == body
 
 
 def test_user_safe_error_for_log_falls_back_for_suppressed_quota():
@@ -322,9 +338,10 @@ def test_user_safe_error_for_log_falls_back_for_suppressed_quota():
     """
     from serving.exceptions import user_safe_error_for_log
 
-    # No stored error → stays None (successful rows).
+    # No stored error → stays None (successful rows); whitespace-only counts too.
     assert user_safe_error_for_log(None, 200) is None
     assert user_safe_error_for_log("", 200) is None
+    assert user_safe_error_for_log("   ", 200) is None
     # Suppressed quota/balance rows fall back to the generic status message.
     assert user_safe_error_for_log('{"error": {"message": "Insufficient Balance"}}', 402) == (
         "Request failed"
