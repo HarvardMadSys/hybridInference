@@ -23,7 +23,9 @@ import {
 } from 'recharts';
 import {
   AdminTtftScatterModel,
+  ProviderObservabilityResponse,
   ProviderStatsRow,
+  getProviderObservability,
   getProviderStats,
   getTtftScatter,
 } from '@/lib/api/admin';
@@ -54,6 +56,43 @@ function fmt0(v: unknown): string {
   if (v == null) return '';
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? Math.round(n).toLocaleString() : String(v);
+}
+
+function pctValue(numerator: number, denominator: number): number | null {
+  if (denominator <= 0) return null;
+  return (numerator / denominator) * 100;
+}
+
+function fmtPctValue(value: number | null, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value.toFixed(digits)}%`;
+}
+
+function fmtPct(numerator: number, denominator: number, digits = 2): string {
+  return fmtPctValue(pctValue(numerator, denominator), digits);
+}
+
+function fmtCompactCount(n: number): string {
+  return Math.round(n).toLocaleString();
+}
+
+function compactErrorBreakdown(
+  rows: ProviderObservabilityResponse['error_types'],
+  limit = 6,
+): ProviderObservabilityResponse['error_types'] {
+  const visible = rows.slice(0, limit);
+  if (rows.length <= limit) return visible;
+
+  const remainder = rows.slice(limit).reduce(
+    (acc, row) => ({
+      count: acc.count + row.count,
+      fraction: acc.fraction + row.fraction,
+    }),
+    { count: 0, fraction: 0 },
+  );
+  if (remainder.count <= 0) return visible;
+
+  return [...visible, { error_type: 'other', ...remainder }];
 }
 
 type AxisDomain = [number, number] | ['auto', 'auto'];
@@ -472,6 +511,140 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
   );
 }
 
+function ProviderObservabilitySection({ data }: { data: ProviderObservabilityResponse | null }) {
+  if (!data) return null;
+
+  const totals = data.totals;
+  const errorRate = pctValue(totals.error_count, totals.request_count);
+  const cacheHitRate = pctValue(totals.cache_hit_count, totals.cache_eligible_count);
+  const cacheTokenShare = pctValue(totals.cache_read_tokens, totals.input_tokens);
+  const trendData = data.buckets.map((bucket) => ({
+    t: fmtHour(bucket.start_time),
+    error_rate: pctValue(bucket.error_count, bucket.request_count),
+    cache_hit_rate: pctValue(bucket.cache_hit_count, bucket.cache_eligible_count),
+  }));
+  const errorBreakdownRows = compactErrorBreakdown(data.error_types);
+  const maxErrorBreakdownCount = Math.max(...errorBreakdownRows.map((row) => row.count), 1);
+
+  return (
+    <div className="space-y-6">
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-[15px] font-semibold text-gray-900">Errors</h2>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
+          <Kpi label="Error rate" value={fmtPctValue(errorRate)} />
+          <Kpi label="Errors" value={fmtCompactCount(totals.error_count)} />
+          <Kpi label="Rate limit" value={fmtPct(totals.rate_limited_count, totals.request_count)} />
+          <Kpi label="Timeout" value={fmtPct(totals.timeout_count, totals.request_count)} />
+          <Kpi label="5xx" value={fmtPct(totals.server_error_count, totals.request_count)} />
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="rounded-xl border p-3">
+            <p className="mb-1 text-[13px] font-semibold">Error rate</p>
+            <div className="h-48">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trendData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    tickFormatter={(v) => `${fmt0(v)}%`}
+                    domain={[0, 100]}
+                    allowDataOverflow
+                  />
+                  <Tooltip formatter={(v) => `${fmt0(v)}%`} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line
+                    type="monotone"
+                    dataKey="error_rate"
+                    stroke="#dc2626"
+                    dot={false}
+                    name="error rate"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-xl border p-3">
+            <p className="mb-2 text-[13px] font-semibold">Error breakdown</p>
+            {data.error_types.length === 0 ? (
+              <p className="text-[12px] text-gray-400">No errors in this range.</p>
+            ) : (
+              <div className="space-y-2">
+                {errorBreakdownRows.map((row) => (
+                  <div
+                    key={row.error_type}
+                    className="grid grid-cols-[minmax(96px,0.8fr)_minmax(120px,1.4fr)_auto] items-center gap-3 text-[12px]"
+                  >
+                    <span className="truncate font-mono text-gray-700">{row.error_type}</span>
+                    <div className="h-5 overflow-hidden rounded bg-red-50">
+                      <div
+                        className="h-full rounded bg-red-500"
+                        style={{
+                          width: `${Math.max(3, (row.count / maxErrorBreakdownCount) * 100)}%`,
+                        }}
+                      />
+                    </div>
+                    <span className="text-right tabular-nums text-gray-500">
+                      {fmtCompactCount(row.count)} · {(row.fraction * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-[15px] font-semibold text-gray-900">Cache</h2>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
+          <Kpi label="Cache hit" value={fmtPctValue(cacheHitRate)} />
+          <Kpi label="Hits" value={fmtCompactCount(totals.cache_hit_count)} />
+          <Kpi label="Eligible reqs" value={fmtCompactCount(totals.cache_eligible_count)} />
+          <Kpi label="Cached input" value={fmtPctValue(cacheTokenShare)} />
+          <Kpi label="Read tokens" value={fmtCompactCount(totals.cache_read_tokens)} />
+          <Kpi label="Write tokens" value={fmtCompactCount(totals.cache_write_tokens)} />
+        </div>
+
+        <div className="rounded-xl border p-3">
+          <p className="mb-1 text-[13px] font-semibold">Cache hit rate</p>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(v) => `${fmt0(v)}%`}
+                  domain={[0, 100]}
+                  allowDataOverflow
+                />
+                <Tooltip formatter={(v) => `${fmt0(v)}%`} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line
+                  type="monotone"
+                  dataKey="cache_hit_rate"
+                  stroke="#10b981"
+                  dot={false}
+                  name="cache hit"
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number } = {}) {
   const [allProviders, setAllProviders] = useState<string[]>([]);
   const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
@@ -485,6 +658,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const [ttftScatterLoading, setTtftScatterLoading] = useState(false);
   const [ttftScatterError, setTtftScatterError] = useState<string | null>(null);
   const [modelRows, setModelRows] = useState<Record<string, ProviderStatsRow[]>>({});
+  const [observability, setObservability] = useState<ProviderObservabilityResponse | null>(null);
 
   const loadTtftScatter = useCallback(async () => {
     setTtftScatterLoading(true);
@@ -509,9 +683,8 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     [allPairs, provider],
   );
 
-  // Client-side filter for the model dropdown. `__all__` keeps every model of
-  // the provider; the full model set is already loaded, so switching models
-  // never triggers a re-fetch.
+  // Client-side filter for the model performance sections. `__all__` keeps
+  // every model of the provider; the full model set is already loaded.
   const visibleModelIds = useMemo(
     () => (model === '__all__' ? providerModels : providerModels.filter((m) => m === model)),
     [providerModels, model],
@@ -545,10 +718,29 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     }
   }, []);
 
+  const loadObservability = useCallback(
+    async (prov: string, rangeKey: RangeKey, modelKey: string) => {
+      if (!prov) return;
+      setObservability(null);
+      try {
+        const window_ = rangeWindow(rangeKey);
+        const resp = await getProviderObservability({
+          provider: prov,
+          model_id: modelKey,
+          from: window_.from,
+          to: window_.to,
+        });
+        setObservability(resp);
+      } catch {
+        setObservability(null);
+      }
+    },
+    [],
+  );
+
   const initializedRef = useRef(false);
   useEffect(() => {
     if (initializedRef.current) return;
-    initializedRef.current = true;
     let cancelled = false;
     (async () => {
       try {
@@ -573,7 +765,10 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
       } catch (exc) {
         if (!cancelled) setError(getErrorMessage(exc));
       } finally {
-        if (!cancelled) setInitializing(false);
+        if (!cancelled) {
+          initializedRef.current = true;
+          setInitializing(false);
+        }
       }
     })();
     return () => {
@@ -586,6 +781,12 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     if (!provider) return;
     void loadData(provider, range);
   }, [provider, range, loadData, initializing, refreshKey]);
+
+  useEffect(() => {
+    if (initializing) return;
+    if (!provider) return;
+    void loadObservability(provider, range, model);
+  }, [provider, range, model, loadObservability, initializing, refreshKey]);
 
   const scatterForProvider = useMemo(
     () => ttftScatter.filter((m) => m.provider === provider),
@@ -675,6 +876,8 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
           <Kpi label="Decode" value={overallTotals.decode.toLocaleString()} />
         </div>
       )}
+
+      <ProviderObservabilitySection data={observability} />
 
       {visibleModelIds.map((modelId) => (
         <ModelPerformanceSection key={modelId} modelId={modelId} rows={modelRows[modelId] ?? []} />

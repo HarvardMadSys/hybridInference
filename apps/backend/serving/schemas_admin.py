@@ -1215,6 +1215,11 @@ __all__ = [
     "ListUsersResponse",
     "ModelVisibilityItem",
     "OpenRouterProviderOption",
+    "ProviderErrorTypeRow",
+    "ProviderObservabilityBucket",
+    "ProviderObservabilityResponse",
+    "ProviderObservabilityTotals",
+    "ProviderObservabilityWindow",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
     "ProviderRouteApiKeyRef",
@@ -1386,6 +1391,61 @@ class ProviderStatsResponse(BaseModel):
     # tab doesn't render empty on load when a retention-only provider sorts
     # first.
     window_providers: list[str]
+
+
+class ProviderObservabilityWindow(BaseModel):
+    """Time window for provider-scoped error/cache stats."""
+
+    from_: datetime = Field(alias="from")
+    to: datetime
+
+    model_config = {"populate_by_name": True}
+
+
+class ProviderObservabilityTotals(BaseModel):
+    """Provider-scoped request, error, and prompt-cache totals."""
+
+    request_count: int
+    error_count: int
+    rate_limited_count: int
+    timeout_count: int
+    server_error_count: int
+    cache_eligible_count: int
+    cache_hit_count: int
+    input_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+
+
+class ProviderObservabilityBucket(BaseModel):
+    """One time bucket for provider observability trends."""
+
+    start_time: datetime
+    request_count: int
+    error_count: int
+    cache_eligible_count: int
+    cache_hit_count: int
+    cache_read_tokens: int
+    input_tokens: int
+
+
+class ProviderErrorTypeRow(BaseModel):
+    """Count of one derived error type."""
+
+    error_type: str
+    count: int
+    fraction: float
+
+
+class ProviderObservabilityResponse(BaseModel):
+    """Provider-scoped error and prompt-cache stats from api_logs."""
+
+    provider: str
+    window: ProviderObservabilityWindow
+    bucket_minutes: int
+    totals: ProviderObservabilityTotals
+    buckets: list[ProviderObservabilityBucket]
+    error_types: list[ProviderErrorTypeRow]
 
 
 # ============================================================

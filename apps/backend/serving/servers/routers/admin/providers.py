@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
     AdminProviderQuotasResponse,
+    ProviderErrorTypeRow,
     ProviderModelPair,
+    ProviderObservabilityBucket,
+    ProviderObservabilityResponse,
+    ProviderObservabilityTotals,
+    ProviderObservabilityWindow,
     ProviderStatsResponse,
     ProviderStatsRow,
     ProviderTokenUsageResponse,
@@ -31,6 +36,25 @@ router = APIRouter(prefix="/admin")
 _PROVIDER_STATS_MAX_DAYS = 90
 _PROVIDER_STATS_DEFAULT_DAYS = 7
 _SYNTHETIC_PERFORMANCE_PROVIDERS = frozenset({"", "router"})
+_ERROR_CONDITION_SQL = (
+    "(error IS NOT NULL OR status_code IS NULL OR status_code < 200 OR status_code >= 400)"
+)
+_OBSERVABILITY_LOG_SCOPE_SQL = "(metadata->>'request_type') IS DISTINCT FROM 'embedding'"
+_ERROR_TYPE_SQL = """
+CASE
+    WHEN error = 'quota_exceeded' THEN 'quota_exceeded'
+    WHEN error = 'concurrency_limit_exceeded' THEN 'concurrency_limit'
+    WHEN error = 'model_not_found' OR error ILIKE 'Model % not found%' THEN 'model_not_found'
+    WHEN status_code = 429 OR error ILIKE '%429%' OR error ILIKE '%rate%limit%'
+         OR error ILIKE '%TooManyRequests%' THEN 'rate_limited'
+    WHEN status_code = 504 OR error ILIKE '%timeout%' OR error ILIKE '%timed out%' THEN 'timeout'
+    WHEN status_code IN (401, 403) OR error ILIKE 'auth_%' THEN 'auth'
+    WHEN status_code IN (400, 422) OR error ILIKE '%validation%' THEN 'validation'
+    WHEN status_code = 404 THEN 'not_found'
+    WHEN status_code >= 500 THEN 'server_error'
+    ELSE 'unknown'
+END
+"""
 
 _TOKEN_USAGE_RANGES: dict[str, timedelta] = {
     "1h": timedelta(hours=1),
@@ -48,6 +72,18 @@ _ROLLUP_MINUTE_OFFSET = 5
 def _is_reportable_performance_provider(provider: str) -> bool:
     """Return whether a provider label represents a real upstream provider."""
     return provider not in _SYNTHETIC_PERFORMANCE_PROVIDERS
+
+
+def _observability_bucket_minutes(start: datetime, end: datetime) -> int:
+    """Choose a compact bucket size for provider observability charts."""
+    delta = end - start
+    if delta <= timedelta(hours=2):
+        return 5
+    if delta <= timedelta(days=2):
+        return 60
+    if delta <= timedelta(days=8):
+        return 360
+    return 1440
 
 
 @router.get("/provider-quotas", response_model=AdminProviderQuotasResponse)
@@ -190,6 +226,207 @@ async def admin_provider_stats(
         models=models,
         pairs=[ProviderModelPair(provider=r["provider"], model_id=r["model_id"]) for r in pairs],
         window_providers=[r["provider"] for r in window_providers],
+    )
+
+
+# ============================================================
+# Provider Observability — provider-scoped error + cache stats directly
+# from api_logs. Kept separate from provider_hourly_stats so classification
+# changes don't require a schema migration or backfill.
+# ============================================================
+
+
+@router.get("/api/provider-observability", response_model=ProviderObservabilityResponse)
+async def admin_provider_observability(
+    request: Request,
+    provider: str,
+    model_id: str = "__all__",
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = None,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> ProviderObservabilityResponse:
+    """Return provider-scoped error and prompt-cache stats over a bounded window."""
+    del request
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(status_code=503, detail="database unavailable")
+    if not _is_reportable_performance_provider(provider):
+        raise HTTPException(status_code=400, detail="provider must be an upstream provider")
+
+    now = datetime.now(timezone.utc)
+    if to is not None:
+        to = _require_aware_utc(to, "to")
+    if from_ is not None:
+        from_ = _require_aware_utc(from_, "from")
+
+    end = to if to else now
+    start = from_ if from_ else end - timedelta(days=_PROVIDER_STATS_DEFAULT_DAYS)
+
+    if end <= start:
+        raise HTTPException(status_code=400, detail="`to` must be after `from`")
+    if (end - start) > timedelta(days=_PROVIDER_STATS_MAX_DAYS):
+        raise HTTPException(
+            status_code=400,
+            detail=f"range must be <= {_PROVIDER_STATS_MAX_DAYS} days",
+        )
+
+    bucket_minutes = _observability_bucket_minutes(start, end)
+
+    async with db_logger.pool.acquire() as conn:
+        totals_row = await conn.fetchrow(
+            f"""
+            SELECT
+                COUNT(*)::BIGINT AS request_count,
+                COUNT(*) FILTER (WHERE {_ERROR_CONDITION_SQL})::BIGINT AS error_count,
+                COUNT(*) FILTER (
+                    WHERE status_code = 429 OR error ILIKE '%429%'
+                       OR error ILIKE '%rate%limit%' OR error ILIKE '%TooManyRequests%'
+                )::BIGINT AS rate_limited_count,
+                COUNT(*) FILTER (
+                    WHERE status_code = 504 OR error ILIKE '%timeout%' OR error ILIKE '%timed out%'
+                )::BIGINT AS timeout_count,
+                COUNT(*) FILTER (WHERE status_code >= 500)::BIGINT AS server_error_count,
+                COUNT(*) FILTER (
+                    WHERE status_code >= 200 AND status_code < 400
+                      AND COALESCE(prompt_tokens, 0) > 0
+                )::BIGINT AS cache_eligible_count,
+                COUNT(*) FILTER (
+                    WHERE status_code >= 200 AND status_code < 400
+                      AND COALESCE(prompt_tokens, 0) > 0
+                      AND COALESCE(cache_read_tokens, 0) > 0
+                )::BIGINT AS cache_hit_count,
+                COALESCE(SUM(prompt_tokens) FILTER (
+                    WHERE status_code >= 200 AND status_code < 400
+                ), 0)::BIGINT AS input_tokens,
+                COALESCE(SUM(cache_read_tokens) FILTER (
+                    WHERE status_code >= 200 AND status_code < 400
+                ), 0)::BIGINT AS cache_read_tokens,
+                COALESCE(SUM(cache_write_tokens) FILTER (
+                    WHERE status_code >= 200 AND status_code < 400
+                ), 0)::BIGINT AS cache_write_tokens
+            FROM api_logs
+            WHERE provider = $1
+              AND timestamp >= $2 AND timestamp < $3
+              AND ($4::text = '__all__' OR model_id = $4::text)
+              AND {_OBSERVABILITY_LOG_SCOPE_SQL}
+            """,
+            provider,
+            start,
+            end,
+            model_id,
+        )
+        bucket_rows = await conn.fetch(
+            f"""
+            WITH config AS (
+                SELECT ($5::int * 60) AS bucket_seconds
+            ),
+            bounds AS (
+                SELECT
+                    to_timestamp(
+                        floor(extract(epoch FROM $2::timestamptz) / config.bucket_seconds)
+                        * config.bucket_seconds
+                    ) AS aligned_start,
+                    $3::timestamptz AS end_time
+                FROM config
+            ),
+            series AS (
+                SELECT generate_series(
+                    (SELECT aligned_start FROM bounds),
+                    (SELECT end_time FROM bounds),
+                    $5::int * interval '1 minute'
+                ) AS bucket_start
+            ),
+            bucketed_logs AS (
+                SELECT
+                    to_timestamp(
+                        floor(extract(epoch FROM timestamp) / ($5::int * 60))
+                        * ($5::int * 60)
+                    ) AS bucket_start,
+                    COUNT(*)::BIGINT AS request_count,
+                    COUNT(*) FILTER (
+                        WHERE error IS NOT NULL
+                           OR status_code IS NULL
+                           OR status_code < 200
+                           OR status_code >= 400
+                    )::BIGINT AS error_count,
+                    COUNT(*) FILTER (
+                        WHERE status_code >= 200 AND status_code < 400
+                          AND COALESCE(prompt_tokens, 0) > 0
+                    )::BIGINT AS cache_eligible_count,
+                    COUNT(*) FILTER (
+                        WHERE status_code >= 200 AND status_code < 400
+                          AND COALESCE(prompt_tokens, 0) > 0
+                          AND COALESCE(cache_read_tokens, 0) > 0
+                    )::BIGINT AS cache_hit_count,
+                    COALESCE(SUM(cache_read_tokens) FILTER (
+                        WHERE status_code >= 200 AND status_code < 400
+                    ), 0)::BIGINT AS cache_read_tokens,
+                    COALESCE(SUM(prompt_tokens) FILTER (
+                        WHERE status_code >= 200 AND status_code < 400
+                    ), 0)::BIGINT AS input_tokens
+                FROM api_logs
+                WHERE provider = $1
+                  AND timestamp >= $2 AND timestamp < $3
+                  AND ($4::text = '__all__' OR model_id = $4::text)
+                  AND {_OBSERVABILITY_LOG_SCOPE_SQL}
+                GROUP BY 1
+            )
+            SELECT
+                series.bucket_start AS start_time,
+                COALESCE(bucketed_logs.request_count, 0) AS request_count,
+                COALESCE(bucketed_logs.error_count, 0) AS error_count,
+                COALESCE(bucketed_logs.cache_eligible_count, 0) AS cache_eligible_count,
+                COALESCE(bucketed_logs.cache_hit_count, 0) AS cache_hit_count,
+                COALESCE(bucketed_logs.cache_read_tokens, 0) AS cache_read_tokens,
+                COALESCE(bucketed_logs.input_tokens, 0) AS input_tokens
+            FROM series
+            LEFT JOIN bucketed_logs ON bucketed_logs.bucket_start = series.bucket_start
+            WHERE series.bucket_start < $3
+            ORDER BY series.bucket_start ASC
+            """,
+            provider,
+            start,
+            end,
+            model_id,
+            bucket_minutes,
+        )
+        error_type_rows = await conn.fetch(
+            f"""
+            SELECT error_type, COUNT(*)::BIGINT AS count
+            FROM (
+                SELECT {_ERROR_TYPE_SQL} AS error_type
+                FROM api_logs
+                WHERE provider = $1
+                  AND timestamp >= $2 AND timestamp < $3
+                  AND ($4::text = '__all__' OR model_id = $4::text)
+                  AND {_OBSERVABILITY_LOG_SCOPE_SQL}
+                  AND {_ERROR_CONDITION_SQL}
+            ) typed
+            GROUP BY error_type
+            ORDER BY count DESC, error_type ASC
+            """,
+            provider,
+            start,
+            end,
+            model_id,
+        )
+
+    totals = ProviderObservabilityTotals(**dict(totals_row or {}))
+    total_errors = max(totals.error_count, 1)
+    return ProviderObservabilityResponse(
+        provider=provider,
+        window=ProviderObservabilityWindow.model_validate({"from": start, "to": end}),
+        bucket_minutes=bucket_minutes,
+        totals=totals,
+        buckets=[ProviderObservabilityBucket(**dict(r)) for r in bucket_rows],
+        error_types=[
+            ProviderErrorTypeRow(
+                error_type=r["error_type"],
+                count=int(r["count"] or 0),
+                fraction=float(int(r["count"] or 0) / total_errors),
+            )
+            for r in error_type_rows
+        ],
     )
 
 
