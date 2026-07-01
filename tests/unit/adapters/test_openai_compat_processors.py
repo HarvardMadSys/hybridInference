@@ -86,6 +86,16 @@ def test_key_pool_provider_label_falls_back_to_route_metadata_and_base_url():
     )
     assert _key_pool_provider_label(host_config) == "featherless"
 
+    malformed_config = ModelConfig(
+        id="minimax-fast",
+        name="MiniMax Fast",
+        provider="",
+        base_url="http://[broken",
+        provider_model_id="MiniMaxAI/MiniMax-M2.5",
+        endpoint_id="minimax-fast:broken-api",
+    )
+    assert _key_pool_provider_label(malformed_config) == "minimax-fast:broken-api"
+
 
 @pytest.mark.asyncio
 async def test_post_with_pool_raises_clear_error_when_pool_empty():

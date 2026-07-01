@@ -82,9 +82,9 @@ function probeErrorMessage(error: string | null) {
     // Fall through to regex/plain-text extraction for truncated JSON.
   }
 
-  const rawMatch = text.match(/"raw"\s*:\s*"([^"]+)/);
+  const rawMatch = text.match(/"raw"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (rawMatch?.[1]) return shortenProbeError(rawMatch[1]);
-  const messageMatch = text.match(/"message"\s*:\s*"([^"]+)/);
+  const messageMatch = text.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)/);
   if (messageMatch?.[1]) return shortenProbeError(messageMatch[1]);
   return shortenProbeError(text);
 }
@@ -96,7 +96,7 @@ function shortenProbeError(error: string) {
     .replace(/All (\d+) keys for provider '' are muted/g, 'All $1 keys are muted')
     .trim();
   if (cleaned.length <= 96) return cleaned;
-  return `${cleaned.slice(0, 95).trimEnd()}...`;
+  return `${cleaned.slice(0, 93).trimEnd()}...`;
 }
 
 function sampleStatusClass(sample: RoutewiseProbeSampleItem) {
@@ -126,7 +126,8 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
   const latestProbeSamples = useMemo(() => {
     const seen = new Set<string>();
     const latest: RoutewiseProbeSampleItem[] = [];
-    for (const sample of probeSamples) {
+    const samples = Array.isArray(probeSamples) ? probeSamples : [];
+    for (const sample of samples) {
       if (seen.has(sample.endpoint_id)) continue;
       seen.add(sample.endpoint_id);
       latest.push(sample);

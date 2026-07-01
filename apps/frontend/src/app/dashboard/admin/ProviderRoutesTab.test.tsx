@@ -259,7 +259,7 @@ describe('ProviderRoutesTab', () => {
           ok: false,
           ttft_ms: null,
           error:
-            '{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"/-m2.5 is temporarily rate-limited upstream. Please retry shortly"}}}',
+            '{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"/-m2.5 is temporarily rate-limited upstream. Please retry shortly. diagnostic-tail-that-should-be-truncated"}}}',
           checked_at: '2026-06-22T00:00:01Z',
         },
       ],
@@ -315,6 +315,7 @@ describe('ProviderRoutesTab', () => {
     expect(screen.getByText('123 ms')).toBeInTheDocument();
     expect(screen.queryByText('RuntimeError')).not.toBeInTheDocument();
     expect(screen.getByText(/temporarily rate-limited upstream/)).toBeInTheDocument();
+    expect(screen.queryByText(/diagnostic-tail-that-should-be-truncated/)).not.toBeInTheDocument();
     expect(listRoutewiseProbeSamples).toHaveBeenCalledWith(expect.objectContaining({ limit: 100 }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Run probe' }));

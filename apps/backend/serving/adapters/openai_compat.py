@@ -77,7 +77,10 @@ def _key_pool_provider_label(config: Any) -> str:
 
     base_url = getattr(config, "base_url", None)
     if isinstance(base_url, str) and base_url.strip():
-        host = (urlsplit(base_url).hostname or "").lower()
+        try:
+            host = (urlsplit(base_url).hostname or "").lower()
+        except ValueError:
+            host = ""
         for known in ("openrouter", "featherless", "chutes", "minimax", "ollama"):
             if known in host:
                 return known
