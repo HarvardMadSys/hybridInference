@@ -37,7 +37,13 @@ export interface AdminUser {
 }
 
 export type UserSortBy =
-  'created' | 'cost_today' | 'cost_month' | 'cost_alltime' | 'last_login' | 'requests' | 'tokens';
+  | 'created'
+  | 'cost_today'
+  | 'cost_month'
+  | 'cost_alltime'
+  | 'last_login'
+  | 'requests'
+  | 'tokens';
 
 export interface StatusCounts {
   all: number;
