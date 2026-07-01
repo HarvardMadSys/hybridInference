@@ -211,17 +211,6 @@ async def test_provider_observability_happy_path_from_api_logs():
                 {"error_type": "rate_limited", "count": 2},
                 {"error_type": "timeout", "count": 1},
             ],
-            [
-                {
-                    "model_id": "gpt-4o-mini",
-                    "request_count": 10,
-                    "error_count": 3,
-                    "cache_eligible_count": 8,
-                    "cache_hit_count": 3,
-                    "cache_read_tokens": 900,
-                    "input_tokens": 3000,
-                },
-            ],
         ],
     )
     fake_db_logger = _fake_db_logger(pool=fake_pool)
@@ -235,6 +224,7 @@ async def test_provider_observability_happy_path_from_api_logs():
             "/admin/api/provider-observability",
             params={
                 "provider": "openai",
+                "model_id": "gpt-4o-mini",
                 "from": "2026-01-01T00:00:00Z",
                 "to": "2026-01-01T02:00:00Z",
             },
@@ -254,8 +244,13 @@ async def test_provider_observability_happy_path_from_api_logs():
         "count": 2,
         "fraction": pytest.approx(2 / 3),
     }
-    assert body["models"][0]["model_id"] == "gpt-4o-mini"
+    assert "models" not in body
     assert "status_codes" not in body
     assert "top_errors" not in body
     assert "request_type" in fake_pool.conn.fetchrow_calls[0][0]
-    assert len(fake_pool.conn.fetch_calls) == 3
+    assert "model_id = $4::text" in fake_pool.conn.fetchrow_calls[0][0]
+    assert fake_pool.conn.fetchrow_calls[0][1][3] == "gpt-4o-mini"
+    assert fake_pool.conn.fetch_calls[0][1][3] == "gpt-4o-mini"
+    assert fake_pool.conn.fetch_calls[0][1][4] == 5
+    assert fake_pool.conn.fetch_calls[1][1][3] == "gpt-4o-mini"
+    assert len(fake_pool.conn.fetch_calls) == 2

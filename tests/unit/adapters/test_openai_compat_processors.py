@@ -9,7 +9,7 @@ import pytest
 
 from serving.adapters.base import ModelConfig
 from serving.adapters.key_pool import KeyPoolExhausted
-from serving.adapters.openai_compat import OpenAICompatAdapter
+from serving.adapters.openai_compat import OpenAICompatAdapter, _key_pool_provider_label
 from serving.adapters.processors import (
     DefaultProcessor,
     GLMProcessor,
@@ -64,6 +64,37 @@ def _make_adapter(
     adapter = OpenAICompatAdapter(config)
     adapter.http = MagicMock()
     return adapter
+
+
+def test_key_pool_provider_label_falls_back_to_route_metadata_and_base_url():
+    metadata_config = ModelConfig(
+        id="minimax-fast",
+        name="MiniMax Fast",
+        provider="",
+        base_url="https://openrouter.ai/api/v1",
+        provider_model_id="minimax/minimax-m2.5",
+        route_metadata={"key_provider": "openrouter"},
+    )
+    assert _key_pool_provider_label(metadata_config) == "openrouter"
+
+    host_config = ModelConfig(
+        id="minimax-fast",
+        name="MiniMax Fast",
+        provider="",
+        base_url="https://api.featherless.ai/v1",
+        provider_model_id="MiniMaxAI/MiniMax-M2.5",
+    )
+    assert _key_pool_provider_label(host_config) == "featherless"
+
+    malformed_config = ModelConfig(
+        id="minimax-fast",
+        name="MiniMax Fast",
+        provider="",
+        base_url="http://[broken",
+        provider_model_id="MiniMaxAI/MiniMax-M2.5",
+        endpoint_id="minimax-fast:broken-api",
+    )
+    assert _key_pool_provider_label(malformed_config) == "minimax-fast:broken-api"
 
 
 @pytest.mark.asyncio

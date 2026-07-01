@@ -80,17 +80,6 @@ vi.mock('@/lib/api/admin', async () => {
         },
       ],
       error_types: [{ error_type: 'rate_limited', count: 1, fraction: 0.5 }],
-      models: [
-        {
-          model_id: 'gpt-4o-mini',
-          request_count: 12,
-          error_count: 2,
-          cache_eligible_count: 10,
-          cache_hit_count: 4,
-          cache_read_tokens: 320,
-          input_tokens: 1200,
-        },
-      ],
     })),
     getTtftScatter: vi.fn(async () => ({ models: [] })),
   };
@@ -100,7 +89,9 @@ describe('ProviderPerformanceTab', () => {
   it('renders compact TTFT and throughput charts in one responsive row without p99', async () => {
     render(<ProviderPerformanceTab />);
 
-    await screen.findByRole('heading', { name: 'gpt-4o-mini' });
+    // Wait for the model *section* to load (the model id also appears in the
+    // Model filter dropdown, so match the heading specifically).
+    await screen.findByRole('heading', { name: 'gpt-4o-mini', level: 3 });
 
     const compactRow = screen.getByTestId('provider-performance-chart-row');
     expect(compactRow).toHaveClass('grid-cols-1', 'lg:grid-cols-2', 'gap-3');
@@ -118,7 +109,8 @@ describe('ProviderPerformanceTab', () => {
 
     expect(screen.getByRole('heading', { name: 'Errors' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Cache' })).toBeInTheDocument();
-    expect(screen.getByText('Cache by model')).toBeInTheDocument();
+    expect(screen.queryByText('Cache by model')).not.toBeInTheDocument();
+    expect(screen.getByText('Eligible reqs')).toBeInTheDocument();
     expect(screen.getByText('Error breakdown')).toBeInTheDocument();
     expect(screen.getByText('rate_limited')).toBeInTheDocument();
     expect(screen.queryByText('Errors and cache')).not.toBeInTheDocument();

@@ -1209,7 +1209,6 @@ __all__ = [
     "ModelVisibilityItem",
     "OpenRouterProviderOption",
     "ProviderErrorTypeRow",
-    "ProviderModelObservabilityRow",
     "ProviderObservabilityBucket",
     "ProviderObservabilityResponse",
     "ProviderObservabilityTotals",
@@ -1431,18 +1430,6 @@ class ProviderErrorTypeRow(BaseModel):
     fraction: float
 
 
-class ProviderModelObservabilityRow(BaseModel):
-    """Provider observability totals for one model."""
-
-    model_id: str
-    request_count: int
-    error_count: int
-    cache_eligible_count: int
-    cache_hit_count: int
-    cache_read_tokens: int
-    input_tokens: int
-
-
 class ProviderObservabilityResponse(BaseModel):
     """Provider-scoped error and prompt-cache stats from api_logs."""
 
@@ -1452,7 +1439,6 @@ class ProviderObservabilityResponse(BaseModel):
     totals: ProviderObservabilityTotals
     buckets: list[ProviderObservabilityBucket]
     error_types: list[ProviderErrorTypeRow]
-    models: list[ProviderModelObservabilityRow]
 
 
 # ============================================================

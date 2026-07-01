@@ -584,76 +584,36 @@ function ProviderObservabilitySection({ data }: { data: ProviderObservabilityRes
         <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
           <Kpi label="Cache hit" value={fmtPctValue(cacheHitRate)} />
           <Kpi label="Hits" value={fmtCompactCount(totals.cache_hit_count)} />
-          <Kpi label="Eligible" value={fmtCompactCount(totals.cache_eligible_count)} />
+          <Kpi label="Eligible reqs" value={fmtCompactCount(totals.cache_eligible_count)} />
           <Kpi label="Cached input" value={fmtPctValue(cacheTokenShare)} />
           <Kpi label="Read tokens" value={fmtCompactCount(totals.cache_read_tokens)} />
           <Kpi label="Write tokens" value={fmtCompactCount(totals.cache_write_tokens)} />
         </div>
 
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-          <div className="rounded-xl border p-3">
-            <p className="mb-1 text-[13px] font-semibold">Cache hit rate</p>
-            <div className="h-48">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={trendData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
-                  <YAxis
-                    tick={{ fontSize: 11 }}
-                    tickFormatter={(v) => `${fmt0(v)}%`}
-                    domain={[0, 100]}
-                    allowDataOverflow
-                  />
-                  <Tooltip formatter={(v) => `${fmt0(v)}%`} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                  <Line
-                    type="monotone"
-                    dataKey="cache_hit_rate"
-                    stroke="#10b981"
-                    dot={false}
-                    name="cache hit"
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="rounded-xl border p-3">
-            <p className="mb-2 text-[13px] font-semibold">Cache by model</p>
-            {data.models.length === 0 ? (
-              <p className="text-[12px] text-gray-400">No requests in this range.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-left text-[12px]">
-                  <thead className="text-[10px] uppercase tracking-wide text-gray-400">
-                    <tr>
-                      <th className="py-1 pr-3 font-medium">Model</th>
-                      <th className="py-1 px-3 text-right font-medium">Eligible</th>
-                      <th className="py-1 px-3 text-right font-medium">Hit</th>
-                      <th className="py-1 pl-3 text-right font-medium">Cached</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.models.slice(0, 10).map((row) => (
-                      <tr key={row.model_id} className="border-t border-gray-100">
-                        <td className="max-w-[220px] truncate py-1.5 pr-3 font-medium text-gray-800">
-                          {row.model_id}
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-gray-600">
-                          {fmtCompactCount(row.cache_eligible_count)}
-                        </td>
-                        <td className="px-3 py-1.5 text-right tabular-nums text-gray-600">
-                          {fmtPct(row.cache_hit_count, row.cache_eligible_count, 1)}
-                        </td>
-                        <td className="pl-3 py-1.5 text-right tabular-nums text-gray-600">
-                          {fmtCompactCount(row.cache_read_tokens)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+        <div className="rounded-xl border p-3">
+          <p className="mb-1 text-[13px] font-semibold">Cache hit rate</p>
+          <div className="h-48">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
+                <YAxis
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(v) => `${fmt0(v)}%`}
+                  domain={[0, 100]}
+                  allowDataOverflow
+                />
+                <Tooltip formatter={(v) => `${fmt0(v)}%`} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Line
+                  type="monotone"
+                  dataKey="cache_hit_rate"
+                  stroke="#10b981"
+                  dot={false}
+                  name="cache hit"
+                />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
         </div>
       </section>
@@ -665,6 +625,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const [allProviders, setAllProviders] = useState<string[]>([]);
   const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
   const [provider, setProvider] = useState<string>('');
+  const [model, setModel] = useState<string>('__all__');
   const [range, setRange] = useState<RangeKey>('7d');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -698,39 +659,26 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     [allPairs, provider],
   );
 
+  // Client-side filter for the model performance sections. `__all__` keeps
+  // every model of the provider; the full model set is already loaded.
+  const visibleModelIds = useMemo(
+    () => (model === '__all__' ? providerModels : providerModels.filter((m) => m === model)),
+    [providerModels, model],
+  );
+
   const loadData = useCallback(async (prov: string, rangeKey: RangeKey) => {
     if (!prov) return;
     setLoading(true);
     setError(null);
     setModelRows({});
-    setObservability(null);
     try {
       const window_ = rangeWindow(rangeKey);
-      // Fetch stats and observability concurrently, but keep their failures
-      // independent: the newer observability panel must never take down the
-      // pre-existing latency/throughput view if its endpoint errors or is
-      // not yet deployed. Stats failure still surfaces the error banner;
-      // observability failure just leaves that section hidden.
-      const [statsResult, obsResult] = await Promise.allSettled([
-        getProviderStats({
-          provider: prov,
-          model_id: '__all__',
-          from: window_.from,
-          to: window_.to,
-        }),
-        getProviderObservability({
-          provider: prov,
-          from: window_.from,
-          to: window_.to,
-        }),
-      ]);
-      if (obsResult.status === 'fulfilled') {
-        setObservability(obsResult.value);
-      }
-      if (statsResult.status === 'rejected') {
-        throw statsResult.reason;
-      }
-      const resp = statsResult.value;
+      const resp = await getProviderStats({
+        provider: prov,
+        model_id: '__all__',
+        from: window_.from,
+        to: window_.to,
+      });
       setAllProviders(resp.providers);
       setAllPairs(resp.pairs);
       const grouped: Record<string, ProviderStatsRow[]> = {};
@@ -745,6 +693,26 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
       setLoading(false);
     }
   }, []);
+
+  const loadObservability = useCallback(
+    async (prov: string, rangeKey: RangeKey, modelKey: string) => {
+      if (!prov) return;
+      setObservability(null);
+      try {
+        const window_ = rangeWindow(rangeKey);
+        const resp = await getProviderObservability({
+          provider: prov,
+          model_id: modelKey,
+          from: window_.from,
+          to: window_.to,
+        });
+        setObservability(resp);
+      } catch {
+        setObservability(null);
+      }
+    },
+    [],
+  );
 
   const initializedRef = useRef(false);
   useEffect(() => {
@@ -790,13 +758,26 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     void loadData(provider, range);
   }, [provider, range, loadData, initializing, refreshKey]);
 
+  useEffect(() => {
+    if (initializing) return;
+    if (!provider) return;
+    void loadObservability(provider, range, model);
+  }, [provider, range, model, loadObservability, initializing, refreshKey]);
+
   const scatterForProvider = useMemo(
     () => ttftScatter.filter((m) => m.provider === provider),
     [ttftScatter, provider],
   );
+  const visibleScatter = useMemo(
+    () =>
+      model === '__all__'
+        ? scatterForProvider
+        : scatterForProvider.filter((m) => m.model_id === model),
+    [scatterForProvider, model],
+  );
 
   const overallTotals = useMemo(() => {
-    const allRows = Object.values(modelRows).flat();
+    const allRows = visibleModelIds.flatMap((m) => modelRows[m] ?? []);
     const requests = allRows.reduce((acc, r) => acc + r.request_count, 0);
     const errors = allRows.reduce((acc, r) => acc + r.error_count, 0);
     const completion = allRows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
@@ -805,7 +786,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     const decode = Math.max(completion - reasoning, 0);
     const errorRate = requests === 0 ? 0 : errors / requests;
     return { requests, errors, errorRate, prefill, reasoning, decode };
-  }, [modelRows]);
+  }, [visibleModelIds, modelRows]);
 
   return (
     <div className="space-y-6">
@@ -815,11 +796,30 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
           <select
             className="border rounded px-2 py-1"
             value={provider}
-            onChange={(e) => setProvider(e.target.value)}
+            onChange={(e) => {
+              setProvider(e.target.value);
+              // Model lists differ per provider; clear the filter on switch.
+              setModel('__all__');
+            }}
           >
             {allProviders.map((p) => (
               <option key={p} value={p}>
                 {p}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          <span className="block text-gray-500 mb-1">Model</span>
+          <select
+            className="border rounded px-2 py-1"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            <option value="__all__">All models</option>
+            {providerModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
               </option>
             ))}
           </select>
@@ -855,7 +855,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
 
       <ProviderObservabilitySection data={observability} />
 
-      {providerModels.map((modelId) => (
+      {visibleModelIds.map((modelId) => (
         <ModelPerformanceSection key={modelId} modelId={modelId} rows={modelRows[modelId] ?? []} />
       ))}
 
@@ -880,9 +880,9 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
               Failed to load scatter data: {ttftScatterError}
             </p>
           </div>
-        ) : scatterForProvider.length > 0 ? (
+        ) : visibleScatter.length > 0 ? (
           <div className="grid gap-3 lg:grid-cols-2">
-            {scatterForProvider.map((m) => (
+            {visibleScatter.map((m) => (
               <TtftScatterCard key={`${m.model_id}::${m.provider}`} model={m} />
             ))}
           </div>

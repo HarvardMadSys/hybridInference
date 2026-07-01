@@ -11,7 +11,6 @@ from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
     AdminProviderQuotasResponse,
     ProviderErrorTypeRow,
-    ProviderModelObservabilityRow,
     ProviderModelPair,
     ProviderObservabilityBucket,
     ProviderObservabilityResponse,
@@ -241,6 +240,7 @@ async def admin_provider_stats(
 async def admin_provider_observability(
     request: Request,
     provider: str,
+    model_id: str = "__all__",
     from_: datetime | None = Query(default=None, alias="from"),
     to: datetime | None = None,
     _admin_id: str = Depends(verify_admin_access),
@@ -307,16 +307,18 @@ async def admin_provider_observability(
             FROM api_logs
             WHERE provider = $1
               AND timestamp >= $2 AND timestamp < $3
+              AND ($4::text = '__all__' OR model_id = $4::text)
               AND {_OBSERVABILITY_LOG_SCOPE_SQL}
             """,
             provider,
             start,
             end,
+            model_id,
         )
         bucket_rows = await conn.fetch(
             f"""
             WITH config AS (
-                SELECT ($4::int * 60) AS bucket_seconds
+                SELECT ($5::int * 60) AS bucket_seconds
             ),
             bounds AS (
                 SELECT
@@ -331,14 +333,14 @@ async def admin_provider_observability(
                 SELECT generate_series(
                     (SELECT aligned_start FROM bounds),
                     (SELECT end_time FROM bounds),
-                    $4::int * interval '1 minute'
+                    $5::int * interval '1 minute'
                 ) AS bucket_start
             ),
             bucketed_logs AS (
                 SELECT
                     to_timestamp(
-                        floor(extract(epoch FROM timestamp) / ($4::int * 60))
-                        * ($4::int * 60)
+                        floor(extract(epoch FROM timestamp) / ($5::int * 60))
+                        * ($5::int * 60)
                     ) AS bucket_start,
                     COUNT(*)::BIGINT AS request_count,
                     COUNT(*) FILTER (
@@ -365,6 +367,7 @@ async def admin_provider_observability(
                 FROM api_logs
                 WHERE provider = $1
                   AND timestamp >= $2 AND timestamp < $3
+                  AND ($4::text = '__all__' OR model_id = $4::text)
                   AND {_OBSERVABILITY_LOG_SCOPE_SQL}
                 GROUP BY 1
             )
@@ -384,6 +387,7 @@ async def admin_provider_observability(
             provider,
             start,
             end,
+            model_id,
             bucket_minutes,
         )
         error_type_rows = await conn.fetch(
@@ -394,6 +398,7 @@ async def admin_provider_observability(
                 FROM api_logs
                 WHERE provider = $1
                   AND timestamp >= $2 AND timestamp < $3
+                  AND ($4::text = '__all__' OR model_id = $4::text)
                   AND {_OBSERVABILITY_LOG_SCOPE_SQL}
                   AND {_ERROR_CONDITION_SQL}
             ) typed
@@ -403,39 +408,7 @@ async def admin_provider_observability(
             provider,
             start,
             end,
-        )
-        model_rows = await conn.fetch(
-            f"""
-            SELECT
-                model_id,
-                COUNT(*)::BIGINT AS request_count,
-                COUNT(*) FILTER (WHERE {_ERROR_CONDITION_SQL})::BIGINT AS error_count,
-                COUNT(*) FILTER (
-                    WHERE status_code >= 200 AND status_code < 400
-                      AND COALESCE(prompt_tokens, 0) > 0
-                )::BIGINT AS cache_eligible_count,
-                COUNT(*) FILTER (
-                    WHERE status_code >= 200 AND status_code < 400
-                      AND COALESCE(prompt_tokens, 0) > 0
-                      AND COALESCE(cache_read_tokens, 0) > 0
-                )::BIGINT AS cache_hit_count,
-                COALESCE(SUM(cache_read_tokens) FILTER (
-                    WHERE status_code >= 200 AND status_code < 400
-                ), 0)::BIGINT AS cache_read_tokens,
-                COALESCE(SUM(prompt_tokens) FILTER (
-                    WHERE status_code >= 200 AND status_code < 400
-                ), 0)::BIGINT AS input_tokens
-            FROM api_logs
-            WHERE provider = $1
-              AND timestamp >= $2 AND timestamp < $3
-              AND {_OBSERVABILITY_LOG_SCOPE_SQL}
-            GROUP BY model_id
-            ORDER BY error_count DESC, request_count DESC, model_id ASC
-            LIMIT 50
-            """,
-            provider,
-            start,
-            end,
+            model_id,
         )
 
     totals = ProviderObservabilityTotals(**dict(totals_row or {}))
@@ -454,7 +427,6 @@ async def admin_provider_observability(
             )
             for r in error_type_rows
         ],
-        models=[ProviderModelObservabilityRow(**dict(r)) for r in model_rows],
     )
 
 
@@ -511,6 +483,7 @@ async def admin_provider_token_usage(
                 COALESCE(SUM(request_count), 0)::BIGINT            AS request_count
             FROM provider_hourly_stats
             WHERE hour_bucket >= $1 AND hour_bucket < $2
+              AND provider NOT IN ('', 'router')
             GROUP BY provider, model_id
             ORDER BY (
                   COALESCE(SUM(total_prompt_tokens), 0)
@@ -523,7 +496,12 @@ async def admin_provider_token_usage(
             end,
         )
 
-    out_rows = [ProviderTokenUsageRow(**dict(r)) for r in rows]
+    out_rows: list[ProviderTokenUsageRow] = []
+    for row in rows:
+        row_dict = dict(row)
+        if row_dict.get("provider") in {"", "router"}:
+            continue
+        out_rows.append(ProviderTokenUsageRow(**row_dict))
     totals = ProviderTokenUsageTotals(
         input_tokens=sum(r.input_tokens for r in out_rows),
         output_tokens=sum(r.output_tokens for r in out_rows),

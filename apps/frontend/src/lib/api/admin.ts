@@ -37,13 +37,7 @@ export interface AdminUser {
 }
 
 export type UserSortBy =
-  | 'created'
-  | 'cost_today'
-  | 'cost_month'
-  | 'cost_alltime'
-  | 'last_login'
-  | 'requests'
-  | 'tokens';
+  'created' | 'cost_today' | 'cost_month' | 'cost_alltime' | 'last_login' | 'requests' | 'tokens';
 
 export interface StatusCounts {
   all: number;
@@ -967,16 +961,6 @@ export interface ProviderErrorTypeRow {
   fraction: number;
 }
 
-export interface ProviderModelObservabilityRow {
-  model_id: string;
-  request_count: number;
-  error_count: number;
-  cache_eligible_count: number;
-  cache_hit_count: number;
-  cache_read_tokens: number;
-  input_tokens: number;
-}
-
 export interface ProviderObservabilityResponse {
   provider: string;
   window: { from: string; to: string };
@@ -984,16 +968,17 @@ export interface ProviderObservabilityResponse {
   totals: ProviderObservabilityTotals;
   buckets: ProviderObservabilityBucket[];
   error_types: ProviderErrorTypeRow[];
-  models: ProviderModelObservabilityRow[];
 }
 
 export async function getProviderObservability(params: {
   provider: string;
+  model_id?: string;
   from?: string;
   to?: string;
 }): Promise<ProviderObservabilityResponse> {
   const search = new URLSearchParams({
     provider: params.provider,
+    ...(params.model_id ? { model_id: params.model_id } : {}),
     ...(params.from ? { from: params.from } : {}),
     ...(params.to ? { to: params.to } : {}),
   });

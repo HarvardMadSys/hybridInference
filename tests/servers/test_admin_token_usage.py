@@ -38,6 +38,36 @@ def _override_admin(app: FastAPI) -> None:
     app.dependency_overrides[verify_admin_access] = _fake_admin
 
 
+class _FakeAcquire:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self.rows = rows
+        self.query = ""
+
+    async def fetch(self, query, *args):
+        del args
+        self.query = query
+        return self.rows
+
+
+class _FakePool:
+    def __init__(self, rows):
+        self.conn = _FakeConn(rows)
+
+    def acquire(self):
+        return _FakeAcquire(self.conn)
+
+
 # ---------------------------------------------------------------------
 # Auth + validation
 # ---------------------------------------------------------------------
@@ -86,6 +116,67 @@ class TestTokenUsageValidation:
             resp = await client.get("/admin/api/provider-token-usage")
         app.dependency_overrides.clear()
         assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_token_usage_hides_router_placeholder_rows():
+    """Regression: synthetic labels are placeholders, not upstream providers."""
+    rows = [
+        {
+            "provider": "router",
+            "model_id": "glm-5.2",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+            "cost_usd": 0,
+            "request_count": 113,
+        },
+        {
+            "provider": "",
+            "model_id": "rejected-model",
+            "input_tokens": 50,
+            "output_tokens": 0,
+            "cached_tokens": 0,
+            "reasoning_tokens": 0,
+            "cost_usd": 0,
+            "request_count": 7,
+        },
+        {
+            "provider": "zai",
+            "model_id": "glm-5.2",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cached_tokens": 80,
+            "reasoning_tokens": 5,
+            "cost_usd": 0.0123,
+            "request_count": 2,
+        },
+    ]
+    fake_db_logger = MagicMock()
+    fake_db_logger.pool = _FakePool(rows)
+
+    app = _build_admin_app(db_logger=fake_db_logger)
+    _override_admin(app)
+    app.dependency_overrides[get_db_logger] = lambda: fake_db_logger
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/admin/api/provider-token-usage")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [r["provider"] for r in body["rows"]] == ["zai"]
+    assert body["totals"] == {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "cached_tokens": 80,
+        "reasoning_tokens": 5,
+        "cost_usd": 0.0123,
+        "request_count": 2,
+    }
+    assert "provider NOT IN ('', 'router')" in fake_db_logger.pool.conn.query
 
 
 # ---------------------------------------------------------------------

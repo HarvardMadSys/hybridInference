@@ -717,6 +717,7 @@ class PostgresLogStore(LogStore):
                 WHERE timestamp >= NOW() - ($1 || ' minutes')::interval
                   AND user_id IS NOT NULL
                   AND (metadata->>'synthetic_probe') IS DISTINCT FROM 'true'
+                  AND provider NOT IN ('', 'router')
                 GROUP BY model_id, provider
                 """,
                 str(window_minutes),
@@ -734,6 +735,9 @@ class PostgresLogStore(LogStore):
 
         result: dict[str, Any] = {}
         for row in rows:
+            provider = row["provider"]
+            if provider in ("", "router"):
+                continue
             key = f"{row['model_id']}::{row['provider']}"
             result[key] = {
                 "request_count": row["request_count"],
