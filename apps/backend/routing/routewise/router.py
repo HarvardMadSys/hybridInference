@@ -1048,7 +1048,9 @@ class RouteWiseRouter(BaseRouter):
         concurrency_pools: dict[str, ConcurrencyManager] = {}
         for pool_id, (policy, _endpoint) in concurrency_specs.items():
             existing_c = self.concurrency_pools.get(pool_id)
-            if existing_c is not None and existing_c.limit == policy.limit:
+            if existing_c is not None:
+                if existing_c.limit != policy.limit:
+                    existing_c.update_limit(policy.limit)
                 concurrency_pools[pool_id] = existing_c
             else:
                 concurrency_pools[pool_id] = ConcurrencyManager(policy.limit)

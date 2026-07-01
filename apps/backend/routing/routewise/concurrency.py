@@ -12,8 +12,8 @@ Congestion pricing follows the binary model:
 - ``lambda = 0`` when at least one slot is available.
 - ``lambda = inf`` when all slots are occupied.
 
-Thread safety: all reads and writes of mutable state (``_active`` and the
-observability counters) are protected by a ``threading.Lock``.  Critical
+Thread safety: all reads and writes of mutable state (``_limit``, ``_active``,
+and the observability counters) are protected by a ``threading.Lock``.  Critical
 sections are short (no awaits held), matching the ``BaseRouter._lock``
 pattern used elsewhere in the codebase.
 """
@@ -51,8 +51,9 @@ class ConcurrencyManager:
 
     @property
     def limit(self) -> int:
-        """Maximum concurrent slots (immutable after init)."""
-        return self._limit
+        """Maximum concurrent slots."""
+        with self._lock:
+            return self._limit
 
     @property
     def active(self) -> int:
@@ -76,6 +77,13 @@ class ConcurrencyManager:
                 return True
             self._total_rejected += 1
             return False
+
+    def update_limit(self, limit: int) -> None:
+        """Update slot capacity without resetting active reservations."""
+        if limit < 1:
+            raise ValueError(f"concurrency limit must be >= 1, got {limit}")
+        with self._lock:
+            self._limit = int(limit)
 
     def release(self) -> None:
         """Release one slot. Guards against underflow."""
