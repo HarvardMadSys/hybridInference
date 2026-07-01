@@ -104,23 +104,12 @@ class PostgresLogStore(LogStore):
                 )
             """)
 
-            # Indexes
-            for ddl in [
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp ON api_logs(timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_model ON api_logs(model_id, timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_provider ON api_logs(provider, timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_request_id ON api_logs(request_id)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_user ON api_logs(user_id, timestamp DESC) WHERE user_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_session ON api_logs(session_id, timestamp DESC) WHERE session_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity ON api_logs(timestamp DESC, model_id, provider) WHERE user_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_error ON api_logs(timestamp DESC) WHERE error IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost ON api_logs(user_id, timestamp, cost_usd)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_served_endpoint "
-                "ON api_logs(served_endpoint_id, timestamp DESC) WHERE served_endpoint_id IS NOT NULL",
-            ]:
-                await conn.execute(ddl)
-
-            # Migrations for existing databases
+            # Migrations for existing databases. These run BEFORE index
+            # creation so that indexes defined on migrated columns (e.g.
+            # served_endpoint_id) don't reference a column that hasn't been
+            # added yet — creating such an index first raises
+            # UndefinedColumnError and aborts initialize(), which would leave
+            # the table permanently missing the new columns.
             await conn.execute("DROP INDEX IF EXISTS idx_api_logs_prompt_hash")
             await conn.execute("DROP INDEX IF EXISTS idx_api_logs_response_hash")
             await conn.execute("ALTER TABLE api_logs DROP COLUMN IF EXISTS prompt_hash")
@@ -150,6 +139,23 @@ class PostgresLogStore(LogStore):
                 "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS served_endpoint_id TEXT",
             ]:
                 await conn.execute(col_ddl)
+
+            # Indexes (created after the column migrations above so predicates /
+            # key columns referencing migrated columns always exist).
+            for ddl in [
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp ON api_logs(timestamp DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_model ON api_logs(model_id, timestamp DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_provider ON api_logs(provider, timestamp DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_request_id ON api_logs(request_id)",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_user ON api_logs(user_id, timestamp DESC) WHERE user_id IS NOT NULL",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_session ON api_logs(session_id, timestamp DESC) WHERE session_id IS NOT NULL",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity ON api_logs(timestamp DESC, model_id, provider) WHERE user_id IS NOT NULL",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_error ON api_logs(timestamp DESC) WHERE error IS NOT NULL",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost ON api_logs(user_id, timestamp, cost_usd)",
+                "CREATE INDEX IF NOT EXISTS idx_api_logs_served_endpoint "
+                "ON api_logs(served_endpoint_id, timestamp DESC) WHERE served_endpoint_id IS NOT NULL",
+            ]:
+                await conn.execute(ddl)
 
             # Aggregated stats table
             await conn.execute("""

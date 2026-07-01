@@ -254,6 +254,29 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS last_user_msg_hash BIGINT
             """)
 
+            # Which model/endpoint actually SERVED the request, promoted from the
+            # routing metadata into queryable columns (the model the request
+            # resolved to after aliasing/rerouting, and the specific endpoint
+            # among the route's candidates). model_id remains the client-requested
+            # model. Feeds smart-router training queries.
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS served_model_id TEXT
+            """)
+
+            await conn.execute("""
+                ALTER TABLE api_logs
+                ADD COLUMN IF NOT EXISTS served_endpoint_id TEXT
+            """)
+
+            # Created after the ADD COLUMN above so the predicate/key column it
+            # references always exists first.
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_api_logs_served_endpoint
+                ON api_logs(served_endpoint_id, timestamp DESC)
+                WHERE served_endpoint_id IS NOT NULL
+            """)
+
             # Aggregated stats table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS api_stats_hourly (
