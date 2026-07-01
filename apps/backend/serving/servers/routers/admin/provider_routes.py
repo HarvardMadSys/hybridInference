@@ -31,6 +31,7 @@ from serving.schemas_admin import (
     ProviderRouteApiKeyRef,
     ProviderRouteItem,
     ProviderRouteOption,
+    UpdateProviderRouteCandidateRequest,
     UpdateProviderRouteRequest,
     UpdateProviderRouteStrategyRequest,
     VerifyProviderRouteResponse,
@@ -1588,6 +1589,45 @@ def _install_route_candidate(services, candidate: PreparedRouteCandidate) -> Non
     _rebuild_routewise_routers(services)
 
 
+def _update_route_candidate_concurrency_limit(
+    services,
+    *,
+    model_id: str,
+    route_id: str,
+    concurrency_limit: int,
+) -> tuple[Any, object, float, str]:
+    route = _validate_canonical_route(services, model_id)
+    entries = _raw_route_entries(route)
+    index = _route_index_for_id(entries, route_id)
+    adapter, raw_weight, endpoint_id = entries[index]
+    route_target = _target_for_provider(_route_provider(adapter))
+    if (
+        not _is_runtime_candidate(adapter)
+        or _route_type(adapter) != "concurrency"
+        or _primary_provider_for_target(route_target) != "openrouter"
+        or _openrouter_pin_for_target(route_target) is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Only runtime OpenRouter concurrency routes can update concurrency_limit",
+        )
+
+    def _mutate() -> None:
+        concurrency = dict(getattr(adapter.config, "concurrency", None) or {})
+        concurrency["limit"] = concurrency_limit
+        adapter.config.concurrency = concurrency
+
+    lock = getattr(services.router, "_lock", None)
+    if lock is not None:
+        with lock:
+            _mutate()
+    else:
+        _mutate()
+
+    _rebuild_routewise_routers(services)
+    return route, adapter, float(raw_weight), endpoint_id
+
+
 def _mutate_router_routes(services, mutate):
     """Run *mutate* under the router lock so concurrent readers never see a torn dict.
 
@@ -2494,6 +2534,88 @@ async def verify_provider_route_candidate(
     )
     await _verify_provider_route(candidate)
     return VerifyProviderRouteResponse(ok=True)
+
+
+@router.patch(
+    "/routing/provider-route-candidates/{model_route_path:path}",
+    response_model=ProviderRouteItem,
+)
+async def update_provider_route_candidate(
+    model_route_path: str,
+    payload: UpdateProviderRouteCandidateRequest,
+    admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+    op_store=Depends(get_operational_store),
+) -> ProviderRouteItem:
+    """Update a DB-backed runtime provider route candidate."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    model_id, route_id, route = _split_model_route_path(services, model_route_path)
+    entries = _raw_route_entries(route)
+    adapter, raw_weight, endpoint_id = entries[_route_index_for_id(entries, route_id)]
+    old_concurrency_limit = _concurrency_limit_for_adapter(adapter)
+    _update_route_candidate_concurrency_limit(
+        services,
+        model_id=model_id,
+        route_id=route_id,
+        concurrency_limit=payload.concurrency_limit,
+    )
+    try:
+        await op_store.upsert_provider_route_candidate(
+            model_id,
+            route_id,
+            _route_type(adapter),
+            _route_provider(adapter),
+            _openrouter_sort(adapter),
+            str(adapter.config.base_url),
+            (
+                str(adapter.config.route_metadata["api_key_id"])
+                if adapter.config.route_metadata.get("api_key_id") is not None
+                else None
+            ),
+            str(getattr(adapter.config, "provider_model_id", "") or model_id),
+            _quota_limit_for_adapter(adapter),
+            payload.concurrency_limit,
+            float(raw_weight),
+            adapter.config.pricing if _is_runtime_created_route(route) else None,
+            admin_id,
+        )
+    except Exception:
+        if old_concurrency_limit is not None:
+            _update_route_candidate_concurrency_limit(
+                services,
+                model_id=model_id,
+                route_id=route_id,
+                concurrency_limit=old_concurrency_limit,
+            )
+        raise
+
+    await log_admin_action(
+        op_store,
+        admin_id,
+        "routing.provider_routes.candidate.update",
+        None,
+        {
+            "model_id": model_id,
+            "route_id": route_id,
+            "route_type": _route_type(adapter),
+            "old_concurrency_limit": old_concurrency_limit,
+            "concurrency_limit": payload.concurrency_limit,
+        },
+    )
+
+    return await _route_row(
+        services,
+        op_store,
+        model_id=model_id,
+        strategy=_strategy_for_model(services, model_id),
+        route_id=route_id,
+        adapter=adapter,
+        yaml_weight=float(raw_weight),
+        endpoint_id=endpoint_id,
+        override_row=None,
+    )
 
 
 @router.put("/routing/provider-routes/{model_route_path:path}", response_model=ProviderRouteItem)

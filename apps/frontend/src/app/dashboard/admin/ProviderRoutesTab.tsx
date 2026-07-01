@@ -23,6 +23,7 @@ import {
   listProviderRoutes,
   setRouteWeight,
   updateProviderRoute,
+  updateProviderRouteCandidate,
   updateProviderRouteStrategy,
   verifyProviderRoute,
   verifyProviderRouteModel,
@@ -198,6 +199,15 @@ function routeLimitLabel(route: ProviderRoute, isRoutewise: boolean) {
     return `${formatWeight(route.effective_weight)} / ${formatWeight(route.yaml_weight)}`;
   }
   return '—';
+}
+
+function canEditConcurrencyLimit(route: ProviderRoute) {
+  return (
+    route.source === 'runtime' &&
+    route.route_type === 'concurrency' &&
+    route.upstream_provider === 'openrouter' &&
+    Boolean(route.openrouter_provider)
+  );
 }
 
 function routeLimitHeading(isRoutewise: boolean) {
@@ -451,7 +461,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
   const [routeWeights, setRouteWeights] = useState<RouteWeight[]>([]);
   const [draftWeights, setDraftWeights] = useState<Record<string, string>>({});
+  const [draftConcurrencyLimits, setDraftConcurrencyLimits] = useState<Record<string, string>>({});
   const [savingWeightKey, setSavingWeightKey] = useState<string | null>(null);
+  const [savingConcurrencyKey, setSavingConcurrencyKey] = useState<string | null>(null);
   const [providerOptions, setProviderOptions] = useState<ProviderRouteOption[]>([]);
   const [openRouterProviderOptions, setOpenRouterProviderOptions] = useState<
     OpenRouterProviderOption[]
@@ -1288,6 +1300,35 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     }
   };
 
+  const onSaveConcurrencyLimit = async (route: ProviderRoute) => {
+    const key = routeKey(route);
+    const draft = draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
+    const trimmed = draft.trim();
+    const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : null;
+    if (parsed === null || parsed < 1) {
+      toast.error('Concurrency limit must be a positive integer.');
+      return;
+    }
+
+    setSavingConcurrencyKey(key);
+    try {
+      const updated = await updateProviderRouteCandidate(route.model_id, route.route_id, {
+        concurrency_limit: parsed,
+      });
+      updateRoute(updated);
+      setDraftConcurrencyLimits((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      toast.success('Concurrency limit updated');
+    } catch (err) {
+      toast.error(`Concurrency update failed: ${getErrorMessage(err)}`);
+    } finally {
+      setSavingConcurrencyKey(null);
+    }
+  };
+
   const onClearWeight = async (route: ProviderRoute) => {
     const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
     setSavingWeightKey(key);
@@ -1420,6 +1461,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 parsedDraftWeight !== null && parsedDraftWeight !== effectiveWeight;
               const isSavingWeight = savingWeightKey === weightKey;
               const hasWeightOverride = routeWeight?.override_weight != null;
+              const editableConcurrencyLimit = canEditConcurrencyLimit(route);
+              const draftConcurrencyLimit =
+                draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
+              const trimmedConcurrencyLimit = draftConcurrencyLimit.trim();
+              const parsedDraftConcurrencyLimit = /^\d+$/.test(trimmedConcurrencyLimit)
+                ? Number.parseInt(trimmedConcurrencyLimit, 10)
+                : null;
+              const concurrencyLimitDirty =
+                parsedDraftConcurrencyLimit !== null &&
+                parsedDraftConcurrencyLimit !== route.concurrency_limit;
+              const concurrencyLimitValid =
+                parsedDraftConcurrencyLimit !== null && parsedDraftConcurrencyLimit > 0;
+              const isSavingConcurrencyLimit = savingConcurrencyKey === key;
               return (
                 <div
                   key={key}
@@ -1481,7 +1535,40 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       {routeLimitHeading(isRoutewise)}
                     </div>
                     {isRoutewise ? (
-                      <div>{routeLimitLabel(route, isRoutewise)}</div>
+                      editableConcurrencyLimit ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <input
+                            aria-label={`Concurrency limit for ${route.endpoint_id}`}
+                            className="h-8 w-20 rounded-md border border-gray-300 px-2 text-right text-[13px] text-gray-900"
+                            disabled={isSavingConcurrencyLimit}
+                            min={1}
+                            step={1}
+                            type="number"
+                            value={draftConcurrencyLimit}
+                            onChange={(event) =>
+                              setDraftConcurrencyLimits((current) => ({
+                                ...current,
+                                [key]: event.target.value,
+                              }))
+                            }
+                          />
+                          <button
+                            aria-label={`Save ${route.endpoint_id} concurrency limit`}
+                            type="button"
+                            disabled={
+                              isSavingConcurrencyLimit ||
+                              !concurrencyLimitDirty ||
+                              !concurrencyLimitValid
+                            }
+                            onClick={() => void onSaveConcurrencyLimit(route)}
+                            className="h-8 rounded-md bg-gray-900 px-2.5 text-[12px] font-medium text-white disabled:opacity-50"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      ) : (
+                        <div>{routeLimitLabel(route, isRoutewise)}</div>
+                      )
                     ) : (
                       <div className="space-y-2">
                         <div className="text-[11px] leading-4 text-gray-400">

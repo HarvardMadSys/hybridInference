@@ -1140,6 +1140,12 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
         return cleaned
 
 
+class UpdateProviderRouteCandidateRequest(BaseModel):
+    """Request payload for updating one runtime provider route candidate."""
+
+    concurrency_limit: int = Field(..., ge=1)
+
+
 class UpdateProviderRouteRequest(BaseModel):
     """Request payload for updating one provider route target."""
 

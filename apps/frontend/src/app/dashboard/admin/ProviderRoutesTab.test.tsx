@@ -21,6 +21,7 @@ vi.mock('@/lib/api/admin', () => ({
   setRouteWeight: vi.fn(),
   updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
+  updateProviderRouteCandidate: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
   verifyProviderRoute: vi.fn(),
   verifyProviderRouteModel: vi.fn(),
@@ -49,6 +50,7 @@ import {
   runRoutewiseProbe,
   setRouteWeight,
   updateProviderRoute,
+  updateProviderRouteCandidate,
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
   verifyProviderRoute,
@@ -828,6 +830,69 @@ describe('ProviderRoutesTab', () => {
       });
     });
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('updates runtime OpenRouter concurrency limit inline', async () => {
+    const runtimeRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'concurrency',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db' as const,
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: 2,
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      source: 'runtime' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, runtimeRoute],
+    });
+    vi.mocked(updateProviderRouteCandidate).mockResolvedValue({
+      ...runtimeRoute,
+      concurrency_limit: 4,
+    });
+
+    render(<ProviderRoutesTab />);
+
+    const limitInput = await screen.findByLabelText(
+      'Concurrency limit for minimax-fast:openrouter[parasail]-api',
+    );
+    expect(limitInput).toHaveValue(2);
+    expect(
+      screen.queryByLabelText('Concurrency limit for minimax-fast:featherless-api'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(limitInput, { target: { value: '4' } });
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Save minimax-fast:openrouter[parasail]-api concurrency limit',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(updateProviderRouteCandidate).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:openrouter[parasail]-api',
+        { concurrency_limit: 4 },
+      );
+    });
+    await waitFor(() => {
+      expect(limitInput).toHaveValue(4);
+    });
   });
 
   it('creates a runtime model with an initial provider route', async () => {

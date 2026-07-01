@@ -1433,6 +1433,10 @@ export interface CreateProviderRoutePayload {
   weight: number;
 }
 
+export interface UpdateProviderRouteCandidatePayload {
+  concurrency_limit: number;
+}
+
 export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
   model_id: string;
   strategy: ProviderRouteStrategy;
@@ -1557,6 +1561,23 @@ export async function createProviderRouteCandidate(
     `/admin/routing/provider-route-candidates/${encodeURIComponent(modelId)}`,
     {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
+export async function updateProviderRouteCandidate(
+  modelId: string,
+  routeId: string,
+  payload: UpdateProviderRouteCandidatePayload,
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routing/provider-route-candidates/${encodeURIComponent(modelId)}/${encodeURIComponent(routeId)}`,
+    {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     },
