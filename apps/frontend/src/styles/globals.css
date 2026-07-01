@@ -9,16 +9,6 @@
 }
 
 @layer utilities {
-  /* Smooth, inertial horizontal scrolling on touch devices. Without
-     `-webkit-overflow-scrolling: touch` iOS Safari falls back to a
-     non-momentum mode where each swipe only nudges the content a little.
-     `overscroll-behavior-x: contain` stops the horizontal swipe from
-     triggering the browser's back/forward navigation gesture. */
-  .touch-scroll-x {
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-x: contain;
-  }
-
   @keyframes fade-in-up {
     from {
       opacity: 0;
