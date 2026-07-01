@@ -14,6 +14,7 @@ from typing import Any
 
 import asyncpg
 
+from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.utils import (
     calculate_cost,
     conversation_shape,
@@ -78,235 +79,11 @@ class DatabaseLogger:
         if self.pool is None:
             raise RuntimeError("DatabaseLogger not initialized")
         async with self.pool.acquire() as conn:
-            # Main logs table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS api_logs (
-                    id BIGSERIAL PRIMARY KEY,
-                    timestamp TIMESTAMPTZ DEFAULT NOW(),
-                    request_id TEXT NOT NULL UNIQUE,
-                    model_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-
-                    -- Request parameters
-                    temperature FLOAT,
-                    top_p FLOAT,
-                    max_tokens INTEGER,
-                    seed INTEGER,
-                    stream BOOLEAN,
-
-                    -- Performance metrics
-                    ttft_ms INTEGER,
-                    latency_ms INTEGER,
-
-                    -- Token usage (optional)
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    reasoning_tokens INTEGER,
-                    total_tokens INTEGER,
-
-                    -- Request/response content
-                    prompt TEXT,
-                    response TEXT,
-                    request_payload JSONB,
-
-                    -- Additional metadata (kept for compatibility)
-                    status_code INTEGER,
-                    error TEXT,
-                    user_id TEXT,
-                    session_id TEXT,
-                    metadata JSONB,
-                    tools JSONB,
-
-                    -- Conversation shape (derived from prompt at log time)
-                    num_turns INTEGER,
-                    num_user_turns INTEGER,
-                    num_tool_calls INTEGER,
-
-                    -- Newest user message fingerprint (derived from prompt at log time)
-                    last_user_msg_chars INTEGER,
-                    last_user_msg_entropy REAL,
-                    last_user_msg_hash BIGINT,
-
-                    -- Which model/endpoint actually served the request (smart-router training)
-                    served_model_id TEXT,
-                    served_endpoint_id TEXT
-                )
-            """)
-
-            # Indexes for performance
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp
-                ON api_logs(timestamp DESC)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_model
-                ON api_logs(model_id, timestamp DESC)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_provider
-                ON api_logs(provider, timestamp DESC)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_request_id
-                ON api_logs(request_id)
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_user
-                ON api_logs(user_id, timestamp DESC)
-                WHERE user_id IS NOT NULL
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_session
-                ON api_logs(session_id, timestamp DESC)
-                WHERE session_id IS NOT NULL
-            """)
-
-            # Covers the model-activity aggregation query which filters by
-            # recent timestamp window + real users, then groups by model/provider.
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity
-                ON api_logs(timestamp DESC, model_id, provider)
-                WHERE user_id IS NOT NULL
-            """)
-
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_error
-                ON api_logs(timestamp DESC)
-                WHERE error IS NOT NULL
-            """)
-
-            # Migrations for existing databases
-            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_prompt_hash")
-            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_response_hash")
-            await conn.execute("""
-                ALTER TABLE api_logs
-                DROP COLUMN IF EXISTS prompt_hash
-            """)
-            await conn.execute("""
-                ALTER TABLE api_logs
-                DROP COLUMN IF EXISTS response_hash
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS stream BOOLEAN
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS ttft_ms INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS request_payload JSONB
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS num_turns INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS num_user_turns INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS num_tool_calls INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS last_user_msg_chars INTEGER
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS last_user_msg_entropy REAL
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS last_user_msg_hash BIGINT
-            """)
-
-            # Which model/endpoint actually SERVED the request, promoted from the
-            # routing metadata into queryable columns (the model the request
-            # resolved to after aliasing/rerouting, and the specific endpoint
-            # among the route's candidates). model_id remains the client-requested
-            # model. Feeds smart-router training queries.
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS served_model_id TEXT
-            """)
-
-            await conn.execute("""
-                ALTER TABLE api_logs
-                ADD COLUMN IF NOT EXISTS served_endpoint_id TEXT
-            """)
-
-            # Created after the ADD COLUMN above so the predicate/key column it
-            # references always exists first.
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_served_endpoint
-                ON api_logs(served_endpoint_id, timestamp DESC)
-                WHERE served_endpoint_id IS NOT NULL
-            """)
-
-            # Aggregated stats table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS api_stats_hourly (
-                    hour TIMESTAMPTZ NOT NULL,
-                    model_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-
-                    request_count INTEGER DEFAULT 0,
-                    success_count INTEGER DEFAULT 0,
-                    error_count INTEGER DEFAULT 0,
-
-                    total_prompt_tokens BIGINT DEFAULT 0,
-                    total_completion_tokens BIGINT DEFAULT 0,
-                    total_tokens BIGINT DEFAULT 0,
-
-                    avg_latency_ms FLOAT,
-                    p50_latency_ms INTEGER,
-                    p95_latency_ms INTEGER,
-                    p99_latency_ms INTEGER,
-                    PRIMARY KEY (hour, model_id, provider)
-                )
-            """)
+            # api_logs + api_stats_hourly (table, migrations, indexes) live in a
+            # single shared module so this boot-time builder and the runtime
+            # PostgresLogStore.initialize cannot drift. Add future api_logs
+            # schema changes in serving.storage.log_schema, never here.
+            await ensure_api_logs_schema(conn)
 
             # API Keys table for user authentication
             await conn.execute("""
@@ -742,12 +519,6 @@ class DatabaseLogger:
                     exc,
                 )
                 raise
-
-            # Critical index for usage analytics (prevents full table scan on cost queries)
-            await conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost
-                ON api_logs(user_id, timestamp, cost_usd)
-            """)
 
             # Sort by last_login in admin user list (DESC NULLS LAST)
             await conn.execute("""
