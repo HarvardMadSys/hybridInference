@@ -466,6 +466,95 @@ async def test_error_before_any_chunk_still_emits_role_chunk_then_error():
     assert log_data["ttft_ms"] is None
 
 
+@pytest.mark.asyncio
+async def test_cancellation_mid_stream_persists_failure_log_and_reraises():
+    """A timeout/disconnect (CancelledError) must not drop the failed request.
+
+    ``asyncio.CancelledError`` is a ``BaseException``, so it bypasses the
+    ``except Exception`` error branch. Without dedicated handling the failed
+    request skipped finalization entirely — no ``api_logs`` row — so under load
+    every timed-out request vanished. The failure row must still be scheduled,
+    and the cancellation must propagate (never be swallowed).
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+
+    async def _slow():
+        yield _content_chunk("gpt-4", "partial")
+        await asyncio.sleep(10)  # suspends here until cancelled
+
+    gen = session.stream(_slow())
+    await gen.__anext__()  # role chunk
+    await gen.__anext__()  # forwarded content chunk
+
+    # Simulate the response task being cancelled (request timeout / disconnect)
+    # while the generator is suspended awaiting the next upstream chunk.
+    with pytest.raises(asyncio.CancelledError):
+        await gen.athrow(asyncio.CancelledError())
+
+    cl_logger.schedule_log.assert_called_once()
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["status_code"] == 500
+    # Message-less CancelledError still records an identifiable error string.
+    assert log_data["error"]
+    cl_logger.record_routing_observation.assert_called_once()
+    assert cl_logger.record_routing_observation.call_args.kwargs["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_midstream_persists_failure_log():
+    """A client disconnect (generator ``aclose`` → ``GeneratorExit``) still logs.
+
+    ``GeneratorExit`` is a ``BaseException`` too, so like a cancellation it must
+    not silently drop the in-flight request from ``api_logs``.
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+
+    async def _slow():
+        yield _content_chunk("gpt-4", "partial")
+        await asyncio.sleep(10)  # suspends here until the consumer goes away
+
+    gen = session.stream(_slow())
+    await gen.__anext__()  # role chunk
+    await gen.__anext__()  # forwarded content chunk
+
+    # Consumer abandons the stream: closing the generator raises GeneratorExit
+    # at the suspended await.
+    await gen.aclose()
+
+    cl_logger.schedule_log.assert_called_once()
+    assert cl_logger.schedule_log.call_args.args[1]["status_code"] == 500
+
+
+@pytest.mark.asyncio
+async def test_failure_log_scheduled_even_when_observation_raises():
+    """A throwing routing-observation update must not drop the error log.
+
+    ``record_routing_observation`` runs before the DB log is scheduled; an
+    online-learning router's ``record_observation`` does real work and can
+    raise. If it did, the failed request must still be persisted.
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    cl_logger.record_routing_observation.side_effect = RuntimeError("observation boom")
+    session = _make_session(completions_logger=cl_logger)
+
+    async def _gen():
+        raise RuntimeError("upstream blew up")
+        if False:  # pragma: no cover
+            yield ""
+
+    out = await _consume(session.stream(_gen()))
+
+    # The client still receives the error chunk...
+    assert "error" in out[-1]
+    # ...and the failed request is still persisted despite the observation throw.
+    cl_logger.schedule_log.assert_called_once()
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["status_code"] == 500
+    assert log_data["error"] == "upstream blew up"
+
+
 # ---------------------------------------------------------------------------
 # StreamSession — keepalive
 # ---------------------------------------------------------------------------

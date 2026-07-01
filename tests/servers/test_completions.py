@@ -667,6 +667,51 @@ async def test_fallback_success_logs_failed_primary_attempt_as_diagnostic(
 
 
 @pytest.mark.asyncio
+async def test_non_stream_failure_logged_even_when_observation_raises(
+    monkeypatch,
+    mock_log_store,
+):
+    """A throwing routing-observation update must not drop the error log.
+
+    On the failure path ``record_routing_observation`` runs before the DB log is
+    scheduled. An online-learning router's ``record_observation`` does real work
+    and can raise; if it did, the failed request was previously dropped from
+    ``api_logs`` entirely. It must still be persisted.
+    """
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    cfg = _mk_cfg("gpt-4")
+    cfg.provider = "primary"
+    router = RouteExecutor()
+    router.register_route("gpt-4", [(FailingAdapter(cfg), 1.0)])
+    # Mimic an online-learning router whose observation update raises.
+    router.record_observation = MagicMock(side_effect=RuntimeError("observation boom"))
+
+    app = FastAPI(title="Observation Throw App")
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        log_store=mock_log_store,
+    )
+    install_error_handlers(app)
+    app.include_router(completions.router)
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
+        )
+
+    # The failure still surfaces as a 5xx to the client...
+    assert resp.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    # ...and the failed request is still persisted despite the observation throw.
+    db_kwargs = await _wait_for_db_log_kwargs(mock_log_store)
+    assert db_kwargs is not None, "DB log_request should have been called on error path"
+    assert db_kwargs["status_code"] == 500
+    assert db_kwargs["error"]
+
+
+@pytest.mark.asyncio
 async def test_synthetic_probe_skips_db_logging(monkeypatch, mock_db_logger):
     """Synthetic probe traffic should not be logged to DB."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")

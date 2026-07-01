@@ -41,8 +41,13 @@ def format_exception_for_db(exc: BaseException, max_len: int = 4000) -> str:
     only credentials are redacted. The user-facing endpoints scrub provider
     identity separately at read time. The upstream response body, when present,
     is appended so the actual provider error survives into the log.
+
+    Falls back to the exception class name when ``str(exc)`` is empty, so
+    message-less exceptions (notably ``asyncio.CancelledError`` and
+    ``GeneratorExit`` from a request timeout or client disconnect) still record
+    an identifiable error rather than a blank string.
     """
-    exc_text = str(exc)
+    exc_text = str(exc) or type(exc).__name__
     upstream_body = getattr(exc, "error_body", None)
     if upstream_body is None:
         value = exc_text

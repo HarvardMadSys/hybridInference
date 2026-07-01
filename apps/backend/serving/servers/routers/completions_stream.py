@@ -430,6 +430,35 @@ class StreamSession:
             error_msg = f"data: {json.dumps(error_chunk)}\n\n"
             logger.error(f"Yielding error chunk: {error_msg}")
             yield error_msg
+        except (asyncio.CancelledError, GeneratorExit) as exc:
+            # A request timeout (TimeoutMiddleware cancels the response task via
+            # ``anyio.move_on_after``) raises ``asyncio.CancelledError``; a client
+            # disconnect raises ``GeneratorExit`` — both subclasses of
+            # ``BaseException``, so the ``except Exception`` above never runs.
+            # Previously these skipped finalization entirely: no ``api_logs`` row
+            # was written, so under load every timed-out request vanished, which
+            # reads as "all failed requests are dropped". Persist the failure row
+            # before re-propagating so timed-out/aborted requests stay visible.
+            # (``KeyboardInterrupt`` / ``SystemExit`` are intentionally NOT caught
+            # here: those are process-level signals, not request failures, and
+            # must propagate without writing a misleading failure log.)
+            #
+            # We deliberately do NOT emit a client error chunk here: the
+            # connection is already being torn down, and yielding while a
+            # ``GeneratorExit`` is in flight is illegal.
+            #
+            # ``_finalize_failure`` must stay synchronous (no suspending
+            # ``await``): it only *schedules* the DB write, so it runs to
+            # completion here even while this task is being cancelled. The write
+            # itself is a separate task retained beyond this request by
+            # ``tracked_task``'s module-level ``_TRACKED_TASKS`` set (and the
+            # shared ``CompletionsLogger._background_tasks`` set), so it survives
+            # the cancellation. If async work is ever genuinely needed in
+            # finalization, schedule it as its own background task rather than
+            # awaiting it here, or a cancellation could abort it mid-flight.
+            with suppress(Exception):
+                await self._finalize_failure(exc)
+            raise
 
     # -- internal: per-chunk handlers ---------------------------------------
 
@@ -615,16 +644,27 @@ class StreamSession:
         # below can reuse it when ``log_synthetic_probes`` is enabled.
         exc_routing = getattr(exc, "_routing", None)
         if not self._is_synthetic_probe:
-            self._completions_logger.record_routing_observation(
-                self._active_router,
-                self._model,
-                exc_routing or self._routing,
-                ttft_ms=float(self._ttft.ttft_ms) if self._ttft.ttft_ms is not None else None,
-                total_latency_ms=(time.time() - self._start_time) * 1000,
-                prompt_tokens=0,
-                completion_tokens=0,
-                success=False,
-            )
+            # A throwing observation update must never abort the error log below:
+            # persisting the failed request is the priority (an online-learning
+            # router's ``record_observation`` does real work and can raise). If
+            # it did, the ``schedule_log`` call further down would be skipped and
+            # the failed request would be dropped from ``api_logs``.
+            try:
+                self._completions_logger.record_routing_observation(
+                    self._active_router,
+                    self._model,
+                    exc_routing or self._routing,
+                    ttft_ms=float(self._ttft.ttft_ms) if self._ttft.ttft_ms is not None else None,
+                    total_latency_ms=(time.time() - self._start_time) * 1000,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    success=False,
+                )
+            except Exception:
+                logger.exception(
+                    "record_routing_observation failed on the stream failure path; "
+                    "continuing to the error log"
+                )
 
         # Prefer the real upstream provider preserved on ``exc._routing``; the
         # req_ctx push scope has already been reset here, so a genuine upstream
