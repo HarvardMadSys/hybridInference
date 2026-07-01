@@ -263,6 +263,20 @@ def _validate_model_router_strategy(services, model_id: str, strategy: str) -> t
     if registry is None:
         raise HTTPException(status_code=500, detail="Model router registry not configured")
     route = _validate_canonical_route(services, model_id)
+    if strategy == "fixed":
+        resource_route_types = sorted(
+            {
+                _route_type(adapter)
+                for adapter, _weight, _endpoint_id in _raw_route_entries(route)
+                if _route_type(adapter) in RESOURCE_ROUTE_TYPES
+            }
+        )
+        if resource_route_types:
+            resource_text = ", ".join(resource_route_types)
+            raise HTTPException(
+                status_code=422,
+                detail=(f"fixed strategy cannot be used while model has {resource_text} routes"),
+            )
     canonical_model_id = route.adapters[0][0].config.id
     validate = getattr(registry, "validate_router_strategy", None)
     if validate is not None:

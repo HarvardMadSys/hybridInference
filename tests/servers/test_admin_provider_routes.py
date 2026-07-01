@@ -102,6 +102,17 @@ def _openrouter_deepinfra_adapter():
     )
 
 
+def _register_on_demand_only_route(route_executor, model_id: str = "on-demand-only") -> None:
+    adapter = _compat_adapter(
+        model_id=model_id,
+        provider="openrouter",
+        endpoint_id=f"{model_id}:openrouter-api",
+        base_url="https://openrouter.ai/api/v1",
+        provider_model_id="openai/gpt-oss-20b",
+    )
+    route_executor.register_route(model_id, [(adapter, 1.0)])
+
+
 @pytest.fixture
 async def admin_client(monkeypatch):
     dynamic_keys.reset()
@@ -342,6 +353,32 @@ async def test_get_openrouter_provider_options_discovers_model_endpoints(
 
 @pytest.mark.asyncio
 async def test_patch_provider_route_strategy_updates_model_router(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _register_on_demand_only_route(route_executor)
+
+    response = await client.patch(
+        "/admin/routing/provider-route-strategies/on-demand-only",
+        json={"strategy": "fixed"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_id"] == "on-demand-only"
+    assert payload["strategy"] == "fixed"
+    assert {row["strategy"] for row in payload["routes"]} == {"fixed"}
+    op_store.set_setting.assert_awaited_once_with(
+        "model_router_strategy:on-demand-only",
+        "fixed",
+        "string",
+        "127.0.0.1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_provider_route_strategy_rejects_fixed_with_resource_routes(
+    admin_client,
+):
     client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
 
     response = await client.patch(
@@ -350,17 +387,11 @@ async def test_patch_provider_route_strategy_updates_model_router(admin_client):
         headers=AUTH,
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["model_id"] == "minimax-fast"
-    assert payload["strategy"] == "fixed"
-    assert {row["strategy"] for row in payload["routes"]} == {"fixed"}
-    op_store.set_setting.assert_awaited_once_with(
-        "model_router_strategy:minimax-fast",
-        "fixed",
-        "string",
-        "127.0.0.1",
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == (
+        "fixed strategy cannot be used while model has concurrency, quota routes"
     )
+    op_store.set_setting.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -455,6 +486,7 @@ async def test_apply_model_router_strategy_rolls_back_when_new_router_cannot_sta
 @pytest.mark.asyncio
 async def test_apply_model_router_strategy_stops_removed_managed_router(admin_client):
     _client, _op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _register_on_demand_only_route(route_executor)
     old_router = _ManagedTestRouter()
     new_router = object()
     registry = MagicMock()
@@ -473,13 +505,13 @@ async def test_apply_model_router_strategy_stops_removed_managed_router(admin_cl
 
     await provider_routes._apply_model_router_strategy(
         services,
-        "minimax-fast",
+        "on-demand-only",
         "fixed",
     )
 
     assert old_router.stopped == 1
     assert services.managed_routers == []
-    registry.set_router_override.assert_called_once_with("minimax-fast", "fixed")
+    registry.set_router_override.assert_called_once_with("on-demand-only", "fixed")
 
 
 @pytest.mark.asyncio
@@ -489,9 +521,10 @@ async def test_apply_persisted_model_router_strategy_overrides(admin_client):
     )
 
     _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _register_on_demand_only_route(route_executor)
     op_store.list_settings.return_value = [
         {
-            "key": "model_router_strategy:minimax-fast",
+            "key": "model_router_strategy:on-demand-only",
             "value": "fixed",
             "value_type": "string",
             "updated_at": NOW,
@@ -521,7 +554,7 @@ async def test_apply_persisted_model_router_strategy_overrides(admin_client):
 
     await apply_persisted_model_router_strategy_overrides(services, op_store)
 
-    registry.set_router_override.assert_called_once_with("minimax-fast", "fixed")
+    registry.set_router_override.assert_called_once_with("on-demand-only", "fixed")
 
 
 @pytest.mark.asyncio
@@ -1123,18 +1156,27 @@ async def test_patch_provider_route_candidate_rejects_config_concurrency_limit(
 
 @pytest.mark.asyncio
 async def test_post_provider_route_candidate_rejects_resource_route_for_fixed_model(admin_client):
-    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    adapter = _compat_adapter(
+        model_id="fixed-only",
+        provider="openrouter",
+        endpoint_id="fixed-only:openrouter-api",
+        base_url="https://openrouter.ai/api/v1",
+        provider_model_id="minimax/minimax-m2.5",
+    )
+    route_executor.register_route("fixed-only", [(adapter, 1.0)])
 
     strategy_response = await client.patch(
-        "/admin/routing/provider-route-strategies/minimax-fast",
+        "/admin/routing/provider-route-strategies/fixed-only",
         json={"strategy": "fixed"},
         headers=AUTH,
     )
     assert strategy_response.status_code == 200, strategy_response.text
     op_store.upsert_provider_route_candidate.reset_mock()
+    op_store.set_setting.reset_mock()
 
     response = await client.post(
-        "/admin/routing/provider-route-candidates/minimax-fast",
+        "/admin/routing/provider-route-candidates/fixed-only",
         json={
             "route_type": "concurrency",
             "upstream_provider": "openrouter",
