@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving.analytics.automation_score import score_users_from_logs
 from serving.storage.base import LogStore, Row
+from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.utils import (
     agent_name_from_prompt,
     calculate_cost,
@@ -62,120 +63,14 @@ class PostgresLogStore(LogStore):
     # -- lifecycle -----------------------------------------------------------
 
     async def initialize(self) -> None:
-        """Create api_logs and api_stats_hourly tables with indexes."""
+        """Create api_logs and api_stats_hourly tables with indexes.
+
+        Delegates to :func:`serving.storage.log_schema.ensure_api_logs_schema`,
+        the single source of truth shared with ``DatabaseLogger._create_tables``
+        so the two initializers cannot drift.
+        """
         async with self.pool.acquire() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS api_logs (
-                    id BIGSERIAL PRIMARY KEY,
-                    timestamp TIMESTAMPTZ DEFAULT NOW(),
-                    request_id TEXT NOT NULL UNIQUE,
-                    model_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    temperature FLOAT,
-                    top_p FLOAT,
-                    max_tokens INTEGER,
-                    seed INTEGER,
-                    stream BOOLEAN,
-                    ttft_ms INTEGER,
-                    latency_ms INTEGER,
-                    prompt_tokens INTEGER,
-                    completion_tokens INTEGER,
-                    reasoning_tokens INTEGER,
-                    total_tokens INTEGER,
-                    prompt TEXT,
-                    response TEXT,
-                    request_payload JSONB,
-                    status_code INTEGER,
-                    error TEXT,
-                    user_id TEXT,
-                    session_id TEXT,
-                    metadata JSONB,
-                    tools JSONB,
-                    cache_read_tokens INTEGER,
-                    cache_write_tokens INTEGER,
-                    cost_usd DECIMAL(12, 8),
-                    upstream_cost_usd DECIMAL(12, 8),
-                    num_turns INTEGER,
-                    num_user_turns INTEGER,
-                    num_tool_calls INTEGER,
-                    last_user_msg_chars INTEGER,
-                    last_user_msg_entropy REAL,
-                    last_user_msg_hash BIGINT
-                )
-            """)
-
-            # Migrations for existing databases. These run BEFORE index
-            # creation so that indexes defined on migrated columns (e.g.
-            # served_endpoint_id) don't reference a column that hasn't been
-            # added yet — creating such an index first raises
-            # UndefinedColumnError and aborts initialize(), which would leave
-            # the table permanently missing the new columns.
-            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_prompt_hash")
-            await conn.execute("DROP INDEX IF EXISTS idx_api_logs_response_hash")
-            await conn.execute("ALTER TABLE api_logs DROP COLUMN IF EXISTS prompt_hash")
-            await conn.execute("ALTER TABLE api_logs DROP COLUMN IF EXISTS response_hash")
-
-            for col_ddl in [
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS reasoning_tokens INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS stream BOOLEAN",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS ttft_ms INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_read_tokens INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cache_write_tokens INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS cost_usd DECIMAL(12, 8)",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS upstream_cost_usd DECIMAL(12, 8)",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS request_payload JSONB",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_turns INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_user_turns INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS num_tool_calls INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_chars INTEGER",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_entropy REAL",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS last_user_msg_hash BIGINT",
-                # Which model/endpoint actually SERVED the request, promoted from
-                # the routing metadata into queryable columns (the model the
-                # request resolved to after aliasing/rerouting, and the specific
-                # endpoint among the route's candidates). model_id remains the
-                # client-requested model. Feeds smart-router training queries.
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS served_model_id TEXT",
-                "ALTER TABLE api_logs ADD COLUMN IF NOT EXISTS served_endpoint_id TEXT",
-            ]:
-                await conn.execute(col_ddl)
-
-            # Indexes (created after the column migrations above so predicates /
-            # key columns referencing migrated columns always exist).
-            for ddl in [
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_timestamp ON api_logs(timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_model ON api_logs(model_id, timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_provider ON api_logs(provider, timestamp DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_request_id ON api_logs(request_id)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_user ON api_logs(user_id, timestamp DESC) WHERE user_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_session ON api_logs(session_id, timestamp DESC) WHERE session_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_model_activity ON api_logs(timestamp DESC, model_id, provider) WHERE user_id IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_error ON api_logs(timestamp DESC) WHERE error IS NOT NULL",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_user_cost ON api_logs(user_id, timestamp, cost_usd)",
-                "CREATE INDEX IF NOT EXISTS idx_api_logs_served_endpoint "
-                "ON api_logs(served_endpoint_id, timestamp DESC) WHERE served_endpoint_id IS NOT NULL",
-            ]:
-                await conn.execute(ddl)
-
-            # Aggregated stats table
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS api_stats_hourly (
-                    hour TIMESTAMPTZ NOT NULL,
-                    model_id TEXT NOT NULL,
-                    provider TEXT NOT NULL,
-                    request_count INTEGER DEFAULT 0,
-                    success_count INTEGER DEFAULT 0,
-                    error_count INTEGER DEFAULT 0,
-                    total_prompt_tokens BIGINT DEFAULT 0,
-                    total_completion_tokens BIGINT DEFAULT 0,
-                    total_tokens BIGINT DEFAULT 0,
-                    avg_latency_ms FLOAT,
-                    p50_latency_ms INTEGER,
-                    p95_latency_ms INTEGER,
-                    p99_latency_ms INTEGER,
-                    PRIMARY KEY (hour, model_id, provider)
-                )
-            """)
+            await ensure_api_logs_schema(conn)
 
     async def cleanup(self) -> None:
         """No-op — pool lifecycle is managed externally."""
