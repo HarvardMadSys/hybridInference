@@ -800,3 +800,230 @@ def test_extract_usage_silently_ignores_garbage():
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-surface correctness fixes (confirmed-finding regression tests)
+# ---------------------------------------------------------------------------
+
+
+def test_request_tool_result_and_text_ordering():
+    """C9: tool messages must precede user text so tool/assistant adjacency holds."""
+    body = {
+        "model": "m",
+        "max_tokens": 10,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "42"},
+                    {"type": "text", "text": "<system-reminder>be brief</system-reminder>"},
+                ],
+            }
+        ],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    # tool message first, then the user text message.
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_call_id"] == "toolu_1"
+    assert messages[1]["role"] == "user"
+    assert messages[1]["content"] == "<system-reminder>be brief</system-reminder>"
+
+
+def test_request_tool_result_image_block_becomes_placeholder():
+    """C10: image blocks in a tool_result don't vanish into an empty string."""
+    body = {
+        "model": "m",
+        "max_tokens": 10,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": [
+                            {"type": "image", "source": {"type": "base64", "data": "x"}},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["content"] == "[image]"
+
+
+def test_request_tool_result_is_error_prefixed():
+    """C11: is_error tool results carry an explicit error marker."""
+    body = {
+        "model": "m",
+        "max_tokens": 10,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "is_error": True,
+                        "content": "bash: command not found",
+                    }
+                ],
+            }
+        ],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages[0]["content"] == "[tool error]\nbash: command not found"
+
+
+def test_request_multiple_text_blocks_joined_with_blank_line():
+    """C12: separate text blocks keep their boundary instead of fusing."""
+    body = {
+        "model": "m",
+        "max_tokens": 10,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "fix the test"},
+                    {"type": "text", "text": "<system-reminder>x</system-reminder>"},
+                ],
+            }
+        ],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages[0]["content"] == "fix the test\n\n<system-reminder>x</system-reminder>"
+
+
+def test_response_reasoning_content_becomes_thinking_block():
+    """C14: non-streaming reasoning_content is surfaced as a thinking block."""
+    from serving.adapters.anthropic_translator import openai_response_to_anthropic
+
+    resp = {
+        "id": "chatcmpl-1",
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "The answer is 4.",
+                    "reasoning_content": "2+2 is 4",
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["content"][0]["type"] == "thinking"
+    assert out["content"][0]["thinking"] == "2+2 is 4"
+    assert out["content"][1] == {"type": "text", "text": "The answer is 4."}
+
+
+def test_stream_reasoning_deltas_become_thinking_blocks():
+    """C1: reasoning deltas are emitted as thinking blocks (not dropped)."""
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    out = b""
+    for c in (
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk({"reasoning_content": "let me think "}),
+        _openai_chunk({"reasoning_content": "about it"}),
+        _openai_chunk({"content": "Answer"}),
+        _openai_chunk({}, finish_reason="stop", usage={"prompt_tokens": 4, "completion_tokens": 1}),
+    ):
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    # A thinking block opens, receives thinking_delta, and closes before text.
+    starts = [e for e in events if e[0] == "content_block_start"]
+    assert starts[0][1]["content_block"]["type"] == "thinking"
+    thinking_deltas = [
+        e[1]["delta"]["thinking"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"]["type"] == "thinking_delta"
+    ]
+    assert "".join(thinking_deltas) == "let me think about it"
+    # Thinking block is index 0, the text block that follows is index 1.
+    text_start = next(s for s in starts if s[1]["content_block"]["type"] == "text")
+    assert text_start[1]["index"] == 1
+
+
+def test_stream_message_delta_reports_input_tokens():
+    """C2: the terminal message_delta carries input_tokens, not just output_tokens."""
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    out = b""
+    for c in (
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk({"content": "hi"}),
+        _openai_chunk(
+            {}, finish_reason="stop", usage={"prompt_tokens": 37, "completion_tokens": 2}
+        ),
+    ):
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    msg_delta = next(e for e in events if e[0] == "message_delta")
+    assert msg_delta[1]["usage"]["input_tokens"] == 37
+    assert msg_delta[1]["usage"]["output_tokens"] == 2
+
+
+def test_request_all_empty_text_blocks_keep_empty_string_content():
+    """Regression: an all-empty text buffer must yield content='' not None."""
+    body = {
+        "model": "m",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": ""}]}],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    assert messages[0]["content"] == ""
+    assert "tool_calls" not in messages[0]
+
+
+def test_stream_interleaved_thinking_after_text_closes_text_block():
+    """Late/interleaved reasoning must close the open text block first (one block at a time)."""
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    out = b""
+    for c in (
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk({"content": "partial answer"}),
+        _openai_chunk({"reasoning_content": "wait, reconsider"}),
+        _openai_chunk({"content": "final answer"}),
+        _openai_chunk({}, finish_reason="stop"),
+    ):
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    # Walk block starts/stops: never two blocks open at once.
+    open_blocks = 0
+    max_open = 0
+    for name, _payload in events:
+        if name == "content_block_start":
+            open_blocks += 1
+            max_open = max(max_open, open_blocks)
+        elif name == "content_block_stop":
+            open_blocks -= 1
+    assert max_open == 1
+    assert open_blocks == 0
+
+
+def test_stream_message_start_seeds_input_estimate_then_corrects_in_delta():
+    """message_start carries the input estimate; message_delta carries the exact count."""
+    t = OpenAIToAnthropicStreamTranslator(model="m", input_tokens_estimate=25)
+    out = b""
+    for c in (
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk({"content": "hi"}),
+        _openai_chunk(
+            {}, finish_reason="stop", usage={"prompt_tokens": 31, "completion_tokens": 2}
+        ),
+    ):
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    msg_start = next(e for e in events if e[0] == "message_start")
+    assert msg_start[1]["message"]["usage"]["input_tokens"] == 25
+    msg_delta = next(e for e in events if e[0] == "message_delta")
+    assert msg_delta[1]["usage"]["input_tokens"] == 31

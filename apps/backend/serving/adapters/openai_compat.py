@@ -902,8 +902,12 @@ class OpenAICompatAdapter(BaseAdapter):
             if formatted:
                 yield formatted
 
-        # Final usage and done sentinel
-        if saw_tool_calls:
+        # Final usage and done sentinel. Some providers stream tool calls but
+        # report finish_reason="stop"; normalize those to "tool_calls". Do NOT
+        # override a "length" finish -- a tool call truncated at max_tokens must
+        # stay "length" so the client sees max_tokens (truncated/unparseable
+        # arguments) rather than a spuriously complete tool_use.
+        if saw_tool_calls and finish_reason in (None, "", "stop"):
             finish_reason = "tool_calls"
         if upstream_usage:
             usage_info = self._usage_normalizer(upstream_usage)
