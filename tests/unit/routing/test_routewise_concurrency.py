@@ -55,6 +55,38 @@ class TestConcurrencyManager:
         assert mgr.active == 0
         assert mgr.available == 4
 
+    def test_update_limit_preserves_active_slots(self):
+        """Live limit updates keep in-flight reservations accounted."""
+        mgr = ConcurrencyManager(2)
+        assert mgr.try_acquire() is True
+        assert mgr.try_acquire() is True
+
+        mgr.update_limit(3)
+        assert mgr.limit == 3
+        assert mgr.active == 2
+        assert mgr.available == 1
+        assert mgr.try_acquire() is True
+
+        mgr.update_limit(2)
+        assert mgr.limit == 2
+        assert mgr.active == 3
+        assert mgr.available == 0
+        assert mgr.try_acquire() is False
+
+        stats = mgr.get_stats()
+        assert stats["total_acquired"] == 3
+        assert stats["total_rejected"] == 1
+        assert stats["peak_active"] == 3
+
+    def test_update_limit_rejects_invalid_limit(self):
+        """Runtime updates use the same validation as construction."""
+        mgr = ConcurrencyManager(2)
+
+        with pytest.raises(ValueError, match="concurrency limit must be >= 1"):
+            mgr.update_limit(0)
+
+        assert mgr.limit == 2
+
     def test_congestion_price_zero_when_available(self):
         """Lambda = 0 when at least one slot is free."""
         mgr = ConcurrencyManager(3)

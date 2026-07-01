@@ -1647,6 +1647,32 @@ class TestRouteWiseSCDecision:
         assert len(router.concurrency_pools) == 1
         assert _conc_pool(router).limit == 2
 
+    def test_sc_pool_limit_rebuild_preserves_active_slots(self):
+        """Changing a route limit must not reset in-flight reservations."""
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api(concurrency_limit=2)
+        pool = _conc_pool(router)
+        assert pool.try_acquire() is True
+        assert pool.try_acquire() is True
+
+        conc_adapter.config.concurrency = {"limit": 3}
+        router._rebuild_from_fixed_router()
+
+        updated_pool = _conc_pool(router)
+        assert updated_pool is pool
+        assert updated_pool.limit == 3
+        assert updated_pool.active == 2
+        assert updated_pool.available == 1
+        assert updated_pool.try_acquire() is True
+
+        conc_adapter.config.concurrency = {"limit": 2}
+        router._rebuild_from_fixed_router()
+
+        assert _conc_pool(router) is pool
+        assert pool.limit == 2
+        assert pool.active == 3
+        assert pool.available == 0
+        assert pool.try_acquire() is False
+
     def test_two_concurrency_pools_do_not_share_slots(self):
         """Each pool has its own slots; saturating one leaves the other free."""
         conc_a = _make_adapter(
