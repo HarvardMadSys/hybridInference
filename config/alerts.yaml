@@ -43,7 +43,7 @@ state_changes:
 
 cost:
   user_overrun:
-    enabled: true
+    enabled: false
     check_interval_sec: 300
     cooldown_sec: 86400
     thresholds_per_role:
