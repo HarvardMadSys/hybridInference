@@ -942,18 +942,29 @@ async def chat_completions(
         # unconditionally so the failed-probe log branch below can reuse it
         # when ``log_synthetic_probes`` is enabled.
         exc_routing = getattr(exc, "_routing", None)
-        # Record failure observation for online learning (RouteWise)
+        # Record failure observation for online learning (RouteWise). A throwing
+        # observation update must never abort the error log below: persisting the
+        # failed request is the priority (an online-learning router's
+        # ``record_observation`` does real work and can raise). If it did, the
+        # ``schedule_log`` call further down would be skipped and the failed
+        # request would be dropped from ``api_logs``.
         if not is_synthetic_probe:
-            completions_logger.record_routing_observation(
-                active_router,
-                model,
-                exc_routing,
-                ttft_ms=None,
-                total_latency_ms=(time.time() - start_time) * 1000,
-                prompt_tokens=0,
-                completion_tokens=0,
-                success=False,
-            )
+            try:
+                completions_logger.record_routing_observation(
+                    active_router,
+                    model,
+                    exc_routing,
+                    ttft_ms=None,
+                    total_latency_ms=(time.time() - start_time) * 1000,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    success=False,
+                )
+            except Exception:
+                logger.exception(
+                    "record_routing_observation failed on the failure path; "
+                    "continuing to the error log"
+                )
 
         # Best-effort extraction of status code from exception. The 6-attribute
         # fallback chain (status_code → response.status_code → response.status →
