@@ -4,7 +4,7 @@ import { ApiKeyManager } from '@/components/features/dashboard/ApiKeyManager';
 import { ModelsSection } from '@/components/features/dashboard/ModelsSection';
 import { RecentRequests } from '@/components/features/dashboard/RecentRequests';
 import { UsageStats } from '@/components/features/dashboard/UsageStats';
-import { UpdatesBanner } from '@/components/landing';
+import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
 

@@ -5,4 +5,3 @@ export { UseCases } from './UseCases';
 export { CodeExample } from './CodeExample';
 export { Sponsors } from './Sponsors';
 export { Updates } from './Updates';
-export { UpdatesBanner } from './UpdatesBanner';

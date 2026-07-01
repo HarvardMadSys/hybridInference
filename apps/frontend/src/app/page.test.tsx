@@ -29,6 +29,9 @@ vi.mock('@/components/landing', () => ({
   UseCases: () => <section aria-label="use cases" />,
   Sponsors: () => <section aria-label="sponsors" />,
   Updates: () => <section aria-label="updates" />,
+}));
+
+vi.mock('@/components/ui/UpdatesBanner', () => ({
   UpdatesBanner: () => <section aria-label="updates banner" />,
 }));
 

@@ -6,9 +6,9 @@ import {
   HowItWorks,
   Sponsors,
   Updates,
-  UpdatesBanner,
   UseCases,
 } from '@/components/landing';
+import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
 
 export default function HomePage(): JSX.Element {
   return (
