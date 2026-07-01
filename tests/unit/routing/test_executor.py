@@ -154,6 +154,72 @@ async def test_fallback_response_records_failed_primary_attempt():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_failed_request_attaches_routing_provider_to_exception():
+    """Regression: a fully-failed non-streaming request must carry the real
+    upstream on ``exc._routing`` so the error-log path attributes it to the
+    provider instead of the "router" sentinel (which the provider-performance
+    aggregations drop)."""
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="kimi_coding"))
+    exe.register_route("m", [(primary, 1.0)])
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+
+    routing = getattr(exc_info.value, "_routing", None)
+    assert routing is not None
+    assert routing["provider"] == "kimi_coding"
+    assert [a["provider"] for a in routing["failed_attempts"]] == ["kimi_coding"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_all_fallbacks_failed_attaches_primary_provider_and_all_attempts():
+    """When every provider fails, the surfaced primary error carries the primary
+    provider and the full failed-attempt chain."""
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    backup = _FailAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+
+    random_state = random.random
+    try:
+        random.random = lambda: 0.01  # always pick primary (weight 0.9)
+        with pytest.raises(RuntimeError) as exc_info:
+            await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        random.random = random_state
+
+    routing = getattr(exc_info.value, "_routing", None)
+    assert routing is not None
+    assert routing["provider"] == "primary"
+    assert [a["provider"] for a in routing["failed_attempts"]] == ["primary", "backup"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pin_failure_attaches_routing_provider_to_exception():
+    """A pinned request that fails must not fall back, and must attribute the
+    failure to the pinned provider rather than the "router" sentinel."""
+    exe = RouteExecutor()
+    pinned = _FailAdapter(_cfg("m", provider="kimi_coding"))
+    other = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(pinned, 0.5), (other, 0.5)])
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await exe.chat_completion(
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            pin_provider="kimi_coding",
+        )
+
+    routing = getattr(exc_info.value, "_routing", None)
+    assert routing is not None
+    assert routing["provider"] == "kimi_coding"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_recording(monkeypatch):
     from routing import routers as routers_mod
 
