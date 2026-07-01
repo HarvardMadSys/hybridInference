@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -37,6 +38,27 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
 
 logger = get_logger(__name__)
+
+# Total timeout (seconds) for a non-streaming upstream completion POST. The old
+# 120s cap killed long-but-healthy generations (reasoning models, large
+# max_tokens) with a generic 502 even while the upstream was still producing.
+# A non-streaming response arrives as one body at the end, so an idle/sock_read
+# timeout can't distinguish "still generating" from "hung" -- only a generous
+# total bound works. A persistent timeout still mutes the key and rotates, so
+# raising the ceiling doesn't weaken failover. Override via env for slow local
+# backends. Streaming requests are unaffected (they set their own timeout).
+_DEFAULT_COMPLETION_TIMEOUT_S = 600.0
+try:
+    _COMPLETION_TIMEOUT_S = float(
+        os.environ.get("UPSTREAM_COMPLETION_TIMEOUT_S", _DEFAULT_COMPLETION_TIMEOUT_S)
+    )
+except (TypeError, ValueError):
+    logger.warning(
+        "Invalid UPSTREAM_COMPLETION_TIMEOUT_S=%r; falling back to %.0fs",
+        os.environ.get("UPSTREAM_COMPLETION_TIMEOUT_S"),
+        _DEFAULT_COMPLETION_TIMEOUT_S,
+    )
+    _COMPLETION_TIMEOUT_S = _DEFAULT_COMPLETION_TIMEOUT_S
 
 
 def _normalize_text_content(content: Any) -> Any:
@@ -315,7 +337,11 @@ class OpenAICompatAdapter(BaseAdapter):
         if self._key_pool is None:
             headers = self._build_headers()
             return await self.http.json_post_with_retry(
-                url=url, json=payload, headers=headers, timeout=120, retries=2
+                url=url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                retries=2,
             )
 
         from serving.utils import context as req_ctx
@@ -361,7 +387,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     url=url,
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=120),
+                    timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
                 )
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0

@@ -1134,6 +1134,27 @@ async def anthropic_messages(
             operator_error=operator_safe_error(exc),
         )
         return _anthropic_error(exc.status, error_message)
+    except (TimeoutError, asyncio.TimeoutError) as exc:
+        # Upstream exceeded the (generous) completion timeout. Surface a 504
+        # gateway-timeout rather than a generic 502 "Internal server error" so
+        # the client can tell a slow upstream from a real server fault.
+        error_message = scrub_error_for_user(None, request_id, 504)
+        logger.warning(f"[{request_id}] Adapter messages() timed out")
+        _log_failure(
+            log_store,
+            request_id=request_id,
+            canonical=canonical,
+            adapter=adapter,
+            metadata=metadata,
+            params_for_log=params_for_log,
+            messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
+            start=start,
+            status_code=504,
+            error_message=error_message,
+            operator_error=operator_safe_error(exc),
+        )
+        return _anthropic_error(504, error_message)
     except Exception as exc:
         error_message = scrub_error_for_user(exc, request_id, 502)
         logger.exception(f"[{request_id}] Adapter messages() failed")
