@@ -1049,6 +1049,7 @@ class ProviderRouteItem(BaseModel):
     api_key: ProviderRouteApiKeyRef
     provider_model_id: str | None = None
     quota_limit: int | None = Field(None, ge=1)
+    concurrency_limit: int | None = Field(None, ge=1)
     endpoint_id: str
     yaml_weight: float
     effective_weight: float
@@ -1137,6 +1138,12 @@ class CreateProviderRouteModelRequest(CreateProviderRouteRequest):
                 raise ValueError(f"pricing.{key_text} must be a non-negative finite number")
             cleaned[key_text] = raw_text
         return cleaned
+
+
+class UpdateProviderRouteCandidateRequest(BaseModel):
+    """Request payload for updating one runtime provider route candidate."""
+
+    concurrency_limit: int = Field(..., ge=1)
 
 
 class UpdateProviderRouteRequest(BaseModel):

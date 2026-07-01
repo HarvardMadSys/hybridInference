@@ -21,6 +21,7 @@ vi.mock('@/lib/api/admin', () => ({
   setRouteWeight: vi.fn(),
   updateRoutewiseSetting: vi.fn(),
   updateProviderRoute: vi.fn(),
+  updateProviderRouteCandidate: vi.fn(),
   updateProviderRouteStrategy: vi.fn(),
   verifyProviderRoute: vi.fn(),
   verifyProviderRouteModel: vi.fn(),
@@ -49,6 +50,7 @@ import {
   runRoutewiseProbe,
   setRouteWeight,
   updateProviderRoute,
+  updateProviderRouteCandidate,
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
   verifyProviderRoute,
@@ -127,6 +129,7 @@ const route = {
   },
   provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
   quota_limit: null,
+  concurrency_limit: 1,
   endpoint_id: 'minimax-fast:featherless-api',
   yaml_weight: 1,
   effective_weight: 1,
@@ -343,6 +346,14 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
 
     expect(screen.getByLabelText('Routing policy')).toHaveValue('fixed');
+    const routeTypeSelect = screen.getByLabelText('Route type');
+    expect(within(routeTypeSelect).getByRole('option', { name: 'on_demand' })).toBeInTheDocument();
+    expect(
+      within(routeTypeSelect).queryByRole('option', { name: 'concurrency' }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(routeTypeSelect).queryByRole('option', { name: 'quota' }),
+    ).not.toBeInTheDocument();
     expect(screen.getByLabelText('Fixed weight')).toHaveValue(1);
   });
 
@@ -739,6 +750,236 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
   });
 
+  it('adds a runtime OpenRouter provider route as concurrency', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+    vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'concurrency',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db',
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: 2,
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      source: 'runtime',
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'concurrency' } });
+
+    const providerSelect = screen.getByLabelText('Provider');
+    expect(providerSelect).toHaveValue('openrouter');
+    expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
+    const routingSelect = screen.getByLabelText('OpenRouter routing');
+    expect(routingSelect).toHaveValue('provider:deepinfra');
+    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
+    expect(
+      within(routingSelect).queryByRole('option', { name: 'Sort by price' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'minimax/minimax-m2.5' },
+    });
+    fireEvent.change(routingSelect, {
+      target: { value: 'provider:parasail' },
+    });
+    fireEvent.change(screen.getByLabelText('Concurrency limit'), {
+      target: { value: '2' },
+    });
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
+        route_type: 'concurrency',
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'parasail',
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        quota_limit: null,
+        concurrency_limit: 2,
+        weight: 1,
+      });
+    });
+    expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('keeps OpenRouter endpoint variant pins from discovery', async () => {
+    const deepinfraRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'deepinfra',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, deepinfraRoute],
+    });
+    vi.mocked(listOpenRouterProviderOptions).mockResolvedValue({
+      provider_model_id: 'minimax/minimax-m2.5',
+      providers: [
+        { provider: 'minimax/fp8', label: 'MiniMax Fp8' },
+        { provider: 'minimax/highspeed', label: 'MiniMax Highspeed' },
+      ],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+    vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+      ...route,
+      route_id: 'minimax-fast:openrouter[minimax/highspeed]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'minimax/highspeed',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db',
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[minimax/highspeed]-api',
+      source: 'runtime',
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+
+    const openRouterSelect = screen.getByLabelText('OpenRouter routing');
+    await waitFor(() => {
+      expect(
+        within(openRouterSelect).getByRole('option', { name: 'Provider: MiniMax Highspeed' }),
+      ).toBeInTheDocument();
+    });
+    fireEvent.change(openRouterSelect, { target: { value: 'provider:minimax/highspeed' } });
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
+        route_type: 'on_demand',
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'minimax/highspeed',
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        quota_limit: null,
+        concurrency_limit: null,
+        weight: 1,
+      });
+    });
+  });
+
+  it('updates runtime OpenRouter concurrency limit inline', async () => {
+    const runtimeRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'concurrency',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db' as const,
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: 2,
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      source: 'runtime' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, runtimeRoute],
+    });
+    vi.mocked(updateProviderRouteCandidate).mockResolvedValue({
+      ...runtimeRoute,
+      concurrency_limit: 4,
+    });
+
+    render(<ProviderRoutesTab />);
+
+    const limitInput = await screen.findByLabelText(
+      'Concurrency limit for minimax-fast:openrouter[parasail]-api',
+    );
+    expect(limitInput).toHaveValue(2);
+    expect(
+      screen.queryByLabelText('Concurrency limit for minimax-fast:featherless-api'),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(limitInput, { target: { value: '4' } });
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'Save minimax-fast:openrouter[parasail]-api concurrency limit',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(updateProviderRouteCandidate).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:openrouter[parasail]-api',
+        { concurrency_limit: 4 },
+      );
+    });
+    await waitFor(() => {
+      expect(limitInput).toHaveValue(4);
+    });
+  });
+
   it('creates a runtime model with an initial provider route', async () => {
     const createdRoute = {
       ...route,
@@ -776,6 +1017,11 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    const routeTypeSelect = screen.getByLabelText('Route type');
+    expect(within(routeTypeSelect).getByRole('option', { name: 'on_demand' })).toBeInTheDocument();
+    expect(
+      within(routeTypeSelect).queryByRole('option', { name: 'concurrency' }),
+    ).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Model ID'), {
       target: { value: 'deepseek-v4-flash' },
     });
@@ -805,6 +1051,102 @@ describe('ProviderRoutesTab', () => {
         provider_model_id: 'deepseek/deepseek-v4-flash',
         quota_limit: null,
         concurrency_limit: null,
+        weight: 1,
+        pricing: {
+          prompt: '0.14',
+          completion: '0.28',
+        },
+      });
+    });
+    expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
+    expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('creates a runtime model with an initial OpenRouter concurrency route', async () => {
+    const createdRoute = {
+      ...route,
+      model_id: 'deepseek-v4-flash',
+      strategy: 'routewise',
+      route_id: 'deepseek-v4-flash:openrouter[parasail]-api',
+      route_type: 'concurrency',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db' as const,
+      },
+      provider_model_id: 'deepseek/deepseek-v4-flash',
+      quota_limit: null,
+      concurrency_limit: 2,
+      endpoint_id: 'deepseek-v4-flash:openrouter[parasail]-api',
+      source: 'runtime' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+    vi.mocked(createProviderRouteModel).mockResolvedValue(createdRoute);
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
+      target: { value: 'routewise' },
+    });
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'concurrency' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openrouter' } });
+    const routingSelect = screen.getByLabelText('OpenRouter routing');
+    expect(routingSelect).toHaveValue('provider:deepinfra');
+    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
+    expect(
+      within(routingSelect).queryByRole('option', { name: 'Sort by price' }),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fireEvent.change(routingSelect, {
+      target: { value: 'provider:parasail' },
+    });
+    fireEvent.change(screen.getByLabelText('Concurrency limit'), {
+      target: { value: '2' },
+    });
+    fillRuntimeModelPricing();
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteModel).toHaveBeenCalledWith({
+        model_id: 'deepseek-v4-flash',
+        strategy: 'routewise',
+        required_role: 'admin',
+        route_type: 'concurrency',
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'parasail',
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'deepseek/deepseek-v4-flash',
+        quota_limit: null,
+        concurrency_limit: 2,
         weight: 1,
         pricing: {
           prompt: '0.14',
@@ -927,6 +1269,9 @@ describe('ProviderRoutesTab', () => {
     render(<ProviderRoutesTab />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
+      target: { value: 'routewise' },
+    });
     fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'quota' } });
 
     const providerSelect = screen.getByLabelText('Provider');

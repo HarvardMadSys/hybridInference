@@ -13,6 +13,7 @@ from serving.servers.registry import _make_adapter, parse_openrouter_kind
     [
         ("openrouter", ("openrouter", None)),
         ("openrouter[deepinfra]", ("openrouter", "deepinfra")),
+        ("openrouter[minimax/highspeed]", ("openrouter", "minimax/highspeed")),
         ("openrouter[fireworks]", ("openrouter", "fireworks")),
         ("openrouter[together-ai]", ("openrouter", "together-ai")),
         ("zai", ("zai", None)),  # non-openrouter passes through
@@ -79,6 +80,12 @@ def test_make_adapter_bracket_openrouter_sets_pinned_provider() -> None:
     adapter = _make_adapter("openrouter[fireworks]", _cfg())
     assert isinstance(adapter, OpenRouterAdapter)
     assert adapter.config.openrouter_pinned_provider == "fireworks"
+
+
+def test_make_adapter_bracket_openrouter_accepts_endpoint_variant() -> None:
+    adapter = _make_adapter("openrouter[minimax/highspeed]", _cfg())
+    assert isinstance(adapter, OpenRouterAdapter)
+    assert adapter.config.openrouter_pinned_provider == "minimax/highspeed"
 
 
 def test_make_adapter_invalid_openrouter_kind_raises() -> None:

@@ -23,6 +23,7 @@ import {
   listProviderRoutes,
   setRouteWeight,
   updateProviderRoute,
+  updateProviderRouteCandidate,
   updateProviderRouteStrategy,
   verifyProviderRoute,
   verifyProviderRouteModel,
@@ -91,7 +92,12 @@ const OPENROUTER_CUSTOM_OPTION: OpenRouterProviderOption = {
   provider: OPENROUTER_PROVIDER_CUSTOM,
   label: 'Custom...',
 };
-const OPENROUTER_PROVIDER_SLUG_RE = /^[A-Za-z0-9_.-]+$/;
+const ROUTE_TYPE_OPTIONS: Array<{ value: ProviderRouteType; label: string }> = [
+  { value: 'on_demand', label: 'on_demand' },
+  { value: 'quota', label: 'quota' },
+  { value: 'concurrency', label: 'concurrency' },
+];
+const OPENROUTER_PROVIDER_SLUG_RE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
 const OPENROUTER_SORT_ROUTING_OPTIONS: Array<{
   value: `${typeof OPENROUTER_ROUTING_SORT_PREFIX}${OpenRouterSortPolicy}`;
   label: string;
@@ -188,10 +194,34 @@ function sourceLabel(route: ProviderRoute) {
 
 function routeLimitLabel(route: ProviderRoute, isRoutewise: boolean) {
   if (route.quota_limit) return route.quota_limit.toLocaleString();
+  if (route.concurrency_limit) return route.concurrency_limit.toLocaleString();
   if (!isRoutewise) {
     return `${formatWeight(route.effective_weight)} / ${formatWeight(route.yaml_weight)}`;
   }
   return '—';
+}
+
+function canEditConcurrencyLimit(route: ProviderRoute) {
+  return (
+    route.source === 'runtime' &&
+    route.route_type === 'concurrency' &&
+    route.upstream_provider === 'openrouter' &&
+    Boolean(route.openrouter_provider)
+  );
+}
+
+function routeLimitHeading(isRoutewise: boolean) {
+  return isRoutewise ? 'Limit' : 'Weight';
+}
+
+function routeTypeAllowedForStrategy(routeType: ProviderRouteType, isRoutewise: boolean) {
+  return routeType === 'on_demand' || isRoutewise;
+}
+
+function routeTypeOptionsForStrategy(isRoutewise: boolean) {
+  return ROUTE_TYPE_OPTIONS.filter((option) =>
+    routeTypeAllowedForStrategy(option.value, isRoutewise),
+  );
 }
 
 function optionFor(providerOptions: ProviderRouteOption[], provider: string) {
@@ -199,7 +229,7 @@ function optionFor(providerOptions: ProviderRouteOption[], provider: string) {
 }
 
 function openRouterProviderFromKind(kind: string) {
-  return /^openrouter\[([A-Za-z0-9_.-]+)\]$/.exec(kind)?.[1] ?? null;
+  return /^openrouter\[([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\]$/.exec(kind)?.[1] ?? null;
 }
 
 function isOpenRouterOption(option: ProviderRouteOption) {
@@ -256,7 +286,9 @@ function openRouterProviderOptionsFor(
 function optionSupportsRouteType(option: ProviderRouteOption, routeType: ProviderRouteType) {
   if (option.provider === 'chutes') return routeType === 'quota';
   if (option.provider === 'featherless') return routeType === 'concurrency';
-  if (option.provider === 'openrouter') return routeType === 'on_demand';
+  if (option.provider === 'openrouter') {
+    return routeType === 'on_demand' || routeType === 'concurrency';
+  }
   return routeType === 'on_demand';
 }
 
@@ -325,19 +357,24 @@ function openRouterSortFromRoutingValue(value: string) {
     : '';
 }
 
-function openRouterRoutingOptions(options: OpenRouterProviderOption[]) {
+function openRouterRoutingOptions(
+  options: OpenRouterProviderOption[],
+  allowAutomaticRouting = true,
+) {
+  const providerOptions = options
+    .filter((option) => option.provider !== OPENROUTER_PROVIDER_AUTO)
+    .map((option) => ({
+      value: `${OPENROUTER_ROUTING_PROVIDER_PREFIX}${option.provider}`,
+      label:
+        option.provider === OPENROUTER_PROVIDER_CUSTOM
+          ? 'Custom provider...'
+          : `Provider: ${option.label}`,
+    }));
+  if (!allowAutomaticRouting) return providerOptions;
   return [
     { value: OPENROUTER_ROUTING_AUTO, label: 'Auto' },
     ...OPENROUTER_SORT_ROUTING_OPTIONS,
-    ...options
-      .filter((option) => option.provider !== OPENROUTER_PROVIDER_AUTO)
-      .map((option) => ({
-        value: `${OPENROUTER_ROUTING_PROVIDER_PREFIX}${option.provider}`,
-        label:
-          option.provider === OPENROUTER_PROVIDER_CUSTOM
-            ? 'Custom provider...'
-            : `Provider: ${option.label}`,
-      })),
+    ...providerOptions,
   ];
 }
 
@@ -383,7 +420,7 @@ function openRouterProviderOptionsForCreate(
   routeType: ProviderRouteType,
   routes: ProviderRoute[],
 ) {
-  if (routeType !== 'on_demand') return [];
+  if (routeType !== 'on_demand' && routeType !== 'concurrency') return [];
   const usedPins = new Set(
     routes
       .filter(
@@ -392,7 +429,11 @@ function openRouterProviderOptionsForCreate(
       )
       .map(routeOpenRouterProvider),
   );
-  return allOptions.filter((option) => !usedPins.has(option.provider));
+  return allOptions.filter(
+    (option) =>
+      !usedPins.has(option.provider) &&
+      (routeType === 'on_demand' || option.provider !== OPENROUTER_PROVIDER_AUTO),
+  );
 }
 
 function createProviderOptionsFor(
@@ -408,9 +449,7 @@ function createProviderOptionsFor(
   return providerOptions.filter(
     (option) =>
       optionSupportsRouteType(option, routeType) &&
-      (option.provider === 'openrouter'
-        ? routeType === 'on_demand'
-        : !usedProviders.has(option.provider)),
+      (option.provider === 'openrouter' || !usedProviders.has(option.provider)),
   );
 }
 
@@ -422,7 +461,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
   const [routeWeights, setRouteWeights] = useState<RouteWeight[]>([]);
   const [draftWeights, setDraftWeights] = useState<Record<string, string>>({});
+  const [draftConcurrencyLimits, setDraftConcurrencyLimits] = useState<Record<string, string>>({});
   const [savingWeightKey, setSavingWeightKey] = useState<string | null>(null);
+  const [savingConcurrencyKey, setSavingConcurrencyKey] = useState<string | null>(null);
   const [providerOptions, setProviderOptions] = useState<ProviderRouteOption[]>([]);
   const [openRouterProviderOptions, setOpenRouterProviderOptions] = useState<
     OpenRouterProviderOption[]
@@ -543,6 +584,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const isRoutewise = strategy === 'routewise';
   const createStrategy = creatingModel ? newModelStrategy : strategy;
   const createIsRoutewise = createStrategy === 'routewise';
+  const createRouteTypeOptions = useMemo(
+    () => routeTypeOptionsForStrategy(createIsRoutewise),
+    [createIsRoutewise],
+  );
   const showCreateWeight = !createIsRoutewise;
   const showCreateLimits =
     createForm.routeType === 'quota' || createForm.routeType === 'concurrency' || showCreateWeight;
@@ -581,6 +626,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       parsedCreateConcurrencyLimit > 0);
   const createWeightValid =
     createIsRoutewise || (Number.isFinite(parsedCreateWeight) && parsedCreateWeight > 0);
+  const createRouteTypeValid = routeTypeAllowedForStrategy(createForm.routeType, createIsRoutewise);
   const formOpenRouterProviderValid = customOpenRouterProviderValid(
     form.openRouterProvider,
     form.customOpenRouterProvider,
@@ -595,6 +641,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     Boolean(createForm.baseUrl.trim()) &&
     Boolean(createForm.providerModelId.trim()) &&
     createOpenRouterProviderValid &&
+    createRouteTypeValid &&
     createQuotaValid &&
     createConcurrencyValid &&
     createWeightValid &&
@@ -743,12 +790,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     [createOpenRouterProviderOptions],
   );
   const createOpenRouterRoutingOptions = useMemo(
-    () => openRouterRoutingOptions(createOpenRouterSelectOptions),
-    [createOpenRouterSelectOptions],
+    () =>
+      openRouterRoutingOptions(createOpenRouterSelectOptions, createForm.routeType === 'on_demand'),
+    [createForm.routeType, createOpenRouterSelectOptions],
   );
   const editOpenRouterRoutingOptions = useMemo(
-    () => openRouterRoutingOptions(editOpenRouterSelectOptions),
-    [editOpenRouterSelectOptions],
+    () =>
+      openRouterRoutingOptions(
+        editOpenRouterSelectOptions,
+        editingRoute?.route_type === 'on_demand',
+      ),
+    [editingRoute?.route_type, editOpenRouterSelectOptions],
   );
 
   const createProviderOptions = useMemo(
@@ -756,6 +808,44 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       createProviderOptionsFor(providerSelectBaseOptions, createForm.routeType, createTargetRoutes),
     [createForm.routeType, providerSelectBaseOptions, createTargetRoutes],
   );
+
+  useEffect(() => {
+    if (!createFormOpen || createRouteTypeValid) return;
+    const routeType: ProviderRouteType = 'on_demand';
+    const nextOpenRouterOptions = openRouterProviderOptionsForCreate(
+      openRouterSelectOptions,
+      routeType,
+      createTargetRoutes,
+    );
+    const nextProvider = createProviderOptionsFor(
+      providerSelectBaseOptions,
+      routeType,
+      createTargetRoutes,
+    )[0];
+    setCreateForm((current) => ({
+      ...current,
+      routeType,
+      upstreamProvider: nextProvider?.provider ?? '',
+      openRouterProvider:
+        nextProvider?.provider === 'openrouter'
+          ? (nextOpenRouterOptions[0]?.provider ?? OPENROUTER_PROVIDER_CUSTOM)
+          : OPENROUTER_PROVIDER_AUTO,
+      customOpenRouterProvider: '',
+      openRouterSort: '',
+      baseUrl: nextProvider?.default_base_url ?? '',
+      apiKeyId: '',
+      providerModelId: nextProvider
+        ? defaultProviderModelIdFor(nextProvider.provider, createTargetRoutes)
+        : current.providerModelId,
+    }));
+    setVerifiedCreateSignature(null);
+  }, [
+    createFormOpen,
+    createRouteTypeValid,
+    createTargetRoutes,
+    openRouterSelectOptions,
+    providerSelectBaseOptions,
+  ]);
 
   const providerSelectOptions = useMemo(() => {
     if (!form.upstreamProvider || optionFor(providerSelectBaseOptions, form.upstreamProvider)) {
@@ -1015,6 +1105,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   };
 
   const onCreateRouteTypeChange = (routeType: ProviderRouteType) => {
+    if (!routeTypeAllowedForStrategy(routeType, createIsRoutewise)) return;
     const nextOpenRouterOptions = openRouterProviderOptionsForCreate(
       openRouterSelectOptions,
       routeType,
@@ -1209,6 +1300,35 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     }
   };
 
+  const onSaveConcurrencyLimit = async (route: ProviderRoute) => {
+    const key = routeKey(route);
+    const draft = draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
+    const trimmed = draft.trim();
+    const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : null;
+    if (parsed === null || parsed < 1) {
+      toast.error('Concurrency limit must be a positive integer.');
+      return;
+    }
+
+    setSavingConcurrencyKey(key);
+    try {
+      const updated = await updateProviderRouteCandidate(route.model_id, route.route_id, {
+        concurrency_limit: parsed,
+      });
+      updateRoute(updated);
+      setDraftConcurrencyLimits((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      toast.success('Concurrency limit updated');
+    } catch (err) {
+      toast.error(`Concurrency update failed: ${getErrorMessage(err)}`);
+    } finally {
+      setSavingConcurrencyKey(null);
+    }
+  };
+
   const onClearWeight = async (route: ProviderRoute) => {
     const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
     setSavingWeightKey(key);
@@ -1317,7 +1437,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             <div>Candidate</div>
             <div>Target</div>
             <div>API key</div>
-            <div>{isRoutewise ? 'Quota' : 'Weight'}</div>
+            <div>{routeLimitHeading(isRoutewise)}</div>
             <div>Status</div>
             <div className="text-right">Actions</div>
           </div>
@@ -1341,6 +1461,19 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 parsedDraftWeight !== null && parsedDraftWeight !== effectiveWeight;
               const isSavingWeight = savingWeightKey === weightKey;
               const hasWeightOverride = routeWeight?.override_weight != null;
+              const editableConcurrencyLimit = canEditConcurrencyLimit(route);
+              const draftConcurrencyLimit =
+                draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
+              const trimmedConcurrencyLimit = draftConcurrencyLimit.trim();
+              const parsedDraftConcurrencyLimit = /^\d+$/.test(trimmedConcurrencyLimit)
+                ? Number.parseInt(trimmedConcurrencyLimit, 10)
+                : null;
+              const concurrencyLimitDirty =
+                parsedDraftConcurrencyLimit !== null &&
+                parsedDraftConcurrencyLimit !== route.concurrency_limit;
+              const concurrencyLimitValid =
+                parsedDraftConcurrencyLimit !== null && parsedDraftConcurrencyLimit > 0;
+              const isSavingConcurrencyLimit = savingConcurrencyKey === key;
               return (
                 <div
                   key={key}
@@ -1399,10 +1532,43 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                   </div>
                   <div className="text-gray-600">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-gray-400 lg:hidden">
-                      {isRoutewise ? 'Quota' : 'Weight'}
+                      {routeLimitHeading(isRoutewise)}
                     </div>
                     {isRoutewise ? (
-                      <div>{routeLimitLabel(route, isRoutewise)}</div>
+                      editableConcurrencyLimit ? (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <input
+                            aria-label={`Concurrency limit for ${route.endpoint_id}`}
+                            className="h-8 w-20 rounded-md border border-gray-300 px-2 text-right text-[13px] text-gray-900"
+                            disabled={isSavingConcurrencyLimit}
+                            min={1}
+                            step={1}
+                            type="number"
+                            value={draftConcurrencyLimit}
+                            onChange={(event) =>
+                              setDraftConcurrencyLimits((current) => ({
+                                ...current,
+                                [key]: event.target.value,
+                              }))
+                            }
+                          />
+                          <button
+                            aria-label={`Save ${route.endpoint_id} concurrency limit`}
+                            type="button"
+                            disabled={
+                              isSavingConcurrencyLimit ||
+                              !concurrencyLimitDirty ||
+                              !concurrencyLimitValid
+                            }
+                            onClick={() => void onSaveConcurrencyLimit(route)}
+                            className="h-8 rounded-md bg-gray-900 px-2.5 text-[12px] font-medium text-white disabled:opacity-50"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      ) : (
+                        <div>{routeLimitLabel(route, isRoutewise)}</div>
+                      )
                     ) : (
                       <div className="space-y-2">
                         <div className="text-[11px] leading-4 text-gray-400">
@@ -1711,9 +1877,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 }
                 className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
               >
-                <option value="on_demand">on_demand</option>
-                <option value="quota">quota</option>
-                <option value="concurrency">concurrency</option>
+                {createRouteTypeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div>

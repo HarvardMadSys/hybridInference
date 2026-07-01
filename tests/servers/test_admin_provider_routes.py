@@ -102,6 +102,17 @@ def _openrouter_deepinfra_adapter():
     )
 
 
+def _register_on_demand_only_route(route_executor, model_id: str = "on-demand-only") -> None:
+    adapter = _compat_adapter(
+        model_id=model_id,
+        provider="openrouter",
+        endpoint_id=f"{model_id}:openrouter-api",
+        base_url="https://openrouter.ai/api/v1",
+        provider_model_id="openai/gpt-oss-20b",
+    )
+    route_executor.register_route(model_id, [(adapter, 1.0)])
+
+
 @pytest.fixture
 async def admin_client(monkeypatch):
     dynamic_keys.reset()
@@ -264,9 +275,11 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert routes[1]["provider"] == "featherless"
     assert routes[1]["upstream_provider"] == "featherless"
     assert routes[1]["quota_limit"] is None
+    assert routes[1]["concurrency_limit"] == 1
     assert routes[2]["provider"] == "openrouter"
     assert routes[2]["upstream_provider"] == "openrouter"
     assert routes[2]["openrouter_provider"] == "deepinfra"
+    assert routes[2]["concurrency_limit"] is None
     assert all(row["strategy"] == "routewise" for row in routes)
 
 
@@ -280,16 +293,21 @@ def test_parse_openrouter_provider_options_from_endpoints():
                     {"provider_name": "DeepInfra", "tag": "deepinfra/fp8"},
                     {"provider_name": "DeepInfra duplicate", "tag": "deepinfra/bf16"},
                     {"provider_name": "Chutes", "tag": "chutes/fp8"},
+                    {"provider_name": "Minimax", "tag": "minimax/fp8"},
+                    {"provider_name": "Minimax", "tag": "minimax/highspeed"},
                 ]
             }
         }
     )
 
     assert [(option.provider, option.label) for option in options] == [
-        ("inceptron", "Inceptron"),
-        ("akashml", "AkashML"),
-        ("deepinfra", "DeepInfra"),
-        ("chutes", "Chutes"),
+        ("inceptron/fp8", "Inceptron Fp8"),
+        ("akashml/fp8", "AkashML Fp8"),
+        ("deepinfra/fp8", "DeepInfra Fp8"),
+        ("deepinfra/bf16", "DeepInfra Bf16"),
+        ("chutes/fp8", "Chutes Fp8"),
+        ("minimax/fp8", "MiniMax Fp8"),
+        ("minimax/highspeed", "MiniMax Highspeed"),
     ]
 
 
@@ -340,6 +358,32 @@ async def test_get_openrouter_provider_options_discovers_model_endpoints(
 
 @pytest.mark.asyncio
 async def test_patch_provider_route_strategy_updates_model_router(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _register_on_demand_only_route(route_executor)
+
+    response = await client.patch(
+        "/admin/routing/provider-route-strategies/on-demand-only",
+        json={"strategy": "fixed"},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model_id"] == "on-demand-only"
+    assert payload["strategy"] == "fixed"
+    assert {row["strategy"] for row in payload["routes"]} == {"fixed"}
+    op_store.set_setting.assert_awaited_once_with(
+        "model_router_strategy:on-demand-only",
+        "fixed",
+        "string",
+        "127.0.0.1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_provider_route_strategy_rejects_fixed_with_resource_routes(
+    admin_client,
+):
     client, op_store, _route_executor, _fake_routewise, _verify_mock = admin_client
 
     response = await client.patch(
@@ -348,17 +392,11 @@ async def test_patch_provider_route_strategy_updates_model_router(admin_client):
         headers=AUTH,
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["model_id"] == "minimax-fast"
-    assert payload["strategy"] == "fixed"
-    assert {row["strategy"] for row in payload["routes"]} == {"fixed"}
-    op_store.set_setting.assert_awaited_once_with(
-        "model_router_strategy:minimax-fast",
-        "fixed",
-        "string",
-        "127.0.0.1",
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == (
+        "fixed strategy cannot be used while model has concurrency, quota routes"
     )
+    op_store.set_setting.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -453,6 +491,7 @@ async def test_apply_model_router_strategy_rolls_back_when_new_router_cannot_sta
 @pytest.mark.asyncio
 async def test_apply_model_router_strategy_stops_removed_managed_router(admin_client):
     _client, _op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _register_on_demand_only_route(route_executor)
     old_router = _ManagedTestRouter()
     new_router = object()
     registry = MagicMock()
@@ -471,13 +510,13 @@ async def test_apply_model_router_strategy_stops_removed_managed_router(admin_cl
 
     await provider_routes._apply_model_router_strategy(
         services,
-        "minimax-fast",
+        "on-demand-only",
         "fixed",
     )
 
     assert old_router.stopped == 1
     assert services.managed_routers == []
-    registry.set_router_override.assert_called_once_with("minimax-fast", "fixed")
+    registry.set_router_override.assert_called_once_with("on-demand-only", "fixed")
 
 
 @pytest.mark.asyncio
@@ -487,9 +526,10 @@ async def test_apply_persisted_model_router_strategy_overrides(admin_client):
     )
 
     _client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    _register_on_demand_only_route(route_executor)
     op_store.list_settings.return_value = [
         {
-            "key": "model_router_strategy:minimax-fast",
+            "key": "model_router_strategy:on-demand-only",
             "value": "fixed",
             "value_type": "string",
             "updated_at": NOW,
@@ -519,7 +559,7 @@ async def test_apply_persisted_model_router_strategy_overrides(admin_client):
 
     await apply_persisted_model_router_strategy_overrides(services, op_store)
 
-    registry.set_router_override.assert_called_once_with("minimax-fast", "fixed")
+    registry.set_router_override.assert_called_once_with("on-demand-only", "fixed")
 
 
 @pytest.mark.asyncio
@@ -944,6 +984,224 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source"] == "runtime"
+    assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
+    assert payload["route_type"] == "concurrency"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["quota_limit"] is None
+    assert payload["concurrency_limit"] == 2
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+        "concurrency",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        2,
+        1.0,
+        None,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.provider == "openrouter"
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.provider_type == "concurrency"
+    assert runtime_adapter.config.concurrency_pool == (
+        "minimax-fast:openrouter[parasail]-api:runtime-concurrency"
+    )
+    assert runtime_adapter.config.concurrency == {"limit": 2}
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_rejects_unpinned_openrouter_concurrency(
+    admin_client,
+):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == (
+        "openrouter concurrency routes require openrouter_provider"
+    )
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_patch_provider_route_candidate_updates_openrouter_concurrency_limit(
+    admin_client,
+):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    create_response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+    assert create_response.status_code == 200, create_response.text
+    op_store.upsert_provider_route_candidate.reset_mock()
+    fake_routewise._rebuild_from_fixed_router.reset_mock()
+    verify_mock.reset_mock()
+
+    response = await client.patch(
+        "/admin/routing/provider-route-candidates/minimax-fast/"
+        "minimax-fast:openrouter[parasail]-api",
+        json={"concurrency_limit": 4},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["route_type"] == "concurrency"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["concurrency_limit"] == 4
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+        "concurrency",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        4,
+        1.0,
+        None,
+        "127.0.0.1",
+    )
+    verify_mock.assert_not_awaited()
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.concurrency == {"limit": 4}
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_patch_provider_route_candidate_rejects_config_concurrency_limit(
+    admin_client,
+):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+
+    response = await client.patch(
+        "/admin/routing/provider-route-candidates/minimax-fast/minimax-fast:featherless-api",
+        json={"concurrency_limit": 4},
+        headers=AUTH,
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == (
+        "Only runtime OpenRouter concurrency routes can update concurrency_limit"
+    )
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    featherless_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    assert featherless_adapter.config.concurrency == {"limit": 1}
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_rejects_resource_route_for_fixed_model(admin_client):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    adapter = _compat_adapter(
+        model_id="fixed-only",
+        provider="openrouter",
+        endpoint_id="fixed-only:openrouter-api",
+        base_url="https://openrouter.ai/api/v1",
+        provider_model_id="minimax/minimax-m2.5",
+    )
+    route_executor.register_route("fixed-only", [(adapter, 1.0)])
+
+    strategy_response = await client.patch(
+        "/admin/routing/provider-route-strategies/fixed-only",
+        json={"strategy": "fixed"},
+        headers=AUTH,
+    )
+    assert strategy_response.status_code == 200, strategy_response.text
+    op_store.upsert_provider_route_candidate.reset_mock()
+    op_store.set_setting.reset_mock()
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/fixed-only",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "concurrency routes require routewise strategy"
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, monkeypatch):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     base_key = "sk-or-base111111111111111111"
@@ -1081,6 +1339,138 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     assert route["api_key_id"] == "db-openrouter"
     assert route["api_key"]["source"] == "db"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_creates_openrouter_concurrency_model(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "routewise",
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+            "pricing": RUNTIME_PRICING,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["model_id"] == "deepseek-v4-flash"
+    assert payload["source"] == "runtime"
+    assert payload["strategy"] == "routewise"
+    assert payload["route_id"] == "deepseek-v4-flash:openrouter[parasail]-api"
+    assert payload["route_type"] == "concurrency"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["quota_limit"] is None
+    assert payload["concurrency_limit"] == 2
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "deepseek-v4-flash",
+        "deepseek-v4-flash:openrouter[parasail]-api",
+        "concurrency",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "deepseek/deepseek-v4-flash",
+        None,
+        2,
+        1.0,
+        RUNTIME_PRICING,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    assert route_executor.routes["deepseek-v4-flash"].required_role == "admin"
+    runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[0][0]
+    assert runtime_adapter.config.provider == "openrouter"
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.provider_type == "concurrency"
+    assert runtime_adapter.config.concurrency_pool == (
+        "deepseek-v4-flash:openrouter[parasail]-api:runtime-concurrency"
+    )
+    assert runtime_adapter.config.concurrency == {"limit": 2}
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_rejects_unpinned_openrouter_concurrency(
+    admin_client,
+):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "routewise",
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+            "pricing": RUNTIME_PRICING,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == (
+        "openrouter concurrency routes require openrouter_provider"
+    )
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_rejects_resource_route_for_fixed_strategy(admin_client):
+    client, op_store, _route_executor, _fake_routewise, verify_mock = admin_client
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "fixed",
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+            "pricing": RUNTIME_PRICING,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "concurrency routes require routewise strategy"
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    verify_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
