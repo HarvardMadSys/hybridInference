@@ -58,6 +58,33 @@ describe('DragScrollArea', () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
+  it('scrolls horizontally with arrow keys when the region overflows', () => {
+    const { container } = render(
+      <DragScrollArea>
+        <div>row</div>
+      </DragScrollArea>,
+    );
+    const wrapper = container.firstElementChild as HTMLDivElement;
+    forceOverflow(wrapper);
+    // Recompute overflow state so the keyboard handler (gated on hasOverflow)
+    // is attached; ResizeObserver doesn't fire in jsdom.
+    fireEvent(window, new Event('resize'));
+    wrapper.scrollLeft = 0;
+
+    fireEvent.keyDown(wrapper, { key: 'ArrowRight' });
+    expect(wrapper.scrollLeft).toBeGreaterThan(0);
+
+    const afterRight = wrapper.scrollLeft;
+    fireEvent.keyDown(wrapper, { key: 'ArrowLeft' });
+    expect(wrapper.scrollLeft).toBeLessThan(afterRight);
+
+    fireEvent.keyDown(wrapper, { key: 'End' });
+    expect(wrapper.scrollLeft).toBe(wrapper.scrollWidth);
+
+    fireEvent.keyDown(wrapper, { key: 'Home' });
+    expect(wrapper.scrollLeft).toBe(0);
+  });
+
   it('does not drag-scroll for mouse input (preserves native text selection)', () => {
     const { child, onClick } = renderWithClickTarget();
 

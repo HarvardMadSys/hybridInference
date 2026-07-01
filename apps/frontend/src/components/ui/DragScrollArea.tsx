@@ -1,6 +1,7 @@
 'use client';
 
 import {
+  type KeyboardEvent,
   type MouseEvent,
   type PointerEvent,
   type ReactNode,
@@ -146,6 +147,21 @@ export function DragScrollArea({
     }
   }, []);
 
+  const handleKeyDown = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Arrow/Home/End scroll the focused region so keyboard-only users can pan
+    // it (the tabIndex/role below only make it focusable — WCAG 2.1.1).
+    const step = Math.max(48, el.clientWidth * 0.5);
+    if (event.key === 'ArrowLeft') el.scrollLeft -= step;
+    else if (event.key === 'ArrowRight') el.scrollLeft += step;
+    else if (event.key === 'Home') el.scrollLeft = 0;
+    else if (event.key === 'End') el.scrollLeft = el.scrollWidth;
+    else return;
+    // Only prevent default for keys we handled, so Tab/typing still behave.
+    event.preventDefault();
+  }, []);
+
   const handleClickCapture = useCallback((event: MouseEvent<HTMLDivElement>) => {
     if (!dragRef.current.moved) return;
     if (clearMovedTimerRef.current !== null) {
@@ -193,6 +209,7 @@ export function DragScrollArea({
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
       onClickCapture={handleClickCapture}
+      onKeyDown={hasOverflow ? handleKeyDown : undefined}
       aria-label={ariaLabel}
       // Make the scrollable region keyboard-focusable when it overflows so
       // keyboard-only users can scroll it with the arrow keys (WCAG 2.1.1).
