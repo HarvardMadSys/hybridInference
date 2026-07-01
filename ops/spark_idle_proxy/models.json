@@ -9,7 +9,7 @@
         "served_name": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
         "docker_image": "vllm/vllm-openai:gemma",
         "max_model_len": 262144,
-        "gpu_memory_utilization": 0.85,
+        "gpu_memory_utilization": 0.64,
         "max_num_seqs": 4,
         "trust_remote_code": true,
         "enable_auto_tool_choice": true,
