@@ -205,6 +205,70 @@ _API_KEY_TOKEN_RE = re.compile(
     r"|\bAIza[0-9A-Za-z_-]{10,}"
 )
 
+# Upstream messages that reveal the operator's own upstream account has hit a
+# quota, balance, billing, or credit limit. Surfacing these verbatim would tell
+# end users that *our* provider account is out of quota/funds — an internal
+# operational detail. When an upstream message matches, the user-facing path
+# suppresses it in favour of a generic status-based message; operators still get
+# the full text via ``operator_safe_error`` / ``api_logs.error``.
+# Plural forms are enumerated explicitly (rather than via a regex ``s?`` suffix,
+# which produces malformed patterns on multi-word markers). ``billing`` is kept
+# specific ("billing hard limit" / "billing limit") so ordinary billing-related
+# messages ("Invalid billing address") are not suppressed; ``quota`` is left bare
+# on purpose — providers phrase exhaustion many ways ("exceeded your current
+# quota", "monthly quota depleted") and missing one would leak the very fact we
+# must hide, whereas an occasional false positive only yields a safe generic
+# message.
+_UPSTREAM_QUOTA_MARKERS: tuple[str, ...] = (
+    "quota",
+    "quotas",
+    "insufficient balance",
+    "insufficient balances",
+    "insufficient funds",
+    "insufficient credit",
+    "insufficient credits",
+    "not enough balance",
+    "balance is too low",
+    "account balance",
+    "account balances",
+    "out of credit",
+    "out of credits",
+    "no credit",
+    "no credits",
+    "credit balance",
+    "credit balances",
+    "credit limit",
+    "credit limits",
+    "billing hard limit",
+    "billing limit",
+    "payment required",
+    "add funds",
+    "top up",
+    "recharge",
+    "arrearage",
+    "spending limit",
+    "spending limits",
+    "usage limit",
+    "usage limits",
+    "purchase more",
+)
+# Word-boundary anchored so "quota" does not match "quotation".
+_UPSTREAM_QUOTA_RE = re.compile(
+    r"(?i)\b(?:" + "|".join(re.escape(m) for m in _UPSTREAM_QUOTA_MARKERS) + r")\b"
+)
+
+
+def _reveals_upstream_quota(text: str) -> bool:
+    """Return True if ``text`` exposes an upstream quota/balance/billing limit."""
+    # ``_`` is a regex word character (and multi-word markers are space-separated),
+    # so the ``\b`` anchored markers never match across machine-style tokens like
+    # ``insufficient_quota`` / ``payment-required`` / ``billing_hard_limit_reached``.
+    # Fold ``_`` and ``-`` separators to spaces for the detection pass (the
+    # surfaced message itself is left untouched).
+    normalized = text.replace("_", " ").replace("-", " ")
+    return bool(_UPSTREAM_QUOTA_RE.search(normalized))
+
+
 # Upstream error string shapes we know how to unwrap into a bare message.
 _UPSTREAM_BODY_MARKER = "upstream_body="
 _AIOHTTP_MESSAGE_RE = re.compile(r"message=(['\"])(?P<msg>.*?)\1(?:,\s*url=|$)", re.DOTALL)
@@ -289,12 +353,19 @@ def scrub_provider_identity(text: str) -> str:
 def user_safe_upstream_error(raw: str | None, *, max_len: int = 500) -> str | None:
     """Return the upstream provider's message, with provider identity removed.
 
-    Returns ``None`` when there is no usable message after scrubbing, so callers
-    can fall back to a generic status-based message.
+    Returns ``None`` when there is no usable message after scrubbing, or when the
+    message would reveal that the operator's own upstream account has hit a
+    quota/balance/billing limit, so callers can fall back to a generic
+    status-based message.
     """
     if not raw:
         return None
-    msg = scrub_provider_identity(_extract_upstream_message(raw))
+    extracted = _extract_upstream_message(raw)
+    # Never reveal that the operator's upstream account has hit a quota/balance
+    # limit — fall back to the caller's generic status-based message instead.
+    if _reveals_upstream_quota(extracted):
+        return None
+    msg = scrub_provider_identity(extracted)
     if not msg:
         return None
     if len(msg) > max_len:
@@ -322,6 +393,33 @@ def _upstream_error_raw(exc: BaseException | None) -> str | None:
     return None
 
 
+def generic_message_for_status(status_code: int) -> str:
+    """Return the generic, provider-free message for an HTTP status code."""
+    if status_code in _GENERIC_MESSAGES_BY_STATUS:
+        return _GENERIC_MESSAGES_BY_STATUS[status_code]
+    if 500 <= status_code < 600:
+        return "Internal server error"
+    return "Request failed"
+
+
+def user_safe_error_for_log(raw: str | None, status_code: int | None) -> str | None:
+    """Return user-safe error text for a stored ``api_logs`` row.
+
+    Used by log-display surfaces (e.g. the ``/user/recent-requests`` dashboard)
+    that read the persisted operator error string rather than a live exception.
+    Returns ``None`` when the row carries no error. Otherwise surfaces the
+    scrubbed upstream message, falling back to a generic status-based message
+    when the message is empty or would reveal an upstream quota/balance limit —
+    so a failed row never renders with blank error text.
+    """
+    if not raw or not raw.strip():
+        return None
+    msg = user_safe_upstream_error(raw)
+    if msg:
+        return msg
+    return generic_message_for_status(status_code) if status_code is not None else "Request failed"
+
+
 def scrub_error_for_user(
     exc: BaseException | None,
     request_id: str | None,
@@ -345,12 +443,7 @@ def scrub_error_for_user(
     else:
         base = user_safe_upstream_error(_upstream_error_raw(exc)) or ""
         if not base:
-            if status_code in _GENERIC_MESSAGES_BY_STATUS:
-                base = _GENERIC_MESSAGES_BY_STATUS[status_code]
-            elif 500 <= status_code < 600:
-                base = "Internal server error"
-            else:
-                base = "Request failed"
+            base = generic_message_for_status(status_code)
 
     if request_id:
         return f"{base} (request_id: {request_id})"

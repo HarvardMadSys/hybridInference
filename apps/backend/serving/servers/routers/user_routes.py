@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from serving.exceptions import (
     UserNotFoundError,
-    user_safe_upstream_error,
+    user_safe_error_for_log,
 )
 from serving.model_access import get_disabled_models_from_preferences
 from serving.schemas import ModelList
@@ -916,7 +916,7 @@ async def get_recent_requests(
             cache_write_tokens=row["cache_write_tokens"],
             total_tokens=row["total_tokens"],
             cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
-            error=user_safe_upstream_error(row["error"]),
+            error=user_safe_error_for_log(row["error"], row["status_code"]),
             routewise=coerce_json_object(row["routewise"]),
             request_type=row["request_type"],
         )
