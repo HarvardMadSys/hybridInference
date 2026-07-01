@@ -278,7 +278,7 @@ export function RecentRequests(): JSX.Element {
 
       {!isLoading && data && data.requests.length > 0 && (
         <>
-          <div className="-mx-6 overflow-x-auto">
+          <div className="-mx-6 touch-scroll-x overflow-x-auto">
             <table className="min-w-full">
               <thead>
                 <tr className="border-b border-gray-200">
