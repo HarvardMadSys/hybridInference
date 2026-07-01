@@ -1208,11 +1208,19 @@ __all__ = [
     "ListUsersResponse",
     "ModelVisibilityItem",
     "OpenRouterProviderOption",
+    "ProviderErrorTypeRow",
+    "ProviderModelObservabilityRow",
+    "ProviderObservabilityBucket",
+    "ProviderObservabilityResponse",
+    "ProviderObservabilityTotals",
+    "ProviderObservabilityWindow",
     "ProviderQuotaResult",
     "ProviderQuotaUsage",
     "ProviderRouteApiKeyRef",
     "ProviderRouteItem",
     "ProviderRouteOption",
+    "ProviderStatusCodeRow",
+    "ProviderTopErrorRow",
     "RejectUserRequest",
     "RejectUserResponse",
     "ResumeUserRequest",
@@ -1379,6 +1387,93 @@ class ProviderStatsResponse(BaseModel):
     # tab doesn't render empty on load when a retention-only provider sorts
     # first.
     window_providers: list[str]
+
+
+class ProviderObservabilityWindow(BaseModel):
+    """Time window for provider-scoped error/cache stats."""
+
+    from_: datetime = Field(alias="from")
+    to: datetime
+
+    model_config = {"populate_by_name": True}
+
+
+class ProviderObservabilityTotals(BaseModel):
+    """Provider-scoped request, error, and prompt-cache totals."""
+
+    request_count: int
+    error_count: int
+    rate_limited_count: int
+    timeout_count: int
+    server_error_count: int
+    cache_eligible_count: int
+    cache_hit_count: int
+    input_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+
+
+class ProviderObservabilityBucket(BaseModel):
+    """One time bucket for provider observability trends."""
+
+    start_time: datetime
+    request_count: int
+    error_count: int
+    cache_eligible_count: int
+    cache_hit_count: int
+    cache_read_tokens: int
+    input_tokens: int
+
+
+class ProviderErrorTypeRow(BaseModel):
+    """Count of one derived error type."""
+
+    error_type: str
+    count: int
+    fraction: float
+
+
+class ProviderStatusCodeRow(BaseModel):
+    """Count of one HTTP status code bucket."""
+
+    status_code: int | None = None
+    count: int
+
+
+class ProviderModelObservabilityRow(BaseModel):
+    """Provider observability totals for one model."""
+
+    model_id: str
+    request_count: int
+    error_count: int
+    cache_eligible_count: int
+    cache_hit_count: int
+    cache_read_tokens: int
+    input_tokens: int
+
+
+class ProviderTopErrorRow(BaseModel):
+    """Frequently observed error text for a provider window."""
+
+    error: str
+    count: int
+    status_code: int | None = None
+    model_id: str | None = None
+    last_seen_at: datetime
+
+
+class ProviderObservabilityResponse(BaseModel):
+    """Provider-scoped error and prompt-cache stats from api_logs."""
+
+    provider: str
+    window: ProviderObservabilityWindow
+    bucket_minutes: int
+    totals: ProviderObservabilityTotals
+    buckets: list[ProviderObservabilityBucket]
+    error_types: list[ProviderErrorTypeRow]
+    status_codes: list[ProviderStatusCodeRow]
+    models: list[ProviderModelObservabilityRow]
+    top_errors: list[ProviderTopErrorRow]
 
 
 # ============================================================

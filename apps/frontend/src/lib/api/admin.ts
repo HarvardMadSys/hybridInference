@@ -938,6 +938,87 @@ export async function getProviderStats(params: {
   return jsonOrThrow<ProviderStatsResponse>(resp);
 }
 
+export interface ProviderObservabilityTotals {
+  request_count: number;
+  error_count: number;
+  rate_limited_count: number;
+  timeout_count: number;
+  server_error_count: number;
+  cache_eligible_count: number;
+  cache_hit_count: number;
+  input_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+
+export interface ProviderObservabilityBucket {
+  start_time: string;
+  request_count: number;
+  error_count: number;
+  cache_eligible_count: number;
+  cache_hit_count: number;
+  cache_read_tokens: number;
+  input_tokens: number;
+}
+
+export interface ProviderErrorTypeRow {
+  error_type: string;
+  count: number;
+  fraction: number;
+}
+
+export interface ProviderStatusCodeRow {
+  status_code: number | null;
+  count: number;
+}
+
+export interface ProviderModelObservabilityRow {
+  model_id: string;
+  request_count: number;
+  error_count: number;
+  cache_eligible_count: number;
+  cache_hit_count: number;
+  cache_read_tokens: number;
+  input_tokens: number;
+}
+
+export interface ProviderTopErrorRow {
+  error: string;
+  count: number;
+  status_code: number | null;
+  model_id: string | null;
+  last_seen_at: string;
+}
+
+export interface ProviderObservabilityResponse {
+  provider: string;
+  window: { from: string; to: string };
+  bucket_minutes: number;
+  totals: ProviderObservabilityTotals;
+  buckets: ProviderObservabilityBucket[];
+  error_types: ProviderErrorTypeRow[];
+  status_codes: ProviderStatusCodeRow[];
+  models: ProviderModelObservabilityRow[];
+  top_errors: ProviderTopErrorRow[];
+}
+
+export async function getProviderObservability(params: {
+  provider: string;
+  from?: string;
+  to?: string;
+}): Promise<ProviderObservabilityResponse> {
+  const search = new URLSearchParams({
+    provider: params.provider,
+    ...(params.from ? { from: params.from } : {}),
+    ...(params.to ? { to: params.to } : {}),
+  });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/api/provider-observability?${search.toString()}`,
+  );
+  return jsonOrThrow<ProviderObservabilityResponse>(resp);
+}
+
 // ========================================
 // Provider Token Usage
 // ========================================

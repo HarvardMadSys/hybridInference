@@ -23,7 +23,9 @@ import {
 } from 'recharts';
 import {
   AdminTtftScatterModel,
+  ProviderObservabilityResponse,
   ProviderStatsRow,
+  getProviderObservability,
   getProviderStats,
   getTtftScatter,
 } from '@/lib/api/admin';
@@ -54,6 +56,24 @@ function fmt0(v: unknown): string {
   if (v == null) return '';
   const n = typeof v === 'number' ? v : Number(v);
   return Number.isFinite(n) ? Math.round(n).toLocaleString() : String(v);
+}
+
+function pctValue(numerator: number, denominator: number): number | null {
+  if (denominator <= 0) return null;
+  return (numerator / denominator) * 100;
+}
+
+function fmtPctValue(value: number | null, digits = 2): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return `${value.toFixed(digits)}%`;
+}
+
+function fmtPct(numerator: number, denominator: number, digits = 2): string {
+  return fmtPctValue(pctValue(numerator, denominator), digits);
+}
+
+function fmtCompactCount(n: number): string {
+  return Math.round(n).toLocaleString();
 }
 
 type AxisDomain = [number, number] | ['auto', 'auto'];
@@ -472,6 +492,175 @@ function ModelPerformanceSection({ modelId, rows }: { modelId: string; rows: Pro
   );
 }
 
+function ProviderObservabilitySection({ data }: { data: ProviderObservabilityResponse | null }) {
+  if (!data) return null;
+
+  const totals = data.totals;
+  const errorRate = pctValue(totals.error_count, totals.request_count);
+  const cacheHitRate = pctValue(totals.cache_hit_count, totals.cache_eligible_count);
+  const cacheTokenShare = pctValue(totals.cache_read_tokens, totals.input_tokens);
+  const trendData = data.buckets.map((bucket) => ({
+    t: fmtHour(bucket.start_time),
+    error_rate: pctValue(bucket.error_count, bucket.request_count),
+    cache_hit_rate: pctValue(bucket.cache_hit_count, bucket.cache_eligible_count),
+  }));
+
+  return (
+    <div className="space-y-6">
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-[15px] font-semibold text-gray-900">Errors</h2>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
+          <Kpi label="Error rate" value={fmtPctValue(errorRate)} />
+          <Kpi label="Errors" value={fmtCompactCount(totals.error_count)} />
+          <Kpi label="Rate limit" value={fmtPct(totals.rate_limited_count, totals.request_count)} />
+          <Kpi label="Timeout" value={fmtPct(totals.timeout_count, totals.request_count)} />
+          <Kpi label="5xx" value={fmtPct(totals.server_error_count, totals.request_count)} />
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="rounded-xl border p-3">
+            <p className="mb-1 text-[13px] font-semibold">Error rate</p>
+            <div className="h-48">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trendData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    tickFormatter={(v) => `${fmt0(v)}%`}
+                    domain={[0, 100]}
+                    allowDataOverflow
+                  />
+                  <Tooltip formatter={(v) => `${fmt0(v)}%`} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line
+                    type="monotone"
+                    dataKey="error_rate"
+                    stroke="#dc2626"
+                    dot={false}
+                    name="error rate"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-xl border p-3">
+            <p className="mb-2 text-[13px] font-semibold">Error breakdown</p>
+            {data.error_types.length === 0 ? (
+              <p className="text-[12px] text-gray-400">No errors in this range.</p>
+            ) : (
+              <div className="space-y-2">
+                {data.error_types.slice(0, 8).map((row) => (
+                  <div key={row.error_type}>
+                    <div className="flex items-center justify-between gap-3 text-[12px]">
+                      <span className="font-mono text-gray-700">{row.error_type}</span>
+                      <span className="tabular-nums text-gray-500">
+                        {fmtCompactCount(row.count)} · {(row.fraction * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                      <div
+                        className="h-full rounded-full bg-red-500"
+                        style={{ width: `${Math.min(100, row.fraction * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-[15px] font-semibold text-gray-900">Cache</h2>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-1 rounded-lg border px-3 py-2 text-[13px]">
+          <Kpi label="Cache hit" value={fmtPctValue(cacheHitRate)} />
+          <Kpi label="Hits" value={fmtCompactCount(totals.cache_hit_count)} />
+          <Kpi label="Eligible" value={fmtCompactCount(totals.cache_eligible_count)} />
+          <Kpi label="Cached input" value={fmtPctValue(cacheTokenShare)} />
+          <Kpi label="Read tokens" value={fmtCompactCount(totals.cache_read_tokens)} />
+          <Kpi label="Write tokens" value={fmtCompactCount(totals.cache_write_tokens)} />
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          <div className="rounded-xl border p-3">
+            <p className="mb-1 text-[13px] font-semibold">Cache hit rate</p>
+            <div className="h-48">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trendData}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="t" minTickGap={32} tick={{ fontSize: 11 }} />
+                  <YAxis
+                    tick={{ fontSize: 11 }}
+                    tickFormatter={(v) => `${fmt0(v)}%`}
+                    domain={[0, 100]}
+                    allowDataOverflow
+                  />
+                  <Tooltip formatter={(v) => `${fmt0(v)}%`} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Line
+                    type="monotone"
+                    dataKey="cache_hit_rate"
+                    stroke="#10b981"
+                    dot={false}
+                    name="cache hit"
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="rounded-xl border p-3">
+            <p className="mb-2 text-[13px] font-semibold">Cache by model</p>
+            {data.models.length === 0 ? (
+              <p className="text-[12px] text-gray-400">No requests in this range.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-[12px]">
+                  <thead className="text-[10px] uppercase tracking-wide text-gray-400">
+                    <tr>
+                      <th className="py-1 pr-3 font-medium">Model</th>
+                      <th className="py-1 px-3 text-right font-medium">Eligible</th>
+                      <th className="py-1 px-3 text-right font-medium">Hit</th>
+                      <th className="py-1 pl-3 text-right font-medium">Cached</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.models.slice(0, 10).map((row) => (
+                      <tr key={row.model_id} className="border-t border-gray-100">
+                        <td className="max-w-[220px] truncate py-1.5 pr-3 font-medium text-gray-800">
+                          {row.model_id}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-gray-600">
+                          {fmtCompactCount(row.cache_eligible_count)}
+                        </td>
+                        <td className="px-3 py-1.5 text-right tabular-nums text-gray-600">
+                          {fmtPct(row.cache_hit_count, row.cache_eligible_count, 1)}
+                        </td>
+                        <td className="pl-3 py-1.5 text-right tabular-nums text-gray-600">
+                          {fmtCompactCount(row.cache_read_tokens)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number } = {}) {
   const [allProviders, setAllProviders] = useState<string[]>([]);
   const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
@@ -484,6 +673,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const [ttftScatterLoading, setTtftScatterLoading] = useState(false);
   const [ttftScatterError, setTtftScatterError] = useState<string | null>(null);
   const [modelRows, setModelRows] = useState<Record<string, ProviderStatsRow[]>>({});
+  const [observability, setObservability] = useState<ProviderObservabilityResponse | null>(null);
 
   const loadTtftScatter = useCallback(async () => {
     setTtftScatterLoading(true);
@@ -513,16 +703,25 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     setLoading(true);
     setError(null);
     setModelRows({});
+    setObservability(null);
     try {
       const window_ = rangeWindow(rangeKey);
-      const resp = await getProviderStats({
-        provider: prov,
-        model_id: '__all__',
-        from: window_.from,
-        to: window_.to,
-      });
+      const [resp, obs] = await Promise.all([
+        getProviderStats({
+          provider: prov,
+          model_id: '__all__',
+          from: window_.from,
+          to: window_.to,
+        }),
+        getProviderObservability({
+          provider: prov,
+          from: window_.from,
+          to: window_.to,
+        }),
+      ]);
       setAllProviders(resp.providers);
       setAllPairs(resp.pairs);
+      setObservability(obs);
       const grouped: Record<string, ProviderStatsRow[]> = {};
       for (const row of resp.rows) {
         const key = row.model_id;
@@ -539,7 +738,6 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const initializedRef = useRef(false);
   useEffect(() => {
     if (initializedRef.current) return;
-    initializedRef.current = true;
     let cancelled = false;
     (async () => {
       try {
@@ -564,7 +762,10 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
       } catch (exc) {
         if (!cancelled) setError(getErrorMessage(exc));
       } finally {
-        if (!cancelled) setInitializing(false);
+        if (!cancelled) {
+          initializedRef.current = true;
+          setInitializing(false);
+        }
       }
     })();
     return () => {
@@ -640,6 +841,8 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
           <Kpi label="Decode" value={overallTotals.decode.toLocaleString()} />
         </div>
       )}
+
+      <ProviderObservabilitySection data={observability} />
 
       {providerModels.map((modelId) => (
         <ModelPerformanceSection key={modelId} modelId={modelId} rows={modelRows[modelId] ?? []} />
