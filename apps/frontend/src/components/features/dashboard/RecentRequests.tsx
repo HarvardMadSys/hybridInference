@@ -2,6 +2,7 @@
 
 import { useId, useState } from 'react';
 import { useRecentRequests } from '@/lib/hooks';
+import { DragScrollArea } from '@/components/ui/DragScrollArea';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import type { RecentRequestItem } from '@/lib/api/user';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
@@ -278,7 +279,7 @@ export function RecentRequests(): JSX.Element {
 
       {!isLoading && data && data.requests.length > 0 && (
         <>
-          <div className="-mx-6 overscroll-x-contain overflow-x-auto">
+          <DragScrollArea className="-mx-6" ariaLabel="Recent requests table">
             <table className="min-w-full">
               <thead>
                 <tr className="border-b border-gray-200">
@@ -305,7 +306,7 @@ export function RecentRequests(): JSX.Element {
                 ))}
               </tbody>
             </table>
-          </div>
+          </DragScrollArea>
 
           {/* Pagination */}
           {totalPages > 1 && (
