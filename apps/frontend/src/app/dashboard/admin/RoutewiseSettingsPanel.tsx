@@ -365,10 +365,10 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
               Warm RouteWise TTFT state for this model without waiting for user traffic.
             </p>
           </div>
-          <div className="flex flex-wrap items-end gap-2">
-            <div>
+          <div className="flex w-full flex-wrap items-end gap-3 lg:w-auto">
+            <div className="flex min-w-0 basis-full flex-col gap-1 sm:min-w-[420px] sm:basis-auto sm:flex-row sm:items-center sm:gap-3 lg:flex-none">
               <label
-                className="text-[11px] font-medium text-gray-500"
+                className="shrink-0 text-[12px] font-medium text-gray-500"
                 htmlFor="routewise-probe-endpoint"
               >
                 Endpoint
@@ -377,7 +377,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
                 id="routewise-probe-endpoint"
                 value={probeEndpointId}
                 onChange={(event) => setProbeEndpointId(event.target.value)}
-                className="mt-1 h-9 min-w-[220px] rounded-md border border-gray-200 bg-white px-2 text-[12px] text-gray-800"
+                className="h-10 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 text-[13px] text-gray-800 sm:w-[420px]"
               >
                 <option value="">All endpoints</option>
                 {probeEndpointOptions.map((endpoint) => (
@@ -393,8 +393,8 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
               onClick={() => void handleRunProbe()}
               className={
                 probeBanner?.kind === 'success'
-                  ? 'h-9 rounded-md bg-emerald-600 px-3 text-[12px] font-medium text-white shadow-sm shadow-emerald-100 disabled:opacity-50'
-                  : 'h-9 rounded-md bg-gray-900 px-3 text-[12px] font-medium text-white disabled:opacity-50'
+                  ? 'h-10 rounded-lg bg-emerald-600 px-4 text-[13px] font-medium text-white shadow-sm shadow-emerald-100 disabled:opacity-50'
+                  : 'h-10 rounded-lg bg-gray-900 px-4 text-[13px] font-medium text-white disabled:opacity-50'
               }
             >
               {probeRunning ? 'Probing...' : 'Run probe'}
@@ -403,7 +403,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
               type="button"
               disabled={!modelId || probeLoading}
               onClick={() => void loadProbeSamples()}
-              className="h-9 rounded-md border border-gray-200 px-3 text-[12px] font-medium text-gray-700 disabled:opacity-50"
+              className="h-10 rounded-lg border border-gray-200 px-4 text-[13px] font-medium text-gray-700 disabled:opacity-50"
             >
               Refresh
             </button>
@@ -429,49 +429,51 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
           </div>
         )}
 
-        <div className="mt-3 overflow-hidden rounded-lg border border-gray-100">
-          <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(120px,.8fr)_90px_minmax(126px,.8fr)] gap-3 bg-gray-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-            <div>Endpoint</div>
-            <div>Status</div>
-            <div>TTFT</div>
-            <div>Checked</div>
-          </div>
-          {probeLoading ? (
-            <div className="px-3 py-6 text-center text-[12px] text-gray-400">
-              Loading probe samples...
+        <div className="mt-3 overflow-x-auto rounded-lg border border-gray-100">
+          <div className="min-w-[620px]">
+            <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(120px,.8fr)_90px_minmax(126px,.8fr)] gap-3 bg-gray-50 px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+              <div>Endpoint</div>
+              <div>Status</div>
+              <div>TTFT</div>
+              <div>Checked</div>
             </div>
-          ) : latestProbeSamples.length === 0 ? (
-            <div className="px-3 py-6 text-center text-[12px] text-gray-400">
-              No probe samples in the last 24 hours.
-            </div>
-          ) : (
-            <div className="divide-y divide-gray-100">
-              {latestProbeSamples.map((sample, index) => (
-                <div
-                  key={`${sample.endpoint_id}-${sample.checked_at}-${index}`}
-                  className="grid grid-cols-[minmax(0,1.3fr)_minmax(120px,.8fr)_90px_minmax(126px,.8fr)] gap-3 px-3 py-2 text-[12px]"
-                >
-                  <div className="min-w-0 break-all font-mono text-gray-600">
-                    {sample.endpoint_id}
-                  </div>
-                  <div className="min-w-0">
-                    <span
-                      title={sample.ok ? undefined : sample.error || undefined}
-                      className={`inline-flex max-w-full rounded px-1.5 py-0.5 text-[11px] font-medium ${sampleStatusClass(
-                        sample,
-                      )}`}
-                    >
-                      <span className="break-words">
-                        {sample.ok ? 'ok' : probeErrorMessage(sample.error)}
+            {probeLoading ? (
+              <div className="px-3 py-6 text-center text-[12px] text-gray-400">
+                Loading probe samples...
+              </div>
+            ) : latestProbeSamples.length === 0 ? (
+              <div className="px-3 py-6 text-center text-[12px] text-gray-400">
+                No probe samples in the last 24 hours.
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {latestProbeSamples.map((sample, index) => (
+                  <div
+                    key={`${sample.endpoint_id}-${sample.checked_at}-${index}`}
+                    className="grid grid-cols-[minmax(0,1.3fr)_minmax(120px,.8fr)_90px_minmax(126px,.8fr)] gap-3 px-3 py-2 text-[12px]"
+                  >
+                    <div className="min-w-0 break-all font-mono text-gray-600">
+                      {sample.endpoint_id}
+                    </div>
+                    <div className="min-w-0">
+                      <span
+                        title={sample.ok ? undefined : sample.error || undefined}
+                        className={`inline-flex max-w-full rounded px-1.5 py-0.5 text-[11px] font-medium ${sampleStatusClass(
+                          sample,
+                        )}`}
+                      >
+                        <span className="break-words">
+                          {sample.ok ? 'ok' : probeErrorMessage(sample.error)}
+                        </span>
                       </span>
-                    </span>
+                    </div>
+                    <div className="text-gray-700">{formatTtft(sample.ttft_ms)}</div>
+                    <div className="text-gray-500">{formatCheckedAt(sample.checked_at)}</div>
                   </div>
-                  <div className="text-gray-700">{formatTtft(sample.ttft_ms)}</div>
-                  <div className="text-gray-500">{formatCheckedAt(sample.checked_at)}</div>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </section>
