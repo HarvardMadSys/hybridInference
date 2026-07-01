@@ -97,7 +97,7 @@ const ROUTE_TYPE_OPTIONS: Array<{ value: ProviderRouteType; label: string }> = [
   { value: 'quota', label: 'quota' },
   { value: 'concurrency', label: 'concurrency' },
 ];
-const OPENROUTER_PROVIDER_SLUG_RE = /^[A-Za-z0-9_.-]+$/;
+const OPENROUTER_PROVIDER_SLUG_RE = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
 const OPENROUTER_SORT_ROUTING_OPTIONS: Array<{
   value: `${typeof OPENROUTER_ROUTING_SORT_PREFIX}${OpenRouterSortPolicy}`;
   label: string;
@@ -229,7 +229,7 @@ function optionFor(providerOptions: ProviderRouteOption[], provider: string) {
 }
 
 function openRouterProviderFromKind(kind: string) {
-  return /^openrouter\[([A-Za-z0-9_.-]+)\]$/.exec(kind)?.[1] ?? null;
+  return /^openrouter\[([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\]$/.exec(kind)?.[1] ?? null;
 }
 
 function isOpenRouterOption(option: ProviderRouteOption) {
