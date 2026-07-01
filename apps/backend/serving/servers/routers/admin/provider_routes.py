@@ -2702,7 +2702,7 @@ async def update_provider_route(
         update.base_url,
         update.api_key_id,
         update.provider_model_id,
-        payload.quota_limit,
+        update.quota_limit,
         update.concurrency_limit,
         admin_id,
     )
@@ -2723,7 +2723,7 @@ async def update_provider_route(
             "openrouter_sort": update.openrouter_sort,
             "new_endpoint_id": update.endpoint_id,
             "api_key_id": update.api_key_id,
-            "quota_limit": payload.quota_limit,
+            "quota_limit": update.quota_limit,
             "concurrency_limit": update.concurrency_limit,
         },
     )

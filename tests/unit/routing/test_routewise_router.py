@@ -348,6 +348,56 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_adapter("test-model", {})
         assert selected is active_adapter
 
+    def test_rebuild_preserves_profiles_for_remaining_endpoints(self):
+        """Rebuilds should keep latency history for endpoints still in RouteWise."""
+        disabled_adapter = _make_adapter(
+            model_id="model-a",
+            provider_type="on_demand",
+            endpoint_id="model-a:disabled",
+        )
+        active_adapter = _make_adapter(
+            model_id="model-a",
+            provider_type="on_demand",
+            endpoint_id="model-a:active",
+        )
+        other_model_adapter = _make_adapter(
+            model_id="model-b",
+            provider_type="on_demand",
+            endpoint_id="model-b:api",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("model-a", [(disabled_adapter, 1.0), (active_adapter, 1.0)])
+        fr.add("model-b", [(other_model_adapter, 1.0)])
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        now = time.time()
+        router._latency_profiles["model-a:disabled"].record(now, 200.0)
+        router._latency_profiles["model-a:active"].record(now, 300.0)
+        router._latency_profiles["model-b:api"].record(now, 400.0)
+        router._latency_history_priors_ms.update(
+            {
+                "model-a:disabled": 200.0,
+                "model-a:active": 300.0,
+                "model-b:api": 400.0,
+            }
+        )
+        active_profile = router._latency_profiles["model-a:active"]
+        other_model_profile = router._latency_profiles["model-b:api"]
+
+        fr.weight_overrides["model-a:disabled"] = 0.0
+        router._rebuild_from_fixed_router()
+
+        assert "model-a:disabled" not in router._latency_profiles
+        assert "model-a:disabled" not in router._latency_history_priors_ms
+        assert router._latency_profiles["model-a:active"] is active_profile
+        assert router._latency_profiles["model-b:api"] is other_model_profile
+        assert router._latency_profiles["model-a:active"].sample_count(now) == 1
+        assert router._latency_profiles["model-b:api"].sample_count(now) == 1
+        assert router._latency_history_priors_ms == {
+            "model-a:active": 300.0,
+            "model-b:api": 400.0,
+        }
+
     def test_pd_selects_quota_when_value_high(self):
         """PD selects S_Q when estimated API cost exceeds shadow price.
 

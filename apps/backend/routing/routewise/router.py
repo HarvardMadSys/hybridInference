@@ -385,6 +385,8 @@ class RouteWiseRouter(BaseRouter):
             self.config.routewise_probe_interval_sec = routewise_probe_interval_sec
 
     def _rebuild_from_fixed_router(self) -> None:
+        existing_latency_profiles = self._latency_profiles
+        existing_latency_history_priors_ms = self._latency_history_priors_ms
         self.classified = {}
         self.route_candidates = {}
         self._model_routewise_pools = {}
@@ -405,11 +407,17 @@ class RouteWiseRouter(BaseRouter):
                 self._endpoint_adapter[endpoint_id] = adapter
                 self._endpoint_models.setdefault(endpoint_id, set()).add(model_id)
                 if endpoint_id not in self._latency_profiles:
-                    self._latency_profiles[endpoint_id] = ProviderProfile(
+                    self._latency_profiles[endpoint_id] = existing_latency_profiles.get(
+                        endpoint_id
+                    ) or ProviderProfile(
                         endpoint_id=endpoint_id,
                         window_sec=self.config.latency_window_sec,
                         max_samples=self.config.latency_max_samples_per_profile,
                     )
+                    if endpoint_id in existing_latency_history_priors_ms:
+                        self._latency_history_priors_ms[endpoint_id] = (
+                            existing_latency_history_priors_ms[endpoint_id]
+                        )
         self._validate_routes()
 
     async def start(self) -> None:

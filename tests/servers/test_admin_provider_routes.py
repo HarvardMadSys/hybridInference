@@ -653,6 +653,60 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
 
 
 @pytest.mark.asyncio
+async def test_put_provider_route_persists_effective_quota_when_payload_omits_limit(
+    admin_client,
+):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:chutes-api",
+            "provider": "openrouter[parasail]",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 5000,
+            "concurrency_limit": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["quota_limit"] == 5000
+    op_store.upsert_provider_route_config.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:chutes-api",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        5000,
+        None,
+        "127.0.0.1",
+    )
+
+    updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert updated_adapter.config.quota == {"limit": 5000}
+    verify_mock.assert_awaited_once()
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_put_provider_route_updates_concurrency_limit_for_concurrency_override(
     admin_client,
 ):
