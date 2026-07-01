@@ -300,6 +300,20 @@ def test_user_safe_upstream_error_suppresses_quota_text():
     )
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "insufficient_quota",
+        "payment_required",
+        "billing_hard_limit_reached",
+        '{"error": {"code": "insufficient_quota", "message": "insufficient_quota"}}',
+    ],
+)
+def test_machine_style_quota_tokens_are_suppressed(body):
+    """Underscore-separated machine tokens must still trip the quota filter."""
+    assert user_safe_upstream_error(body) is None
+
+
 def test_user_safe_error_for_log_falls_back_for_suppressed_quota():
     """Stored-log display path must never render a failed row with blank error.
 

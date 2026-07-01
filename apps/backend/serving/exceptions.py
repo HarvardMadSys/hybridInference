@@ -242,7 +242,11 @@ _UPSTREAM_QUOTA_RE = re.compile(
 
 def _reveals_upstream_quota(text: str) -> bool:
     """Return True if ``text`` exposes an upstream quota/balance/billing limit."""
-    return bool(_UPSTREAM_QUOTA_RE.search(text))
+    # ``_`` is a regex word character, so the ``\b`` anchored markers never match
+    # across a machine-style token like ``insufficient_quota`` / ``payment_required``
+    # / ``billing_hard_limit_reached``. Treat underscores as separators for the
+    # detection pass (the surfaced message itself is left untouched).
+    return bool(_UPSTREAM_QUOTA_RE.search(text.replace("_", " ")))
 
 
 # Upstream error string shapes we know how to unwrap into a bare message.
