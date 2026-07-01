@@ -127,6 +127,7 @@ const route = {
   },
   provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
   quota_limit: null,
+  concurrency_limit: 1,
   endpoint_id: 'minimax-fast:featherless-api',
   yaml_weight: 1,
   effective_weight: 1,
@@ -739,6 +740,82 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
   });
 
+  it('adds a runtime OpenRouter provider route as concurrency', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+    vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'concurrency',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db',
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      quota_limit: null,
+      concurrency_limit: 2,
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+      source: 'runtime',
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'concurrency' } });
+
+    const providerSelect = screen.getByLabelText('Provider');
+    expect(providerSelect).toHaveValue('openrouter');
+    expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'minimax/minimax-m2.5' },
+    });
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:parasail' },
+    });
+    fireEvent.change(screen.getByLabelText('Concurrency limit'), {
+      target: { value: '2' },
+    });
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
+        route_type: 'concurrency',
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'parasail',
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        quota_limit: null,
+        concurrency_limit: 2,
+        weight: 1,
+      });
+    });
+    expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
   it('creates a runtime model with an initial provider route', async () => {
     const createdRoute = {
       ...route,
@@ -805,6 +882,96 @@ describe('ProviderRoutesTab', () => {
         provider_model_id: 'deepseek/deepseek-v4-flash',
         quota_limit: null,
         concurrency_limit: null,
+        weight: 1,
+        pricing: {
+          prompt: '0.14',
+          completion: '0.28',
+        },
+      });
+    });
+    expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
+    expect(await screen.findByText('Runtime added')).toBeInTheDocument();
+  });
+
+  it('creates a runtime model with an initial OpenRouter concurrency route', async () => {
+    const createdRoute = {
+      ...route,
+      model_id: 'deepseek-v4-flash',
+      strategy: 'routewise',
+      route_id: 'deepseek-v4-flash:openrouter[parasail]-api',
+      route_type: 'concurrency',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db' as const,
+      },
+      provider_model_id: 'deepseek/deepseek-v4-flash',
+      quota_limit: null,
+      concurrency_limit: 2,
+      endpoint_id: 'deepseek-v4-flash:openrouter[parasail]-api',
+      source: 'runtime' as const,
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+    vi.mocked(createProviderRouteModel).mockResolvedValue(createdRoute);
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Initial routing policy'), {
+      target: { value: 'routewise' },
+    });
+    fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'concurrency' } });
+    fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openrouter' } });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+      target: { value: 'provider:parasail' },
+    });
+    fireEvent.change(screen.getByLabelText('Concurrency limit'), {
+      target: { value: '2' },
+    });
+    fillRuntimeModelPricing();
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteModel).toHaveBeenCalledWith({
+        model_id: 'deepseek-v4-flash',
+        strategy: 'routewise',
+        required_role: 'admin',
+        route_type: 'concurrency',
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'parasail',
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'deepseek/deepseek-v4-flash',
+        quota_limit: null,
+        concurrency_limit: 2,
         weight: 1,
         pricing: {
           prompt: '0.14',

@@ -264,9 +264,11 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert routes[1]["provider"] == "featherless"
     assert routes[1]["upstream_provider"] == "featherless"
     assert routes[1]["quota_limit"] is None
+    assert routes[1]["concurrency_limit"] == 1
     assert routes[2]["provider"] == "openrouter"
     assert routes[2]["upstream_provider"] == "openrouter"
     assert routes[2]["openrouter_provider"] == "deepinfra"
+    assert routes[2]["concurrency_limit"] is None
     assert all(row["strategy"] == "routewise" for row in routes)
 
 
@@ -944,6 +946,75 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source"] == "runtime"
+    assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
+    assert payload["route_type"] == "concurrency"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["quota_limit"] is None
+    assert payload["concurrency_limit"] == 2
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+        "concurrency",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        2,
+        1.0,
+        None,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.provider == "openrouter"
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.provider_type == "concurrency"
+    assert runtime_adapter.config.concurrency_pool == (
+        "minimax-fast:openrouter[parasail]-api:runtime-concurrency"
+    )
+    assert runtime_adapter.config.concurrency == {"limit": 2}
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, monkeypatch):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     base_key = "sk-or-base111111111111111111"
@@ -1080,6 +1151,79 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     route = list_response.json()["routes"][0]
     assert route["api_key_id"] == "db-openrouter"
     assert route["api_key"]["source"] == "db"
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_model_creates_openrouter_concurrency_model(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-models",
+        json={
+            "model_id": "deepseek-v4-flash",
+            "strategy": "routewise",
+            "route_type": "concurrency",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "deepseek/deepseek-v4-flash",
+            "concurrency_limit": 2,
+            "weight": 1.0,
+            "pricing": RUNTIME_PRICING,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["model_id"] == "deepseek-v4-flash"
+    assert payload["source"] == "runtime"
+    assert payload["strategy"] == "routewise"
+    assert payload["route_id"] == "deepseek-v4-flash:openrouter[parasail]-api"
+    assert payload["route_type"] == "concurrency"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["quota_limit"] is None
+    assert payload["concurrency_limit"] == 2
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "deepseek-v4-flash",
+        "deepseek-v4-flash:openrouter[parasail]-api",
+        "concurrency",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "deepseek/deepseek-v4-flash",
+        None,
+        2,
+        1.0,
+        RUNTIME_PRICING,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    assert route_executor.routes["deepseek-v4-flash"].required_role == "admin"
+    runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[0][0]
+    assert runtime_adapter.config.provider == "openrouter"
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.provider_type == "concurrency"
+    assert runtime_adapter.config.concurrency_pool == (
+        "deepseek-v4-flash:openrouter[parasail]-api:runtime-concurrency"
+    )
+    assert runtime_adapter.config.concurrency == {"limit": 2}
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 

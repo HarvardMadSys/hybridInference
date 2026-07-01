@@ -188,6 +188,7 @@ function sourceLabel(route: ProviderRoute) {
 
 function routeLimitLabel(route: ProviderRoute, isRoutewise: boolean) {
   if (route.quota_limit) return route.quota_limit.toLocaleString();
+  if (route.concurrency_limit) return route.concurrency_limit.toLocaleString();
   if (!isRoutewise) {
     return `${formatWeight(route.effective_weight)} / ${formatWeight(route.yaml_weight)}`;
   }
@@ -256,7 +257,9 @@ function openRouterProviderOptionsFor(
 function optionSupportsRouteType(option: ProviderRouteOption, routeType: ProviderRouteType) {
   if (option.provider === 'chutes') return routeType === 'quota';
   if (option.provider === 'featherless') return routeType === 'concurrency';
-  if (option.provider === 'openrouter') return routeType === 'on_demand';
+  if (option.provider === 'openrouter') {
+    return routeType === 'on_demand' || routeType === 'concurrency';
+  }
   return routeType === 'on_demand';
 }
 
@@ -383,7 +386,7 @@ function openRouterProviderOptionsForCreate(
   routeType: ProviderRouteType,
   routes: ProviderRoute[],
 ) {
-  if (routeType !== 'on_demand') return [];
+  if (routeType !== 'on_demand' && routeType !== 'concurrency') return [];
   const usedPins = new Set(
     routes
       .filter(
@@ -409,7 +412,7 @@ function createProviderOptionsFor(
     (option) =>
       optionSupportsRouteType(option, routeType) &&
       (option.provider === 'openrouter'
-        ? routeType === 'on_demand'
+        ? routeType === 'on_demand' || routeType === 'concurrency'
         : !usedProviders.has(option.provider)),
   );
 }

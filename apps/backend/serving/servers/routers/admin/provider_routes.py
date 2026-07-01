@@ -148,9 +148,9 @@ PROVIDER_MODEL_IDS: dict[str, dict[str, str]] = {
 PROVIDER_CREATE_ROUTE_TYPES: dict[str, set[str]] = {
     "chutes": {"quota"},
     "featherless": {"concurrency"},
-    "deepinfra": {"on_demand"},
-    "openrouter": {"on_demand"},
-    "parasail": {"on_demand"},
+    "deepinfra": {"concurrency", "on_demand"},
+    "openrouter": {"concurrency", "on_demand"},
+    "parasail": {"concurrency", "on_demand"},
 }
 
 
@@ -1981,6 +1981,12 @@ def _quota_limit_for_row(adapter, override_row: dict[str, Any] | None) -> int | 
     return _quota_limit_for_adapter(adapter)
 
 
+def _concurrency_limit_for_row(adapter) -> int | None:
+    if _route_type(adapter) != "concurrency":
+        return None
+    return _concurrency_limit_for_adapter(adapter)
+
+
 async def _route_row(
     services,
     op_store,
@@ -2052,6 +2058,7 @@ async def _route_row(
         api_key=api_key,
         provider_model_id=provider_model_id,
         quota_limit=_quota_limit_for_row(adapter, effective_override),
+        concurrency_limit=_concurrency_limit_for_row(adapter),
         endpoint_id=endpoint_id,
         yaml_weight=float(yaml_weight),
         effective_weight=_effective_weight(services, model_id, float(yaml_weight), endpoint_id),

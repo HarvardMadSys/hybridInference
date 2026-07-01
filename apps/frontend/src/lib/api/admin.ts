@@ -1385,6 +1385,7 @@ export interface ProviderRoute {
   api_key: ProviderRouteApiKeyRef;
   provider_model_id: string | null;
   quota_limit: number | null;
+  concurrency_limit: number | null;
   endpoint_id: string;
   yaml_weight: number;
   effective_weight: number;
