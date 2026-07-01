@@ -19,12 +19,10 @@ from serving.schemas_admin import (
     ProviderObservabilityWindow,
     ProviderStatsResponse,
     ProviderStatsRow,
-    ProviderStatusCodeRow,
     ProviderTokenUsageResponse,
     ProviderTokenUsageRow,
     ProviderTokenUsageTotals,
     ProviderTokenUsageWindow,
-    ProviderTopErrorRow,
 )
 from serving.servers.deps import (
     get_db_logger,
@@ -406,21 +404,6 @@ async def admin_provider_observability(
             start,
             end,
         )
-        status_rows = await conn.fetch(
-            f"""
-            SELECT status_code, COUNT(*)::BIGINT AS count
-            FROM api_logs
-            WHERE provider = $1
-              AND timestamp >= $2 AND timestamp < $3
-              AND {_OBSERVABILITY_LOG_SCOPE_SQL}
-              AND {_ERROR_CONDITION_SQL}
-            GROUP BY status_code
-            ORDER BY count DESC, status_code ASC NULLS LAST
-            """,
-            provider,
-            start,
-            end,
-        )
         model_rows = await conn.fetch(
             f"""
             SELECT
@@ -454,30 +437,6 @@ async def admin_provider_observability(
             start,
             end,
         )
-        top_error_rows = await conn.fetch(
-            f"""
-            SELECT
-                error_text AS error,
-                COUNT(*)::BIGINT AS count,
-                (array_agg(status_code ORDER BY timestamp DESC))[1] AS status_code,
-                (array_agg(model_id ORDER BY timestamp DESC))[1] AS model_id,
-                MAX(timestamp) AS last_seen_at
-            FROM (
-                SELECT LEFT(error, 240) AS error_text, status_code, model_id, timestamp
-                FROM api_logs
-                WHERE provider = $1
-                  AND timestamp >= $2 AND timestamp < $3
-                  AND {_OBSERVABILITY_LOG_SCOPE_SQL}
-                  AND error IS NOT NULL
-            ) scoped
-            GROUP BY error_text
-            ORDER BY count DESC, last_seen_at DESC
-            LIMIT 10
-            """,
-            provider,
-            start,
-            end,
-        )
 
     totals = ProviderObservabilityTotals(**dict(totals_row or {}))
     total_errors = max(totals.error_count, 1)
@@ -495,9 +454,7 @@ async def admin_provider_observability(
             )
             for r in error_type_rows
         ],
-        status_codes=[ProviderStatusCodeRow(**dict(r)) for r in status_rows],
         models=[ProviderModelObservabilityRow(**dict(r)) for r in model_rows],
-        top_errors=[ProviderTopErrorRow(**dict(r)) for r in top_error_rows],
     )
 
 

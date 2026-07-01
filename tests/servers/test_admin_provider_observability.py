@@ -147,10 +147,32 @@ async def test_provider_observability_range_over_90_days_rejected():
 
 
 @pytest.mark.asyncio
+async def test_provider_observability_rejects_inverted_range():
+    fake_db_logger = _fake_db_logger(pool=MagicMock())
+    app = _build_admin_app(db_logger=fake_db_logger)
+    _override_admin(app)
+    app.dependency_overrides[get_db_logger] = lambda: fake_db_logger
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(
+            "/admin/api/provider-observability",
+            params={
+                "provider": "openai",
+                "from": "2026-01-02T00:00:00Z",
+                "to": "2026-01-01T00:00:00Z",
+            },
+        )
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 400
+    assert "must be after" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_provider_observability_happy_path_from_api_logs():
     start = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
     next_bucket = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
-    last_seen = datetime(2026, 1, 1, 1, 45, tzinfo=timezone.utc)
     fake_pool = _FakePool(
         fetchrow_response={
             "request_count": 10,
@@ -190,10 +212,6 @@ async def test_provider_observability_happy_path_from_api_logs():
                 {"error_type": "timeout", "count": 1},
             ],
             [
-                {"status_code": 429, "count": 2},
-                {"status_code": 504, "count": 1},
-            ],
-            [
                 {
                     "model_id": "gpt-4o-mini",
                     "request_count": 10,
@@ -202,15 +220,6 @@ async def test_provider_observability_happy_path_from_api_logs():
                     "cache_hit_count": 3,
                     "cache_read_tokens": 900,
                     "input_tokens": 3000,
-                },
-            ],
-            [
-                {
-                    "error": "rate limit exceeded",
-                    "count": 2,
-                    "status_code": 429,
-                    "model_id": "gpt-4o-mini",
-                    "last_seen_at": last_seen,
                 },
             ],
         ],
@@ -245,8 +254,8 @@ async def test_provider_observability_happy_path_from_api_logs():
         "count": 2,
         "fraction": pytest.approx(2 / 3),
     }
-    assert body["status_codes"][0] == {"status_code": 429, "count": 2}
     assert body["models"][0]["model_id"] == "gpt-4o-mini"
-    assert body["top_errors"][0]["error"] == "rate limit exceeded"
+    assert "status_codes" not in body
+    assert "top_errors" not in body
     assert "request_type" in fake_pool.conn.fetchrow_calls[0][0]
-    assert len(fake_pool.conn.fetch_calls) == 5
+    assert len(fake_pool.conn.fetch_calls) == 3

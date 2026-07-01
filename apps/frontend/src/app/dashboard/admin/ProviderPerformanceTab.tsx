@@ -706,7 +706,12 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     setObservability(null);
     try {
       const window_ = rangeWindow(rangeKey);
-      const [resp, obs] = await Promise.all([
+      // Fetch stats and observability concurrently, but keep their failures
+      // independent: the newer observability panel must never take down the
+      // pre-existing latency/throughput view if its endpoint errors or is
+      // not yet deployed. Stats failure still surfaces the error banner;
+      // observability failure just leaves that section hidden.
+      const [statsResult, obsResult] = await Promise.allSettled([
         getProviderStats({
           provider: prov,
           model_id: '__all__',
@@ -719,9 +724,15 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
           to: window_.to,
         }),
       ]);
+      if (obsResult.status === 'fulfilled') {
+        setObservability(obsResult.value);
+      }
+      if (statsResult.status === 'rejected') {
+        throw statsResult.reason;
+      }
+      const resp = statsResult.value;
       setAllProviders(resp.providers);
       setAllPairs(resp.pairs);
-      setObservability(obs);
       const grouped: Record<string, ProviderStatsRow[]> = {};
       for (const row of resp.rows) {
         const key = row.model_id;

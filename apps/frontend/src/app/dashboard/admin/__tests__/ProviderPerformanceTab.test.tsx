@@ -80,7 +80,6 @@ vi.mock('@/lib/api/admin', async () => {
         },
       ],
       error_types: [{ error_type: 'rate_limited', count: 1, fraction: 0.5 }],
-      status_codes: [{ status_code: 429, count: 1 }],
       models: [
         {
           model_id: 'gpt-4o-mini',
@@ -90,15 +89,6 @@ vi.mock('@/lib/api/admin', async () => {
           cache_hit_count: 4,
           cache_read_tokens: 320,
           input_tokens: 1200,
-        },
-      ],
-      top_errors: [
-        {
-          error: 'rate limit exceeded',
-          count: 1,
-          status_code: 429,
-          model_id: 'gpt-4o-mini',
-          last_seen_at: '2026-05-07T20:30:00.000Z',
         },
       ],
     })),
@@ -131,8 +121,6 @@ describe('ProviderPerformanceTab', () => {
     expect(screen.getByText('Cache by model')).toBeInTheDocument();
     expect(screen.getByText('Error breakdown')).toBeInTheDocument();
     expect(screen.getByText('rate_limited')).toBeInTheDocument();
-    expect(screen.queryByText('Top errors')).not.toBeInTheDocument();
-    expect(screen.queryByText('rate limit exceeded')).not.toBeInTheDocument();
     expect(screen.queryByText('Errors and cache')).not.toBeInTheDocument();
   });
 });

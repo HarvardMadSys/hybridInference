@@ -1219,8 +1219,6 @@ __all__ = [
     "ProviderRouteApiKeyRef",
     "ProviderRouteItem",
     "ProviderRouteOption",
-    "ProviderStatusCodeRow",
-    "ProviderTopErrorRow",
     "RejectUserRequest",
     "RejectUserResponse",
     "ResumeUserRequest",
@@ -1433,13 +1431,6 @@ class ProviderErrorTypeRow(BaseModel):
     fraction: float
 
 
-class ProviderStatusCodeRow(BaseModel):
-    """Count of one HTTP status code bucket."""
-
-    status_code: int | None = None
-    count: int
-
-
 class ProviderModelObservabilityRow(BaseModel):
     """Provider observability totals for one model."""
 
@@ -1452,16 +1443,6 @@ class ProviderModelObservabilityRow(BaseModel):
     input_tokens: int
 
 
-class ProviderTopErrorRow(BaseModel):
-    """Frequently observed error text for a provider window."""
-
-    error: str
-    count: int
-    status_code: int | None = None
-    model_id: str | None = None
-    last_seen_at: datetime
-
-
 class ProviderObservabilityResponse(BaseModel):
     """Provider-scoped error and prompt-cache stats from api_logs."""
 
@@ -1471,9 +1452,7 @@ class ProviderObservabilityResponse(BaseModel):
     totals: ProviderObservabilityTotals
     buckets: list[ProviderObservabilityBucket]
     error_types: list[ProviderErrorTypeRow]
-    status_codes: list[ProviderStatusCodeRow]
     models: list[ProviderModelObservabilityRow]
-    top_errors: list[ProviderTopErrorRow]
 
 
 # ============================================================

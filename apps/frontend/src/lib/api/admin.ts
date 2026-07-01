@@ -967,11 +967,6 @@ export interface ProviderErrorTypeRow {
   fraction: number;
 }
 
-export interface ProviderStatusCodeRow {
-  status_code: number | null;
-  count: number;
-}
-
 export interface ProviderModelObservabilityRow {
   model_id: string;
   request_count: number;
@@ -982,14 +977,6 @@ export interface ProviderModelObservabilityRow {
   input_tokens: number;
 }
 
-export interface ProviderTopErrorRow {
-  error: string;
-  count: number;
-  status_code: number | null;
-  model_id: string | null;
-  last_seen_at: string;
-}
-
 export interface ProviderObservabilityResponse {
   provider: string;
   window: { from: string; to: string };
@@ -997,9 +984,7 @@ export interface ProviderObservabilityResponse {
   totals: ProviderObservabilityTotals;
   buckets: ProviderObservabilityBucket[];
   error_types: ProviderErrorTypeRow[];
-  status_codes: ProviderStatusCodeRow[];
   models: ProviderModelObservabilityRow[];
-  top_errors: ProviderTopErrorRow[];
 }
 
 export async function getProviderObservability(params: {
