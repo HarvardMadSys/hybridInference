@@ -69,6 +69,7 @@ async def test_api_logs_schema_contains_cost_columns(db_logger: DatabaseLogger):
         column_names = {row["column_name"] for row in rows}
 
     assert {"cache_read_tokens", "cache_write_tokens", "cost_usd"}.issubset(column_names)
+    assert {"served_model_id", "served_endpoint_id"}.issubset(column_names)
     assert "prompt_hash" not in column_names
     assert "response_hash" not in column_names
 
