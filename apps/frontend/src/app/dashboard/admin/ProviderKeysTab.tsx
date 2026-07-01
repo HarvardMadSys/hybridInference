@@ -209,7 +209,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   return (
     <div className="space-y-6">
       <div>
-        <label className="text-[12px] font-medium text-gray-500" htmlFor="provider-keys-select">
+        <label className="block text-[12px] font-medium text-gray-500" htmlFor="provider-keys-select">
           Selected provider
         </label>
         <select
@@ -353,7 +353,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <label
-                className="text-[12px] font-medium text-gray-500"
+                className="block text-[12px] font-medium text-gray-500"
                 htmlFor="provider-keys-form-provider"
               >
                 Provider
@@ -374,7 +374,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
             </div>
             <div>
               <label
-                className="text-[12px] font-medium text-gray-500"
+                className="block text-[12px] font-medium text-gray-500"
                 htmlFor="provider-keys-form-label"
               >
                 Label (optional)
@@ -391,7 +391,7 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
           </div>
           <div>
             <label
-              className="text-[12px] font-medium text-gray-500"
+              className="block text-[12px] font-medium text-gray-500"
               htmlFor="provider-keys-form-key"
             >
               API key
