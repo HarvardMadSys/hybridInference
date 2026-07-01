@@ -54,10 +54,27 @@ if "aiohttp" not in sys.modules:  # pragma: no cover - import-time shim
         subclass in aiohttp, so ``except aiohttp.ClientError`` paths catch it.
         """
 
+    class _ClientOSError(_ClientError, OSError):
+        """Stub for aiohttp.ClientOSError (socket errors: ECONNRESET, EPIPE).
+
+        Mirrors the real hierarchy (ClientOSError subclasses both ClientError
+        and OSError) so ``except aiohttp.ClientOSError`` / ``OSError`` paths
+        catch it.
+        """
+
+    class _ClientConnectorError(_ClientOSError):
+        """Stub for aiohttp.ClientConnectorError (fresh-connection failure).
+
+        Subclasses ClientOSError, matching aiohttp, so the stream_post retry
+        guard can distinguish a genuine connect failure from a stale socket.
+        """
+
     sys.modules["aiohttp"] = SimpleNamespace(
         ClientError=_ClientError,
         ClientResponseError=_ClientResponseError,
         ServerDisconnectedError=_ServerDisconnectedError,
+        ClientOSError=_ClientOSError,
+        ClientConnectorError=_ClientConnectorError,
         ClientTimeout=lambda total=None: None,
         ClientSession=_DummySession,
         TCPConnector=lambda **k: None,

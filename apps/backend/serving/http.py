@@ -158,13 +158,20 @@ class AsyncHTTPClient:
 
         Performs at most one transparent retry when the underlying TCP socket
         was a stale pooled keep-alive connection that the upstream had already
-        half-closed. aiohttp raises ``ServerDisconnectedError`` from
-        ``session.post(...).__aenter__()`` in that case — i.e. while sending
-        the request and reading status/headers, before any response body byte
-        has been read. The retry is scoped to that connect phase only; once
-        ``__aenter__`` returns, body iteration runs once with no retry, so
-        the upstream never sees a duplicate request after it has begun
-        responding.
+        dropped. A clean half-close surfaces as ``ServerDisconnectedError``,
+        but a socket the upstream reset with a TCP RST (or a half-open one we
+        write into) instead surfaces as ``ClientOSError`` / ``ConnectionResetError``
+        (ECONNRESET) or ``BrokenPipeError`` (EPIPE). All are raised from
+        ``session.post(...).__aenter__()`` — i.e. while sending the request and
+        reading status/headers, before any response body byte has been read —
+        so retrying once on a fresh connection is safe: the upstream has not
+        begun responding, so it never sees a duplicate after it started work.
+        The retry is scoped to that connect phase only; once ``__aenter__``
+        returns, body iteration runs once with no retry.
+
+        A ``ClientConnectorError`` (DNS failure, connection refused, TLS error
+        on a *fresh* connection) is a genuine connectivity failure rather than
+        a stale pooled socket, so it propagates without a retry.
 
         Args:
             url: Target URL.
@@ -187,8 +194,10 @@ class AsyncHTTPClient:
             timeout = aiohttp.ClientTimeout(total=None)
 
         # Phase 1: open connection. Retry once on a stale pooled keep-alive
-        # socket. Anything else (DNS, refused, TLS, mid-stream payload error)
-        # propagates so the router can decide what to do.
+        # socket, whether it surfaces as a clean disconnect or a reset/broken
+        # pipe. A fresh-connection failure (ClientConnectorError: DNS, refused,
+        # TLS) and anything else (mid-stream payload error) propagates so the
+        # router can decide what to do.
         max_attempts = 2
         cm: Any = None
         resp: Any = None
@@ -197,8 +206,15 @@ class AsyncHTTPClient:
             try:
                 resp = await cm.__aenter__()
                 break
-            except aiohttp.ServerDisconnectedError:
-                if attempt == max_attempts - 1:
+            except (
+                aiohttp.ServerDisconnectedError,
+                aiohttp.ClientOSError,
+                ConnectionResetError,
+            ) as err:
+                # ClientConnectorError (subclass of ClientOSError) means we
+                # never had a connection to go stale — a real connectivity
+                # failure. Don't retry it, and give up after the last attempt.
+                if isinstance(err, aiohttp.ClientConnectorError) or attempt == max_attempts - 1:
                     raise
                 ctx = req_ctx.get()
                 logger.info(
@@ -206,7 +222,7 @@ class AsyncHTTPClient:
                     extra={
                         "event": "http_retry",
                         "provider": str(ctx.get("provider", "unknown")),
-                        "reason": "ServerDisconnectedError",
+                        "reason": type(err).__name__,
                         "attempt": attempt + 1,
                     },
                 )
