@@ -62,6 +62,37 @@ def _normalize_text_content(content: Any) -> Any:
     return "\n".join(p for p in parts if p)
 
 
+def _key_pool_provider_label(config: Any) -> str:
+    """Return a stable operator-facing provider label for key-pool errors/logs."""
+    provider = getattr(config, "provider", None)
+    if isinstance(provider, str) and provider.strip():
+        return provider.strip()
+
+    metadata = getattr(config, "route_metadata", None)
+    if isinstance(metadata, dict):
+        for key in ("key_provider", "upstream_provider", "route_provider", "provider"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    base_url = getattr(config, "base_url", None)
+    if isinstance(base_url, str) and base_url.strip():
+        try:
+            host = (urlsplit(base_url).hostname or "").lower()
+        except ValueError:
+            host = ""
+        for known in ("openrouter", "featherless", "chutes", "minimax", "ollama"):
+            if known in host:
+                return known
+        if host:
+            return host
+
+    endpoint_id = getattr(config, "endpoint_id", None)
+    if isinstance(endpoint_id, str) and endpoint_id.strip():
+        return endpoint_id.strip()
+    return "unknown"
+
+
 class OpenAICompatAdapter(BaseAdapter):
     """Generic adapter for OpenAI-compatible APIs.
 
@@ -86,10 +117,11 @@ class OpenAICompatAdapter(BaseAdapter):
         # endpoint candidate. Per-key scarcity must be represented by separate
         # route entries, not hidden behind this adapter-level pool.
         self._key_pool: KeyPool | None = None
+        self._key_pool_provider_label = _key_pool_provider_label(config)
         if config.api_keys:
             self._key_pool = KeyPool(
                 keys=list(config.api_keys),
-                provider_label=config.provider,
+                provider_label=self._key_pool_provider_label,
             )
 
         logger.info(f"[OpenAICompat] Initialized for {config.id} at {config.base_url}")
@@ -130,7 +162,7 @@ class OpenAICompatAdapter(BaseAdapter):
             seed.append(static.strip())
         if not seed:
             return None
-        self._key_pool = KeyPool(keys=seed, provider_label=self.config.provider)
+        self._key_pool = KeyPool(keys=seed, provider_label=self._key_pool_provider_label)
         return self._key_pool
 
     def add_runtime_key(self, key: str) -> bool:
@@ -157,7 +189,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 seed.append(static.strip())
             if normalized not in seed:
                 seed.append(normalized)
-            self._key_pool = KeyPool(keys=seed, provider_label=self.config.provider)
+            self._key_pool = KeyPool(keys=seed, provider_label=self._key_pool_provider_label)
             return True
         self._key_pool.add_key(normalized)
         return True
@@ -289,7 +321,7 @@ class OpenAICompatAdapter(BaseAdapter):
         from serving.utils import context as req_ctx
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
-        provider = self.config.provider
+        provider = self._key_pool_provider_label
 
         # Bound the loop to pool size — defensive; acquire already filters
         # muted keys, so we shouldn't reacquire the same just-muted one.
@@ -416,7 +448,7 @@ class OpenAICompatAdapter(BaseAdapter):
         from serving.utils import context as req_ctx
 
         affinity_key = req_ctx.get().get("auth_key_hash") or "_anon"
-        provider = self.config.provider
+        provider = self._key_pool_provider_label
         max_attempts = self._key_pool.size()
         if max_attempts <= 0:
             raise KeyPoolExhausted(f"No active API keys for provider {provider!r}")
