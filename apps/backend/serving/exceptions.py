@@ -369,6 +369,33 @@ def _upstream_error_raw(exc: BaseException | None) -> str | None:
     return None
 
 
+def generic_message_for_status(status_code: int) -> str:
+    """Return the generic, provider-free message for an HTTP status code."""
+    if status_code in _GENERIC_MESSAGES_BY_STATUS:
+        return _GENERIC_MESSAGES_BY_STATUS[status_code]
+    if 500 <= status_code < 600:
+        return "Internal server error"
+    return "Request failed"
+
+
+def user_safe_error_for_log(raw: str | None, status_code: int | None) -> str | None:
+    """Return user-safe error text for a stored ``api_logs`` row.
+
+    Used by log-display surfaces (e.g. the ``/user/recent-requests`` dashboard)
+    that read the persisted operator error string rather than a live exception.
+    Returns ``None`` when the row carries no error. Otherwise surfaces the
+    scrubbed upstream message, falling back to a generic status-based message
+    when the message is empty or would reveal an upstream quota/balance limit —
+    so a failed row never renders with blank error text.
+    """
+    if not raw:
+        return None
+    msg = user_safe_upstream_error(raw)
+    if msg:
+        return msg
+    return generic_message_for_status(status_code) if status_code is not None else "Request failed"
+
+
 def scrub_error_for_user(
     exc: BaseException | None,
     request_id: str | None,
@@ -392,12 +419,7 @@ def scrub_error_for_user(
     else:
         base = user_safe_upstream_error(_upstream_error_raw(exc)) or ""
         if not base:
-            if status_code in _GENERIC_MESSAGES_BY_STATUS:
-                base = _GENERIC_MESSAGES_BY_STATUS[status_code]
-            elif 500 <= status_code < 600:
-                base = "Internal server error"
-            else:
-                base = "Request failed"
+            base = generic_message_for_status(status_code)
 
     if request_id:
         return f"{base} (request_id: {request_id})"

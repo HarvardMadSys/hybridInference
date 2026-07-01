@@ -300,6 +300,31 @@ def test_user_safe_upstream_error_suppresses_quota_text():
     )
 
 
+def test_user_safe_error_for_log_falls_back_for_suppressed_quota():
+    """Stored-log display path must never render a failed row with blank error.
+
+    A suppressed quota/balance row falls back to the generic status message
+    instead of ``None`` (which would show as blank on the dashboard).
+    """
+    from serving.exceptions import user_safe_error_for_log
+
+    # No stored error → stays None (successful rows).
+    assert user_safe_error_for_log(None, 200) is None
+    assert user_safe_error_for_log("", 200) is None
+    # Suppressed quota/balance rows fall back to the generic status message.
+    assert user_safe_error_for_log('{"error": {"message": "Insufficient Balance"}}', 402) == (
+        "Request failed"
+    )
+    assert (
+        user_safe_error_for_log('{"error": {"message": "You exceeded your current quota"}}', 429)
+        == "Rate limit exceeded"
+    )
+    # Non-quota upstream messages still surface verbatim (identity scrubbed).
+    assert user_safe_error_for_log('{"error": {"message": "Model is overloaded"}}', 503) == (
+        "Model is overloaded"
+    )
+
+
 def test_upstream_error_without_body_drops_url():
     """A ClientResponseError with no body surfaces its message but never the URL."""
     exc = _make_client_response_error(
