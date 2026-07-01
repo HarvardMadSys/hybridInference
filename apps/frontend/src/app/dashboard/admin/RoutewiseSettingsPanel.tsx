@@ -26,6 +26,12 @@ type ProbeEndpointOption = {
   label: string;
 };
 
+// A probe sample for an endpoint that is no longer a live route is treated as a
+// stale leftover once its newest sample lags this far behind the freshest probe
+// in the table. Fresh probes within one cycle land seconds apart, so an hour is
+// a wide margin that only catches genuinely decommissioned endpoints.
+const PROBE_STALE_LOOKBEHIND_MS = 60 * 60 * 1000;
+
 interface RoutewiseSettingsPanelProps {
   modelId?: string;
   endpoints?: ProbeEndpointOption[];
@@ -131,20 +137,29 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
     const seen = new Set<string>();
     const latest: RoutewiseProbeSampleItem[] = [];
     const samples = Array.isArray(probeSamples) ? probeSamples : [];
+    // The list endpoint returns samples newest-first over a 24h window, so the
+    // first sample seen per endpoint is that endpoint's most recent probe.
     for (const sample of samples) {
-      // Drop persisted samples for endpoints that are no longer live route
-      // candidates (e.g. a provider replaced by a route override). Their last
-      // probe lingers in the 24h lookback and otherwise reads as a current
-      // failure. Fall back to showing everything when we have no live endpoint
-      // list to filter against.
-      if (liveEndpointIds.size > 0 && !liveEndpointIds.has(sample.endpoint_id)) {
-        continue;
-      }
       if (seen.has(sample.endpoint_id)) continue;
       seen.add(sample.endpoint_id);
       latest.push(sample);
     }
-    return latest;
+    // Hide rows that are almost certainly stale leftovers: an endpoint that is
+    // no longer a live route candidate (e.g. a provider replaced by a route
+    // override) whose newest sample also lags well behind the freshest probe in
+    // the table. This clears the "ghost" row a decommissioned endpoint leaves in
+    // the lookback window, while still showing every current route (even if its
+    // last probe is old) and any endpoint actually probed in the latest cycle.
+    const newestMs = latest.reduce((max, sample) => {
+      const parsed = Date.parse(sample.checked_at);
+      return Number.isFinite(parsed) && parsed > max ? parsed : max;
+    }, Number.NEGATIVE_INFINITY);
+    return latest.filter((sample) => {
+      if (liveEndpointIds.has(sample.endpoint_id)) return true;
+      const parsed = Date.parse(sample.checked_at);
+      if (!Number.isFinite(parsed) || !Number.isFinite(newestMs)) return true;
+      return newestMs - parsed <= PROBE_STALE_LOOKBEHIND_MS;
+    });
   }, [probeSamples, liveEndpointIds]);
 
   const loadSettings = useCallback(async () => {

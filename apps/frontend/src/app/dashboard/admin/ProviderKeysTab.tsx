@@ -209,7 +209,10 @@ export function ProviderKeysTab({ refreshKey = 0 }: Props) {
   return (
     <div className="space-y-6">
       <div>
-        <label className="block text-[12px] font-medium text-gray-500" htmlFor="provider-keys-select">
+        <label
+          className="block text-[12px] font-medium text-gray-500"
+          htmlFor="provider-keys-select"
+        >
           Selected provider
         </label>
         <select
