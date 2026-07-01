@@ -21,12 +21,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from serving.storage.database import DatabaseLogger
-from serving.storage.log_schema import ensure_api_logs_schema
+from serving.storage.log_schema import (
+    _API_LOGS_COLUMN_MIGRATIONS,
+    _API_LOGS_INDEXES,
+    ensure_api_logs_schema,
+)
 from serving.storage.postgres_log import PostgresLogStore
 
 
 def _capturing_conn() -> tuple[MagicMock, list[str]]:
-    """Return ``(conn, statements)`` recording every SQL string executed."""
+    """Return ``(conn, statements)`` recording every SQL string executed.
+
+    ``conn.fetch`` (the catalog snapshot the schema helper reads before issuing
+    DDL) defaults to empty, i.e. "nothing exists yet", so every migration/index
+    is emitted — the fresh-install path.
+    """
     statements: list[str] = []
     conn = MagicMock()
 
@@ -35,6 +44,7 @@ def _capturing_conn() -> tuple[MagicMock, list[str]]:
         return "OK"
 
     conn.execute = AsyncMock(side_effect=_execute)
+    conn.fetch = AsyncMock(return_value=[])
     return conn, statements
 
 
@@ -78,6 +88,30 @@ async def test_shared_helper_orders_served_index_after_column():
     conn, statements = _capturing_conn()
     await ensure_api_logs_schema(conn)
     _assert_served_columns_before_index(statements)
+
+
+@pytest.mark.asyncio
+async def test_helper_skips_migration_ddl_when_schema_current():
+    """Steady-state startup issues no ALTER/CREATE INDEX/DROP — only CREATE TABLE.
+
+    When the catalog snapshot reports every column and index already present,
+    the helper must not emit lock-taking migration DDL, so a restart under load
+    can't starve the ``api_logs`` lock queue.
+    """
+    conn, statements = _capturing_conn()
+    column_rows = [{"attname": name} for name, _ in _API_LOGS_COLUMN_MIGRATIONS]
+    index_rows = [{"indexname": name} for name, _ in _API_LOGS_INDEXES]
+    # First fetch = columns, second fetch = indexes (order matches the helper).
+    conn.fetch = AsyncMock(side_effect=[column_rows, index_rows])
+
+    await ensure_api_logs_schema(conn)
+
+    migrations = [
+        s for s in statements if s.strip().startswith(("ALTER TABLE", "CREATE INDEX", "DROP INDEX"))
+    ]
+    assert migrations == [], f"expected no migration DDL, got: {migrations}"
+    # The two idempotent CREATE TABLE IF NOT EXISTS statements still run.
+    assert all("CREATE TABLE IF NOT EXISTS" in s for s in statements)
 
 
 @pytest.mark.asyncio
