@@ -428,6 +428,74 @@ describe('ProviderRoutesTab', () => {
     });
   });
 
+  it('disables and enables routewise config routes with weight overrides', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(setRouteWeight).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'routewise',
+      endpoint_id: 'minimax-fast:featherless-api',
+      provider: 'featherless',
+      base_url: 'https://api.featherless.ai/v1',
+      yaml_weight: 1,
+      override_weight: 0,
+      effective_weight: 0,
+    });
+    vi.mocked(clearRouteWeight).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'routewise',
+      endpoint_id: 'minimax-fast:featherless-api',
+      provider: 'featherless',
+      base_url: 'https://api.featherless.ai/v1',
+      yaml_weight: 1,
+      override_weight: null,
+      effective_weight: 1,
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Disable' }));
+
+    await waitFor(() => {
+      expect(setRouteWeight).toHaveBeenCalledWith(
+        'minimax-fast',
+        'minimax-fast:featherless-api',
+        0,
+      );
+    });
+    expect(await screen.findByText('Disabled')).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
+
+    await waitFor(() => {
+      expect(clearRouteWeight).toHaveBeenCalledWith('minimax-fast', 'minimax-fast:featherless-api');
+    });
+  });
+
+  it('opens the provider route editor in a dialog', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Edit provider route' });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Override provider')).toHaveValue('featherless');
+    expect(within(dialog).getByLabelText('Provider model ID')).toHaveValue(
+      'MiniMaxAI/MiniMax-M2.5',
+    );
+    expect(within(dialog).getByLabelText('Local concurrency limit')).toHaveValue(1);
+  });
+
   it('updates provider route target', async () => {
     vi.mocked(listProviderRoutes).mockResolvedValue({
       provider_options: providerOptions,
@@ -454,6 +522,7 @@ describe('ProviderRoutesTab', () => {
       },
       provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: null,
+      concurrency_limit: 3,
       endpoint_id: 'minimax-fast:openrouter[parasail]-api',
       source: 'override',
       updated_by: '127.0.0.1',
@@ -470,6 +539,9 @@ describe('ProviderRoutesTab', () => {
     });
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
+    });
+    fireEvent.change(screen.getByLabelText('Local concurrency limit'), {
+      target: { value: '3' },
     });
 
     await waitFor(() => {
@@ -492,6 +564,7 @@ describe('ProviderRoutesTab', () => {
           api_key_id: 'key-1',
           provider_model_id: 'minimax/minimax-m2.5',
           quota_limit: null,
+          concurrency_limit: 3,
         },
       );
     });
@@ -549,6 +622,7 @@ describe('ProviderRoutesTab', () => {
           api_key_id: 'key-1',
           provider_model_id: 'minimax/minimax-m2.5',
           quota_limit: null,
+          concurrency_limit: 1,
         },
       );
     });
@@ -620,6 +694,7 @@ describe('ProviderRoutesTab', () => {
         api_key_id: null,
         provider_model_id: 'minimax/minimax-m2.5',
         quota_limit: 8000,
+        concurrency_limit: null,
       });
     });
   });

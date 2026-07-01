@@ -1472,6 +1472,7 @@ export interface UpdateProviderRoutePayload {
   api_key_id?: string | null;
   provider_model_id?: string | null;
   quota_limit?: number | null;
+  concurrency_limit?: number | null;
 }
 
 export type ProviderRouteStrategy = 'fixed' | 'routewise';
@@ -1578,6 +1579,7 @@ export async function updateProviderRoute(
         api_key_id: payload.api_key_id ?? null,
         provider_model_id: payload.provider_model_id ?? null,
         quota_limit: payload.quota_limit ?? null,
+        concurrency_limit: payload.concurrency_limit ?? null,
       }),
     },
   );
@@ -1603,6 +1605,7 @@ export async function verifyProviderRoute(
         api_key_id: payload.api_key_id ?? null,
         provider_model_id: payload.provider_model_id ?? null,
         quota_limit: payload.quota_limit ?? null,
+        concurrency_limit: payload.concurrency_limit ?? null,
       }),
     },
   );

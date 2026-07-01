@@ -1157,6 +1157,7 @@ class UpdateProviderRouteRequest(BaseModel):
     api_key_id: str | None = Field(None, min_length=1, max_length=128)
     provider_model_id: str | None = Field(None, min_length=1, max_length=512)
     quota_limit: int | None = Field(None, ge=1)
+    concurrency_limit: int | None = Field(None, ge=1)
 
 
 class VerifyProviderRouteResponse(BaseModel):

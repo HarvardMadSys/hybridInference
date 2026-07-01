@@ -404,6 +404,7 @@ describe('provider route client', () => {
           },
           provider_model_id: 'minimax/minimax-m2.5',
           quota_limit: null,
+          concurrency_limit: 3,
           endpoint_id: 'minimax-fast:openrouter[parasail]-api',
           yaml_weight: 1,
           effective_weight: 1,
@@ -422,6 +423,7 @@ describe('provider route client', () => {
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: 8000,
+      concurrency_limit: 3,
     });
 
     expect(out.provider).toBe('featherless');
@@ -440,6 +442,7 @@ describe('provider route client', () => {
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: 8000,
+      concurrency_limit: 3,
     });
   });
 
@@ -458,6 +461,7 @@ describe('provider route client', () => {
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: 8000,
+      concurrency_limit: 3,
     });
 
     expect(out.ok).toBe(true);
@@ -474,6 +478,7 @@ describe('provider route client', () => {
       api_key_id: 'key-1',
       provider_model_id: 'minimax/minimax-m2.5',
       quota_limit: 8000,
+      concurrency_limit: 3,
     });
   });
 

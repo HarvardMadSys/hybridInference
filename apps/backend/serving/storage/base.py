@@ -804,6 +804,7 @@ class OperationalStore(ABC):
         api_key_id: str | None,
         provider_model_id: str,
         quota_limit: int | None,
+        concurrency_limit: int | None,
         updated_by: str | None,
     ) -> None:
         """Upsert a runtime provider route override row."""
