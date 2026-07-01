@@ -57,11 +57,11 @@ vi.mock('@/lib/api/admin', async () => {
       },
       bucket_minutes: 60,
       totals: {
-        request_count: 12,
-        error_count: 2,
-        rate_limited_count: 1,
-        timeout_count: 1,
-        server_error_count: 0,
+        request_count: 20,
+        error_count: 12,
+        rate_limited_count: 4,
+        timeout_count: 2,
+        server_error_count: 2,
         cache_eligible_count: 10,
         cache_hit_count: 4,
         input_tokens: 1200,
@@ -71,15 +71,23 @@ vi.mock('@/lib/api/admin', async () => {
       buckets: [
         {
           start_time: '2026-05-07T20:00:00.000Z',
-          request_count: 12,
-          error_count: 2,
+          request_count: 20,
+          error_count: 12,
           cache_eligible_count: 10,
           cache_hit_count: 4,
           cache_read_tokens: 320,
           input_tokens: 1200,
         },
       ],
-      error_types: [{ error_type: 'rate_limited', count: 1, fraction: 0.5 }],
+      error_types: [
+        { error_type: 'rate_limited', count: 4, fraction: 4 / 12 },
+        { error_type: 'timeout', count: 2, fraction: 2 / 12 },
+        { error_type: 'server_error', count: 2, fraction: 2 / 12 },
+        { error_type: 'validation', count: 1, fraction: 1 / 12 },
+        { error_type: 'auth', count: 1, fraction: 1 / 12 },
+        { error_type: 'not_found', count: 1, fraction: 1 / 12 },
+        { error_type: 'model_not_found', count: 1, fraction: 1 / 12 },
+      ],
     })),
     getTtftScatter: vi.fn(async () => ({ models: [] })),
   };
@@ -113,6 +121,7 @@ describe('ProviderPerformanceTab', () => {
     expect(screen.getByText('Eligible reqs')).toBeInTheDocument();
     expect(screen.getByText('Error breakdown')).toBeInTheDocument();
     expect(screen.getByText('rate_limited')).toBeInTheDocument();
+    expect(screen.getByText('other')).toBeInTheDocument();
     expect(screen.queryByText('Errors and cache')).not.toBeInTheDocument();
   });
 });

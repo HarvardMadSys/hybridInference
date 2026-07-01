@@ -76,6 +76,25 @@ function fmtCompactCount(n: number): string {
   return Math.round(n).toLocaleString();
 }
 
+function compactErrorBreakdown(
+  rows: ProviderObservabilityResponse['error_types'],
+  limit = 6,
+): ProviderObservabilityResponse['error_types'] {
+  const visible = rows.slice(0, limit);
+  if (rows.length <= limit) return visible;
+
+  const remainder = rows.slice(limit).reduce(
+    (acc, row) => ({
+      count: acc.count + row.count,
+      fraction: acc.fraction + row.fraction,
+    }),
+    { count: 0, fraction: 0 },
+  );
+  if (remainder.count <= 0) return visible;
+
+  return [...visible, { error_type: 'other', ...remainder }];
+}
+
 type AxisDomain = [number, number] | ['auto', 'auto'];
 type Scale = 'linear' | 'log';
 
@@ -504,6 +523,8 @@ function ProviderObservabilitySection({ data }: { data: ProviderObservabilityRes
     error_rate: pctValue(bucket.error_count, bucket.request_count),
     cache_hit_rate: pctValue(bucket.cache_hit_count, bucket.cache_eligible_count),
   }));
+  const errorBreakdownRows = compactErrorBreakdown(data.error_types);
+  const maxErrorBreakdownCount = Math.max(...errorBreakdownRows.map((row) => row.count), 1);
 
   return (
     <div className="space-y-6">
@@ -554,20 +575,23 @@ function ProviderObservabilitySection({ data }: { data: ProviderObservabilityRes
               <p className="text-[12px] text-gray-400">No errors in this range.</p>
             ) : (
               <div className="space-y-2">
-                {data.error_types.slice(0, 8).map((row) => (
-                  <div key={row.error_type}>
-                    <div className="flex items-center justify-between gap-3 text-[12px]">
-                      <span className="font-mono text-gray-700">{row.error_type}</span>
-                      <span className="tabular-nums text-gray-500">
-                        {fmtCompactCount(row.count)} · {(row.fraction * 100).toFixed(1)}%
-                      </span>
-                    </div>
-                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-gray-100">
+                {errorBreakdownRows.map((row) => (
+                  <div
+                    key={row.error_type}
+                    className="grid grid-cols-[minmax(96px,0.8fr)_minmax(120px,1.4fr)_auto] items-center gap-3 text-[12px]"
+                  >
+                    <span className="truncate font-mono text-gray-700">{row.error_type}</span>
+                    <div className="h-5 overflow-hidden rounded bg-red-50">
                       <div
-                        className="h-full rounded-full bg-red-500"
-                        style={{ width: `${Math.min(100, row.fraction * 100)}%` }}
+                        className="h-full rounded bg-red-500"
+                        style={{
+                          width: `${Math.max(3, (row.count / maxErrorBreakdownCount) * 100)}%`,
+                        }}
                       />
                     </div>
+                    <span className="text-right tabular-nums text-gray-500">
+                      {fmtCompactCount(row.count)} · {(row.fraction * 100).toFixed(1)}%
+                    </span>
                   </div>
                 ))}
               </div>
