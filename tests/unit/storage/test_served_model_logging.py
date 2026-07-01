@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
 
 # conn.execute is called as (sql, $1, $2, ...), so args[0] is the SQL string and
@@ -79,3 +80,29 @@ async def test_served_endpoint_falls_back_to_base_url_then_provider():
     await _log(store2, provider="minimax", metadata={})
     args2 = conn2.execute.await_args.args
     assert args2[SERVED_ENDPOINT_ARG] == "minimax"
+
+
+@pytest.mark.asyncio
+async def test_create_tables_migrates_served_columns():
+    """DatabaseLogger._create_tables (the schema path that actually runs at
+    startup) must add the served_model_id / served_endpoint_id columns that
+    PostgresLogStore.log_request inserts into. Without this migration, every
+    request-log insert fails with UndefinedColumnError on an existing DB.
+    """
+    conn = MagicMock()
+    conn.execute = AsyncMock(return_value="")
+    acquire_cm = MagicMock()
+    acquire_cm.__aenter__ = AsyncMock(return_value=conn)
+    acquire_cm.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.acquire.return_value = acquire_cm
+
+    logger_ = DatabaseLogger({}, store_full_prompts=True)
+    logger_.pool = pool
+    await logger_._create_tables()
+
+    executed_sql = " ".join(
+        call.args[0] for call in conn.execute.await_args_list if call.args
+    )
+    assert "ADD COLUMN IF NOT EXISTS served_model_id" in executed_sql
+    assert "ADD COLUMN IF NOT EXISTS served_endpoint_id" in executed_sql
