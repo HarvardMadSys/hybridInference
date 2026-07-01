@@ -96,6 +96,7 @@ FROM (
         END AS throughput_tps
     FROM api_logs
     WHERE timestamp >= $1 AND timestamp < $2
+      AND provider NOT IN ('', 'router')
       -- Exclude embeddings entirely from the provider rollup: they have a
       -- different latency profile and no completion tokens, so they'd skew the
       -- chat-performance KPIs (request/error counts, ttft/latency/throughput,

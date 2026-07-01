@@ -246,6 +246,7 @@ async def admin_provider_token_usage(
                 COALESCE(SUM(request_count), 0)::BIGINT            AS request_count
             FROM provider_hourly_stats
             WHERE hour_bucket >= $1 AND hour_bucket < $2
+              AND provider NOT IN ('', 'router')
             GROUP BY provider, model_id
             ORDER BY (
                   COALESCE(SUM(total_prompt_tokens), 0)
@@ -258,7 +259,12 @@ async def admin_provider_token_usage(
             end,
         )
 
-    out_rows = [ProviderTokenUsageRow(**dict(r)) for r in rows]
+    out_rows: list[ProviderTokenUsageRow] = []
+    for row in rows:
+        row_dict = dict(row)
+        if row_dict.get("provider") in {"", "router"}:
+            continue
+        out_rows.append(ProviderTokenUsageRow(**row_dict))
     totals = ProviderTokenUsageTotals(
         input_tokens=sum(r.input_tokens for r in out_rows),
         output_tokens=sum(r.output_tokens for r in out_rows),

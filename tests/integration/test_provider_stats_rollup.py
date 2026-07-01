@@ -293,6 +293,73 @@ async def test_run_rollup_excludes_embeddings(db_logger: DatabaseLogger):
 
 
 @pytest.mark.asyncio
+async def test_run_rollup_excludes_router_placeholder_provider(db_logger: DatabaseLogger):
+    """Synthetic labels are not upstream provider rollup buckets."""
+    from serving.admin.provider_stats_rollup import run_rollup
+
+    assert db_logger.pool is not None
+    pool = db_logger.pool
+
+    hour = datetime(2026, 5, 2, 14, 0, tzinfo=timezone.utc)
+    await _insert_api_log(
+        pool,
+        request_id="router-placeholder",
+        provider="router",
+        model_id="glm-5.2",
+        timestamp=hour + timedelta(minutes=5),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=10,
+        prompt_tokens=None,
+        completion_tokens=None,
+        status_code=404,
+        error="Model 'glm-5.2' not found",
+    )
+    await _insert_api_log(
+        pool,
+        request_id="empty-placeholder",
+        provider="",
+        model_id="rejected-model",
+        timestamp=hour + timedelta(minutes=8),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=10,
+        prompt_tokens=50,
+        completion_tokens=0,
+        status_code=400,
+        error="rejected",
+    )
+    await _insert_api_log(
+        pool,
+        request_id="upstream-row",
+        provider="zai",
+        model_id="glm-5.2",
+        timestamp=hour + timedelta(minutes=10),
+        stream=False,
+        ttft_ms=None,
+        latency_ms=4000,
+        prompt_tokens=100,
+        completion_tokens=20,
+    )
+
+    written = await run_rollup(pool, start=hour, end=hour + timedelta(hours=1))
+    assert written == 1
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT provider, model_id, request_count
+            FROM provider_hourly_stats
+            ORDER BY provider, model_id
+            """
+        )
+
+    assert [dict(row) for row in rows] == [
+        {"provider": "zai", "model_id": "glm-5.2", "request_count": 1}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_rollup_is_idempotent(db_logger: DatabaseLogger):
     from serving.admin.provider_stats_rollup import run_rollup
 
