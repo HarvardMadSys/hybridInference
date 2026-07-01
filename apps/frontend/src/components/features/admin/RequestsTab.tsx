@@ -174,7 +174,13 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
   }, []);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || isInteractiveTarget(event.target)) return;
+    // Mouse only. Touch/pen scroll natively now (see the container's
+    // touch-action) so they keep inertial/momentum scrolling — driving
+    // scrollLeft from pointer events would pin the table 1:1 to the finger with
+    // no fling, which felt like "each swipe only moves a bit". The click-drag
+    // affordance and synced top scrollbar are still useful for mouse users.
+    if (event.pointerType !== 'mouse' || event.button !== 0 || isInteractiveTarget(event.target))
+      return;
 
     const scrollContainer = scrollRef.current;
     if (!scrollContainer || scrollContainer.scrollWidth <= scrollContainer.clientWidth) return;
@@ -297,7 +303,7 @@ function RequestTableScrollArea({ children }: { children: ReactNode }) {
       )}
       <div
         ref={scrollRef}
-        className={`overflow-x-auto touch-pan-y ${hasOverflow ? 'cursor-grab active:cursor-grabbing' : ''}`}
+        className={`overflow-x-auto overscroll-x-contain ${hasOverflow ? 'cursor-grab active:cursor-grabbing' : ''}`}
         onScroll={(event) => syncScroll(event.currentTarget)}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
