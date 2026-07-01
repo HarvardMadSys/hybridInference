@@ -948,7 +948,13 @@ class RouteWiseRouter(BaseRouter):
             model_id = getattr(route_cfg, "canonical_model_id", None) or route_key
             if model_id in self.route_candidates:
                 continue
-            candidates = build_provider_candidates(model_id, route_cfg.adapters)
+            get_effective_adapters = getattr(self.fixed_router, "_get_effective_adapters", None)
+            adapters_with_weights = (
+                get_effective_adapters(route_key, route_cfg)
+                if callable(get_effective_adapters)
+                else route_cfg.adapters
+            )
+            candidates = build_provider_candidates(model_id, adapters_with_weights)
             self.route_candidates[model_id] = candidates
             self.classified[model_id] = [
                 (candidate.adapter, candidate.weight, candidate.provider_type)

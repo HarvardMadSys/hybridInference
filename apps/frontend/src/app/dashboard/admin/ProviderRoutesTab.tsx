@@ -41,6 +41,7 @@ type RouteForm = {
   apiKeyId: string;
   providerModelId: string;
   quotaLimit: string;
+  concurrencyLimit: string;
 };
 
 type CreateRouteForm = {
@@ -489,6 +490,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     apiKeyId: '',
     providerModelId: '',
     quotaLimit: '',
+    concurrencyLimit: '',
   });
   const [createForm, setCreateForm] = useState<CreateRouteForm>(emptyCreateForm);
   const [keyOptions, setKeyOptions] = useState<ProviderApiKeyItem[]>([]);
@@ -601,6 +603,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const quotaLimitValid =
     !editsLocalQuota ||
     (parsedQuotaLimit !== null && Number.isInteger(parsedQuotaLimit) && parsedQuotaLimit > 0);
+  const editsConcurrencyLimit = editingRoute?.route_type === 'concurrency';
+  const parsedConcurrencyLimit = editsConcurrencyLimit
+    ? Number.parseInt(form.concurrencyLimit, 10)
+    : null;
+  const concurrencyLimitValid =
+    !editsConcurrencyLimit ||
+    (parsedConcurrencyLimit !== null &&
+      Number.isInteger(parsedConcurrencyLimit) &&
+      parsedConcurrencyLimit > 0);
   const parsedCreateQuotaLimit =
     createForm.routeType === 'quota' ? Number.parseInt(createForm.quotaLimit, 10) : null;
   const parsedCreateConcurrencyLimit =
@@ -652,7 +663,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     Boolean(form.baseUrl.trim()) &&
     Boolean(form.providerModelId.trim()) &&
     formOpenRouterProviderValid &&
-    quotaLimitValid;
+    quotaLimitValid &&
+    concurrencyLimitValid;
   const editRoutePayload = useMemo(() => {
     if (!editingRoute) {
       return null;
@@ -670,16 +682,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       api_key_id: form.apiKeyId || null,
       provider_model_id: form.providerModelId.trim(),
       quota_limit: editsLocalQuota ? parsedQuotaLimit : null,
+      concurrency_limit: editsConcurrencyLimit ? parsedConcurrencyLimit : null,
     };
   }, [
+    editsConcurrencyLimit,
     editingRoute,
     editsLocalQuota,
     form.apiKeyId,
     form.baseUrl,
+    form.concurrencyLimit,
     form.openRouterProvider,
     form.openRouterSort,
     form.providerModelId,
     form.upstreamProvider,
+    parsedConcurrencyLimit,
     parsedQuotaLimit,
     selectedOpenRouterProvider,
   ]);
@@ -750,6 +766,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         apiKeyId: '',
         providerModelId: '',
         quotaLimit: '',
+        concurrencyLimit: '',
       });
       setKeyOptions([]);
       return;
@@ -763,6 +780,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       apiKeyId: editingRoute.api_key_id ?? '',
       providerModelId: editingRoute.provider_model_id ?? '',
       quotaLimit: editingRoute.quota_limit ? String(editingRoute.quota_limit) : '',
+      concurrencyLimit: editingRoute.concurrency_limit
+        ? String(editingRoute.concurrency_limit)
+        : '',
     });
   }, [editingRoute]);
 
@@ -1016,6 +1036,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           ? (editingRoute.provider_model_id ?? current.providerModelId)
           : defaultProviderModelIdFor(upstreamProvider, selectedRoutes) || current.providerModelId,
       quotaLimit: current.quotaLimit,
+      concurrencyLimit: current.concurrencyLimit,
     }));
   };
 
@@ -1348,6 +1369,44 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     }
   };
 
+  const onDisableRoute = async (route: ProviderRoute) => {
+    const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
+    setSavingWeightKey(key);
+    try {
+      const updated = await setRouteWeight(route.model_id, route.endpoint_id, 0);
+      replaceRouteWeight(updated);
+      setDraftWeights((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      toast.success(`Disabled ${route.endpoint_id}.`);
+    } catch (err) {
+      toast.error(`Disable failed: ${getErrorMessage(err)}`);
+    } finally {
+      setSavingWeightKey(null);
+    }
+  };
+
+  const onEnableRoute = async (route: ProviderRoute) => {
+    const key = routeWeightKey({ model_id: route.model_id, endpoint_id: route.endpoint_id });
+    setSavingWeightKey(key);
+    try {
+      const updated = await clearRouteWeight(route.model_id, route.endpoint_id);
+      replaceRouteWeight(updated);
+      setDraftWeights((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+      toast.success(`Enabled ${route.endpoint_id}.`);
+    } catch (err) {
+      toast.error(`Enable failed: ${getErrorMessage(err)}`);
+    } finally {
+      setSavingWeightKey(null);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -1461,6 +1520,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                 parsedDraftWeight !== null && parsedDraftWeight !== effectiveWeight;
               const isSavingWeight = savingWeightKey === weightKey;
               const hasWeightOverride = routeWeight?.override_weight != null;
+              const routeDisabled = effectiveWeight <= 0;
               const editableConcurrencyLimit = canEditConcurrencyLimit(route);
               const draftConcurrencyLimit =
                 draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
@@ -1621,14 +1681,16 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     </div>
                     <span
                       className={
-                        route.source === 'override'
-                          ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
-                          : route.source === 'runtime'
-                            ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
-                            : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                        routeDisabled
+                          ? 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                          : route.source === 'override'
+                            ? 'inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700'
+                            : route.source === 'runtime'
+                              ? 'inline-flex rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700'
+                              : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
                       }
                     >
-                      {sourceLabel(route)}
+                      {routeDisabled ? 'Disabled' : sourceLabel(route)}
                     </span>
                   </div>
                   <div className="flex flex-wrap items-start justify-end gap-1 justify-self-end">
@@ -1642,6 +1704,29 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         {resettingKey === key ? 'Resetting...' : 'Reset config'}
                       </button>
                     )}
+                    {isRoutewise && route.source !== 'runtime' && !routeDisabled && (
+                      <button
+                        type="button"
+                        onClick={() => void onDisableRoute(route)}
+                        disabled={isSavingWeight}
+                        className="rounded-md px-2 py-1 text-[12px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+                      >
+                        {isSavingWeight ? 'Disabling...' : 'Disable'}
+                      </button>
+                    )}
+                    {isRoutewise &&
+                      route.source !== 'runtime' &&
+                      routeDisabled &&
+                      hasWeightOverride && (
+                        <button
+                          type="button"
+                          onClick={() => void onEnableRoute(route)}
+                          disabled={isSavingWeight}
+                          className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
+                        >
+                          {isSavingWeight ? 'Enabling...' : 'Enable'}
+                        </button>
+                      )}
                     {route.source === 'runtime' ? (
                       <button
                         type="button"
@@ -2144,217 +2229,260 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       )}
 
       {editingRoute && (
-        <form onSubmit={onSubmit} className="rounded-lg border border-gray-200 bg-white p-4">
-          <div className="mb-4 flex items-start justify-between gap-3">
-            <div>
-              <h3 className="text-[14px] font-semibold text-gray-900">Edit provider route</h3>
-              <p className="mt-1 font-mono text-[12px] text-gray-400">
-                {editingRoute.model_id} / {editingRoute.provider} / {editingRoute.route_type}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => setEditingRoute(null)}
-              className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100"
-            >
-              Close
-            </button>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="route-provider">
-                Override provider
-              </label>
-              <select
-                id="route-provider"
-                value={form.upstreamProvider}
-                onChange={(event) => onUpstreamProviderChange(event.target.value)}
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                required
-              >
-                {providerSelectOptions.map((option) => (
-                  <option key={option.provider} value={option.provider}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="route-api-key">
-                API key
-              </label>
-              <select
-                id="route-api-key"
-                value={form.apiKeyId}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, apiKeyId: event.target.value }))
-                }
-                disabled={keysLoading}
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
-              >
-                <option value="">{defaultKeyOptionLabel(keyProvider)}</option>
-                {keyOptions.map((key) => (
-                  <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
-                    {key.label ? `${key.label} · ` : ''}
-                    {key.key_prefix} ({key.source})
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="mt-3">
-            <label className="text-[12px] font-medium text-gray-500" htmlFor="route-base-url">
-              Base URL
-            </label>
-            <input
-              id="route-base-url"
-              type="url"
-              value={form.baseUrl}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, baseUrl: event.target.value }))
-              }
-              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-              required
-            />
-          </div>
-
-          <div className="mt-3">
-            <label
-              className="text-[12px] font-medium text-gray-500"
-              htmlFor="route-provider-model-id"
-            >
-              Provider model ID
-            </label>
-            <input
-              id="route-provider-model-id"
-              type="text"
-              value={form.providerModelId}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, providerModelId: event.target.value }))
-              }
-              className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-              required
-            />
-          </div>
-
-          {form.upstreamProvider === 'openrouter' && (
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <label
-                    className="text-[12px] font-medium text-gray-500"
-                    htmlFor="route-openrouter-routing"
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-900/30 px-4 py-8">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-provider-route-title"
+            className="mx-auto w-full max-w-5xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl"
+          >
+            <form onSubmit={onSubmit}>
+              <div className="mb-4 flex items-start justify-between gap-3">
+                <div>
+                  <h3
+                    id="edit-provider-route-title"
+                    className="text-[14px] font-semibold text-gray-900"
                   >
-                    OpenRouter routing
+                    Edit provider route
+                  </h3>
+                  <p className="mt-1 font-mono text-[12px] text-gray-400">
+                    {editingRoute.model_id} / {editingRoute.provider} / {editingRoute.route_type}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingRoute(null)}
+                  className="rounded-md px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-100"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                <div>
+                  <label className="text-[12px] font-medium text-gray-500" htmlFor="route-provider">
+                    Override provider
                   </label>
-                  {openRouterProvidersLoading && (
-                    <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
+                  <select
+                    id="route-provider"
+                    value={form.upstreamProvider}
+                    onChange={(event) => onUpstreamProviderChange(event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    required
+                  >
+                    {providerSelectOptions.map((option) => (
+                      <option key={option.provider} value={option.provider}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[12px] font-medium text-gray-500" htmlFor="route-api-key">
+                    API key
+                  </label>
+                  <select
+                    id="route-api-key"
+                    value={form.apiKeyId}
+                    onChange={(event) =>
+                      setForm((current) => ({ ...current, apiKeyId: event.target.value }))
+                    }
+                    disabled={keysLoading}
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none disabled:opacity-50"
+                  >
+                    <option value="">{defaultKeyOptionLabel(keyProvider)}</option>
+                    {keyOptions.map((key) => (
+                      <option key={key.id ?? key.key_prefix} value={key.id ?? ''}>
+                        {key.label ? `${key.label} · ` : ''}
+                        {key.key_prefix} ({key.source})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-3">
+                <label className="text-[12px] font-medium text-gray-500" htmlFor="route-base-url">
+                  Base URL
+                </label>
+                <input
+                  id="route-base-url"
+                  type="url"
+                  value={form.baseUrl}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, baseUrl: event.target.value }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                  required
+                />
+              </div>
+
+              <div className="mt-3">
+                <label
+                  className="text-[12px] font-medium text-gray-500"
+                  htmlFor="route-provider-model-id"
+                >
+                  Provider model ID
+                </label>
+                <input
+                  id="route-provider-model-id"
+                  type="text"
+                  value={form.providerModelId}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, providerModelId: event.target.value }))
+                  }
+                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                  required
+                />
+              </div>
+
+              {form.upstreamProvider === 'openrouter' && (
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <div className="flex items-center gap-1.5">
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="route-openrouter-routing"
+                      >
+                        OpenRouter routing
+                      </label>
+                      {openRouterProvidersLoading && (
+                        <span className="h-3 w-3 animate-spin rounded-full border border-gray-200 border-t-gray-700" />
+                      )}
+                    </div>
+                    <select
+                      id="route-openrouter-routing"
+                      value={openRouterRoutingValue(form.openRouterProvider, form.openRouterSort)}
+                      onChange={(event) => {
+                        const routingValue = event.target.value;
+                        const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
+                        setForm((current) => ({
+                          ...current,
+                          openRouterProvider,
+                          openRouterSort: openRouterSortFromRoutingValue(routingValue),
+                          customOpenRouterProvider:
+                            openRouterProvider === OPENROUTER_PROVIDER_CUSTOM
+                              ? current.customOpenRouterProvider
+                              : '',
+                        }));
+                      }}
+                      className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    >
+                      {editOpenRouterRoutingOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {form.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
+                    <div>
+                      <label
+                        className="text-[12px] font-medium text-gray-500"
+                        htmlFor="route-custom-openrouter-provider"
+                      >
+                        Custom OpenRouter provider
+                      </label>
+                      <input
+                        id="route-custom-openrouter-provider"
+                        type="text"
+                        value={form.customOpenRouterProvider}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            customOpenRouterProvider: event.target.value,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
+                        placeholder="provider-slug"
+                        required
+                      />
+                    </div>
                   )}
                 </div>
-                <select
-                  id="route-openrouter-routing"
-                  value={openRouterRoutingValue(form.openRouterProvider, form.openRouterSort)}
-                  onChange={(event) => {
-                    const routingValue = event.target.value;
-                    const openRouterProvider = openRouterProviderFromRoutingValue(routingValue);
-                    setForm((current) => ({
-                      ...current,
-                      openRouterProvider,
-                      openRouterSort: openRouterSortFromRoutingValue(routingValue),
-                      customOpenRouterProvider:
-                        openRouterProvider === OPENROUTER_PROVIDER_CUSTOM
-                          ? current.customOpenRouterProvider
-                          : '',
-                    }));
-                  }}
-                  className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                >
-                  {editOpenRouterRoutingOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {form.openRouterProvider === OPENROUTER_PROVIDER_CUSTOM && (
-                <div>
+              )}
+
+              {editsLocalQuota && (
+                <div className="mt-3">
                   <label
                     className="text-[12px] font-medium text-gray-500"
-                    htmlFor="route-custom-openrouter-provider"
+                    htmlFor="route-quota-limit"
                   >
-                    Custom OpenRouter provider
+                    Local daily quota
                   </label>
                   <input
-                    id="route-custom-openrouter-provider"
-                    type="text"
-                    value={form.customOpenRouterProvider}
+                    id="route-quota-limit"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={form.quotaLimit}
                     onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        customOpenRouterProvider: event.target.value,
-                      }))
+                      setForm((current) => ({ ...current, quotaLimit: event.target.value }))
                     }
-                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 font-mono text-[13px] focus:border-gray-400 focus:outline-none"
-                    placeholder="provider-slug"
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
                     required
                   />
                 </div>
               )}
-            </div>
-          )}
 
-          {editsLocalQuota && (
-            <div className="mt-3">
-              <label className="text-[12px] font-medium text-gray-500" htmlFor="route-quota-limit">
-                Local daily quota
-              </label>
-              <input
-                id="route-quota-limit"
-                type="number"
-                min={1}
-                step={1}
-                value={form.quotaLimit}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, quotaLimit: event.target.value }))
-                }
-                className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
-                required
-              />
-            </div>
-          )}
+              {editsConcurrencyLimit && (
+                <div className="mt-3">
+                  <label
+                    className="text-[12px] font-medium text-gray-500"
+                    htmlFor="route-concurrency-limit"
+                  >
+                    Local concurrency limit
+                  </label>
+                  <input
+                    id="route-concurrency-limit"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={form.concurrencyLimit}
+                    onChange={(event) =>
+                      setForm((current) => ({
+                        ...current,
+                        concurrencyLimit: event.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none"
+                    required
+                  />
+                </div>
+              )}
 
-          <div className="mt-4 flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={onVerify}
-              disabled={
-                verifyingKey === routeKey(editingRoute) ||
-                savingKey === routeKey(editingRoute) ||
-                !editFormValid
-              }
-              className={
-                editRouteVerified
-                  ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
-                  : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
-              }
-            >
-              {verifyingKey === routeKey(editingRoute)
-                ? 'Verifying…'
-                : editRouteVerified
-                  ? 'Verified'
-                  : 'Verify'}
-            </button>
-            <button
-              type="submit"
-              disabled={savingKey === routeKey(editingRoute) || !editFormValid}
-              className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {savingKey === routeKey(editingRoute) ? 'Applying…' : 'Apply'}
-            </button>
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onVerify}
+                  disabled={
+                    verifyingKey === routeKey(editingRoute) ||
+                    savingKey === routeKey(editingRoute) ||
+                    !editFormValid
+                  }
+                  className={
+                    editRouteVerified
+                      ? 'rounded-md border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40'
+                      : 'rounded-md border border-gray-200 bg-white px-4 py-2 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40'
+                  }
+                >
+                  {verifyingKey === routeKey(editingRoute)
+                    ? 'Verifying…'
+                    : editRouteVerified
+                      ? 'Verified'
+                      : 'Verify'}
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingKey === routeKey(editingRoute) || !editFormValid}
+                  className="rounded-md bg-gray-900 px-4 py-2 text-[13px] font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {savingKey === routeKey(editingRoute) ? 'Applying…' : 'Apply'}
+                </button>
+              </div>
+            </form>
           </div>
-        </form>
+        </div>
       )}
     </div>
   );

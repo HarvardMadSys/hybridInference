@@ -154,6 +154,9 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
     client, op_store, resolver, model_router_registry = admin_client
     await resolver.get_for_model("public-model")
     assert op_store.list_weight_overrides_for_model.await_count == 1
+    routewise_router = MagicMock()
+    routewise_router._route_commit_lock = None
+    model_router_registry.cached_routers = MagicMock(return_value=[routewise_router])
     model_router_registry.get_router = MagicMock(
         side_effect=AssertionError("should not call get_router")
     )
@@ -173,6 +176,7 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.5}
     ]
     assert await resolver.get_for_model("public-model") == {"public-model:remote": 4.5}
+    routewise_router._rebuild_from_fixed_router.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -231,6 +235,9 @@ async def test_delete_route_weight_clears_override(admin_client):
     op_store.list_weight_overrides_for_model.return_value = [
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.0}
     ]
+    routewise_router = MagicMock()
+    routewise_router._route_commit_lock = None
+    model_router_registry.cached_routers = MagicMock(return_value=[routewise_router])
     model_router_registry.get_router = MagicMock(
         side_effect=AssertionError("should not call get_router")
     )
@@ -247,6 +254,7 @@ async def test_delete_route_weight_clears_override(admin_client):
     assert row["strategy"] == "routewise"
     assert row["override_weight"] is None
     assert row["effective_weight"] == 2.0
+    routewise_router._rebuild_from_fixed_router.assert_called_once_with()
 
 
 @pytest.mark.asyncio

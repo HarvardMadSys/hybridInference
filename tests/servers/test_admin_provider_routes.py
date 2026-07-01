@@ -623,6 +623,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
         "db-openrouter",
         "minimax/minimax-m2.5",
         8000,
+        None,
         "127.0.0.1",
     )
 
@@ -648,6 +649,83 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert updated_adapter._key_pool.snapshot_keys() == ["openrouter-db-key-1234567890"]
     assert dynamic_keys.remove_key_from_provider("openrouter", "openrouter-db-key-1234567890") == 1
     assert updated_adapter._key_pool.snapshot_keys() == []
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_put_provider_route_updates_concurrency_limit_for_concurrency_override(
+    admin_client,
+):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:featherless-api",
+            "provider": "openrouter[parasail]",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": None,
+            "concurrency_limit": 3,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:featherless-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "concurrency_limit": 3,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "featherless"
+    assert payload["upstream_provider"] == "openrouter"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["route_type"] == "concurrency"
+    assert payload["quota_limit"] is None
+    assert payload["concurrency_limit"] == 3
+    op_store.upsert_provider_route_config.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:featherless-api",
+        "openrouter[parasail]",
+        None,
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        3,
+        "127.0.0.1",
+    )
+
+    updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
+    assert updated_adapter.config.provider == "openrouter"
+    assert updated_adapter.config.openrouter_pinned_provider == "parasail"
+    assert updated_adapter.config.provider_type == "concurrency"
+    assert updated_adapter.config.route_metadata["route_provider"] == "featherless"
+    assert updated_adapter.config.route_metadata["upstream_provider"] == "openrouter[parasail]"
+    assert updated_adapter.config.concurrency_pool == "featherless-minimax-fast"
+    assert updated_adapter.config.concurrency == {"limit": 3}
+    verify_mock.assert_awaited_once()
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
@@ -700,6 +778,7 @@ async def test_put_provider_route_allows_openrouter_pin_matching_route_provider(
         "db-openrouter",
         "minimax/minimax-m2.5",
         5000,
+        None,
         "127.0.0.1",
     )
 

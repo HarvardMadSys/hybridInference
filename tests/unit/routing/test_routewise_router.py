@@ -132,9 +132,23 @@ class _FakeFixedRouter:
 
     def __init__(self) -> None:
         self.routes: dict[str, _FakeRouteConfig] = {}
+        self.weight_overrides: dict[str, float] = {}
 
     def add(self, model_id: str, adapters_with_weights: list[tuple[Any, float]]) -> None:
         self.routes[model_id] = _FakeRouteConfig(adapters=adapters_with_weights)
+
+    def _get_effective_adapters(
+        self,
+        _model_id: str,
+        route: _FakeRouteConfig,
+    ) -> list[tuple[Any, float]]:
+        return [
+            (
+                adapter,
+                float(self.weight_overrides.get(adapter.config.endpoint_id, weight)),
+            )
+            for adapter, weight in route.adapters
+        ]
 
 
 def _quota_pool(router: RouteWiseRouter):
@@ -307,6 +321,32 @@ class TestRouteWiseRouterScaffold:
         types = {s for _, _, s in entries}
         assert ProviderType.QUOTA in types
         assert ProviderType.ON_DEMAND in types
+
+    def test_rebuild_honors_fixed_router_weight_overrides(self):
+        """Weight overrides should remove disabled endpoints from RouteWise candidates."""
+        disabled_adapter = _make_adapter(
+            provider_type="on_demand",
+            endpoint_id="test-model:disabled-provider",
+            prompt_price="0.001",
+            completion_price="0.010",
+        )
+        active_adapter = _make_adapter(
+            provider_type="on_demand",
+            endpoint_id="test-model:active-provider",
+            prompt_price="0.002",
+            completion_price="0.020",
+        )
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(disabled_adapter, 1.0), (active_adapter, 1.0)])
+        fr.weight_overrides["test-model:disabled-provider"] = 0.0
+
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        assert [c.endpoint_id for c in router.route_candidates["test-model"]] == [
+            "test-model:active-provider"
+        ]
+        selected = router._select_adapter("test-model", {})
+        assert selected is active_adapter
 
     def test_pd_selects_quota_when_value_high(self):
         """PD selects S_Q when estimated API cost exceeds shadow price.

@@ -174,6 +174,7 @@ class PreparedRouteUpdate:
     api_key_id: str | None
     provider_model_id: str
     quota_limit: int | None
+    concurrency_limit: int | None
 
 
 @dataclass
@@ -1439,6 +1440,7 @@ async def _prepare_route_update(
     api_key_id: str | None,
     provider_model_id_override: str | None = None,
     quota_limit_override: int | None = None,
+    concurrency_limit_override: int | None = None,
 ) -> PreparedRouteUpdate:
     route = _validate_canonical_route(services, model_id)
     entries = _raw_route_entries(route)
@@ -1463,6 +1465,11 @@ async def _prepare_route_update(
                 status_code=400,
                 detail="quota_limit is only supported when using an override provider",
             )
+    if concurrency_limit_override is not None and route_type != "concurrency":
+        raise HTTPException(
+            status_code=400,
+            detail="concurrency_limit can only be set for concurrency routes",
+        )
     target = _target_for_provider(upstream_provider)
     openrouter_sort = _openrouter_sort_from_request(
         _primary_provider_for_target(target),
@@ -1490,6 +1497,10 @@ async def _prepare_route_update(
         quota = dict(cfg.get("quota") or {})
         quota["limit"] = quota_limit_override
         cfg["quota"] = quota
+    if concurrency_limit_override is not None:
+        concurrency = dict(cfg.get("concurrency") or {})
+        concurrency["limit"] = concurrency_limit_override
+        cfg["concurrency"] = concurrency
 
     provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
     cfg["provider"] = provider_for_cfg
@@ -1515,6 +1526,7 @@ async def _prepare_route_update(
         api_key_id=api_key_id,
         provider_model_id=provider_model_id,
         quota_limit=_quota_limit_for_adapter(adapter),
+        concurrency_limit=_concurrency_limit_for_adapter(adapter),
     )
 
 
@@ -1889,6 +1901,7 @@ async def _prepare_update_context_from_payload(
         api_key_id=payload.api_key_id,
         provider_model_id_override=provider_model_id,
         quota_limit_override=payload.quota_limit,
+        concurrency_limit_override=payload.concurrency_limit,
     )
     return PreparedRouteUpdateContext(
         model_id=model_id,
@@ -2083,6 +2096,14 @@ def _quota_limit_for_row(adapter, override_row: dict[str, Any] | None) -> int | 
     return _quota_limit_for_adapter(adapter)
 
 
+def _concurrency_limit_for_row(adapter, override_row: dict[str, Any] | None) -> int | None:
+    if _route_type(adapter) != "concurrency":
+        return None
+    if override_row and override_row.get("concurrency_limit") is not None:
+        return int(override_row["concurrency_limit"])
+    return _concurrency_limit_for_adapter(adapter)
+
+
 async def _route_row(
     services,
     op_store,
@@ -2154,7 +2175,7 @@ async def _route_row(
         api_key=api_key,
         provider_model_id=provider_model_id,
         quota_limit=_quota_limit_for_row(adapter, effective_override),
-        concurrency_limit=_concurrency_limit_for_adapter(adapter),
+        concurrency_limit=_concurrency_limit_for_row(adapter, effective_override),
         endpoint_id=endpoint_id,
         yaml_weight=float(yaml_weight),
         effective_weight=_effective_weight(services, model_id, float(yaml_weight), endpoint_id),
@@ -2682,6 +2703,7 @@ async def update_provider_route(
         update.api_key_id,
         update.provider_model_id,
         payload.quota_limit,
+        update.concurrency_limit,
         admin_id,
     )
     _install_route_update(services, update)
@@ -2702,6 +2724,7 @@ async def update_provider_route(
             "new_endpoint_id": update.endpoint_id,
             "api_key_id": update.api_key_id,
             "quota_limit": payload.quota_limit,
+            "concurrency_limit": update.concurrency_limit,
         },
     )
 
@@ -3030,6 +3053,7 @@ async def apply_persisted_provider_route_configs(services, op_store) -> None:
                 api_key_id=row.get("api_key_id"),
                 provider_model_id_override=str(row["provider_model_id"]),
                 quota_limit_override=row.get("quota_limit"),
+                concurrency_limit_override=row.get("concurrency_limit"),
             )
             _install_route_update(services, update)
         except Exception as exc:

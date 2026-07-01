@@ -758,6 +758,7 @@ class CachedOperationalStore(OperationalStore):
         api_key_id: str | None,
         provider_model_id: str,
         quota_limit: int | None,
+        concurrency_limit: int | None,
         updated_by: str | None,
     ) -> None:
         """Delegate to wrapped store."""
@@ -770,6 +771,7 @@ class CachedOperationalStore(OperationalStore):
             api_key_id,
             provider_model_id,
             quota_limit,
+            concurrency_limit,
             updated_by,
         )
 
