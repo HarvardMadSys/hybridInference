@@ -56,7 +56,9 @@ describe('ProviderPerformanceTab', () => {
   it('renders compact TTFT and throughput charts in one responsive row without p99', async () => {
     render(<ProviderPerformanceTab />);
 
-    await screen.findByText('gpt-4o-mini');
+    // Wait for the model *section* to load (the model id also appears in the
+    // Model filter dropdown, so match the heading specifically).
+    await screen.findByRole('heading', { name: 'gpt-4o-mini', level: 3 });
 
     const compactRow = screen.getByTestId('provider-performance-chart-row');
     expect(compactRow).toHaveClass('grid-cols-1', 'lg:grid-cols-2', 'gap-3');
