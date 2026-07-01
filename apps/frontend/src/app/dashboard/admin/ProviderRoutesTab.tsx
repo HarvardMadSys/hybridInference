@@ -690,7 +690,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     editsLocalQuota,
     form.apiKeyId,
     form.baseUrl,
-    form.concurrencyLimit,
     form.openRouterProvider,
     form.openRouterSort,
     form.providerModelId,
@@ -1521,6 +1520,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
               const isSavingWeight = savingWeightKey === weightKey;
               const hasWeightOverride = routeWeight?.override_weight != null;
               const routeDisabled = effectiveWeight <= 0;
+              const isRoutewiseConfigRoute = isRoutewise && route.source !== 'runtime';
+              const canDisableRoute = isRoutewiseConfigRoute && !routeDisabled;
+              const canEnableRoute = isRoutewiseConfigRoute && routeDisabled && hasWeightOverride;
               const editableConcurrencyLimit = canEditConcurrencyLimit(route);
               const draftConcurrencyLimit =
                 draftConcurrencyLimits[key] ?? String(route.concurrency_limit ?? '');
@@ -1704,7 +1706,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         {resettingKey === key ? 'Resetting...' : 'Reset config'}
                       </button>
                     )}
-                    {isRoutewise && route.source !== 'runtime' && !routeDisabled && (
+                    {canDisableRoute && (
                       <button
                         type="button"
                         onClick={() => void onDisableRoute(route)}
@@ -1714,19 +1716,16 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         {isSavingWeight ? 'Disabling...' : 'Disable'}
                       </button>
                     )}
-                    {isRoutewise &&
-                      route.source !== 'runtime' &&
-                      routeDisabled &&
-                      hasWeightOverride && (
-                        <button
-                          type="button"
-                          onClick={() => void onEnableRoute(route)}
-                          disabled={isSavingWeight}
-                          className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
-                        >
-                          {isSavingWeight ? 'Enabling...' : 'Enable'}
-                        </button>
-                      )}
+                    {canEnableRoute && (
+                      <button
+                        type="button"
+                        onClick={() => void onEnableRoute(route)}
+                        disabled={isSavingWeight}
+                        className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
+                      >
+                        {isSavingWeight ? 'Enabling...' : 'Enable'}
+                      </button>
+                    )}
                     {route.source === 'runtime' ? (
                       <button
                         type="button"
