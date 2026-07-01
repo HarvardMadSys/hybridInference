@@ -476,6 +476,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
   const [allProviders, setAllProviders] = useState<string[]>([]);
   const [allPairs, setAllPairs] = useState<{ provider: string; model_id: string }[]>([]);
   const [provider, setProvider] = useState<string>('');
+  const [model, setModel] = useState<string>('__all__');
   const [range, setRange] = useState<RangeKey>('7d');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -506,6 +507,14 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     () =>
       Array.from(new Set(allPairs.filter((p) => p.provider === provider).map((p) => p.model_id))),
     [allPairs, provider],
+  );
+
+  // Client-side filter for the model dropdown. `__all__` keeps every model of
+  // the provider; the full model set is already loaded, so switching models
+  // never triggers a re-fetch.
+  const visibleModelIds = useMemo(
+    () => (model === '__all__' ? providerModels : providerModels.filter((m) => m === model)),
+    [providerModels, model],
   );
 
   const loadData = useCallback(async (prov: string, rangeKey: RangeKey) => {
@@ -582,9 +591,16 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     () => ttftScatter.filter((m) => m.provider === provider),
     [ttftScatter, provider],
   );
+  const visibleScatter = useMemo(
+    () =>
+      model === '__all__'
+        ? scatterForProvider
+        : scatterForProvider.filter((m) => m.model_id === model),
+    [scatterForProvider, model],
+  );
 
   const overallTotals = useMemo(() => {
-    const allRows = Object.values(modelRows).flat();
+    const allRows = visibleModelIds.flatMap((m) => modelRows[m] ?? []);
     const requests = allRows.reduce((acc, r) => acc + r.request_count, 0);
     const errors = allRows.reduce((acc, r) => acc + r.error_count, 0);
     const completion = allRows.reduce((acc, r) => acc + r.total_completion_tokens, 0);
@@ -593,7 +609,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
     const decode = Math.max(completion - reasoning, 0);
     const errorRate = requests === 0 ? 0 : errors / requests;
     return { requests, errors, errorRate, prefill, reasoning, decode };
-  }, [modelRows]);
+  }, [visibleModelIds, modelRows]);
 
   return (
     <div className="space-y-6">
@@ -603,11 +619,30 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
           <select
             className="border rounded px-2 py-1"
             value={provider}
-            onChange={(e) => setProvider(e.target.value)}
+            onChange={(e) => {
+              setProvider(e.target.value);
+              // Model lists differ per provider; clear the filter on switch.
+              setModel('__all__');
+            }}
           >
             {allProviders.map((p) => (
               <option key={p} value={p}>
                 {p}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          <span className="block text-gray-500 mb-1">Model</span>
+          <select
+            className="border rounded px-2 py-1"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            <option value="__all__">All models</option>
+            {providerModels.map((m) => (
+              <option key={m} value={m}>
+                {m}
               </option>
             ))}
           </select>
@@ -641,7 +676,7 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
         </div>
       )}
 
-      {providerModels.map((modelId) => (
+      {visibleModelIds.map((modelId) => (
         <ModelPerformanceSection key={modelId} modelId={modelId} rows={modelRows[modelId] ?? []} />
       ))}
 
@@ -666,9 +701,9 @@ export function ProviderPerformanceTab({ refreshKey = 0 }: { refreshKey?: number
               Failed to load scatter data: {ttftScatterError}
             </p>
           </div>
-        ) : scatterForProvider.length > 0 ? (
+        ) : visibleScatter.length > 0 ? (
           <div className="grid gap-3 lg:grid-cols-2">
-            {scatterForProvider.map((m) => (
+            {visibleScatter.map((m) => (
               <TtftScatterCard key={`${m.model_id}::${m.provider}`} model={m} />
             ))}
           </div>
