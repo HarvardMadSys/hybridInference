@@ -141,11 +141,12 @@ describe('RecentRequests', () => {
 
     const { container } = render(<RecentRequests />);
 
-    // The table scrolls horizontally on mobile; overscroll-x-contain stops the
-    // swipe from being hijacked by the browser's back/forward navigation gesture
-    // (the "each swipe only moves a bit" symptom). Guard against silent removal.
+    // The table is wrapped in DragScrollArea, which drives horizontal scrolling
+    // from pointer events (touch-action: pan-y) so mobile swipes track the finger
+    // 1:1 instead of stalling on the browser's touch axis-lock (the "each swipe
+    // only moves a bit" symptom). Guard the key classes against silent removal.
     const scrollWrapper = container.querySelector('table')?.parentElement;
-    expect(scrollWrapper).toHaveClass('overflow-x-auto', 'overscroll-x-contain');
+    expect(scrollWrapper).toHaveClass('overflow-x-auto', 'overscroll-x-contain', 'touch-pan-y');
   });
 
   it('rounds sub-second latencies consistently across metrics', async () => {
