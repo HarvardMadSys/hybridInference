@@ -293,16 +293,21 @@ def test_parse_openrouter_provider_options_from_endpoints():
                     {"provider_name": "DeepInfra", "tag": "deepinfra/fp8"},
                     {"provider_name": "DeepInfra duplicate", "tag": "deepinfra/bf16"},
                     {"provider_name": "Chutes", "tag": "chutes/fp8"},
+                    {"provider_name": "Minimax", "tag": "minimax/fp8"},
+                    {"provider_name": "Minimax", "tag": "minimax/highspeed"},
                 ]
             }
         }
     )
 
     assert [(option.provider, option.label) for option in options] == [
-        ("inceptron", "Inceptron"),
-        ("akashml", "AkashML"),
-        ("deepinfra", "DeepInfra"),
-        ("chutes", "Chutes"),
+        ("inceptron/fp8", "Inceptron Fp8"),
+        ("akashml/fp8", "AkashML Fp8"),
+        ("deepinfra/fp8", "DeepInfra Fp8"),
+        ("deepinfra/bf16", "DeepInfra Bf16"),
+        ("chutes/fp8", "Chutes Fp8"),
+        ("minimax/fp8", "MiniMax Fp8"),
+        ("minimax/highspeed", "MiniMax Highspeed"),
     ]
 
 

@@ -832,6 +832,91 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByText('Runtime added')).toBeInTheDocument();
   });
 
+  it('keeps OpenRouter endpoint variant pins from discovery', async () => {
+    const deepinfraRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[deepinfra]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'deepinfra',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[deepinfra]-api',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route, deepinfraRoute],
+    });
+    vi.mocked(listOpenRouterProviderOptions).mockResolvedValue({
+      provider_model_id: 'minimax/minimax-m2.5',
+      providers: [
+        { provider: 'minimax/fp8', label: 'MiniMax Fp8' },
+        { provider: 'minimax/highspeed', label: 'MiniMax Highspeed' },
+      ],
+    });
+    vi.mocked(listProviderKeys).mockImplementation(async (provider?: string) =>
+      providerKeysResponse(provider),
+    );
+    vi.mocked(createProviderRouteCandidate).mockResolvedValue({
+      ...route,
+      route_id: 'minimax-fast:openrouter[minimax/highspeed]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'minimax/highspeed',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      api_key_id: 'key-1',
+      api_key: {
+        id: 'key-1',
+        provider: 'openrouter',
+        label: 'staging',
+        key_prefix: 'sk-or...1234',
+        source: 'db',
+      },
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[minimax/highspeed]-api',
+      source: 'runtime',
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add provider' }));
+
+    const openRouterSelect = screen.getByLabelText('OpenRouter routing');
+    await waitFor(() => {
+      expect(
+        within(openRouterSelect).getByRole('option', { name: 'Provider: MiniMax Highspeed' }),
+      ).toBeInTheDocument();
+    });
+    fireEvent.change(openRouterSelect, { target: { value: 'provider:minimax/highspeed' } });
+
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
+    });
+
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+
+    await waitFor(() => {
+      expect(createProviderRouteCandidate).toHaveBeenCalledWith('minimax-fast', {
+        route_type: 'on_demand',
+        upstream_provider: 'openrouter',
+        openrouter_provider: 'minimax/highspeed',
+        openrouter_sort: null,
+        base_url: 'https://openrouter.ai/api/v1',
+        api_key_id: 'key-1',
+        provider_model_id: 'minimax/minimax-m2.5',
+        quota_limit: null,
+        concurrency_limit: null,
+        weight: 1,
+      });
+    });
+  });
+
   it('updates runtime OpenRouter concurrency limit inline', async () => {
     const runtimeRoute = {
       ...route,

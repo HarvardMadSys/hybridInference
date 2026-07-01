@@ -53,7 +53,7 @@ MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 MODEL_REQUIRED_ROLE_SETTING_PREFIX = "model_required_role:"
 MODEL_ROUTER_STRATEGIES = {"fixed", "routewise"}
 DEFAULT_RUNTIME_MODEL_REQUIRED_ROLE = "admin"
-OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+OPENROUTER_PROVIDER_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 OPENROUTER_MODEL_ID_RE = re.compile(
     r"^[A-Za-z0-9_.:-]*[A-Za-z0-9][A-Za-z0-9_.:-]*/"
     r"[A-Za-z0-9_.:-]*[A-Za-z0-9][A-Za-z0-9_.:-]*$"
@@ -126,6 +126,8 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
 SELECTABLE_PROVIDER_TARGETS = {"chutes", "featherless", "openrouter"}
 OPENROUTER_PROVIDER_LABELS = {
     "deepinfra": "DeepInfra",
+    "minimax": "MiniMax",
+    "minimax/highspeed": "MiniMax Highspeed",
     "parasail": "Parasail",
 }
 
@@ -621,7 +623,7 @@ def _openrouter_provider_options() -> list[OpenRouterProviderOption]:
 def _openrouter_endpoint_provider_slug(endpoint: dict[str, Any]) -> str | None:
     tag = endpoint.get("tag")
     if isinstance(tag, str) and tag.strip():
-        slug = tag.strip().split("/", 1)[0].lower()
+        slug = tag.strip().lower()
         if OPENROUTER_PROVIDER_RE.fullmatch(slug):
             return slug
 
@@ -631,6 +633,22 @@ def _openrouter_endpoint_provider_slug(endpoint: dict[str, Any]) -> str | None:
         if slug and OPENROUTER_PROVIDER_RE.fullmatch(slug):
             return slug
     return None
+
+
+def _openrouter_provider_label(slug: str, provider_name: Any) -> str:
+    label = OPENROUTER_PROVIDER_LABELS.get(slug)
+    if not label:
+        base_label = OPENROUTER_PROVIDER_LABELS.get(slug.split("/", 1)[0])
+        label = base_label or (str(provider_name).strip() if provider_name else None)
+    if not label:
+        label = OPENROUTER_PROVIDER_LABELS.get(slug.split("/", 1)[0], slug)
+
+    _base_slug, separator, suffix = slug.partition("/")
+    if separator and label and suffix:
+        suffix_label = re.sub(r"[-_.]+", " ", suffix).title()
+        if suffix_label.lower() not in label.lower():
+            label = f"{label} {suffix_label}"
+    return label or slug
 
 
 def _parse_openrouter_provider_options(payload: dict[str, Any]) -> list[OpenRouterProviderOption]:
@@ -647,11 +665,12 @@ def _parse_openrouter_provider_options(payload: dict[str, Any]) -> list[OpenRout
         slug = _openrouter_endpoint_provider_slug(endpoint)
         if not slug or slug in seen:
             continue
-        provider_name = endpoint.get("provider_name")
-        label = (
-            str(provider_name).strip() if provider_name else OPENROUTER_PROVIDER_LABELS.get(slug)
+        providers.append(
+            OpenRouterProviderOption(
+                provider=slug,
+                label=_openrouter_provider_label(slug, endpoint.get("provider_name")),
+            )
         )
-        providers.append(OpenRouterProviderOption(provider=slug, label=label or slug))
         seen.add(slug)
     return providers
 
