@@ -309,6 +309,8 @@ def test_user_safe_upstream_error_suppresses_quota_text():
         "insufficient-quota",
         "billing_hard_limit_reached",
         "billing-hard-limit-reached",
+        "credit_limit_reached",
+        "credit limit reached",
         '{"error": {"code": "insufficient_quota", "message": "insufficient_quota"}}',
     ],
 )

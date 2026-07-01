@@ -237,6 +237,8 @@ _UPSTREAM_QUOTA_MARKERS: tuple[str, ...] = (
     "no credits",
     "credit balance",
     "credit balances",
+    "credit limit",
+    "credit limits",
     "billing hard limit",
     "billing limit",
     "payment required",
