@@ -789,11 +789,17 @@ describe('ProviderRoutesTab', () => {
     const providerSelect = screen.getByLabelText('Provider');
     expect(providerSelect).toHaveValue('openrouter');
     expect(within(providerSelect).getByRole('option', { name: 'OpenRouter' })).toBeInTheDocument();
+    const routingSelect = screen.getByLabelText('OpenRouter routing');
+    expect(routingSelect).toHaveValue('provider:deepinfra');
+    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
+    expect(
+      within(routingSelect).queryByRole('option', { name: 'Sort by price' }),
+    ).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'minimax/minimax-m2.5' },
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+    fireEvent.change(routingSelect, {
       target: { value: 'provider:parasail' },
     });
     fireEvent.change(screen.getByLabelText('Concurrency limit'), {
@@ -953,10 +959,16 @@ describe('ProviderRoutesTab', () => {
     });
     fireEvent.change(screen.getByLabelText('Route type'), { target: { value: 'concurrency' } });
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openrouter' } });
+    const routingSelect = screen.getByLabelText('OpenRouter routing');
+    expect(routingSelect).toHaveValue('provider:deepinfra');
+    expect(within(routingSelect).queryByRole('option', { name: 'Auto' })).not.toBeInTheDocument();
+    expect(
+      within(routingSelect).queryByRole('option', { name: 'Sort by price' }),
+    ).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Provider model ID'), {
       target: { value: 'deepseek/deepseek-v4-flash' },
     });
-    fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
+    fireEvent.change(routingSelect, {
       target: { value: 'provider:parasail' },
     });
     fireEvent.change(screen.getByLabelText('Concurrency limit'), {

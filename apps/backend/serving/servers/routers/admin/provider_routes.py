@@ -1116,6 +1116,18 @@ def _validate_create_route_type_for_provider(route_type: str, upstream_provider:
     )
 
 
+def _validate_resource_route_target(route_type: str, target: ProviderTarget) -> None:
+    if route_type != "concurrency" or _primary_provider_for_target(target) != "openrouter":
+        return
+    _base_kind, pinned = parse_openrouter_kind(target.kind)
+    if pinned:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail="openrouter concurrency routes require openrouter_provider",
+    )
+
+
 def _validate_route_type_for_strategy(route_type: str, strategy: str) -> None:
     if route_type not in RESOURCE_ROUTE_TYPES or strategy == "routewise":
         return
@@ -1178,6 +1190,7 @@ async def _prepare_route_candidate(
 
     target = _target_for_provider(upstream_provider)
     _validate_create_route_type_for_provider(route_type, upstream_provider)
+    _validate_resource_route_target(route_type, target)
     openrouter_sort = _openrouter_sort_from_request(
         _primary_provider_for_target(target),
         openrouter_sort,
@@ -1300,6 +1313,7 @@ async def _prepare_model_route_candidate(
 
     target = _target_for_provider(upstream_provider)
     _validate_create_route_type_for_provider(route_type, upstream_provider)
+    _validate_resource_route_target(route_type, target)
     openrouter_sort = _openrouter_sort_from_request(
         _primary_provider_for_target(target),
         openrouter_sort,

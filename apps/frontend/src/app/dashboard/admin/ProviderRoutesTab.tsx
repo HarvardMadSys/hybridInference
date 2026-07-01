@@ -347,19 +347,24 @@ function openRouterSortFromRoutingValue(value: string) {
     : '';
 }
 
-function openRouterRoutingOptions(options: OpenRouterProviderOption[]) {
+function openRouterRoutingOptions(
+  options: OpenRouterProviderOption[],
+  allowAutomaticRouting = true,
+) {
+  const providerOptions = options
+    .filter((option) => option.provider !== OPENROUTER_PROVIDER_AUTO)
+    .map((option) => ({
+      value: `${OPENROUTER_ROUTING_PROVIDER_PREFIX}${option.provider}`,
+      label:
+        option.provider === OPENROUTER_PROVIDER_CUSTOM
+          ? 'Custom provider...'
+          : `Provider: ${option.label}`,
+    }));
+  if (!allowAutomaticRouting) return providerOptions;
   return [
     { value: OPENROUTER_ROUTING_AUTO, label: 'Auto' },
     ...OPENROUTER_SORT_ROUTING_OPTIONS,
-    ...options
-      .filter((option) => option.provider !== OPENROUTER_PROVIDER_AUTO)
-      .map((option) => ({
-        value: `${OPENROUTER_ROUTING_PROVIDER_PREFIX}${option.provider}`,
-        label:
-          option.provider === OPENROUTER_PROVIDER_CUSTOM
-            ? 'Custom provider...'
-            : `Provider: ${option.label}`,
-      })),
+    ...providerOptions,
   ];
 }
 
@@ -414,7 +419,11 @@ function openRouterProviderOptionsForCreate(
       )
       .map(routeOpenRouterProvider),
   );
-  return allOptions.filter((option) => !usedPins.has(option.provider));
+  return allOptions.filter(
+    (option) =>
+      !usedPins.has(option.provider) &&
+      (routeType === 'on_demand' || option.provider !== OPENROUTER_PROVIDER_AUTO),
+  );
 }
 
 function createProviderOptionsFor(
@@ -769,12 +778,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     [createOpenRouterProviderOptions],
   );
   const createOpenRouterRoutingOptions = useMemo(
-    () => openRouterRoutingOptions(createOpenRouterSelectOptions),
-    [createOpenRouterSelectOptions],
+    () =>
+      openRouterRoutingOptions(createOpenRouterSelectOptions, createForm.routeType === 'on_demand'),
+    [createForm.routeType, createOpenRouterSelectOptions],
   );
   const editOpenRouterRoutingOptions = useMemo(
-    () => openRouterRoutingOptions(editOpenRouterSelectOptions),
-    [editOpenRouterSelectOptions],
+    () =>
+      openRouterRoutingOptions(
+        editOpenRouterSelectOptions,
+        editingRoute?.route_type === 'on_demand',
+      ),
+    [editingRoute?.route_type, editOpenRouterSelectOptions],
   );
 
   const createProviderOptions = useMemo(
