@@ -1101,12 +1101,16 @@ class DatabaseLogger:
                 FROM api_logs
                 WHERE timestamp >= NOW() - ($1 || ' minutes')::interval
                   AND user_id IS NOT NULL
+                  AND provider NOT IN ('', 'router')
                 GROUP BY model_id, provider
                 """,
                 str(window_minutes),
             )
         result: dict[str, Any] = {}
         for row in rows:
+            provider = row["provider"]
+            if provider in ("", "router"):
+                continue
             key = f"{row['model_id']}::{row['provider']}"
             last_req = row["last_request_at"]
 
