@@ -1324,6 +1324,30 @@ class FixedRouter(BaseRouter):
                 exc=primary_error,
             )
             failed_attempts = [_failed_attempt(primary, primary_error)]
+            # Attach routing to the surfaced error so the error-log path can
+            # attribute the failure to the real upstream. Unlike the
+            # non-streaming twin below, this generator never gets a chance to
+            # set resp["_routing"] on success, so the consumer instead tracks
+            # provider via in-band _routing_chunk SSE events -- but those are
+            # emitted before each fallback attempt even starts (so req_ctx is
+            # visible across the asyncio.create_task reader boundary), and
+            # the consumer keeps overwriting its provider with the latest one
+            # seen. When every attempt fails without yielding content, that
+            # leaves the last (lowest-priority) fallback attributed instead
+            # of primary, whose error is what's actually re-raised below.
+            # Setting exc._routing here mirrors chat_completion's pattern and
+            # takes priority over the consumer's SSE-derived guess. Covers
+            # all three re-raise points below (pin mode, a stream already
+            # committed to primary, and all-providers-failed); failed_attempts
+            # is stored by reference so it reflects any fallback attempts
+            # appended before primary_error is finally re-raised.
+            if not hasattr(primary_error, "_routing"):
+                primary_error._routing = {  # type: ignore[attr-defined]
+                    "provider": primary.config.provider,
+                    "base_url": primary.config.base_url,
+                    "endpoint_id": _get_endpoint_id(primary),
+                    "failed_attempts": failed_attempts,
+                }
             # Pin mode: never fallback — re-raise immediately.
             if pin_provider:
                 raise primary_error

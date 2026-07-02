@@ -817,6 +817,64 @@ async def test_stream_emits_routing_chunk_for_fallback_adapter():
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_failed_request_attaches_routing_provider_to_exception():
+    """Regression: a fully-failed streaming request must carry the real
+    upstream on ``exc._routing`` so the error-log path attributes it to the
+    provider instead of guessing from the last in-band ``_routing`` SSE
+    chunk the consumer saw."""
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="kimi_coding"))
+    exe.register_route("m", [(primary, 1.0)])
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async for _ in exe.stream_chat_completion(
+            "m", messages=[{"role": "user", "content": "hi"}]
+        ):
+            pass
+
+    routing = getattr(exc_info.value, "_routing", None)
+    assert routing is not None
+    assert routing["provider"] == "kimi_coding"
+    assert [a["provider"] for a in routing["failed_attempts"]] == ["kimi_coding"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stream_all_fallbacks_failed_attaches_primary_provider_and_all_attempts():
+    """When every provider fails without yielding a single chunk, the
+    surfaced primary error must carry the primary provider -- not the last
+    (lowest-priority) fallback attempted.
+
+    Before the fix, error-path attribution for streaming fell back to the
+    consumer's ``self._routing``, which tracks whichever in-band
+    ``_routing`` SSE chunk arrived most recently. The router emits that
+    chunk before each fallback attempt even starts (so req_ctx is visible
+    across the asyncio.create_task reader boundary), so a fallback that
+    fails immediately -- without ever yielding real content -- still
+    overwrites the consumer's idea of "the provider" with itself. In prod
+    this misattributed errors from e.g. api.kimi.com / api.z.ai to a
+    low-weight canary fallback route that happened to be tried last.
+    """
+    exe = RouteExecutor()
+    primary = _FailAdapter(_cfg("m", provider="primary"))
+    backup = _FailAdapter(_cfg("m", provider="backup"))
+    exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
+    exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        async for _ in exe.stream_chat_completion(
+            "m", messages=[{"role": "user", "content": "hi"}]
+        ):
+            pass
+
+    routing = getattr(exc_info.value, "_routing", None)
+    assert routing is not None
+    assert routing["provider"] == "primary"
+    assert [a["provider"] for a in routing["failed_attempts"]] == ["primary", "backup"]
+
+
+@pytest.mark.unit
 def test_admin_only_default_false():
     """RouteConfig defaults admin_only to False."""
     cfg = RouteConfig(adapters=[])
