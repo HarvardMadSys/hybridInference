@@ -519,13 +519,7 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-[14px] font-semibold text-gray-900">RouteWise decisions</h2>
-          <p className="mt-1 text-[12px] text-gray-500">
-            How RouteWise routed {modelId || 'this model'}: which provider legs it used, in what
-            share, and why.
-          </p>
-        </div>
+        <h2 className="text-[14px] font-semibold text-gray-900">RouteWise decisions</h2>
         <div className="flex items-center gap-2">
           <div className="flex gap-1">
             {RANGES.map(({ key, label }) => (
@@ -601,9 +595,6 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                 {summary}
               </p>
             )}
-            <p className="mt-1 text-[11px] text-gray-400">
-              Hedge backup wins are attributed to the backup endpoint.
-            </p>
           </>
         )}
       </div>
