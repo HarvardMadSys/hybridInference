@@ -21,6 +21,7 @@ class SSEParser:
     def __init__(self) -> None:
         self._decoder = codecs.getincrementaldecoder("utf-8")()
         self._buffer: str = ""
+        self._pending_cr: str = ""
 
     def feed(self, chunk: bytes) -> list[SSEMessage]:
         """Feed raw bytes and yield complete SSE messages when available."""
@@ -29,9 +30,17 @@ class SSEParser:
         except UnicodeDecodeError:
             return []
 
-        if decoded:
-            # Providers use CRLF; normalise to LF so frame boundaries are stable.
-            self._buffer += decoded.replace("\r\n", "\n")
+        # Providers use CRLF; normalise to LF so frame boundaries are stable.
+        # A CRLF delimiter can straddle two chunks (chunk ends '\r', next starts
+        # '\n'); hold back a trailing CR so the split pair rejoins and the frame
+        # boundary isn't missed. A lone CR is only ever a line terminator in SSE,
+        # so mapping it to LF is spec-safe.
+        data = self._pending_cr + decoded
+        self._pending_cr = ""
+        if data.endswith("\r"):
+            self._pending_cr = "\r"
+            data = data[:-1]
+        self._buffer += data.replace("\r\n", "\n").replace("\r", "\n")
 
         messages: list[SSEMessage] = []
         while "\n\n" in self._buffer:

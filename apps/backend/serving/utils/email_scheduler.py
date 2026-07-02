@@ -109,7 +109,7 @@ def _add_scheduler_job(broadcast_id: str, run_at: datetime) -> None:
     if not _scheduler:
         raise RuntimeError("Scheduler not started")
     _scheduler.add_job(
-        _run_broadcast_sync,
+        _run_broadcast,
         trigger=DateTrigger(run_date=run_at),
         id=broadcast_id,
         args=[broadcast_id],
@@ -117,9 +117,15 @@ def _add_scheduler_job(broadcast_id: str, run_at: datetime) -> None:
     )
 
 
-def _run_broadcast_sync(broadcast_id: str) -> None:
-    """Sync wrapper called by APScheduler — creates asyncio task."""
-    _spawn_background(execute_broadcast(broadcast_id))
+async def _run_broadcast(broadcast_id: str) -> None:
+    """Coroutine job run by AsyncIOExecutor ON the event loop.
+
+    Must be a coroutine: AsyncIOExecutor runs plain (non-coroutine) job funcs in
+    a thread-pool worker thread, where asyncio.create_task would raise
+    RuntimeError (no running loop). An async job runs as its own task on the
+    loop, and execute_broadcast already claims atomically and offloads SMTP.
+    """
+    await execute_broadcast(broadcast_id)
 
 
 async def execute_broadcast(broadcast_id: str) -> None:

@@ -8,6 +8,7 @@ instantiated; changing the env at runtime requires a restart.
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import TYPE_CHECKING
 
@@ -46,13 +47,24 @@ class TimeoutMiddleware:
 
         response_started = False
 
-        async def send_wrapper(message: dict) -> None:
-            nonlocal response_started
-            if message["type"] == "http.response.start":
-                response_started = True
-            await send(message)
+        with anyio.move_on_after(self._timeout_s) as scope_deadline:
 
-        with anyio.move_on_after(self._timeout_s):
+            async def send_wrapper(message: dict) -> None:
+                nonlocal response_started
+                if message["type"] == "http.response.start":
+                    response_started = True
+                    # Streaming (SSE) responses are legitimately long-lived; the
+                    # total timeout would kill healthy streams mid-body. Once we
+                    # see an event-stream response start, drop the deadline so the
+                    # body iterates uncapped. Non-streaming requests keep the cap.
+                    for name, value in message.get("headers") or []:
+                        if name.lower() == b"content-type" and value.lower().startswith(
+                            b"text/event-stream"
+                        ):
+                            scope_deadline.deadline = math.inf
+                            break
+                await send(message)
+
             await self.app(scope, receive, send_wrapper)
             return
 

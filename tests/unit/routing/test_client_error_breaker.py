@@ -8,12 +8,18 @@ Genuine faults (5xx, timeout/connection errors with no status, and the
 overload-signalling 408/429) must still count.
 """
 
+import asyncio
+import types
+
+import pytest
+
 from routing.routers import (
     BaseRouter,
     _CircuitState,
     _http_status_of,
     _is_client_error,
 )
+from routing.routewise.router import RouteWiseRouter
 
 
 class _StatusError(Exception):
@@ -89,3 +95,80 @@ def test_5xx_still_opens_circuit(monkeypatch):
         router._on_failure(endpoint_id, reason="stream_exception", exc=_StatusError(502))
 
     assert router.get_provider_status()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
+
+
+# ---------------------------------------------------------------------------
+# RouteWiseRouter must forward the caught exception to _on_failure so the base
+# router's client-error guard actually sees it. This is the RouteWise sibling of
+# the FixedRouter fix from #813: both chat_completion and stream_chat_completion
+# used to call _on_failure without exc=, so a 4xx was misclassified as a fault.
+# ---------------------------------------------------------------------------
+
+
+class _FakeConfig:
+    provider = "vllm"
+    endpoint_id = "vllm:local:8001"
+    base_url = "http://local:8001"
+
+
+class _FakeAdapter:
+    config = _FakeConfig()
+
+
+class _CaptureRouteWise(RouteWiseRouter):
+    """RouteWiseRouter stub that captures _on_failure kwargs on the except path.
+
+    Bypasses the heavy __init__ so the test drives only the failure-recording
+    code path; every attribute the two chat paths touch before re-raising is
+    stubbed here.
+    """
+
+    def __init__(self) -> None:
+        self.captured: list[dict] = []
+        self._pending_decisions: dict = {}
+        # fallback_mode != "policy" so both paths re-raise right after recording.
+        self.config = types.SimpleNamespace(fallback_mode="off")
+        self._fake = _FakeAdapter()
+
+    def _select_adapter(self, model_id, context=None, **kwargs):  # type: ignore[override]
+        return self._fake
+
+    async def _execute_adapter(self, adapter, model_id, messages, **params):  # type: ignore[override]
+        raise _StatusError(400)
+
+    async def _execute_stream_adapter(self, adapter, model_id, messages, **params):  # type: ignore[override]
+        raise _StatusError(400)
+        yield  # unreachable; marks this coroutine as an async generator
+
+    def _on_failure(self, endpoint_id, *, reason="error", detail=None, exc=None):  # type: ignore[override]
+        self.captured.append({"endpoint_id": endpoint_id, "reason": reason, "exc": exc})
+
+    def _release_pending_primary_reservation(self, request_id):
+        pass
+
+
+def test_routewise_chat_forwards_exc_to_on_failure():
+    router = _CaptureRouteWise()
+    with pytest.raises(_StatusError):
+        asyncio.run(router.chat_completion("m", []))
+    assert router.captured, "chat_completion did not record a failure"
+    exc = router.captured[-1]["exc"]
+    # The bug: exc was omitted (None), so _is_client_error was never consulted
+    # and the 400 tripped the breaker for everyone.
+    assert exc is not None
+    assert _is_client_error(exc) is True
+
+
+def test_routewise_stream_forwards_exc_to_on_failure():
+    router = _CaptureRouteWise()
+
+    async def _drain() -> None:
+        async for _ in router.stream_chat_completion("m", []):
+            pass
+
+    with pytest.raises(_StatusError):
+        asyncio.run(_drain())
+    assert router.captured, "stream_chat_completion did not record a failure"
+    exc = router.captured[-1]["exc"]
+    assert exc is not None
+    assert _is_client_error(exc) is True

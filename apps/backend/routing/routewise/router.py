@@ -2621,6 +2621,10 @@ class RouteWiseRouter(BaseRouter):
                         endpoint_id,
                         reason=exc.__class__.__name__,
                         detail=operator_safe_error(exc),
+                        # Pass the exception so the base router can skip the
+                        # breaker on a client (4xx) error — otherwise one user's
+                        # bad request opens the circuit for every user.
+                        exc=exc,
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
@@ -2735,6 +2739,10 @@ class RouteWiseRouter(BaseRouter):
                         endpoint_id,
                         reason="stream_exception",
                         detail=operator_safe_error(exc),
+                        # Pass the exception so the base router can skip the
+                        # breaker on a client (4xx) error — otherwise one user's
+                        # bad request opens the circuit for every user.
+                        exc=exc,
                     )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
