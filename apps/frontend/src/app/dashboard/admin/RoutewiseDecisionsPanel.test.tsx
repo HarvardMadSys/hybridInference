@@ -208,11 +208,11 @@ describe('RoutewiseDecisionsPanel', () => {
   it('renders hedging KPIs and stacked legend labels from the response', async () => {
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
-    // KPI chips carry the percentages/median computed from hedge_summary.
+    // KPI chips carry the percentages computed from hedge_summary.
     const kpis = await screen.findByTestId('hedge-kpis');
     expect(kpis).toHaveTextContent('hedge rate 20.0%');
     expect(kpis).toHaveTextContent('backup win rate 50.0%');
-    expect(kpis).toHaveTextContent('median hedge delay 975 ms');
+    expect(kpis).not.toHaveTextContent('median hedge delay');
 
     // Stacked hedge bar legend labels (recharts Bar names).
     expect(await screen.findByText('not hedged')).toBeInTheDocument();
@@ -220,7 +220,7 @@ describe('RoutewiseDecisionsPanel', () => {
     expect(screen.getByText('hedged · backup won')).toBeInTheDocument();
   });
 
-  it('renders hedge KPIs gracefully when nothing hedged and the median is null', async () => {
+  it('renders hedge KPIs gracefully when nothing hedged', async () => {
     vi.mocked(getRoutewiseDecisions).mockResolvedValue(emptyDecisions);
     vi.mocked(listRecentRequests).mockResolvedValue({
       requests: [],
@@ -232,10 +232,9 @@ describe('RoutewiseDecisionsPanel', () => {
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
     const kpis = await screen.findByTestId('hedge-kpis');
-    // hedged == 0 -> win rate dash; median null -> delay dash.
+    // hedged == 0 -> win rate dash.
     expect(kpis).toHaveTextContent('hedge rate 0.0%');
     expect(kpis).toHaveTextContent('backup win rate —');
-    expect(kpis).toHaveTextContent('median hedge delay —');
     expect(screen.getByText('No hedging activity in this window.')).toBeInTheDocument();
   });
 

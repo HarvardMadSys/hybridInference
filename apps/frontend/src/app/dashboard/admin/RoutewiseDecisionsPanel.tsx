@@ -514,8 +514,6 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
   const hedgeRateText = fmtRatePct(hedge?.hedge_rate);
   // Backup win rate is undefined when nothing hedged, so show a dash there.
   const backupWinText = hedge && hedge.hedged > 0 ? fmtRatePct(hedge.backup_win_rate) : '—';
-  const medianDelay = hedge?.median_hedge_delay_ms ?? null;
-  const medianDelayText = medianDelay != null ? `${Math.round(medianDelay)} ms` : '—';
   const hasHedgeChart = serverBucketCount > 0;
 
   return (
@@ -621,9 +619,6 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
           </span>
           <span className="rounded bg-gray-100 px-2 py-0.5 text-gray-700">
             backup win rate {backupWinText}
-          </span>
-          <span className="rounded bg-gray-100 px-2 py-0.5 text-gray-700">
-            median hedge delay {medianDelayText}
           </span>
         </div>
         {!hasHedgeChart ? (
