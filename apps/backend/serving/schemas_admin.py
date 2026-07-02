@@ -926,6 +926,72 @@ class RunRoutewiseProbeResponse(BaseModel):
     results: list[RoutewiseProbeRunResult]
 
 
+class RoutewiseSelectionShareItem(BaseModel):
+    """Selection count for one final RouteWise endpoint within the window."""
+
+    endpoint: str
+    provider_type: str | None = None
+    count: int
+
+
+class RoutewiseHedgeSummary(BaseModel):
+    """Window-level hedge KPIs for a model's RouteWise decisions.
+
+    ``hedged`` counts routewise rows whose decision blob has ``hedged`` true;
+    ``hedge_rate`` is that count over ``total_requests`` (0.0 when there are no
+    requests). ``backup_won`` counts hedged rows the backup leg won and
+    ``backup_win_rate`` is that count over ``hedged`` (0.0 when nothing hedged).
+    ``median_hedge_delay_ms`` is the median hedge delay across hedged rows with a
+    non-null delay, or ``None`` when there are no such samples.
+    """
+
+    hedged: int
+    hedge_rate: float
+    backup_won: int
+    backup_win_rate: float
+    median_hedge_delay_ms: float | None = None
+
+
+class RoutewiseDecisionBucketHedge(BaseModel):
+    """Hedge outcome counts over all routewise rows in one time bucket.
+
+    The three counts partition every routewise row in the bucket:
+    ``not_hedged`` rows were served without a hedge, ``hedged_backup_won`` rows
+    hedged and the backup leg won, and ``hedged_primary_won`` covers all other
+    hedged rows.
+    """
+
+    not_hedged: int
+    hedged_primary_won: int
+    hedged_backup_won: int
+
+
+class RoutewiseDecisionBucket(BaseModel):
+    """Per-endpoint selection counts and hedge outcomes within a time bucket.
+
+    ``counts`` is computed over attributed rows only and may be empty; ``hedge``
+    is computed over every routewise row in the bucket.
+    """
+
+    bucket_start: str
+    counts: dict[str, int]
+    hedge: RoutewiseDecisionBucketHedge
+
+
+class RoutewiseDecisionsResponse(BaseModel):
+    """Aggregated RouteWise routing decisions for a model over a time window."""
+
+    model_id: str
+    range: str
+    bucket_seconds: int
+    total_requests: int
+    unattributed_requests: int
+    lp_status_counts: dict[str, int]
+    selection_share: list[RoutewiseSelectionShareItem]
+    hedge_summary: RoutewiseHedgeSummary
+    buckets: list[RoutewiseDecisionBucket]
+
+
 class ModelVisibilityItem(BaseModel):
     """Current visibility requirements for a canonical model."""
 
@@ -1232,8 +1298,13 @@ __all__ = [
     "ResumeUserResponse",
     "RevokeAPIKeyResponse",
     "RouteWeightItem",
+    "RoutewiseDecisionBucket",
+    "RoutewiseDecisionBucketHedge",
+    "RoutewiseDecisionsResponse",
+    "RoutewiseHedgeSummary",
     "RoutewiseProbeRunResult",
     "RoutewiseProbeSampleItem",
+    "RoutewiseSelectionShareItem",
     "RoutewiseSettingItem",
     "RunRoutewiseProbeRequest",
     "RunRoutewiseProbeResponse",

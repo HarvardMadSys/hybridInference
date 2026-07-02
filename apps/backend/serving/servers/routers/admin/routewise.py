@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -16,15 +16,25 @@ from serving.config.runtime_settings import (
 from serving.schemas_admin import (
     ListRoutewiseProbeSamplesResponse,
     ListRoutewiseSettingsResponse,
+    RoutewiseDecisionBucket,
+    RoutewiseDecisionBucketHedge,
+    RoutewiseDecisionsResponse,
+    RoutewiseHedgeSummary,
     RoutewiseProbeRunResult,
     RoutewiseProbeSampleItem,
+    RoutewiseSelectionShareItem,
     RoutewiseSettingItem,
     RunRoutewiseProbeRequest,
     RunRoutewiseProbeResponse,
     UpdateSettingRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, get_services, verify_admin_access
+from serving.servers.deps import (
+    get_db_logger,
+    get_operational_store,
+    get_services,
+    verify_admin_access,
+)
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin/routewise")
@@ -36,6 +46,13 @@ ROUTEWISE_KEYS = (
     "routewise_probe_enabled",
     "routewise_probe_interval_sec",
 )
+
+# Maps each decisions range to its (lookback window, time-bucket) size in seconds.
+DECISIONS_RANGE_SECONDS: dict[str, tuple[int, int]] = {
+    "24h": (86_400, 3_600),
+    "7d": (604_800, 21_600),
+    "30d": (2_592_000, 86_400),
+}
 
 
 def _require_runtime_settings(rt: RuntimeSettings | None) -> RuntimeSettings:
@@ -307,4 +324,216 @@ async def run_routewise_probe_endpoint(
             )
             for result in results
         ]
+    )
+
+
+@router.get("/decisions", response_model=RoutewiseDecisionsResponse)
+async def get_routewise_decisions_endpoint(
+    model_id: str,
+    range: Literal["24h", "7d", "30d"] = "24h",
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> RoutewiseDecisionsResponse:
+    """Aggregate a model's RouteWise routing decisions over a lookback window.
+
+    Scans ``api_logs`` rows for ``model_id`` whose ``metadata`` carries a
+    ``routewise`` decision blob within the window implied by ``range`` and
+    aggregates them server-side (one GROUP BY per facet). ``total_requests``
+    counts every attributed and unattributed row; ``unattributed_requests``
+    counts rows missing ``final_endpoint`` (error paths) and are excluded from
+    ``selection_share`` and each bucket's ``counts``. A bucket appears when it
+    holds at least one routewise row, and its ``hedge`` breakdown covers every
+    such row. ``hedge_summary`` reports the window hedge rate (over all requests)
+    and backup win rate (over hedged requests).
+
+    Args:
+        model_id: Canonical model id to aggregate (exact match, required).
+        range: Lookback window, one of ``"24h"``, ``"7d"``, ``"30d"``.
+        _admin_id: Injected admin identity from the auth dependency.
+        db_logger: Injected database logger providing the connection pool.
+
+    Returns:
+        The aggregated decision counts, LP status mix, per-endpoint selection
+        share, window hedge KPIs, and per-bucket selection and hedge counts.
+    """
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    window_seconds, bucket_seconds = DECISIONS_RANGE_SECONDS[range]
+
+    async with db_logger.pool.acquire() as conn:
+        counts_row = await conn.fetchrow(
+            """
+            SELECT
+                COUNT(*) AS total_requests,
+                COUNT(*) FILTER (
+                    WHERE (metadata->'routewise'->>'final_endpoint') IS NULL
+                ) AS unattributed_requests,
+                COUNT(*) FILTER (
+                    WHERE (metadata->'routewise'->>'hedged') = 'true'
+                ) AS hedged,
+                COUNT(*) FILTER (
+                    WHERE (metadata->'routewise'->>'hedged') = 'true'
+                      AND (metadata->'routewise'->>'hedge_winner') = 'backup'
+                ) AS backup_won,
+                percentile_cont(0.5) WITHIN GROUP (
+                    ORDER BY (metadata->'routewise'->>'hedge_delay_ms')::double precision
+                ) FILTER (
+                    WHERE (metadata->'routewise'->>'hedged') = 'true'
+                      AND (metadata->'routewise'->>'hedge_delay_ms') IS NOT NULL
+                ) AS median_hedge_delay_ms
+            FROM api_logs
+            WHERE model_id = $1
+              AND timestamp >= NOW() - ($2::int * interval '1 second')
+              AND metadata ? 'routewise'
+            """,
+            model_id,
+            window_seconds,
+        )
+
+        lp_status_rows = await conn.fetch(
+            """
+            SELECT
+                metadata->'routewise'->>'lp_status' AS lp_status,
+                COUNT(*) AS cnt
+            FROM api_logs
+            WHERE model_id = $1
+              AND timestamp >= NOW() - ($2::int * interval '1 second')
+              AND metadata ? 'routewise'
+              AND (metadata->'routewise'->>'lp_status') IS NOT NULL
+            GROUP BY 1
+            """,
+            model_id,
+            window_seconds,
+        )
+
+        selection_rows = await conn.fetch(
+            """
+            SELECT
+                metadata->'routewise'->>'final_endpoint' AS endpoint,
+                metadata->'routewise'->>'final_provider_type' AS provider_type,
+                COUNT(*) AS cnt
+            FROM api_logs
+            WHERE model_id = $1
+              AND timestamp >= NOW() - ($2::int * interval '1 second')
+              AND metadata ? 'routewise'
+              AND (metadata->'routewise'->>'final_endpoint') IS NOT NULL
+            GROUP BY 1, 2
+            ORDER BY cnt DESC, endpoint ASC
+            """,
+            model_id,
+            window_seconds,
+        )
+
+        bucket_rows = await conn.fetch(
+            """
+            SELECT
+                to_timestamp(
+                    floor(extract(epoch FROM timestamp) / $3::int) * $3::int
+                ) AS bucket_start,
+                metadata->'routewise'->>'final_endpoint' AS endpoint,
+                COUNT(*) AS cnt
+            FROM api_logs
+            WHERE model_id = $1
+              AND timestamp >= NOW() - ($2::int * interval '1 second')
+              AND metadata ? 'routewise'
+              AND (metadata->'routewise'->>'final_endpoint') IS NOT NULL
+            GROUP BY 1, 2
+            ORDER BY bucket_start ASC
+            """,
+            model_id,
+            window_seconds,
+            bucket_seconds,
+        )
+
+        # Hedge breakdown over ALL routewise rows in each bucket. Drives bucket
+        # inclusion (>= 1 routewise row) so buckets holding only unattributed
+        # rows still surface with an empty ``counts`` map.
+        hedge_bucket_rows = await conn.fetch(
+            """
+            SELECT
+                to_timestamp(
+                    floor(extract(epoch FROM timestamp) / $3::int) * $3::int
+                ) AS bucket_start,
+                COUNT(*) FILTER (
+                    WHERE (metadata->'routewise'->>'hedged') IS DISTINCT FROM 'true'
+                ) AS not_hedged,
+                COUNT(*) FILTER (
+                    WHERE (metadata->'routewise'->>'hedged') = 'true'
+                      AND (metadata->'routewise'->>'hedge_winner') IS DISTINCT FROM 'backup'
+                ) AS hedged_primary_won,
+                COUNT(*) FILTER (
+                    WHERE (metadata->'routewise'->>'hedged') = 'true'
+                      AND (metadata->'routewise'->>'hedge_winner') = 'backup'
+                ) AS hedged_backup_won
+            FROM api_logs
+            WHERE model_id = $1
+              AND timestamp >= NOW() - ($2::int * interval '1 second')
+              AND metadata ? 'routewise'
+            GROUP BY 1
+            ORDER BY bucket_start ASC
+            """,
+            model_id,
+            window_seconds,
+            bucket_seconds,
+        )
+
+    total_requests = int(counts_row["total_requests"] or 0) if counts_row else 0
+    unattributed_requests = int(counts_row["unattributed_requests"] or 0) if counts_row else 0
+    hedged = int(counts_row.get("hedged") or 0) if counts_row else 0
+    backup_won = int(counts_row.get("backup_won") or 0) if counts_row else 0
+    median_delay_raw = counts_row.get("median_hedge_delay_ms") if counts_row else None
+    median_hedge_delay_ms = float(median_delay_raw) if median_delay_raw is not None else None
+
+    hedge_summary = RoutewiseHedgeSummary(
+        hedged=hedged,
+        hedge_rate=(hedged / total_requests) if total_requests else 0.0,
+        backup_won=backup_won,
+        backup_win_rate=(backup_won / hedged) if hedged else 0.0,
+        median_hedge_delay_ms=median_hedge_delay_ms,
+    )
+
+    lp_status_counts = {str(row["lp_status"]): int(row["cnt"] or 0) for row in lp_status_rows}
+
+    selection_share = [
+        RoutewiseSelectionShareItem(
+            endpoint=str(row["endpoint"]),
+            provider_type=row["provider_type"],
+            count=int(row["cnt"] or 0),
+        )
+        for row in selection_rows
+    ]
+
+    # Attributed per-endpoint counts keyed by bucket_start; a bucket may be absent
+    # here yet still appear below when it holds only unattributed routewise rows.
+    counts_by_start: dict[str, dict[str, int]] = {}
+    for row in bucket_rows:
+        start_key = row["bucket_start"].isoformat()
+        counts_by_start.setdefault(start_key, {})[str(row["endpoint"])] = int(row["cnt"] or 0)
+
+    # The hedge-bucket rows cover every routewise row and arrive ordered by
+    # bucket_start ASC, so they set both bucket inclusion and ascending order.
+    buckets = [
+        RoutewiseDecisionBucket(
+            bucket_start=row["bucket_start"].isoformat(),
+            counts=counts_by_start.get(row["bucket_start"].isoformat(), {}),
+            hedge=RoutewiseDecisionBucketHedge(
+                not_hedged=int(row["not_hedged"] or 0),
+                hedged_primary_won=int(row["hedged_primary_won"] or 0),
+                hedged_backup_won=int(row["hedged_backup_won"] or 0),
+            ),
+        )
+        for row in hedge_bucket_rows
+    ]
+
+    return RoutewiseDecisionsResponse(
+        model_id=model_id,
+        range=range,
+        bucket_seconds=bucket_seconds,
+        total_requests=total_requests,
+        unattributed_requests=unattributed_requests,
+        lp_status_counts=lp_status_counts,
+        selection_share=selection_share,
+        hedge_summary=hedge_summary,
+        buckets=buckets,
     )
