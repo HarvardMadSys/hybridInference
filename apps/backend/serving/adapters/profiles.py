@@ -76,7 +76,63 @@ def normalize_tools_for_profile(
     profile: ProviderProfile, tools: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]] | None:
     """Return provider-specific normalized tool definitions."""
+    if not tools:
+        return tools
+    if profile == ProviderProfile.KIMI:
+        return [_sanitize_kimi_tool_schema(tool) for tool in tools]
+    if profile == ProviderProfile.MINIMAX:
+        return [_ensure_minimax_parameters(tool) for tool in tools]
     return tools
+
+
+def _sanitize_kimi_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    """Drop a redundant parent "type" declared beside "anyOf" for Moonshot.
+
+    Moonshot's JSON Schema validator rejects a schema node that declares both
+    "type" and a sibling "anyOf" ("type should be defined in anyOf items
+    instead of the parent schema"), even when every anyOf branch already
+    declares its own "type" -- as discriminated-union tool schemas (e.g.
+    Claude Code's own agent/task tools) commonly do.
+    """
+    function = tool.get("function")
+    if not isinstance(function, dict) or "parameters" not in function:
+        return tool
+    return {
+        **tool,
+        "function": {
+            **function,
+            "parameters": _strip_type_beside_anyof(function["parameters"]),
+        },
+    }
+
+
+def _strip_type_beside_anyof(schema: Any) -> Any:
+    """Recursively drop "type" wherever it sits next to "anyOf" in a schema."""
+    if isinstance(schema, dict):
+        cleaned = {key: _strip_type_beside_anyof(value) for key, value in schema.items()}
+        if "anyOf" in cleaned and "type" in cleaned:
+            del cleaned["type"]
+        return cleaned
+    if isinstance(schema, list):
+        return [_strip_type_beside_anyof(item) for item in schema]
+    return schema
+
+
+def _ensure_minimax_parameters(tool: dict[str, Any]) -> dict[str, Any]:
+    """Default a missing/empty "parameters" schema for MiniMax.
+
+    MiniMax rejects tool definitions with no parameters schema at all
+    ("invalid params, function name or parameters is empty"), even though
+    omitting "parameters" for a no-argument tool is valid per the OpenAI spec
+    that other providers accept as-is.
+    """
+    function = tool.get("function")
+    if not isinstance(function, dict) or function.get("parameters"):
+        return tool
+    return {
+        **tool,
+        "function": {**function, "parameters": {"type": "object", "properties": {}}},
+    }
 
 
 def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) -> Any:

@@ -7,6 +7,7 @@ import pytest
 from serving.adapters.profiles import (
     ProviderProfile,
     function_call_delta_to_tool_calls,
+    normalize_tools_for_profile,
     normalize_usage_deepseek,
     normalize_usage_default,
 )
@@ -172,3 +173,124 @@ def test_normalize_usage_deepseek_miss_only_reported() -> None:
     assert info.cache_read_tokens == 0
     assert info.cache_read_reported is True
     assert info.to_dict()["cache_read_tokens"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Tool schema normalization: normalize_tools_for_profile
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_tools_default_profile_passthrough() -> None:
+    """Non-Kimi/MiniMax profiles forward tool defs unchanged."""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {"type": "anyOf"}}}]
+    assert normalize_tools_for_profile(ProviderProfile.DEFAULT, tools) is tools
+
+
+def test_normalize_tools_empty_or_none_passthrough() -> None:
+    """No tools on the request -> nothing to normalize."""
+    assert normalize_tools_for_profile(ProviderProfile.KIMI, None) is None
+    assert normalize_tools_for_profile(ProviderProfile.KIMI, []) == []
+
+
+def test_normalize_tools_kimi_strips_type_beside_anyof() -> None:
+    """Moonshot rejects a discriminated-union schema (Claude Code's actor tool):
+
+    'tools.function.parameters is not a valid moonshot flavored json schema,
+    details: <At path 'properties.operation': when using anyOf, type should
+    be defined in anyOf items instead of the parent schema>' (prod
+    req_77edb9933df642cba5f418ea072f5803). Every anyOf branch below already
+    declares its own "type", so the redundant parent "type" is dropped.
+    """
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "actor",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "operation": {
+                            "type": "object",
+                            "anyOf": [
+                                {"type": "object", "required": ["action"]},
+                                {"type": "object", "required": ["actor_id"]},
+                            ],
+                        }
+                    },
+                },
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.KIMI, tools)
+    operation_schema = result[0]["function"]["parameters"]["properties"]["operation"]
+    assert "type" not in operation_schema
+    assert len(operation_schema["anyOf"]) == 2
+    # Nested "type" declarations inside each anyOf branch are untouched.
+    assert all(branch["type"] == "object" for branch in operation_schema["anyOf"])
+    # Original input is not mutated.
+    assert "type" in tools[0]["function"]["parameters"]["properties"]["operation"]
+
+
+def test_normalize_tools_kimi_leaves_plain_schemas_untouched() -> None:
+    """A schema with "type" but no "anyOf" sibling is unaffected."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.KIMI, tools)
+    assert result[0]["function"]["parameters"]["type"] == "object"
+    assert result[0]["function"]["parameters"]["properties"]["query"]["type"] == "string"
+
+
+def test_normalize_tools_kimi_tool_without_parameters_passthrough() -> None:
+    """A tool with no "parameters" key at all has nothing to sanitize."""
+    tools = [{"type": "function", "function": {"name": "no_args_tool"}}]
+    result = normalize_tools_for_profile(ProviderProfile.KIMI, tools)
+    assert result[0] == tools[0]
+
+
+def test_normalize_tools_minimax_defaults_missing_parameters() -> None:
+    """MiniMax rejects a tool def with no "parameters" key at all:
+
+    '{"type":"error","error":{"type":"bad_request_error","message":"invalid
+    params, function name or parameters is empty (2013)"...}}' (prod
+    req_534feefacd484f0891c240344f12e02c, tool {"name": "web_search",
+    "description": ""} with no "parameters" key).
+    """
+    tools = [{"type": "function", "function": {"name": "web_search", "description": ""}}]
+    result = normalize_tools_for_profile(ProviderProfile.MINIMAX, tools)
+    assert result[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+    assert result[0]["function"]["name"] == "web_search"
+    # Original input is not mutated.
+    assert "parameters" not in tools[0]["function"]
+
+
+def test_normalize_tools_minimax_defaults_empty_parameters_dict() -> None:
+    """An explicit empty {} parameters schema is just as "empty" as a missing key."""
+    tools = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+    result = normalize_tools_for_profile(ProviderProfile.MINIMAX, tools)
+    assert result[0]["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_normalize_tools_minimax_leaves_populated_parameters_untouched() -> None:
+    """A tool that already declares a real parameters schema passes through as-is."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}},
+            },
+        }
+    ]
+    result = normalize_tools_for_profile(ProviderProfile.MINIMAX, tools)
+    assert result[0]["function"]["parameters"]["properties"]["x"]["type"] == "string"
