@@ -472,10 +472,16 @@ def operator_safe_error(exc: BaseException | None, *, max_len: int = 500) -> str
     raw = _upstream_error_raw(exc)
     if not raw:
         # Non-upstream exception (timeout, connection error, ValueError, ...).
-        # str() can raise on a malformed exception, so guard it.
+        # str() can raise on a malformed exception, so guard it. Some aiohttp
+        # connection errors (e.g. ClientOSError, ClientPayloadError) render an
+        # empty str(), which would otherwise scrub down to nothing and return
+        # None -- losing the exception type. Fall back to the class name so the
+        # operator still sees *what* failed (e.g. "ClientOSError").
         try:
-            raw = str(exc)
+            raw = str(exc).strip()
         except Exception:
+            raw = ""
+        if not raw:
             raw = exc.__class__.__name__
     # Bound before scrubbing: error_body can hold a full upstream response body
     # (e.g. a large HTML 5xx page), and running every regex substitution over

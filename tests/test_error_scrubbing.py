@@ -137,6 +137,25 @@ def test_operator_safe_error_handles_plain_exception():
     assert detail == "connection reset by peer"
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        aiohttp.ClientOSError(),
+        aiohttp.ClientPayloadError(),
+        RuntimeError(""),
+    ],
+)
+def test_operator_safe_error_falls_back_to_class_name_when_str_is_empty(exc):
+    """Connection-drop errors mid-stream (ClientOSError / ClientPayloadError)
+    render an empty ``str()``. Without a fallback the result scrubs down to
+    ``None`` and the operator loses the exception type -- exactly the blank
+    ``metadata.operator_error`` seen on the zai/GLM streaming 502s. The class
+    name must survive so the failure stays diagnosable.
+    """
+    detail = operator_safe_error(exc)
+    assert detail == type(exc).__name__
+
+
 def test_operator_safe_error_scrubs_secrets_in_plain_exception():
     detail = operator_safe_error(RuntimeError("auth failed: api_key=sk-supersecret"))
     assert detail is not None
