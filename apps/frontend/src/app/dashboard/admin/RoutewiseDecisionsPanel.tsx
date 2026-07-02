@@ -18,6 +18,7 @@ import {
 import { getRoutewiseDecisions, listRecentRequests, listRoutewiseSettings } from '@/lib/api/admin';
 import type {
   AdminRecentRequestItem,
+  RoutewiseDecisionBucket,
   RoutewiseDecisionsRange,
   RoutewiseDecisionsResponse,
 } from '@/lib/api/admin';
@@ -40,19 +41,30 @@ const RANGE_DAYS: Record<RoutewiseDecisionsRange, number> = {
   '30d': 30,
 };
 
-// Reused from AnalyticsTab conventions.
-const CHART_COLORS = [
-  '#3b82f6',
-  '#f59e0b',
-  '#10b981',
-  '#8b5cf6',
-  '#ec4899',
-  '#06b6d4',
-  '#f97316',
-  '#84cc16',
-  '#e11d48',
-  '#7c3aed',
-];
+// Full window span (seconds) per range, used to zero-fill bucket gaps so the
+// x-axis always covers the whole window even when the backend returns only the
+// non-empty buckets.
+const RANGE_WINDOW_SECONDS: Record<RoutewiseDecisionsRange, number> = {
+  '24h': 24 * 3600,
+  '7d': 7 * 24 * 3600,
+  '30d': 30 * 24 * 3600,
+};
+
+// Distribution bars stay in the tier hue family used by the scatter (on_demand
+// blue, quota amber, concurrency green); multiple endpoints in one tier take
+// progressively different shades. Endpoints with an unknown tier fall back to
+// gray.
+const TIER_SHADES: Record<string, string[]> = {
+  on_demand: ['#3b82f6', '#93c5fd', '#1d4ed8', '#bfdbfe'],
+  quota: ['#f59e0b', '#fcd34d', '#b45309', '#fde68a'],
+  concurrency: ['#10b981', '#6ee7b7', '#047857', '#a7f3d0'],
+};
+const UNKNOWN_TIER_COLOR = '#9ca3af';
+
+const AXIS_TICK = { fontSize: 11, fill: '#6b7280' } as const;
+const AXIS_LABEL_STYLE = { fontSize: 11, fill: '#6b7280' } as const;
+const LEGEND_STYLE = { fontSize: 11, color: '#6b7280' } as const;
+const GRID_STROKE = '#e5e7eb';
 
 const TOOLTIP_STYLE = {
   fontSize: 12,
@@ -73,13 +85,53 @@ const TIER_META: Record<string, { label: string; color: string }> = {
 
 const ALPHA_SETTING_KEY = 'routewise_budget_alpha';
 
-// Hedge stack, bottom to top. not_hedged is the panel's muted neutral gray;
+// Hedge stack, bottom to top. not_hedged is a receding neutral gray;
 // hedged_primary_won a light orange; hedged_backup_won the paper hedge orange.
 const HEDGE_SEGMENTS = [
-  { key: 'not_hedged', label: 'not hedged', color: '#d1d5db' },
+  { key: 'not_hedged', label: 'not hedged', color: '#e5e7eb' },
   { key: 'hedged_primary_won', label: 'hedged · primary won', color: '#f8c471' },
   { key: 'hedged_backup_won', label: 'hedged · backup won', color: '#f28e2b' },
 ] as const;
+
+// Client-side zero-fill: the backend returns only non-empty buckets, so a
+// window with one burst of traffic would otherwise render a single bar
+// spanning the whole chart. Generates the complete epoch-aligned series
+// (matching the backend's to_timestamp(floor(epoch/bucket)*bucket) alignment)
+// from the window start through now, merging server buckets in and filling
+// gaps with zero buckets.
+export function fillBucketGaps(
+  buckets: RoutewiseDecisionBucket[],
+  bucketSeconds: number,
+  windowSeconds: number,
+  nowMs: number,
+): RoutewiseDecisionBucket[] {
+  if (!Number.isFinite(bucketSeconds) || bucketSeconds <= 0) return buckets;
+  const byStart = new Map<number, RoutewiseDecisionBucket>();
+  for (const bucket of buckets) {
+    const epochMs = Date.parse(bucket.bucket_start);
+    if (Number.isNaN(epochMs)) continue;
+    byStart.set(Math.floor(epochMs / 1000 / bucketSeconds) * bucketSeconds, bucket);
+  }
+  const nowSec = Math.floor(nowMs / 1000);
+  const startSec = Math.floor((nowSec - windowSeconds) / bucketSeconds) * bucketSeconds;
+  const filled: RoutewiseDecisionBucket[] = [];
+  for (let t = startSec; t <= nowSec; t += bucketSeconds) {
+    filled.push(
+      byStart.get(t) ?? {
+        bucket_start: new Date(t * 1000).toISOString(),
+        counts: {},
+        hedge: { not_hedged: 0, hedged_primary_won: 0, hedged_backup_won: 0 },
+      },
+    );
+  }
+  return filled;
+}
+
+// With a zero-filled axis of ~24-30 categories, showing every tick label turns
+// the axis to mush; aim for roughly six labels.
+function xTickInterval(categoryCount: number): number {
+  return Math.max(0, Math.ceil(categoryCount / 6) - 1);
+}
 
 function shortEndpoint(modelId: string, endpoint: string): string {
   let label = endpoint;
@@ -206,6 +258,51 @@ function CandidateDot(props: {
   );
 }
 
+type DistributionSeries = {
+  endpoint: string;
+  dataKey: string;
+  short: string;
+  tier: string | null;
+  color: string;
+};
+
+function DistributionTooltip(props: {
+  active?: boolean;
+  label?: string;
+  payload?: { dataKey?: string | number; value?: number | string }[];
+  series: DistributionSeries[];
+}) {
+  const { active, label, payload, series } = props;
+  if (!active || !payload || payload.length === 0) return null;
+  const metaByKey = new Map(series.map((item) => [item.dataKey, item]));
+  return (
+    <div style={TOOLTIP_STYLE}>
+      {label != null && <div className="font-medium text-gray-900">{label}</div>}
+      {payload.map((entry) => {
+        const meta = entry.dataKey != null ? metaByKey.get(String(entry.dataKey)) : undefined;
+        if (!meta) return null;
+        return (
+          <div key={meta.dataKey} className="flex items-center gap-1.5 text-gray-600">
+            <span
+              aria-hidden
+              style={{
+                display: 'inline-block',
+                width: 8,
+                height: 8,
+                borderRadius: 2,
+                background: meta.color,
+              }}
+            />
+            <span>{meta.short}</span>
+            <span className="text-gray-400">{meta.tier ? tierLabel(meta.tier) : 'unknown'}</span>
+            <span className="font-medium text-gray-900">{entry.value ?? 0}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function CandidateTooltip(props: { active?: boolean; payload?: { payload: CandidatePoint }[] }) {
   const { active, payload } = props;
   if (!active || !payload || payload.length === 0) return null;
@@ -286,9 +383,46 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
     return Array.from(set);
   }, [decisions]);
 
+  // Tier-consistent bar colors: endpoint -> tier comes from selection_share;
+  // repeated tiers walk the tier's shade array.
+  const distributionSeries = useMemo<DistributionSeries[]>(() => {
+    const tierByEndpoint = new Map<string, string>();
+    for (const item of decisions?.selection_share ?? []) {
+      tierByEndpoint.set(item.endpoint, item.provider_type);
+    }
+    const shadeUse = new Map<string, number>();
+    return distributionEndpoints.map((endpoint, index) => {
+      const tier = tierByEndpoint.get(endpoint) ?? null;
+      const shades = tier ? TIER_SHADES[tier] : undefined;
+      let color = UNKNOWN_TIER_COLOR;
+      if (tier && shades) {
+        const used = shadeUse.get(tier) ?? 0;
+        color = shades[used % shades.length];
+        shadeUse.set(tier, used + 1);
+      }
+      return {
+        endpoint,
+        dataKey: `s${index}`,
+        short: shortEndpoint(modelId, endpoint),
+        tier,
+        color,
+      };
+    });
+  }, [decisions, distributionEndpoints, modelId]);
+
+  const filledBuckets = useMemo(() => {
+    if (!decisions) return [];
+    return fillBucketGaps(
+      decisions.buckets ?? [],
+      decisions.bucket_seconds,
+      RANGE_WINDOW_SECONDS[range],
+      Date.now(),
+    );
+  }, [decisions, range]);
+
   const barData = useMemo(
     () =>
-      (decisions?.buckets ?? []).map((bucket) => {
+      filledBuckets.map((bucket) => {
         const row: Record<string, number | string> = {
           label: fmtBucketLabel(bucket.bucket_start, range),
         };
@@ -297,18 +431,18 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
         });
         return row;
       }),
-    [decisions, distributionEndpoints, range],
+    [filledBuckets, distributionEndpoints, range],
   );
 
   const hedgeBarData = useMemo(
     () =>
-      (decisions?.buckets ?? []).map((bucket) => ({
+      filledBuckets.map((bucket) => ({
         label: fmtBucketLabel(bucket.bucket_start, range),
         not_hedged: bucket.hedge.not_hedged,
         hedged_primary_won: bucket.hedge.hedged_primary_won,
         hedged_backup_won: bucket.hedge.hedged_backup_won,
       })),
-    [decisions, range],
+    [filledBuckets, range],
   );
 
   const candidatePoints = useMemo<CandidatePoint[]>(() => {
@@ -372,7 +506,10 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
 
   const summary = decisions ? shareSummary(decisions.selection_share, modelId) : '';
   const unattributed = decisions?.unattributed_requests ?? 0;
-  const hasDistribution = barData.length > 0 && distributionEndpoints.length > 0;
+  // Zero-filled series are non-empty whenever a response exists, so the empty
+  // states key off the raw server buckets instead.
+  const serverBucketCount = decisions?.buckets?.length ?? 0;
+  const hasDistribution = serverBucketCount > 0 && distributionEndpoints.length > 0;
 
   const hedge = decisions?.hedge_summary ?? null;
   const hedgeRateText = fmtRatePct(hedge?.hedge_rate);
@@ -380,7 +517,7 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
   const backupWinText = hedge && hedge.hedged > 0 ? fmtRatePct(hedge.backup_win_rate) : '—';
   const medianDelay = hedge?.median_hedge_delay_ms ?? null;
   const medianDelayText = medianDelay != null ? `${Math.round(medianDelay)} ms` : '—';
-  const hasHedgeChart = hedgeBarData.length > 0;
+  const hasHedgeChart = serverBucketCount > 0;
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4">
@@ -424,7 +561,7 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
         <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700">{error}</div>
       )}
 
-      <div className="mt-4">
+      <div className="mt-6">
         <h3 className="text-[13px] font-semibold text-gray-900">Selection distribution</h3>
         {!hasDistribution ? (
           <div className="mt-2 rounded-lg border border-dashed border-gray-200 py-8 text-center text-[12px] text-gray-400">
@@ -432,25 +569,30 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
           </div>
         ) : (
           <>
-            <div className="mt-2 h-[240px] w-full">
+            <div className="mt-2 h-[210px] w-full">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={barData} margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
-                  <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
-                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#6b7280' }} />
-                  <YAxis
-                    allowDecimals={false}
-                    width={36}
-                    tick={{ fontSize: 10, fill: '#6b7280' }}
+                <BarChart data={barData} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+                  <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
+                  <XAxis
+                    dataKey="label"
+                    interval={xTickInterval(barData.length)}
+                    tickLine={false}
+                    tick={AXIS_TICK}
                   />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} />
-                  {distributionEndpoints.map((endpoint, index) => (
+                  <YAxis allowDecimals={false} width={36} tickLine={false} tick={AXIS_TICK} />
+                  <Tooltip
+                    cursor={{ fill: 'rgba(0,0,0,0.04)' }}
+                    content={<DistributionTooltip series={distributionSeries} />}
+                  />
+                  <Legend wrapperStyle={LEGEND_STYLE} iconSize={10} />
+                  {distributionSeries.map((series) => (
                     <Bar
-                      key={endpoint}
-                      dataKey={`s${index}`}
+                      key={series.endpoint}
+                      dataKey={series.dataKey}
                       stackId="selection"
-                      name={shortEndpoint(modelId, endpoint)}
-                      fill={CHART_COLORS[index % CHART_COLORS.length]}
+                      name={series.short}
+                      fill={series.color}
+                      maxBarSize={28}
                       isAnimationActive={false}
                     />
                   ))}
@@ -493,14 +635,19 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
             No hedging activity in this window.
           </div>
         ) : (
-          <div className="mt-2 h-[240px] w-full">
+          <div className="mt-2 h-[210px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={hedgeBarData} margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
-                <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
-                <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#6b7280' }} />
-                <YAxis allowDecimals={false} width={36} tick={{ fontSize: 10, fill: '#6b7280' }} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
+              <BarChart data={hedgeBarData} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+                <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="label"
+                  interval={xTickInterval(hedgeBarData.length)}
+                  tickLine={false}
+                  tick={AXIS_TICK}
+                />
+                <YAxis allowDecimals={false} width={36} tickLine={false} tick={AXIS_TICK} />
+                <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} contentStyle={TOOLTIP_STYLE} />
+                <Legend wrapperStyle={LEGEND_STYLE} iconSize={10} />
                 {HEDGE_SEGMENTS.map((segment) => (
                   <Bar
                     key={segment.key}
@@ -508,6 +655,7 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                     stackId="hedge"
                     name={segment.label}
                     fill={segment.color}
+                    maxBarSize={28}
                     isAnimationActive={false}
                   />
                 ))}
@@ -559,7 +707,16 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
             <div className="min-w-0">
               {infoParts.length > 0 && (
                 <div className="flex flex-wrap items-center gap-2 text-[12px] text-gray-600">
-                  <span data-testid="decision-info-line">{infoParts.join(' · ')}</span>
+                  <span
+                    data-testid="decision-info-line"
+                    className="flex flex-wrap items-center gap-2"
+                  >
+                    {infoParts.map((part) => (
+                      <span key={part} className="rounded bg-gray-100 px-2 py-0.5 text-gray-700">
+                        {part}
+                      </span>
+                    ))}
+                  </span>
                   {hedged && (
                     <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">
                       hedged
@@ -580,21 +737,22 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                   No candidate data for this decision.
                 </div>
               ) : (
-                <div className="mt-2 h-[280px] w-full">
+                <div className="mt-2 h-[220px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart margin={{ top: 8, right: 16, bottom: 24, left: 8 }}>
-                      <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
+                    <ScatterChart margin={{ top: 16, right: 16, bottom: 20, left: 8 }}>
+                      <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
                       <XAxis
                         type="number"
                         dataKey="cost"
                         name="cost"
-                        tick={{ fontSize: 10, fill: '#6b7280' }}
+                        tickLine={false}
+                        tick={AXIS_TICK}
                         tickFormatter={(value: number) => fmtCost(value)}
                         label={{
                           value: 'cost (USD)',
                           position: 'insideBottom',
-                          offset: -12,
-                          style: { fontSize: 11, fill: '#6b7280' },
+                          offset: -14,
+                          style: AXIS_LABEL_STYLE,
                         }}
                       />
                       <YAxis
@@ -602,16 +760,22 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                         dataKey="ttft"
                         name="TTFT"
                         width={44}
-                        tick={{ fontSize: 10, fill: '#6b7280' }}
+                        tickLine={false}
+                        tick={AXIS_TICK}
                         label={{
                           value: 'TTFT (s)',
                           angle: -90,
                           position: 'insideLeft',
-                          style: { fontSize: 11, fill: '#6b7280', textAnchor: 'middle' },
+                          style: { ...AXIS_LABEL_STYLE, textAnchor: 'middle' },
                         }}
                       />
                       <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CandidateTooltip />} />
-                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Legend
+                        verticalAlign="top"
+                        align="right"
+                        wrapperStyle={{ ...LEGEND_STYLE, paddingBottom: 8 }}
+                        iconSize={10}
+                      />
                       {budget != null && (
                         <ReferenceLine
                           x={budget}
@@ -619,9 +783,9 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                           strokeDasharray="4 3"
                           label={{
                             value: 'budget',
-                            position: 'top',
+                            position: 'insideTopRight',
                             fontSize: 11,
-                            fill: '#111827',
+                            fill: '#6b7280',
                           }}
                         />
                       )}

@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
+import { RoutewiseDecisionsPanel, fillBucketGaps } from './RoutewiseDecisionsPanel';
 
 // Render recharts primitives as simple elements so DOM assertions stay robust to
 // SVG internals: <Bar>/<Scatter> surface their `name` as text (legend labels).
@@ -189,8 +189,9 @@ describe('RoutewiseDecisionsPanel', () => {
   it('lists a decision and renders scatter tiers plus the budget info line on selection', async () => {
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
-    // Explainer row (auto-selects the first decision on load).
-    const row = await screen.findByText('optimal');
+    // Explainer row (auto-selects the first decision on load). The info line
+    // also renders an "optimal" chip, so target the row button specifically.
+    const row = await screen.findByRole('button', { name: /optimal/ });
     fireEvent.click(row);
 
     // Tier legend labels use paper notation.
@@ -256,6 +257,17 @@ describe('RoutewiseDecisionsPanel', () => {
     ).toBeInTheDocument();
   });
 
+  it('zero-fills bar data across the whole window so one busy bucket cannot span the chart', async () => {
+    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+
+    // The two server buckets still render (legend names come from the Bars),
+    // and the empty-state message stays absent even though most generated
+    // buckets are zero.
+    expect((await screen.findAllByText('openrouter[wandb]')).length).toBeGreaterThan(0);
+    expect(screen.queryByText('No RouteWise decisions in this window.')).not.toBeInTheDocument();
+    expect(screen.queryByText('No hedging activity in this window.')).not.toBeInTheDocument();
+  });
+
   it('refetches with the new range when the range selector changes', async () => {
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
@@ -269,5 +281,39 @@ describe('RoutewiseDecisionsPanel', () => {
     await waitFor(() => {
       expect(getRoutewiseDecisions).toHaveBeenCalledWith('minimax-fast', '7d');
     });
+  });
+});
+
+describe('fillBucketGaps', () => {
+  const emptyHedge = { not_hedged: 0, hedged_primary_won: 0, hedged_backup_won: 0 };
+
+  it('generates the epoch-aligned series over the window, merging server buckets', () => {
+    const nowMs = Date.parse('2026-07-01T15:30:00Z');
+    const serverBucket = {
+      bucket_start: '2026-07-01T13:00:00+00:00',
+      counts: { 'minimax-fast:openrouter[wandb]-api': 6 },
+      hedge: { not_hedged: 4, hedged_primary_won: 1, hedged_backup_won: 1 },
+    };
+
+    const filled = fillBucketGaps([serverBucket], 3600, 24 * 3600, nowMs);
+
+    // floor((now - 24h) / 3600) * 3600 = 2026-06-30T15:00Z, then hourly
+    // through the bucket containing now (2026-07-01T15:00Z): 25 buckets.
+    expect(filled).toHaveLength(25);
+    expect(filled[0].bucket_start).toBe('2026-06-30T15:00:00.000Z');
+    expect(filled[filled.length - 1].bucket_start).toBe('2026-07-01T15:00:00.000Z');
+
+    // The server bucket lands on its aligned slot; every other slot is zero.
+    expect(filled[22]).toBe(serverBucket);
+    for (const [index, bucket] of filled.entries()) {
+      if (index === 22) continue;
+      expect(bucket.counts).toEqual({});
+      expect(bucket.hedge).toEqual(emptyHedge);
+    }
+  });
+
+  it('returns the input unchanged when bucket_seconds is not positive', () => {
+    const buckets = [{ bucket_start: '2026-07-01T13:00:00+00:00', counts: {}, hedge: emptyHedge }];
+    expect(fillBucketGaps(buckets, 0, 24 * 3600, Date.now())).toBe(buckets);
   });
 });
