@@ -257,6 +257,24 @@ _FINISH_REASON_MAP = {
 }
 
 
+def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
+    """Parse an OpenAI tool_call ``arguments`` field into an Anthropic input dict.
+
+    ``arguments`` is a JSON *string* per the OpenAI spec, but some vLLM/Ollama/GLM
+    deployments return an already-decoded object. Accept both: pass a dict
+    through unchanged (previously it was silently replaced with ``{}``), and
+    json-decode a string, falling back to ``{}`` only on genuinely malformed
+    input.
+    """
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[str, Any]:
     """Translate an OpenAI ChatCompletion response to Anthropic Messages format."""
     choice = (resp.get("choices") or [{}])[0]
@@ -277,21 +295,24 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
 
     for tc in message.get("tool_calls") or []:
         fn = tc.get("function") or {}
-        try:
-            tool_input = json.loads(fn.get("arguments") or "{}")
-        except (json.JSONDecodeError, TypeError):
-            tool_input = {}
         content_blocks.append(
             {
                 "type": "tool_use",
                 "id": tc.get("id", ""),
                 "name": fn.get("name", ""),
-                "input": tool_input,
+                "input": _parse_tool_arguments(fn.get("arguments")),
             }
         )
 
     finish = choice.get("finish_reason") or "stop"
     stop_reason = _FINISH_REASON_MAP.get(finish, "end_turn")
+    # Some providers return tool_calls with finish_reason "stop" (the streaming
+    # path defends against this too). If tool_use blocks are present but the
+    # finish mapped to a plain end_turn, force "tool_use" so the client runs the
+    # tools. A "length"/max_tokens finish is left intact -- a tool call
+    # truncated at max_tokens must stay max_tokens, not look complete.
+    if stop_reason == "end_turn" and any(b.get("type") == "tool_use" for b in content_blocks):
+        stop_reason = "tool_use"
 
     raw_id = resp.get("id") or ""
     if raw_id.startswith("msg_"):
@@ -627,6 +648,14 @@ class OpenAIToAnthropicStreamTranslator:
 
         anthropic_index = self._tool_blocks[idx]["anthropic_index"]
         partial = fn.get("arguments")
+        # partial_json must be a JSON *string* fragment. Most providers stream
+        # string fragments; some send the whole arguments object as a dict in one
+        # delta -- serialize that to a string so the client's SSE parser doesn't
+        # receive a partial_json that is an object.
+        if isinstance(partial, dict):
+            partial = json.dumps(partial)
+        elif partial is not None and not isinstance(partial, str):
+            partial = None
         if partial:
             yield self._sse(
                 "content_block_delta",

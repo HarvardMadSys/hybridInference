@@ -1733,3 +1733,28 @@ def test_map_upstream_status_remaps_402_billing():
     from serving.servers.routers.anthropic_messages import _map_upstream_status
 
     assert _map_upstream_status(402) == (502, "api_error")
+
+
+@pytest.mark.asyncio
+async def test_unimplemented_v1_messages_path_returns_anthropic_shaped_404():
+    """P9: a router 404 (Starlette-raised) under /v1/messages gets the Anthropic envelope."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    from serving.servers.routers import anthropic_messages
+
+    app = FastAPI()
+    # Mirror app.py: register the Anthropic-aware handler on the Starlette base
+    # class so router-raised 404/405 are matched (fastapi.HTTPException would not).
+    app.add_exception_handler(
+        StarletteHTTPException, anthropic_messages.anthropic_aware_http_exception_handler
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post("/v1/messages/batches", json={})
+    assert r.status_code == 404
+    body = r.json()
+    assert body["type"] == "error"
+    assert body["error"]["type"] == "not_found_error"

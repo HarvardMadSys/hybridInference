@@ -50,10 +50,23 @@ router = APIRouter()
 # request after ~30s of silence, but slow upstream backends can take longer to
 # emit a first token. During idle gaps the stream emits an SSE comment heartbeat
 # every _KEEPALIVE_INTERVAL seconds to keep the connection alive, giving the
-# upstream up to _MAX_STREAM_IDLE seconds to produce the next chunk before we
-# give up. _STREAM_SENTINEL marks end-of-upstream on the internal queue.
+# upstream up to _MAX_STREAM_IDLE seconds to produce the next FORWARDED frame
+# before we give up. _STREAM_SENTINEL marks end-of-upstream on the internal queue.
+#
+# The idle timer only resets on a frame the adapter actually yields, but a
+# provider can be actively streaming while producing no forwardable frame for a
+# while -- e.g. GLM/Qwen processors buffer a whole XML tool call before emitting
+# it, and a large tool call (a big Write) can buffer for a minute-plus. A 60s
+# ceiling false-aborts those healthy generations, so the ceiling is generous and
+# env-tunable. The client still gets a heartbeat every _KEEPALIVE_INTERVAL, so a
+# higher ceiling only delays detection of a genuinely dead upstream (rare), which
+# is the right trade vs. killing a good turn. (A byte-level idle detector inside
+# the adapter is the fuller fix -- tracked in the surface bug backlog.)
 _KEEPALIVE_INTERVAL = 15
-_MAX_STREAM_IDLE = 60
+try:
+    _MAX_STREAM_IDLE = int(os.environ.get("STREAM_MAX_IDLE_S", "300"))
+except (TypeError, ValueError):
+    _MAX_STREAM_IDLE = 300
 _STREAM_SENTINEL: Any = object()
 
 

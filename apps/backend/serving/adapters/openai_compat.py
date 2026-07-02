@@ -336,12 +336,21 @@ class OpenAICompatAdapter(BaseAdapter):
         """
         if self._key_pool is None:
             headers = self._build_headers()
+            # retries=1 => exactly one attempt, NO retry. A chat.completion POST
+            # is non-idempotent: re-sending on any ClientError (which includes a
+            # response-phase >=400, or a total timeout that fires while the
+            # upstream has already generated and billed the response) would
+            # double-bill the generation, hammer a 429'd provider ignoring
+            # Retry-After, and just add latency on deterministic 4xx. Resilience
+            # comes from the router's provider fallback chain, not from blindly
+            # re-running the same generation (mirrors the pooled path, which does
+            # one json_post per key).
             return await self.http.json_post_with_retry(
                 url=url,
                 json=payload,
                 headers=headers,
                 timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
-                retries=2,
+                retries=1,
             )
 
         from serving.utils import context as req_ctx
