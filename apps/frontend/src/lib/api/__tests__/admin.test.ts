@@ -6,6 +6,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  getRoutewiseDecisions,
   listProviderKeyProviders,
   listOpenRouterProviderOptions,
   listProviderRoutes,
@@ -997,5 +998,69 @@ describe('routewise settings client', () => {
       endpoint_id: 'minimax-fast:featherless-api',
       idle_only: false,
     });
+  });
+});
+
+describe('routewise decisions client', () => {
+  it('getRoutewiseDecisions builds model_id and range query and parses response', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          model_id: 'minimax-fast',
+          range: '7d',
+          bucket_seconds: 21600,
+          total_requests: 512,
+          unattributed_requests: 3,
+          lp_status_counts: { optimal: 498, cheapest_fallback: 14 },
+          selection_share: [
+            {
+              endpoint: 'minimax-fast:openrouter[wandb]-api',
+              provider_type: 'on_demand',
+              count: 258,
+            },
+          ],
+          hedge_summary: {
+            hedged: 96,
+            hedge_rate: 0.1875,
+            backup_won: 61,
+            backup_win_rate: 0.6354,
+            median_hedge_delay_ms: 975.0,
+          },
+          buckets: [
+            {
+              bucket_start: '2026-07-01T13:00:00+00:00',
+              counts: { 'minimax-fast:openrouter[wandb]-api': 10 },
+              hedge: { not_hedged: 10, hedged_primary_won: 2, hedged_backup_won: 1 },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await getRoutewiseDecisions('minimax-fast', '7d');
+
+    expect(out.bucket_seconds).toBe(21600);
+    expect(out.total_requests).toBe(512);
+    expect(out.unattributed_requests).toBe(3);
+    expect(out.lp_status_counts).toEqual({ optimal: 498, cheapest_fallback: 14 });
+    expect(out.selection_share[0].endpoint).toBe('minimax-fast:openrouter[wandb]-api');
+    expect(out.hedge_summary.hedged).toBe(96);
+    expect(out.hedge_summary.hedge_rate).toBeCloseTo(0.1875);
+    expect(out.hedge_summary.backup_win_rate).toBeCloseTo(0.6354);
+    expect(out.hedge_summary.median_hedge_delay_ms).toBe(975.0);
+    expect(out.buckets[0].counts['minimax-fast:openrouter[wandb]-api']).toBe(10);
+    expect(out.buckets[0].hedge).toEqual({
+      not_hedged: 10,
+      hedged_primary_won: 2,
+      hedged_backup_won: 1,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain('/admin/routewise/decisions?');
+    expect(String(url)).toContain('model_id=minimax-fast');
+    expect(String(url)).toContain('range=7d');
+    expect(init.headers).toBeInstanceOf(Headers);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
   });
 });
