@@ -31,6 +31,7 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
+import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
 
 type RouteForm = {
   upstreamProvider: string;
@@ -1480,6 +1481,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           }))}
         />
       )}
+
+      {isRoutewise && <RoutewiseDecisionsPanel modelId={selectedModel} />}
 
       {loading && routes.length === 0 ? (
         <div className="flex justify-center py-24">

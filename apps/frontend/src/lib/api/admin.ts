@@ -504,7 +504,17 @@ export interface AdminRecentRequestItem {
   num_tool_calls?: number | null;
 }
 
+// Per-request RouteWise decision blob. The backend passes the raw persisted
+// `metadata->'routewise'` dict straight through (see
+// apps/backend/serving/servers/routers/admin/metrics.py and
+// apps/backend/routing/routewise/router.py `_decision_metadata`), so the real
+// field names differ from the older narrow shape below. Every field is optional
+// because older rows and error paths may omit any of them. The first group is
+// kept for backward compatibility with existing consumers (e.g.
+// lib/utils/routewise.ts); the second group mirrors the real persisted keys used
+// by the RouteWise decisions panel.
 export interface AdminRouteWiseDecision {
+  // --- legacy / compatibility fields (do not remove) ---
   selected_provider_type?: string | null;
   selected_provider?: string | null;
   selected_endpoint_id?: string | null;
@@ -512,7 +522,22 @@ export interface AdminRouteWiseDecision {
   hedge_backup_provider?: string | null;
   hedge_backup_endpoint_id?: string | null;
   backup_won?: boolean | null;
+  // --- raw persisted metadata fields ---
+  candidate_costs_usd?: Record<string, number>;
+  candidate_mean_ttft_sec?: Record<string, number>;
+  candidate_provider_types?: Record<string, string>;
+  candidate_mean_ttft_sources?: Record<string, string>;
+  candidate_quota_remaining?: Record<string, number>;
+  lp_weights?: Record<string, number>;
   lp_status?: string | null;
+  budget_usd?: number | null;
+  selected_endpoint?: string | null;
+  final_endpoint?: string | null;
+  final_provider_type?: string | null;
+  hedged?: boolean | null;
+  hedge_winner?: string | null;
+  backup_provider?: string | null;
+  fallback_attempts?: number | null;
 }
 
 export interface AdminRecentRequestsResponse {
@@ -1395,6 +1420,65 @@ export async function runRoutewiseProbe(
     body: JSON.stringify(payload),
   });
   return jsonOrThrow<RunRoutewiseProbeResponse>(resp);
+}
+
+// ========================================
+// RouteWise Decisions (aggregate selection distribution per model)
+// ========================================
+
+export type RoutewiseDecisionsRange = '24h' | '7d' | '30d';
+
+export interface RoutewiseSelectionShareItem {
+  endpoint: string;
+  provider_type: string;
+  count: number;
+}
+
+// Hedge outcome counts over ALL routewise rows in one bucket. The three counts
+// partition every routewise row: not_hedged + hedged_primary_won +
+// hedged_backup_won == total routewise rows in the bucket.
+export interface RoutewiseDecisionBucketHedge {
+  not_hedged: number;
+  hedged_primary_won: number;
+  hedged_backup_won: number;
+}
+
+export interface RoutewiseDecisionBucket {
+  bucket_start: string; // ISO8601 UTC
+  counts: Record<string, number>; // endpoint -> selection count in the bucket (attributed only)
+  hedge: RoutewiseDecisionBucketHedge;
+}
+
+// Window-level hedge KPIs. hedge_rate is over all requests; backup_win_rate is
+// over hedged requests. median_hedge_delay_ms is null when no hedged rows carry
+// a delay sample.
+export interface RoutewiseHedgeSummary {
+  hedged: number;
+  hedge_rate: number;
+  backup_won: number;
+  backup_win_rate: number;
+  median_hedge_delay_ms: number | null;
+}
+
+export interface RoutewiseDecisionsResponse {
+  model_id: string;
+  range: RoutewiseDecisionsRange;
+  bucket_seconds: number;
+  total_requests: number;
+  unattributed_requests: number;
+  lp_status_counts: Record<string, number>;
+  selection_share: RoutewiseSelectionShareItem[];
+  hedge_summary: RoutewiseHedgeSummary;
+  buckets: RoutewiseDecisionBucket[];
+}
+
+export async function getRoutewiseDecisions(
+  modelId: string,
+  range: RoutewiseDecisionsRange = '24h',
+): Promise<RoutewiseDecisionsResponse> {
+  const params = new URLSearchParams({ model_id: modelId, range });
+  const resp = await fetchWithAuth(API_BASE, `/admin/routewise/decisions?${params.toString()}`);
+  return jsonOrThrow<RoutewiseDecisionsResponse>(resp);
 }
 
 // ========================================
