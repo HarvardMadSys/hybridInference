@@ -231,6 +231,62 @@ def test_normalize_tools_kimi_strips_type_beside_anyof() -> None:
     assert "type" in tools[0]["function"]["parameters"]["properties"]["operation"]
 
 
+def test_normalize_tools_kimi_pushes_parent_type_into_typeless_branches() -> None:
+    """Dropping the parent "type" must not loosen validation.
+
+    When an anyOf branch relies on the parent for its only type constraint
+    (object-only keywords like "required" don't reject non-objects), the
+    parent "type" is pushed down into that branch rather than simply deleted,
+    so the object constraint is preserved while still satisfying Moonshot's
+    "type in the anyOf items, not beside them" rule.
+    """
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "anyOf": [
+                        {"required": ["a"]},  # no own "type" -> must inherit object
+                        {"type": "string"},  # own "type" -> left as-is
+                    ],
+                },
+            },
+        }
+    ]
+    params = normalize_tools_for_profile(ProviderProfile.KIMI, tools)[0]["function"]["parameters"]
+    assert "type" not in params
+    assert params["anyOf"][0] == {"type": "object", "required": ["a"]}
+    assert params["anyOf"][1] == {"type": "string"}
+
+
+def test_normalize_tools_kimi_normalizes_nested_union_after_pushdown() -> None:
+    """A branch that gains a parent "type" beside its own nested "anyOf" is
+    itself normalized, so no "type beside anyOf" survives at any depth."""
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "f",
+                "parameters": {
+                    "type": "object",
+                    "anyOf": [
+                        # No own "type": inherits "object", which then sits
+                        # beside this branch's own "anyOf" and must be stripped.
+                        {"anyOf": [{"type": "object", "required": ["x"]}]},
+                    ],
+                },
+            },
+        }
+    ]
+    params = normalize_tools_for_profile(ProviderProfile.KIMI, tools)[0]["function"]["parameters"]
+    assert "type" not in params
+    inner = params["anyOf"][0]
+    assert "type" not in inner  # pushed down again, not left beside the nested anyOf
+    assert inner["anyOf"][0] == {"type": "object", "required": ["x"]}
+
+
 def test_normalize_tools_kimi_leaves_plain_schemas_untouched() -> None:
     """A schema with "type" but no "anyOf" sibling is unaffected."""
     tools = [

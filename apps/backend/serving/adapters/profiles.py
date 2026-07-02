@@ -107,12 +107,30 @@ def _sanitize_kimi_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
 
 
 def _strip_type_beside_anyof(schema: Any) -> Any:
-    """Recursively drop "type" wherever it sits next to "anyOf" in a schema."""
+    """Recursively remove a parent "type" that sits next to "anyOf".
+
+    Rather than deleting the parent ``type`` outright (which would loosen the
+    schema when a branch relies on the parent for its only type constraint --
+    object-only keywords like ``required``/``properties`` don't reject
+    non-objects), push it down into any ``anyOf`` branch that doesn't already
+    declare its own ``type``, then drop it from the parent. This preserves the
+    original validation semantics while satisfying Moonshot's rule that ``type``
+    live in the ``anyOf`` items instead of beside them. The push-down runs
+    before recursion so a branch that gains a ``type`` next to its own nested
+    ``anyOf`` is normalized on the way down.
+    """
     if isinstance(schema, dict):
-        cleaned = {key: _strip_type_beside_anyof(value) for key, value in schema.items()}
-        if "anyOf" in cleaned and "type" in cleaned:
-            del cleaned["type"]
-        return cleaned
+        node = dict(schema)
+        if "anyOf" in node and "type" in node and isinstance(node["anyOf"], list):
+            parent_type = node["type"]
+            node["anyOf"] = [
+                {"type": parent_type, **branch}
+                if isinstance(branch, dict) and "type" not in branch
+                else branch
+                for branch in node["anyOf"]
+            ]
+            del node["type"]
+        return {key: _strip_type_beside_anyof(value) for key, value in node.items()}
     if isinstance(schema, list):
         return [_strip_type_beside_anyof(item) for item in schema]
     return schema
