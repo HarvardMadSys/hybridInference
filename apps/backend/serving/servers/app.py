@@ -110,8 +110,20 @@ def create_app() -> FastAPI:
 
     # Override HTTPException handler to emit Anthropic-format errors on
     # /v1/messages and /anthropic/... paths (must register after install_error_handlers).
+    # Register on the Starlette base class, not just fastapi.HTTPException: router
+    # 404/405 (unimplemented surface an Anthropic client probes -- GET /v1/messages,
+    # /v1/messages/batches, ...) are raised as starlette.exceptions.HTTPException,
+    # and Starlette's handler lookup walks the raised type's MRO, so a handler keyed
+    # only on the fastapi subclass would never match those. The subclass registration
+    # is kept for explicitness (fastapi.HTTPException is a subclass, so the base
+    # registration already covers it).
     from fastapi import HTTPException as _HTTPException
+    from starlette.exceptions import HTTPException as _StarletteHTTPException
 
+    app.add_exception_handler(
+        _StarletteHTTPException,
+        anthropic_messages.anthropic_aware_http_exception_handler,
+    )
     app.add_exception_handler(
         _HTTPException,
         anthropic_messages.anthropic_aware_http_exception_handler,

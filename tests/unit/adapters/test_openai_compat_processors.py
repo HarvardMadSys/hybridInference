@@ -733,3 +733,25 @@ async def test_streaming_tool_call_with_stop_finish_normalized_to_tool_calls():
     payloads = [json.loads(chunk[6:]) for chunk in chunks if chunk.strip() != "data: [DONE]"]
     final = payloads[-1]
     assert final["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_single_key_completion_does_not_retry():
+    """P2: the no-pool completion POST uses retries=1 (one attempt), never re-sending a generation."""
+    from unittest.mock import AsyncMock
+
+    adapter = _make_adapter(processor="default")  # no api_keys -> single-key path
+    response = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "model": "glm-4.7-flash",
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+    }
+    mock = AsyncMock(return_value=response)
+    adapter.http.json_post_with_retry = mock
+    await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    assert mock.await_count == 1
+    assert mock.call_args.kwargs["retries"] == 1

@@ -1027,3 +1027,130 @@ def test_stream_message_start_seeds_input_estimate_then_corrects_in_delta():
     assert msg_start[1]["message"]["usage"]["input_tokens"] == 25
     msg_delta = next(e for e in events if e[0] == "message_delta")
     assert msg_delta[1]["usage"]["input_tokens"] == 31
+
+
+# ---------------------------------------------------------------------------
+# Backlog fixes: P4 (dict tool args), P5 (tool_use stop_reason)
+# ---------------------------------------------------------------------------
+
+
+def test_response_tool_calls_with_stop_finish_forces_tool_use():
+    """P5: provider returns tool_calls with finish_reason 'stop' -> stop_reason tool_use."""
+    from serving.adapters.anthropic_translator import openai_response_to_anthropic
+
+    resp = {
+        "id": "chatcmpl-1",
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": "{}"},
+                        }
+                    ],
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["stop_reason"] == "tool_use"
+    assert out["content"][0]["type"] == "tool_use"
+
+
+def test_response_tool_call_truncated_at_length_stays_max_tokens():
+    """P5: a tool call truncated at max_tokens (finish 'length') keeps stop_reason max_tokens."""
+    from serving.adapters.anthropic_translator import openai_response_to_anthropic
+
+    resp = {
+        "id": "chatcmpl-1",
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": '{"a":'},
+                        }
+                    ],
+                },
+                "finish_reason": "length",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["stop_reason"] == "max_tokens"
+
+
+def test_response_tool_call_dict_arguments_used_directly():
+    """P4: non-string (already-decoded) tool arguments are used, not dropped to {}."""
+    from serving.adapters.anthropic_translator import openai_response_to_anthropic
+
+    resp = {
+        "id": "chatcmpl-1",
+        "model": "m",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "f", "arguments": {"city": "SF"}},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+    }
+    out = openai_response_to_anthropic(resp, model="m")
+    assert out["content"][0]["input"] == {"city": "SF"}
+
+
+def test_stream_tool_call_dict_arguments_serialized_to_string():
+    """P4 (streaming): a dict arguments delta becomes a JSON string partial_json, not an object."""
+    t = OpenAIToAnthropicStreamTranslator(model="m")
+    out = b""
+    for c in (
+        _openai_chunk({"role": "assistant"}),
+        _openai_chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "c1",
+                        "type": "function",
+                        "function": {"name": "f", "arguments": {"city": "SF"}},
+                    }
+                ]
+            }
+        ),
+        _openai_chunk({}, finish_reason="tool_calls"),
+    ):
+        out += b"".join(t.feed(c))
+    out += b"".join(t.finalize())
+    events = _events([out])
+    pj = [
+        e[1]["delta"]["partial_json"]
+        for e in events
+        if e[0] == "content_block_delta" and e[1]["delta"].get("type") == "input_json_delta"
+    ]
+    assert pj == ['{"city": "SF"}']
+    assert all(isinstance(x, str) for x in pj)
