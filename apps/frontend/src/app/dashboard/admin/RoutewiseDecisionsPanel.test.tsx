@@ -180,7 +180,7 @@ describe('RoutewiseDecisionsPanel', () => {
 
     // One-line share summary from selection_share.
     expect(screen.getByTestId('selection-share-summary')).toHaveTextContent(
-      'wandb 50% · minimax/highspeed 50%',
+      'on_demand 50% · concurrency 50%',
     );
     expect(screen.queryByText('2 unattributed')).not.toBeInTheDocument();
   });

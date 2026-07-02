@@ -140,14 +140,6 @@ function shortEndpoint(modelId: string, endpoint: string): string {
   return label.replace(/-api$/, '');
 }
 
-// Even shorter label for the one-line share summary: the provider slug inside
-// the bracket when present, else the stripped endpoint.
-function shareLabel(modelId: string, endpoint: string): string {
-  const match = /\[([^\]]+)\]/.exec(endpoint);
-  if (match) return match[1];
-  return shortEndpoint(modelId, endpoint);
-}
-
 function tierLabel(type: string): string {
   return TIER_META[type]?.label ?? type;
 }
@@ -206,14 +198,22 @@ function fmtRatePct(rate: number | null | undefined): string {
   return `${(rate * 100).toFixed(1)}%`;
 }
 
-function shareSummary(
-  share: RoutewiseDecisionsResponse['selection_share'],
-  modelId: string,
-): string {
+// Tier mix over the window (the paper's provider-mix metric), not
+// per-endpoint shares: those are already visible in the chart legend.
+function shareSummary(share: RoutewiseDecisionsResponse['selection_share']): string {
   const total = share.reduce((sum, item) => sum + item.count, 0);
   if (!total) return '';
-  return share
-    .map((item) => `${shareLabel(modelId, item.endpoint)} ${fmtPct(item.count, total)}`)
+  const byTier = new Map<string, number>();
+  for (const item of share) {
+    const tier = item.provider_type || 'unknown';
+    byTier.set(tier, (byTier.get(tier) ?? 0) + item.count);
+  }
+  const ordered = [
+    ...TIER_ORDER.filter((tier) => byTier.has(tier)),
+    ...[...byTier.keys()].filter((tier) => !TIER_ORDER.includes(tier as never)),
+  ];
+  return ordered
+    .map((tier) => `${tierLabel(tier)} ${fmtPct(byTier.get(tier) ?? 0, total)}`)
     .join(' · ');
 }
 
@@ -504,7 +504,7 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
   if (budget != null) infoParts.push(`budget ${fmtUsd(budget)}`);
   if (lpStatus) infoParts.push(lpStatus);
 
-  const summary = decisions ? shareSummary(decisions.selection_share, modelId) : '';
+  const summary = decisions ? shareSummary(decisions.selection_share) : '';
   // Zero-filled series are non-empty whenever a response exists, so the empty
   // states key off the raw server buckets instead.
   const serverBucketCount = decisions?.buckets?.length ?? 0;
