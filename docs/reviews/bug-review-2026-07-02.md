@@ -1,19 +1,27 @@
 # Bug Review — 2026-07-02
 
 Whole-repo correctness review covering the routing engine (`apps/backend/routing/`),
-the FastAPI serving core and SSE path (`apps/backend/serving/`), provider adapters
-(`apps/backend/serving/adapters/`), storage/auth (`apps/backend/serving/storage/`,
-`auth/`), admin/observability (`apps/backend/serving/admin/`, `observability/`),
-services (`services/status-monitor-worker`, `services/freeinference-harness`), and the
+the FastAPI serving core and SSE path (`apps/backend/serving/servers/`,
+`apps/backend/serving/http.py`), provider adapters (`apps/backend/serving/adapters/`),
+storage (`apps/backend/serving/storage/`), auth (`apps/backend/serving/auth/` and
+`apps/backend/serving/servers/auth.py`), admin and observability
+(`apps/backend/serving/admin/`, `apps/backend/serving/observability/`), services
+(`services/status-monitor-worker`, `services/freeinference-harness`), and the
 Next.js frontend (`apps/frontend/`). Methodology: six parallel per-subsystem deep
 reads hunting for concrete failure scenarios only (no style findings), followed by
 independent re-verification of every high-severity finding against the code (and,
 for the SSE parser, by execution). Out of scope: performance, architecture (see
 `architecture-review-2026-05-03.md`), and live testing against staging.
 
-**Totals: 47 unique findings — 7 high, 21 medium, 19 low.** One finding (the
-bootstrap backfill mis-indent, H-class impact) was independently discovered by two
-reviewers.
+Review baseline: `main` @ `7e277e6`, cross-checked against `dev` @ `9caaa56`
+(2026-07-02). Three findings were already fixed on `dev` while this review was in
+flight — S3 by #857, and A9/A10 by #864 — and are marked **fixed on dev** below;
+all other findings were re-verified as still present on `dev`. Line references are
+to `dev`.
+
+**Totals: 47 unique findings — 7 high, 23 medium, 17 low** (3 of the mediums already
+fixed on `dev`, 44 open). One finding (the bootstrap backfill mis-indent, H-class
+impact) was independently discovered by two reviewers.
 
 ## Executive summary — high severity
 
@@ -28,6 +36,8 @@ reviewers.
    iteration, so any stream longer than `REQUEST_TIMEOUT_SECONDS` (default 120) is cut
    mid-body with no `[DONE]` and no error event — despite the adapters deliberately
    using `ClientTimeout(total=None)` because "streaming responses can run for minutes".
+   Since #857 the cancellation at least gets logged as a failure; the mid-stream kill
+   itself remains.
    ([apps/backend/serving/servers/middleware/timeout.py:55-57](../../apps/backend/serving/servers/middleware/timeout.py))
 3. **RouteWise failure recording bypasses the 4xx client-error guard.**
    `RouteWiseRouter` calls `_on_failure(...)` without `exc=`, so the
@@ -127,19 +137,22 @@ regex that accepts `\r\n\r\n`), keeping a possible trailing `\r` in the buffer.
 `servers/sse.py:27-38`; drop site `adapters/openai_compat.py:843-844`.
 
 ### S2 (high) — `TimeoutMiddleware` kills long streams
-See executive summary #2. Because the cancellation is a `CancelledError`
-(BaseException), it also bypasses `StreamSession`'s finalizers (see S3), so the
-truncated request is never logged or billed. Streaming endpoints need an exemption or
-an idle-based timeout. `servers/middleware/timeout.py:55-57`; wired in
+See executive summary #2. Since #857 (merged to `dev`) the resulting
+`CancelledError` at least persists a failure row; but the stream is still cut
+mid-body with no `[DONE]`, and tokens generated before the cut are still unbilled
+(the failure row records 0 tokens). Streaming endpoints need an exemption or an
+idle-based timeout. `servers/middleware/timeout.py:55-57`; wired in
 `servers/app.py:84`.
 
-### S3 (medium) — `StreamSession.stream` never finalizes on disconnect/cancellation
-`_finalize_success` runs only on normal completion, `_finalize_failure` only under
-`except Exception`; `GeneratorExit`/`CancelledError` bypass both — no cost increment,
-no `api_logs` row, no routing observation. A client can stream 99 % of a completion,
-disconnect before `[DONE]`, and never be charged. The Anthropic Messages handler
-handles this exact case in a `finally` block (`anthropic_messages.py:1054-1096`),
-confirming the omission. `servers/routers/completions_stream.py:287-432`.
+### S3 (medium, **fixed on dev** by #857) — `StreamSession.stream` never finalized on disconnect/cancellation
+At the review baseline, `_finalize_success` ran only on normal completion and
+`_finalize_failure` only under `except Exception`; `GeneratorExit`/`CancelledError`
+bypassed both — no cost increment, no `api_logs` row, no routing observation. #857
+adds an `except (asyncio.CancelledError, GeneratorExit)` branch that persists the
+failure row before re-raising, and guards `record_routing_observation` so a throw
+there can't skip the log. Note the row records 0 tokens — tokens generated before a
+disconnect are still not charged (see S2).
+`servers/routers/completions_stream.py`.
 
 ### S4 (medium) — provider-stats backfill is mis-indented into a failure branch
 *(independently found by two reviewers)* The `_run_backfill` task (`backfill_if_empty`
@@ -224,17 +237,19 @@ the real finish reason (`"length"`, `"content_filter"`) never reaches
 `format_and_yield` and the gateway reports `"stop"` — clients cannot detect
 truncation. `processors.py:92-143, 305-350, 519-527`; `openai_compat.py:730-733`.
 
-### A9 (medium) — Anthropic→OpenAI translation emits user text before tool results
-A user message containing `tool_result` blocks plus text becomes
-`[assistant(tool_calls), user(text), tool(...)]`; strict upstreams reject with 400
-because the tool message no longer follows the `tool_calls` message.
-`anthropic_translator.py:121-137`.
+### A9 (medium, **fixed on dev** by #864) — Anthropic→OpenAI translation emitted user text before tool results
+At the review baseline, a user message containing `tool_result` blocks plus text
+became `[assistant(tool_calls), user(text), tool(...)]`; strict upstreams reject with
+400 because the tool message no longer follows the `tool_calls` message. #864 moves
+`out.extend(tool_results)` ahead of the primary message.
+`anthropic_translator.py:126-133`.
 
-### A10 (medium) — OpenAI→Anthropic stream translation never reports `input_tokens`
-`message_start` fires with zeroed usage (real usage arrives only in the final OpenAI
-chunk) and the terminal `message_delta` includes only `output_tokens` + cache fields,
-so Anthropic-SDK clients see 0 input tokens on every streamed request.
-`anthropic_translator.py:361-374, 432-449`.
+### A10 (medium, **fixed on dev** by #864) — OpenAI→Anthropic stream translation never reported `input_tokens`
+At the review baseline, `message_start` fired with zeroed usage and the terminal
+`message_delta` included only `output_tokens` + cache fields, so Anthropic-SDK
+clients saw 0 input tokens on every streamed request. #864 seeds `message_start`
+with an estimate and adds `input_tokens` to the terminal `message_delta.usage`.
+`anthropic_translator.py:406-424`.
 
 ### A11 (medium) — claude.py streaming: 120 s total timeout and no end-of-stream flush
 `ClientTimeout(total=120)` kills long streams mid-body, and when the upstream ends
@@ -252,9 +267,9 @@ validated_params` checks are dead even when `supported_params` lists it.
 unconstrained `json_object` mode otherwise. `openai_compat.py:683-689` vs `:622-624`.
 
 ### A14 (low) — `int(usage.get("completion_tokens", …))` TypeErrors on explicit null
-The neighboring `prompt_tokens` line defends with `or 0`; this one doesn't, and a
-null kills the Anthropic-SSE translation mid-finalization.
-`anthropic_translator.py:404-406`.
+The non-streaming path defends with `or 0` (`anthropic_translator.py:313`); the
+streaming path doesn't, and a null kills the Anthropic-SSE translation
+mid-finalization. `anthropic_translator.py:459-461`.
 
 ### A15 (low) — GLM tool-XML parser merges all parallel tool calls into one
 Only the first `<tool_call>` name is matched and `<arg_key>/<arg_value>` pairs from
@@ -295,7 +310,7 @@ Same as S4 (cross-reported by the storage reviewer). `servers/bootstrap.py:466-5
 ### D4 (low) — `DatabaseLogger.get_stats` binds int to a text-typed param
 `($1 || ' hours')::interval` infers `$1` as text; passing `hours` (int) raises
 `DataError`. Latent — the live route uses `PostgresLogStore.get_stats`, which passes
-`str(hours)`. `database.py:1201-1221`.
+`str(hours)`. `database.py:975-991`.
 
 ### D5 (low) — `NOW() AT TIME ZONE 'UTC'` day/month windows depend on session TZ
 The naive timestamp is re-interpreted in the session TimeZone when compared to
@@ -398,9 +413,9 @@ frontend auth/refresh single-flight, react-query hooks, playground SSE streaming
 
 ## Suggested fix order
 
-1. **S1 + S2 + S3** — the streaming data-loss cluster (dropped SSE frames, 120 s
-   stream kill, unbilled/unlogged disconnects) directly corrupts user responses and
-   billing.
+1. **S1 + S2** — the streaming data-loss cluster (dropped SSE frames, 120 s stream
+   kill) directly corrupts user responses; S3, the unlogged-disconnect half of this
+   cluster, is already fixed on `dev` by #857.
 2. **R1 + R2** — circuit-breaker poisoning and mid-stream provider splices affect
    availability and response integrity for all users.
 3. **A1/A2** (if/when Gemini routes are enabled) and **O1** — hard crashes.
