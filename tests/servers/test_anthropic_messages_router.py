@@ -140,6 +140,31 @@ async def test_alias_model_id_resolves(anthropic_test_client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_upstream_timeout_returns_504_not_502(anthropic_test_client, monkeypatch):
+    """A slow upstream (timeout) surfaces as 504, not a generic 502 api_error."""
+    import asyncio
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        raise asyncio.TimeoutError
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 504
+    err = r.json()
+    assert err["type"] == "error"
+    # 504 has no dedicated Anthropic error type; api_error is the retryable default.
+    assert err["error"]["type"] == "api_error"
+
+
+@pytest.mark.asyncio
 async def test_unknown_model_returns_anthropic_format_404(anthropic_test_client):
     body = {
         "model": "no-such-model",
