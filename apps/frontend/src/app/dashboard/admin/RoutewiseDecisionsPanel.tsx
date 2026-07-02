@@ -6,18 +6,14 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
-  ReferenceLine,
   ResponsiveContainer,
-  Scatter,
-  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts';
 
-import { getRoutewiseDecisions, listRecentRequests, listRoutewiseSettings } from '@/lib/api/admin';
+import { getRoutewiseDecisions } from '@/lib/api/admin';
 import type {
-  AdminRecentRequestItem,
   RoutewiseDecisionBucket,
   RoutewiseDecisionsRange,
   RoutewiseDecisionsResponse,
@@ -34,13 +30,6 @@ const RANGES: { key: RoutewiseDecisionsRange; label: string }[] = [
   { key: '30d', label: '30d' },
 ];
 
-// Recent-decisions window (days) fetched for the explainer per range.
-const RANGE_DAYS: Record<RoutewiseDecisionsRange, number> = {
-  '24h': 1,
-  '7d': 7,
-  '30d': 30,
-};
-
 // Full window span (seconds) per range, used to zero-fill bucket gaps so the
 // x-axis always covers the whole window even when the backend returns only the
 // non-empty buckets.
@@ -50,10 +39,9 @@ const RANGE_WINDOW_SECONDS: Record<RoutewiseDecisionsRange, number> = {
   '30d': 30 * 24 * 3600,
 };
 
-// Distribution bars stay in the tier hue family used by the scatter (on_demand
-// blue, quota amber, concurrency green); multiple endpoints in one tier take
-// progressively different shades. Endpoints with an unknown tier fall back to
-// gray.
+// Distribution bars use the tier hue family (on_demand blue, quota amber,
+// concurrency green); multiple endpoints in one tier take progressively
+// different shades. Endpoints with an unknown tier fall back to gray.
 const TIER_SHADES: Record<string, string[]> = {
   on_demand: ['#3b82f6', '#93c5fd', '#1d4ed8', '#bfdbfe'],
   quota: ['#f59e0b', '#fcd34d', '#b45309', '#fde68a'],
@@ -62,7 +50,6 @@ const TIER_SHADES: Record<string, string[]> = {
 const UNKNOWN_TIER_COLOR = '#9ca3af';
 
 const AXIS_TICK = { fontSize: 11, fill: '#6b7280' } as const;
-const AXIS_LABEL_STYLE = { fontSize: 11, fill: '#6b7280' } as const;
 const LEGEND_STYLE = { fontSize: 11, color: '#6b7280' } as const;
 const GRID_STROKE = '#e5e7eb';
 
@@ -82,8 +69,6 @@ const TIER_META: Record<string, { label: string; color: string }> = {
   quota: { label: 'quota', color: '#f59e0b' },
   concurrency: { label: 'concurrency', color: '#10b981' },
 };
-
-const ALPHA_SETTING_KEY = 'routewise_budget_alpha';
 
 // Hedge stack, bottom to top. not_hedged is a receding neutral gray;
 // hedged_primary_won a light orange; hedged_backup_won the paper hedge orange.
@@ -144,10 +129,6 @@ function tierLabel(type: string): string {
   return TIER_META[type]?.label ?? type;
 }
 
-function tierColor(type: string): string {
-  return TIER_META[type]?.color ?? '#9ca3af';
-}
-
 function fmtBucketLabel(iso: string, range: RoutewiseDecisionsRange): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -157,34 +138,6 @@ function fmtBucketLabel(iso: string, range: RoutewiseDecisionsRange): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${mm}-${dd}`;
-}
-
-function fmtTimestamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
-}
-
-function fmtUsd(value: number | null | undefined, digits = 4): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  return `$${value.toFixed(digits)}`;
-}
-
-function fmtCost(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  if (value === 0) return '$0';
-  return `$${value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
-}
-
-function fmtTtft(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value)) return '—';
-  return `${value.toFixed(3)} s`;
 }
 
 function fmtPct(count: number, total: number): string {
@@ -215,47 +168,6 @@ function shareSummary(share: RoutewiseDecisionsResponse['selection_share']): str
   return ordered
     .map((tier) => `${tierLabel(tier)} ${fmtPct(byTier.get(tier) ?? 0, total)}`)
     .join(' · ');
-}
-
-function hasCandidateBlob(row: AdminRecentRequestItem): boolean {
-  const costs = row.routewise?.candidate_costs_usd;
-  return Boolean(costs && Object.keys(costs).length > 0);
-}
-
-type CandidatePoint = {
-  endpoint: string;
-  short: string;
-  cost: number;
-  ttft: number;
-  tier: string;
-  weight: number;
-  selected: boolean;
-  source: string | null;
-  quotaRemaining: number | null;
-};
-
-// Custom marker: selected (LP weight > 0) candidates render solid and larger;
-// others translucent.
-function CandidateDot(props: {
-  cx?: number;
-  cy?: number;
-  fill?: string;
-  payload?: CandidatePoint;
-}) {
-  const { cx, cy, fill, payload } = props;
-  if (cx == null || cy == null || Number.isNaN(cx) || Number.isNaN(cy)) return null;
-  const selected = Boolean(payload?.selected);
-  return (
-    <circle
-      cx={cx}
-      cy={cy}
-      r={selected ? 6 : 4}
-      fill={fill}
-      fillOpacity={selected ? 1 : 0.35}
-      stroke={selected ? '#111827' : 'none'}
-      strokeWidth={selected ? 1 : 0}
-    />
-  );
 }
 
 type DistributionSeries = {
@@ -303,31 +215,9 @@ function DistributionTooltip(props: {
   );
 }
 
-function CandidateTooltip(props: { active?: boolean; payload?: { payload: CandidatePoint }[] }) {
-  const { active, payload } = props;
-  if (!active || !payload || payload.length === 0) return null;
-  const point = payload[0].payload;
-  return (
-    <div style={TOOLTIP_STYLE}>
-      <div className="font-medium text-gray-900">{point.short}</div>
-      <div className="text-gray-600">cost {fmtCost(point.cost)}</div>
-      <div className="text-gray-600">TTFT {fmtTtft(point.ttft)}</div>
-      <div className="text-gray-600">tier {tierLabel(point.tier)}</div>
-      <div className="text-gray-600">lp weight {point.weight.toFixed(2)}</div>
-      {point.source && <div className="text-gray-600">ttft source {point.source}</div>}
-      {point.quotaRemaining != null && (
-        <div className="text-gray-600">quota remaining {point.quotaRemaining.toLocaleString()}</div>
-      )}
-    </div>
-  );
-}
-
 export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProps) {
   const [range, setRange] = useState<RoutewiseDecisionsRange>('24h');
   const [decisions, setDecisions] = useState<RoutewiseDecisionsResponse | null>(null);
-  const [decisionRows, setDecisionRows] = useState<AdminRecentRequestItem[]>([]);
-  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
-  const [alpha, setAlpha] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -336,42 +226,18 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
     setLoading(true);
     setError(null);
     try {
-      const [decisionsResp, recentResp] = await Promise.all([
-        getRoutewiseDecisions(modelId, range),
-        listRecentRequests(20, 0, undefined, modelId, false, 'chat', RANGE_DAYS[range]),
-      ]);
+      const decisionsResp = await getRoutewiseDecisions(modelId, range);
       setDecisions(decisionsResp);
-      const rows = (recentResp.requests ?? []).filter(hasCandidateBlob);
-      setDecisionRows(rows);
-      setSelectedRequestId((current) => {
-        if (current && rows.some((row) => row.request_id === current)) return current;
-        return rows[0]?.request_id ?? null;
-      });
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
       setLoading(false);
-    }
-    // Alpha is read-only and best-effort: a missing setting must not break the
-    // panel, so it loads separately and swallows its own errors.
-    try {
-      const settings = await listRoutewiseSettings();
-      const found = settings.settings.find((item) => item.key === ALPHA_SETTING_KEY);
-      const value = typeof found?.value === 'number' ? found.value : Number(found?.value);
-      setAlpha(found && Number.isFinite(value) ? value : null);
-    } catch {
-      setAlpha(null);
     }
   }, [modelId, range]);
 
   useEffect(() => {
     void load();
   }, [load]);
-
-  const selectedDecision = useMemo(
-    () => decisionRows.find((row) => row.request_id === selectedRequestId) ?? null,
-    [decisionRows, selectedRequestId],
-  );
 
   const distributionEndpoints = useMemo(() => {
     const fromShare = (decisions?.selection_share ?? []).map((item) => item.endpoint);
@@ -444,65 +310,6 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
       })),
     [filledBuckets, range],
   );
-
-  const candidatePoints = useMemo<CandidatePoint[]>(() => {
-    const rw = selectedDecision?.routewise;
-    if (!rw?.candidate_costs_usd) return [];
-    const costs = rw.candidate_costs_usd;
-    const ttfts = rw.candidate_mean_ttft_sec ?? {};
-    const types = rw.candidate_provider_types ?? {};
-    const weights = rw.lp_weights ?? {};
-    const sources = rw.candidate_mean_ttft_sources ?? {};
-    const quota = rw.candidate_quota_remaining ?? {};
-    return Object.keys(costs)
-      .map((endpoint) => {
-        const cost = costs[endpoint];
-        const ttft = ttfts[endpoint];
-        const weight = weights[endpoint] ?? 0;
-        return {
-          endpoint,
-          short: shortEndpoint(modelId, endpoint),
-          cost,
-          ttft,
-          tier: types[endpoint] ?? 'unknown',
-          weight,
-          selected: weight > 0,
-          source: sources[endpoint] ?? null,
-          quotaRemaining: quota[endpoint] ?? null,
-        };
-      })
-      .filter((point) => Number.isFinite(point.cost) && Number.isFinite(point.ttft));
-  }, [selectedDecision, modelId]);
-
-  const candidatesByTier = useMemo(() => {
-    const grouped = new Map<string, CandidatePoint[]>();
-    for (const point of candidatePoints) {
-      const list = grouped.get(point.tier) ?? [];
-      list.push(point);
-      grouped.set(point.tier, list);
-    }
-    return grouped;
-  }, [candidatePoints]);
-
-  const tierKeys = useMemo(() => {
-    const known = TIER_ORDER.filter((tier) => candidatesByTier.has(tier));
-    const extra = Array.from(candidatesByTier.keys()).filter(
-      (tier) => !(TIER_ORDER as readonly string[]).includes(tier),
-    );
-    return [...known, ...extra];
-  }, [candidatesByTier]);
-
-  const budget = selectedDecision?.routewise?.budget_usd ?? null;
-  const lpStatus = selectedDecision?.routewise?.lp_status ?? null;
-  const hedged = selectedDecision?.routewise?.hedged === true;
-  const hedgeWinner = selectedDecision?.routewise?.hedge_winner ?? null;
-  const backupProvider = selectedDecision?.routewise?.backup_provider ?? null;
-  const fallbackAttempts = selectedDecision?.routewise?.fallback_attempts ?? 0;
-
-  const infoParts: string[] = [];
-  if (alpha != null) infoParts.push(`α = ${alpha}`);
-  if (budget != null) infoParts.push(`budget ${fmtUsd(budget)}`);
-  if (lpStatus) infoParts.push(lpStatus);
 
   const summary = decisions ? shareSummary(decisions.selection_share) : '';
   // Zero-filled series are non-empty whenever a response exists, so the empty
@@ -643,149 +450,6 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                 ))}
               </BarChart>
             </ResponsiveContainer>
-          </div>
-        )}
-      </div>
-
-      <div className="mt-6 border-t border-gray-100 pt-4">
-        <h3 className="text-[13px] font-semibold text-gray-900">Decision explainer</h3>
-        <p className="mt-1 text-[12px] text-gray-500">
-          Pick a recent request to see its candidate cost × TTFT trade-off.
-        </p>
-
-        {decisionRows.length === 0 ? (
-          <div className="mt-2 rounded-lg border border-dashed border-gray-200 py-8 text-center text-[12px] text-gray-400">
-            No per-request decisions with candidate data in this window.
-          </div>
-        ) : (
-          <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,260px)_minmax(0,1fr)]">
-            <div className="max-h-[300px] overflow-y-auto rounded-lg border border-gray-100">
-              <div className="divide-y divide-gray-100">
-                {decisionRows.map((row) => {
-                  const selectedEndpoint =
-                    row.routewise?.final_endpoint ?? row.routewise?.selected_endpoint ?? null;
-                  const status = row.routewise?.lp_status ?? null;
-                  const isActive = row.request_id === selectedRequestId;
-                  return (
-                    <button
-                      key={row.request_id}
-                      type="button"
-                      onClick={() => setSelectedRequestId(row.request_id)}
-                      className={`block w-full px-3 py-2 text-left text-[12px] ${
-                        isActive ? 'bg-gray-50' : 'bg-white hover:bg-gray-50'
-                      }`}
-                    >
-                      <div className="text-gray-500">{fmtTimestamp(row.timestamp)}</div>
-                      <div className="truncate font-medium text-gray-800">
-                        {selectedEndpoint ? shortEndpoint(modelId, selectedEndpoint) : '—'}
-                      </div>
-                      {status && <div className="text-[11px] text-gray-400">{status}</div>}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="min-w-0">
-              {infoParts.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 text-[12px] text-gray-600">
-                  <span
-                    data-testid="decision-info-line"
-                    className="flex flex-wrap items-center gap-2"
-                  >
-                    {infoParts.map((part) => (
-                      <span key={part} className="rounded bg-gray-100 px-2 py-0.5 text-gray-700">
-                        {part}
-                      </span>
-                    ))}
-                  </span>
-                  {hedged && (
-                    <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">
-                      hedged
-                      {hedgeWinner ? ` · ${hedgeWinner}` : ''}
-                      {backupProvider ? ` → ${shortEndpoint(modelId, backupProvider)}` : ''}
-                    </span>
-                  )}
-                  {fallbackAttempts > 0 && (
-                    <span className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium text-red-700">
-                      fallback ×{fallbackAttempts}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {candidatePoints.length === 0 ? (
-                <div className="mt-2 rounded-lg border border-dashed border-gray-200 py-8 text-center text-[12px] text-gray-400">
-                  No candidate data for this decision.
-                </div>
-              ) : (
-                <div className="mt-2 h-[220px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <ScatterChart margin={{ top: 16, right: 16, bottom: 20, left: 8 }}>
-                      <CartesianGrid stroke={GRID_STROKE} strokeDasharray="3 3" />
-                      <XAxis
-                        type="number"
-                        dataKey="cost"
-                        name="cost"
-                        tickLine={false}
-                        tick={AXIS_TICK}
-                        tickFormatter={(value: number) => fmtCost(value)}
-                        label={{
-                          value: 'cost (USD)',
-                          position: 'insideBottom',
-                          offset: -14,
-                          style: AXIS_LABEL_STYLE,
-                        }}
-                      />
-                      <YAxis
-                        type="number"
-                        dataKey="ttft"
-                        name="TTFT"
-                        width={44}
-                        tickLine={false}
-                        tick={AXIS_TICK}
-                        label={{
-                          value: 'TTFT (s)',
-                          angle: -90,
-                          position: 'insideLeft',
-                          style: { ...AXIS_LABEL_STYLE, textAnchor: 'middle' },
-                        }}
-                      />
-                      <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CandidateTooltip />} />
-                      <Legend
-                        verticalAlign="top"
-                        align="right"
-                        wrapperStyle={{ ...LEGEND_STYLE, paddingBottom: 8 }}
-                        iconSize={10}
-                      />
-                      {budget != null && (
-                        <ReferenceLine
-                          x={budget}
-                          stroke="#111827"
-                          strokeDasharray="4 3"
-                          label={{
-                            value: 'budget',
-                            position: 'insideTopRight',
-                            fontSize: 11,
-                            fill: '#6b7280',
-                          }}
-                        />
-                      )}
-                      {tierKeys.map((tier) => (
-                        <Scatter
-                          key={tier}
-                          name={tierLabel(tier)}
-                          data={candidatesByTier.get(tier)}
-                          fill={tierColor(tier)}
-                          shape={<CandidateDot />}
-                          isAnimationActive={false}
-                        />
-                      ))}
-                    </ScatterChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </div>
           </div>
         )}
       </div>

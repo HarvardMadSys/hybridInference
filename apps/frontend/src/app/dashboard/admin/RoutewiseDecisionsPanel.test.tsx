@@ -6,16 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RoutewiseDecisionsPanel, fillBucketGaps } from './RoutewiseDecisionsPanel';
 
 // Render recharts primitives as simple elements so DOM assertions stay robust to
-// SVG internals: <Bar>/<Scatter> surface their `name` as text (legend labels).
+// SVG internals: <Bar> surfaces its `name` as text (legend labels).
 vi.mock('recharts', () => ({
   Bar: ({ name }: { name?: string }) => (name ? <span>{name}</span> : null),
   BarChart: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   CartesianGrid: () => null,
   Legend: () => null,
-  ReferenceLine: () => null,
   ResponsiveContainer: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-  Scatter: ({ name }: { name?: string }) => (name ? <span>{name}</span> : null),
-  ScatterChart: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Tooltip: () => null,
   XAxis: () => null,
   YAxis: () => null,
@@ -23,12 +20,10 @@ vi.mock('recharts', () => ({
 
 vi.mock('@/lib/api/admin', () => ({
   getRoutewiseDecisions: vi.fn(),
-  listRecentRequests: vi.fn(),
-  listRoutewiseSettings: vi.fn(),
 }));
 
-import { getRoutewiseDecisions, listRecentRequests, listRoutewiseSettings } from '@/lib/api/admin';
-import type { AdminRecentRequestItem, RoutewiseDecisionsResponse } from '@/lib/api/admin';
+import { getRoutewiseDecisions } from '@/lib/api/admin';
+import type { RoutewiseDecisionsResponse } from '@/lib/api/admin';
 
 const emptyDecisions: RoutewiseDecisionsResponse = {
   model_id: 'minimax-fast',
@@ -91,62 +86,6 @@ const decisions: RoutewiseDecisionsResponse = {
   ],
 };
 
-const decisionRow: AdminRecentRequestItem = {
-  request_id: 'req-1',
-  user_id: null,
-  model_id: 'minimax-fast',
-  provider: 'openrouter',
-  timestamp: '2026-07-01T13:05:00Z',
-  routewise: {
-    final_endpoint: 'minimax-fast:openrouter[wandb]-api',
-    selected_endpoint: 'minimax-fast:openrouter[wandb]-api',
-    final_provider_type: 'on_demand',
-    lp_status: 'optimal',
-    budget_usd: 0.0026,
-    hedged: false,
-    fallback_attempts: 0,
-    lp_weights: {
-      'minimax-fast:openrouter[minimax/highspeed]-api': 0.5,
-      'minimax-fast:openrouter[wandb]-api': 0.5,
-    },
-    candidate_costs_usd: {
-      'minimax-fast:openrouter[minimax/highspeed]-api': 0.0,
-      'minimax-fast:openrouter[wandb]-api': 0.005201,
-      'minimax-fast:openrouter[chutes]-api': 0.000385,
-    },
-    candidate_mean_ttft_sec: {
-      'minimax-fast:openrouter[minimax/highspeed]-api': 0.839,
-      'minimax-fast:openrouter[wandb]-api': 0.457,
-      'minimax-fast:openrouter[chutes]-api': 1.334,
-    },
-    candidate_provider_types: {
-      'minimax-fast:openrouter[minimax/highspeed]-api': 'concurrency',
-      'minimax-fast:openrouter[wandb]-api': 'on_demand',
-      'minimax-fast:openrouter[chutes]-api': 'quota',
-    },
-    candidate_mean_ttft_sources: {
-      'minimax-fast:openrouter[chutes]-api': 'probe',
-    },
-    candidate_quota_remaining: {
-      'minimax-fast:openrouter[chutes]-api': 5000,
-    },
-  },
-};
-
-const alphaSettings = {
-  settings: [
-    {
-      key: 'routewise_budget_alpha',
-      value: 0.5,
-      value_type: 'float',
-      default_value: 0.5,
-      description: 'RouteWise LP cost budget interpolation.',
-      min: 0,
-      max: 1,
-    },
-  ],
-};
-
 describe('RoutewiseDecisionsPanel', () => {
   afterEach(() => {
     cleanup();
@@ -155,13 +94,6 @@ describe('RoutewiseDecisionsPanel', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(getRoutewiseDecisions).mockResolvedValue(decisions);
-    vi.mocked(listRecentRequests).mockResolvedValue({
-      requests: [decisionRow],
-      total: 1,
-      limit: 20,
-      offset: 0,
-    });
-    vi.mocked(listRoutewiseSettings).mockResolvedValue(alphaSettings);
   });
 
   it('renders the panel header', async () => {
@@ -185,26 +117,6 @@ describe('RoutewiseDecisionsPanel', () => {
     expect(screen.queryByText('2 unattributed')).not.toBeInTheDocument();
   });
 
-  it('lists a decision and renders scatter tiers plus the budget info line on selection', async () => {
-    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
-
-    // Explainer row (auto-selects the first decision on load). The info line
-    // also renders an "optimal" chip, so target the row button specifically.
-    const row = await screen.findByRole('button', { name: /optimal/ });
-    fireEvent.click(row);
-
-    // Tier legend labels use route type names.
-    expect(await screen.findByText('on_demand')).toBeInTheDocument();
-    expect(screen.getByText('quota')).toBeInTheDocument();
-    expect(screen.getByText('concurrency')).toBeInTheDocument();
-
-    // Info line carries alpha, budget reference, and lp status.
-    const infoLine = screen.getByTestId('decision-info-line');
-    expect(infoLine).toHaveTextContent('α = 0.5');
-    expect(infoLine).toHaveTextContent('budget $0.0026');
-    expect(infoLine).toHaveTextContent('optimal');
-  });
-
   it('renders hedging KPIs and stacked legend labels from the response', async () => {
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
@@ -222,12 +134,6 @@ describe('RoutewiseDecisionsPanel', () => {
 
   it('renders hedge KPIs gracefully when nothing hedged', async () => {
     vi.mocked(getRoutewiseDecisions).mockResolvedValue(emptyDecisions);
-    vi.mocked(listRecentRequests).mockResolvedValue({
-      requests: [],
-      total: 0,
-      limit: 20,
-      offset: 0,
-    });
 
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
@@ -240,19 +146,10 @@ describe('RoutewiseDecisionsPanel', () => {
 
   it('shows empty states when the API returns no rows', async () => {
     vi.mocked(getRoutewiseDecisions).mockResolvedValue(emptyDecisions);
-    vi.mocked(listRecentRequests).mockResolvedValue({
-      requests: [],
-      total: 0,
-      limit: 20,
-      offset: 0,
-    });
 
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
     expect(await screen.findByText('No RouteWise decisions in this window.')).toBeInTheDocument();
-    expect(
-      screen.getByText('No per-request decisions with candidate data in this window.'),
-    ).toBeInTheDocument();
   });
 
   it('zero-fills bar data across the whole window so one busy bucket cannot span the chart', async () => {
