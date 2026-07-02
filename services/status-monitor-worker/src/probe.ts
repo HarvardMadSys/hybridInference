@@ -257,6 +257,35 @@ function decodeThroughput(
   return (completionTokens - 1) / ((latencyMs - ttftMs) / 1000);
 }
 
+/**
+ * True for diffusion LLMs (e.g. DiffusionGemma), which get whole-response
+ * throughput instead of the autoregressive decode rate — see
+ * {@link wholeResponseThroughput}. Matched on a "diffusion" marker in the model
+ * id so any diffusion variant is covered, not just today's `diffusiongemma`.
+ */
+export function isDiffusionModel(modelId: string): boolean {
+  return modelId.toLowerCase().includes("diffusion");
+}
+
+/**
+ * Whole-response throughput (tokens/sec): completion tokens over the full request
+ * duration.
+ *
+ * Diffusion LLMs generate the entire output block by iterative denoising rather
+ * than left-to-right, so there is no post-TTFT decode window to measure:
+ * {@link decodeThroughput} either returns null (the block lands in one read, so
+ * latency ≈ ttft) or a meaningless spike (every token in a tiny tail after the
+ * first). Dividing output tokens by total duration is the honest rate for them.
+ */
+function wholeResponseThroughput(
+  latencyMs: number,
+  completionTokens: number | null,
+): number | null {
+  if (completionTokens == null || completionTokens <= 0) return null;
+  if (latencyMs <= 0) return null;
+  return completionTokens / (latencyMs / 1000);
+}
+
 /** Sends one synthetic request for a model and returns the measured result. */
 export async function probeModel(
   config: Config,
@@ -298,7 +327,11 @@ export async function probeModel(
       config.probeMaxTokens,
     );
 
-    const throughputTps = decodeThroughput(ttftMs, latencyMs, completionTokens);
+    // Diffusion LLMs have no autoregressive decode window, so report their
+    // throughput as output tokens over the whole request duration instead.
+    const throughputTps = isDiffusionModel(target.id)
+      ? wholeResponseThroughput(latencyMs, completionTokens)
+      : decodeThroughput(ttftMs, latencyMs, completionTokens);
     return {
       modelId: target.id,
       ok: true,

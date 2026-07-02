@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../src/env";
-import { consumeSse, probeModel, StreamingProbeError } from "../src/probe";
+import { consumeSse, isDiffusionModel, probeModel, StreamingProbeError } from "../src/probe";
 
 const embedConfig = {
   gatewayBaseUrl: "https://gw.example",
@@ -159,5 +159,31 @@ describe("probeModel (chat)", () => {
     const r = await probeModel(embedConfig, "k", { id: "m", kind: "chat" });
     expect(r.ok).toBe(false);
     expect(r.error).toContain("gw error");
+  });
+
+  // A diffusion model runs the same streaming probe; it just reports throughput
+  // as output-tokens / total-duration (see the isDiffusionModel unit tests) so
+  // the branch is exercised end-to-end here — it stays healthy and still records
+  // the token count.
+  it("probes a diffusion model over the same streaming path", async () => {
+    const calls = stubChat(workload);
+    const r = await probeModel(embedConfig, "k", { id: "diffusiongemma", kind: "chat" });
+    expect(r.ok).toBe(true);
+    expect(calls.count).toBe(1);
+    expect(r.completionTokens).toBe(7);
+  });
+});
+
+describe("isDiffusionModel", () => {
+  it("matches diffusion model ids case-insensitively, including aliases", () => {
+    expect(isDiffusionModel("diffusiongemma")).toBe(true);
+    expect(isDiffusionModel("freeinference-diffusiongemma")).toBe(true);
+    expect(isDiffusionModel("DiffusionGemma")).toBe(true);
+  });
+
+  it("does not match autoregressive models", () => {
+    expect(isDiffusionModel("gpt-oss-20b")).toBe(false);
+    expect(isDiffusionModel("qwen3.6-35b")).toBe(false);
+    expect(isDiffusionModel("bge-m3")).toBe(false);
   });
 });
