@@ -6,6 +6,7 @@ import pytest
 
 from serving.observability.alerts import (
     AlertSeverity,
+    _base_url,
     _detect_environment,
     _format_message,
     alert_slack,
@@ -97,6 +98,27 @@ def test_server_info_has_expected_keys():
     }
     assert info["hostname"]
     assert info["platform"]
+
+
+def test_unconfigured_default_base_url_is_not_rendered(monkeypatch):
+    monkeypatch.delenv("BASE_URL", raising=False)
+    monkeypatch.delenv("base_url", raising=False)
+
+    url, explicit = _base_url()
+    assert (url, explicit) == ("", False)
+
+    message = _format_message(AlertSeverity.ERROR, "Boom", {})
+    assert "• *Base URL:* https://freeinference.org" not in message
+
+
+def test_explicit_base_url_is_rendered(monkeypatch):
+    monkeypatch.setenv("BASE_URL", "https://staging.freeinference.org")
+
+    url, explicit = _base_url()
+    assert (url, explicit) == ("https://staging.freeinference.org", True)
+
+    message = _format_message(AlertSeverity.ERROR, "Boom", {})
+    assert "• *Base URL:* https://staging.freeinference.org" in message
 
 
 @pytest.mark.parametrize(
