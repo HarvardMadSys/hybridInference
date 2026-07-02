@@ -679,3 +679,57 @@ class TestGetProcessorOverride:
     def test_invalid_override_raises(self):
         with pytest.raises(ValueError, match="Unknown processor override"):
             get_processor("glm-4.7-flash", override="nonexistent")
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_truncated_at_max_tokens_keeps_length_finish():
+    """C13: saw_tool_calls must not overwrite a 'length' finish_reason as 'tool_calls'."""
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(
+            delta={
+                "role": "assistant",
+                "tool_calls": [
+                    {"index": 0, "id": "c1", "function": {"name": "write", "arguments": '{"a":'}}
+                ],
+            }
+        )
+        yield _make_chunk(delta={}, finish_reason="length")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor="default")
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+    ]
+    payloads = [json.loads(chunk[6:]) for chunk in chunks if chunk.strip() != "data: [DONE]"]
+    final = payloads[-1]
+    assert final["choices"][0]["finish_reason"] == "length"
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_call_with_stop_finish_normalized_to_tool_calls():
+    """C13: the known 'provider streams tool_calls but reports stop' quirk still normalizes."""
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(
+            delta={
+                "role": "assistant",
+                "tool_calls": [
+                    {"index": 0, "id": "c1", "function": {"name": "write", "arguments": "{}"}}
+                ],
+            }
+        )
+        yield _make_chunk(delta={}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor="default")
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+    ]
+    payloads = [json.loads(chunk[6:]) for chunk in chunks if chunk.strip() != "data: [DONE]"]
+    final = payloads[-1]
+    assert final["choices"][0]["finish_reason"] == "tool_calls"

@@ -236,10 +236,21 @@ class BaseAdapter(ABC):
             OpenAIToAnthropicStreamTranslator,
             anthropic_request_to_openai,
         )
+        from serving.utils.tokens import estimate_prompt_tokens
 
         oai_messages, oai_params = anthropic_request_to_openai(body)
         oai_params["stream"] = True
-        translator = OpenAIToAnthropicStreamTranslator(model=body.get("model", ""))
+        # Seed message_start.usage.input_tokens with an estimate: OpenAI streams
+        # report prompt tokens only in the final chunk, but Anthropic clients
+        # read input usage from message_start. The exact count replaces this in
+        # the terminal message_delta once the upstream reports it.
+        try:
+            input_estimate = estimate_prompt_tokens(oai_messages)
+        except Exception:
+            input_estimate = 0
+        translator = OpenAIToAnthropicStreamTranslator(
+            model=body.get("model", ""), input_tokens_estimate=input_estimate
+        )
         async for openai_chunk in self.stream_chat_completion(oai_messages, **oai_params):
             data = openai_chunk.encode("utf-8") if isinstance(openai_chunk, str) else openai_chunk
             for ant in translator.feed(data):

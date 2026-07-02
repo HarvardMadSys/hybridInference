@@ -108,17 +108,31 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
             )
 
         elif btype == "tool_result":
+            result_text = _flatten_tool_result_content(block.get("content"))
+            if block.get("is_error"):
+                # OpenAI tool messages have no error flag; prepend a marker so
+                # the model can distinguish a failed tool call from a successful
+                # one instead of treating raw stderr as a valid result.
+                result_text = f"[tool error]\n{result_text}" if result_text else "[tool error]"
             tool_results.append(
                 {
                     "role": "tool",
                     "tool_call_id": block.get("tool_use_id", ""),
-                    "content": _flatten_tool_result_content(block.get("content")),
+                    "content": result_text,
                 }
             )
 
         # Unknown blocks ignored.
 
     out: list[dict[str, Any]] = []
+
+    # tool_result blocks become standalone tool-role messages. OpenAI requires
+    # each tool message to directly follow the assistant tool_calls message it
+    # answers, so they must precede any user text in this same turn. Claude Code
+    # routinely appends <system-reminder> text blocks alongside tool results, so
+    # emitting the text first would produce assistant(tool_calls) -> user(text)
+    # -> tool(...), which strict upstreams reject.
+    out.extend(tool_results)
 
     # Build the primary translated message (text + image parts + tool_calls).
     has_image = any(p.get("type") == "image_url" for p in text_parts)
@@ -127,13 +141,17 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
         if has_image:
             primary["content"] = text_parts
         else:
-            primary["content"] = "".join(text_only_buffer) if text_only_buffer else None
+            # Join separate text blocks with blank lines (matching
+            # _flatten_system) so block boundaries survive instead of fusing the
+            # user's text onto a trailing <system-reminder>. Fall back to None
+            # only when there were no text blocks at all: an all-empty buffer
+            # keeps content="" (a valid message), never None without tool_calls.
+            joined = "\n\n".join(t for t in text_only_buffer if t)
+            primary["content"] = joined if text_only_buffer else None
         if tool_calls:
             primary["tool_calls"] = tool_calls
         out.append(primary)
 
-    # tool_result blocks become standalone tool-role messages, appended after.
-    out.extend(tool_results)
     return out
 
 
@@ -152,16 +170,27 @@ def _flatten_tool_result_content(content: Any) -> str:
     """Flatten Anthropic tool_result content to a string.
 
     Anthropic tool_result content can be a string or list of blocks; OpenAI tool
-    messages take a string. Concatenates text blocks and ignores non-text.
+    messages take a string. Text blocks are joined with newlines. Image (and
+    other non-text) blocks can't ride along in a string tool message, so each is
+    replaced with a ``[image]`` placeholder: this keeps the result non-empty so
+    the model doesn't read an image-only tool result as "the tool returned
+    nothing" and answer wrongly or loop retrying.
     """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        parts = []
+        parts: list[str] = []
         for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-        return "".join(parts)
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text_val = block.get("text")
+                if isinstance(text_val, str):
+                    parts.append(text_val)
+            elif btype == "image":
+                parts.append("[image]")
+        return "\n".join(p for p in parts if p)
     return ""
 
 
@@ -233,6 +262,14 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
     choice = (resp.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     content_blocks: list[dict[str, Any]] = []
+
+    # Reasoning models expose chain-of-thought on ``reasoning_content``. Surface
+    # it as a thinking block (before the answer) so it isn't silently dropped --
+    # otherwise a response truncated during thinking yields an empty content
+    # array even though the provider produced (and billed) reasoning output.
+    reasoning = message.get("reasoning_content")
+    if reasoning:
+        content_blocks.append({"type": "thinking", "thinking": reasoning, "signature": ""})
 
     text = message.get("content")
     if text:
@@ -311,20 +348,31 @@ class OpenAIToAnthropicStreamTranslator:
                 yield ant
         for ant in t.finalize():
             yield ant
+
+    ``input_tokens_estimate`` seeds message_start.usage.input_tokens. OpenAI
+    streams report prompt tokens only in the final chunk, so message_start would
+    otherwise carry 0 -- but Anthropic clients read input usage from
+    message_start, where a 0 breaks their context/cost accounting. The estimate
+    is corrected to the exact value in the terminal message_delta once the
+    upstream reports it.
     """
 
-    def __init__(self, *, model: str) -> None:
+    def __init__(self, *, model: str, input_tokens_estimate: int = 0) -> None:
         self.model = model
         self._message_id = f"msg_{uuid.uuid4().hex[:24]}"
         self._started = False
         self._closed = False
+        self._current_thinking_index: int | None = None
         self._current_text_index: int | None = None
         self._tool_blocks: dict[
             int, dict[str, Any]
         ] = {}  # openai-tool-index -> {anthropic_index, name, id}
         self._next_index = 0
         self._finish_reason: str | None = None
-        self._usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        self._usage: dict[str, int] = {
+            "input_tokens": max(0, int(input_tokens_estimate)),
+            "output_tokens": 0,
+        }
         self._buffer = b""
 
     @property
@@ -346,6 +394,7 @@ class OpenAIToAnthropicStreamTranslator:
         if not self._started:
             yield from self._emit_message_start()
         # Close any open content block.
+        yield from self._close_thinking()
         if self._current_text_index is not None:
             yield self._sse(
                 "content_block_stop",
@@ -357,9 +406,15 @@ class OpenAIToAnthropicStreamTranslator:
                 "content_block_stop", {"type": "content_block_stop", "index": tb["anthropic_index"]}
             )
         self._tool_blocks.clear()
-        # Emit message_delta with stop_reason + final usage.
+        # Emit message_delta with stop_reason + final usage. input_tokens are
+        # unknown when message_start is emitted (upstream reports usage only in
+        # its final chunk), so message_start carries 0; the client picks up the
+        # real input/cache counts from this terminal message_delta.usage.
         stop_reason = _FINISH_REASON_MAP.get(self._finish_reason or "stop", "end_turn")
-        delta_usage: dict[str, int] = {"output_tokens": self._usage["output_tokens"]}
+        delta_usage: dict[str, int] = {
+            "input_tokens": self._usage.get("input_tokens", 0),
+            "output_tokens": self._usage["output_tokens"],
+        }
         if "cache_read_input_tokens" in self._usage:
             delta_usage["cache_read_input_tokens"] = self._usage["cache_read_input_tokens"]
         if "cache_creation_input_tokens" in self._usage:
@@ -418,6 +473,17 @@ class OpenAIToAnthropicStreamTranslator:
         if not self._started:
             yield from self._emit_message_start()
 
+        # Reasoning/thinking deltas (DeepSeek-R1, Zhipu, ...) arrive on their own
+        # field. Emit them as thinking-block frames: this both preserves the
+        # chain-of-thought for the client and keeps the stream producing bytes
+        # during a long reasoning phase, so the router's idle watchdog doesn't
+        # abort a healthy upstream that hasn't emitted visible text yet.
+        reasoning = (
+            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+        )
+        if isinstance(reasoning, str) and reasoning:
+            yield from self._emit_thinking(reasoning)
+
         text = delta.get("content")
         if text:
             yield from self._emit_text(text)
@@ -448,8 +514,55 @@ class OpenAIToAnthropicStreamTranslator:
             },
         )
 
+    def _emit_thinking(self, text: str) -> Iterator[bytes]:
+        if self._current_thinking_index is None:
+            # Anthropic SSE allows one open block at a time. Reasoning usually
+            # precedes visible output, but with interleaved thinking it can
+            # follow text or a tool call, so close any open block first.
+            if self._current_text_index is not None:
+                yield self._sse(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": self._current_text_index},
+                )
+                self._current_text_index = None
+            for tb in list(self._tool_blocks.values()):
+                yield self._sse(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": tb["anthropic_index"]},
+                )
+            self._tool_blocks.clear()
+            self._current_thinking_index = self._next_index
+            self._next_index += 1
+            yield self._sse(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": self._current_thinking_index,
+                    "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                },
+            )
+        yield self._sse(
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": self._current_thinking_index,
+                "delta": {"type": "thinking_delta", "thinking": text},
+            },
+        )
+
+    def _close_thinking(self) -> Iterator[bytes]:
+        if self._current_thinking_index is not None:
+            yield self._sse(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": self._current_thinking_index},
+            )
+            self._current_thinking_index = None
+
     def _emit_text(self, text: str) -> Iterator[bytes]:
         if self._current_text_index is None:
+            # A thinking block precedes visible text; close it first. Anthropic
+            # SSE requires exactly one open content block at a time.
+            yield from self._close_thinking()
             # Close any open tool blocks first (Anthropic SSE requires one block at a time).
             for tb in list(self._tool_blocks.values()):
                 yield self._sse(
@@ -479,13 +592,16 @@ class OpenAIToAnthropicStreamTranslator:
     def _emit_tool_call_delta(self, tc: dict[str, Any]) -> Iterator[bytes]:
         idx = tc.get("index", 0)
         fn = tc.get("function") or {}
-        # Close text block if open before opening a tool block (matches Anthropic ordering convention).
-        if idx not in self._tool_blocks and self._current_text_index is not None:
-            yield self._sse(
-                "content_block_stop",
-                {"type": "content_block_stop", "index": self._current_text_index},
-            )
-            self._current_text_index = None
+        # Close thinking/text blocks if open before opening a tool block
+        # (matches Anthropic ordering convention).
+        if idx not in self._tool_blocks:
+            yield from self._close_thinking()
+            if self._current_text_index is not None:
+                yield self._sse(
+                    "content_block_stop",
+                    {"type": "content_block_stop", "index": self._current_text_index},
+                )
+                self._current_text_index = None
 
         if idx not in self._tool_blocks:
             anthropic_index = self._next_index

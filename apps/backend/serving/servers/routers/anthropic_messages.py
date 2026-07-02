@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
+from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user
@@ -70,14 +71,40 @@ _ERROR_TYPE_BY_STATUS = {
 }
 
 
-def _anthropic_error(status: int, message: str) -> JSONResponse:
+def _anthropic_error(
+    status: int,
+    message: str,
+    *,
+    error_type: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> JSONResponse:
     return JSONResponse(
         status_code=status,
         content={
             "type": "error",
-            "error": {"type": _ERROR_TYPE_BY_STATUS.get(status, "api_error"), "message": message},
+            "error": {
+                "type": error_type or _ERROR_TYPE_BY_STATUS.get(status, "api_error"),
+                "message": message,
+            },
         },
+        headers=headers,
     )
+
+
+def _map_upstream_status(status: int) -> tuple[int, str]:
+    """Map an upstream provider HTTP status to (client_status, anthropic error type).
+
+    Upstream auth/permission/billing failures mean the operator's provider
+    account is invalid/revoked/out of credit -- never the client's freeinference
+    key, which already authenticated. Surfacing them verbatim would make the
+    Anthropic SDK raise AuthenticationError / a 402 and Claude Code blame the
+    user's (valid) key or payment, so 401/402/403 are remapped to a retryable
+    502 api_error. Other statuses pass through with their natural Anthropic error
+    type (429 -> rate_limit_error, 503 -> overloaded_error, ...).
+    """
+    if status in (401, 402, 403):
+        return 502, "api_error"
+    return status, _ERROR_TYPE_BY_STATUS.get(status, "api_error")
 
 
 _ANTHROPIC_PATHS = ("/v1/messages", "/anthropic/")
@@ -89,12 +116,30 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     Emits Anthropic-format errors for requests against the Anthropic surfaces,
     and the default OpenRouter JSON shape for everything else. Pre-shaped
     error bodies (``exc.detail`` is a dict containing ``"error"``) are
-    forwarded verbatim on every surface -- this preserves structured errors
-    such as ``concurrency_limit_exceeded`` regardless of path. Matches the
-    behaviour of the global handler installed by
+    forwarded verbatim on non-Anthropic surfaces -- this preserves structured
+    errors such as ``concurrency_limit_exceeded`` regardless of path. Matches
+    the behaviour of the global handler installed by
     ``serving.servers.middleware.error.install_error_handlers``.
     """
+    path = request.url.path
+    is_anthropic = any(path.startswith(p) for p in _ANTHROPIC_PATHS)
+
     if isinstance(exc.detail, dict) and "error" in exc.detail:
+        # On the Anthropic surfaces these dict bodies (e.g. the concurrency
+        # limiter's {"error": {"code": ...}} or the quota check's
+        # {"error": "Daily cost quota exceeded", ...}) are NOT Anthropic-shaped,
+        # so Claude Code's parser finds no error.type/message and shows an
+        # opaque failure. Re-wrap them into the Anthropic envelope, preserving a
+        # human-readable message from the inner error.
+        if is_anthropic:
+            inner = exc.detail["error"]
+            if isinstance(inner, dict):
+                message = inner.get("message") or inner.get("code") or str(inner)
+            else:
+                message = str(inner)
+            return _anthropic_error(
+                exc.status_code, str(message), headers=dict(exc.headers or {}) or None
+            )
         return JSONResponse(
             status_code=exc.status_code,
             content=exc.detail,
@@ -116,8 +161,7 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
         exc_info=exc if exc.status_code >= 500 else None,
     )
 
-    path = request.url.path
-    if any(path.startswith(p) for p in _ANTHROPIC_PATHS):
+    if is_anthropic:
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -1025,14 +1069,38 @@ async def anthropic_messages(
                         await reader_task
             except aiohttp.ClientResponseError as exc:
                 stream_failed = True
-                stream_status_code = exc.status
-                stream_error_message = scrub_error_for_user(exc, request_id, exc.status)
+                # On a 200 SSE stream the error event's `error.type` is the only
+                # signal the client gets to classify the failure, so map the
+                # upstream status to the right Anthropic type (429 ->
+                # rate_limit_error, 503 -> overloaded_error) instead of a flat
+                # api_error. Upstream 401/403 are remapped to api_error so the
+                # client doesn't treat the operator's key failure as its own.
+                client_status, err_type = _map_upstream_status(exc.status)
+                # Log the client-facing status; the true upstream status stays
+                # in stream_error_operator.
+                stream_status_code = client_status
+                scrub_exc = exc if client_status == exc.status else None
+                stream_error_message = scrub_error_for_user(scrub_exc, request_id, client_status)
                 stream_error_operator = operator_safe_error(exc)
                 logger.exception(f"[{request_id}] Streaming dispatch failed")
                 err = {
                     "type": "error",
                     "error": {
-                        "type": "api_error",
+                        "type": err_type,
+                        "message": stream_error_message,
+                    },
+                }
+                yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+            except KeyPoolExhausted as exc:
+                stream_failed = True
+                stream_status_code = 429
+                stream_error_message = scrub_error_for_user(None, request_id, 429)
+                stream_error_operator = operator_safe_error(exc)
+                logger.warning(f"[{request_id}] Streaming dispatch failed: key pool exhausted")
+                err = {
+                    "type": "error",
+                    "error": {
+                        "type": "rate_limit_error",
                         "message": stream_error_message,
                     },
                 }
@@ -1117,7 +1185,12 @@ async def anthropic_messages(
         )
         return _anthropic_error(exc.status_code, error_message)
     except aiohttp.ClientResponseError as exc:
-        error_message = scrub_error_for_user(exc, request_id, exc.status)
+        client_status, err_type = _map_upstream_status(exc.status)
+        # For a remapped upstream auth/permission failure, suppress the
+        # provider's message (it would wrongly implicate the user's key) and
+        # use a generic gateway message; otherwise surface the scrubbed body.
+        scrub_exc = exc if client_status == exc.status else None
+        error_message = scrub_error_for_user(scrub_exc, request_id, client_status)
         logger.exception(f"[{request_id}] Adapter messages() failed")
         _log_failure(
             log_store,
@@ -1129,11 +1202,37 @@ async def anthropic_messages(
             messages_for_log=messages_for_log,
             request_payload_for_log=request_payload_for_log,
             start=start,
-            status_code=exc.status,
+            # Log the client-facing status so the row matches what the client
+            # saw; the true upstream status survives in operator_error.
+            status_code=client_status,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
         )
-        return _anthropic_error(exc.status, error_message)
+        return _anthropic_error(client_status, error_message, error_type=err_type)
+    except KeyPoolExhausted as exc:
+        # Every upstream key is in cooldown (typically after provider 429/401
+        # muted them). This is a rate-limit condition, not an internal error:
+        # return 429 rate_limit_error so Claude Code applies backoff instead of
+        # hammering with immediate retries for the whole mute window.
+        error_message = scrub_error_for_user(None, request_id, 429)
+        logger.warning(f"[{request_id}] Adapter messages() failed: key pool exhausted")
+        _log_failure(
+            log_store,
+            request_id=request_id,
+            canonical=canonical,
+            adapter=adapter,
+            metadata=metadata,
+            params_for_log=params_for_log,
+            messages_for_log=messages_for_log,
+            request_payload_for_log=request_payload_for_log,
+            start=start,
+            status_code=429,
+            error_message=error_message,
+            operator_error=operator_safe_error(exc),
+        )
+        return _anthropic_error(
+            429, error_message, headers={"retry-after": str(int(KeyPool.MUTE_SECONDS))}
+        )
     except (TimeoutError, asyncio.TimeoutError) as exc:
         # Upstream exceeded the (generous) completion timeout. Surface a 504
         # gateway-timeout rather than a generic 502 "Internal server error" so
@@ -1200,3 +1299,54 @@ async def anthropic_messages(
             request_payload=request_payload_for_log,
         )
     return JSONResponse(content=resp)
+
+
+@router.post("/v1/messages/count_tokens", response_model=None)
+@router.post("/anthropic/v1/messages/count_tokens", response_model=None)
+async def anthropic_count_tokens(
+    request: Request,
+    user_ctx: dict = Depends(verify_api_key),
+    router_exec=Depends(get_router),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+):
+    """Handle Anthropic ``POST /v1/messages/count_tokens`` requests.
+
+    Claude Code calls this for context-window accounting and auto-compaction
+    thresholds. There is no universal upstream token-counter across the
+    OpenAI-compatible backends, so the count is estimated locally from the
+    translated request (a useful estimate beats the 404 the client got before,
+    which left its context tracking blind). Returns ``{"input_tokens": N}``.
+    """
+    from serving.adapters.anthropic_translator import anthropic_request_to_openai
+
+    try:
+        body = await request.json()
+    except Exception:
+        return _anthropic_error(400, "Invalid JSON in request body")
+
+    model_id = body.get("model")
+    if not model_id:
+        return _anthropic_error(400, "Missing required field: model")
+    if "messages" not in body:
+        return _anthropic_error(400, "Missing required field: messages")
+
+    # Enforce the same model visibility as /v1/messages: an unknown, admin-only,
+    # or per-user-disabled model must 404 here too, so token counting can't be
+    # used to probe hidden models or make an unusable model look available.
+    try:
+        await _resolve(model_id, router_exec, user_ctx, model_visibility_resolver)
+    except HTTPException as exc:
+        return _anthropic_error(exc.status_code, str(exc.detail))
+
+    try:
+        oai_messages, oai_params = anthropic_request_to_openai(body)
+        input_tokens = estimate_prompt_tokens(oai_messages)
+        # Tool schemas are billed as input; approximate their serialized size.
+        tools = oai_params.get("tools")
+        if tools:
+            input_tokens += estimate_text_tokens(json.dumps(tools))
+    except Exception:
+        logger.exception("count_tokens estimation failed")
+        return _anthropic_error(500, "Failed to count tokens")
+
+    return JSONResponse(content={"input_tokens": int(input_tokens)})

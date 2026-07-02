@@ -1581,3 +1581,155 @@ async def test_streaming_aborts_after_max_idle(anthropic_test_client, monkeypatc
     assert captured.get("error") is not None
     assert captured["usage"]["input_tokens"] == 0  # failed stream -> not billed
     assert captured["usage"]["output_tokens"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Error-mapping + count_tokens correctness fixes
+# ---------------------------------------------------------------------------
+
+
+def test_map_upstream_status_remaps_auth_and_preserves_ratelimit():
+    """C4/C6: upstream 401/403 -> 502 api_error; 429/503 keep their Anthropic type."""
+    from serving.servers.routers.anthropic_messages import _map_upstream_status
+
+    assert _map_upstream_status(401) == (502, "api_error")
+    assert _map_upstream_status(403) == (502, "api_error")
+    assert _map_upstream_status(429) == (429, "rate_limit_error")
+    assert _map_upstream_status(503) == (503, "overloaded_error")
+    assert _map_upstream_status(500) == (500, "api_error")
+
+
+def _client_response_error(status: int, message: str = "err"):
+    from types import SimpleNamespace
+
+    import aiohttp
+    from yarl import URL
+
+    return aiohttp.ClientResponseError(
+        request_info=SimpleNamespace(real_url=URL("http://upstream.test")),
+        history=(),
+        status=status,
+        message=message,
+    )
+
+
+@pytest.mark.asyncio
+async def test_upstream_401_remapped_to_502_not_401(anthropic_test_client, monkeypatch):
+    """C6: an upstream 401 (operator key bad) must not become a client 401."""
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        raise _client_response_error(401, "Incorrect API key provided")
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 502
+    err = r.json()
+    assert err["error"]["type"] == "api_error"
+    # The provider's own auth message must not leak to the user.
+    assert "Incorrect API key" not in err["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_key_pool_exhausted_returns_429_rate_limit(anthropic_test_client, monkeypatch):
+    """C7: all keys muted -> 429 rate_limit_error, not a generic 502."""
+    from serving.adapters.key_pool import KeyPoolExhausted
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        raise KeyPoolExhausted("No active API keys")
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 429
+    err = r.json()
+    assert err["error"]["type"] == "rate_limit_error"
+    # retry-after matches the key-pool mute window so clients don't retry early.
+    assert r.headers.get("retry-after") == "300"
+
+
+@pytest.mark.asyncio
+async def test_dict_detail_error_wrapped_in_anthropic_envelope():
+    """C8: a pre-shaped dict error on the Anthropic surface gets the Anthropic envelope."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from serving.servers.routers.anthropic_messages import (
+        anthropic_aware_http_exception_handler,
+    )
+
+    request = SimpleNamespace(url=SimpleNamespace(path="/v1/messages"), method="POST")
+    exc = HTTPException(
+        status_code=429,
+        detail={"error": {"code": "concurrency_limit_exceeded", "message": "Too many", "limit": 5}},
+    )
+    resp = await anthropic_aware_http_exception_handler(request, exc)
+    import json as _json
+
+    payload = _json.loads(bytes(resp.body))
+    assert payload["type"] == "error"
+    assert payload["error"]["type"] == "rate_limit_error"
+    assert payload["error"]["message"] == "Too many"
+
+
+@pytest.mark.asyncio
+async def test_count_tokens_returns_input_tokens(anthropic_test_client):
+    """C3: POST /v1/messages/count_tokens is implemented and Anthropic-shaped."""
+    body = {
+        "model": OPENAI_MODEL,
+        "system": [{"type": "text", "text": "You are helpful."}],
+        "messages": [{"role": "user", "content": "Count the tokens in this sentence please."}],
+    }
+    r = await anthropic_test_client.post("/v1/messages/count_tokens", json=body, headers=_auth())
+    assert r.status_code == 200
+    out = r.json()
+    assert isinstance(out["input_tokens"], int)
+    assert out["input_tokens"] > 0
+
+
+@pytest.mark.asyncio
+async def test_count_tokens_requires_model(anthropic_test_client):
+    """C3: missing model -> Anthropic-shaped 400, not a bare 404."""
+    r = await anthropic_test_client.post(
+        "/v1/messages/count_tokens",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+        headers=_auth(),
+    )
+    assert r.status_code == 400
+    assert r.json()["type"] == "error"
+
+
+@pytest.mark.asyncio
+async def test_count_tokens_unknown_model_returns_404(anthropic_test_client):
+    """count_tokens enforces model visibility, like /v1/messages (no probing hidden models)."""
+    r = await anthropic_test_client.post(
+        "/v1/messages/count_tokens",
+        json={"model": "no-such-model", "messages": [{"role": "user", "content": "hi"}]},
+        headers=_auth(),
+    )
+    assert r.status_code == 404
+    err = r.json()
+    assert err["type"] == "error"
+    assert err["error"]["type"] == "not_found_error"
+
+
+def test_map_upstream_status_remaps_402_billing():
+    """402 (upstream out of credit) must not surface as the client's payment failure."""
+    from serving.servers.routers.anthropic_messages import _map_upstream_status
+
+    assert _map_upstream_status(402) == (502, "api_error")
