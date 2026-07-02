@@ -931,6 +931,12 @@ class BaseRouter:
                             exc=fallback_error,
                         )
                         failed_attempts.append(_failed_attempt(adapter, fallback_error))
+                        # Same commit invariant as the primary path: once this
+                        # fallback provider's bytes reached the client, the SSE
+                        # stream is committed to it. Re-raise instead of splicing
+                        # a further provider into the same response.
+                        if chunks_yielded:
+                            raise
                         continue
                 raise
         except BaseException as e:
@@ -1348,6 +1354,7 @@ class FixedRouter(BaseRouter):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
                             yield chunk
+                            chunks_yielded = True
                     return
                 except Exception as fallback_error:
                     self._on_failure(
@@ -1357,5 +1364,11 @@ class FixedRouter(BaseRouter):
                         exc=fallback_error,
                     )
                     failed_attempts.append(_failed_attempt(adapter, fallback_error))
+                    # Once this fallback provider's bytes reached the client the
+                    # SSE stream has committed to it (same invariant as the
+                    # primary path above). Re-raise instead of splicing yet
+                    # another provider into the same response.
+                    if chunks_yielded:
+                        raise
                     continue
             raise primary_error
