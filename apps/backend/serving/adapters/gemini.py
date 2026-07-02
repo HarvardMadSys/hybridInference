@@ -68,6 +68,9 @@ class GeminiAdapter(BaseAdapter):
 
         system_instruction: str | None = None
         contents: list[dict[str, Any]] = []
+        # Map an assistant tool_call id -> function name so a later role:"tool"
+        # message can name its functionResponse to match the prior functionCall.
+        tool_call_names: dict[str, str] = {}
 
         for msg in messages:
             role = msg.get("role")
@@ -87,13 +90,43 @@ class GeminiAdapter(BaseAdapter):
 
             if role == "assistant":
                 text = _extract_text(raw_content)
+                parts: list[dict[str, Any]] = []
                 if text:
-                    contents.append({"role": "model", "parts": [{"text": text}]})
+                    parts.append({"text": text})
+                # Assistant turns may carry tool_calls with content=None. Emit one
+                # Gemini functionCall part per call so the following functionResponse
+                # has a matching call; otherwise Gemini 400s on every post-tool turn.
+                for tool_call in msg.get("tool_calls") or []:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    fn = tool_call.get("function") or {}
+                    fn_name = fn.get("name")
+                    if not fn_name:
+                        continue
+                    call_id = tool_call.get("id")
+                    if call_id:
+                        tool_call_names[call_id] = fn_name
+                    # Parse arguments defensively; bad/empty JSON -> {}.
+                    raw_args = fn.get("arguments")
+                    if isinstance(raw_args, dict):
+                        args_obj = raw_args
+                    else:
+                        try:
+                            args_obj = json.loads(raw_args) if raw_args else {}
+                        except Exception:
+                            args_obj = {}
+                    if not isinstance(args_obj, dict):
+                        args_obj = {}
+                    parts.append({"functionCall": {"name": fn_name, "args": args_obj}})
+                if parts:
+                    contents.append({"role": "model", "parts": parts})
                 continue
 
             if role == "tool":
-                # Map OpenAI tool result to Gemini functionResponse part.
-                name = msg.get("name") or "tool"
+                # Map OpenAI tool result to Gemini functionResponse part. OpenAI
+                # clients send tool_call_id (not name); resolve the function name
+                # from the matching prior tool_call so Gemini can pair them.
+                name = tool_call_names.get(msg.get("tool_call_id")) or msg.get("name") or "tool"
                 # Try to parse JSON content; fall back to string
                 response_payload: Any
                 if isinstance(raw_content, dict | list):
@@ -446,7 +479,11 @@ class GeminiAdapter(BaseAdapter):
                 data = json.loads(raw)
 
                 emitted_any = False
-                if "candidates" in data:
+                # Reset per-frame: not every frame carries a candidate (blocked
+                # prompts, usage-only, or in-band error frames), and a stale value
+                # from a prior frame must not leak into the late finishReason guard.
+                candidate = None
+                if data.get("candidates"):
                     candidate = data["candidates"][0]
 
                     # Track finish reason from upstream
@@ -522,7 +559,7 @@ class GeminiAdapter(BaseAdapter):
                 # Handle empty content case (e.g., after tool execution)
                 # When Gemini returns finishReason with empty content, we should still
                 # emit at least one chunk to signal the response has started/completed
-                if not emitted_any and candidate.get("finishReason"):
+                if not emitted_any and candidate and candidate.get("finishReason"):
                     # Emit an empty content delta to satisfy client expectations
                     yield self.format_stream_chunk("", self.config.id)
                     emitted_any = True
