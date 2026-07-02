@@ -27,11 +27,7 @@ vi.mock('@/lib/api/admin', () => ({
   listRoutewiseSettings: vi.fn(),
 }));
 
-import {
-  getRoutewiseDecisions,
-  listRecentRequests,
-  listRoutewiseSettings,
-} from '@/lib/api/admin';
+import { getRoutewiseDecisions, listRecentRequests, listRoutewiseSettings } from '@/lib/api/admin';
 import type { AdminRecentRequestItem, RoutewiseDecisionsResponse } from '@/lib/api/admin';
 
 const emptyDecisions: RoutewiseDecisionsResponse = {
@@ -254,9 +250,7 @@ describe('RoutewiseDecisionsPanel', () => {
 
     render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
 
-    expect(
-      await screen.findByText('No RouteWise decisions in this window.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('No RouteWise decisions in this window.')).toBeInTheDocument();
     expect(
       screen.getByText('No per-request decisions with candidate data in this window.'),
     ).toBeInTheDocument();

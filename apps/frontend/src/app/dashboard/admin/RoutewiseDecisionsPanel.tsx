@@ -15,11 +15,7 @@ import {
   YAxis,
 } from 'recharts';
 
-import {
-  getRoutewiseDecisions,
-  listRecentRequests,
-  listRoutewiseSettings,
-} from '@/lib/api/admin';
+import { getRoutewiseDecisions, listRecentRequests, listRoutewiseSettings } from '@/lib/api/admin';
 import type {
   AdminRecentRequestItem,
   RoutewiseDecisionsRange,
@@ -164,7 +160,9 @@ function shareSummary(
 ): string {
   const total = share.reduce((sum, item) => sum + item.count, 0);
   if (!total) return '';
-  return share.map((item) => `${shareLabel(modelId, item.endpoint)} ${fmtPct(item.count, total)}`).join(' · ');
+  return share
+    .map((item) => `${shareLabel(modelId, item.endpoint)} ${fmtPct(item.count, total)}`)
+    .join(' · ');
 }
 
 function hasCandidateBlob(row: AdminRecentRequestItem): boolean {
@@ -439,7 +437,11 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                 <BarChart data={barData} margin={{ top: 8, right: 12, bottom: 8, left: 0 }}>
                   <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
                   <XAxis dataKey="label" tick={{ fontSize: 10, fill: '#6b7280' }} />
-                  <YAxis allowDecimals={false} width={36} tick={{ fontSize: 10, fill: '#6b7280' }} />
+                  <YAxis
+                    allowDecimals={false}
+                    width={36}
+                    tick={{ fontSize: 10, fill: '#6b7280' }}
+                  />
                   <Tooltip contentStyle={TOOLTIP_STYLE} />
                   <Legend wrapperStyle={{ fontSize: 11 }} />
                   {distributionEndpoints.map((endpoint, index) => (
@@ -463,6 +465,9 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
             {unattributed > 0 && (
               <p className="mt-1 text-[11px] text-gray-400">{unattributed} unattributed</p>
             )}
+            <p className="mt-1 text-[11px] text-gray-400">
+              Hedge backup wins are attributed to the backup endpoint.
+            </p>
           </>
         )}
       </div>
@@ -612,7 +617,12 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
                           x={budget}
                           stroke="#111827"
                           strokeDasharray="4 3"
-                          label={{ value: 'budget', position: 'top', fontSize: 11, fill: '#111827' }}
+                          label={{
+                            value: 'budget',
+                            position: 'top',
+                            fontSize: 11,
+                            fill: '#111827',
+                          }}
                         />
                       )}
                       {tierKeys.map((tier) => (
