@@ -182,8 +182,7 @@ describe('RoutewiseDecisionsPanel', () => {
     expect(screen.getByTestId('selection-share-summary')).toHaveTextContent(
       'wandb 50% · minimax/highspeed 50%',
     );
-    // Unattributed note when unattributed_requests > 0.
-    expect(screen.getByText('2 unattributed')).toBeInTheDocument();
+    expect(screen.queryByText('2 unattributed')).not.toBeInTheDocument();
   });
 
   it('lists a decision and renders scatter tiers plus the budget info line on selection', async () => {
@@ -194,10 +193,10 @@ describe('RoutewiseDecisionsPanel', () => {
     const row = await screen.findByRole('button', { name: /optimal/ });
     fireEvent.click(row);
 
-    // Tier legend labels use paper notation.
-    expect(await screen.findByText('on_demand (𝒫_O)')).toBeInTheDocument();
-    expect(screen.getByText('quota (𝒫_Q)')).toBeInTheDocument();
-    expect(screen.getByText('concurrency (𝒫_C)')).toBeInTheDocument();
+    // Tier legend labels use route type names.
+    expect(await screen.findByText('on_demand')).toBeInTheDocument();
+    expect(screen.getByText('quota')).toBeInTheDocument();
+    expect(screen.getByText('concurrency')).toBeInTheDocument();
 
     // Info line carries alpha, budget reference, and lp status.
     const infoLine = screen.getByTestId('decision-info-line');

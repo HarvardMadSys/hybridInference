@@ -75,12 +75,12 @@ const TOOLTIP_STYLE = {
   padding: '6px 8px',
 } as const;
 
-// Paper tier notation (binding decision #8). Order is the legend order.
+// Order is the legend order.
 const TIER_ORDER = ['on_demand', 'quota', 'concurrency'] as const;
 const TIER_META: Record<string, { label: string; color: string }> = {
-  on_demand: { label: 'on_demand (𝒫_O)', color: '#3b82f6' },
-  quota: { label: 'quota (𝒫_Q)', color: '#f59e0b' },
-  concurrency: { label: 'concurrency (𝒫_C)', color: '#10b981' },
+  on_demand: { label: 'on_demand', color: '#3b82f6' },
+  quota: { label: 'quota', color: '#f59e0b' },
+  concurrency: { label: 'concurrency', color: '#10b981' },
 };
 
 const ALPHA_SETTING_KEY = 'routewise_budget_alpha';
@@ -505,7 +505,6 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
   if (lpStatus) infoParts.push(lpStatus);
 
   const summary = decisions ? shareSummary(decisions.selection_share, modelId) : '';
-  const unattributed = decisions?.unattributed_requests ?? 0;
   // Zero-filled series are non-empty whenever a response exists, so the empty
   // states key off the raw server buckets instead.
   const serverBucketCount = decisions?.buckets?.length ?? 0;
@@ -603,9 +602,6 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
               <p className="mt-2 text-[12px] text-gray-700" data-testid="selection-share-summary">
                 {summary}
               </p>
-            )}
-            {unattributed > 0 && (
-              <p className="mt-1 text-[11px] text-gray-400">{unattributed} unattributed</p>
             )}
             <p className="mt-1 text-[11px] text-gray-400">
               Hedge backup wins are attributed to the backup endpoint.
