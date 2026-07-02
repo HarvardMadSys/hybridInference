@@ -76,7 +76,81 @@ def normalize_tools_for_profile(
     profile: ProviderProfile, tools: list[dict[str, Any]] | None
 ) -> list[dict[str, Any]] | None:
     """Return provider-specific normalized tool definitions."""
+    if not tools:
+        return tools
+    if profile == ProviderProfile.KIMI:
+        return [_sanitize_kimi_tool_schema(tool) for tool in tools]
+    if profile == ProviderProfile.MINIMAX:
+        return [_ensure_minimax_parameters(tool) for tool in tools]
     return tools
+
+
+def _sanitize_kimi_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
+    """Drop a redundant parent "type" declared beside "anyOf" for Moonshot.
+
+    Moonshot's JSON Schema validator rejects a schema node that declares both
+    "type" and a sibling "anyOf" ("type should be defined in anyOf items
+    instead of the parent schema"), even when every anyOf branch already
+    declares its own "type" -- as discriminated-union tool schemas (e.g.
+    Claude Code's own agent/task tools) commonly do.
+    """
+    function = tool.get("function")
+    if not isinstance(function, dict) or "parameters" not in function:
+        return tool
+    return {
+        **tool,
+        "function": {
+            **function,
+            "parameters": _strip_type_beside_anyof(function["parameters"]),
+        },
+    }
+
+
+def _strip_type_beside_anyof(schema: Any) -> Any:
+    """Recursively remove a parent "type" that sits next to "anyOf".
+
+    Rather than deleting the parent ``type`` outright (which would loosen the
+    schema when a branch relies on the parent for its only type constraint --
+    object-only keywords like ``required``/``properties`` don't reject
+    non-objects), push it down into any ``anyOf`` branch that doesn't already
+    declare its own ``type``, then drop it from the parent. This preserves the
+    original validation semantics while satisfying Moonshot's rule that ``type``
+    live in the ``anyOf`` items instead of beside them. The push-down runs
+    before recursion so a branch that gains a ``type`` next to its own nested
+    ``anyOf`` is normalized on the way down.
+    """
+    if isinstance(schema, dict):
+        node = dict(schema)
+        if "anyOf" in node and "type" in node and isinstance(node["anyOf"], list):
+            parent_type = node["type"]
+            node["anyOf"] = [
+                {"type": parent_type, **branch}
+                if isinstance(branch, dict) and "type" not in branch
+                else branch
+                for branch in node["anyOf"]
+            ]
+            del node["type"]
+        return {key: _strip_type_beside_anyof(value) for key, value in node.items()}
+    if isinstance(schema, list):
+        return [_strip_type_beside_anyof(item) for item in schema]
+    return schema
+
+
+def _ensure_minimax_parameters(tool: dict[str, Any]) -> dict[str, Any]:
+    """Default a missing/empty "parameters" schema for MiniMax.
+
+    MiniMax rejects tool definitions with no parameters schema at all
+    ("invalid params, function name or parameters is empty"), even though
+    omitting "parameters" for a no-argument tool is valid per the OpenAI spec
+    that other providers accept as-is.
+    """
+    function = tool.get("function")
+    if not isinstance(function, dict) or function.get("parameters"):
+        return tool
+    return {
+        **tool,
+        "function": {**function, "parameters": {"type": "object", "properties": {}}},
+    }
 
 
 def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) -> Any:
