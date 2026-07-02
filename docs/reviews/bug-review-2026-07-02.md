@@ -19,11 +19,19 @@ flight — S3 by #857, and A9/A10 by #864 — and are marked **fixed on dev** be
 all other findings were re-verified as still present on `dev`. Line references are
 to `dev`.
 
-**Totals: 47 unique findings — 7 high, 23 medium, 17 low** (3 of the mediums already
-fixed on `dev`, 44 open). One finding (the bootstrap backfill mis-indent, H-class
-impact) was independently discovered by two reviewers.
+**Update (#865):** all seven high-severity findings — S1, S2, R1, R2, O1, A1, A2 —
+were subsequently fixed in PR #865 (each with a regression test), which also added
+this document. They are marked **fixed by #865** below.
+
+**Totals: 47 unique findings — 7 high, 23 medium, 17 low.** Status: **10 fixed**
+(all 7 highs by #865; 3 mediums on `dev` by #857/#864), **37 open** (0 high,
+20 medium, 17 low). One finding (the bootstrap backfill mis-indent, H-class impact)
+was independently discovered by two reviewers.
 
 ## Executive summary — high severity
+
+*All seven fixed in #865 (see the **Update** note above); descriptions below
+describe the pre-fix defect.*
 
 1. **SSE frames are silently dropped when a CRLF delimiter straddles a read-chunk
    boundary.** `SSEParser.feed` normalizes `\r\n` per chunk, so a `\r\n\r\n` frame
@@ -74,13 +82,13 @@ parser; finding 5 against the pinned apscheduler 3.11.2 executor source).
 
 ## Routing engine (`apps/backend/routing/`)
 
-### R1 (high) — RouteWise 4xx failures trip the circuit breaker
+### R1 (high, **fixed by #865**) — RouteWise 4xx failures trip the circuit breaker
 See executive summary #3. Three context-limit 400s reach
 `CIRCUIT_FAILURE_THRESHOLD=3` and `_build_candidates` skips the healthy endpoint for
 the 30 s cooldown for all users.
 `routewise/router.py:2620-2624` (chat) and `:2734-2738` (stream): pass `exc=exc`.
 
-### R2 (high) — streaming fallback loop ignores `chunks_yielded`
+### R2 (high, **fixed by #865**) — streaming fallback loop ignores `chunks_yielded`
 See executive summary #4. `BaseRouter.stream_chat_completion` sets
 `chunks_yielded = True` inside the fallback loop but never re-checks it before
 `continue`; `FixedRouter`'s fallback loop never sets it at all. A fallback adapter
@@ -129,14 +137,14 @@ Verified clean: `config.py`, `health.py`'s check loop, `model_router_registry.py
 
 ## Serving core (`apps/backend/serving/`)
 
-### S1 (high) — SSE CRLF frame boundary lost across read chunks
+### S1 (high, **fixed by #865**) — SSE CRLF frame boundary lost across read chunks
 See executive summary #1. Repro: feed `data: {"a":1}\r\n\r` then `\ndata: {"b":2}\r\n\r\n`
 — yields one message with `data == '{"a":1}\n{"b":2}'`; `openai_compat` logs "Failed
 to parse chunk" and drops both deltas. Fix: normalize after buffering (or split on a
 regex that accepts `\r\n\r\n`), keeping a possible trailing `\r` in the buffer.
 `servers/sse.py:27-38`; drop site `adapters/openai_compat.py:843-844`.
 
-### S2 (high) — `TimeoutMiddleware` kills long streams
+### S2 (high, **fixed by #865**) — `TimeoutMiddleware` kills long streams
 See executive summary #2. Since #857 (merged to `dev`) the resulting
 `CancelledError` at least persists a failure row; but the stream is still cut
 mid-body with no `[DONE]`, and tokens generated before the cut are still unbilled
@@ -195,10 +203,10 @@ object the generator could have yielded. `servers/routers/completions.py:260-268
 
 ## Provider adapters (`apps/backend/serving/adapters/`)
 
-### A1 (high) — Gemini streaming `NameError` on candidate-less frames
+### A1 (high, **fixed by #865**) — Gemini streaming `NameError` on candidate-less frames
 See executive summary #6. `gemini.py:450, 525`.
 
-### A2 (high) — Gemini drops assistant `tool_calls` turns from history
+### A2 (high, **fixed by #865**) — Gemini drops assistant `tool_calls` turns from history
 See executive summary #7. `gemini.py:88-116`.
 
 ### A3 (medium) — Gemini streamed tool calls all use `index: 0` and colliding IDs
@@ -332,7 +340,7 @@ changes.
 
 ## Admin & observability (`apps/backend/serving/admin/`, `observability/`)
 
-### O1 (high) — scheduled broadcasts crash at fire time
+### O1 (high, **fixed by #865**) — scheduled broadcasts crash at fire time
 See executive summary #5. `utils/email_scheduler.py:108-122`; verified against
 apscheduler 3.11.2 (`AsyncIOExecutor._do_submit_job` dispatches non-coroutine funcs
 via `run_in_executor`).
@@ -413,11 +421,16 @@ frontend auth/refresh single-flight, react-query hooks, playground SSE streaming
 
 ## Suggested fix order
 
-1. **S1 + S2** — the streaming data-loss cluster (dropped SSE frames, 120 s stream
-   kill) directly corrupts user responses; S3, the unlogged-disconnect half of this
-   cluster, is already fixed on `dev` by #857.
-2. **R1 + R2** — circuit-breaker poisoning and mid-stream provider splices affect
-   availability and response integrity for all users.
-3. **A1/A2** (if/when Gemini routes are enabled) and **O1** — hard crashes.
+Items 1–3 (all seven high-severity findings) were fixed in #865; S3 was fixed on
+`dev` by #857. They are kept here struck through for historical context; remaining
+work starts at item 4.
+
+1. ~~**S1 + S2** — the streaming data-loss cluster (dropped SSE frames, 120 s stream
+   kill) directly corrupts user responses~~ — **done (#865)**; S3, the
+   unlogged-disconnect half of this cluster, was fixed on `dev` by #857.
+2. ~~**R1 + R2** — circuit-breaker poisoning and mid-stream provider splices affect
+   availability and response integrity for all users.~~ — **done (#865)**
+3. ~~**A1/A2** (if/when Gemini routes are enabled) and **O1** — hard crashes.~~ —
+   **done (#865)**
 4. **S4/D3, S5, D1, D2, O2–O4** — operational correctness and admin-surface bugs.
 5. The remaining mediums/lows opportunistically, each is small and localized.
