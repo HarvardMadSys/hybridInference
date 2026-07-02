@@ -876,6 +876,79 @@ async def test_streaming_logs_prompt_and_cache_separate_tokens(anthropic_test_cl
 
 
 @pytest.mark.asyncio
+async def test_streaming_empty_completion_flagged_in_logged_metadata(
+    anthropic_test_client, monkeypatch
+):
+    """A well-formed 200 stream with no content blocks is flagged, not logged
+    identically to a normal completion.
+
+    Seen in prod on zai/minimax at meaningful volume: the stream completes
+    cleanly (message_start -> message_delta -> message_stop) but never emits
+    a single content_block, so the client gets nothing back even though the
+    request "succeeded".
+    """
+    upstream_sse = (
+        b"event: message_start\n"
+        b'data: {"type":"message_start","message":{"id":"msg_empty","model":"claude-opus-4-7",'
+        b'"role":"assistant","content":[],"usage":{"input_tokens":50,"output_tokens":0}}}\n\n'
+        b"event: message_delta\n"
+        b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":0}}\n\n'
+        b"event: message_stop\n"
+        b'data: {"type":"message_stop"}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield upstream_sse
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    captured: dict = {}
+    captured_event = __import__("asyncio").Event()
+
+    async def fake_log_request(**kwargs):
+        captured.update(kwargs)
+        captured_event.set()
+
+    services = anthropic_test_client._transport.app.state.services
+    services.log_store.log_request = fake_log_request
+
+    messages = [{"role": "user", "content": "say hi"}]
+    body = {"model": NATIVE_MODEL, "max_tokens": 50, "stream": True, "messages": messages}
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    await __import__("asyncio").wait_for(captured_event.wait(), timeout=2.0)
+
+    assert captured["status_code"] == 200
+    assert captured["error"] is None
+    assert captured["metadata"]["empty_completion"] is True
+
+
+@pytest.mark.asyncio
 async def test_streaming_logged_response_reassembles_split_sse_frames(
     anthropic_test_client, monkeypatch
 ):

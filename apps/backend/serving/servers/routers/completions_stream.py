@@ -89,6 +89,22 @@ def _extract_exception_status_code(exc: BaseException, default: int = 500) -> in
         return default
 
 
+def _is_empty_completion(response_for_db: dict[str, Any]) -> bool:
+    """Whether a "successful" stream produced no deliverable content.
+
+    Some upstreams occasionally return a well-formed 200 stream that ends
+    with an empty message and finish_reason "stop" -- no exception, but
+    nothing for the user either (seen on zai, minimax, and local sglang
+    routes). Mirrors ``_has_non_empty_content``'s definition of "started
+    output" (content, reasoning, or tool_calls) so a stream that never
+    trips that check is also flagged here.
+    """
+    message = (response_for_db.get("choices") or [{}])[0].get("message") or {}
+    return not (
+        message.get("content") or message.get("reasoning_content") or message.get("tool_calls")
+    )
+
+
 class ToolCallAccumulator:
     """Merge tool_calls deltas indexed by ``index`` into complete tool calls.
 
@@ -559,6 +575,9 @@ class StreamSession:
     async def _finalize_success(self) -> None:
         """Schedule cost increment, DB log, and routing observation."""
         response_for_db = self._build_response_for_db()
+        is_empty_completion = _is_empty_completion(response_for_db)
+        if is_empty_completion:
+            self._metadata["empty_completion"] = True
 
         provider = "router"
         pricing: dict[str, str] | None = None
@@ -633,7 +652,10 @@ class StreamSession:
                 total_latency_ms=(time.time() - self._start_time) * 1000,
                 prompt_tokens=int(stream_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(stream_usage.get("completion_tokens", 0) or 0),
-                success=True,
+                # An empty completion is a 200 with no exception, but it's not
+                # a routing win either -- don't reward RouteWise's cost/quality
+                # model for a response the user got nothing out of.
+                success=not is_empty_completion,
             )
 
     async def _finalize_failure(self, exc: BaseException) -> None:

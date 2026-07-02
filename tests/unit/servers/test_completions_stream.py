@@ -238,6 +238,64 @@ async def test_finalization_schedules_log_and_records_observation():
 
 
 @pytest.mark.asyncio
+async def test_finalization_flags_empty_completion_and_skips_routewise_reward():
+    """A 200 stream that ends with no content is not a routing win.
+
+    Seen in prod on zai/minimax/local-sglang routes: a well-formed stream
+    with an empty message and finish_reason "stop" -- no exception raised,
+    but nothing delivered either. Regression for treating that identically
+    to a normal completion (rewarding RouteWise, no observability signal).
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+    chunks = [_content_chunk("gpt-4", "", finish="stop")]
+    await _consume(session.stream(_aiter(chunks)))
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["response"]["choices"][0]["message"]["content"] is None
+    assert log_data["metadata"]["empty_completion"] is True
+    obs_kwargs = cl_logger.record_routing_observation.call_args.kwargs
+    assert obs_kwargs["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_finalization_tool_call_only_response_not_flagged_empty():
+    """A tool-call-only response (no text) is a real completion, not empty."""
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+
+    def _tc_chunk(deltas: list[dict[str, Any]], finish: str | None = None) -> str:
+        payload = {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4",
+            "choices": [{"index": 0, "delta": {"tool_calls": deltas}, "finish_reason": finish}],
+        }
+        return f"data: {json.dumps(payload)}\n\n"
+
+    chunks = [
+        _tc_chunk(
+            [
+                {
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+            finish="tool_calls",
+        )
+    ]
+    await _consume(session.stream(_aiter(chunks)))
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert "empty_completion" not in log_data["metadata"]
+    obs_kwargs = cl_logger.record_routing_observation.call_args.kwargs
+    assert obs_kwargs["success"] is True
+
+
+@pytest.mark.asyncio
 async def test_finalization_propagates_usage_and_schedules_cost_when_routing_present():
     cl_logger = MagicMock(spec=CompletionsLogger)
     cost_tracker = MagicMock(spec=CostTracker)

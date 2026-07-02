@@ -1144,6 +1144,13 @@ async def anthropic_messages(
                     log_metadata = (
                         {**metadata, "usage_estimated": True} if usage_estimated else metadata
                     )
+                    # A well-formed 200 stream can still end with no deliverable
+                    # content (empty text/thinking, no tool_use) -- no exception,
+                    # but nothing for the user either. Seen on zai/minimax at
+                    # meaningful volume; flag it so these rows are distinguishable
+                    # from a normal completion instead of blending in silently.
+                    if not stream_failed and not _accumulated_output_text(final_acc).strip():
+                        log_metadata = {**log_metadata, "empty_completion": True}
                     _schedule_log_store_task(
                         log_store,
                         request_id=request_id,
