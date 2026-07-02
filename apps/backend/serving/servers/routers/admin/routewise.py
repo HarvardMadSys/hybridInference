@@ -54,6 +54,24 @@ DECISIONS_RANGE_SECONDS: dict[str, tuple[int, int]] = {
     "30d": (2_592_000, 86_400),
 }
 
+# The endpoint that actually served a request. A hedge backup win is served by
+# ``backup_provider`` (its tier in ``backup_provider_type``); every other request
+# is served by ``final_endpoint`` (``final_provider_type``). Defined once and
+# interpolated into the counts, selection, and bucket queries so the three usages
+# cannot drift. These are static SQL (no user input), safe to interpolate.
+SERVED_ENDPOINT_SQL = (
+    "CASE WHEN (metadata->'routewise'->>'hedge_winner') = 'backup' "
+    "THEN COALESCE(metadata->'routewise'->>'backup_provider', "
+    "metadata->'routewise'->>'final_endpoint') "
+    "ELSE metadata->'routewise'->>'final_endpoint' END"
+)
+SERVED_PROVIDER_TYPE_SQL = (
+    "CASE WHEN (metadata->'routewise'->>'hedge_winner') = 'backup' "
+    "THEN COALESCE(metadata->'routewise'->>'backup_provider_type', "
+    "metadata->'routewise'->>'final_provider_type') "
+    "ELSE metadata->'routewise'->>'final_provider_type' END"
+)
+
 
 def _require_runtime_settings(rt: RuntimeSettings | None) -> RuntimeSettings:
     """Return the singleton or raise 503 if the app hasn't initialized it yet."""
@@ -338,13 +356,16 @@ async def get_routewise_decisions_endpoint(
 
     Scans ``api_logs`` rows for ``model_id`` whose ``metadata`` carries a
     ``routewise`` decision blob within the window implied by ``range`` and
-    aggregates them server-side (one GROUP BY per facet). ``total_requests``
-    counts every attributed and unattributed row; ``unattributed_requests``
-    counts rows missing ``final_endpoint`` (error paths) and are excluded from
-    ``selection_share`` and each bucket's ``counts``. A bucket appears when it
-    holds at least one routewise row, and its ``hedge`` breakdown covers every
-    such row. ``hedge_summary`` reports the window hedge rate (over all requests)
-    and backup win rate (over hedged requests).
+    aggregates them server-side (one GROUP BY per facet). ``selection_share`` and
+    each bucket's ``counts`` attribute each request to the endpoint that actually
+    served it, so a hedge backup win counts toward its backup endpoint
+    (``backup_provider``) rather than the primary ``final_endpoint``.
+    ``total_requests`` counts every attributed and unattributed row;
+    ``unattributed_requests`` counts rows with no served endpoint (error paths)
+    and are excluded from ``selection_share`` and each bucket's ``counts``. A
+    bucket appears when it holds at least one routewise row, and its ``hedge``
+    breakdown covers every such row. ``hedge_summary`` reports the window hedge
+    rate (over all requests) and backup win rate (over hedged requests).
 
     Args:
         model_id: Canonical model id to aggregate (exact match, required).
@@ -363,11 +384,11 @@ async def get_routewise_decisions_endpoint(
 
     async with db_logger.pool.acquire() as conn:
         counts_row = await conn.fetchrow(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total_requests,
                 COUNT(*) FILTER (
-                    WHERE (metadata->'routewise'->>'final_endpoint') IS NULL
+                    WHERE ({SERVED_ENDPOINT_SQL}) IS NULL
                 ) AS unattributed_requests,
                 COUNT(*) FILTER (
                     WHERE (metadata->'routewise'->>'hedged') = 'true'
@@ -408,16 +429,16 @@ async def get_routewise_decisions_endpoint(
         )
 
         selection_rows = await conn.fetch(
-            """
+            f"""
             SELECT
-                metadata->'routewise'->>'final_endpoint' AS endpoint,
-                metadata->'routewise'->>'final_provider_type' AS provider_type,
+                {SERVED_ENDPOINT_SQL} AS endpoint,
+                {SERVED_PROVIDER_TYPE_SQL} AS provider_type,
                 COUNT(*) AS cnt
             FROM api_logs
             WHERE model_id = $1
               AND timestamp >= NOW() - ($2::int * interval '1 second')
               AND metadata ? 'routewise'
-              AND (metadata->'routewise'->>'final_endpoint') IS NOT NULL
+              AND ({SERVED_ENDPOINT_SQL}) IS NOT NULL
             GROUP BY 1, 2
             ORDER BY cnt DESC, endpoint ASC
             """,
@@ -426,18 +447,18 @@ async def get_routewise_decisions_endpoint(
         )
 
         bucket_rows = await conn.fetch(
-            """
+            f"""
             SELECT
                 to_timestamp(
                     floor(extract(epoch FROM timestamp) / $3::int) * $3::int
                 ) AS bucket_start,
-                metadata->'routewise'->>'final_endpoint' AS endpoint,
+                {SERVED_ENDPOINT_SQL} AS endpoint,
                 COUNT(*) AS cnt
             FROM api_logs
             WHERE model_id = $1
               AND timestamp >= NOW() - ($2::int * interval '1 second')
               AND metadata ? 'routewise'
-              AND (metadata->'routewise'->>'final_endpoint') IS NOT NULL
+              AND ({SERVED_ENDPOINT_SQL}) IS NOT NULL
             GROUP BY 1, 2
             ORDER BY bucket_start ASC
             """,

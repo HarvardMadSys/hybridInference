@@ -21,6 +21,10 @@ from httpx import ASGITransport, AsyncClient
 from routing.executor import RouteExecutor
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin
+from serving.servers.routers.admin.routewise import (
+    SERVED_ENDPOINT_SQL,
+    SERVED_PROVIDER_TYPE_SQL,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -114,12 +118,19 @@ def _build_client(logger: Any) -> AsyncClient:
 async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list[Any]]], None]:
     """Client backed by a representative aggregation of six fake rows.
 
-    Underlying (conceptual) rows for ``minimax-fast``:
-      * 3 rows -> final_endpoint ``...[wandb]-api`` (on_demand), lp optimal, 13:00;
-        one hedged with the backup leg winning, one hedged primary won
-      * 2 rows -> final_endpoint ``...[highspeed]-api`` (concurrency), lp optimal,
-        14:00; not hedged
-      * 1 row  -> final_endpoint NULL (error path), lp cheapest_fallback, 13:00
+    Attribution is winner-aware: a hedge backup win counts toward the endpoint
+    that actually served it (``backup_provider``), not the primary
+    ``final_endpoint``. The canned selection/bucket rows below are what the
+    served-endpoint ``CASE`` yields. Underlying (conceptual) rows for
+    ``minimax-fast``:
+      * 13:00 -> 2 rows served by ``...[wandb]-api`` (on_demand), lp optimal:
+        one not hedged, one hedged with the primary leg winning
+      * 13:00 -> 1 row hedged with the backup leg winning: primary was
+        ``...[wandb]-api`` but ``backup_provider`` ``...[deepinfra]-api``
+        (quota) served it, so it lands under deepinfra
+      * 14:00 -> 2 rows served by ``...[highspeed]-api`` (concurrency), lp
+        optimal, not hedged
+      * 13:00 -> 1 row with no served endpoint (error path), lp cheapest_fallback
     """
     logger, calls = _make_db_logger(
         counts={
@@ -133,23 +144,35 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
             {"lp_status": "optimal", "cnt": 5},
             {"lp_status": "cheapest_fallback", "cnt": 1},
         ],
+        # Ordered by cnt DESC, endpoint ASC (as the served-endpoint query does).
+        # The backup-won row lands under its backup endpoint (deepinfra).
         selection=[
-            {
-                "endpoint": "minimax-fast:openrouter[wandb]-api",
-                "provider_type": "on_demand",
-                "cnt": 3,
-            },
             {
                 "endpoint": "minimax-fast:openrouter[minimax/highspeed]-api",
                 "provider_type": "concurrency",
                 "cnt": 2,
+            },
+            {
+                "endpoint": "minimax-fast:openrouter[wandb]-api",
+                "provider_type": "on_demand",
+                "cnt": 2,
+            },
+            {
+                "endpoint": "minimax-fast:openrouter[deepinfra]-api",
+                "provider_type": "quota",
+                "cnt": 1,
             },
         ],
         buckets=[
             {
                 "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
                 "endpoint": "minimax-fast:openrouter[wandb]-api",
-                "cnt": 3,
+                "cnt": 2,
+            },
+            {
+                "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
+                "endpoint": "minimax-fast:openrouter[deepinfra]-api",
+                "cnt": 1,
             },
             {
                 "bucket_start": datetime(2026, 7, 1, 14, 0, tzinfo=timezone.utc),
@@ -158,8 +181,9 @@ async def populated_client() -> AsyncGenerator[tuple[AsyncClient, dict[str, list
             },
         ],
         hedge_buckets=[
-            # 13:00 holds the 3 wandb rows plus the 1 unattributed row (4 total):
-            # two not hedged, one hedged primary won, one hedged backup won.
+            # 13:00 holds the 3 attributed rows plus the 1 unattributed row (4
+            # total): two not hedged, one hedged primary won, one hedged backup
+            # won. The hedge query is winner-agnostic, so it is unchanged.
             {
                 "bucket_start": datetime(2026, 7, 1, 13, 0, tzinfo=timezone.utc),
                 "not_hedged": 2,
@@ -191,16 +215,23 @@ async def test_decisions_aggregates_from_rows(populated_client):
     assert body["total_requests"] == 6
     assert body["unattributed_requests"] == 1
     assert body["lp_status_counts"] == {"optimal": 5, "cheapest_fallback": 1}
+    # The backup-won row is attributed to its backup endpoint (deepinfra), not to
+    # the primary (wandb); wandb therefore holds 2, deepinfra 1.
     assert body["selection_share"] == [
-        {
-            "endpoint": "minimax-fast:openrouter[wandb]-api",
-            "provider_type": "on_demand",
-            "count": 3,
-        },
         {
             "endpoint": "minimax-fast:openrouter[minimax/highspeed]-api",
             "provider_type": "concurrency",
             "count": 2,
+        },
+        {
+            "endpoint": "minimax-fast:openrouter[wandb]-api",
+            "provider_type": "on_demand",
+            "count": 2,
+        },
+        {
+            "endpoint": "minimax-fast:openrouter[deepinfra]-api",
+            "provider_type": "quota",
+            "count": 1,
         },
     ]
     # hedge_rate is over all requests (2/6); backup_win_rate over hedged (1/2).
@@ -209,10 +240,15 @@ async def test_decisions_aggregates_from_rows(populated_client):
     assert body["hedge_summary"]["hedge_rate"] == pytest.approx(2 / 6)
     assert body["hedge_summary"]["backup_win_rate"] == pytest.approx(0.5)
     assert body["hedge_summary"]["median_hedge_delay_ms"] == 975.0
+    # The backup-won row lands under deepinfra in its 13:00 bucket, alongside the
+    # two wandb-served rows.
     assert body["buckets"] == [
         {
             "bucket_start": "2026-07-01T13:00:00+00:00",
-            "counts": {"minimax-fast:openrouter[wandb]-api": 3},
+            "counts": {
+                "minimax-fast:openrouter[wandb]-api": 2,
+                "minimax-fast:openrouter[deepinfra]-api": 1,
+            },
             "hedge": {"not_hedged": 2, "hedged_primary_won": 1, "hedged_backup_won": 1},
         },
         {
@@ -239,20 +275,41 @@ async def test_decisions_issues_expected_sql(populated_client):
     assert "(metadata->'routewise'->>'hedge_winner') = 'backup'" in count_query
     assert "percentile_cont(0.5)" in count_query
     assert count_args == ("minimax-fast", 86_400)
+    # unattributed = no SERVED endpoint (not merely no final_endpoint), so a
+    # backup win with a backup_provider stays attributed. The CASE falls back to
+    # final_endpoint via COALESCE when backup_provider is NULL.
+    assert f"WHERE ({SERVED_ENDPOINT_SQL}) IS NULL" in count_query
+    assert (
+        "COALESCE(metadata->'routewise'->>'backup_provider', "
+        "metadata->'routewise'->>'final_endpoint')"
+    ) in SERVED_ENDPOINT_SQL
 
-    # Selection-distribution bucket query must receive bucket_seconds as $3.
+    # Selection-distribution bucket query must receive bucket_seconds as $3 and
+    # attribute each row to the served endpoint (the backup on a backup win).
     bucket_calls = [
         (q, a) for q, a in calls["fetch"] if "to_timestamp" in q and "not_hedged" not in q
     ]
     assert bucket_calls, "expected the buckets query to run"
-    _bucket_query, bucket_args = bucket_calls[0]
+    bucket_query, bucket_args = bucket_calls[0]
     assert bucket_args == ("minimax-fast", 86_400, 3_600)
+    assert f"{SERVED_ENDPOINT_SQL} AS endpoint" in bucket_query
+    assert f"({SERVED_ENDPOINT_SQL}) IS NOT NULL" in bucket_query
 
-    # Hedge-bucket query buckets over ALL routewise rows (no final_endpoint gate).
+    # Selection query groups the served endpoint and its served provider type.
+    selection_calls = [(q, a) for q, a in calls["fetch"] if "final_provider_type" in q]
+    assert selection_calls, "expected the selection query to run"
+    selection_query, _selection_args = selection_calls[0]
+    assert f"{SERVED_ENDPOINT_SQL} AS endpoint" in selection_query
+    assert f"{SERVED_PROVIDER_TYPE_SQL} AS provider_type" in selection_query
+    assert f"({SERVED_ENDPOINT_SQL}) IS NOT NULL" in selection_query
+
+    # Hedge-bucket query buckets over ALL routewise rows (winner-agnostic): no
+    # served-endpoint CASE and no final_endpoint gate.
     hedge_calls = [(q, a) for q, a in calls["fetch"] if "not_hedged" in q]
     assert hedge_calls, "expected the hedge-bucket query to run"
     hedge_query, hedge_args = hedge_calls[0]
     assert "final_endpoint" not in hedge_query
+    assert SERVED_ENDPOINT_SQL not in hedge_query
     assert hedge_args == ("minimax-fast", 86_400, 3_600)
 
 
