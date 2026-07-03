@@ -77,6 +77,7 @@ class ConfigProviderSpec:
     provider: str
     adapter_kind: str
     default_base_url: str
+    model_ids: frozenset[str]
 
 
 def _validate_provider_slug(provider: str) -> str:
@@ -188,28 +189,35 @@ def _merge_config_provider_spec(
     provider: str,
     adapter_kind: str,
     default_base_url: str,
+    model_id: str | None,
 ) -> None:
     if not provider:
         return
     default_base_url = _base_url_with_provider_default(provider, default_base_url)
     current = specs.get(provider)
+    model_ids = frozenset([model_id]) if model_id else frozenset()
     if current is None:
         specs[provider] = ConfigProviderSpec(
             provider=provider,
             adapter_kind=adapter_kind,
             default_base_url=default_base_url,
+            model_ids=model_ids,
         )
         return
     merged_adapter_kind = current.adapter_kind
     if current.adapter_kind == provider and adapter_kind != provider:
         merged_adapter_kind = adapter_kind
-    if (not current.default_base_url and default_base_url) or (
-        merged_adapter_kind != current.adapter_kind
+    merged_model_ids = current.model_ids | model_ids
+    if (
+        (not current.default_base_url and default_base_url)
+        or (merged_adapter_kind != current.adapter_kind)
+        or (merged_model_ids != current.model_ids)
     ):
         specs[provider] = ConfigProviderSpec(
             provider=provider,
             adapter_kind=merged_adapter_kind,
             default_base_url=current.default_base_url or default_base_url,
+            model_ids=merged_model_ids,
         )
 
 
@@ -227,6 +235,7 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
     for model in models:
         if not isinstance(model, dict):
             continue
+        model_id = str(model.get("id") or "").strip()
         raw_model_provider = str(model.get("provider") or "").strip()
         model_provider = (
             dynamic_keys.normalize_key_provider(raw_model_provider) if raw_model_provider else None
@@ -237,6 +246,7 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
                 provider=model_provider,
                 adapter_kind=model_provider,
                 default_base_url=_expand_config_string(model.get("base_url")),
+                model_id=model_id,
             )
 
         routes = model.get("route") or [
@@ -259,6 +269,7 @@ def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
                 provider=provider,
                 adapter_kind=adapter_kind,
                 default_base_url=_expand_config_string(route.get("base_url")),
+                model_id=model_id,
             )
     return specs
 
@@ -324,6 +335,15 @@ def _models_by_provider(services) -> dict[str, set[str]]:
             for provider in _provider_candidates_for_adapter(adapter):
                 by_provider[provider].add(canonical_model_id)
     return by_provider
+
+
+def _merge_config_models_by_provider(
+    models_by_provider: dict[str, set[str]],
+    config_specs: dict[str, ConfigProviderSpec],
+) -> dict[str, set[str]]:
+    for provider, spec in config_specs.items():
+        models_by_provider[provider].update(spec.model_ids)
+    return models_by_provider
 
 
 async def _active_key_count(op_store, provider: str) -> int:
@@ -551,7 +571,10 @@ async def list_provider_definitions(
         | set(SELECTABLE_PROVIDER_TARGETS)
         | set(active_rows)
     ) - disabled_providers
-    models_by_provider = _models_by_provider(services)
+    models_by_provider = _merge_config_models_by_provider(
+        _models_by_provider(services),
+        config_specs,
+    )
     rows = [
         await _build_provider_item(
             provider=provider,
@@ -702,7 +725,10 @@ async def update_provider_definition(
         base_url_changed = cleaned_base_url != row.default_base_url
 
     if base_url_changed and not is_builtin:
-        models = _models_by_provider(services).get(provider_slug, set())
+        models = _merge_config_models_by_provider(
+            _models_by_provider(services),
+            config_specs,
+        ).get(provider_slug, set())
         if models:
             raise HTTPException(
                 status_code=409,
@@ -745,7 +771,10 @@ async def update_provider_definition(
         },
     )
 
-    models_by_provider = _models_by_provider(services)
+    models_by_provider = _merge_config_models_by_provider(
+        _models_by_provider(services),
+        config_specs,
+    )
     return await _build_provider_item(
         provider=provider_slug,
         custom_row=updated,
@@ -783,7 +812,10 @@ async def delete_provider_definition(
         else:
             raise HTTPException(status_code=404, detail="provider not found")
 
-    models = _models_by_provider(services).get(provider_slug, set())
+    models = _merge_config_models_by_provider(
+        _models_by_provider(services),
+        config_specs,
+    ).get(provider_slug, set())
     if models:
         raise HTTPException(
             status_code=409,

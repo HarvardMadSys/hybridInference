@@ -69,6 +69,7 @@ async def test_update_builtin_provider_writes_active_override_without_probe(monk
         provider="kimi",
         adapter_kind="kimi",
         default_base_url="https://api.kimi.com/coding/v1",
+        model_ids=frozenset(["kimi-test"]),
     )
 
     async def clean_base_url(value: str) -> str:
@@ -80,7 +81,9 @@ async def test_update_builtin_provider_writes_active_override_without_probe(monk
     async def noop_audit(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", lambda: {"kimi": config_spec})
+    monkeypatch.setattr(
+        provider_definitions, "_configured_provider_specs", lambda: {"kimi": config_spec}
+    )
     monkeypatch.setattr(provider_definitions, "_validate_base_url", clean_base_url)
     monkeypatch.setattr(provider_definitions, "_probe_openai_compat", fail_probe)
     monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
@@ -118,12 +121,15 @@ async def test_delete_builtin_provider_writes_disabled_marker(monkeypatch):
         provider="kimi",
         adapter_kind="kimi",
         default_base_url="https://api.kimi.com/coding/v1",
+        model_ids=frozenset(),
     )
 
     async def noop_audit(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", lambda: {"kimi": config_spec})
+    monkeypatch.setattr(
+        provider_definitions, "_configured_provider_specs", lambda: {"kimi": config_spec}
+    )
     monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
 
     response = await provider_definitions.delete_provider_definition(
@@ -182,9 +188,13 @@ models:
 
     assert set(specs) == {"kimi", "openai", "openrouter", "sglang"}
     assert specs["kimi"].default_base_url == "https://api.kimi.com/coding/v1"
+    assert specs["kimi"].model_ids == frozenset(["kimi-test"])
     assert specs["sglang"].default_base_url == "http://host.docker.internal:8001/v1"
+    assert specs["sglang"].model_ids == frozenset(["local-test"])
     assert specs["openrouter"].adapter_kind == "openrouter"
+    assert specs["openrouter"].model_ids == frozenset(["openrouter-test"])
     assert specs["openai"].adapter_kind == "openai_compat"
+    assert specs["openai"].model_ids == frozenset(["openai-test"])
 
 
 def test_configured_provider_specs_fill_local_provider_defaults(tmp_path, monkeypatch):
@@ -206,3 +216,25 @@ models:
     specs = _configured_provider_specs()
 
     assert specs["vllm"].default_base_url == "http://host.docker.internal:8002/v1"
+    assert specs["vllm"].model_ids == frozenset(["vllm-test"])
+
+
+def test_merge_config_models_by_provider_preserves_runtime_models():
+    specs = {
+        "kimi": provider_definitions.ConfigProviderSpec(
+            provider="kimi",
+            adapter_kind="kimi",
+            default_base_url="https://api.kimi.com/coding/v1",
+            model_ids=frozenset(["kimi-test"]),
+        )
+    }
+
+    merged = provider_definitions._merge_config_models_by_provider(
+        {"kimi": {"runtime-kimi"}, "custom": {"custom-model"}},
+        specs,
+    )
+
+    assert merged == {
+        "kimi": {"runtime-kimi", "kimi-test"},
+        "custom": {"custom-model"},
+    }
