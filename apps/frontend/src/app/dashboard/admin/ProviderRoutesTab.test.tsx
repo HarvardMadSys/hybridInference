@@ -686,6 +686,64 @@ describe('ProviderRoutesTab', () => {
     expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
   });
 
+  it('clears stale provider model ID when switching to a provider without a mapping', async () => {
+    const openRouterRoute = {
+      ...route,
+      route_id: 'minimax-fast:openrouter[parasail]-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      openrouter_provider: 'parasail',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      provider_model_id: 'minimax/minimax-m2.5',
+      endpoint_id: 'minimax-fast:openrouter[parasail]-api',
+    };
+    const tencentOption = {
+      provider: 'tencent_token_plan',
+      label: 'Tencent Token Plan',
+      kind: 'openai_compat',
+      key_provider: 'tencent_token_plan',
+      default_base_url: 'https://api.lkeap.cloud.tencent.com/plan/v3',
+    };
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: [...providerOptions, tencentOption],
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [openRouterRoute],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({
+      provider: 'tencent_token_plan',
+      keys: [
+        {
+          id: 'key-tencent',
+          provider: 'tencent_token_plan',
+          key_prefix: 'tencent...1234',
+          label: 'tencent',
+          source: 'db',
+          status: 'active',
+          created_at: null,
+        },
+      ],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText('Provider model ID')).toHaveValue('minimax/minimax-m2.5');
+
+    fireEvent.change(screen.getByLabelText('Override provider'), {
+      target: { value: 'tencent_token_plan' },
+    });
+
+    expect(screen.getByLabelText('Provider model ID')).toHaveValue('');
+    expect(screen.getByLabelText('Base URL')).toHaveValue(
+      'https://api.lkeap.cloud.tencent.com/plan/v3',
+    );
+    await waitFor(() => {
+      expect(listProviderKeys).toHaveBeenCalledWith('tencent_token_plan');
+    });
+  });
+
   it('submits local daily quota for quota provider overrides', async () => {
     const quotaRoute = {
       ...route,

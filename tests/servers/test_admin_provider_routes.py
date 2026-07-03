@@ -2045,7 +2045,7 @@ async def test_custom_provider_route_candidate_preserves_provider_identity(admin
             provider="acme",
             display_name="Acme",
             adapter_kind="openai_compat",
-            default_base_url="https://api.acme.test/v1",
+            default_base_url="https://api.acme.test/plan/v3",
         )
     )
     op_store.get_provider_key_full.return_value = ("acme", "acme-db-key-1234567890")
@@ -2066,7 +2066,7 @@ async def test_custom_provider_route_candidate_preserves_provider_identity(admin
             json={
                 "route_type": "on_demand",
                 "upstream_provider": "acme",
-                "base_url": "https://api.acme.test/v1",
+                "base_url": "https://api.acme.test/plan/v3",
                 "api_key_id": "db-acme",
                 "provider_model_id": "acme/model",
                 "weight": 1.0,
@@ -2082,8 +2082,58 @@ async def test_custom_provider_route_candidate_preserves_provider_identity(admin
         assert payload["api_key"]["provider"] == "acme"
         runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
         assert runtime_adapter.config.provider == "acme"
+        assert runtime_adapter.config.chat_path == "/chat/completions"
+        assert runtime_adapter._build_url() == "https://api.acme.test/plan/v3/chat/completions"
     finally:
         provider_registry.unregister_provider_definition("acme")
+
+
+@pytest.mark.asyncio
+async def test_custom_provider_route_update_uses_definition_chat_path(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    provider_registry.register_provider_definition(
+        RuntimeProviderDefinition(
+            provider="tencent_token_plan",
+            display_name="Tencent Token Plan",
+            adapter_kind="openai_compat",
+            default_base_url="https://api.lkeap.cloud.tencent.com/plan/v3",
+        )
+    )
+    op_store.get_provider_key_full.return_value = (
+        "tencent_token_plan",
+        "tencent-db-key-1234567890",
+    )
+
+    try:
+        response = await client.post(
+            "/admin/routing/provider-route-verifications/minimax-fast/minimax-fast:chutes-api",
+            json={
+                "upstream_provider": "tencent_token_plan",
+                "base_url": "https://api.lkeap.cloud.tencent.com/plan/v3",
+                "api_key_id": "db-tencent",
+                "provider_model_id": "minimax-m2.5",
+                "quota_limit": 5000,
+            },
+            headers=AUTH,
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json() == {"ok": True}
+        verify_mock.assert_awaited_once()
+        update = verify_mock.await_args.args[0]
+        assert update.adapter.config.provider == "tencent_token_plan"
+        assert update.adapter.config.chat_path == "/chat/completions"
+        assert (
+            update.adapter._build_url()
+            == "https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions"
+        )
+        op_store.upsert_provider_route_config.assert_not_awaited()
+
+        current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+        assert current_adapter.config.provider == "chutes"
+        fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    finally:
+        provider_registry.unregister_provider_definition("tencent_token_plan")
 
 
 @pytest.mark.asyncio

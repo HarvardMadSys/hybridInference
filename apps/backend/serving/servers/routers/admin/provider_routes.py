@@ -72,6 +72,7 @@ class ProviderTarget:
     kind: str
     key_provider: str
     default_base_url: str
+    chat_path: str | None = None
 
 
 def _env_default(name: str, fallback: str) -> str:
@@ -514,6 +515,7 @@ def _target_for_provider(provider: str) -> ProviderTarget:
             kind=custom.adapter_kind,
             key_provider=custom.provider,
             default_base_url=custom.default_base_url,
+            chat_path="/chat/completions",
         )
     if provider in PROVIDER_TARGETS:
         return PROVIDER_TARGETS[provider]
@@ -562,6 +564,10 @@ def _model_config_provider_for_target(target: ProviderTarget) -> str:
     if base_kind == "openai_compat" and target.provider != base_kind:
         return target.provider
     return base_kind
+
+
+def _apply_target_adapter_defaults(cfg: dict[str, Any], target: ProviderTarget) -> None:
+    cfg["chat_path"] = target.chat_path
 
 
 def _target_provider_from_request(
@@ -1321,6 +1327,7 @@ async def _prepare_route_candidate(
             },
         }
     )
+    _apply_target_adapter_defaults(cfg, target)
     if route_type == "quota":
         quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
         cfg["quota_pool"] = quota_pool
@@ -1440,6 +1447,7 @@ async def _prepare_model_route_candidate(
             "runtime_candidate": True,
         },
     }
+    _apply_target_adapter_defaults(cfg, target)
     if route_type == "quota":
         quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
         cfg["quota_pool"] = quota_pool
@@ -1549,6 +1557,7 @@ async def _prepare_route_update(
 
     provider_for_cfg = _model_config_provider_for_target(target)
     cfg["provider"] = provider_for_cfg
+    _apply_target_adapter_defaults(cfg, target)
     _preserve_route_semantics(
         cfg,
         current_adapter=current_adapter,
