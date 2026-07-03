@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import copy
+
 import pytest
 
 from serving.adapters.profiles import (
     ProviderProfile,
     function_call_delta_to_tool_calls,
     get_stream_idle_timeout_seconds,
+    normalize_messages_for_profile,
     normalize_tools_for_profile,
     normalize_usage_deepseek,
     normalize_usage_default,
@@ -370,3 +373,177 @@ def test_normalize_tools_minimax_leaves_populated_parameters_untouched() -> None
     ]
     result = normalize_tools_for_profile(ProviderProfile.MINIMAX, tools)
     assert result[0]["function"]["parameters"]["properties"]["x"]["type"] == "string"
+
+
+# ---------------------------------------------------------------------------
+# Message normalization: normalize_messages_for_profile (MiniMax 2013 guard)
+# ---------------------------------------------------------------------------
+#
+# MiniMax rejects any history where an assistant tool_calls message is not
+# immediately followed by tool messages answering all of its ids:
+# '{"type":"error","error":{"type":"bad_request_error","message":"invalid
+# params, tool call result does not follow tool call (2013)"}}'. Agent clients
+# routinely produce such histories and every other provider accepts them.
+
+
+def _tool_call(call_id: str, name: str = "f") -> dict:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": name, "arguments": "{}"},
+    }
+
+
+def test_normalize_messages_valid_single_call_sequence_unchanged() -> None:
+    """A well-formed call/result pair passes through untouched."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": None, "tool_calls": [_tool_call("a")]},
+        {"role": "tool", "tool_call_id": "a", "content": "result"},
+        {"role": "assistant", "content": "done"},
+    ]
+    assert normalize_messages_for_profile(ProviderProfile.MINIMAX, messages) == messages
+
+
+def test_normalize_messages_valid_multi_call_block_unchanged() -> None:
+    """One assistant turn with several calls answered by adjacent tool messages."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [_tool_call("a"), _tool_call("b"), _tool_call("c")],
+        },
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "tool", "tool_call_id": "b", "content": "rb"},
+        {"role": "tool", "tool_call_id": "c", "content": "rc"},
+    ]
+    assert normalize_messages_for_profile(ProviderProfile.MINIMAX, messages) == messages
+
+
+def test_normalize_messages_orphan_tool_calls_with_text_keeps_text() -> None:
+    """Unanswered tool_calls beside real text: strip the calls, keep the turn."""
+    messages = [
+        {"role": "assistant", "content": "let me check", "tool_calls": [_tool_call("a")]},
+        {"role": "user", "content": "never mind"},
+    ]
+    result = normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
+    assert result == [
+        {"role": "assistant", "content": "let me check"},
+        {"role": "user", "content": "never mind"},
+    ]
+
+
+@pytest.mark.parametrize("content", [None, ""])
+def test_normalize_messages_orphan_tool_calls_without_content_drops_message(content) -> None:
+    """A tool_calls-only assistant turn with no answers has nothing left to send."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": content, "tool_calls": [_tool_call("a")]},
+        {"role": "assistant", "content": "answering directly"},
+    ]
+    result = normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
+    assert result == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "answering directly"},
+    ]
+
+
+def test_normalize_messages_partial_answer_filters_unanswered_call() -> None:
+    """Two calls, one answered adjacently: keep the answered pair, drop the orphan."""
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [_tool_call("a"), _tool_call("b")]},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "user", "content": "next"},
+    ]
+    result = normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
+    assert result == [
+        {"role": "assistant", "content": None, "tool_calls": [_tool_call("a")]},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "user", "content": "next"},
+    ]
+
+
+def test_normalize_messages_orphan_tool_after_user_becomes_user() -> None:
+    """A tool result whose governing message is a user turn is downgraded."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "tool", "tool_call_id": "a", "name": "f", "content": "stale result"},
+    ]
+    result = normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
+    assert result == [
+        {"role": "user", "content": "hi"},
+        {"role": "user", "content": "stale result"},
+    ]
+
+
+def test_normalize_messages_orphan_tool_with_mismatched_id_becomes_user() -> None:
+    """A tool result the preceding assistant never called is downgraded."""
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [_tool_call("a")]},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "tool", "tool_call_id": "zzz", "content": "stray"},
+    ]
+    result = normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
+    assert result == [
+        {"role": "assistant", "content": None, "tool_calls": [_tool_call("a")]},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "user", "content": "stray"},
+    ]
+
+
+def test_normalize_messages_non_minimax_profile_passthrough() -> None:
+    """Other providers tolerate malformed histories; forward them verbatim."""
+    messages = [
+        {"role": "assistant", "content": None, "tool_calls": [_tool_call("a")]},
+        {"role": "user", "content": "hi"},
+        {"role": "tool", "tool_call_id": "a", "content": "late result"},
+    ]
+    for profile in (ProviderProfile.DEFAULT, ProviderProfile.DEEPSEEK, ProviderProfile.KIMI):
+        assert normalize_messages_for_profile(profile, messages) is messages
+
+
+def test_normalize_messages_real_world_deferred_results_shape() -> None:
+    """Staging shape: calls answered many turns later, past an assistant text turn.
+
+    The tool_calls-only assistant turn is dropped (its answers are not
+    adjacent), and the late tool results are downgraded to user messages
+    because their governing assistant has no matching tool_calls.
+    """
+    messages = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [_tool_call("a"), _tool_call("b"), _tool_call("c")],
+        },
+        {"role": "user", "content": "interruption"},
+        {"role": "assistant", "content": "some text"},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "tool", "tool_call_id": "b", "content": "rb"},
+        {"role": "tool", "tool_call_id": "c", "content": "rc"},
+        {"role": "user", "content": "continue"},
+    ]
+    result = normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
+    assert result == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "interruption"},
+        {"role": "assistant", "content": "some text"},
+        {"role": "user", "content": "ra"},
+        {"role": "user", "content": "rb"},
+        {"role": "user", "content": "rc"},
+        {"role": "user", "content": "continue"},
+    ]
+
+
+def test_normalize_messages_does_not_mutate_input() -> None:
+    """Sanitizing is copy-on-write: the caller's list and dicts stay intact."""
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [_tool_call("a"), _tool_call("b")]},
+        {"role": "tool", "tool_call_id": "a", "content": "ra"},
+        {"role": "tool", "tool_call_id": "zzz", "content": "stray"},
+        {"role": "assistant", "content": None, "tool_calls": [_tool_call("x")]},
+    ]
+    snapshot = copy.deepcopy(messages)
+    normalize_messages_for_profile(ProviderProfile.MINIMAX, messages)
+    assert messages == snapshot

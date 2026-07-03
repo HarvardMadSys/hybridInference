@@ -154,6 +154,94 @@ def _ensure_minimax_parameters(tool: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalize_messages_for_profile(
+    profile: ProviderProfile, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return provider-specific normalized request messages.
+
+    MiniMax strictly requires that every assistant message carrying
+    ``tool_calls`` be immediately followed by ``tool`` messages answering all
+    of its ids, and that every ``tool`` message answer the immediately
+    preceding assistant's ``tool_calls``; anything else is rejected with
+    "invalid params, tool call result does not follow tool call (2013)".
+    Real agent-client histories routinely violate this (results delivered many
+    turns later, or re-sent without their originating call) and every other
+    provider accepts them, so for the MINIMAX profile the gateway sanitizes
+    the history instead of letting the upstream 400. All other profiles pass
+    through unchanged.
+    """
+    if profile != ProviderProfile.MINIMAX or not messages:
+        return messages
+    return _enforce_minimax_tool_adjacency(messages)
+
+
+def _enforce_minimax_tool_adjacency(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop orphan tool_calls and downgrade orphan tool results for MiniMax.
+
+    Copy-on-write: the input list and its message dicts are never mutated.
+
+    - An assistant ``tool_calls`` entry survives only if a ``tool`` message in
+      the contiguous run immediately following that assistant answers its id.
+      If some entries are orphaned the list is filtered; if none survive the
+      ``tool_calls`` key is removed, and an assistant message left without
+      content is dropped entirely.
+    - A ``tool`` message survives only if its governing assistant (the nearest
+      preceding non-tool message) kept a matching tool_call id; otherwise it
+      is downgraded to a plain user message carrying the same content.
+    """
+    # Pass 1: for each assistant tool_calls message, keep only the ids
+    # answered by the contiguous run of tool messages right after it.
+    kept_ids_by_index: dict[int, set[Any]] = {}
+    for i, msg in enumerate(messages):
+        if msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            continue
+        answered: set[Any] = set()
+        j = i + 1
+        while j < len(messages) and messages[j].get("role") == "tool":
+            answered.add(messages[j].get("tool_call_id"))
+            j += 1
+        kept_ids_by_index[i] = {
+            call.get("id")
+            for call in tool_calls
+            if isinstance(call, dict) and call.get("id") in answered
+        }
+
+    # Pass 2: rebuild the history with orphans filtered or downgraded.
+    normalized: list[dict[str, Any]] = []
+    for i, msg in enumerate(messages):
+        if i in kept_ids_by_index:
+            kept_ids = kept_ids_by_index[i]
+            tool_calls = msg["tool_calls"]
+            kept = [
+                call for call in tool_calls if isinstance(call, dict) and call.get("id") in kept_ids
+            ]
+            if len(kept) == len(tool_calls):
+                normalized.append(msg)
+            elif kept:
+                normalized.append({**msg, "tool_calls": kept})
+            else:
+                stripped = {k: v for k, v in msg.items() if k != "tool_calls"}
+                content = stripped.get("content")
+                if content is None or content == "":
+                    continue  # tool_calls-only turn: nothing left worth sending
+                normalized.append(stripped)
+        elif msg.get("role") == "tool":
+            governing = i - 1
+            while governing >= 0 and messages[governing].get("role") == "tool":
+                governing -= 1
+            if governing >= 0 and msg.get("tool_call_id") in kept_ids_by_index.get(governing, ()):
+                normalized.append(msg)
+            else:
+                content = msg.get("content")
+                normalized.append({"role": "user", "content": "" if content is None else content})
+        else:
+            normalized.append(msg)
+    return normalized
+
+
 def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) -> Any:
     """Resolve provider-specific tool choice defaults."""
     if tool_choice is not None:
