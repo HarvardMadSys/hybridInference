@@ -231,14 +231,16 @@ async def client(monkeypatch, store):
     monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "0")
     for env_var in (
         "CHUTES_API_KEY",
+        "DEEPSEEK_API_KEY",
         "FEATHERLESS_API_KEY",
         "KIMI_CODING_API_KEY",
         "MINIMAX_API_KEY",
         "OLLAMA_API_KEY",
+        "STAGING_API_KEY",
         "ZAI_API_KEY",
     ):
         monkeypatch.delenv(env_var, raising=False)
-        for index in range(2, 21):
+        for index in range(1, 21):
             monkeypatch.delenv(f"{env_var}{index}", raising=False)
 
     # The verify_admin_access dependency requires get_user_by_id to short-
@@ -281,6 +283,26 @@ def _registered_provider_adapter(provider: str, *, api_key: str = "env-key-origi
             endpoint_id=f"minimax-fast:{provider}",
         )
     )
+
+
+def test_configured_env_keys_support_numbered_only_env_keys(monkeypatch):
+    monkeypatch.delenv("CHUTES_API_KEY", raising=False)
+    monkeypatch.setenv("CHUTES_API_KEY1", "chutes-key-one")
+    monkeypatch.setenv("CHUTES_API_KEY2", "chutes-key-two")
+    monkeypatch.delenv("CHUTES_API_KEY3", raising=False)
+
+    assert dynamic_keys.configured_env_keys_for_provider("chutes") == [
+        "chutes-key-one",
+        "chutes-key-two",
+    ]
+
+
+def test_configured_env_keys_include_provider_overview_builtin_names(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setenv("STAGING_API_KEY", "staging-key")
+
+    assert dynamic_keys.configured_env_keys_for_provider("deepseek") == ["deepseek-key"]
+    assert dynamic_keys.configured_env_keys_for_provider("staging") == ["staging-key"]
 
 
 def _install_provider_route(store, provider: str):

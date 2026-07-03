@@ -33,11 +33,13 @@ _disabled_env_key_hashes: dict[str, set[str]] = {}
 _MAX_NUMBERED_ENV_KEYS = 20
 _PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
     "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
+    "deepseek": ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
     "featherless": ("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY"),
     "kimi": ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY"),
     "minimax": ("MINIMAX_API_KEY", "MINIMAX_API_KEY"),
     "ollama": ("OLLAMA_API_KEY", "OLLAMA_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
+    "staging": ("STAGING_API_KEY", "STAGING_API_KEY"),
     "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
 }
 _KEY_PROVIDER_ALIASES = {
@@ -227,15 +229,14 @@ def configured_env_keys_for_provider(provider: str) -> list[str]:
 
     base_var, numbered_prefix = spec
     base_value = os.getenv(base_var, "")
-    if not base_value:
-        return []
-
-    keys = [base_value]
-    for index in range(2, _MAX_NUMBERED_ENV_KEYS):
+    keys = [base_value] if base_value else []
+    start_index = 2 if base_value else 1
+    for index in range(start_index, _MAX_NUMBERED_ENV_KEYS):
         value = os.getenv(f"{numbered_prefix}{index}", "")
         if not value:
             break
-        keys.append(value)
+        if value not in keys:
+            keys.append(value)
     return keys
 
 
