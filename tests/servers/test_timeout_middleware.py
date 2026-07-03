@@ -9,8 +9,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from serving.servers.middleware.timeout import (
+    _DEFAULT_STREAM_TIMEOUT_S,
     _DEFAULT_TIMEOUT_S,
     TimeoutMiddleware,
+    _parse_stream_timeout_env,
     _parse_timeout_env,
 )
 
@@ -79,3 +81,38 @@ def test_parse_timeout_env_uses_default_when_non_positive(
 def test_parse_timeout_env_parses_valid_value(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("REQUEST_TIMEOUT_SECONDS", "30.5")
     assert _parse_timeout_env() == 30.5
+
+
+def test_parse_stream_timeout_env_uses_default_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("STREAM_REQUEST_TIMEOUT_SECONDS", raising=False)
+    assert _parse_stream_timeout_env() == _DEFAULT_STREAM_TIMEOUT_S
+
+
+def test_parse_stream_timeout_env_uses_default_when_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STREAM_REQUEST_TIMEOUT_SECONDS", "  ")
+    assert _parse_stream_timeout_env() == _DEFAULT_STREAM_TIMEOUT_S
+
+
+def test_parse_stream_timeout_env_uses_default_when_non_numeric(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STREAM_REQUEST_TIMEOUT_SECONDS", "not-a-number")
+    assert _parse_stream_timeout_env() == _DEFAULT_STREAM_TIMEOUT_S
+
+
+def test_parse_stream_timeout_env_disables_cap_when_non_positive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("STREAM_REQUEST_TIMEOUT_SECONDS", "0")
+    assert _parse_stream_timeout_env() is None
+    monkeypatch.setenv("STREAM_REQUEST_TIMEOUT_SECONDS", "-5")
+    assert _parse_stream_timeout_env() is None
+
+
+def test_parse_stream_timeout_env_parses_valid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STREAM_REQUEST_TIMEOUT_SECONDS", "3600.5")
+    assert _parse_stream_timeout_env() == 3600.5

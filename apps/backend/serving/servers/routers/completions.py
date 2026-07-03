@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
@@ -42,6 +44,7 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
+from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.storage.utils import json_safe
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
@@ -198,6 +201,35 @@ async def _buffer_streaming_response_for_non_stream_client(
 _FORCE_STREAMING_KEEPALIVE_S = 15
 
 
+async def _close_stream_quietly(stream: Any) -> None:
+    aclose = getattr(stream, "aclose", None)
+    if not callable(aclose):
+        return
+    try:
+        with anyio.CancelScope(shield=True):
+            await aclose()
+    except (Exception, asyncio.CancelledError):
+        pass
+
+
+async def _yield_with_cleanup(stream: Any) -> Any:
+    try:
+        async for data in stream:
+            yield data
+    finally:
+        await _close_stream_quietly(stream)
+
+
+async def _chain_first_then_rest(first: bytes | None, stream: Any) -> Any:
+    try:
+        if first is not None:
+            yield first
+        async for data in stream:
+            yield data
+    finally:
+        await _close_stream_quietly(stream)
+
+
 async def _streaming_response_with_keepalive(
     stream_chunks: Any,
     *,
@@ -290,10 +322,9 @@ async def _streaming_response_with_keepalive(
                 tool_calls.add(delta["tool_calls"])
     finally:
         reader_task.cancel()
-        import contextlib
-
         with contextlib.suppress(asyncio.CancelledError):
             await reader_task
+        await _close_stream_quietly(stream_chunks)
 
     message: dict[str, Any] = {
         "role": "assistant",
@@ -739,16 +770,10 @@ async def chat_completions(
                 if provider_header:
                     http_response.headers["X-Provider"] = provider_header
 
-            async def _chain_first_then_rest(first: bytes | None, gen: Any) -> Any:
-                if first is not None:
-                    yield first
-                async for data in gen:
-                    yield data
-                await gen.aclose()
-
             # This path emits keepalive whitespace to keep intermediaries alive;
             # without no-transform / no-buffering a CDN (e.g. Cloudflare) can
             # buffer it and defeat the keepalive on long completions.
+            request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
             streaming_headers: dict[str, str] = {
                 "Cache-Control": "no-cache, no-transform",
                 "X-Accel-Buffering": "no",
@@ -775,7 +800,7 @@ async def chat_completions(
             if provider_header:
                 response_headers["X-Provider"] = provider_header
         return StreamingResponse(
-            session.stream(adapter_chunks),
+            _yield_with_cleanup(session.stream(adapter_chunks)),
             media_type="text/event-stream",
             headers=response_headers,
         )
