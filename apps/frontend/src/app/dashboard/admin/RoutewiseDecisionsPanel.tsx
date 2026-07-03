@@ -39,15 +39,30 @@ const RANGE_WINDOW_SECONDS: Record<RoutewiseDecisionsRange, number> = {
   '30d': 30 * 24 * 3600,
 };
 
-// Distribution bars use the tier hue family (on_demand blue, quota amber,
-// concurrency green); multiple endpoints in one tier take progressively
-// different shades. Endpoints with an unknown tier fall back to gray.
-const TIER_SHADES: Record<string, string[]> = {
-  on_demand: ['#3b82f6', '#93c5fd', '#1d4ed8', '#bfdbfe'],
-  quota: ['#f59e0b', '#fcd34d', '#b45309', '#fde68a'],
-  concurrency: ['#10b981', '#6ee7b7', '#047857', '#a7f3d0'],
+const DISTRIBUTION_COLORS = [
+  '#2563eb',
+  '#10b981',
+  '#f59e0b',
+  '#8b5cf6',
+  '#14b8a6',
+  '#f97316',
+  '#ec4899',
+  '#64748b',
+  '#84cc16',
+  '#06b6d4',
+  '#dc2626',
+  '#a855f7',
+] as const;
+
+const ENDPOINT_COLOR_HINTS: Record<string, string> = {
+  chutes: '#f59e0b',
+  deepinfra: '#2563eb',
+  'minimax/highspeed': '#10b981',
+  wandb: '#8b5cf6',
+  siliconflow: '#14b8a6',
+  'atlas-cloud': '#64748b',
+  novita: '#ec4899',
 };
-const UNKNOWN_TIER_COLOR = '#9ca3af';
 
 const AXIS_TICK = { fontSize: 11, fill: '#6b7280' } as const;
 const LEGEND_STYLE = { fontSize: 11, color: '#6b7280' } as const;
@@ -125,6 +140,41 @@ function shortEndpoint(modelId: string, endpoint: string): string {
   return label.replace(/-api$/, '');
 }
 
+function endpointColorKey(endpoint: string): string {
+  const routePart = endpoint.includes(':') ? endpoint.slice(endpoint.indexOf(':') + 1) : endpoint;
+  const short = routePart.replace(/-api$/, '');
+  const openRouterMatch = short.match(/^openrouter\[(.+)\]$/);
+  return openRouterMatch?.[1] ?? short;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function distributionColorForEndpoint(endpoint: string, usedColors: Set<string>): string {
+  const key = endpointColorKey(endpoint);
+  const hintedColor = ENDPOINT_COLOR_HINTS[key];
+  if (hintedColor && !usedColors.has(hintedColor)) {
+    usedColors.add(hintedColor);
+    return hintedColor;
+  }
+
+  const start = hashString(endpoint) % DISTRIBUTION_COLORS.length;
+  for (let offset = 0; offset < DISTRIBUTION_COLORS.length; offset += 1) {
+    const color = DISTRIBUTION_COLORS[(start + offset) % DISTRIBUTION_COLORS.length];
+    if (!usedColors.has(color)) {
+      usedColors.add(color);
+      return color;
+    }
+  }
+
+  return DISTRIBUTION_COLORS[start];
+}
+
 function tierLabel(type: string): string {
   return TIER_META[type]?.label ?? type;
 }
@@ -178,23 +228,42 @@ type DistributionSeries = {
   color: string;
 };
 
+type DistributionTooltipPayloadEntry = {
+  dataKey?: string | number;
+  value?: number | string | null;
+};
+
 function DistributionTooltip(props: {
   active?: boolean;
   label?: string;
-  payload?: { dataKey?: string | number; value?: number | string }[];
+  payload?: DistributionTooltipPayloadEntry[];
   series: DistributionSeries[];
 }) {
   const { active, label, payload, series } = props;
   if (!active || !payload || payload.length === 0) return null;
   const metaByKey = new Map(series.map((item) => [item.dataKey, item]));
+  const rows = payload
+    .map((entry) => {
+      const meta = entry.dataKey != null ? metaByKey.get(String(entry.dataKey)) : undefined;
+      const value =
+        typeof entry.value === 'number' ? entry.value : Number.parseFloat(String(entry.value));
+      if (!meta || !Number.isFinite(value) || value <= 0) return null;
+      return { meta, value };
+    })
+    .filter((row): row is { meta: DistributionSeries; value: number } => row != null)
+    .sort((a, b) => b.value - a.value);
+
+  if (rows.length === 0) return null;
+
   return (
     <div style={TOOLTIP_STYLE}>
       {label != null && <div className="font-medium text-gray-900">{label}</div>}
-      {payload.map((entry) => {
-        const meta = entry.dataKey != null ? metaByKey.get(String(entry.dataKey)) : undefined;
-        if (!meta) return null;
-        return (
-          <div key={meta.dataKey} className="flex items-center gap-1.5 text-gray-600">
+      <div className="mt-1 space-y-1" data-testid="routewise-distribution-tooltip">
+        {rows.map(({ meta, value }) => (
+          <div
+            key={meta.dataKey}
+            className="grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-x-2 text-gray-600"
+          >
             <span
               aria-hidden
               style={{
@@ -205,12 +274,14 @@ function DistributionTooltip(props: {
                 background: meta.color,
               }}
             />
-            <span>{meta.short}</span>
+            <span className="truncate">{meta.short}</span>
             <span className="text-gray-400">{meta.tier ? tierLabel(meta.tier) : 'unknown'}</span>
-            <span className="font-medium text-gray-900">{entry.value ?? 0}</span>
+            <span className="text-right font-medium tabular-nums text-gray-900">
+              {Math.round(value).toLocaleString()}
+            </span>
           </div>
-        );
-      })}
+        ))}
+      </div>
     </div>
   );
 }
@@ -249,29 +320,22 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
     return Array.from(set);
   }, [decisions]);
 
-  // Tier-consistent bar colors: endpoint -> tier comes from selection_share;
-  // repeated tiers walk the tier's shade array.
+  // Endpoint colors are stable across renders and use a categorical palette so
+  // providers in the same RouteWise tier remain visually distinct.
   const distributionSeries = useMemo<DistributionSeries[]>(() => {
     const tierByEndpoint = new Map<string, string>();
     for (const item of decisions?.selection_share ?? []) {
       tierByEndpoint.set(item.endpoint, item.provider_type);
     }
-    const shadeUse = new Map<string, number>();
+    const usedColors = new Set<string>();
     return distributionEndpoints.map((endpoint, index) => {
       const tier = tierByEndpoint.get(endpoint) ?? null;
-      const shades = tier ? TIER_SHADES[tier] : undefined;
-      let color = UNKNOWN_TIER_COLOR;
-      if (tier && shades) {
-        const used = shadeUse.get(tier) ?? 0;
-        color = shades[used % shades.length];
-        shadeUse.set(tier, used + 1);
-      }
       return {
         endpoint,
         dataKey: `s${index}`,
         short: shortEndpoint(modelId, endpoint),
         tier,
-        color,
+        color: distributionColorForEndpoint(endpoint, usedColors),
       };
     });
   }, [decisions, distributionEndpoints, modelId]);
