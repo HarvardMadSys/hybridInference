@@ -20,6 +20,9 @@ class FakeProviderDefinitionStore:
     async def get_provider_definition(self, provider: str):
         return self.rows.get(provider)
 
+    async def list_provider_definitions(self):
+        return list(self.rows.values())
+
     async def upsert_provider_definition(
         self,
         *,
@@ -239,6 +242,35 @@ async def test_delete_custom_provider_hard_deletes_definition_and_keys(monkeypat
     assert store.deleted_keys == ["acme"]
     assert "acme" not in store.rows
     assert store.upserts == []
+
+
+@pytest.mark.asyncio
+async def test_list_provider_definitions_excludes_openrouter_pinned_route_targets(monkeypatch):
+    store = FakeProviderDefinitionStore()
+    openrouter_spec = provider_definitions.ConfigProviderSpec(
+        provider="openrouter",
+        adapter_kind="openrouter",
+        default_base_url="https://openrouter.ai/api/v1",
+        model_ids=frozenset(["openrouter-test"]),
+    )
+
+    monkeypatch.setattr(
+        provider_definitions,
+        "_configured_provider_specs",
+        lambda: {"openrouter": openrouter_spec},
+    )
+    monkeypatch.setattr(provider_definitions.dynamic_keys, "get_known_providers", set)
+
+    response = await provider_definitions.list_provider_definitions(
+        _admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    providers = {row.provider for row in response.providers}
+    assert "openrouter" in providers
+    assert "deepinfra" not in providers
+    assert "parasail" not in providers
 
 
 def test_configured_provider_specs_include_config_declared_providers(tmp_path, monkeypatch):
