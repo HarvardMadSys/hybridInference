@@ -586,8 +586,10 @@ models:
           - ${STAGING_API_KEY}
         provider_model_id: "qwen3.6-35b"
 
-  # Served on DGX Spark by ops/spark_idle_proxy (vLLM + NVFP4 kernels).
   # Discrete diffusion LLM (Gemma4 backbone); replaced gpt-oss-20b on Spark.
+  # Served on two internal GPU boxes: DGX Spark via ops/spark_idle_proxy and the
+  # rtx6000 node via ops/local_deployment_proxy — both vLLM + NVFP4 kernels. The
+  # two vLLM routes share traffic and fall back to each other automatically.
   - id: diffusiongemma
     name: DiffusionGemma 26B
     provider: vllm
@@ -613,6 +615,15 @@ models:
       - kind: vllm
         weight: 1.0
         base_url: ${SPARK_DEPLOYMENT_URL}
+        provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
+        api_keys:
+          - ${LOCAL_API_KEY}
+      # rtx6000 node via ops/local_deployment_proxy (models.rtx6000.json). Equal
+      # weight with the Spark route above: traffic splits across both boxes and
+      # each is a fallback for the other if one is down.
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_DEPLOYMENT_URL}
         provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
         api_keys:
           - ${LOCAL_API_KEY}

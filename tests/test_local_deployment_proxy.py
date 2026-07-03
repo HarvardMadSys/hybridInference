@@ -664,6 +664,49 @@ def test_vllm_generation_default_enables_prefix_cache_reporting(
     assert "--runner" not in cmd
 
 
+def test_vllm_custom_image_env_and_extra_args(monkeypatch: Any, tmp_path: Path) -> None:
+    """DiffusionGemma-style config: a custom server image, extra container env,
+    trust_remote_code, and free-form vLLM flags are all threaded into docker run."""
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "diffusiongemma-vllm",
+            "engine": "vllm",
+            "gpu_index": "0",
+            "backend_port": 18004,
+            "model_dir": "/tmp/diffusiongemma",
+            "served_name": MODEL_NAME,
+            "max_model_len": 262144,
+            "mem_fraction": "0.85",
+            "trust_remote_code": True,
+            "reasoning_parser": "gemma4",
+            "tool_call_parser": "gemma4",
+            "docker_image": "vllm/vllm-openai:gemma",
+            "docker_env": {"VLLM_USE_V2_MODEL_RUNNER": "1"},
+            "vllm_extra_args": ["--attention-backend", "TRITON_ATTN"],
+        },
+    )
+
+    cmd = backend._vllm_run_cmd("0")
+
+    # The custom image replaces the stock server tag and sits before the vLLM
+    # args (its own container-level flags like -e must precede it).
+    assert "vllm/vllm-openai:gemma" in cmd
+    assert "vllm/vllm-openai:latest" not in cmd
+    image_idx = cmd.index("vllm/vllm-openai:gemma")
+    assert cmd[cmd.index("-e") + 1] == "VLLM_USE_V2_MODEL_RUNNER=1"
+    assert cmd.index("-e") < image_idx
+    # trust_remote_code and the free-form args are vLLM flags → after the image.
+    assert "--trust-remote-code" in cmd
+    assert cmd.index("--trust-remote-code") > image_idx
+    assert cmd[cmd.index("--attention-backend") + 1] == "TRITON_ATTN"
+    assert cmd.index("--attention-backend") > image_idx
+    assert cmd[cmd.index("--reasoning-parser") + 1] == "gemma4"
+    assert cmd[cmd.index("--tool-call-parser") + 1] == "gemma4"
+    assert "--enable-auto-tool-choice" in cmd
+
+
 def test_health_endpoint_returns_200_without_api_key(monkeypatch: Any, tmp_path: Path) -> None:
     # The routing HealthMonitor probes GET /health with no API key and expects
     # 200; a 401 there marks every local model unhealthy.

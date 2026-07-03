@@ -445,11 +445,17 @@ class BackendManager:
 
         Hybrid Mamba models running MTP spec decoding with radix cache need the
         v2 speculative path (paired with ``--mamba-scheduler-strategy
-        extra_buffer``); see ``_start_container``.
+        extra_buffer``); see ``_start_container``. A free-form ``docker_env``
+        mapping in the model config (e.g. ``VLLM_USE_V2_MODEL_RUNNER`` for
+        DiffusionGemma) is merged in and wins over the derived defaults.
         """
         env: dict[str, str] = {}
         if self.config.get("mtp") and self.config.get("mamba"):
             env["SGLANG_ENABLE_SPEC_V2"] = "1"
+        extra_env = self.config.get("docker_env")
+        if isinstance(extra_env, dict):
+            for key, val in extra_env.items():
+                env[str(key)] = str(val)
         args: list[str] = []
         for key, val in env.items():
             args += ["-e", f"{key}={val}"]
@@ -483,8 +489,13 @@ class BackendManager:
         ``kv_cache_dtype`` and trades away cache reporting. Embedding models run
         vLLM's pooling runner, which has no KV cache, so ``--kv-cache-dtype`` and
         the generation parsers are omitted for them.
+
+        Non-stock models can override the server image via ``docker_image``
+        (e.g. ``vllm/vllm-openai:gemma`` for DiffusionGemma) and append
+        model-specific server flags via ``vllm_extra_args``.
         """
         tp = int(self.config.get("tensor_parallel_size", 1))
+        image = self.config.get("docker_image", "vllm/vllm-openai:latest")
         cmd = [
             "sudo",
             "docker",
@@ -503,7 +514,8 @@ class BackendManager:
             f"{self.backend_port}:8000",
             "-v",
             f"{self.config['model_dir']}:/model:ro",
-            "vllm/vllm-openai:latest",
+            *self._docker_env_args(),
+            image,
             "--model",
             "/model",
             "--served-model-name",
@@ -517,6 +529,8 @@ class BackendManager:
             "--tensor-parallel-size",
             str(tp),
         ]
+        if self.config.get("trust_remote_code"):
+            cmd.append("--trust-remote-code")
         if self.config.get("is_embedding"):
             # vLLM >= 0.20 selects the embedding runner with --runner pooling
             # (the older --task embed was removed). Pooling models keep no KV
@@ -543,6 +557,9 @@ class BackendManager:
             tcp = self.config.get("vllm_tool_call_parser", self.config.get("tool_call_parser"))
             if tcp:
                 cmd += ["--enable-auto-tool-choice", "--tool-call-parser", str(tcp)]
+        # Escape hatch for model-specific server flags (attention backend,
+        # generation overrides, chat-template kwargs) with no dedicated key.
+        cmd += [str(arg) for arg in self.config.get("vllm_extra_args", [])]
         return cmd
 
     def _sglang_run_cmd(self, gpu: str) -> list[str]:

@@ -24,5 +24,25 @@
         "mem_fraction": "0.10",
         "is_embedding": true,
         "colocate_group": "primary"
+    },
+    "nvidia/diffusiongemma-26B-A4B-it-NVFP4": {
+        "container": "diffusiongemma-vllm",
+        "engine": "vllm",
+        "backend_port": 18004,
+        "model_dir": "/scratch/juncheng/models/diffusiongemma-26B-A4B-it-NVFP4",
+        "hf_repo": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
+        "served_name": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
+        "docker_image": "vllm/vllm-openai:gemma",
+        "max_model_len": 262144,
+        "mem_fraction": "0.85",
+        "trust_remote_code": true,
+        "tool_call_parser": "gemma4",
+        "reasoning_parser": "gemma4",
+        "docker_env": {"VLLM_USE_V2_MODEL_RUNNER": "1"},
+        "vllm_extra_args": [
+            "--attention-backend", "TRITON_ATTN",
+            "--override-generation-config", "{\"max_new_tokens\": null}",
+            "--default-chat-template-kwargs", "{\"enable_thinking\": true}"
+        ]
     }
 }

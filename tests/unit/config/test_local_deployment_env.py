@@ -20,19 +20,23 @@ def test_sglang_local_route_uses_local_deployment_url() -> None:
     assert sglang_route["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
-def test_spark_route_uses_spark_deployment_url() -> None:
-    """Spark vLLM routes must use SPARK_DEPLOYMENT_URL, not LOCAL_DEPLOYMENT_URL."""
+def test_diffusiongemma_serves_on_spark_and_rtx6000() -> None:
+    """DiffusionGemma runs on both internal boxes: a Spark vLLM route and an
+    rtx6000 vLLM route, keyed by their deployment env vars (never LOCAL_BASE_URL).
+    """
     models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
 
-    spark_model = next(
-        (model for model in models["models"] if model["id"] == "diffusiongemma"), None
-    )
-    assert spark_model is not None, "Model 'diffusiongemma' not found in config/models.yaml"
-    vllm_route = next((route for route in spark_model["route"] if route["kind"] == "vllm"), None)
-    assert vllm_route is not None, "vLLM route not found for model 'diffusiongemma'"
+    model = next((m for m in models["models"] if m["id"] == "diffusiongemma"), None)
+    assert model is not None, "Model 'diffusiongemma' not found in config/models.yaml"
 
-    assert vllm_route["base_url"] == "${SPARK_DEPLOYMENT_URL}"
-    assert vllm_route["provider_model_id"] == "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
+    vllm_routes = [route for route in model["route"] if route["kind"] == "vllm"]
+    base_urls = {route["base_url"] for route in vllm_routes}
+    assert base_urls == {"${SPARK_DEPLOYMENT_URL}", "${LOCAL_DEPLOYMENT_URL}"}, (
+        "DiffusionGemma must have exactly one Spark and one rtx6000 vLLM route"
+    )
+
+    for route in vllm_routes:
+        assert route["provider_model_id"] == "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
 
 
 def test_routing_local_deployment_uses_local_deployment_url() -> None:
