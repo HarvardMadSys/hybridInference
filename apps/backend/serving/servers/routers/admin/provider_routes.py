@@ -101,6 +101,13 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
         key_provider="featherless",
         default_base_url=_env_default("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1"),
     ),
+    "minimax": ProviderTarget(
+        provider="minimax",
+        label="MiniMax",
+        kind="minimax",
+        key_provider="minimax",
+        default_base_url=_env_default("MINIMAX_BASE_URL", "https://api.minimax.io/v1"),
+    ),
     "openrouter": ProviderTarget(
         provider="openrouter",
         label="OpenRouter",
@@ -124,7 +131,7 @@ PROVIDER_TARGETS: dict[str, ProviderTarget] = {
     ),
 }
 
-SELECTABLE_PROVIDER_TARGETS = {"chutes", "featherless", "openrouter"}
+SELECTABLE_PROVIDER_TARGETS = {"chutes", "featherless", "minimax", "openrouter"}
 OPENROUTER_PROVIDER_LABELS = {
     "deepinfra": "DeepInfra",
     "minimax": "MiniMax",
@@ -136,6 +143,7 @@ PROVIDER_MODEL_IDS: dict[str, dict[str, str]] = {
     "minimax-fast": {
         "chutes": "MiniMaxAI/MiniMax-M2.5-TEE",
         "featherless": "MiniMaxAI/MiniMax-M2.5",
+        "minimax": "MiniMax-M2.5",
         "deepinfra": "minimax/minimax-m2.5",
         "openrouter": "minimax/minimax-m2.5",
         "parasail": "minimax/minimax-m2.5",
@@ -143,6 +151,7 @@ PROVIDER_MODEL_IDS: dict[str, dict[str, str]] = {
     "minimax-m2.5": {
         "chutes": "MiniMaxAI/MiniMax-M2.5-TEE",
         "featherless": "MiniMaxAI/MiniMax-M2.5",
+        "minimax": "MiniMax-M2.5",
         "openrouter": "minimax/minimax-m2.5",
         "deepinfra": "minimax/minimax-m2.5",
         "parasail": "minimax/minimax-m2.5",
@@ -155,6 +164,7 @@ RESOURCE_ROUTE_TYPES = {"quota", "concurrency"}
 PROVIDER_CREATE_ROUTE_TYPES: dict[str, set[str]] = {
     "chutes": {"quota"},
     "featherless": {"concurrency"},
+    "minimax": {"on_demand"},
     "openrouter": {"concurrency", "on_demand"},
 }
 
@@ -885,6 +895,37 @@ async def _validate_base_url(base_url: str) -> str:
     return cleaned
 
 
+def _default_base_url_host(target: ProviderTarget) -> str | None:
+    if not target.default_base_url:
+        return None
+    parsed = urlparse(target.default_base_url)
+    return parsed.hostname.rstrip(".").lower() if parsed.hostname else None
+
+
+def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None:
+    hostname = urlparse(base_url).hostname
+    if hostname is None:
+        return
+    normalized_host = hostname.rstrip(".").lower()
+    expected_host = _default_base_url_host(target)
+    if expected_host and normalized_host == expected_host:
+        return
+
+    target_provider = _primary_provider_for_target(target)
+    for other in PROVIDER_TARGETS.values():
+        other_provider = _primary_provider_for_target(other)
+        if other_provider == target_provider:
+            continue
+        if normalized_host == _default_base_url_host(other):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"base_url host belongs to provider {other_provider!r}, "
+                    f"not {target_provider!r}"
+                ),
+            )
+
+
 def _base_url_ip_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return (
         ip.is_loopback
@@ -1237,6 +1278,40 @@ def _runtime_concurrency_pool(_model_id: str, route_id: str) -> str:
     return f"{route_id}:runtime-concurrency"
 
 
+def _runtime_route_id_for_target(
+    *,
+    model_id: str,
+    target: ProviderTarget,
+    base_url: str,
+    route_id: str | None,
+) -> str:
+    expected = _make_provider_id(model_id, target.kind, base_url)
+    if route_id is None:
+        return expected
+    if route_id == expected:
+        return route_id
+
+    known_providers = set(PROVIDER_TARGETS) | {
+        definition.provider for definition in provider_registry.list_provider_definitions()
+    }
+    for provider in sorted(known_providers):
+        try:
+            other = _target_for_provider(provider)
+        except HTTPException:
+            continue
+        if other.kind == target.kind:
+            continue
+        if route_id == _make_provider_id(model_id, other.kind, base_url):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"runtime route_id {route_id!r} belongs to provider "
+                    f"{other.provider!r}, not {target.provider!r}"
+                ),
+            )
+    return route_id
+
+
 async def _prepare_route_candidate(
     services,
     op_store,
@@ -1282,13 +1357,19 @@ async def _prepare_route_candidate(
         openrouter_sort,
     )
     cleaned_base_url = await _validate_base_url(base_url)
+    _validate_base_url_for_target(target, cleaned_base_url)
     provider_model_id = provider_model_id.strip()
     if not provider_model_id:
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
     raw_weight = _validate_positive_weight(weight)
 
     provider_for_cfg = _model_config_provider_for_target(target)
-    candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
+    candidate_route_id = _runtime_route_id_for_target(
+        model_id=model_id,
+        target=target,
+        base_url=cleaned_base_url,
+        route_id=route_id,
+    )
     _ensure_route_id_available(entries, candidate_route_id)
 
     api_key, api_keys = await _resolve_key_material(
@@ -1406,6 +1487,7 @@ async def _prepare_model_route_candidate(
         openrouter_sort,
     )
     cleaned_base_url = await _validate_base_url(base_url)
+    _validate_base_url_for_target(target, cleaned_base_url)
     provider_model_id = provider_model_id.strip()
     if not provider_model_id:
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
@@ -1413,7 +1495,12 @@ async def _prepare_model_route_candidate(
     normalized_pricing = _normalize_runtime_model_pricing(pricing)
 
     provider_for_cfg = _model_config_provider_for_target(target)
-    candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
+    candidate_route_id = _runtime_route_id_for_target(
+        model_id=model_id,
+        target=target,
+        base_url=cleaned_base_url,
+        route_id=route_id,
+    )
     api_key, api_keys = await _resolve_key_material(
         op_store,
         key_provider=target.key_provider,
@@ -1529,6 +1616,7 @@ async def _prepare_route_update(
         openrouter_sort,
     )
     cleaned_base_url = await _validate_base_url(base_url)
+    _validate_base_url_for_target(target, cleaned_base_url)
 
     api_key, api_keys = await _resolve_key_material(
         op_store,

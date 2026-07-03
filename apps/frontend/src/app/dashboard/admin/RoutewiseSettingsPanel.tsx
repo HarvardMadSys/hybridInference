@@ -133,6 +133,16 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
     () => new Set(probeEndpointOptions.map((endpoint) => endpoint.endpointId)),
     [probeEndpointOptions],
   );
+  const probeEndpointLabelById = useMemo(
+    () =>
+      new Map(
+        probeEndpointOptions.map((endpoint) => [
+          endpoint.endpointId,
+          endpoint.label || endpoint.endpointId,
+        ]),
+      ),
+    [probeEndpointOptions],
+  );
   const latestProbeSamples = useMemo(() => {
     const seen = new Set<string>();
     const latest: RoutewiseProbeSampleItem[] = [];
@@ -479,8 +489,15 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
                     key={`${sample.endpoint_id}-${sample.checked_at}-${index}`}
                     className="grid grid-cols-[minmax(0,1.3fr)_minmax(120px,.8fr)_90px_minmax(126px,.8fr)] gap-3 px-3 py-2 text-[12px]"
                   >
-                    <div className="min-w-0 break-all font-mono text-gray-600">
-                      {sample.endpoint_id}
+                    <div className="min-w-0" title={sample.endpoint_id}>
+                      <div className="break-words font-medium text-gray-700">
+                        {probeEndpointLabelById.get(sample.endpoint_id) ?? sample.endpoint_id}
+                      </div>
+                      {probeEndpointLabelById.has(sample.endpoint_id) && (
+                        <div className="mt-0.5 break-all font-mono text-[11px] leading-4 text-gray-400">
+                          {sample.endpoint_id}
+                        </div>
+                      )}
                     </div>
                     <div className="min-w-0">
                       <span

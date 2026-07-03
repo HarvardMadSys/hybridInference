@@ -223,10 +223,30 @@ describe('ProviderRoutesTab', () => {
   });
 
   it('renders settings and runs RouteWise probes when requested', async () => {
+    const tencentRoute = {
+      ...route,
+      route_id: 'minimax-fast:lkeap-api',
+      route_type: 'on_demand',
+      provider: 'lkeap',
+      upstream_provider: 'lkeap',
+      key_provider: 'lkeap',
+      base_url: 'https://api.lkeap.cloud.tencent.com/v1',
+      provider_model_id: 'MiniMax-M2.5',
+      endpoint_id: 'minimax-fast:lkeap-api',
+    };
     vi.mocked(listProviderRoutes).mockResolvedValue({
-      provider_options: providerOptions,
+      provider_options: [
+        ...providerOptions,
+        {
+          provider: 'lkeap',
+          label: 'Tencent Token Plan',
+          kind: 'lkeap',
+          key_provider: 'lkeap',
+          default_base_url: 'https://api.lkeap.cloud.tencent.com/v1',
+        },
+      ],
       openrouter_provider_options: openRouterProviderOptions,
-      routes: [route],
+      routes: [route, tencentRoute],
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
@@ -287,6 +307,14 @@ describe('ProviderRoutesTab', () => {
             '{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"/-m2.5 is temporarily rate-limited upstream. Please retry shortly. diagnostic-tail-that-should-be-truncated"}}}',
           checked_at: '2026-06-22T00:00:01Z',
         },
+        {
+          model_id: 'minimax-fast',
+          endpoint_id: 'minimax-fast:lkeap-api',
+          ok: true,
+          ttft_ms: 456.7,
+          error: null,
+          checked_at: '2026-06-22T00:00:02Z',
+        },
       ],
     });
     vi.mocked(runRoutewiseProbe).mockResolvedValue({
@@ -337,6 +365,8 @@ describe('ProviderRoutesTab', () => {
     });
 
     expect((await screen.findAllByText('minimax-fast:featherless-api')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('on_demand · Tencent Token Plan').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('minimax-fast:lkeap-api').length).toBeGreaterThan(0);
     expect(screen.getByText('123 ms')).toBeInTheDocument();
     expect(screen.queryByText('RuntimeError')).not.toBeInTheDocument();
     expect(screen.getByText(/temporarily rate-limited upstream/)).toBeInTheDocument();
@@ -920,6 +950,8 @@ describe('ProviderRoutesTab', () => {
     });
 
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
@@ -1224,6 +1256,8 @@ describe('ProviderRoutesTab', () => {
     });
 
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() => {
@@ -1568,6 +1602,8 @@ describe('ProviderRoutesTab', () => {
       expect(listProviderKeys).toHaveBeenCalledWith('openrouter');
     });
     fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'key-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
@@ -1617,6 +1653,8 @@ describe('ProviderRoutesTab', () => {
     fireEvent.change(screen.getByLabelText('OpenRouter routing'), {
       target: { value: 'sort:throughput' },
     });
+    fireEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await screen.findByRole('button', { name: 'Verified' });
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
 
     await waitFor(() => {
