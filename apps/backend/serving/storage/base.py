@@ -30,6 +30,19 @@ class ProviderKeyRow:
     created_at: datetime
 
 
+@dataclass
+class ProviderDefinitionRow:
+    """Persisted upstream provider definition, override, or disabled marker."""
+
+    provider: str
+    display_name: str
+    adapter_kind: str
+    default_base_url: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
 # ---------------------------------------------------------------------------
 # Shared types
 # ---------------------------------------------------------------------------
@@ -907,6 +920,37 @@ class OperationalStore(ABC):
         Returns the number of rows updated. Atomic: a failure rolls back.
         Overwrites any per-key custom override.
         """
+
+    # -- provider definitions -----------------------------------------------
+
+    @abstractmethod
+    async def list_provider_definitions(self) -> list[ProviderDefinitionRow]:
+        """Return provider definitions, overrides, and disabled markers."""
+
+    @abstractmethod
+    async def get_provider_definition(self, provider: str) -> ProviderDefinitionRow | None:
+        """Return one provider definition, override, or disabled marker if present."""
+
+    @abstractmethod
+    async def upsert_provider_definition(
+        self,
+        *,
+        provider: str,
+        display_name: str,
+        adapter_kind: str,
+        default_base_url: str,
+        created_by: str | None,
+        status: str = "active",
+    ) -> ProviderDefinitionRow:
+        """Create or update a provider definition or override."""
+
+    @abstractmethod
+    async def delete_provider_definition(self, provider: str) -> bool:
+        """Delete a provider definition row. Returns True if removed."""
+
+    @abstractmethod
+    async def delete_provider_keys_for_provider(self, provider: str) -> int:
+        """Delete DB/env-key records for a custom provider and return row count."""
 
     # -- provider api keys ---------------------------------------------------
 

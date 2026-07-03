@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from routing.routers import ManagedRouter, _get_endpoint_id
 from routing.routewise.envelope import EnvelopeNotCalibratedError
-from serving.adapters import ModelConfig, dynamic_keys
+from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.config.settings import VALID_ROLES
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
@@ -506,6 +506,15 @@ def _target_for_provider(provider: str) -> ProviderTarget:
             default_base_url=OPENROUTER_API_BASE_URL,
         )
 
+    custom = provider_registry.get_provider_definition(provider)
+    if custom is not None:
+        return ProviderTarget(
+            provider=custom.provider,
+            label=custom.display_name,
+            kind=custom.adapter_kind,
+            key_provider=custom.provider,
+            default_base_url=custom.default_base_url,
+        )
     if provider in PROVIDER_TARGETS:
         return PROVIDER_TARGETS[provider]
     known = dynamic_keys.get_known_providers()
@@ -543,6 +552,16 @@ def _primary_provider_for_target(target: ProviderTarget) -> str:
     if base_kind == "openrouter":
         return "openrouter"
     return target.provider
+
+
+def _model_config_provider_for_target(target: ProviderTarget) -> str:
+    """Return the provider label to store on ModelConfig for a route target."""
+    base_kind, _pinned = parse_openrouter_kind(target.kind)
+    if base_kind == "openrouter":
+        return "openrouter"
+    if base_kind == "openai_compat" and target.provider != base_kind:
+        return target.provider
+    return base_kind
 
 
 def _target_provider_from_request(
@@ -596,12 +615,37 @@ def _provider_option_for_target(target: ProviderTarget) -> ProviderRouteOption:
 
 
 def _provider_options() -> list[ProviderRouteOption]:
+    custom_by_provider = {
+        custom.provider: custom for custom in provider_registry.list_provider_definitions()
+    }
     options = [
-        _provider_option_for_target(target)
+        ProviderRouteOption(
+            provider=custom_by_provider[target.provider].provider,
+            label=custom_by_provider[target.provider].display_name,
+            kind=custom_by_provider[target.provider].adapter_kind,
+            key_provider=custom_by_provider[target.provider].provider,
+            default_base_url=custom_by_provider[target.provider].default_base_url,
+        )
+        if target.provider in custom_by_provider
+        else _provider_option_for_target(target)
         for target in PROVIDER_TARGETS.values()
         if target.provider in SELECTABLE_PROVIDER_TARGETS
     ]
-    for provider in sorted(set(dynamic_keys.get_known_providers()) - set(PROVIDER_TARGETS)):
+    for custom in provider_registry.list_provider_definitions():
+        if custom.provider in SELECTABLE_PROVIDER_TARGETS:
+            continue
+        options.append(
+            ProviderRouteOption(
+                provider=custom.provider,
+                label=custom.display_name,
+                kind=custom.adapter_kind,
+                key_provider=custom.provider,
+                default_base_url=custom.default_base_url,
+            )
+        )
+    for provider in sorted(
+        set(dynamic_keys.get_known_providers()) - set(PROVIDER_TARGETS) - set(custom_by_provider)
+    ):
         options.append(
             ProviderRouteOption(
                 provider=provider,
@@ -611,6 +655,7 @@ def _provider_options() -> list[ProviderRouteOption]:
                 default_base_url="",
             )
         )
+    options.sort(key=lambda option: option.label.lower())
     return options
 
 
@@ -1236,7 +1281,7 @@ async def _prepare_route_candidate(
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
     raw_weight = _validate_positive_weight(weight)
 
-    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    provider_for_cfg = _model_config_provider_for_target(target)
     candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
     _ensure_route_id_available(entries, candidate_route_id)
 
@@ -1360,7 +1405,7 @@ async def _prepare_model_route_candidate(
     raw_weight = _validate_positive_weight(weight)
     normalized_pricing = _normalize_runtime_model_pricing(pricing)
 
-    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    provider_for_cfg = _model_config_provider_for_target(target)
     candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
     api_key, api_keys = await _resolve_key_material(
         op_store,
@@ -1502,7 +1547,7 @@ async def _prepare_route_update(
         concurrency["limit"] = concurrency_limit_override
         cfg["concurrency"] = concurrency
 
-    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    provider_for_cfg = _model_config_provider_for_target(target)
     cfg["provider"] = provider_for_cfg
     _preserve_route_semantics(
         cfg,

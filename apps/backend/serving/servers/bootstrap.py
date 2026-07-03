@@ -697,6 +697,18 @@ async def initialize() -> AppServices:
     # a failure here should not prevent the server from starting.
     if operational_store is not None:
         try:
+            from serving.adapters.provider_registry import apply_provider_definitions_at_boot
+            from serving.servers.routers.admin.provider_definitions import (
+                _config_managed_provider_names,
+            )
+
+            await apply_provider_definitions_at_boot(
+                operational_store,
+                reserved_providers=_config_managed_provider_names(),
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to apply DB-backed provider definitions at boot: {exc}")
+        try:
             from serving.adapters.dynamic_keys import apply_db_keys_at_boot
 
             await apply_db_keys_at_boot(operational_store)

@@ -33,11 +33,13 @@ _disabled_env_key_hashes: dict[str, set[str]] = {}
 _MAX_NUMBERED_ENV_KEYS = 20
 _PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
     "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
+    "deepseek": ("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
     "featherless": ("FEATHERLESS_API_KEY", "FEATHERLESS_API_KEY"),
     "kimi": ("KIMI_CODING_API_KEY", "KIMI_CODING_API_KEY"),
     "minimax": ("MINIMAX_API_KEY", "MINIMAX_API_KEY"),
     "ollama": ("OLLAMA_API_KEY", "OLLAMA_API_KEY"),
     "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
+    "staging": ("STAGING_API_KEY", "STAGING_API_KEY"),
     "zai": ("ZAI_API_KEY", "ZAI_API_KEY"),
 }
 _KEY_PROVIDER_ALIASES = {
@@ -100,10 +102,39 @@ def register_known_provider(provider: str) -> None:
         _known_providers.add(provider)
 
 
+def unregister_known_provider(provider: str) -> bool:
+    """Remove a whitelist-only provider.
+
+    Providers with live adapters are left registered because model routes still
+    depend on them. Returns True when the provider was removed from the known
+    provider set.
+    """
+    with _lock:
+        if _adapters_by_provider.get(provider):
+            return False
+        before = provider in _known_providers
+        _known_providers.discard(provider)
+        _db_injected_keys.pop(provider, None)
+        _disabled_env_key_hashes.pop(provider, None)
+        return before
+
+
 def get_known_providers() -> set[str]:
     """Return the set of providers seen during model registration."""
     with _lock:
         return set(_known_providers)
+
+
+def get_registered_base_urls(provider: str) -> list[str]:
+    """Return base URLs observed on live adapters for *provider*."""
+    with _lock:
+        urls: list[str] = []
+        for adapter in _adapters_by_provider.get(provider, []):
+            cfg = getattr(adapter, "config", None)
+            base_url = str(getattr(cfg, "base_url", "") or "").strip()
+            if base_url and base_url not in urls:
+                urls.append(base_url)
+        return urls
 
 
 def _pools_for_provider_locked(
@@ -198,15 +229,14 @@ def configured_env_keys_for_provider(provider: str) -> list[str]:
 
     base_var, numbered_prefix = spec
     base_value = os.getenv(base_var, "")
-    if not base_value:
-        return []
-
-    keys = [base_value]
-    for index in range(2, _MAX_NUMBERED_ENV_KEYS):
+    keys = [base_value] if base_value else []
+    start_index = 2 if base_value else 1
+    for index in range(start_index, _MAX_NUMBERED_ENV_KEYS):
         value = os.getenv(f"{numbered_prefix}{index}", "")
         if not value:
             break
-        keys.append(value)
+        if value not in keys:
+            keys.append(value)
     return keys
 
 

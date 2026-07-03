@@ -12,7 +12,8 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from routing.routewise.envelope import EnvelopeNotCalibratedError
-from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys
+from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
+from serving.adapters.provider_registry import RuntimeProviderDefinition
 from serving.servers.deps import AppServices
 from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
@@ -2034,6 +2035,55 @@ async def test_runtime_candidate_list_ignores_stale_override_row(admin_client):
     assert runtime_row["provider_model_id"] == "minimax/minimax-m2.5"
     runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+
+
+@pytest.mark.asyncio
+async def test_custom_provider_route_candidate_preserves_provider_identity(admin_client):
+    client, op_store, route_executor, _fake_routewise, _verify_mock = admin_client
+    provider_registry.register_provider_definition(
+        RuntimeProviderDefinition(
+            provider="acme",
+            display_name="Acme",
+            adapter_kind="openai_compat",
+            default_base_url="https://api.acme.test/v1",
+        )
+    )
+    op_store.get_provider_key_full.return_value = ("acme", "acme-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-acme",
+            provider="acme",
+            key_prefix="acme-db-...7890",
+            label="acme",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    try:
+        response = await client.post(
+            "/admin/routing/provider-route-candidates/minimax-fast",
+            json={
+                "route_type": "on_demand",
+                "upstream_provider": "acme",
+                "base_url": "https://api.acme.test/v1",
+                "api_key_id": "db-acme",
+                "provider_model_id": "acme/model",
+                "weight": 1.0,
+            },
+            headers=AUTH,
+        )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["provider"] == "acme"
+        assert payload["upstream_provider"] == "acme"
+        assert payload["key_provider"] == "acme"
+        assert payload["api_key"]["provider"] == "acme"
+        runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+        assert runtime_adapter.config.provider == "acme"
+    finally:
+        provider_registry.unregister_provider_definition("acme")
 
 
 @pytest.mark.asyncio

@@ -1777,6 +1777,114 @@ export async function deleteProviderRouteCandidate(
 // Provider API Keys (admin-managed runtime credentials)
 // ========================================
 
+export type ProviderDefinitionSource = 'built_in' | 'custom';
+export type ProviderDefinitionAdapterKind = 'openai_compat';
+
+export interface ProviderDefinitionItem {
+  provider: string;
+  display_name: string;
+  adapter_kind: string;
+  default_base_url: string;
+  source: ProviderDefinitionSource;
+  status: string;
+  keys_count: number;
+  models_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ListProviderDefinitionsResponse {
+  providers: ProviderDefinitionItem[];
+  adapter_kinds: ProviderDefinitionAdapterKind[];
+}
+
+export interface ProbeProviderDefinitionPayload {
+  default_base_url: string;
+  api_key: string;
+  probe_model_id: string;
+}
+
+export interface ProbeProviderDefinitionResponse {
+  ok: boolean;
+  streaming: boolean;
+  first_event_ttft_ms: number | null;
+  first_content_ttft_ms: number | null;
+  preview: string | null;
+}
+
+export interface CreateProviderDefinitionPayload extends ProbeProviderDefinitionPayload {
+  provider: string;
+  display_name: string;
+  adapter_kind: ProviderDefinitionAdapterKind;
+  api_key_label?: string | null;
+}
+
+export interface UpdateProviderDefinitionPayload {
+  display_name?: string | null;
+  default_base_url?: string | null;
+  api_key?: string | null;
+  probe_model_id?: string | null;
+}
+
+export interface DeleteProviderDefinitionResponse {
+  provider: string;
+  deleted_keys: number;
+}
+
+export async function listProviderDefinitions(): Promise<ListProviderDefinitionsResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-definitions');
+  return jsonOrThrow<ListProviderDefinitionsResponse>(resp);
+}
+
+export async function probeProviderDefinition(
+  payload: ProbeProviderDefinitionPayload,
+): Promise<ProbeProviderDefinitionResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-definitions/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow<ProbeProviderDefinitionResponse>(resp);
+}
+
+export async function createProviderDefinition(
+  payload: CreateProviderDefinitionPayload,
+): Promise<ProviderDefinitionItem> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-definitions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return jsonOrThrow<ProviderDefinitionItem>(resp);
+}
+
+export async function updateProviderDefinition(
+  provider: string,
+  payload: UpdateProviderDefinitionPayload,
+): Promise<ProviderDefinitionItem> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/provider-definitions/${encodeURIComponent(provider)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<ProviderDefinitionItem>(resp);
+}
+
+export async function deleteProviderDefinition(
+  provider: string,
+): Promise<DeleteProviderDefinitionResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/provider-definitions/${encodeURIComponent(provider)}`,
+    { method: 'DELETE' },
+  );
+  return jsonOrThrow<DeleteProviderDefinitionResponse>(resp);
+}
+
 export type ProviderKeySource = 'env' | 'db';
 
 export interface ProviderApiKeyItem {
