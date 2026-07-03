@@ -920,8 +920,7 @@ def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    f"base_url host belongs to provider {other_provider!r}, "
-                    f"not {target_provider!r}"
+                    f"base_url host belongs to provider {other_provider!r}, not {target_provider!r}"
                 ),
             )
 
