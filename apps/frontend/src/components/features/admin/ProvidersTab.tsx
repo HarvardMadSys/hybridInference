@@ -6,10 +6,12 @@ import { ProviderQuotaResult, getProviderQuotas } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { PerformanceTab } from '@/components/features/admin/PerformanceTab';
 import { ProviderKeysTab } from '@/app/dashboard/admin/ProviderKeysTab';
+import { ProviderOverviewTab } from '@/app/dashboard/admin/ProviderOverviewTab';
 
-type SubTab = 'quotas' | 'keys' | 'performance';
+type SubTab = 'overview' | 'quotas' | 'keys' | 'performance';
 
 const SUB_TABS: { key: SubTab; label: string }[] = [
+  { key: 'overview', label: 'Overview' },
   { key: 'quotas', label: 'Quotas' },
   { key: 'keys', label: 'Keys' },
   { key: 'performance', label: 'Performance' },
@@ -210,7 +212,7 @@ function QuotasSection() {
 }
 
 export function ProvidersTab() {
-  const [active, setActive] = useState<SubTab>('quotas');
+  const [active, setActive] = useState<SubTab>('overview');
 
   return (
     <div className="mt-6">
@@ -240,7 +242,9 @@ export function ProvidersTab() {
         })}
       </div>
 
-      {active === 'quotas' ? (
+      {active === 'overview' ? (
+        <ProviderOverviewTab />
+      ) : active === 'quotas' ? (
         <QuotasSection />
       ) : active === 'keys' ? (
         <ProviderKeysTab />
