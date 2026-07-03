@@ -324,29 +324,6 @@ function openRouterProviderLabel(options: OpenRouterProviderOption[], provider: 
   return options.find((option) => option.provider === provider)?.label ?? provider;
 }
 
-function routeTargetLabel(
-  route: ProviderRoute,
-  providerOptions: ProviderRouteOption[],
-  openRouterOptions: OpenRouterProviderOption[],
-) {
-  const targetProvider = routePrimaryProvider(route);
-  const targetUpstreamProvider = routePrimaryUpstreamProvider(route);
-  const targetOpenRouterProvider = routeOpenRouterProvider(route);
-  if (targetUpstreamProvider === 'openrouter') {
-    if (targetOpenRouterProvider) {
-      return `OpenRouter · ${openRouterProviderLabel(openRouterOptions, targetOpenRouterProvider)}`;
-    }
-    return 'OpenRouter';
-  }
-  if (targetProvider !== targetUpstreamProvider) {
-    return `${providerLabel(providerOptions, targetProvider)} → ${providerLabel(
-      providerOptions,
-      targetUpstreamProvider,
-    )}`;
-  }
-  return providerLabel(providerOptions, targetProvider);
-}
-
 function ensureOpenRouterProviderOption(options: OpenRouterProviderOption[], provider: string) {
   if (
     !provider ||
@@ -1502,11 +1479,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           modelId={selectedModel}
           endpoints={selectedRoutes.map((route) => ({
             endpointId: route.endpoint_id,
-            label: `${route.route_type} · ${routeTargetLabel(
-              route,
-              providerSelectBaseOptions,
-              openRouterSelectOptions,
-            )}`,
+            label: `${route.route_type} · ${route.endpoint_id}`,
           }))}
         />
       )}
