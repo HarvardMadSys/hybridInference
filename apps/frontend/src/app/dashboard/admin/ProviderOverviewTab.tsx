@@ -41,6 +41,44 @@ function formatMs(value: number | null): string {
   return `${(value / 1000).toFixed(2)} s`;
 }
 
+function formatCount(value: number, singular: string): string {
+  return `${value.toLocaleString()} ${value === 1 ? singular : `${singular}s`}`;
+}
+
+function sourceBadgeClass(source: ProviderDefinitionItem['source']): string {
+  if (source === 'custom') {
+    return 'border-blue-100 bg-blue-50 text-blue-700';
+  }
+  return 'border-gray-200 bg-gray-50 text-gray-600';
+}
+
+function ProviderSourceBadge({ provider }: { provider: ProviderDefinitionItem }) {
+  return (
+    <span
+      className={`inline-flex min-w-[72px] items-center justify-center rounded-full border px-2 py-1 text-[11px] font-medium ${sourceBadgeClass(
+        provider.source,
+      )}`}
+    >
+      {provider.source === 'custom' ? 'Custom' : 'Config'}
+    </span>
+  );
+}
+
+function ProviderUsageCell({ keys, models }: { keys: number; models: number }) {
+  return (
+    <div className="flex justify-end gap-2">
+      <div className="min-w-[58px] rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-right">
+        <div className="text-[13px] font-semibold tabular-nums text-gray-900">{keys}</div>
+        <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">Keys</div>
+      </div>
+      <div className="min-w-[58px] rounded-md border border-gray-100 bg-gray-50 px-2 py-1 text-right">
+        <div className="text-[13px] font-semibold tabular-nums text-gray-900">{models}</div>
+        <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">Models</div>
+      </div>
+    </div>
+  );
+}
+
 interface AddProviderModalProps {
   open: boolean;
   onClose: () => void;
@@ -661,6 +699,19 @@ export function ProviderOverviewTab() {
   const [editTarget, setEditTarget] = useState<ProviderDefinitionItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProviderDefinitionItem | null>(null);
 
+  const providerSummary = useMemo(
+    () =>
+      providers.reduce(
+        (summary, provider) => ({
+          keys: summary.keys + provider.keys_count,
+          models: summary.models + provider.models_count,
+          custom: summary.custom + (provider.source === 'custom' ? 1 : 0),
+        }),
+        { keys: 0, models: 0, custom: 0 },
+      ),
+    [providers],
+  );
+
   const loadProviders = useCallback(async () => {
     setLoading(true);
     try {
@@ -679,12 +730,30 @@ export function ProviderOverviewTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h3 className="text-[14px] font-semibold text-gray-900">Provider registry</h3>
           <p className="mt-1 text-[12px] text-gray-500">
             Built-in and custom upstream providers available to keys and routing.
           </p>
+          {providers.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
+                {formatCount(providers.length, 'provider')}
+              </span>
+              <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
+                {formatCount(providerSummary.keys, 'key')}
+              </span>
+              <span className="rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[12px] font-medium tabular-nums text-gray-600">
+                {formatCount(providerSummary.models, 'model')}
+              </span>
+              {providerSummary.custom > 0 && (
+                <span className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-[12px] font-medium tabular-nums text-blue-700">
+                  {formatCount(providerSummary.custom, 'custom provider')}
+                </span>
+              )}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -704,89 +773,94 @@ export function ProviderOverviewTab() {
           <p className="text-[13px] text-gray-400">No provider data.</p>
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-gray-200">
-          <table className="w-full min-w-[760px] text-[13px]">
-            <thead className="bg-gray-50 text-left text-[12px] uppercase tracking-wide text-gray-500">
-              <tr>
-                <th className="px-3 py-2">Provider</th>
-                <th className="px-3 py-2">Base URL</th>
-                <th className="px-3 py-2 text-right">Keys</th>
-                <th className="px-3 py-2 text-right">Models</th>
-                <th className="px-3 py-2 text-right">Manage</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 bg-white">
-              {providers.map((provider) => {
-                const custom = provider.source === 'custom';
-                const inUse = provider.models_count > 0;
-                return (
-                  <tr key={provider.provider}>
-                    <td className="px-3 py-3">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-gray-900">{provider.display_name}</span>
-                        {custom && (
-                          <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-700">
-                            Custom
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-0.5 font-mono text-[12px] text-gray-400">
-                        {provider.provider}
-                      </div>
-                    </td>
-                    <td
-                      className="max-w-[320px] truncate px-3 py-3 font-mono text-[12px] text-gray-600"
-                      title={provider.default_base_url || undefined}
-                    >
-                      {formatBaseUrl(provider.default_base_url)}
-                    </td>
-                    <td className="px-3 py-3 text-right tabular-nums text-gray-700">
-                      {provider.keys_count}
-                    </td>
-                    <td className="px-3 py-3 text-right tabular-nums text-gray-700">
-                      {provider.models_count}
-                    </td>
-                    <td className="px-3 py-3 text-right">
-                      {custom ? (
-                        <div className="flex justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setEditTarget(provider)}
-                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
-                          >
-                            Edit
-                          </button>
-                          {inUse ? (
-                            <span
-                              className="px-2 py-1 text-[12px] text-gray-400"
-                              title={`Used by ${provider.models_count} model(s). Remove those routes in Routing before deleting.`}
-                            >
-                              In use
-                            </span>
-                          ) : (
+        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[840px] text-[13px]">
+              <thead className="border-b border-gray-100 bg-gray-50/80 text-left text-[11px] uppercase tracking-wide text-gray-500">
+                <tr>
+                  <th className="px-4 py-2.5">Provider</th>
+                  <th className="px-4 py-2.5">Endpoint</th>
+                  <th className="px-4 py-2.5 text-right">Usage</th>
+                  <th className="px-4 py-2.5 text-center">Source</th>
+                  <th className="px-4 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {providers.map((provider) => {
+                  const custom = provider.source === 'custom';
+                  const inUse = provider.models_count > 0;
+                  return (
+                    <tr key={provider.provider} className="transition-colors hover:bg-gray-50/70">
+                      <td className="px-4 py-3.5">
+                        <div className="font-medium text-gray-900">{provider.display_name}</div>
+                        <div className="mt-1 font-mono text-[12px] text-gray-400">
+                          {provider.provider}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <div
+                          className="max-w-[360px] truncate font-mono text-[12px] text-gray-700"
+                          title={provider.default_base_url || undefined}
+                        >
+                          {formatBaseUrl(provider.default_base_url)}
+                        </div>
+                        <div className="mt-1 text-[11px] text-gray-400">
+                          {provider.adapter_kind === 'openai_compat'
+                            ? 'OpenAI-compatible'
+                            : provider.adapter_kind}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3.5">
+                        <ProviderUsageCell
+                          keys={provider.keys_count}
+                          models={provider.models_count}
+                        />
+                      </td>
+                      <td className="px-4 py-3.5 text-center">
+                        <ProviderSourceBadge provider={provider} />
+                      </td>
+                      <td className="px-4 py-3.5 text-right">
+                        {custom ? (
+                          <div className="flex justify-end gap-2">
                             <button
                               type="button"
-                              onClick={() => setDeleteTarget(provider)}
-                              className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50"
+                              onClick={() => setEditTarget(provider)}
+                              className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
                             >
-                              Delete
+                              Edit
                             </button>
-                          )}
-                        </div>
-                      ) : (
-                        <span
-                          className="px-2 py-1 text-[12px] text-gray-400"
-                          title="Defined in config/models.yaml. Manage in the Routing and Keys tabs."
-                        >
-                          Config managed
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                            {inUse ? (
+                              <span
+                                className="px-2.5 py-1.5 text-[12px] text-gray-400"
+                                title={`Used by ${provider.models_count} model(s). Remove those routes in Routing before deleting.`}
+                              >
+                                In use
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setDeleteTarget(provider)}
+                                className="rounded-md px-2.5 py-1.5 text-[12px] font-medium text-red-600 hover:bg-red-50"
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <span
+                            className="text-[12px] text-gray-300"
+                            title="Defined in config/models.yaml. Manage in the Routing and Keys tabs."
+                          >
+                            —
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
