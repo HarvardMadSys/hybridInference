@@ -554,6 +554,16 @@ def _primary_provider_for_target(target: ProviderTarget) -> str:
     return target.provider
 
 
+def _model_config_provider_for_target(target: ProviderTarget) -> str:
+    """Return the provider label to store on ModelConfig for a route target."""
+    base_kind, _pinned = parse_openrouter_kind(target.kind)
+    if base_kind == "openrouter":
+        return "openrouter"
+    if base_kind == "openai_compat" and target.provider != base_kind:
+        return target.provider
+    return base_kind
+
+
 def _target_provider_from_request(
     upstream_provider: str,
     openrouter_provider: str | None,
@@ -1271,7 +1281,7 @@ async def _prepare_route_candidate(
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
     raw_weight = _validate_positive_weight(weight)
 
-    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    provider_for_cfg = _model_config_provider_for_target(target)
     candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
     _ensure_route_id_available(entries, candidate_route_id)
 
@@ -1395,7 +1405,7 @@ async def _prepare_model_route_candidate(
     raw_weight = _validate_positive_weight(weight)
     normalized_pricing = _normalize_runtime_model_pricing(pricing)
 
-    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    provider_for_cfg = _model_config_provider_for_target(target)
     candidate_route_id = route_id or _make_provider_id(model_id, target.kind, cleaned_base_url)
     api_key, api_keys = await _resolve_key_material(
         op_store,
@@ -1537,7 +1547,7 @@ async def _prepare_route_update(
         concurrency["limit"] = concurrency_limit_override
         cfg["concurrency"] = concurrency
 
-    provider_for_cfg, _pinned = parse_openrouter_kind(target.kind)
+    provider_for_cfg = _model_config_provider_for_target(target)
     cfg["provider"] = provider_for_cfg
     _preserve_route_semantics(
         cfg,

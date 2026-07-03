@@ -1,9 +1,11 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from serving.schemas_admin import UpdateProviderDefinitionRequest
+from serving.adapters import provider_registry
+from serving.schemas_admin import CreateProviderDefinitionRequest, UpdateProviderDefinitionRequest
 from serving.servers.routers.admin import provider_definitions
 from serving.servers.routers.admin.provider_definitions import _configured_provider_specs
 from serving.storage.base import ProviderDefinitionRow
@@ -131,6 +133,36 @@ async def test_delete_builtin_provider_is_rejected(monkeypatch):
     assert exc_info.value.status_code == 409
     assert store.upserts == []
     assert store.deleted_keys == []
+
+
+@pytest.mark.asyncio
+async def test_create_custom_provider_rejects_blank_display_name(monkeypatch):
+    store = FakeProviderDefinitionStore()
+
+    async def fail_probe(**_kwargs):
+        raise AssertionError("blank display name must fail before probing")
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions, "_probe_openai_compat", fail_probe)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await provider_definitions.create_provider_definition(
+            CreateProviderDefinitionRequest(
+                provider="acme",
+                display_name="   ",
+                adapter_kind="openai_compat",
+                default_base_url="https://api.acme.test/v1",
+                api_key="sk-test",
+                probe_model_id="acme/model",
+            ),
+            admin_id="admin",
+            op_store=store,
+            services=_empty_services(),
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail == "display_name must not be blank"
+    assert store.upserts == []
 
 
 @pytest.mark.asyncio
@@ -294,3 +326,45 @@ def test_merge_config_models_by_provider_preserves_runtime_models():
         "kimi": {"runtime-kimi", "kimi-test"},
         "custom": {"custom-model"},
     }
+
+
+@pytest.mark.asyncio
+async def test_provider_registry_boot_skips_reserved_provider_rows():
+    now = datetime.now(timezone.utc)
+
+    class Store:
+        async def list_provider_definitions(self):
+            return [
+                ProviderDefinitionRow(
+                    provider="kimi",
+                    display_name="Kimi Override",
+                    adapter_kind="openai_compat",
+                    default_base_url="https://api.kimi-override.test/v1",
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                ),
+                ProviderDefinitionRow(
+                    provider="acme",
+                    display_name="Acme",
+                    adapter_kind="openai_compat",
+                    default_base_url="https://api.acme.test/v1",
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                ),
+            ]
+
+    provider_registry.unregister_provider_definition("kimi")
+    provider_registry.unregister_provider_definition("acme")
+    try:
+        await provider_registry.apply_provider_definitions_at_boot(
+            Store(),
+            reserved_providers={"kimi"},
+        )
+
+        assert provider_registry.get_provider_definition("kimi") is None
+        assert provider_registry.get_provider_definition("acme") is not None
+    finally:
+        provider_registry.unregister_provider_definition("kimi")
+        provider_registry.unregister_provider_definition("acme")

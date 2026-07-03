@@ -140,7 +140,18 @@ def _base_url_with_provider_default(provider: str, base_url: str) -> str:
     return base_url or PROVIDER_DEFAULT_BASE_URLS.get(provider, "")
 
 
-def _is_config_managed_provider(provider: str, config_specs: dict[str, ConfigProviderSpec]) -> bool:
+def _config_managed_provider_names(
+    config_specs: dict[str, ConfigProviderSpec] | None = None,
+) -> set[str]:
+    """Return provider slugs managed by code or config/models.yaml."""
+    specs = config_specs if config_specs is not None else _configured_provider_specs()
+    return set(PROVIDER_TARGETS) | set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
+
+
+def _is_config_managed_provider(
+    provider: str,
+    config_specs: dict[str, ConfigProviderSpec],
+) -> bool:
     """Return True for built-in providers sourced from code or config/models.yaml.
 
     Deliberately excludes ``dynamic_keys.get_known_providers()``: custom
@@ -149,11 +160,7 @@ def _is_config_managed_provider(provider: str, config_specs: dict[str, ConfigPro
     Built-in providers are read-only in this registry — they are managed via
     config/models.yaml, the Routing tab, and the Keys tab.
     """
-    return (
-        provider in PROVIDER_TARGETS
-        or provider in SELECTABLE_PROVIDER_TARGETS
-        or provider in config_specs
-    )
+    return provider in _config_managed_provider_names(config_specs)
 
 
 def _merge_config_provider_spec(
@@ -528,9 +535,7 @@ async def list_provider_definitions(
     config_specs = _configured_provider_specs()
     db_row_providers = set(definition_rows)
     runtime_known_providers = dynamic_keys.get_known_providers() - db_row_providers
-    built_in_providers = (
-        set(config_specs) | set(PROVIDER_TARGETS) | set(SELECTABLE_PROVIDER_TARGETS)
-    ) | runtime_known_providers
+    built_in_providers = _config_managed_provider_names(config_specs) | runtime_known_providers
 
     # The definitions table only surfaces genuine custom providers. A row whose
     # slug matches a built-in name is ignored: built-ins are read-only and
@@ -596,13 +601,15 @@ async def create_provider_definition(
 
     provider = _validate_provider_slug(payload.provider)
     if (
-        provider in PROVIDER_TARGETS
+        provider in _config_managed_provider_names()
         or provider in dynamic_keys.get_known_providers()
-        or provider in _configured_provider_specs()
     ):
         raise HTTPException(status_code=409, detail="provider is reserved or already registered")
     if await op_store.get_provider_definition(provider) is not None:
         raise HTTPException(status_code=409, detail="provider already exists")
+    display_name = payload.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=422, detail="display_name must not be blank")
 
     cleaned_base_url = await _validate_base_url(payload.default_base_url)
     _strip_chat_completions(cleaned_base_url)
@@ -614,7 +621,7 @@ async def create_provider_definition(
 
     row = await op_store.upsert_provider_definition(
         provider=provider,
-        display_name=payload.display_name.strip(),
+        display_name=display_name,
         adapter_kind=payload.adapter_kind,
         default_base_url=cleaned_base_url,
         created_by=admin_id,

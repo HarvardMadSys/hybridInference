@@ -61,7 +61,14 @@ def list_provider_definitions() -> list[RuntimeProviderDefinition]:
         return sorted(_definitions.values(), key=lambda row: (row.display_name, row.provider))
 
 
-async def apply_provider_definitions_at_boot(op_store) -> None:
+async def apply_provider_definitions_at_boot(
+    op_store,
+    *,
+    reserved_providers: set[str] | None = None,
+) -> None:
     """Load custom provider definitions from storage into runtime registries."""
+    reserved = reserved_providers or set()
     for row in await op_store.list_provider_definitions():
+        if row.provider in reserved:
+            continue
         register_provider_definition(row)
