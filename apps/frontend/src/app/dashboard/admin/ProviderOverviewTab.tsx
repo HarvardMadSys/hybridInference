@@ -587,7 +587,6 @@ function DeleteProviderModal({ provider, onClose, onDeleted }: DeleteProviderMod
   if (!provider) return null;
 
   const canDelete = confirmValue === provider.provider && !deleting;
-  const customProvider = provider.source === 'custom';
 
   const onDelete = async () => {
     if (!canDelete) return;
@@ -614,9 +613,8 @@ function DeleteProviderModal({ provider, onClose, onDeleted }: DeleteProviderMod
         </div>
         <div className="space-y-3 px-5 py-4">
           <p className="text-[13px] text-gray-600">
-            {customProvider
-              ? 'This removes the custom provider definition and its stored provider keys. This cannot be undone.'
-              : 'This removes the provider from the admin registry. Existing config files are not modified.'}
+            This removes the custom provider definition and its stored provider keys. This cannot be
+            undone.
           </p>
           <div>
             <label
@@ -749,26 +747,40 @@ export function ProviderOverviewTab() {
                       {provider.models_count}
                     </td>
                     <td className="px-3 py-3 text-right">
-                      <div className="flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setEditTarget(provider)}
-                          className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
-                        >
-                          Edit
-                        </button>
-                        {inUse ? (
-                          <span className="px-2 py-1 text-[12px] text-gray-400">In use</span>
-                        ) : (
+                      {custom ? (
+                        <div className="flex justify-end gap-2">
                           <button
                             type="button"
-                            onClick={() => setDeleteTarget(provider)}
-                            className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50"
+                            onClick={() => setEditTarget(provider)}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-700 hover:bg-gray-100"
                           >
-                            Delete
+                            Edit
                           </button>
-                        )}
-                      </div>
+                          {inUse ? (
+                            <span
+                              className="px-2 py-1 text-[12px] text-gray-400"
+                              title={`Used by ${provider.models_count} model(s). Remove those routes in Routing before deleting.`}
+                            >
+                              In use
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDeleteTarget(provider)}
+                              className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span
+                          className="px-2 py-1 text-[12px] text-gray-400"
+                          title="Defined in config/models.yaml. Manage in the Routing and Keys tabs."
+                        >
+                          Config managed
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );
