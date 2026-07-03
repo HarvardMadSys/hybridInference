@@ -856,7 +856,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       apiKeyId: '',
       providerModelId: nextProvider
         ? defaultProviderModelIdFor(nextProvider.provider, createTargetRoutes)
-        : current.providerModelId,
+        : '',
     }));
     setVerifiedCreateSignature(null);
   }, [
@@ -962,6 +962,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         openRouterSort: '',
         baseUrl: '',
         apiKeyId: '',
+        providerModelId: '',
       }));
       return;
     }
@@ -978,12 +979,14 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       openRouterSort: '',
       baseUrl: nextProvider.default_base_url,
       apiKeyId: '',
+      providerModelId: defaultProviderModelIdFor(nextProvider.provider, createTargetRoutes),
     }));
   }, [
     createFormOpen,
     createForm.upstreamProvider,
     createOpenRouterProviderOptions,
     createProviderOptions,
+    createTargetRoutes,
   ]);
 
   const updateRoute = useCallback((updated: ProviderRoute) => {
@@ -1034,7 +1037,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       providerModelId:
         editingRoute && upstreamProvider === routePrimaryUpstreamProvider(editingRoute)
           ? (editingRoute.provider_model_id ?? current.providerModelId)
-          : defaultProviderModelIdFor(upstreamProvider, selectedRoutes) || current.providerModelId,
+          : defaultProviderModelIdFor(upstreamProvider, selectedRoutes),
       quotaLimit: current.quotaLimit,
       concurrencyLimit: current.concurrencyLimit,
     }));
@@ -1120,8 +1123,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       openRouterSort: '',
       baseUrl: selected?.default_base_url || current.baseUrl,
       apiKeyId: '',
-      providerModelId:
-        defaultProviderModelIdFor(upstreamProvider, createTargetRoutes) || current.providerModelId,
+      providerModelId: defaultProviderModelIdFor(upstreamProvider, createTargetRoutes),
     }));
   };
 
@@ -1151,7 +1153,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       apiKeyId: '',
       providerModelId: nextProvider
         ? defaultProviderModelIdFor(nextProvider.provider, createTargetRoutes)
-        : current.providerModelId,
+        : '',
     }));
   };
 
