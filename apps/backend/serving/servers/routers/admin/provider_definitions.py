@@ -148,6 +148,14 @@ def _config_managed_provider_names(
     return set(PROVIDER_TARGETS) | set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
 
 
+def _registry_provider_names(
+    config_specs: dict[str, ConfigProviderSpec] | None = None,
+) -> set[str]:
+    """Return built-in provider slugs that belong in the provider registry."""
+    specs = config_specs if config_specs is not None else _configured_provider_specs()
+    return set(SELECTABLE_PROVIDER_TARGETS) | set(specs)
+
+
 def _is_config_managed_provider(
     provider: str,
     config_specs: dict[str, ConfigProviderSpec],
@@ -535,7 +543,7 @@ async def list_provider_definitions(
     config_specs = _configured_provider_specs()
     db_row_providers = set(definition_rows)
     runtime_known_providers = dynamic_keys.get_known_providers() - db_row_providers
-    built_in_providers = _config_managed_provider_names(config_specs) | runtime_known_providers
+    built_in_providers = _registry_provider_names(config_specs) | runtime_known_providers
 
     # The definitions table only surfaces genuine custom providers. A row whose
     # slug matches a built-in name is ignored: built-ins are read-only and
