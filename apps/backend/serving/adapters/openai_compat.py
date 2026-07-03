@@ -29,6 +29,7 @@ from .profiles import (
     function_call_delta_to_tool_calls,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
+    normalize_messages_for_profile,
     normalize_tools_for_profile,
     resolve_tool_choice_for_profile,
     supports_guided_json,
@@ -235,6 +236,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
     def _prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Normalize request messages for the active provider profile."""
+        messages = normalize_messages_for_profile(self._usage_profile, messages)
         return [self._clean_message(msg) for msg in messages]
 
     def _normalize_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
