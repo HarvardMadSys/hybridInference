@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from routing.manager import RoutingManager
     from routing.model_router_registry import ModelRouterRegistry
     from routing.routers import ManagedRouter
+    from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
     from serving.config.weight_overrides import WeightOverrideResolver
@@ -56,6 +57,7 @@ class AppServices:
     model_visibility_resolver: ModelVisibilityResolver | None = None
     model_concurrency_resolver: ModelConcurrencyResolver | None = None
     weight_override_resolver: WeightOverrideResolver | None = None
+    disabled_provider_resolver: DisabledProviderResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None
@@ -64,6 +66,7 @@ class AppServices:
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
     weight_override_refresh_task: Any | None = None
+    disabled_provider_refresh_task: Any | None = None
 
 
 def get_services(request: Request) -> AppServices:

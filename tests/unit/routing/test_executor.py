@@ -952,3 +952,76 @@ def test_select_skips_zero_weight_when_positive_circuits_open():
 
     with pytest.raises(AllCircuitsOpenError):
         exe._select_adapter("m")
+
+
+class _StaticDisabledResolver:
+    """Minimal disabled-provider resolver for router tests."""
+
+    def __init__(self, disabled: set[str]) -> None:
+        self._disabled = set(disabled)
+
+    def is_disabled(self, provider: str) -> bool:
+        return provider in self._disabled
+
+
+@pytest.mark.unit
+def test_disabled_provider_excluded_from_selection():
+    """A disabled provider is never selected even at full weight."""
+    exe = RouteExecutor()
+    exe.disabled_provider_resolver = _StaticDisabledResolver({"B"})
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    exe.register_route("m", [(a, 0.5), (b, 0.5)])
+
+    random.seed(1)
+    for _ in range(500):
+        chosen = exe._select_adapter("m")  # type: ignore[attr-defined]
+        assert chosen is not None
+        assert chosen.config.provider == "A"
+
+
+@pytest.mark.unit
+def test_all_providers_disabled_raises_all_circuits_open():
+    """Disabling every provider for a model surfaces AllCircuitsOpenError."""
+    exe = RouteExecutor()
+    exe.disabled_provider_resolver = _StaticDisabledResolver({"A", "B"})
+    a = _EchoAdapter(_cfg("m", provider="A"))
+    b = _EchoAdapter(_cfg("m", provider="B"))
+    exe.register_route("m", [(a, 0.5), (b, 0.5)])
+
+    with pytest.raises(AllCircuitsOpenError):
+        exe._select_adapter("m")  # type: ignore[attr-defined]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_skips_disabled_provider():
+    """The fallback loop must skip a disabled provider and use the next one."""
+    exe = RouteExecutor()
+    exe.disabled_provider_resolver = _StaticDisabledResolver({"featherless"})
+    primary = _FailAdapter(_cfg("m", provider="zai"))
+    disabled = _EchoAdapter(_cfg("m", provider="featherless"))
+    backup = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(primary, 0.8), (disabled, 0.1), (backup, 0.1)])
+
+    orig = exe._select_adapter
+    try:
+        exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
+        resp = await exe.chat_completion("m", messages=[{"role": "user", "content": "hi"}])
+    finally:
+        exe._select_adapter = orig  # type: ignore[assignment]
+
+    assert resp["_routing"]["provider"] == "ollama"
+
+
+@pytest.mark.unit
+def test_pin_to_disabled_provider_returns_none():
+    """Pinning to a disabled provider yields no adapter (pin miss)."""
+    exe = RouteExecutor()
+    exe.disabled_provider_resolver = _StaticDisabledResolver({"zai"})
+    a = _EchoAdapter(_cfg("m", provider="zai"))
+    b = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(a, 0.5), (b, 0.5)])
+
+    assert exe._select_adapter("m", pin_provider="zai") is None  # type: ignore[attr-defined]
+    assert exe._select_adapter("m", pin_provider="ollama") is not None  # type: ignore[attr-defined]

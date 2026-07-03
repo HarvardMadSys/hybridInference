@@ -517,6 +517,17 @@ class PostgresOperationalStore(OperationalStore):
             "CREATE INDEX IF NOT EXISTS idx_pwo_model ON provider_weight_overrides(model_id)"
         )
 
+        # Admin-controlled kill switch: a row here means the provider label is
+        # excluded from routing (all its endpoints treated as weight 0). Empty
+        # table = every provider enabled, so the default state needs no seeding.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS disabled_providers (
+                provider TEXT PRIMARY KEY,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT
+            )
+        """)
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS provider_route_configs (
                 model_id TEXT NOT NULL,
@@ -2124,6 +2135,35 @@ class PostgresOperationalStore(OperationalStore):
                 "FROM model_visibility_overrides ORDER BY model_id"
             )
         return [dict(r) for r in rows]
+
+    async def list_disabled_providers(self) -> list[Row]:
+        """Return all disabled-provider rows ordered by provider."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, updated_at, updated_by FROM disabled_providers ORDER BY provider"
+            )
+        return [dict(r) for r in rows]
+
+    async def set_provider_disabled(self, provider: str, updated_by: str | None) -> None:
+        """Mark an upstream provider disabled (upsert)."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO disabled_providers (provider, updated_at, updated_by) "
+                "VALUES ($1, NOW(), $2) "
+                "ON CONFLICT (provider) DO UPDATE SET "
+                "updated_at = NOW(), updated_by = EXCLUDED.updated_by",
+                provider,
+                updated_by,
+            )
+
+    async def clear_provider_disabled(self, provider: str) -> bool:
+        """Re-enable a provider by deleting its row. Returns True if removed."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM disabled_providers WHERE provider = $1",
+                provider,
+            )
+        return _parse_command_tag_count(tag) > 0
 
     async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
         """Fetch a single model_concurrency_exemptions row by model_id."""

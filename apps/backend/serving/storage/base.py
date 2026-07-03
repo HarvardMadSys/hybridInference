@@ -757,6 +757,18 @@ class OperationalStore(ABC):
         """Return all model visibility override rows ordered by model_id."""
 
     @abstractmethod
+    async def list_disabled_providers(self) -> list[Row]:
+        """Return all disabled-provider rows ordered by provider."""
+
+    @abstractmethod
+    async def set_provider_disabled(self, provider: str, updated_by: str | None) -> None:
+        """Mark an upstream provider disabled (upsert). Excludes it from routing."""
+
+    @abstractmethod
+    async def clear_provider_disabled(self, provider: str) -> bool:
+        """Re-enable a provider by deleting its row. Returns True if removed."""
+
+    @abstractmethod
     async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
         """Fetch a single model concurrency exemption row by model_id."""
 

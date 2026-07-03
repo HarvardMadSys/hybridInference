@@ -22,6 +22,7 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
+from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
@@ -122,6 +123,20 @@ async def _refresh_weight_override_snapshots(
             await resolver.load_all()
         except Exception:
             logger.warning("Route weight override snapshot refresh failed", exc_info=True)
+
+
+async def _refresh_disabled_provider_snapshots(
+    resolver: DisabledProviderResolver,
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Periodically reload the disabled-provider set so workers converge after admin edits."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await resolver.load_all()
+        except Exception:
+            logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
 
 
 async def _bootstrap_routewise_from_logs(
@@ -849,6 +864,8 @@ async def initialize() -> AppServices:
     model_concurrency_resolver = None
     weight_override_resolver = None
     weight_override_refresh_task = None
+    disabled_provider_resolver = None
+    disabled_provider_refresh_task = None
     if operational_store is not None:
         try:
             model_visibility_resolver = ModelVisibilityResolver(operational_store)
@@ -872,6 +889,18 @@ async def initialize() -> AppServices:
             logger.info("Route weight override resolver initialized")
         except Exception as exc:
             logger.warning(f"Route weight override resolver initialization failed: {exc}")
+        try:
+            disabled_provider_resolver = DisabledProviderResolver(operational_store)
+            await disabled_provider_resolver.load_all()
+            router.disabled_provider_resolver = disabled_provider_resolver
+            disabled_provider_refresh_task = asyncio.create_task(
+                _refresh_disabled_provider_snapshots(disabled_provider_resolver)
+            )
+            _BACKGROUND_TASKS.add(disabled_provider_refresh_task)
+            disabled_provider_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
+            logger.info("Disabled provider resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Disabled provider resolver initialization failed: {exc}")
 
     # Per-user concurrency limiter — reads live caps from RuntimeSettings so
     # operators can tune them at runtime. Falls back to registry defaults
@@ -960,6 +989,7 @@ async def initialize() -> AppServices:
         model_visibility_resolver=model_visibility_resolver,
         model_concurrency_resolver=model_concurrency_resolver,
         weight_override_resolver=weight_override_resolver,
+        disabled_provider_resolver=disabled_provider_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
         alert_engine=alert_engine,
         runtime_settings=runtime_settings,
@@ -968,6 +998,7 @@ async def initialize() -> AppServices:
         cost_tracker=cost_tracker,
         responses_store=responses_store,
         weight_override_refresh_task=weight_override_refresh_task,
+        disabled_provider_refresh_task=disabled_provider_refresh_task,
     )
 
 
@@ -1036,6 +1067,11 @@ async def shutdown(services: AppServices) -> None:
         services.weight_override_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.weight_override_refresh_task
+
+    if services.disabled_provider_refresh_task is not None:
+        services.disabled_provider_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.disabled_provider_refresh_task
 
     # Close shared HTTP client
     with contextlib.suppress(Exception):

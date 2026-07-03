@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
     AdminProviderQuotasResponse,
+    ListRoutableProvidersResponse,
     ProviderErrorTypeRow,
     ProviderModelPair,
     ProviderObservabilityBucket,
@@ -22,7 +23,11 @@ from serving.schemas_admin import (
     ProviderTokenUsageRow,
     ProviderTokenUsageTotals,
     ProviderTokenUsageWindow,
+    RoutableProvider,
+    SetProviderDisabledRequest,
+    SetProviderDisabledResponse,
 )
+from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     get_db_logger,
     get_operational_store,
@@ -30,6 +35,7 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _require_aware_utc, _truncate_hour
+from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
@@ -74,6 +80,39 @@ def _is_reportable_performance_provider(provider: str) -> bool:
     return provider not in _SYNTHETIC_PERFORMANCE_PROVIDERS
 
 
+async def _disabled_provider_set(op_store) -> set[str]:
+    """Return the set of admin-disabled provider labels (empty on failure)."""
+    if op_store is None:
+        return set()
+    try:
+        rows = await op_store.list_disabled_providers()
+    except Exception:
+        return set()
+    return {str(row["provider"]) for row in rows}
+
+
+def _enumerate_routable_providers(
+    router_obj,
+) -> dict[str, tuple[set[str], set[str]]]:
+    """Map each provider label to its (canonical model ids, endpoint ids).
+
+    Iterates the live routing table. Alias model ids share a RouteConfig with
+    their canonical model, so counting by ``canonical_model_id`` avoids double
+    counting aliases.
+    """
+    by_provider: dict[str, tuple[set[str], set[str]]] = {}
+    for model_id, route in getattr(router_obj, "routes", {}).items():
+        canonical = getattr(route, "canonical_model_id", None) or model_id
+        for adapter, _weight in route.adapters:
+            provider = adapter.config.provider
+            if not _is_reportable_performance_provider(provider):
+                continue
+            models, endpoints = by_provider.setdefault(provider, (set(), set()))
+            models.add(canonical)
+            endpoints.add(getattr(adapter.config, "endpoint_id", None) or provider)
+    return by_provider
+
+
 def _observability_bucket_minutes(start: datetime, end: datetime) -> int:
     """Choose a compact bucket size for provider observability charts."""
     delta = end - start
@@ -94,9 +133,88 @@ async def admin_provider_quotas(
 ) -> AdminProviderQuotasResponse:
     """Return current quota status for each upstream LLM provider."""
     providers = await gather_all(op_store, services)
+    disabled = await _disabled_provider_set(op_store)
+    for provider in providers:
+        provider.disabled = provider.name in disabled
     return AdminProviderQuotasResponse(
         generated_at=datetime.now(timezone.utc),
         providers=providers,
+    )
+
+
+@router.get("/providers/routable", response_model=ListRoutableProvidersResponse)
+async def admin_list_routable_providers(
+    _admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+    services=Depends(get_services),
+) -> ListRoutableProvidersResponse:
+    """List every provider in the live routing table with its disabled state."""
+    disabled = await _disabled_provider_set(op_store)
+    by_provider = _enumerate_routable_providers(services.router)
+    # Include disabled providers even if they've since been removed from the
+    # routing table, so an admin can always find and re-enable them.
+    for provider in disabled:
+        by_provider.setdefault(provider, (set(), set()))
+
+    providers = [
+        RoutableProvider(
+            provider=provider,
+            model_count=len(models),
+            endpoint_count=len(endpoints),
+            disabled=provider in disabled,
+        )
+        for provider, (models, endpoints) in sorted(by_provider.items())
+    ]
+    return ListRoutableProvidersResponse(providers=providers)
+
+
+@router.patch(
+    "/providers/{provider}/disabled",
+    response_model=SetProviderDisabledResponse,
+)
+async def admin_set_provider_disabled(
+    request: Request,
+    provider: str,
+    payload: SetProviderDisabledRequest,
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+    services=Depends(get_services),
+) -> SetProviderDisabledResponse:
+    """Disable or re-enable an upstream provider across all routing."""
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+
+    by_provider = _enumerate_routable_providers(services.router)
+    disabled = await _disabled_provider_set(op_store)
+    # Guard against typos: only accept a provider that is routable now or is
+    # already recorded as disabled (so it can be re-enabled).
+    if provider not in by_provider and provider not in disabled:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+
+    affected_models = by_provider.get(provider, (set(), set()))[0]
+
+    resolver = getattr(services, "disabled_provider_resolver", None)
+    if payload.disabled:
+        await op_store.set_provider_disabled(provider, admin_id)
+        if resolver is not None:
+            resolver.set_disabled(provider)
+    else:
+        await op_store.clear_provider_disabled(provider)
+        if resolver is not None:
+            resolver.clear_disabled(provider)
+
+    await log_admin_action(
+        op_store,
+        get_client_ip(request),
+        "providers.disabled.update",
+        provider,
+        {"provider": provider, "disabled": payload.disabled},
+    )
+
+    return SetProviderDisabledResponse(
+        provider=provider,
+        disabled=payload.disabled,
+        affected_model_count=len(affected_models),
     )
 
 

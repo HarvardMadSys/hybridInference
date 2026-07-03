@@ -893,6 +893,7 @@ export interface ProviderQuotaResult {
   ok: boolean;
   error: string | null;
   usages: ProviderQuotaUsage[];
+  disabled: boolean;
 }
 
 export interface AdminProviderQuotasResponse {
@@ -903,6 +904,48 @@ export interface AdminProviderQuotasResponse {
 export async function getProviderQuotas(): Promise<AdminProviderQuotasResponse> {
   const resp = await fetchWithAuth(API_BASE, '/admin/provider-quotas');
   return jsonOrThrow<AdminProviderQuotasResponse>(resp);
+}
+
+// ========================================
+// Provider Availability (disable / enable)
+// ========================================
+
+export interface RoutableProvider {
+  provider: string;
+  model_count: number;
+  endpoint_count: number;
+  disabled: boolean;
+}
+
+export interface ListRoutableProvidersResponse {
+  providers: RoutableProvider[];
+}
+
+export interface SetProviderDisabledResponse {
+  provider: string;
+  disabled: boolean;
+  affected_model_count: number;
+}
+
+export async function getRoutableProviders(): Promise<ListRoutableProvidersResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/providers/routable');
+  return jsonOrThrow<ListRoutableProvidersResponse>(resp);
+}
+
+export async function setProviderDisabled(
+  provider: string,
+  disabled: boolean,
+): Promise<SetProviderDisabledResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/providers/${encodeURIComponent(provider)}/disabled`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ disabled }),
+    },
+  );
+  return jsonOrThrow<SetProviderDisabledResponse>(resp);
 }
 
 // ========================================

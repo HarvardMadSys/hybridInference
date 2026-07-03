@@ -809,6 +809,10 @@ class ProviderQuotaResult(BaseModel):
         description="Short reason code if !ok: 'auth_failed' | 'plan_api_disabled' | 'timeout' | 'not_configured' | 'probe_unavailable' | 'parse_error' | 'unexpected'",
     )
     usages: list[ProviderQuotaUsage] = Field(default_factory=list)
+    disabled: bool = Field(
+        False,
+        description="True if an admin has disabled this provider (excluded from routing)",
+    )
 
 
 class AdminProviderQuotasResponse(BaseModel):
@@ -816,6 +820,38 @@ class AdminProviderQuotasResponse(BaseModel):
 
     generated_at: datetime
     providers: list[ProviderQuotaResult]
+
+
+class RoutableProvider(BaseModel):
+    """A distinct provider label present in the live routing table."""
+
+    provider: str = Field(..., description="Provider label, e.g. 'openrouter'")
+    model_count: int = Field(..., description="Number of models with at least one route to it")
+    endpoint_count: int = Field(..., description="Number of distinct endpoints for this provider")
+    disabled: bool = Field(..., description="True if an admin has disabled this provider")
+
+
+class ListRoutableProvidersResponse(BaseModel):
+    """All distinct providers in the routing table with their disabled state."""
+
+    providers: list[RoutableProvider]
+
+
+class SetProviderDisabledRequest(BaseModel):
+    """Toggle whether a provider is disabled (excluded from routing)."""
+
+    disabled: bool = Field(..., description="True to disable the provider, False to re-enable")
+
+
+class SetProviderDisabledResponse(BaseModel):
+    """Result of toggling a provider's disabled state."""
+
+    provider: str
+    disabled: bool
+    affected_model_count: int = Field(
+        ...,
+        description="Models routing to this provider (informational; disabling may reduce their routes)",
+    )
 
 
 class RuntimeSettingItem(BaseModel):
