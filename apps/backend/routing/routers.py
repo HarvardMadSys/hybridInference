@@ -981,7 +981,12 @@ class FixedRouter(BaseRouter):
             weighted-random selection over ``routes`` is unchanged.
     """
 
-    def __init__(self, params: Any = None, weight_override_resolver: Any | None = None) -> None:
+    def __init__(
+        self,
+        params: Any = None,
+        weight_override_resolver: Any | None = None,
+        disabled_provider_resolver: Any | None = None,
+    ) -> None:
         super().__init__()
         self.routes: dict[str, RouteConfig] = {}
         # Keep the validated params accessible for future use (e.g. honoring
@@ -989,6 +994,23 @@ class FixedRouter(BaseRouter):
         # because per-route weights already encode local-vs-remote balance.
         self.params = params
         self.weight_override_resolver = weight_override_resolver
+        # Admin kill switch: adapters whose provider is disabled are forced to
+        # weight 0 so the existing ``weight > 0`` gates in selection and every
+        # fallback loop skip them without any per-call-site change.
+        self.disabled_provider_resolver = disabled_provider_resolver
+
+    def _apply_disabled_providers(
+        self, adapters: list[tuple[BaseAdapter, float]]
+    ) -> list[tuple[BaseAdapter, float]]:
+        """Force weight 0 for adapters whose provider is admin-disabled."""
+        resolver = self.disabled_provider_resolver
+        if resolver is None:
+            return adapters
+        is_disabled = resolver.is_disabled
+        return [
+            (adapter, 0.0 if is_disabled(adapter.config.provider) else weight)
+            for adapter, weight in adapters
+        ]
 
     def _get_effective_adapters(
         self, model_id: str, route: RouteConfig
@@ -998,15 +1020,17 @@ class FixedRouter(BaseRouter):
         raw_adapters = route.raw_adapters
         override_model_id = route.canonical_model_id or model_id
         if resolver is None or not raw_adapters:
-            return route.adapters
+            return self._apply_disabled_providers(route.adapters)
 
         get_snapshot = getattr(resolver, "get_snapshot_for_model", None)
         if get_snapshot is not None:
             overrides = get_snapshot(override_model_id)
-            return [
-                (adapter, float(overrides.get(endpoint_id, raw_weight)))
-                for adapter, raw_weight, endpoint_id in raw_adapters
-            ]
+            return self._apply_disabled_providers(
+                [
+                    (adapter, float(overrides.get(endpoint_id, raw_weight)))
+                    for adapter, raw_weight, endpoint_id in raw_adapters
+                ]
+            )
 
         result = resolver.get_for_model(override_model_id)
         if isawaitable(result):
@@ -1021,10 +1045,12 @@ class FixedRouter(BaseRouter):
         else:
             overrides = result
 
-        return [
-            (adapter, float(overrides.get(endpoint_id, raw_weight)))
-            for adapter, raw_weight, endpoint_id in raw_adapters
-        ]
+        return self._apply_disabled_providers(
+            [
+                (adapter, float(overrides.get(endpoint_id, raw_weight)))
+                for adapter, raw_weight, endpoint_id in raw_adapters
+            ]
+        )
 
     def register_route(
         self,

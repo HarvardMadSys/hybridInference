@@ -698,6 +698,18 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_model_visibility_overrides()
 
+    async def list_disabled_providers(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_disabled_providers()
+
+    async def set_provider_disabled(self, provider: str, updated_by: str | None) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_provider_disabled(provider, updated_by)
+
+    async def clear_provider_disabled(self, provider: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.clear_provider_disabled(provider)
+
     async def get_model_concurrency_exemption(self, model_id: str) -> Row | None:
         """Delegate to wrapped store."""
         return await self._store.get_model_concurrency_exemption(model_id)
