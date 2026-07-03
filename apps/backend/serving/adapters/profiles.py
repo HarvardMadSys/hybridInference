@@ -7,6 +7,7 @@ format. Names are chosen to grow into a fuller framework later.
 from __future__ import annotations
 
 import math
+import os
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
@@ -161,8 +162,16 @@ def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) 
 
 
 def get_stream_idle_timeout_seconds(profile: ProviderProfile) -> float | None:
-    """Return a provider-specific stream idle timeout in seconds, if any."""
-    return None
+    """Return the stream socket-read idle timeout in seconds, if configured."""
+    del profile
+    raw = os.getenv("STREAM_IDLE_TIMEOUT_SECONDS")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def extract_tool_calls_for_profile(

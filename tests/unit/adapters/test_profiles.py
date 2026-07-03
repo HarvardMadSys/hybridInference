@@ -7,6 +7,7 @@ import pytest
 from serving.adapters.profiles import (
     ProviderProfile,
     function_call_delta_to_tool_calls,
+    get_stream_idle_timeout_seconds,
     normalize_tools_for_profile,
     normalize_usage_deepseek,
     normalize_usage_default,
@@ -29,6 +30,25 @@ from serving.adapters.profiles import (
 def test_function_call_delta_returns_none(profile, delta) -> None:
     """Stub returns None for all profiles after Llama removal; guards regression."""
     assert function_call_delta_to_tool_calls(profile, delta) is None
+
+
+def test_stream_idle_timeout_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("STREAM_IDLE_TIMEOUT_SECONDS", raising=False)
+    assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) is None
+
+
+def test_stream_idle_timeout_parses_positive_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("STREAM_IDLE_TIMEOUT_SECONDS", "300.5")
+    assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) == 300.5
+
+
+@pytest.mark.parametrize("raw", ["", "  ", "0", "-1", "nope"])
+def test_stream_idle_timeout_ignores_disabled_or_invalid_env(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    monkeypatch.setenv("STREAM_IDLE_TIMEOUT_SECONDS", raw)
+    assert get_stream_idle_timeout_seconds(ProviderProfile.OPENROUTER) is None
 
 
 # ---------------------------------------------------------------------------

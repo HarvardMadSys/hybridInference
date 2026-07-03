@@ -329,6 +329,7 @@ async def test_runtime_setting_streams_upstream_and_buffers_non_stream_response(
     assert DummyAdapter.stream_calls == 1
     assert resp.status_code == status.HTTP_200_OK
     assert resp.headers["content-type"].startswith("application/json")
+    assert "x-hybridinference-streaming-response" not in resp.headers
     body = resp.json()
     assert body["object"] == "chat.completion"
     assert body["choices"][0]["message"]["content"] == "Test response"

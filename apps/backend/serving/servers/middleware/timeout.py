@@ -1,7 +1,8 @@
 """Request timeout middleware.
 
 Enforces a per-request timeout, returning 504 Gateway Timeout when exceeded.
-``REQUEST_TIMEOUT_SECONDS`` (default 120s) is read once when the middleware is
+``REQUEST_TIMEOUT_SECONDS`` (default 120s) and ``STREAM_REQUEST_TIMEOUT_SECONDS``
+(default 3600s; <=0 disables the stream cap) are read once when the middleware is
 instantiated; changing the env at runtime requires a restart.
 """
 
@@ -14,30 +15,63 @@ from typing import TYPE_CHECKING
 
 import anyio
 
+from serving.servers.streaming_state import (
+    STREAMING_RESPONSE_MARKER_HEADER,
+    STREAMING_RESPONSE_SCOPE_STATE_KEY,
+)
+
 if TYPE_CHECKING:
     from starlette.types import ASGIApp, Receive, Scope, Send
 
 _DEFAULT_TIMEOUT_S = 120.0
+_DEFAULT_STREAM_TIMEOUT_S = 3600.0
 
 
 def _parse_timeout_env() -> float:
     """Read ``REQUEST_TIMEOUT_SECONDS``, falling back to the default on bad input."""
-    raw = os.getenv("REQUEST_TIMEOUT_SECONDS")
+    return _parse_positive_timeout_env("REQUEST_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_S)
+
+
+def _parse_stream_timeout_env() -> float | None:
+    """Read stream cap env; non-positive values intentionally disable the cap."""
+    raw = os.getenv("STREAM_REQUEST_TIMEOUT_SECONDS")
     if raw is None or raw.strip() == "":
-        return _DEFAULT_TIMEOUT_S
+        return _DEFAULT_STREAM_TIMEOUT_S
     try:
         value = float(raw)
     except ValueError:
-        return _DEFAULT_TIMEOUT_S
-    return value if value > 0 else _DEFAULT_TIMEOUT_S
+        return _DEFAULT_STREAM_TIMEOUT_S
+    return value if value > 0 else None
+
+
+def _parse_positive_timeout_env(name: str, default: float) -> float:
+    """Read a strictly-positive timeout value with a safe default."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 class TimeoutMiddleware:
     """Cancel requests that exceed ``REQUEST_TIMEOUT_SECONDS`` and return 504."""
 
-    def __init__(self, app: ASGIApp, timeout_s: float | None = None) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        timeout_s: float | None = None,
+        stream_timeout_s: float | None = None,
+    ) -> None:
         self.app = app
         self._timeout_s = timeout_s if timeout_s is not None else _parse_timeout_env()
+        self._stream_timeout_s = (
+            (stream_timeout_s if stream_timeout_s > 0 else None)
+            if stream_timeout_s is not None
+            else _parse_stream_timeout_env()
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Enforce per-request timeout and return 504 on expiry."""
@@ -53,16 +87,31 @@ class TimeoutMiddleware:
                 nonlocal response_started
                 if message["type"] == "http.response.start":
                     response_started = True
-                    # Streaming (SSE) responses are legitimately long-lived; the
-                    # total timeout would kill healthy streams mid-body. Once we
-                    # see an event-stream response start, drop the deadline so the
-                    # body iterates uncapped. Non-streaming requests keep the cap.
+                    headers = []
+                    state = scope.get("state") or {}
+                    is_streaming = bool(state.get(STREAMING_RESPONSE_SCOPE_STATE_KEY))
                     for name, value in message.get("headers") or []:
-                        if name.lower() == b"content-type" and value.lower().startswith(
+                        lower_name = name.lower()
+                        if lower_name == STREAMING_RESPONSE_MARKER_HEADER:
+                            is_streaming = True
+                            continue
+                        if lower_name == b"content-type" and value.lower().startswith(
                             b"text/event-stream"
                         ):
-                            scope_deadline.deadline = math.inf
-                            break
+                            is_streaming = True
+                        headers.append((name, value))
+                    if is_streaming:
+                        # Streams are legitimately long-lived, but not immortal:
+                        # give them a separate cap so stuck bodies can't occupy
+                        # connection slots forever. Operators can set
+                        # STREAM_REQUEST_TIMEOUT_SECONDS<=0 to preserve the old
+                        # uncapped behavior.
+                        scope_deadline.deadline = (
+                            math.inf
+                            if self._stream_timeout_s is None
+                            else anyio.current_time() + self._stream_timeout_s
+                        )
+                    message = {**message, "headers": headers}
                 await send(message)
 
             await self.app(scope, receive, send_wrapper)
