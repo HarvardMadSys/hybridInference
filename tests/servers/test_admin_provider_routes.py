@@ -258,8 +258,13 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert {option["provider"] for option in payload["provider_options"]} >= {
         "chutes",
         "featherless",
+        "minimax",
         "openrouter",
     }
+    minimax_option = next(
+        option for option in payload["provider_options"] if option["provider"] == "minimax"
+    )
+    assert minimax_option["default_base_url"] == "https://api.minimax.io/v1"
     assert {option["provider"] for option in payload["openrouter_provider_options"]} >= {
         "deepinfra",
         "parasail",
@@ -1114,6 +1119,59 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_client):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.list_provider_keys_full.return_value = ["minimax-db-key-1234567890"]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "minimax",
+            "base_url": "https://api.minimax.io/v1",
+            "provider_model_id": "MiniMax-M2.5",
+            "weight": 2.0,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["source"] == "runtime"
+    assert payload["route_id"] == "minimax-fast:minimax-api"
+    assert payload["provider"] == "minimax"
+    assert payload["upstream_provider"] == "minimax"
+    assert payload["key_provider"] == "minimax"
+    assert payload["base_url"] == "https://api.minimax.io/v1"
+    assert payload["provider_model_id"] == "MiniMax-M2.5"
+    assert payload["effective_weight"] == 2.0
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:minimax-api",
+        "on_demand",
+        "minimax",
+        None,
+        "https://api.minimax.io/v1",
+        None,
+        "MiniMax-M2.5",
+        None,
+        None,
+        2.0,
+        None,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.provider == "minimax"
+    assert runtime_adapter.config.provider_profile == "minimax"
+    assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
+    assert runtime_adapter.config.route_metadata["route_provider"] == "minimax"
+    assert runtime_adapter.config.route_metadata["upstream_provider"] == "minimax"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
@@ -2300,6 +2358,32 @@ async def test_post_provider_route_candidate_rejects_route_type_provider_mismatc
 
 
 @pytest.mark.asyncio
+async def test_post_provider_route_candidate_rejects_provider_base_url_mismatch(admin_client):
+    client, op_store, _route_executor, fake_routewise, verify_mock = admin_client
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "quota",
+            "upstream_provider": "chutes",
+            "base_url": "https://api.minimax.io/v1",
+            "provider_model_id": "MiniMax-M2.5",
+            "quota_limit": 5000,
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "base_url host belongs to provider 'minimax', not 'chutes'"
+    )
+    verify_mock.assert_not_awaited()
+    op_store.upsert_provider_route_candidate.assert_not_awaited()
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_delete_provider_route_candidate_removes_runtime_route(admin_client):
     client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
@@ -2472,6 +2556,50 @@ async def test_apply_persisted_provider_route_candidates(admin_client):
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_apply_persisted_provider_route_candidates_skips_mismatched_route_id(
+    admin_client,
+):
+    _client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
+    op_store.list_all_provider_route_candidates.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:minimax-api",
+            "route_type": "on_demand",
+            "provider": "chutes",
+            "openrouter_sort": None,
+            "base_url": "https://api.minimax.io/v1",
+            "api_key_id": None,
+            "provider_model_id": "MiniMax-M2.5",
+            "quota_limit": None,
+            "concurrency_limit": None,
+            "weight": 1.0,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+    registry = MagicMock()
+    registry.cached_routers.return_value = [fake_routewise]
+    services = AppServices(
+        router=route_executor,
+        model_router_registry=registry,
+        operational_store=op_store,
+        db_logger=MagicMock(),
+        log_store=MagicMock(),
+    )
+
+    await apply_persisted_provider_route_candidates(services, op_store)
+
+    route_ids = [
+        provider_routes._route_id_for_entry(adapter, endpoint_id)
+        for adapter, _weight, endpoint_id in route_executor.routes["minimax-fast"].raw_adapters
+    ]
+    assert "minimax-fast:minimax-api" not in route_ids
+    assert len(route_ids) == 3
+    op_store.list_provider_keys_full.assert_not_awaited()
+    fake_routewise._rebuild_from_fixed_router.assert_not_called()
 
 
 @pytest.mark.asyncio
