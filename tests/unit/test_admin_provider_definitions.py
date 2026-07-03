@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 from serving.schemas_admin import UpdateProviderDefinitionRequest
 from serving.servers.routers.admin import provider_definitions
@@ -12,6 +13,7 @@ class FakeProviderDefinitionStore:
     def __init__(self, rows: dict[str, ProviderDefinitionRow] | None = None):
         self.rows = rows or {}
         self.upserts: list[dict[str, object]] = []
+        self.deleted_keys: list[str] = []
 
     async def get_provider_definition(self, provider: str):
         return self.rows.get(provider)
@@ -57,13 +59,20 @@ class FakeProviderDefinitionStore:
     async def list_disabled_provider_env_key_hashes(self, provider: str):
         return []
 
+    async def delete_provider_keys_for_provider(self, provider: str) -> int:
+        self.deleted_keys.append(provider)
+        return 2
+
+    async def delete_provider_definition(self, provider: str) -> bool:
+        return self.rows.pop(provider, None) is not None
+
 
 def _empty_services():
     return SimpleNamespace(router=SimpleNamespace(routes={}))
 
 
 @pytest.mark.asyncio
-async def test_update_builtin_provider_writes_active_override_without_probe(monkeypatch):
+async def test_update_builtin_provider_is_rejected(monkeypatch):
     store = FakeProviderDefinitionStore()
     config_spec = provider_definitions.ConfigProviderSpec(
         provider="kimi",
@@ -72,50 +81,29 @@ async def test_update_builtin_provider_writes_active_override_without_probe(monk
         model_ids=frozenset(["kimi-test"]),
     )
 
-    async def clean_base_url(value: str) -> str:
-        return value.strip()
-
-    async def fail_probe(**_kwargs):
-        raise AssertionError("built-in provider override should not require probe")
-
     async def noop_audit(*_args, **_kwargs):
         return None
 
     monkeypatch.setattr(
         provider_definitions, "_configured_provider_specs", lambda: {"kimi": config_spec}
     )
-    monkeypatch.setattr(provider_definitions, "_validate_base_url", clean_base_url)
-    monkeypatch.setattr(provider_definitions, "_probe_openai_compat", fail_probe)
     monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
 
-    item = await provider_definitions.update_provider_definition(
-        "kimi",
-        UpdateProviderDefinitionRequest(
-            display_name="Kimi Coding",
-            default_base_url="https://api.kimi.com/coding/v1-alt",
-        ),
-        admin_id="admin",
-        op_store=store,
-        services=_empty_services(),
-    )
+    with pytest.raises(HTTPException) as exc_info:
+        await provider_definitions.update_provider_definition(
+            "kimi",
+            UpdateProviderDefinitionRequest(display_name="Kimi Coding"),
+            admin_id="admin",
+            op_store=store,
+            services=_empty_services(),
+        )
 
-    assert item.source == "built_in"
-    assert item.display_name == "Kimi Coding"
-    assert item.default_base_url == "https://api.kimi.com/coding/v1-alt"
-    assert store.upserts == [
-        {
-            "provider": "kimi",
-            "display_name": "Kimi Coding",
-            "adapter_kind": "kimi",
-            "default_base_url": "https://api.kimi.com/coding/v1-alt",
-            "created_by": "admin",
-            "status": "active",
-        }
-    ]
+    assert exc_info.value.status_code == 409
+    assert store.upserts == []
 
 
 @pytest.mark.asyncio
-async def test_delete_builtin_provider_writes_disabled_marker(monkeypatch):
+async def test_delete_builtin_provider_is_rejected(monkeypatch):
     store = FakeProviderDefinitionStore()
     config_spec = provider_definitions.ConfigProviderSpec(
         provider="kimi",
@@ -132,25 +120,93 @@ async def test_delete_builtin_provider_writes_disabled_marker(monkeypatch):
     )
     monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
 
-    response = await provider_definitions.delete_provider_definition(
-        "kimi",
+    with pytest.raises(HTTPException) as exc_info:
+        await provider_definitions.delete_provider_definition(
+            "kimi",
+            admin_id="admin",
+            op_store=store,
+            services=_empty_services(),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert store.upserts == []
+    assert store.deleted_keys == []
+
+
+@pytest.mark.asyncio
+async def test_update_custom_provider_display_name_without_probe(monkeypatch):
+    store = FakeProviderDefinitionStore(
+        {
+            "acme": ProviderDefinitionRow(
+                provider="acme",
+                display_name="Acme",
+                adapter_kind="openai_compat",
+                default_base_url="https://api.acme.test/v1",
+                status="active",
+                created_at=None,  # type: ignore[arg-type]
+                updated_at=None,  # type: ignore[arg-type]
+            )
+        }
+    )
+
+    async def fail_probe(**_kwargs):
+        raise AssertionError("display-name-only edit must not probe")
+
+    async def noop_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions, "_probe_openai_compat", fail_probe)
+    monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
+
+    item = await provider_definitions.update_provider_definition(
+        "acme",
+        UpdateProviderDefinitionRequest(display_name="Acme Prod"),
         admin_id="admin",
         op_store=store,
         services=_empty_services(),
     )
 
-    assert response.provider == "kimi"
-    assert response.deleted_keys == 0
-    assert store.upserts == [
+    assert item.source == "custom"
+    assert item.display_name == "Acme Prod"
+    assert item.default_base_url == "https://api.acme.test/v1"
+    assert store.upserts[0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_delete_custom_provider_hard_deletes_definition_and_keys(monkeypatch):
+    store = FakeProviderDefinitionStore(
         {
-            "provider": "kimi",
-            "display_name": "Kimi",
-            "adapter_kind": "kimi",
-            "default_base_url": "https://api.kimi.com/coding/v1",
-            "created_by": "admin",
-            "status": "disabled",
+            "acme": ProviderDefinitionRow(
+                provider="acme",
+                display_name="Acme",
+                adapter_kind="openai_compat",
+                default_base_url="https://api.acme.test/v1",
+                status="active",
+                created_at=None,  # type: ignore[arg-type]
+                updated_at=None,  # type: ignore[arg-type]
+            )
         }
-    ]
+    )
+
+    async def noop_audit(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(provider_definitions, "_configured_provider_specs", dict)
+    monkeypatch.setattr(provider_definitions, "log_admin_action", noop_audit)
+
+    response = await provider_definitions.delete_provider_definition(
+        "acme",
+        admin_id="admin",
+        op_store=store,
+        services=_empty_services(),
+    )
+
+    assert response.provider == "acme"
+    assert response.deleted_keys == 2
+    assert store.deleted_keys == ["acme"]
+    assert "acme" not in store.rows
+    assert store.upserts == []
 
 
 def test_configured_provider_specs_include_config_declared_providers(tmp_path, monkeypatch):

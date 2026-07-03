@@ -10,7 +10,6 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
@@ -141,45 +140,19 @@ def _base_url_with_provider_default(provider: str, base_url: str) -> str:
     return base_url or PROVIDER_DEFAULT_BASE_URLS.get(provider, "")
 
 
-def _is_builtin_provider(provider: str, config_specs: dict[str, ConfigProviderSpec]) -> bool:
+def _is_config_managed_provider(provider: str, config_specs: dict[str, ConfigProviderSpec]) -> bool:
+    """Return True for built-in providers sourced from code or config/models.yaml.
+
+    Deliberately excludes ``dynamic_keys.get_known_providers()``: custom
+    providers register themselves there, so consulting it would misclassify a
+    custom provider as built-in and make it un-editable and un-deletable.
+    Built-in providers are read-only in this registry — they are managed via
+    config/models.yaml, the Routing tab, and the Keys tab.
+    """
     return (
         provider in PROVIDER_TARGETS
-        or provider in dynamic_keys.get_known_providers()
+        or provider in SELECTABLE_PROVIDER_TARGETS
         or provider in config_specs
-    )
-
-
-def _definition_defaults(
-    provider: str,
-    config_spec: ConfigProviderSpec | None,
-) -> tuple[str, str, str]:
-    if provider in PROVIDER_TARGETS:
-        target = PROVIDER_TARGETS[provider]
-        return (
-            target.label,
-            target.kind,
-            _base_url_with_provider_default(provider, target.default_base_url),
-        )
-    return (
-        _display_name(provider),
-        config_spec.adapter_kind if config_spec else provider,
-        _base_url_with_provider_default(
-            provider,
-            config_spec.default_base_url if config_spec else "",
-        ),
-    )
-
-
-def _definition_defaults_row(provider: str, config_spec: ConfigProviderSpec | None) -> Any:
-    display_name, adapter_kind, default_base_url = _definition_defaults(provider, config_spec)
-    return SimpleNamespace(
-        provider=provider,
-        display_name=display_name,
-        adapter_kind=adapter_kind,
-        default_base_url=default_base_url,
-        status="active",
-        created_at=None,
-        updated_at=None,
     )
 
 
@@ -466,6 +439,9 @@ async def _probe_openai_compat(
                     "Accept": "text/event-stream",
                 },
                 json=payload,
+                # A validated public host must not be able to 302 the probe to
+                # an internal address, bypassing _validate_base_url's IP checks.
+                allow_redirects=False,
             ) as response,
         ):
             if response.status >= 400:
@@ -548,12 +524,6 @@ async def list_provider_definitions(
         raise HTTPException(status_code=500, detail="Database not configured")
 
     definition_rows = {row.provider: row for row in await op_store.list_provider_definitions()}
-    active_rows = {
-        provider: row for provider, row in definition_rows.items() if row.status == "active"
-    }
-    disabled_providers = {
-        provider for provider, row in definition_rows.items() if row.status == "disabled"
-    }
 
     config_specs = _configured_provider_specs()
     db_row_providers = set(definition_rows)
@@ -562,15 +532,19 @@ async def list_provider_definitions(
         set(config_specs) | set(PROVIDER_TARGETS) | set(SELECTABLE_PROVIDER_TARGETS)
     ) | runtime_known_providers
 
-    for row in definition_rows.values():
+    # The definitions table only surfaces genuine custom providers. A row whose
+    # slug matches a built-in name is ignored: built-ins are read-only and
+    # sourced from code/config, so a stale override or disabled marker left by an
+    # earlier build must never resurrect a provider or leak into routing options.
+    custom_rows = {
+        provider: row
+        for provider, row in definition_rows.items()
+        if provider not in built_in_providers
+    }
+    for row in custom_rows.values():
         provider_registry.register_provider_definition(row)
 
-    providers = (
-        set(config_specs)
-        | runtime_known_providers
-        | set(SELECTABLE_PROVIDER_TARGETS)
-        | set(active_rows)
-    ) - disabled_providers
+    providers = built_in_providers | set(custom_rows)
     models_by_provider = _merge_config_models_by_provider(
         _models_by_provider(services),
         config_specs,
@@ -578,9 +552,9 @@ async def list_provider_definitions(
     rows = [
         await _build_provider_item(
             provider=provider,
-            custom_row=active_rows.get(provider),
+            custom_row=custom_rows.get(provider),
             config_spec=config_specs.get(provider),
-            source="built_in" if provider in built_in_providers else "custom",
+            source="custom" if provider in custom_rows else "built_in",
             op_store=op_store,
             models_by_provider=models_by_provider,
         )
@@ -694,22 +668,24 @@ async def update_provider_definition(
     op_store=Depends(get_operational_store),
     services=Depends(get_services),
 ) -> ProviderDefinitionItem:
-    """Update an admin-managed provider definition or built-in override."""
+    """Update a custom provider definition.
+
+    Built-in providers are read-only here: they are defined in
+    config/models.yaml and managed through the Routing and Keys tabs.
+    """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not configured")
 
     provider_slug = _validate_provider_slug(provider)
     config_specs = _configured_provider_specs()
-    config_spec = config_specs.get(provider_slug)
-    is_builtin = _is_builtin_provider(provider_slug, config_specs)
+    if _is_config_managed_provider(provider_slug, config_specs):
+        raise HTTPException(
+            status_code=409,
+            detail="Built-in providers are defined in config/models.yaml and cannot be edited here.",
+        )
     row = await op_store.get_provider_definition(provider_slug)
-    if row is not None and row.status == "disabled":
-        raise HTTPException(status_code=404, detail="provider not found")
     if row is None:
-        if is_builtin:
-            row = _definition_defaults_row(provider_slug, config_spec)
-        else:
-            raise HTTPException(status_code=404, detail="provider not found")
+        raise HTTPException(status_code=404, detail="provider not found")
 
     display_name = row.display_name
     if payload.display_name is not None:
@@ -724,7 +700,7 @@ async def update_provider_definition(
         _strip_chat_completions(cleaned_base_url)
         base_url_changed = cleaned_base_url != row.default_base_url
 
-    if base_url_changed and not is_builtin:
+    if base_url_changed:
         models = _merge_config_models_by_provider(
             _models_by_provider(services),
             config_specs,
@@ -778,8 +754,8 @@ async def update_provider_definition(
     return await _build_provider_item(
         provider=provider_slug,
         custom_row=updated,
-        config_spec=config_spec,
-        source="built_in" if is_builtin else "custom",
+        config_spec=None,
+        source="custom",
         op_store=op_store,
         models_by_provider=models_by_provider,
     )
@@ -795,22 +771,24 @@ async def delete_provider_definition(
     op_store=Depends(get_operational_store),
     services=Depends(get_services),
 ) -> DeleteProviderDefinitionResponse:
-    """Delete an unused provider definition or hide an unused built-in provider."""
+    """Delete an unused custom provider definition and its stored keys.
+
+    Built-in providers are read-only here: they are defined in
+    config/models.yaml and cannot be deleted from the admin registry.
+    """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not configured")
 
     provider_slug = _validate_provider_slug(provider)
     config_specs = _configured_provider_specs()
-    config_spec = config_specs.get(provider_slug)
-    is_builtin = _is_builtin_provider(provider_slug, config_specs)
+    if _is_config_managed_provider(provider_slug, config_specs):
+        raise HTTPException(
+            status_code=409,
+            detail="Built-in providers are defined in config/models.yaml and cannot be deleted here.",
+        )
     row = await op_store.get_provider_definition(provider_slug)
-    if row is not None and row.status == "disabled":
-        raise HTTPException(status_code=404, detail="provider not found")
     if row is None:
-        if is_builtin:
-            row = _definition_defaults_row(provider_slug, config_spec)
-        else:
-            raise HTTPException(status_code=404, detail="provider not found")
+        raise HTTPException(status_code=404, detail="provider not found")
 
     models = _merge_config_models_by_provider(
         _models_by_provider(services),
@@ -825,21 +803,10 @@ async def delete_provider_definition(
             ),
         )
 
-    if is_builtin:
-        await op_store.upsert_provider_definition(
-            provider=provider_slug,
-            display_name=row.display_name,
-            adapter_kind=row.adapter_kind,
-            default_base_url=row.default_base_url,
-            created_by=admin_id,
-            status="disabled",
-        )
-        deleted_keys = 0
-    else:
-        deleted_keys = await op_store.delete_provider_keys_for_provider(provider_slug)
-        deleted = await op_store.delete_provider_definition(provider_slug)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="provider not found")
+    deleted_keys = await op_store.delete_provider_keys_for_provider(provider_slug)
+    deleted = await op_store.delete_provider_definition(provider_slug)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="provider not found")
     provider_registry.unregister_provider_definition(provider_slug)
 
     await log_admin_action(
