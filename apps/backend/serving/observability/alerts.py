@@ -96,7 +96,11 @@ def _base_url() -> tuple[str, bool]:
 
         settings = get_settings()
         explicit = "base_url" in settings.model_fields_set
-        return (settings.base_url or ""), explicit
+        if not explicit:
+            # The built-in default is only a Settings fallback. Showing it in
+            # alerts makes local/test gateways look like production.
+            return "", False
+        return (settings.base_url or ""), True
     except Exception:
         return "", False
 
