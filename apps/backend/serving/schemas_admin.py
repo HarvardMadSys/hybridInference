@@ -1260,8 +1260,10 @@ __all__ = [
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
     "CreateAPIKeyResponse",
+    "CreateProviderDefinitionRequest",
     "CreateProviderRouteModelRequest",
     "CreateProviderRouteRequest",
+    "DeleteProviderDefinitionResponse",
     "DeleteUserRequest",
     "DeleteUserResponse",
     "HardDeleteUserRequest",
@@ -1273,6 +1275,7 @@ __all__ = [
     "ListModelVisibilityResponse",
     "ListOpenRouterProviderOptionsResponse",
     "ListProviderApiKeyProvidersResponse",
+    "ListProviderDefinitionsResponse",
     "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
     "ListRoutewiseProbeSamplesResponse",
@@ -1282,6 +1285,9 @@ __all__ = [
     "ListUsersResponse",
     "ModelVisibilityItem",
     "OpenRouterProviderOption",
+    "ProbeProviderDefinitionRequest",
+    "ProbeProviderDefinitionResponse",
+    "ProviderDefinitionItem",
     "ProviderErrorTypeRow",
     "ProviderObservabilityBucket",
     "ProviderObservabilityResponse",
@@ -1316,6 +1322,7 @@ __all__ = [
     "UpdateAPIKeyRequest",
     "UpdateAPIKeyResponse",
     "UpdateModelVisibilityRequest",
+    "UpdateProviderDefinitionRequest",
     "UpdateProviderRouteRequest",
     "UpdateProviderRouteStrategyRequest",
     "UpdateRouteWeightRequest",
@@ -1591,6 +1598,74 @@ class AddSignupAllowedDomainRequest(BaseModel):  # type: ignore[no-any-unimporte
 # ---------------------------------------------------------------------------
 # Provider API keys (admin-managed runtime credentials)
 # ---------------------------------------------------------------------------
+
+
+class ProviderDefinitionItem(BaseModel):  # type: ignore[no-any-unimported]
+    """Provider registry row for the admin Providers overview."""
+
+    provider: str
+    display_name: str
+    adapter_kind: str
+    default_base_url: str
+    source: Literal["built_in", "custom"]
+    status: str = "active"
+    keys_count: int = 0
+    models_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ListProviderDefinitionsResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``GET /admin/provider-definitions``."""
+
+    providers: list[ProviderDefinitionItem]
+    adapter_kinds: list[str] = ["openai_compat"]
+
+
+class ProbeProviderDefinitionRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for probing a custom OpenAI-compatible provider."""
+
+    default_base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key: str = Field(..., min_length=1, max_length=4096)
+    probe_model_id: str = Field(..., min_length=1, max_length=512)
+
+
+class ProbeProviderDefinitionResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for provider compatibility probe."""
+
+    ok: bool = True
+    streaming: bool = True
+    first_event_ttft_ms: float | None = None
+    first_content_ttft_ms: float | None = None
+    preview: str | None = None
+
+
+class CreateProviderDefinitionRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for creating an admin-managed custom provider."""
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    display_name: str = Field(..., min_length=1, max_length=120)
+    adapter_kind: Literal["openai_compat"] = "openai_compat"
+    default_base_url: str = Field(..., min_length=1, max_length=2048)
+    api_key: str = Field(..., min_length=1, max_length=4096)
+    api_key_label: str | None = Field(None, max_length=255)
+    probe_model_id: str = Field(..., min_length=1, max_length=512)
+
+
+class UpdateProviderDefinitionRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for updating an admin-managed provider definition."""
+
+    display_name: str | None = Field(None, min_length=1, max_length=120)
+    default_base_url: str | None = Field(None, min_length=1, max_length=2048)
+    api_key: str | None = Field(None, min_length=1, max_length=4096)
+    probe_model_id: str | None = Field(None, min_length=1, max_length=512)
+
+
+class DeleteProviderDefinitionResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for deleting or disabling a provider definition."""
+
+    provider: str
+    deleted_keys: int
 
 
 class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]

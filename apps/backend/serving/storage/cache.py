@@ -17,7 +17,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from .base import OperationalStore, ProviderKeyRow, Row
+from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -950,6 +950,42 @@ class CachedOperationalStore(OperationalStore):
             created_by=created_by,
             key_id=key_id,
         )
+
+    async def list_provider_definitions(self) -> list[ProviderDefinitionRow]:
+        """Delegate to wrapped store."""
+        return await self._store.list_provider_definitions()
+
+    async def get_provider_definition(self, provider: str) -> ProviderDefinitionRow | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_provider_definition(provider)
+
+    async def upsert_provider_definition(
+        self,
+        *,
+        provider: str,
+        display_name: str,
+        adapter_kind: str,
+        default_base_url: str,
+        created_by: str | None,
+        status: str = "active",
+    ) -> ProviderDefinitionRow:
+        """Delegate to wrapped store."""
+        return await self._store.upsert_provider_definition(
+            provider=provider,
+            display_name=display_name,
+            adapter_kind=adapter_kind,
+            default_base_url=default_base_url,
+            created_by=created_by,
+            status=status,
+        )
+
+    async def delete_provider_definition(self, provider: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_definition(provider)
+
+    async def delete_provider_keys_for_provider(self, provider: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.delete_provider_keys_for_provider(provider)
 
     async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
         """Delegate to wrapped store."""

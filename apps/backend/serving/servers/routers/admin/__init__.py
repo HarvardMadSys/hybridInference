@@ -20,6 +20,7 @@ from serving.servers.routers.admin import (
     metrics,
     model_concurrency,
     model_visibility,
+    provider_definitions,
     provider_keys,
     provider_routes,
     providers,
@@ -45,6 +46,7 @@ router.include_router(login_events.router)
 router.include_router(metrics.router)
 router.include_router(model_concurrency.router)
 router.include_router(model_visibility.router)
+router.include_router(provider_definitions.router)
 router.include_router(provider_keys.router)
 router.include_router(provider_routes.router)
 router.include_router(providers.router)

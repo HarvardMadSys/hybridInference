@@ -100,10 +100,39 @@ def register_known_provider(provider: str) -> None:
         _known_providers.add(provider)
 
 
+def unregister_known_provider(provider: str) -> bool:
+    """Remove a whitelist-only provider.
+
+    Providers with live adapters are left registered because model routes still
+    depend on them. Returns True when the provider was removed from the known
+    provider set.
+    """
+    with _lock:
+        if _adapters_by_provider.get(provider):
+            return False
+        before = provider in _known_providers
+        _known_providers.discard(provider)
+        _db_injected_keys.pop(provider, None)
+        _disabled_env_key_hashes.pop(provider, None)
+        return before
+
+
 def get_known_providers() -> set[str]:
     """Return the set of providers seen during model registration."""
     with _lock:
         return set(_known_providers)
+
+
+def get_registered_base_urls(provider: str) -> list[str]:
+    """Return base URLs observed on live adapters for *provider*."""
+    with _lock:
+        urls: list[str] = []
+        for adapter in _adapters_by_provider.get(provider, []):
+            cfg = getattr(adapter, "config", None)
+            base_url = str(getattr(cfg, "base_url", "") or "").strip()
+            if base_url and base_url not in urls:
+                urls.append(base_url)
+        return urls
 
 
 def _pools_for_provider_locked(

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from serving.config.settings import VALID_ROLES
 from serving.exceptions import DuplicateAPIKeyError
-from serving.storage.base import OperationalStore, ProviderKeyRow, Row
+from serving.storage.base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -625,6 +625,24 @@ class PostgresOperationalStore(OperationalStore):
         await conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_provider_api_keys_provider_status "
             "ON provider_api_keys(provider, status)"
+        )
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS provider_definitions (
+                provider TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                adapter_kind TEXT NOT NULL,
+                default_base_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'disabled')),
+                created_by TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_by TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_provider_definitions_status "
+            "ON provider_definitions(status)"
         )
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS disabled_provider_env_keys (
@@ -2895,6 +2913,115 @@ class PostgresOperationalStore(OperationalStore):
                 created_by,
             )
         return key_id
+
+    async def list_provider_definitions(self) -> list[ProviderDefinitionRow]:
+        """Return provider definitions, overrides, and disabled markers."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT provider, display_name, adapter_kind, default_base_url, "
+                "status, created_at, updated_at "
+                "FROM provider_definitions "
+                "ORDER BY display_name ASC, provider ASC"
+            )
+        return [
+            ProviderDefinitionRow(
+                provider=r["provider"],
+                display_name=r["display_name"],
+                adapter_kind=r["adapter_kind"],
+                default_base_url=r["default_base_url"],
+                status=r["status"],
+                created_at=r["created_at"],
+                updated_at=r["updated_at"],
+            )
+            for r in rows
+        ]
+
+    async def get_provider_definition(self, provider: str) -> ProviderDefinitionRow | None:
+        """Return one provider definition or override."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT provider, display_name, adapter_kind, default_base_url, "
+                "status, created_at, updated_at "
+                "FROM provider_definitions "
+                "WHERE provider = $1",
+                provider,
+            )
+        if row is None:
+            return None
+        return ProviderDefinitionRow(
+            provider=row["provider"],
+            display_name=row["display_name"],
+            adapter_kind=row["adapter_kind"],
+            default_base_url=row["default_base_url"],
+            status=row["status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    async def upsert_provider_definition(
+        self,
+        *,
+        provider: str,
+        display_name: str,
+        adapter_kind: str,
+        default_base_url: str,
+        created_by: str | None,
+        status: str = "active",
+    ) -> ProviderDefinitionRow:
+        """Create or update a provider definition or override."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO provider_definitions "
+                "(provider, display_name, adapter_kind, default_base_url, status, "
+                "created_by, updated_by) "
+                "VALUES ($1, $2, $3, $4, $6, $5, $5) "
+                "ON CONFLICT (provider) DO UPDATE SET "
+                "display_name = EXCLUDED.display_name, "
+                "adapter_kind = EXCLUDED.adapter_kind, "
+                "default_base_url = EXCLUDED.default_base_url, "
+                "status = $6, "
+                "updated_by = EXCLUDED.updated_by, "
+                "updated_at = NOW() "
+                "RETURNING provider, display_name, adapter_kind, default_base_url, "
+                "status, created_at, updated_at",
+                provider,
+                display_name,
+                adapter_kind,
+                default_base_url,
+                created_by,
+                status,
+            )
+        return ProviderDefinitionRow(
+            provider=row["provider"],
+            display_name=row["display_name"],
+            adapter_kind=row["adapter_kind"],
+            default_base_url=row["default_base_url"],
+            status=row["status"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    async def delete_provider_definition(self, provider: str) -> bool:
+        """Delete a custom provider definition."""
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                "DELETE FROM provider_definitions WHERE provider = $1",
+                provider,
+            )
+        return _parse_command_tag_count(tag) > 0
+
+    async def delete_provider_keys_for_provider(self, provider: str) -> int:
+        """Delete DB keys and env-key tombstones for a custom provider."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            key_tag = await conn.execute(
+                "DELETE FROM provider_api_keys WHERE provider = $1",
+                provider,
+            )
+            tombstone_tag = await conn.execute(
+                "DELETE FROM disabled_provider_env_keys WHERE provider = $1",
+                provider,
+            )
+        return _parse_command_tag_count(key_tag) + _parse_command_tag_count(tombstone_tag)
 
     async def list_provider_keys(self, provider: str | None = None) -> list[ProviderKeyRow]:
         """Return masked provider key rows (active and disabled), newest first.
