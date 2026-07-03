@@ -94,7 +94,9 @@ function ProviderToggle({
       role="switch"
       aria-checked={!disabled}
       aria-label={`${disabled ? 'Enable' : 'Disable'} ${label}`}
-      title={disabled ? 'Provider disabled — click to enable' : 'Provider enabled — click to disable'}
+      title={
+        disabled ? 'Provider disabled — click to enable' : 'Provider enabled — click to disable'
+      }
       className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition disabled:opacity-50 ${
         disabled ? 'bg-gray-300' : 'bg-emerald-500'
       }`}
@@ -240,27 +242,24 @@ function QuotasSection() {
     }
   }, []);
 
-  const handleToggle = useCallback(
-    async (provider: ProviderQuotaResult) => {
-      const next = !provider.disabled;
-      setTogglingProvider(provider.name);
-      try {
-        await setProviderDisabled(provider.name, next);
-        // Reflect the new state on every card sharing this provider label.
-        setProviderQuotas((prev) =>
-          prev.map((p) => (p.name === provider.name ? { ...p, disabled: next } : p)),
-        );
-        toast.success(
-          `${provider.display_name} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
-        );
-      } catch (e) {
-        toast.error(getErrorMessage(e));
-      } finally {
-        setTogglingProvider(null);
-      }
-    },
-    [],
-  );
+  const handleToggle = useCallback(async (provider: ProviderQuotaResult) => {
+    const next = !provider.disabled;
+    setTogglingProvider(provider.name);
+    try {
+      await setProviderDisabled(provider.name, next);
+      // Reflect the new state on every card sharing this provider label.
+      setProviderQuotas((prev) =>
+        prev.map((p) => (p.name === provider.name ? { ...p, disabled: next } : p)),
+      );
+      toast.success(
+        `${provider.display_name} ${next ? 'disabled — excluded from routing' : 'enabled'}`,
+      );
+    } catch (e) {
+      toast.error(getErrorMessage(e));
+    } finally {
+      setTogglingProvider(null);
+    }
+  }, []);
 
   useEffect(() => {
     loadProviderQuotas();
