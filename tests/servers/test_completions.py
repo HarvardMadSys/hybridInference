@@ -65,6 +65,27 @@ class DummyAdapter(BaseAdapter):
         yield done_sentinel()
 
 
+def test_token_usage_sanity_allows_reasoning_counted_inside_completion():
+    assert completions._token_usage_is_sane(
+        prompt_tokens=100,
+        completion_tokens=50,
+        reasoning_tokens=20,
+        total_tokens=150,
+    )
+    assert completions._token_usage_is_sane(
+        prompt_tokens=100,
+        completion_tokens=50,
+        reasoning_tokens=20,
+        total_tokens=170,
+    )
+    assert not completions._token_usage_is_sane(
+        prompt_tokens=100,
+        completion_tokens=50,
+        reasoning_tokens=20,
+        total_tokens=149,
+    )
+
+
 class ThinkingDeltaAdapter(BaseAdapter):
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         return self.format_response(content="answer", model=self.config.id)

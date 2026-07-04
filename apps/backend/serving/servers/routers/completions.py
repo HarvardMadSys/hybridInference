@@ -45,7 +45,7 @@ from serving.servers.routers.routing_info import (
     merge_adapter_routing,
 )
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
-from serving.storage.utils import json_safe
+from serving.storage.utils import billable_output_tokens, json_safe
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
@@ -71,6 +71,31 @@ _CONTENT_BLOCK_MODALITY = {
     "input_audio": "audio",
     "audio": "audio",
 }
+
+
+def _token_usage_is_sane(
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    reasoning_tokens: int,
+    total_tokens: int,
+    max_tokens_cap: int = 10_000_000,
+) -> bool:
+    if not (
+        0 <= prompt_tokens < max_tokens_cap
+        and 0 <= completion_tokens < max_tokens_cap
+        and 0 <= reasoning_tokens < max_tokens_cap
+        and 0 <= total_tokens < max_tokens_cap
+    ):
+        return False
+
+    output_tokens = billable_output_tokens(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        reasoning_tokens=reasoning_tokens,
+        total_tokens=total_tokens,
+    )
+    return total_tokens >= prompt_tokens + output_tokens
 
 
 def _find_unsupported_modality(
@@ -920,14 +945,14 @@ async def chat_completions(
                 logger.warning(f"Invalid token usage types for {model}/{provider}: {usage}")
                 prompt_tokens = completion_tokens = reasoning_tokens = total_tokens = 0
 
-            # Basic sanity: non-negative, totals consistent, and not absurdly large
-            max_tokens_cap = 10_000_000
-            sane = (
-                0 <= prompt_tokens < max_tokens_cap
-                and 0 <= completion_tokens < max_tokens_cap
-                and 0 <= reasoning_tokens < max_tokens_cap
-                and 0 <= total_tokens < max_tokens_cap
-                and total_tokens >= prompt_tokens + completion_tokens + reasoning_tokens
+            # Basic sanity: non-negative, totals consistent, and not absurdly large.
+            # Providers differ on whether reasoning is already counted inside
+            # completion_tokens, so mirror billing semantics here.
+            sane = _token_usage_is_sane(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                reasoning_tokens=reasoning_tokens,
+                total_tokens=total_tokens,
             )
             if not sane:
                 logger.warning(f"Token usage anomaly for {model}/{provider}: {usage}")
