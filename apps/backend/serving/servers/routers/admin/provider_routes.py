@@ -11,6 +11,7 @@ import re
 import socket
 import time
 from dataclasses import asdict, dataclass, fields, is_dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -59,7 +60,7 @@ OPENROUTER_MODEL_ID_RE = re.compile(
     r"[A-Za-z0-9_.:-]*[A-Za-z0-9][A-Za-z0-9_.:-]*$"
 )
 OPENROUTER_SORT_POLICIES = {"price", "throughput", "latency"}
-OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[str, tuple[float, list[OpenRouterProviderOption]]] = {}
+OPENROUTER_ENDPOINT_DISCOVERY_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 CGNAT_IPV4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -73,6 +74,14 @@ class ProviderTarget:
     key_provider: str
     default_base_url: str
     chat_path: str | None = None
+
+
+@dataclass(frozen=True)
+class OpenRouterEndpointPricing:
+    """OpenRouter endpoint pricing normalized to USD per million tokens."""
+
+    provider: str
+    pricing: dict[str, str]
 
 
 def _env_default(name: str, fallback: str) -> str:
@@ -737,6 +746,98 @@ def _parse_openrouter_provider_options(payload: dict[str, Any]) -> list[OpenRout
     return providers
 
 
+def _openrouter_price_per_million(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = Decimal(text) * Decimal("1000000")
+    except (InvalidOperation, ValueError):
+        return None
+    if not value.is_finite() or value < 0:
+        return None
+    normalized = format(value.normalize(), "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized or "0"
+
+
+def _openrouter_endpoint_pricing(endpoint: dict[str, Any]) -> dict[str, str] | None:
+    raw_pricing = endpoint.get("pricing")
+    if not isinstance(raw_pricing, dict):
+        return None
+
+    prompt = _openrouter_price_per_million(raw_pricing.get("prompt"))
+    completion = _openrouter_price_per_million(raw_pricing.get("completion"))
+    if prompt is None or completion is None:
+        return None
+
+    return {
+        "prompt": prompt,
+        "completion": completion,
+        "image": "0",
+        "request": "0",
+        "input_cache_reads": _openrouter_price_per_million(
+            raw_pricing.get("input_cache_read")
+        )
+        or "0",
+        "input_cache_writes": _openrouter_price_per_million(
+            raw_pricing.get("input_cache_write")
+        )
+        or "0",
+    }
+
+
+def _openrouter_provider_matches(slug: str, provider: str) -> bool:
+    if slug == provider:
+        return True
+    return "/" not in provider and slug.split("/", 1)[0] == provider
+
+
+def _parse_openrouter_endpoint_pricing(
+    payload: dict[str, Any],
+    provider: str,
+) -> OpenRouterEndpointPricing | None:
+    pin = provider.strip().lower()
+    if not pin:
+        return None
+
+    data = payload.get("data")
+    endpoints = data.get("endpoints") if isinstance(data, dict) else None
+    if not isinstance(endpoints, list):
+        return None
+
+    exact_matches: list[OpenRouterEndpointPricing] = []
+    base_matches: list[OpenRouterEndpointPricing] = []
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        slug = _openrouter_endpoint_provider_slug(endpoint)
+        if not slug:
+            continue
+        pricing = _openrouter_endpoint_pricing(endpoint)
+        if pricing is None:
+            continue
+        option = OpenRouterEndpointPricing(provider=slug, pricing=pricing)
+        if slug == pin:
+            exact_matches.append(option)
+        elif _openrouter_provider_matches(slug, pin):
+            base_matches.append(option)
+
+    matches = exact_matches or base_matches
+    if not matches:
+        return None
+    return min(
+        matches,
+        key=lambda option: (
+            Decimal(option.pricing["prompt"]) + Decimal(option.pricing["completion"]),
+            option.provider,
+        ),
+    )
+
+
 def _openrouter_endpoints_url(model_id: str) -> str:
     if not OPENROUTER_MODEL_ID_RE.fullmatch(model_id):
         raise HTTPException(
@@ -747,9 +848,7 @@ def _openrouter_endpoints_url(model_id: str) -> str:
     return f"{OPENROUTER_API_BASE_URL}/models/{encoded_model_id}/endpoints"
 
 
-async def _fetch_openrouter_provider_options(
-    provider_model_id: str,
-) -> list[OpenRouterProviderOption]:
+async def _fetch_openrouter_endpoint_payload(provider_model_id: str) -> dict[str, Any]:
     model_id = provider_model_id.strip()
     if not model_id:
         raise HTTPException(status_code=422, detail="provider_model_id must not be blank")
@@ -791,9 +890,76 @@ async def _fetch_openrouter_provider_options(
             detail=f"OpenRouter provider discovery failed: {_truncate(str(exc) or type(exc).__name__)}",
         ) from exc
 
+    OPENROUTER_ENDPOINT_DISCOVERY_CACHE[model_id] = (now, payload)
+    return payload
+
+
+async def _fetch_openrouter_provider_options(
+    provider_model_id: str,
+) -> list[OpenRouterProviderOption]:
+    payload = await _fetch_openrouter_endpoint_payload(provider_model_id)
     providers = _parse_openrouter_provider_options(payload)
-    OPENROUTER_ENDPOINT_DISCOVERY_CACHE[model_id] = (now, providers)
     return providers
+
+
+async def _openrouter_pricing_for_target(
+    *,
+    provider_model_id: str,
+    target: ProviderTarget,
+    openrouter_sort: str | None,
+) -> OpenRouterEndpointPricing | None:
+    if openrouter_sort is not None:
+        return None
+    _base_kind, pinned_provider = parse_openrouter_kind(target.kind)
+    if not pinned_provider:
+        return None
+    try:
+        payload = await _fetch_openrouter_endpoint_payload(provider_model_id)
+    except HTTPException as exc:
+        logger.warning(
+            "Failed to fetch OpenRouter endpoint pricing for model=%s provider=%s: %s",
+            provider_model_id,
+            pinned_provider,
+            exc.detail,
+        )
+        return None
+    except Exception as exc:
+        logger.warning(
+            "Failed to fetch OpenRouter endpoint pricing for model=%s provider=%s: %s",
+            provider_model_id,
+            pinned_provider,
+            exc,
+        )
+        return None
+    pricing = _parse_openrouter_endpoint_pricing(payload, pinned_provider)
+    if pricing is None:
+        logger.warning(
+            "OpenRouter endpoint pricing unavailable for model=%s provider=%s",
+            provider_model_id,
+            pinned_provider,
+        )
+    return pricing
+
+
+async def _apply_openrouter_endpoint_pricing(
+    cfg: dict[str, Any],
+    *,
+    provider_model_id: str,
+    target: ProviderTarget,
+    openrouter_sort: str | None,
+) -> None:
+    endpoint_pricing = await _openrouter_pricing_for_target(
+        provider_model_id=provider_model_id,
+        target=target,
+        openrouter_sort=openrouter_sort,
+    )
+    if endpoint_pricing is None:
+        return
+    cfg["pricing"] = endpoint_pricing.pricing
+    route_metadata = dict(cfg.get("route_metadata") or {})
+    route_metadata["pricing_source"] = "openrouter_endpoint"
+    route_metadata["pricing_provider"] = endpoint_pricing.provider
+    cfg["route_metadata"] = route_metadata
 
 
 def _upstream_provider(adapter) -> str:
@@ -1408,6 +1574,12 @@ async def _prepare_route_candidate(
         }
     )
     _apply_target_adapter_defaults(cfg, target)
+    await _apply_openrouter_endpoint_pricing(
+        cfg,
+        provider_model_id=provider_model_id,
+        target=target,
+        openrouter_sort=openrouter_sort,
+    )
     if route_type == "quota":
         quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
         cfg["quota_pool"] = quota_pool
@@ -1650,6 +1822,12 @@ async def _prepare_route_update(
         current_adapter=current_adapter,
         upstream_provider=upstream_provider,
         route_id=route_id,
+    )
+    await _apply_openrouter_endpoint_pricing(
+        cfg,
+        provider_model_id=provider_model_id,
+        target=target,
+        openrouter_sort=openrouter_sort,
     )
 
     adapter = _make_adapter(target.kind, cfg)

@@ -437,7 +437,7 @@ models:
           completion: "1.15"
           image: "0"
           request: "0"
-          input_cache_reads: "0"
+          input_cache_reads: "0.03"
           input_cache_writes: "0"
 
   - id: minimax-m2.7

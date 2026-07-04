@@ -32,6 +32,80 @@ RUNTIME_PRICING = {
     "input_cache_reads": "0.0028",
     "input_cache_writes": "0",
 }
+OPENROUTER_DEEPINFRA_PRICING = {
+    "prompt": "0.15",
+    "completion": "1.15",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.03",
+    "input_cache_writes": "0",
+}
+OPENROUTER_PARASAIL_PRICING = {
+    "prompt": "0.3",
+    "completion": "1.2",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.03",
+    "input_cache_writes": "0",
+}
+OPENROUTER_MINIMAX_PRICING = {
+    "prompt": "0.3",
+    "completion": "1.2",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.03",
+    "input_cache_writes": "0",
+}
+OPENROUTER_HIGHSPEED_PRICING = {
+    "prompt": "0.6",
+    "completion": "2.4",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.06",
+    "input_cache_writes": "0",
+}
+OPENROUTER_ENDPOINT_PAYLOAD = {
+    "data": {
+        "endpoints": [
+            {
+                "provider_name": "DeepInfra",
+                "tag": "deepinfra/fp8",
+                "pricing": {
+                    "prompt": "0.00000015",
+                    "completion": "0.00000115",
+                    "input_cache_read": "0.00000003",
+                },
+            },
+            {
+                "provider_name": "Parasail",
+                "tag": "parasail/fp8",
+                "pricing": {
+                    "prompt": "0.0000003",
+                    "completion": "0.0000012",
+                    "input_cache_read": "0.00000003",
+                },
+            },
+            {
+                "provider_name": "MiniMax",
+                "tag": "minimax/fp8",
+                "pricing": {
+                    "prompt": "0.0000003",
+                    "completion": "0.0000012",
+                    "input_cache_read": "0.00000003",
+                },
+            },
+            {
+                "provider_name": "MiniMax",
+                "tag": "minimax/highspeed",
+                "pricing": {
+                    "prompt": "0.0000006",
+                    "completion": "0.0000024",
+                    "input_cache_read": "0.00000006",
+                },
+            },
+        ]
+    }
+}
 
 
 class _ManagedTestRouter:
@@ -224,6 +298,15 @@ async def admin_client(monkeypatch):
         "serving.servers.routers.admin.provider_routes._verify_provider_route",
         verify_mock,
     )
+
+    async def fake_openrouter_endpoint_payload(_model_id: str):
+        return OPENROUTER_ENDPOINT_PAYLOAD
+
+    monkeypatch.setattr(
+        provider_routes,
+        "_fetch_openrouter_endpoint_payload",
+        fake_openrouter_endpoint_payload,
+    )
     monkeypatch.setattr(
         provider_routes.socket,
         "getaddrinfo",
@@ -329,6 +412,31 @@ def test_parse_openrouter_provider_options_from_endpoints():
         ("minimax/fp8", "MiniMax Fp8"),
         ("minimax/highspeed", "MiniMax Highspeed"),
     ]
+
+
+def test_parse_openrouter_endpoint_pricing_from_endpoints():
+    deepinfra = provider_routes._parse_openrouter_endpoint_pricing(
+        OPENROUTER_ENDPOINT_PAYLOAD,
+        "deepinfra",
+    )
+    minimax = provider_routes._parse_openrouter_endpoint_pricing(
+        OPENROUTER_ENDPOINT_PAYLOAD,
+        "minimax",
+    )
+    highspeed = provider_routes._parse_openrouter_endpoint_pricing(
+        OPENROUTER_ENDPOINT_PAYLOAD,
+        "minimax/highspeed",
+    )
+
+    assert deepinfra is not None
+    assert deepinfra.provider == "deepinfra/fp8"
+    assert deepinfra.pricing == OPENROUTER_DEEPINFRA_PRICING
+    assert minimax is not None
+    assert minimax.provider == "minimax/fp8"
+    assert minimax.pricing == OPENROUTER_MINIMAX_PRICING
+    assert highspeed is not None
+    assert highspeed.provider == "minimax/highspeed"
+    assert highspeed.pricing == OPENROUTER_HIGHSPEED_PRICING
 
 
 def test_openrouter_endpoints_url_preserves_model_slug_separator():
@@ -1131,6 +1239,9 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    assert runtime_adapter.config.route_metadata["pricing_source"] == "openrouter_endpoint"
+    assert runtime_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
