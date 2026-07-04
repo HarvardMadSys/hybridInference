@@ -292,7 +292,7 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
-    aliases: ["MiniMax-M3"]
+    aliases: ["MiniMax-M3", "claude-opus-4.8"]
     # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:
       prompt: "0.5"
@@ -556,7 +556,7 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream]
-    aliases: ["qwen3.6:35b"]
+    aliases: ["qwen3.6:35b", "claude-sonnet-5"]
     pricing:
       prompt: "0.08"
       completion: "0.28"
