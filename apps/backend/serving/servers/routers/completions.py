@@ -44,7 +44,10 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
-from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
+from serving.servers.streaming_state import (
+    REQUEST_TIMEOUT_SCOPE_STATE_KEY,
+    STREAMING_RESPONSE_SCOPE_STATE_KEY,
+)
 from serving.storage.utils import json_safe
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
@@ -53,6 +56,8 @@ from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
 
@@ -199,6 +204,22 @@ async def _buffer_streaming_response_for_non_stream_client(
 
 
 _FORCE_STREAMING_KEEPALIVE_S = 15
+
+
+def _timeout_fired_probe(request: Request) -> Callable[[], bool]:
+    """Build a probe telling whether TimeoutMiddleware's deadline has fired.
+
+    Read lazily at exception time (not at request entry): the middleware's
+    ``CancelScope.cancel_called`` only flips once the deadline expires, which
+    is what distinguishes a gateway timeout from a client disconnect.
+    """
+
+    def _fired() -> bool:
+        state = request.scope.get("state") or {}
+        timeout_scope = state.get(REQUEST_TIMEOUT_SCOPE_STATE_KEY)
+        return bool(getattr(timeout_scope, "cancel_called", False))
+
+    return _fired
 
 
 async def _close_stream_quietly(stream: Any) -> None:
@@ -747,6 +768,7 @@ async def chat_completions(
             pricing_lookup=pricing_lookup,
             get_adapter_config_for_provider=get_adapter_config_for_provider,
             request_payload=body,
+            timeout_fired_probe=_timeout_fired_probe(request),
         )
 
         logger.debug(f"Creating StreamingResponse for model: {model}")

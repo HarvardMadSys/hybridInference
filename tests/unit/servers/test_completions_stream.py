@@ -51,6 +51,7 @@ def _make_session(
     metadata: dict[str, Any] | None = None,
     routing: RoutingInfo | None = None,
     request_headers: Any | None = None,
+    timeout_fired_probe: Any | None = None,
 ) -> StreamSession:
     routing = routing or _routing()
     if log_store is None:
@@ -88,6 +89,7 @@ def _make_session(
         completions_logger=completions_logger,
         pricing_lookup=pricing_lookup,
         get_adapter_config_for_provider=lambda _provider, _base_url: None,
+        timeout_fired_probe=timeout_fired_probe,
     )
 
 
@@ -525,14 +527,14 @@ async def test_error_before_any_chunk_still_emits_role_chunk_then_error():
 
 
 @pytest.mark.asyncio
-async def test_cancellation_mid_stream_persists_failure_log_and_reraises():
-    """A timeout/disconnect (CancelledError) must not drop the failed request.
+async def test_cancellation_mid_stream_logs_client_disconnect_and_reraises():
+    """A cancelled stream must persist a 499 abort row, not a 500 failure.
 
     ``asyncio.CancelledError`` is a ``BaseException``, so it bypasses the
-    ``except Exception`` error branch. Without dedicated handling the failed
-    request skipped finalization entirely — no ``api_logs`` row — so under load
-    every timed-out request vanished. The failure row must still be scheduled,
-    and the cancellation must propagate (never be swallowed).
+    ``except Exception`` error branch. The row must still be scheduled (aborted
+    requests may not vanish from ``api_logs``) but classified as a client
+    disconnect — not a provider error — and the cancellation must propagate
+    (never be swallowed).
     """
     cl_logger = MagicMock(spec=CompletionsLogger)
     session = _make_session(completions_logger=cl_logger)
@@ -545,26 +547,76 @@ async def test_cancellation_mid_stream_persists_failure_log_and_reraises():
     await gen.__anext__()  # role chunk
     await gen.__anext__()  # forwarded content chunk
 
-    # Simulate the response task being cancelled (request timeout / disconnect)
-    # while the generator is suspended awaiting the next upstream chunk.
+    # Simulate the response task being cancelled (client went away) while the
+    # generator is suspended awaiting the next upstream chunk.
     with pytest.raises(asyncio.CancelledError):
         await gen.athrow(asyncio.CancelledError())
 
     cl_logger.schedule_log.assert_called_once()
     log_data = cl_logger.schedule_log.call_args.args[1]
-    assert log_data["status_code"] == 500
-    # Message-less CancelledError still records an identifiable error string.
-    assert log_data["error"]
-    cl_logger.record_routing_observation.assert_called_once()
-    assert cl_logger.record_routing_observation.call_args.kwargs["success"] is False
+    assert log_data["status_code"] == 499
+    assert log_data["error"] == "Client disconnected before the stream completed"
+    assert log_data["metadata"]["terminal_state"] == "client_disconnect"
+    # The partial content the client already received is persisted, not dropped.
+    assert log_data["response"]["choices"][0]["message"]["content"] == "partial"
+    # Client behavior is not a provider failure: no success=False observation.
+    cl_logger.record_routing_observation.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_client_disconnect_midstream_persists_failure_log():
+async def test_cancellation_after_middleware_timeout_logs_504():
+    """When TimeoutMiddleware's deadline fired, the abort row is a 504."""
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger, timeout_fired_probe=lambda: True)
+
+    async def _slow():
+        yield _content_chunk("gpt-4", "partial")
+        await asyncio.sleep(10)
+
+    gen = session.stream(_slow())
+    await gen.__anext__()
+    await gen.__anext__()
+
+    with pytest.raises(asyncio.CancelledError):
+        await gen.athrow(asyncio.CancelledError())
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["status_code"] == 504
+    assert log_data["metadata"]["terminal_state"] == "request_timeout"
+    cl_logger.record_routing_observation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_preserves_usage_already_delivered():
+    """Usage the upstream already reported survives into the abort row."""
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger)
+
+    async def _slow():
+        yield _content_chunk("gpt-4", "partial")
+        yield _usage_chunk("gpt-4", {"prompt_tokens": 7, "completion_tokens": 3})
+        await asyncio.sleep(10)
+
+    gen = session.stream(_slow())
+    for _ in range(3):  # role chunk + content + usage chunk
+        await gen.__anext__()
+
+    with pytest.raises(asyncio.CancelledError):
+        await gen.athrow(asyncio.CancelledError())
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["status_code"] == 499
+    assert log_data["usage"]["prompt_tokens"] == 7
+    assert log_data["usage"]["completion_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_midstream_logs_499():
     """A client disconnect (generator ``aclose`` → ``GeneratorExit``) still logs.
 
     ``GeneratorExit`` is a ``BaseException`` too, so like a cancellation it must
-    not silently drop the in-flight request from ``api_logs``.
+    not silently drop the in-flight request from ``api_logs`` — and it is a
+    client abort, not a 500.
     """
     cl_logger = MagicMock(spec=CompletionsLogger)
     session = _make_session(completions_logger=cl_logger)
@@ -582,7 +634,10 @@ async def test_client_disconnect_midstream_persists_failure_log():
     await gen.aclose()
 
     cl_logger.schedule_log.assert_called_once()
-    assert cl_logger.schedule_log.call_args.args[1]["status_code"] == 500
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["status_code"] == 499
+    assert log_data["metadata"]["terminal_state"] == "client_disconnect"
+    cl_logger.record_routing_observation.assert_not_called()
 
 
 @pytest.mark.asyncio
