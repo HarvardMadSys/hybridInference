@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 import anyio
 
 from serving.servers.streaming_state import (
+    REQUEST_TIMEOUT_SCOPE_STATE_KEY,
     STREAMING_RESPONSE_MARKER_HEADER,
     STREAMING_RESPONSE_SCOPE_STATE_KEY,
 )
@@ -82,6 +83,10 @@ class TimeoutMiddleware:
         response_started = False
 
         with anyio.move_on_after(self._timeout_s) as scope_deadline:
+            # Expose the scope so response generators (StreamSession) can
+            # classify a mid-stream cancellation: ``cancel_called`` is True
+            # only when this deadline fired, i.e. not on client disconnects.
+            scope.setdefault("state", {})[REQUEST_TIMEOUT_SCOPE_STATE_KEY] = scope_deadline
 
             async def send_wrapper(message: dict) -> None:
                 nonlocal response_started
