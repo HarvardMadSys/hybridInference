@@ -320,6 +320,18 @@ class QuotaPool:
         return 0 if snapshot is None else snapshot.remaining
 
     @property
+    def effective_used(self) -> float | None:
+        """Requests used per the latest snapshot, including local increments."""
+        snapshot = self._snapshot()
+        return None if snapshot is None else snapshot.effective_used
+
+    @property
+    def reset_at(self) -> datetime | None:
+        """When the current quota window resets, if the snapshot reported it."""
+        snapshot = self._snapshot()
+        return None if snapshot is None else snapshot.reset_at
+
+    @property
     def used_fraction(self) -> float:
         """Used fraction per the latest snapshot (1.0 when not ready)."""
         snapshot = self._snapshot()

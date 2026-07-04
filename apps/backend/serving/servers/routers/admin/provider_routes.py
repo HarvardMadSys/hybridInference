@@ -2229,6 +2229,38 @@ def _effective_weight(services, model_id: str, raw_weight: float, endpoint_id: s
     return float(get_snapshot(model_id).get(endpoint_id, raw_weight))
 
 
+def _quota_state_for_row(services, model_id: str, adapter) -> dict[str, Any]:
+    if _route_type(adapter) != "quota":
+        return {}
+    quota_pool_id = getattr(adapter.config, "quota_pool", None)
+    if not quota_pool_id:
+        return {}
+    registry = getattr(services, "model_router_registry", None)
+    if registry is None:
+        return {}
+    try:
+        router_obj = registry.get_router(model_id)
+    except Exception:
+        logger.debug("provider route quota state unavailable", exc_info=True)
+        return {}
+    quota_pools = getattr(router_obj, "quota_pools", None)
+    if not isinstance(quota_pools, dict):
+        return {}
+    quota_pool = quota_pools.get(str(quota_pool_id))
+    if quota_pool is None or not getattr(quota_pool, "ready", False):
+        return {}
+    current_limit = getattr(quota_pool, "limit", None)
+    used = getattr(quota_pool, "effective_used", None)
+    remaining = getattr(quota_pool, "remaining", None)
+    reset_at = getattr(quota_pool, "reset_at", None)
+    return {
+        "quota_current_limit": int(current_limit) if current_limit is not None else None,
+        "quota_used": float(used) if used is not None else None,
+        "quota_remaining": int(remaining) if remaining is not None else None,
+        "quota_reset_at": reset_at,
+    }
+
+
 def _quota_limit_for_row(adapter, override_row: dict[str, Any] | None) -> int | None:
     if _route_type(adapter) != "quota":
         return None
@@ -2317,6 +2349,7 @@ async def _route_row(
         provider_model_id=provider_model_id,
         quota_limit=_quota_limit_for_row(adapter, effective_override),
         concurrency_limit=_concurrency_limit_for_row(adapter, effective_override),
+        **_quota_state_for_row(services, model_id, adapter),
         endpoint_id=endpoint_id,
         yaml_weight=float(yaml_weight),
         effective_weight=_effective_weight(services, model_id, float(yaml_weight), endpoint_id),

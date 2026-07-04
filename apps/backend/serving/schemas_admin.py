@@ -1116,6 +1116,10 @@ class ProviderRouteItem(BaseModel):
     provider_model_id: str | None = None
     quota_limit: int | None = Field(None, ge=1)
     concurrency_limit: int | None = Field(None, ge=1)
+    quota_current_limit: int | None = Field(None, ge=1)
+    quota_used: float | None = Field(None, ge=0)
+    quota_remaining: int | None = Field(None, ge=0)
+    quota_reset_at: datetime | None = None
     endpoint_id: str
     yaml_weight: float
     effective_weight: float

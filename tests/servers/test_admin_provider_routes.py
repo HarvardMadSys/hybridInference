@@ -248,7 +248,17 @@ async def admin_client(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_provider_routes_lists_routewise_candidates(admin_client):
-    client, _op_store, _router, _fake_routewise, _verify_mock = admin_client
+    client, _op_store, _router, fake_routewise, _verify_mock = admin_client
+    quota_reset_at = datetime(2026, 6, 17, tzinfo=timezone.utc)
+    fake_routewise.quota_pools = {
+        "chutes-minimax-fast-daily": MagicMock(
+            ready=True,
+            limit=5000,
+            effective_used=123.0,
+            remaining=4877,
+            reset_at=quota_reset_at,
+        )
+    }
 
     response = await client.get("/admin/routing/provider-routes/minimax-fast", headers=AUTH)
 
@@ -278,6 +288,10 @@ async def test_get_provider_routes_lists_routewise_candidates(admin_client):
     assert routes[0]["provider"] == "chutes"
     assert routes[0]["upstream_provider"] == "chutes"
     assert routes[0]["quota_limit"] == 5000
+    assert routes[0]["quota_current_limit"] == 5000
+    assert routes[0]["quota_used"] == 123.0
+    assert routes[0]["quota_remaining"] == 4877
+    assert routes[0]["quota_reset_at"] == quota_reset_at.isoformat().replace("+00:00", "Z")
     assert routes[1]["provider"] == "featherless"
     assert routes[1]["upstream_provider"] == "featherless"
     assert routes[1]["quota_limit"] is None

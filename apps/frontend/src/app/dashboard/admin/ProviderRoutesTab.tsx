@@ -216,6 +216,72 @@ function routeLimitHeading(isRoutewise: boolean) {
   return isRoutewise ? 'Limit' : 'Weight';
 }
 
+function formatRouteQuotaValue(value: number | null | undefined) {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return Math.round(value).toLocaleString();
+}
+
+function routeQuotaCurrentLimit(route: ProviderRoute) {
+  return route.quota_current_limit ?? route.quota_limit ?? null;
+}
+
+function routeQuotaUsedPercent(route: ProviderRoute) {
+  const limit = routeQuotaCurrentLimit(route);
+  if (limit == null || limit <= 0 || route.quota_remaining == null) return null;
+  return Math.min(100, Math.max(0, ((limit - route.quota_remaining) / limit) * 100));
+}
+
+function routeQuotaResetLabel(route: ProviderRoute) {
+  if (!route.quota_reset_at) return null;
+  const resetAt = new Date(route.quota_reset_at);
+  if (Number.isNaN(resetAt.getTime())) return null;
+  return resetAt.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
+function RouteQuotaCell({ route }: { route: ProviderRoute }) {
+  const limit = routeQuotaCurrentLimit(route);
+  const usedPct = routeQuotaUsedPercent(route);
+  const resetLabel = routeQuotaResetLabel(route);
+  if (route.quota_remaining == null || limit == null) {
+    return (
+      <div>
+        <div>{routeLimitLabel(route, true)}</div>
+        <div className="mt-1 text-[11px] leading-4 text-gray-400">Snapshot pending</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <div className="tabular-nums text-gray-900">
+        {formatRouteQuotaValue(route.quota_remaining)} left
+      </div>
+      <div className="text-[11px] leading-4 text-gray-400">
+        of {formatRouteQuotaValue(limit)} today
+      </div>
+      {usedPct != null && (
+        <div className="h-1 overflow-hidden rounded-full bg-gray-100">
+          <div
+            className={
+              route.quota_remaining === 0
+                ? 'h-full bg-red-400'
+                : usedPct >= 80
+                  ? 'h-full bg-amber-400'
+                  : 'h-full bg-emerald-500'
+            }
+            style={{ width: `${usedPct}%` }}
+          />
+        </div>
+      )}
+      {resetLabel && <div className="text-[11px] leading-4 text-gray-400">Resets {resetLabel}</div>}
+    </div>
+  );
+}
+
 function routeTypeAllowedForStrategy(routeType: ProviderRouteType, isRoutewise: boolean) {
   return routeType === 'on_demand' || isRoutewise;
 }
@@ -559,6 +625,10 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const selectedRoutes = useMemo(
     () => routes.filter((route) => route.model_id === selectedModel),
     [routes, selectedModel],
+  );
+  const selectedQuotaRoutes = useMemo(
+    () => selectedRoutes.filter((route) => route.route_type === 'quota'),
+    [selectedRoutes],
   );
   const createFormOpen = addingRoute || creatingModel;
   const createTargetRoutes = creatingModel ? EMPTY_PROVIDER_ROUTES : selectedRoutes;
@@ -1511,7 +1581,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         />
       )}
 
-      {isRoutewise && <RoutewiseDecisionsPanel modelId={selectedModel} />}
+      {isRoutewise && (
+        <RoutewiseDecisionsPanel modelId={selectedModel} quotaRoutes={selectedQuotaRoutes} />
+      )}
 
       {loading && routes.length === 0 ? (
         <div className="flex justify-center py-24">
@@ -1660,6 +1732,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                             Save
                           </button>
                         </div>
+                      ) : route.route_type === 'quota' ? (
+                        <RouteQuotaCell route={route} />
                       ) : (
                         <div>{routeLimitLabel(route, isRoutewise)}</div>
                       )

@@ -1527,6 +1527,10 @@ export interface ProviderRoute {
   provider_model_id: string | null;
   quota_limit: number | null;
   concurrency_limit: number | null;
+  quota_current_limit?: number | null;
+  quota_used?: number | null;
+  quota_remaining?: number | null;
+  quota_reset_at?: string | null;
   endpoint_id: string;
   yaml_weight: number;
   effective_weight: number;

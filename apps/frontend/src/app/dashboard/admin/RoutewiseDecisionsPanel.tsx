@@ -14,6 +14,7 @@ import {
 
 import { getRoutewiseDecisions } from '@/lib/api/admin';
 import type {
+  ProviderRoute,
   RoutewiseDecisionBucket,
   RoutewiseDecisionsRange,
   RoutewiseDecisionsResponse,
@@ -22,6 +23,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 
 interface RoutewiseDecisionsPanelProps {
   modelId: string;
+  quotaRoutes?: ProviderRoute[];
 }
 
 const RANGES: { key: RoutewiseDecisionsRange; label: string }[] = [
@@ -195,6 +197,32 @@ function fmtPct(count: number, total: number): string {
   return `${Math.round((count / total) * 100)}%`;
 }
 
+function fmtQuotaCount(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return Math.round(value).toLocaleString();
+}
+
+function resetAtLabel(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
+function quotaLimitForRoute(route: ProviderRoute): number | null {
+  return route.quota_current_limit ?? route.quota_limit ?? null;
+}
+
+function quotaUsedPercent(route: ProviderRoute): number | null {
+  const limit = quotaLimitForRoute(route);
+  if (limit == null || limit <= 0 || route.quota_remaining == null) return null;
+  return Math.min(100, Math.max(0, ((limit - route.quota_remaining) / limit) * 100));
+}
+
 // One-decimal percentage for the hedge KPIs (e.g. 0.1875 -> "18.8%").
 function fmtRatePct(rate: number | null | undefined): string {
   if (rate == null || !Number.isFinite(rate)) return '—';
@@ -286,7 +314,10 @@ function DistributionTooltip(props: {
   );
 }
 
-export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProps) {
+export function RoutewiseDecisionsPanel({
+  modelId,
+  quotaRoutes = [],
+}: RoutewiseDecisionsPanelProps) {
   const [range, setRange] = useState<RoutewiseDecisionsRange>('24h');
   const [decisions, setDecisions] = useState<RoutewiseDecisionsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -421,6 +452,52 @@ export function RoutewiseDecisionsPanel({ modelId }: RoutewiseDecisionsPanelProp
 
       {error && (
         <div className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-[12px] text-red-700">{error}</div>
+      )}
+
+      {quotaRoutes.length > 0 && (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-y border-gray-100 py-2 text-[12px]"
+          data-testid="routewise-quota-summary"
+        >
+          <span className="font-semibold text-gray-900">Quota today</span>
+          {quotaRoutes.map((route) => {
+            const limit = quotaLimitForRoute(route);
+            const usedPct = quotaUsedPercent(route);
+            const resetAt = resetAtLabel(route.quota_reset_at);
+            const hasRemaining = route.quota_remaining != null && limit != null;
+            return (
+              <div key={route.route_id} className="min-w-[180px] flex-1 sm:flex-none">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="truncate font-mono text-gray-500" title={route.endpoint_id}>
+                    {shortEndpoint(modelId, route.endpoint_id)}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-gray-900">
+                    {hasRemaining
+                      ? `${fmtQuotaCount(route.quota_remaining)} left / ${fmtQuotaCount(limit)}`
+                      : limit != null
+                        ? `limit ${fmtQuotaCount(limit)}`
+                        : 'snapshot pending'}
+                  </span>
+                </div>
+                {usedPct != null && (
+                  <div className="mt-1 h-1 overflow-hidden rounded-full bg-gray-100">
+                    <div
+                      className={
+                        route.quota_remaining === 0
+                          ? 'h-full bg-red-400'
+                          : usedPct >= 80
+                            ? 'h-full bg-amber-400'
+                            : 'h-full bg-emerald-500'
+                      }
+                      style={{ width: `${usedPct}%` }}
+                    />
+                  </div>
+                )}
+                {resetAt && <div className="mt-1 text-[11px] text-gray-400">Resets {resetAt}</div>}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       <div className="mt-6">
