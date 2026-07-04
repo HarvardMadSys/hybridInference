@@ -8,7 +8,7 @@ rules:
   fivexx_rate:
     enabled: true
     window_sec: 300
-    threshold_pct: 2.0
+    threshold_pct: 10.0
     min_samples: 50
     cooldown_sec: 900
   p95_latency_per_provider:
