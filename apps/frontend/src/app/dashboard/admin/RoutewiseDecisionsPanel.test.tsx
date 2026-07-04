@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ComponentType, ReactElement, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RoutewiseDecisionsPanel, fillBucketGaps } from './RoutewiseDecisionsPanel';
@@ -8,12 +9,31 @@ import { RoutewiseDecisionsPanel, fillBucketGaps } from './RoutewiseDecisionsPan
 // Render recharts primitives as simple elements so DOM assertions stay robust to
 // SVG internals: <Bar> surfaces its `name` as text (legend labels).
 vi.mock('recharts', () => ({
-  Bar: ({ name }: { name?: string }) => (name ? <span>{name}</span> : null),
-  BarChart: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  Bar: ({ name, fill }: { name?: string; fill?: string }) =>
+    name ? (
+      <span data-fill={fill} data-testid={`bar-${name}`}>
+        {name}
+      </span>
+    ) : null,
+  BarChart: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   CartesianGrid: () => null,
   Legend: () => null,
-  ResponsiveContainer: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
-  Tooltip: () => null,
+  ResponsiveContainer: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Tooltip: ({ content }: { content?: ReactElement }) => {
+    if (!content) return null;
+    const Content = content.type as ComponentType<Record<string, unknown>>;
+    return (
+      <Content
+        {...content.props}
+        active
+        label="23:00"
+        payload={[
+          { dataKey: 's0', value: 0 },
+          { dataKey: 's1', value: 6 },
+        ]}
+      />
+    );
+  },
   XAxis: () => null,
   YAxis: () => null,
 }));
@@ -115,6 +135,28 @@ describe('RoutewiseDecisionsPanel', () => {
       'on_demand 50% · concurrency 50%',
     );
     expect(screen.queryByText('2 unattributed')).not.toBeInTheDocument();
+  });
+
+  it('renders only non-zero distribution tooltip rows', async () => {
+    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+
+    const tooltip = await screen.findByTestId('routewise-distribution-tooltip');
+    expect(within(tooltip).queryByText('openrouter[wandb]')).not.toBeInTheDocument();
+    expect(within(tooltip).getByText('openrouter[minimax/highspeed]')).toBeInTheDocument();
+    expect(within(tooltip).getByText('6')).toBeInTheDocument();
+  });
+
+  it('uses distinct stable colors for selection distribution endpoints', async () => {
+    render(<RoutewiseDecisionsPanel modelId="minimax-fast" />);
+
+    expect(await screen.findByTestId('bar-openrouter[wandb]')).toHaveAttribute(
+      'data-fill',
+      '#8b5cf6',
+    );
+    expect(screen.getByTestId('bar-openrouter[minimax/highspeed]')).toHaveAttribute(
+      'data-fill',
+      '#10b981',
+    );
   });
 
   it('renders hedging KPIs and stacked legend labels from the response', async () => {

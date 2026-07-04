@@ -337,6 +337,10 @@ describe('provider route client', () => {
               provider_model_id: 'MiniMaxAI/MiniMax-M2.5',
               quota_limit: null,
               endpoint_id: 'minimax-fast:featherless-api',
+              quota_current_limit: null,
+              quota_used: null,
+              quota_remaining: null,
+              quota_reset_at: null,
               yaml_weight: 1,
               effective_weight: 1,
               source: 'yaml',
@@ -352,6 +356,7 @@ describe('provider route client', () => {
     const out = await listProviderRoutes('minimax-fast');
 
     expect(out.routes[0].route_id).toBe('minimax-fast:featherless-api');
+    expect(out.routes[0].quota_remaining).toBeNull();
     expect(out.provider_options[0].provider).toBe('openrouter');
     expect(out.openrouter_provider_options?.[0].provider).toBe('parasail');
     const [url] = fetchMock.mock.calls[0];

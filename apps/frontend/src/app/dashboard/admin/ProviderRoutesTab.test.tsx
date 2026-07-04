@@ -160,6 +160,24 @@ const route = {
   updated_by: null,
 };
 
+const quotaRoute = {
+  ...route,
+  route_id: 'minimax-fast:chutes-api',
+  route_type: 'quota',
+  provider: 'chutes',
+  upstream_provider: 'chutes',
+  key_provider: 'chutes',
+  base_url: 'https://llm.chutes.ai/v1',
+  provider_model_id: 'MiniMaxAI/MiniMax-M2.5-TEE',
+  quota_limit: 5000,
+  concurrency_limit: null,
+  quota_current_limit: 5000,
+  quota_used: 123,
+  quota_remaining: 4877,
+  quota_reset_at: '2026-07-04T16:00:00Z',
+  endpoint_id: 'minimax-fast:chutes-api',
+};
+
 describe('ProviderRoutesTab', () => {
   afterEach(() => {
     cleanup();
@@ -204,6 +222,23 @@ describe('ProviderRoutesTab', () => {
     expect(screen.getByText('Featherless')).toBeInTheDocument();
     expect(screen.getByText('Configured default featherless key')).toBeInTheDocument();
     expect(screen.queryByText('Effective')).not.toBeInTheDocument();
+  });
+
+  it('shows current daily quota remaining in the RouteWise summary and routes table', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [quotaRoute, route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'chutes', keys: [] });
+
+    render(<ProviderRoutesTab />);
+
+    expect(await screen.findByTestId('routewise-quota-summary')).toHaveTextContent(
+      '4,877 left / 5,000',
+    );
+    expect(screen.getByText('4,877 left')).toBeInTheDocument();
+    expect(screen.getByText('of 5,000 today')).toBeInTheDocument();
   });
 
   it('hides fixed weight when adding a routewise provider route', async () => {
