@@ -282,7 +282,7 @@ models:
         provider_model_id: "minimax-m2.5"
 
   - id: minimax-m3
-    name: MiniMax M3
+    name: MiniMax M3 (mapped from claude-opus-4.8 alias; not a real Anthropic model)
     provider: minimax
     quantization: "bf16"
     input_modalities: ["text", "image"]
@@ -546,7 +546,7 @@ models:
         provider_model_id: "kimi-k2.7-code"
 
   - id: qwen3.6-35b
-    name: Qwen3.6 35B (no concurrency limit currently)
+    name: Qwen3.6 35B (mapped from claude-sonnet-5 alias; not a real Anthropic model; no concurrency limit currently)
     provider: sglang
     quantization: "fp8"
     input_modalities: ["text"]
