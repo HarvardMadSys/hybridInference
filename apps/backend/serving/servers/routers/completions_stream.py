@@ -611,6 +611,9 @@ class StreamSession:
                 routing=self._routing,
                 prompt_tokens=int(_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(_usage.get("completion_tokens", 0) or 0),
+                total_tokens=(
+                    int(_usage["total_tokens"]) if _usage.get("total_tokens") is not None else None
+                ),
                 cache_read_tokens=int(_usage.get("cache_read_tokens", 0) or 0),
                 cache_write_tokens=int(_usage.get("cache_write_tokens", 0) or 0),
                 reasoning_tokens=int(_usage.get("reasoning_tokens", 0) or 0),

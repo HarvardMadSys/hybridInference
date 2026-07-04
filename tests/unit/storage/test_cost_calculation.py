@@ -25,6 +25,7 @@ def test_cost_calculation_with_cache_and_reasoning() -> None:
         "prompt_tokens": 6000,
         "completion_tokens": 500,
         "reasoning_tokens": 200,
+        "total_tokens": 6700,
         "cache_read_tokens": 5000,
     }
     pricing = {
@@ -41,6 +42,40 @@ def test_cost_calculation_with_cache_and_reasoning() -> None:
         + (200 * 0.42 / 1_000_000)
         + (5000 * 0.028 / 1_000_000)
     )
+    assert cost == pytest.approx(expected)
+
+
+def test_cost_calculation_does_not_double_bill_included_reasoning() -> None:
+    usage = {
+        "prompt_tokens": 6000,
+        "completion_tokens": 700,
+        "reasoning_tokens": 200,
+        "total_tokens": 6700,
+        "cache_read_tokens": 5000,
+    }
+    pricing = {
+        "prompt": "0.28",
+        "completion": "0.42",
+        "input_cache_reads": "0.028",
+    }
+
+    cost = calculate_cost(usage, pricing)
+
+    expected = (1000 * 0.28 / 1_000_000) + (700 * 0.42 / 1_000_000) + (5000 * 0.028 / 1_000_000)
+    assert cost == pytest.approx(expected)
+
+
+def test_cost_calculation_preserves_reasoning_charge_without_total() -> None:
+    usage = {
+        "prompt_tokens": 1000,
+        "completion_tokens": 100,
+        "reasoning_tokens": 500,
+    }
+    pricing = {"prompt": "0.5", "completion": "2.0"}
+
+    cost = calculate_cost(usage, pricing)
+
+    expected = (1000 * 0.5 / 1_000_000) + ((100 + 500) * 2.0 / 1_000_000)
     assert cost == pytest.approx(expected)
 
 

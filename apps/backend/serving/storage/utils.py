@@ -467,6 +467,41 @@ def coerce_json_object(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def billable_output_tokens(
+    *,
+    prompt_tokens: float,
+    completion_tokens: float,
+    reasoning_tokens: float = 0.0,
+    total_tokens: float | None = None,
+) -> float:
+    """Return output tokens to bill at the completion price.
+
+    Providers are not consistent about whether ``completion_tokens`` already
+    includes reasoning. When ``total_tokens`` proves it does, avoid charging the
+    separately reported ``reasoning_tokens`` twice. When total usage is absent
+    or ambiguous, preserve the historical conservative behavior and bill
+    completion plus reasoning.
+    """
+    if reasoning_tokens <= 0:
+        return completion_tokens
+
+    if total_tokens is not None:
+        prompt_plus_completion = prompt_tokens + completion_tokens
+        if math.isclose(total_tokens, prompt_plus_completion, rel_tol=0.0, abs_tol=1e-9):
+            return completion_tokens
+
+        prompt_plus_completion_plus_reasoning = prompt_plus_completion + reasoning_tokens
+        if math.isclose(
+            total_tokens,
+            prompt_plus_completion_plus_reasoning,
+            rel_tol=0.0,
+            abs_tol=1e-9,
+        ):
+            return completion_tokens + reasoning_tokens
+
+    return completion_tokens + reasoning_tokens
+
+
 def calculate_cost(
     usage: dict[str, Any] | None,
     pricing: dict[str, str] | None,
@@ -490,6 +525,8 @@ def calculate_cost(
         prompt_tokens = float(usage.get("prompt_tokens", 0))
         completion_tokens = float(usage.get("completion_tokens", 0))
         reasoning_tokens = float(usage.get("reasoning_tokens", 0))
+        total_raw = usage.get("total_tokens")
+        total_tokens = float(total_raw) if total_raw is not None else None
         cache_read_tokens = float(usage.get("cache_read_tokens", 0))
         cache_write_tokens = float(usage.get("cache_write_tokens", 0))
 
@@ -505,10 +542,16 @@ def calculate_cost(
             billable_prompt_tokens -= cache_write_tokens
         billable_prompt_tokens = max(billable_prompt_tokens, 0.0)
 
+        output_tokens = billable_output_tokens(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            reasoning_tokens=reasoning_tokens,
+            total_tokens=total_tokens,
+        )
+
         return (
             (billable_prompt_tokens * prompt_price / 1_000_000)
-            + (completion_tokens * completion_price / 1_000_000)
-            + (reasoning_tokens * completion_price / 1_000_000)
+            + (output_tokens * completion_price / 1_000_000)
             + (cache_read_tokens * cache_read_price / 1_000_000)
             + (cache_write_tokens * cache_write_price / 1_000_000)
         )
