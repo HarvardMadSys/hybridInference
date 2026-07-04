@@ -779,13 +779,9 @@ def _openrouter_endpoint_pricing(endpoint: dict[str, Any]) -> dict[str, str] | N
         "completion": completion,
         "image": "0",
         "request": "0",
-        "input_cache_reads": _openrouter_price_per_million(
-            raw_pricing.get("input_cache_read")
-        )
+        "input_cache_reads": _openrouter_price_per_million(raw_pricing.get("input_cache_read"))
         or "0",
-        "input_cache_writes": _openrouter_price_per_million(
-            raw_pricing.get("input_cache_write")
-        )
+        "input_cache_writes": _openrouter_price_per_million(raw_pricing.get("input_cache_write"))
         or "0",
     }
 
@@ -908,8 +904,6 @@ async def _openrouter_pricing_for_target(
     target: ProviderTarget,
     openrouter_sort: str | None,
 ) -> OpenRouterEndpointPricing | None:
-    if openrouter_sort is not None:
-        return None
     _base_kind, pinned_provider = parse_openrouter_kind(target.kind)
     if not pinned_provider:
         return None
