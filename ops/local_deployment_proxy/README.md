@@ -206,12 +206,7 @@ Models are defined in `local_deployment_proxy/models.json`:
 | Field | Description |
 |---|---|
 | `kv_cache_dtype` | `--kv-cache-dtype` (default `fp8`, matching FP8 weights) |
-| `reasoning_parser` | `--reasoning-parser` (splits the thinking block into `message.reasoning_content`) |
 | `vllm_tool_call_parser` | `--tool-call-parser` override when vLLM's parser name differs from sglang's; falls back to `tool_call_parser`. vLLM also gets `--enable-auto-tool-choice` automatically |
-| `trust_remote_code` | `true` → adds `--trust-remote-code` |
-| `docker_image` | server image override (default `vllm/vllm-openai:latest`); e.g. `vllm/vllm-openai:gemma` for DiffusionGemma |
-| `docker_env` | mapping of extra container env vars, e.g. `{"VLLM_USE_V2_MODEL_RUNNER": "1"}` |
-| `vllm_extra_args` | list of extra CLI args appended to the vLLM server (attention backend, generation overrides, chat-template kwargs, …) |
 
 To add a new model, append an entry to `models.json` and restart the proxy.
 
