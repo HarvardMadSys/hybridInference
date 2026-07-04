@@ -781,6 +781,104 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
 
 
 @pytest.mark.asyncio
+async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget(
+    admin_client,
+):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:chutes-api",
+            "provider": "openrouter[parasail]",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 8000,
+            "concurrency_limit": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    openrouter_response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 8000,
+        },
+        headers=AUTH,
+    )
+    assert openrouter_response.status_code == 200, openrouter_response.text
+    openrouter_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert openrouter_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    assert openrouter_adapter.config.route_metadata["pricing_source"] == "openrouter_endpoint"
+    assert openrouter_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
+    verify_mock.assert_awaited_once()
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+    op_store.upsert_provider_route_config.reset_mock()
+    verify_mock.reset_mock()
+    fake_routewise._rebuild_from_fixed_router.reset_mock()
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:chutes-api",
+            "provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1",
+            "api_key_id": None,
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "quota_limit": 8000,
+            "concurrency_limit": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    chutes_response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+        },
+        headers=AUTH,
+    )
+
+    assert chutes_response.status_code == 200, chutes_response.text
+    op_store.upsert_provider_route_config.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:chutes-api",
+        "chutes",
+        None,
+        "https://llm.chutes.ai/v1",
+        None,
+        "MiniMaxAI/MiniMax-M2.5-TEE",
+        8000,
+        None,
+        "127.0.0.1",
+    )
+    retargeted_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert retargeted_adapter.config.provider == "chutes"
+    assert retargeted_adapter.config.pricing == {
+        "prompt": "0",
+        "completion": "0",
+        "image": "0",
+        "request": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+    }
+    assert "pricing_source" not in retargeted_adapter.config.route_metadata
+    assert "pricing_provider" not in retargeted_adapter.config.route_metadata
+    verify_mock.assert_awaited_once()
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
 async def test_put_provider_route_persists_effective_quota_when_payload_omits_limit(
     admin_client,
 ):

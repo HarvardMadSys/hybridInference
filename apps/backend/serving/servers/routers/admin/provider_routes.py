@@ -948,6 +948,12 @@ async def _apply_openrouter_endpoint_pricing(
         openrouter_sort=openrouter_sort,
     )
     if endpoint_pricing is None:
+        route_metadata = dict(cfg.get("route_metadata") or {})
+        if route_metadata.get("pricing_source") == "openrouter_endpoint":
+            cfg.pop("pricing", None)
+            route_metadata.pop("pricing_source", None)
+            route_metadata.pop("pricing_provider", None)
+            cfg["route_metadata"] = route_metadata
         return
     cfg["pricing"] = endpoint_pricing.pricing
     route_metadata = dict(cfg.get("route_metadata") or {})
