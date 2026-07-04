@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from httpx import ASGITransport, AsyncClient
 
 from serving.servers.middleware.timeout import (
@@ -15,6 +15,7 @@ from serving.servers.middleware.timeout import (
     _parse_stream_timeout_env,
     _parse_timeout_env,
 )
+from serving.servers.streaming_state import REQUEST_TIMEOUT_SCOPE_STATE_KEY
 
 
 def _build_app(timeout_s: float) -> FastAPI:
@@ -50,6 +51,41 @@ async def test_slow_request_returns_504() -> None:
         response = await client.get("/slow")
     assert response.status_code == 504
     assert "Gateway Timeout" in response.text
+
+
+@pytest.mark.asyncio
+async def test_timeout_scope_exposed_in_scope_state() -> None:
+    """Handlers can read the middleware's cancel scope to classify aborts.
+
+    ``cancel_called`` must be False while the request is healthy and flip to
+    True once the deadline fires — that is the signal StreamSession uses to
+    log 504 (gateway timeout) instead of 499 (client disconnect).
+    """
+    captured: list = []
+    app = FastAPI()
+    app.add_middleware(TimeoutMiddleware, timeout_s=0.05)
+
+    @app.get("/probe")
+    async def probe(request: Request) -> dict[str, bool]:
+        timeout_scope = request.scope["state"][REQUEST_TIMEOUT_SCOPE_STATE_KEY]
+        return {"fired": timeout_scope.cancel_called}
+
+    @app.get("/slow-capture")
+    async def slow_capture(request: Request) -> dict[str, str]:
+        captured.append(request.scope["state"][REQUEST_TIMEOUT_SCOPE_STATE_KEY])
+        await asyncio.sleep(1.0)
+        return {"ok": "yes"}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/probe")
+        assert response.json() == {"fired": False}
+
+        response = await client.get("/slow-capture")
+        assert response.status_code == 504
+
+    assert len(captured) == 1
+    assert captured[0].cancel_called is True
 
 
 def test_parse_timeout_env_uses_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:

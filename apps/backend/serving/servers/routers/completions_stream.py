@@ -204,6 +204,7 @@ class StreamSession:
         pricing_lookup: PricingLookup,
         get_adapter_config_for_provider: Callable[[str, str | None], Any],
         request_payload: Any | None = None,
+        timeout_fired_probe: Callable[[], bool] | None = None,
     ) -> None:
         """Capture per-request state and dependencies.
 
@@ -240,6 +241,11 @@ class StreamSession:
             request_payload: Original raw request payload, retained for
                 downstream logging and replay reconstruction; ``None`` when
                 the caller does not need to preserve it.
+            timeout_fired_probe: Zero-arg callable returning ``True`` when the
+                TimeoutMiddleware deadline for this request has fired. Used to
+                classify a mid-stream cancellation as a gateway timeout (504)
+                rather than a client disconnect (499). ``None`` means "no
+                middleware signal available" and classifies as disconnect.
         """
         self._routing: RoutingInfo = routing
         self._model = model
@@ -259,6 +265,7 @@ class StreamSession:
         self._pricing_lookup = pricing_lookup
         self._get_adapter_config_for_provider = get_adapter_config_for_provider
         self._request_payload = request_payload
+        self._timeout_fired_probe = timeout_fired_probe
 
         # Streaming-loop state
         self._yielded_first_chunk = False
@@ -446,15 +453,18 @@ class StreamSession:
             error_msg = f"data: {json.dumps(error_chunk)}\n\n"
             logger.error(f"Yielding error chunk: {error_msg}")
             yield error_msg
-        except (asyncio.CancelledError, GeneratorExit) as exc:
-            # A request timeout (TimeoutMiddleware cancels the response task via
-            # ``anyio.move_on_after``) raises ``asyncio.CancelledError``; a client
-            # disconnect raises ``GeneratorExit`` — both subclasses of
-            # ``BaseException``, so the ``except Exception`` above never runs.
-            # Previously these skipped finalization entirely: no ``api_logs`` row
-            # was written, so under load every timed-out request vanished, which
-            # reads as "all failed requests are dropped". Persist the failure row
-            # before re-propagating so timed-out/aborted requests stay visible.
+        except (asyncio.CancelledError, GeneratorExit):
+            # Both a TimeoutMiddleware deadline (cancels the response task via
+            # ``anyio.move_on_after``) and a client disconnect (uvicorn cancels
+            # the ASGI task, or closes the generator with ``GeneratorExit``)
+            # land here — both are ``BaseException`` subclasses, so the
+            # ``except Exception`` above never runs. Previously these skipped
+            # finalization entirely: no ``api_logs`` row was written, so under
+            # load every timed-out request vanished. Persist the row before
+            # re-propagating so aborted requests stay visible — but through
+            # ``_finalize_cancelled``, not ``_finalize_failure``: an abort is
+            # not a provider failure, so it must not be logged as a 500 or
+            # recorded as a ``success=False`` routing observation.
             # (``KeyboardInterrupt`` / ``SystemExit`` are intentionally NOT caught
             # here: those are process-level signals, not request failures, and
             # must propagate without writing a misleading failure log.)
@@ -463,7 +473,7 @@ class StreamSession:
             # connection is already being torn down, and yielding while a
             # ``GeneratorExit`` is in flight is illegal.
             #
-            # ``_finalize_failure`` must stay synchronous (no suspending
+            # ``_finalize_cancelled`` must stay synchronous (no suspending
             # ``await``): it only *schedules* the DB write, so it runs to
             # completion here even while this task is being cancelled. The write
             # itself is a separate task retained beyond this request by
@@ -473,7 +483,7 @@ class StreamSession:
             # finalization, schedule it as its own background task rather than
             # awaiting it here, or a cancellation could abort it mid-flight.
             with suppress(Exception):
-                await self._finalize_failure(exc)
+                self._finalize_cancelled()
             raise
 
     # -- internal: per-chunk handlers ---------------------------------------
@@ -730,3 +740,76 @@ class StreamSession:
             )
 
         return
+
+    def _finalize_cancelled(self) -> None:
+        """Schedule the api_logs row for a stream aborted by cancellation.
+
+        Covers client disconnects and TimeoutMiddleware deadline expiry.
+        Unlike ``_finalize_failure`` this deliberately:
+
+        - classifies the row as 499 (client closed request, nginx
+          convention) or 504 (gateway timeout) instead of the generic 500 —
+          an abort is not a provider error and must not inflate 5xx metrics;
+        - persists the partial response and any usage the upstream already
+          delivered instead of dropping them (billing intentionally stays
+          untouched: no pricing, no cost increment — the same product-policy
+          boundary as the ``empty_completion`` handling);
+        - records NO routing observation: client behavior must not count as
+          a ``success=False`` sample against the serving endpoint's health
+          or RouteWise profiles.
+
+        Must not suspend (sync ``def``, no ``await``): it runs while the
+        request task is being cancelled — see the caller's comment in
+        ``stream()``.
+        """
+        timed_out = False
+        if self._timeout_fired_probe is not None:
+            with suppress(Exception):
+                timed_out = bool(self._timeout_fired_probe())
+        if timed_out:
+            status_code = 504
+            terminal_state = "request_timeout"
+            error_text = "Stream cancelled: gateway request timeout exceeded"
+        else:
+            status_code = 499
+            terminal_state = "client_disconnect"
+            error_text = "Client disconnected before the stream completed"
+
+        logger.info(
+            f"Stream aborted ({terminal_state}): model={self._model}, "
+            f"chunks={self._chunk_count}, request_id={self._request_id}"
+        )
+
+        if not self._log_store or self._suppress_synthetic_logging:
+            return
+
+        provider = self._provider_from_ctx or self._routing.provider or "router"
+        metadata_for_log: dict[str, Any] = dict(self._metadata)
+        if self._adapter_routing:
+            metadata_for_log.update(
+                json_safe(
+                    {k: v for k, v in self._adapter_routing.items() if k != "upstream_cost_usd"}
+                )
+            )
+        metadata_for_log["terminal_state"] = terminal_state
+
+        response_for_db = self._build_response_for_db()
+        self._completions_logger.schedule_log(
+            self._request_id,
+            {
+                "request_id": self._request_id,
+                "model_id": self._model,
+                "provider": provider,
+                "prompt": self._messages,
+                "response": response_for_db,
+                "usage": response_for_db.get("usage") or self._usage_data,
+                "latency_ms": int((time.time() - self._start_time) * 1000),
+                "status_code": status_code,
+                "error": error_text,
+                "params": self._params,
+                "metadata": metadata_for_log,
+                "ttft_ms": self._ttft.ttft_ms,
+                "pricing": None,
+                "request_payload": self._request_payload,
+            },
+        )
