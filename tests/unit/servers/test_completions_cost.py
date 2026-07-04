@@ -402,6 +402,22 @@ async def test_cost_tracker_no_op_store_skips_increment(empty_lookup):
                 "prompt_tokens": 6000,
                 "completion_tokens": 500,
                 "reasoning_tokens": 200,
+                "total_tokens": 6700,
+                "cache_read_tokens": 5000,
+            },
+            {
+                "prompt": "0.28",
+                "completion": "0.42",
+                "input_cache_reads": "0.028",
+            },
+        ),
+        # Reasoning reported separately but already included in completion_tokens.
+        (
+            {
+                "prompt_tokens": 6000,
+                "completion_tokens": 700,
+                "reasoning_tokens": 200,
+                "total_tokens": 6700,
                 "cache_read_tokens": 5000,
             },
             {
@@ -475,6 +491,9 @@ def test_cost_tracker_compute_cost_matches_calculate_cost_byte_for_byte(usage, p
     actual = CostTracker._compute_cost(
         prompt_tokens=int(usage.get("prompt_tokens", 0)),
         completion_tokens=int(usage.get("completion_tokens", 0)),
+        total_tokens=(
+            int(usage["total_tokens"]) if usage.get("total_tokens") is not None else None
+        ),
         pricing=pricing,
         cache_read_tokens=int(usage.get("cache_read_tokens", 0)),
         cache_write_tokens=int(usage.get("cache_write_tokens", 0)),

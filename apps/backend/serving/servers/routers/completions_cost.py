@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
+from serving.storage.utils import billable_output_tokens
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -220,6 +221,7 @@ class CostTracker:
         routing: RoutingInfo,
         prompt_tokens: int,
         completion_tokens: int,
+        total_tokens: int | None = None,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
         reasoning_tokens: int = 0,
@@ -244,6 +246,7 @@ class CostTracker:
         cost = self._compute_cost(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
             pricing=pricing,
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
@@ -277,6 +280,7 @@ class CostTracker:
         prompt_tokens: int,
         completion_tokens: int,
         pricing: Pricing,
+        total_tokens: int | None = None,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
         reasoning_tokens: int = 0,
@@ -292,6 +296,7 @@ class CostTracker:
             prompt = float(prompt_tokens or 0)
             completion = float(completion_tokens or 0)
             reasoning = float(reasoning_tokens or 0)
+            total = float(total_tokens) if total_tokens is not None else None
             cache_r = float(cache_read_tokens or 0)
             cache_w = float(cache_write_tokens or 0)
 
@@ -307,10 +312,16 @@ class CostTracker:
                 billable_prompt -= cache_w
             billable_prompt = max(billable_prompt, 0.0)
 
+            output = billable_output_tokens(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                reasoning_tokens=reasoning,
+                total_tokens=total,
+            )
+
             return (
                 (billable_prompt * prompt_p / 1_000_000)
-                + (completion * completion_p / 1_000_000)
-                + (reasoning * completion_p / 1_000_000)
+                + (output * completion_p / 1_000_000)
                 + (cache_r * cache_r_p / 1_000_000)
                 + (cache_w * cache_w_p / 1_000_000)
             )
