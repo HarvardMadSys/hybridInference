@@ -32,6 +32,80 @@ RUNTIME_PRICING = {
     "input_cache_reads": "0.0028",
     "input_cache_writes": "0",
 }
+OPENROUTER_DEEPINFRA_PRICING = {
+    "prompt": "0.15",
+    "completion": "1.15",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.03",
+    "input_cache_writes": "0",
+}
+OPENROUTER_PARASAIL_PRICING = {
+    "prompt": "0.3",
+    "completion": "1.2",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.03",
+    "input_cache_writes": "0",
+}
+OPENROUTER_MINIMAX_PRICING = {
+    "prompt": "0.3",
+    "completion": "1.2",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.03",
+    "input_cache_writes": "0",
+}
+OPENROUTER_HIGHSPEED_PRICING = {
+    "prompt": "0.6",
+    "completion": "2.4",
+    "image": "0",
+    "request": "0",
+    "input_cache_reads": "0.06",
+    "input_cache_writes": "0",
+}
+OPENROUTER_ENDPOINT_PAYLOAD = {
+    "data": {
+        "endpoints": [
+            {
+                "provider_name": "DeepInfra",
+                "tag": "deepinfra/fp8",
+                "pricing": {
+                    "prompt": "0.00000015",
+                    "completion": "0.00000115",
+                    "input_cache_read": "0.00000003",
+                },
+            },
+            {
+                "provider_name": "Parasail",
+                "tag": "parasail/fp8",
+                "pricing": {
+                    "prompt": "0.0000003",
+                    "completion": "0.0000012",
+                    "input_cache_read": "0.00000003",
+                },
+            },
+            {
+                "provider_name": "MiniMax",
+                "tag": "minimax/fp8",
+                "pricing": {
+                    "prompt": "0.0000003",
+                    "completion": "0.0000012",
+                    "input_cache_read": "0.00000003",
+                },
+            },
+            {
+                "provider_name": "MiniMax",
+                "tag": "minimax/highspeed",
+                "pricing": {
+                    "prompt": "0.0000006",
+                    "completion": "0.0000024",
+                    "input_cache_read": "0.00000006",
+                },
+            },
+        ]
+    }
+}
 
 
 class _ManagedTestRouter:
@@ -224,6 +298,15 @@ async def admin_client(monkeypatch):
         "serving.servers.routers.admin.provider_routes._verify_provider_route",
         verify_mock,
     )
+
+    async def fake_openrouter_endpoint_payload(_model_id: str):
+        return OPENROUTER_ENDPOINT_PAYLOAD
+
+    monkeypatch.setattr(
+        provider_routes,
+        "_fetch_openrouter_endpoint_payload",
+        fake_openrouter_endpoint_payload,
+    )
     monkeypatch.setattr(
         provider_routes.socket,
         "getaddrinfo",
@@ -329,6 +412,31 @@ def test_parse_openrouter_provider_options_from_endpoints():
         ("minimax/fp8", "MiniMax Fp8"),
         ("minimax/highspeed", "MiniMax Highspeed"),
     ]
+
+
+def test_parse_openrouter_endpoint_pricing_from_endpoints():
+    deepinfra = provider_routes._parse_openrouter_endpoint_pricing(
+        OPENROUTER_ENDPOINT_PAYLOAD,
+        "deepinfra",
+    )
+    minimax = provider_routes._parse_openrouter_endpoint_pricing(
+        OPENROUTER_ENDPOINT_PAYLOAD,
+        "minimax",
+    )
+    highspeed = provider_routes._parse_openrouter_endpoint_pricing(
+        OPENROUTER_ENDPOINT_PAYLOAD,
+        "minimax/highspeed",
+    )
+
+    assert deepinfra is not None
+    assert deepinfra.provider == "deepinfra/fp8"
+    assert deepinfra.pricing == OPENROUTER_DEEPINFRA_PRICING
+    assert minimax is not None
+    assert minimax.provider == "minimax/fp8"
+    assert minimax.pricing == OPENROUTER_MINIMAX_PRICING
+    assert highspeed is not None
+    assert highspeed.provider == "minimax/highspeed"
+    assert highspeed.pricing == OPENROUTER_HIGHSPEED_PRICING
 
 
 def test_openrouter_endpoints_url_preserves_model_slug_separator():
@@ -669,6 +777,104 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert updated_adapter._key_pool.snapshot_keys() == ["openrouter-db-key-1234567890"]
     assert dynamic_keys.remove_key_from_provider("openrouter", "openrouter-db-key-1234567890") == 1
     assert updated_adapter._key_pool.snapshot_keys() == []
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget(
+    admin_client,
+):
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:chutes-api",
+            "provider": "openrouter[parasail]",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 8000,
+            "concurrency_limit": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    openrouter_response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "quota_limit": 8000,
+        },
+        headers=AUTH,
+    )
+    assert openrouter_response.status_code == 200, openrouter_response.text
+    openrouter_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert openrouter_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    assert openrouter_adapter.config.route_metadata["pricing_source"] == "openrouter_endpoint"
+    assert openrouter_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
+    verify_mock.assert_awaited_once()
+    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+    op_store.upsert_provider_route_config.reset_mock()
+    verify_mock.reset_mock()
+    fake_routewise._rebuild_from_fixed_router.reset_mock()
+    op_store.list_provider_route_configs_for_model.return_value = [
+        {
+            "model_id": "minimax-fast",
+            "route_id": "minimax-fast:chutes-api",
+            "provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1",
+            "api_key_id": None,
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+            "quota_limit": 8000,
+            "concurrency_limit": None,
+            "updated_at": NOW,
+            "updated_by": "127.0.0.1",
+        }
+    ]
+
+    chutes_response = await client.put(
+        "/admin/routing/provider-routes/minimax-fast/minimax-fast:chutes-api",
+        json={
+            "upstream_provider": "chutes",
+            "base_url": "https://llm.chutes.ai/v1",
+            "provider_model_id": "MiniMaxAI/MiniMax-M2.5-TEE",
+        },
+        headers=AUTH,
+    )
+
+    assert chutes_response.status_code == 200, chutes_response.text
+    op_store.upsert_provider_route_config.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:chutes-api",
+        "chutes",
+        None,
+        "https://llm.chutes.ai/v1",
+        None,
+        "MiniMaxAI/MiniMax-M2.5-TEE",
+        8000,
+        None,
+        "127.0.0.1",
+    )
+    retargeted_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
+    assert retargeted_adapter.config.provider == "chutes"
+    assert retargeted_adapter.config.pricing == {
+        "prompt": "0",
+        "completion": "0",
+        "image": "0",
+        "request": "0",
+        "input_cache_reads": "0",
+        "input_cache_writes": "0",
+    }
+    assert "pricing_source" not in retargeted_adapter.config.route_metadata
+    assert "pricing_provider" not in retargeted_adapter.config.route_metadata
+    verify_mock.assert_awaited_once()
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
 
 
@@ -1131,6 +1337,9 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
     assert runtime_adapter.config.provider == "openrouter"
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    assert runtime_adapter.config.route_metadata["pricing_source"] == "openrouter_endpoint"
+    assert runtime_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
@@ -2346,6 +2555,67 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
     assert runtime_adapter.config.openrouter_pinned_provider is None
     assert runtime_adapter.config.route_metadata["openrouter_sort"] == "throughput"
     fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_post_provider_route_candidate_prices_pinned_openrouter_with_sort(
+    admin_client,
+):
+    client, op_store, route_executor, _fake_routewise, verify_mock = admin_client
+    op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
+    op_store.list_provider_keys.return_value = [
+        ProviderKeyRow(
+            id="db-openrouter",
+            provider="openrouter",
+            key_prefix="openrou...7890",
+            label="staging",
+            status="active",
+            created_at=NOW,
+        )
+    ]
+
+    response = await client.post(
+        "/admin/routing/provider-route-candidates/minimax-fast",
+        json={
+            "route_type": "on_demand",
+            "upstream_provider": "openrouter",
+            "openrouter_provider": "parasail",
+            "openrouter_sort": "throughput",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_id": "db-openrouter",
+            "provider_model_id": "minimax/minimax-m2.5",
+            "weight": 1,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["route_id"] == "minimax-fast:openrouter[parasail]-api"
+    assert payload["openrouter_provider"] == "parasail"
+    assert payload["openrouter_sort"] == "throughput"
+    op_store.upsert_provider_route_candidate.assert_awaited_once_with(
+        "minimax-fast",
+        "minimax-fast:openrouter[parasail]-api",
+        "on_demand",
+        "openrouter[parasail]",
+        "throughput",
+        "https://openrouter.ai/api/v1",
+        "db-openrouter",
+        "minimax/minimax-m2.5",
+        None,
+        None,
+        1.0,
+        None,
+        "127.0.0.1",
+    )
+    verify_mock.assert_awaited_once()
+
+    runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
+    assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
+    assert runtime_adapter.config.openrouter_sort == "throughput"
+    assert runtime_adapter.config.pricing == OPENROUTER_PARASAIL_PRICING
+    assert runtime_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
 
 
 @pytest.mark.asyncio
