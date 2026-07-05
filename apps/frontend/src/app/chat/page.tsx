@@ -173,7 +173,8 @@ function ChatView() {
                 }
               >
                 <div className="whitespace-pre-wrap break-words">
-                  {m.content || (m.streaming ? <span className="text-gray-400">Thinking…</span> : '')}
+                  {m.content ||
+                    (m.streaming ? <span className="text-gray-400">Thinking…</span> : '')}
                 </div>
                 {m.role === 'assistant' && m.sources && <SourceChips sources={m.sources} />}
               </div>

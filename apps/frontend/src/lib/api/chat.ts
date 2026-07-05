@@ -30,13 +30,11 @@ export interface StreamRagChatOptions {
 
 function handleEvent(raw: string, opts: StreamRagChatOptions): boolean {
   // Returns true when the stream signalled completion ([DONE]).
-  const line = raw
-    .split('\n')
-    .find((l) => l.startsWith('data:'));
+  const line = raw.split('\n').find((l) => l.startsWith('data:'));
   if (!line) return false;
 
   const payload = line.slice(5).trim();
-  if (payload === '' ) return false;
+  if (payload === '') return false;
   if (payload === '[DONE]') return true;
 
   try {
