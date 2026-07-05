@@ -11,8 +11,23 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-# apps/backend/serving/rag/config.py -> parents[4] == repo root
-_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+def _repo_root_for(path: Path) -> Path:
+    """Best-effort repo root, used only for the ingest-time corpus default.
+
+    In the repo tree this file is ``apps/backend/serving/rag/config.py`` so the
+    repo root is ``parents[4]``. Inside the Docker image the tree is flattened to
+    ``/app/serving/rag/config.py`` (only 4 parents), where ``parents[4]`` raises
+    ``IndexError`` and crashes the whole app at import. Fall back to the package
+    dir there: serving never reads the corpus default — it uses the
+    package-relative prebuilt index below — so the fallback never affects
+    requests, and the offline ingest CLI always runs from the repo tree.
+    """
+    parents = path.parents
+    return parents[4] if len(parents) > 4 else path.parent
+
+
+_REPO_ROOT = _repo_root_for(Path(__file__).resolve())
 
 DEFAULT_CORPUS_DIR = _REPO_ROOT / "docs" / "free_inference" / "docs" / "source"
 # Package-relative so the prebuilt index ships inside the Docker image (which
