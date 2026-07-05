@@ -68,6 +68,9 @@ def _split_by_headings(text: str) -> list[tuple[str, str]]:
 
 def _split_text(body: str, max_chars: int, overlap: int) -> list[str]:
     """Pack paragraphs into pieces of at most ``max_chars`` with tail overlap."""
+    # Clamp overlap below max_chars: at overlap >= max_chars the hard-split step
+    # collapses to 1, producing O(n) overlapping slices for a large paragraph.
+    overlap = max(0, min(overlap, max_chars - 1))
     paragraphs = [p.strip() for p in _PARAGRAPH_SPLIT_RE.split(body) if p.strip()]
     pieces: list[str] = []
     current = ""

@@ -62,10 +62,14 @@ def build_index(settings: RagSettings) -> VectorStore:
         file=sys.stderr,
     )
     vectors = embedder.embed_texts([chunk.text for chunk in chunks])
+    if len(vectors) != len(chunks):
+        raise ValueError(f"Embedder returned {len(vectors)} vectors for {len(chunks)} chunks")
     dim = len(vectors[0]) if vectors else 0
+    if dim == 0:
+        raise ValueError("Embedder returned empty vectors (dim=0); refusing to write index")
 
     store = VectorStore(embed_model=embedder.model, embedder_mode=embedder.mode, dim=dim)
-    for chunk, vector in zip(chunks, vectors, strict=False):
+    for chunk, vector in zip(chunks, vectors, strict=True):
         store.add(chunk, vector)
     return store
 

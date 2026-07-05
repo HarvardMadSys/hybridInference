@@ -21,7 +21,6 @@ export interface RagSource {
 
 export interface StreamRagChatOptions {
   messages: ChatMessage[];
-  model?: string;
   topK?: number;
   signal?: AbortSignal;
   onSources?: (sources: RagSource[]) => void;
@@ -30,10 +29,15 @@ export interface StreamRagChatOptions {
 
 function handleEvent(raw: string, opts: StreamRagChatOptions): boolean {
   // Returns true when the stream signalled completion ([DONE]).
-  const line = raw.split('\n').find((l) => l.startsWith('data:'));
-  if (!line) return false;
+  // Collect every `data:` line in the event (SSE allows multiple, joined by \n)
+  // and tolerate CRLF line endings that a proxy/CDN may introduce.
+  const dataLines = raw
+    .split(/\r?\n/)
+    .filter((l) => l.startsWith('data:'))
+    .map((l) => l.replace(/^data:\s?/, ''));
+  if (!dataLines.length) return false;
 
-  const payload = line.slice(5).trim();
+  const payload = dataLines.join('\n').trim();
   if (payload === '') return false;
   if (payload === '[DONE]') return true;
 
@@ -59,7 +63,6 @@ export async function streamRagChat(opts: StreamRagChatOptions): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       messages: opts.messages,
-      model: opts.model,
       top_k: opts.topK,
       stream: true,
     }),
@@ -81,12 +84,14 @@ export async function streamRagChat(opts: StreamRagChatOptions): Promise<void> {
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    let sep = buffer.indexOf('\n\n');
-    while (sep !== -1) {
-      const event = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
+    // Event boundary is a blank line — match both LF (\n\n) and CRLF (\r\n\r\n).
+    // The regex naturally waits for a complete boundary even if it spans reads.
+    const boundary = /\r?\n\r?\n/;
+    let m: RegExpExecArray | null;
+    while ((m = boundary.exec(buffer))) {
+      const event = buffer.slice(0, m.index);
+      buffer = buffer.slice(m.index + m[0].length);
       if (handleEvent(event, opts)) return;
-      sep = buffer.indexOf('\n\n');
     }
   }
 

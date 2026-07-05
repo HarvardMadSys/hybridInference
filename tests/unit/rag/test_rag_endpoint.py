@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from serving.rag.chunker import Chunk
@@ -192,6 +192,23 @@ def test_chat_503_on_missing_embedding_adapter(tmp_path, monkeypatch):
     client = _make_app(tmp_path / "idx.json", {}, monkeypatch)
     resp = client.post("/v1/rag/chat", json={"messages": [{"role": "user", "content": "hi"}]})
     assert resp.status_code == 503
+
+
+def test_status_requires_auth(tmp_path, monkeypatch):
+    _build_index(tmp_path / "idx.json")
+    monkeypatch.setenv("RAG_INDEX_PATH", str(tmp_path / "idx.json"))
+    rag_module._store = None
+    rag_module._store_path = None
+    rag_module._store_mtime = None
+    app = FastAPI()
+    app.include_router(rag_module.router)
+
+    def _deny():
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    app.dependency_overrides[get_current_user] = _deny
+    resp = TestClient(app).get("/v1/rag/status")
+    assert resp.status_code == 401
 
 
 def test_history_split_does_not_duplicate_query(tmp_path, monkeypatch):

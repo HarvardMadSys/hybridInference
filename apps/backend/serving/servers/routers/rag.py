@@ -15,6 +15,7 @@ so the Next.js chat page can call it with the session token it already holds.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import suppress
 from typing import Any
@@ -38,38 +39,41 @@ router = APIRouter(prefix="/v1/rag", tags=["RAG"])
 _INTERNAL_KEYS = frozenset({"_routing"})
 
 # Lazily-loaded index, cached across requests and invalidated when the file's
-# mtime changes so a re-ingest is picked up without a restart.
+# mtime changes so a re-ingest is picked up without a restart. The stat + parse
+# run in a worker thread so the (~1 MB) load never blocks the event loop. No
+# lock is used: a concurrent cold-cache load is harmless (both produce the same
+# store), and a module-level asyncio.Lock would bind to one event loop.
 _store: VectorStore | None = None
 _store_path: str | None = None
 _store_mtime: float | None = None
 
 
-def _load_store() -> VectorStore | None:
-    """Return the cached index, (re)loading from disk when needed."""
+async def _load_store() -> VectorStore | None:
+    """Return the cached index, (re)loading from disk off the event loop."""
     global _store, _store_path, _store_mtime
-    settings = load_rag_settings()
-    path = settings.index_path
-    if not path.exists():
+    path = load_rag_settings().index_path
+    try:
+        mtime = (await asyncio.to_thread(path.stat)).st_mtime
+    except OSError:
         _store = None
         _store_path = None
         _store_mtime = None
         return None
-    mtime = path.stat().st_mtime
-    if _store is None or _store_path != str(path) or _store_mtime != mtime:
-        try:
-            loaded = VectorStore.load(path)
-        except Exception as exc:
-            # A concurrent/partial re-ingest can momentarily yield an unparseable
-            # file; keep serving the previously loaded index rather than 500.
-            logger.warning(f"failed to load rag index at {path}: {exc}")
-            return _store
-        _store = loaded
-        _store_path = str(path)
-        _store_mtime = mtime
-        logger.info(
-            "rag_index_loaded",
-            extra={"path": str(path), "chunks": len(_store.records), "model": _store.embed_model},
-        )
+    if _store is not None and _store_path == str(path) and _store_mtime == mtime:
+        return _store
+    try:
+        loaded = await asyncio.to_thread(VectorStore.load, path)
+    except Exception as exc:
+        # A concurrent/partial re-ingest can momentarily yield an unparseable
+        # file; keep serving the previously loaded index rather than 500.
+        logger.warning(f"failed to load rag index at {path}: {exc}")
+        return _store
+    _store = loaded
+    _store_path = str(path)
+    _store_mtime = mtime
+    logger.info(
+        f"rag index loaded: {path} ({len(_store.records)} chunks, model={_store.embed_model})"
+    )
     return _store
 
 
@@ -84,7 +88,6 @@ class RagChatRequest(BaseModel):
     """Request body for the RAG chat endpoint."""
 
     messages: list[RagMessage] = Field(..., min_length=1)
-    model: str | None = None
     top_k: int | None = Field(default=None, ge=1, le=20)
     stream: bool = True
 
@@ -144,17 +147,18 @@ async def _embed_query(
 
 
 @router.get("/status")
-async def rag_status() -> dict[str, Any]:
+async def rag_status(
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Report whether the index is built and which models it uses."""
     settings = load_rag_settings()
-    store = _load_store()
+    store = await _load_store()
     return {
         "index_loaded": store is not None,
         "num_chunks": len(store.records) if store else 0,
         "embed_model": store.embed_model if store else settings.embed_model,
         "embedder_mode": store.embedder_mode if store else settings.embedder_mode,
         "chat_model": settings.chat_model,
-        "index_path": str(settings.index_path),
     }
 
 
@@ -167,7 +171,7 @@ async def rag_chat(
 ) -> Any:
     """Answer the latest user question, grounded in retrieved docs."""
     settings = load_rag_settings()
-    store = _load_store()
+    store = await _load_store()
     if store is None:
         raise HTTPException(
             status_code=503,
@@ -203,7 +207,9 @@ async def rag_chat(
     results = store.search(query_vec, top_k)
     messages = build_messages(query, results, history)
     sources = sources_payload(results)
-    model = body.model or settings.chat_model
+    # The generation model is fixed server-side (not client-selectable) so this
+    # endpoint can't be used to reach role-gated models by passing a model id.
+    model = settings.chat_model
     gen_kwargs = {"temperature": settings.temperature, "max_tokens": settings.max_tokens}
 
     if not body.stream:

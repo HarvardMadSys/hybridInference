@@ -110,9 +110,13 @@ class VectorStore:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        with tmp.open("w", encoding="utf-8") as handle:
-            json.dump(self.to_dict(), handle, ensure_ascii=False)
-        tmp.replace(path)
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                json.dump(self.to_dict(), handle, ensure_ascii=False)
+            tmp.replace(path)
+        except Exception:
+            tmp.unlink(missing_ok=True)  # don't leave a partial .tmp behind
+            raise
 
     @classmethod
     def load(cls, path: str | Path) -> VectorStore:
@@ -134,4 +138,12 @@ class VectorStore:
             )
             for item in data.get("records", [])
         ]
+        # Reject a corrupt/mismatched index up front rather than letting a wrong
+        # dimension silently degrade cosine search at query time.
+        for record in store.records:
+            if len(record.embedding) != store.dim:
+                raise ValueError(
+                    f"index record {record.id!r} has embedding dim "
+                    f"{len(record.embedding)} != declared dim {store.dim}"
+                )
         return store
