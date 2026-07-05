@@ -60,6 +60,11 @@ test-all:  ## Run all tests except external (includes db-dependent)
 test-e2e: ## Run external/E2E tests (may require local server)
 	$(UV_RUN) pytest -m external -vv
 
+rag-ingest:  ## Build the docs RAG index (real bge-m3; RAG_EMBEDDER=hash for offline)
+	@echo "$(YELLOW)Building docs RAG index...$(RESET)"
+	PYTHONPATH=apps/backend $(UV_RUN) python -m serving.rag.ingest --embedder $${RAG_EMBEDDER:-gateway}
+	@echo "$(GREEN)OK RAG index built$(RESET)"
+
 check: lint test  ## Run all checks (lint, test)
 	@echo "$(GREEN)OK All checks passed$(RESET)"
 

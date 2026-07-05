@@ -19,6 +19,7 @@ see the `FreeInference docs <https://doc.freeinference.org/>`_.
    configuration
    database
    automation-score
+   rag-chat
    openrouter
    freeinference
    claude-code-setup

@@ -41,6 +41,12 @@ export function Header() {
         {state.isAuthenticated && (
           <>
             <Link
+              href="/chat"
+              className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
+            >
+              Docs Assistant
+            </Link>
+            <Link
               href="/dashboard"
               className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
             >
