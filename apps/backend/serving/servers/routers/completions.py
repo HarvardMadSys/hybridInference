@@ -58,6 +58,7 @@ from serving.utils.token_utils import normalize_usage
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from serving.adapters.base import ModelConfig
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
 
@@ -130,6 +131,33 @@ def _find_unsupported_modality(
             if required and required not in supported:
                 return required
     return None
+
+
+def _resolve_thinking_param(
+    payload: ChatCompletionRequest, model_cfg: ModelConfig | None
+) -> dict[str, Any] | None:
+    """Resolve the ``thinking`` param to forward for this request.
+
+    Precedence:
+
+    1. An explicit client ``thinking`` object always wins.
+    2. If the client sent ``reasoning_effort`` (an explicit reasoning choice),
+       inject nothing — some providers (e.g. Kimi) reject a request that
+       carries both ``thinking`` and ``reasoning_effort``.
+    3. Otherwise fall back to the model's configured ``default_thinking``
+       (e.g. ``{"type": "disabled"}``), so reason-by-default providers don't
+       silently spend thinking tokens when the client never asked to think.
+
+    Returns ``None`` when nothing should be sent. The model's
+    ``supported_params`` still gates whether the value reaches the upstream.
+    """
+    if payload.thinking is not None:
+        return payload.thinking
+    if payload.reasoning_effort is not None:
+        return None
+    default_thinking = getattr(model_cfg, "default_thinking", None)
+    # Copy so the shared ModelConfig dict is never mutated downstream.
+    return dict(default_thinking) if default_thinking is not None else None
 
 
 async def _should_force_chat_completions_streaming(
@@ -633,8 +661,13 @@ async def chat_completions(
         params["presence_penalty"] = payload.presence_penalty
     if payload.reasoning_effort is not None:
         params["reasoning_effort"] = payload.reasoning_effort
-    if payload.thinking is not None:
-        params["thinking"] = payload.thinking
+    # Client `thinking` wins; otherwise apply the model's `default_thinking`
+    # (e.g. disable reasoning) when no explicit reasoning control was sent.
+    thinking_param = _resolve_thinking_param(
+        payload, route.adapters[0][0].config if route.adapters else None
+    )
+    if thinking_param is not None:
+        params["thinking"] = thinking_param
     if payload.tools is not None:
         params["tools"] = payload.tools
     if payload.tool_choice is not None:
