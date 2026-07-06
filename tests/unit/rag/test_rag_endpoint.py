@@ -2,34 +2,55 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from serving.rag.chunker import Chunk
+from serving.rag.config import load_rag_settings
 from serving.rag.embedder import HashEmbedder
 from serving.rag.store import VectorStore
-from serving.servers.deps import get_current_user, get_embedding_adapters, get_router
+from serving.servers.deps import get_current_user
 from serving.servers.routers import rag as rag_module
 
+# --------------------------------------------------------------------------- #
+# Fakes for the gateway-as-a-user HTTP helpers (monkeypatched onto rag_module).
+# --------------------------------------------------------------------------- #
 
-class _FakeRouter:
-    """Minimal stand-in for RouteExecutor covering both chat paths."""
 
-    def __init__(self):
-        self.seen_messages = None
+def _fake_chat_json(capture, answer="Create a key from the dashboard."):
+    async def _impl(settings, model, messages):
+        capture["messages"] = messages
+        capture["model"] = model
+        return answer
 
-    async def chat_completion(self, model, messages, **kwargs):
-        self.seen_messages = messages
-        return {
-            "choices": [{"message": {"content": "Create a key from the dashboard."}}],
-            "_routing": {"provider": "test"},
-        }
+    return _impl
 
-    async def stream_chat_completion(self, model, messages, **kwargs):
-        for piece in ["Create a key ", "from the dashboard."]:
-            yield f"data: {json.dumps({'choices': [{'delta': {'content': piece}}]})}\n\n"
-        yield "data: [DONE]\n\n"
+
+def _fake_open_stream(pieces):
+    async def _impl(settings, model, messages):
+        async def _iter():
+            yield b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            for piece in pieces:
+                yield (
+                    "data: " + json.dumps({"choices": [{"delta": {"content": piece}}]}) + "\n\n"
+                ).encode()
+            yield b"data: [DONE]\n\n"
+
+        async def _aclose():
+            return None
+
+        return _iter(), _aclose
+
+    return _impl
+
+
+def _fake_embed(vec):
+    async def _impl(settings, model, text):
+        return vec
+
+    return _impl
 
 
 def _build_index(path):
@@ -44,7 +65,7 @@ def _build_index(path):
         ),
         Chunk(
             id="models.md#0",
-            text="Available models include glm-5.1 for general coding tasks.",
+            text="Available models include qwen3.6-35b for general coding tasks.",
             source="models.md",
             title="Available Models",
         ),
@@ -54,22 +75,28 @@ def _build_index(path):
     store.save(path)
 
 
-@pytest.fixture
-def client(tmp_path, monkeypatch):
-    index_path = tmp_path / "docs_index.json"
-    _build_index(index_path)
+def _build_gateway_index(path, dim):
+    store = VectorStore(embed_model="bge-m3", embedder_mode="gateway", dim=dim)
+    store.add(Chunk(id="a#0", text="alpha", source="a.md", title="A"), [1.0] + [0.0] * (dim - 1))
+    store.save(path)
+
+
+def _make_app(index_path, monkeypatch):
     monkeypatch.setenv("RAG_INDEX_PATH", str(index_path))
-    # Reset the module-level index cache so each test loads fresh.
+    monkeypatch.delenv("RAG_API_KEY", raising=False)
     rag_module._store = None
     rag_module._store_path = None
     rag_module._store_mtime = None
-
     app = FastAPI()
     app.include_router(rag_module.router)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "u1", "role": "user"}
-    app.dependency_overrides[get_router] = lambda: _FakeRouter()
-    app.dependency_overrides[get_embedding_adapters] = lambda: {}
     return TestClient(app)
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    _build_index(tmp_path / "idx.json")
+    return _make_app(tmp_path / "idx.json", monkeypatch)
 
 
 def test_status_reports_loaded_index(client):
@@ -79,119 +106,8 @@ def test_status_reports_loaded_index(client):
     assert data["index_loaded"] is True
     assert data["num_chunks"] == 2
     assert data["embedder_mode"] == "hash"
-
-
-def test_chat_non_streaming_returns_answer_and_sources(client):
-    resp = client.post(
-        "/v1/rag/chat",
-        json={
-            "messages": [{"role": "user", "content": "How do I get an API key?"}],
-            "stream": False,
-        },
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["answer"] == "Create a key from the dashboard."
-    assert "_routing" not in data
-    assert data["sources"]
-    # The API-key chunk should be retrieved as a source.
-    assert any(s["source"] == "quickstart.md" for s in data["sources"])
-
-
-def test_chat_streaming_emits_sources_then_tokens(client):
-    resp = client.post(
-        "/v1/rag/chat",
-        json={
-            "messages": [{"role": "user", "content": "How do I get an API key?"}],
-            "stream": True,
-        },
-    )
-    assert resp.status_code == 200
-    body = resp.text
-    assert '"type": "sources"' in body
-    assert "from the dashboard." in body
-    assert "[DONE]" in body
-    # Sources event must precede the answer tokens.
-    assert body.index('"type": "sources"') < body.index("from the dashboard.")
-
-
-def test_chat_returns_503_when_index_missing(tmp_path, monkeypatch):
-    monkeypatch.setenv("RAG_INDEX_PATH", str(tmp_path / "missing.json"))
-    rag_module._store = None
-    rag_module._store_path = None
-    rag_module._store_mtime = None
-
-    app = FastAPI()
-    app.include_router(rag_module.router)
-    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u1"}
-    app.dependency_overrides[get_router] = lambda: _FakeRouter()
-    app.dependency_overrides[get_embedding_adapters] = lambda: {}
-    client = TestClient(app)
-
-    resp = client.post(
-        "/v1/rag/chat",
-        json={"messages": [{"role": "user", "content": "hi"}]},
-    )
-    assert resp.status_code == 503
-
-
-class _FakeEmbAdapter:
-    """Stand-in embedding adapter for gateway-mode query embedding."""
-
-    def __init__(self, vec=None, exc=None):
-        self._vec = vec
-        self._exc = exc
-
-    async def embeddings(self, inp, **kwargs):
-        if self._exc:
-            raise self._exc
-        return {"data": [{"embedding": self._vec}], "model": "bge-m3", "usage": {}}
-
-
-def _build_gateway_index(path, dim):
-    store = VectorStore(embed_model="bge-m3", embedder_mode="gateway", dim=dim)
-    store.add(
-        Chunk(id="a#0", text="alpha", source="a.md", title="A"),
-        [1.0] + [0.0] * (dim - 1),
-    )
-    store.save(path)
-
-
-def _make_app(index_path, adapters, monkeypatch, router=None):
-    monkeypatch.setenv("RAG_INDEX_PATH", str(index_path))
-    rag_module._store = None
-    rag_module._store_path = None
-    rag_module._store_mtime = None
-    app = FastAPI()
-    app.include_router(rag_module.router)
-    app.dependency_overrides[get_current_user] = lambda: {"user_id": "u1"}
-    app.dependency_overrides[get_router] = lambda: router or _FakeRouter()
-    app.dependency_overrides[get_embedding_adapters] = lambda: adapters
-    return TestClient(app)
-
-
-def test_chat_502_on_dimension_mismatch(tmp_path, monkeypatch):
-    _build_gateway_index(tmp_path / "idx.json", dim=8)
-    # Adapter returns a 4-dim vector against an 8-dim index.
-    adapters = {"bge-m3": _FakeEmbAdapter(vec=[0.1, 0.2, 0.3, 0.4])}
-    client = _make_app(tmp_path / "idx.json", adapters, monkeypatch)
-    resp = client.post("/v1/rag/chat", json={"messages": [{"role": "user", "content": "hi"}]})
-    assert resp.status_code == 502
-
-
-def test_chat_503_on_embedding_upstream_error(tmp_path, monkeypatch):
-    _build_gateway_index(tmp_path / "idx.json", dim=8)
-    adapters = {"bge-m3": _FakeEmbAdapter(exc=RuntimeError("key pool exhausted"))}
-    client = _make_app(tmp_path / "idx.json", adapters, monkeypatch)
-    resp = client.post("/v1/rag/chat", json={"messages": [{"role": "user", "content": "hi"}]})
-    assert resp.status_code == 503
-
-
-def test_chat_503_on_missing_embedding_adapter(tmp_path, monkeypatch):
-    _build_gateway_index(tmp_path / "idx.json", dim=8)
-    client = _make_app(tmp_path / "idx.json", {}, monkeypatch)
-    resp = client.post("/v1/rag/chat", json={"messages": [{"role": "user", "content": "hi"}]})
-    assert resp.status_code == 503
+    # The server filesystem path must not leak.
+    assert "index_path" not in data
 
 
 def test_status_requires_auth(tmp_path, monkeypatch):
@@ -207,15 +123,85 @@ def test_status_requires_auth(tmp_path, monkeypatch):
         raise HTTPException(status_code=401, detail="unauthorized")
 
     app.dependency_overrides[get_current_user] = _deny
-    resp = TestClient(app).get("/v1/rag/status")
-    assert resp.status_code == 401
+    assert TestClient(app).get("/v1/rag/status").status_code == 401
 
 
-def test_history_split_does_not_duplicate_query(tmp_path, monkeypatch):
-    _build_index(tmp_path / "idx.json")  # hash index, dims match
-    router = _FakeRouter()
-    client = _make_app(tmp_path / "idx.json", {}, monkeypatch, router=router)
-    # Conversation ends with an ASSISTANT turn — the query is the earlier user turn.
+def test_chat_non_streaming_returns_answer_and_sources(client, monkeypatch):
+    cap = {}
+    monkeypatch.setattr(rag_module, "_gateway_chat_json", _fake_chat_json(cap))
+    resp = client.post(
+        "/v1/rag/chat",
+        json={
+            "messages": [{"role": "user", "content": "How do I get an API key?"}],
+            "stream": False,
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["answer"] == "Create a key from the dashboard."
+    assert data["model"] == "qwen3.6-35b"
+    assert any(s["source"] == "quickstart.md" for s in data["sources"])
+    # Retrieved context is handed to the (upstream) chat call.
+    assert "Documentation context" in cap["messages"][-1]["content"]
+
+
+def test_chat_streaming_emits_sources_then_tokens(client, monkeypatch):
+    monkeypatch.setattr(
+        rag_module, "_open_chat_stream", _fake_open_stream(["Create a key ", "from the dashboard."])
+    )
+    resp = client.post(
+        "/v1/rag/chat",
+        json={
+            "messages": [{"role": "user", "content": "How do I get an API key?"}],
+            "stream": True,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.text
+    assert '"type": "sources"' in body
+    assert "from the dashboard." in body
+    assert "[DONE]" in body
+    assert body.index('"type": "sources"') < body.index("from the dashboard.")
+
+
+def test_chat_returns_503_when_index_missing(tmp_path, monkeypatch):
+    client = _make_app(tmp_path / "missing.json", monkeypatch)
+    resp = client.post("/v1/rag/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert resp.status_code == 503
+
+
+def test_chat_502_on_dimension_mismatch(tmp_path, monkeypatch):
+    _build_gateway_index(tmp_path / "idx.json", dim=8)
+    client = _make_app(tmp_path / "idx.json", monkeypatch)
+    # Gateway embed returns a 4-dim vector against an 8-dim index.
+    monkeypatch.setattr(rag_module, "_gateway_embed", _fake_embed([0.1, 0.2, 0.3, 0.4]))
+    resp = client.post("/v1/rag/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert resp.status_code == 502
+
+
+def test_chat_503_when_api_key_unset(tmp_path, monkeypatch):
+    # Gateway index + no RAG_API_KEY and no monkeypatch -> _require_api_key fires.
+    _build_gateway_index(tmp_path / "idx.json", dim=8)
+    client = _make_app(tmp_path / "idx.json", monkeypatch)
+    resp = client.post("/v1/rag/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    assert resp.status_code == 503
+
+
+def test_chat_passes_through_upstream_429(client, monkeypatch):
+    async def _quota(settings, model, messages):
+        raise rag_module._map_upstream_error(429, "generation")
+
+    monkeypatch.setattr(rag_module, "_gateway_chat_json", _quota)
+    resp = client.post(
+        "/v1/rag/chat",
+        json={"messages": [{"role": "user", "content": "hi"}], "stream": False},
+    )
+    assert resp.status_code == 429
+
+
+def test_history_split_does_not_duplicate_query(client, monkeypatch):
+    cap = {}
+    monkeypatch.setattr(rag_module, "_gateway_chat_json", _fake_chat_json(cap))
     resp = client.post(
         "/v1/rag/chat",
         json={
@@ -227,9 +213,97 @@ def test_history_split_does_not_duplicate_query(tmp_path, monkeypatch):
         },
     )
     assert resp.status_code == 200
-    seen = router.seen_messages
-    # History turns (everything but the final grounded user turn) must not repeat
-    # the query verbatim; it should appear only inside the grounded final turn.
+    seen = cap["messages"]
     history = seen[:-1]
     assert all("UNIQUEQUERY" not in m["content"] for m in history)
     assert "UNIQUEQUERY" in seen[-1]["content"]
+
+
+def test_map_upstream_error_mapping():
+    assert rag_module._map_upstream_error(429, "x").status_code == 429
+    assert rag_module._map_upstream_error(401, "x").status_code == 502
+    assert rag_module._map_upstream_error(403, "x").status_code == 502
+    assert rag_module._map_upstream_error(500, "x").status_code == 502
+
+
+# --------------------------------------------------------------------------- #
+# HTTP-transport tests: exercise the real helper bodies (URL, auth header,
+# status mapping, JSON parsing) via an httpx MockTransport.
+# --------------------------------------------------------------------------- #
+
+
+def _patch_transport(monkeypatch, handler):
+    real_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr(rag_module.httpx, "AsyncClient", factory)
+
+
+def _settings(monkeypatch):
+    monkeypatch.setenv("RAG_API_KEY", "test-key")
+    monkeypatch.setenv("RAG_API_BASE_URL", "http://gw.test/v1")
+    return load_rag_settings()
+
+
+async def test_gateway_embed_transport_ok(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2, 0.3]}]})
+
+    _patch_transport(monkeypatch, handler)
+    vec = await rag_module._gateway_embed(_settings(monkeypatch), "bge-m3", "hello")
+    assert vec == [0.1, 0.2, 0.3]
+    assert seen["url"].endswith("/v1/embeddings")
+    assert seen["auth"] == "Bearer test-key"
+    assert seen["body"] == {"model": "bge-m3", "input": "hello"}
+
+
+async def test_gateway_chat_json_transport_ok_and_payload(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi there"}}]})
+
+    _patch_transport(monkeypatch, handler)
+    out = await rag_module._gateway_chat_json(
+        _settings(monkeypatch), "qwen3.6-35b", [{"role": "user", "content": "q"}]
+    )
+    assert out == "hi there"
+    assert seen["url"].endswith("/v1/chat/completions")
+    assert seen["body"]["model"] == "qwen3.6-35b"
+    assert seen["body"]["stream"] is False
+
+
+async def test_gateway_chat_json_maps_429(monkeypatch):
+    _patch_transport(monkeypatch, lambda request: httpx.Response(429, json={"error": "quota"}))
+    with pytest.raises(HTTPException) as ei:
+        await rag_module._gateway_chat_json(
+            _settings(monkeypatch), "qwen3.6-35b", [{"role": "user", "content": "q"}]
+        )
+    assert ei.value.status_code == 429
+
+
+async def test_gateway_embed_malformed_body_502(monkeypatch):
+    _patch_transport(monkeypatch, lambda request: httpx.Response(200, json={"nope": True}))
+    with pytest.raises(HTTPException) as ei:
+        await rag_module._gateway_embed(_settings(monkeypatch), "bge-m3", "hi")
+    assert ei.value.status_code == 502
+
+
+async def test_open_chat_stream_preflight_error_raises(monkeypatch):
+    _patch_transport(monkeypatch, lambda request: httpx.Response(401, json={"error": "bad key"}))
+    with pytest.raises(HTTPException) as ei:
+        await rag_module._open_chat_stream(
+            _settings(monkeypatch), "qwen3.6-35b", [{"role": "user", "content": "q"}]
+        )
+    # 401 from upstream => our RAG_API_KEY is bad => 502 to the client.
+    assert ei.value.status_code == 502

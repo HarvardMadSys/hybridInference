@@ -5,6 +5,7 @@
 
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
+import { APIError } from '@/lib/utils/errors';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -41,18 +42,29 @@ function handleEvent(raw: string, opts: StreamRagChatOptions): boolean {
   if (payload === '') return false;
   if (payload === '[DONE]') return true;
 
+  let obj: unknown;
   try {
-    const obj = JSON.parse(payload);
-    if (obj.type === 'sources' && Array.isArray(obj.sources)) {
-      opts.onSources?.(obj.sources as RagSource[]);
-      return false;
-    }
-    const delta = obj?.choices?.[0]?.delta?.content;
-    if (typeof delta === 'string' && delta.length > 0) {
-      opts.onToken?.(delta);
-    }
+    obj = JSON.parse(payload);
   } catch {
-    // Ignore keep-alive/comment lines and any non-JSON noise.
+    return false; // keep-alive / comment / non-JSON noise
+  }
+
+  const data = obj as Record<string, unknown>;
+  // The upstream chat endpoint reports a mid-stream failure as an in-band
+  // `data: {"error": ...}` event (HTTP 200 already sent) — surface it as an error.
+  if (data.error) {
+    const err = data.error as { message?: string };
+    const message = typeof data.error === 'string' ? data.error : err?.message;
+    throw new APIError('UPSTREAM_ERROR', message || 'The model returned an error.');
+  }
+  if (data.type === 'sources' && Array.isArray(data.sources)) {
+    opts.onSources?.(data.sources as RagSource[]);
+    return false;
+  }
+  const choices = data.choices as Array<{ delta?: { content?: unknown } }> | undefined;
+  const delta = choices?.[0]?.delta?.content;
+  if (typeof delta === 'string' && delta.length > 0) {
+    opts.onToken?.(delta);
   }
   return false;
 }

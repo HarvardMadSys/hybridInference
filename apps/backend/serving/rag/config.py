@@ -53,6 +53,13 @@ class RagSettings:
     chunk_overlap_chars: int
     max_tokens: int
     temperature: float
+    # Serving-time: the gateway the /v1/rag/chat handler calls (as a user, over
+    # HTTP) for query embedding and answer generation, so those requests flow
+    # through the standard handlers and get logged / cost / quota-tracked. A
+    # self-call to the gateway's own address; ``api_key`` must be a valid user
+    # API key (unset => the endpoint returns 503).
+    api_base_url: str
+    api_key: str
     # Used only by the ingest CLI when embedder_mode == "gateway": the
     # OpenAI-compatible base URL + key of the gateway to embed against.
     gateway_base_url: str
@@ -89,6 +96,8 @@ def load_rag_settings() -> RagSettings:
         chunk_overlap_chars=_int_env("RAG_CHUNK_OVERLAP_CHARS", 150),
         max_tokens=_int_env("RAG_MAX_TOKENS", 1024),
         temperature=_float_env("RAG_TEMPERATURE", 0.3),
+        api_base_url=os.getenv("RAG_API_BASE_URL", "http://localhost:8080/v1"),
+        api_key=os.getenv("RAG_API_KEY", ""),
         gateway_base_url=os.getenv("RAG_GATEWAY_BASE_URL", "https://freeinference.org/v1"),
         gateway_api_key=os.getenv("RAG_GATEWAY_API_KEY", os.getenv("LOCAL_API_KEY", "")),
     )
