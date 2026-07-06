@@ -254,6 +254,7 @@ async def test_gateway_embed_transport_ok(monkeypatch):
     def handler(request):
         seen["url"] = str(request.url)
         seen["auth"] = request.headers.get("authorization")
+        seen["ua"] = request.headers.get("user-agent")
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2, 0.3]}]})
 
@@ -262,6 +263,8 @@ async def test_gateway_embed_transport_ok(monkeypatch):
     assert vec == [0.1, 0.2, 0.3]
     assert seen["url"].endswith("/v1/embeddings")
     assert seen["auth"] == "Bearer test-key"
+    # RAG self-calls are tagged so they're identifiable in api_logs.
+    assert seen["ua"] == "doc_assistant"
     assert seen["body"] == {"model": "bge-m3", "input": "hello"}
 
 

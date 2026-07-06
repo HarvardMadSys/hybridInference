@@ -109,9 +109,18 @@ class RagChatRequest(BaseModel):
 # Gateway-as-a-user HTTP helpers (module-level so tests can monkeypatch them). #
 # --------------------------------------------------------------------------- #
 
+# Sent on the self-calls so RAG-originated traffic is identifiable in api_logs
+# (the /v1/* handlers record metadata.user_agent) and distinguishable from other
+# users of the RAG_API_KEY account.
+_USER_AGENT = "doc_assistant"
+
 
 def _auth_headers(settings: RagSettings) -> dict[str, str]:
-    return {"Authorization": f"Bearer {settings.api_key}", "Content-Type": "application/json"}
+    return {
+        "Authorization": f"Bearer {settings.api_key}",
+        "Content-Type": "application/json",
+        "User-Agent": _USER_AGENT,
+    }
 
 
 def _require_api_key(settings: RagSettings) -> None:
