@@ -6,16 +6,20 @@ retrieval and generation route through the gateway itself.
 
 ## Architecture
 
+`/v1/rag/chat` is a thin orchestrator: it retrieves in-process, then calls the
+gateway's **own** public API **as a user** for the model work.
+
 ```text
-                 ingest (offline)                      serving (per request)
-docs/free_inference/docs/source/*.md            ┌──────────────────────────────────┐
-        │  chunk (by heading)                    │ POST /v1/rag/chat                 │
-        ▼                                         │  1. embed query (bge-m3 adapter) │
-   embed each chunk ──► /v1/embeddings (bge-m3)   │  2. cosine top-k over the index  │
-        │                                         │  3. build grounded prompt        │
-        ▼                                         │  4. RouteExecutor.stream_chat_…  │
-   serving/rag/prebuilt/docs_index.json ─────────►│     → SSE (sources + answer)     │
-                                                  └──────────────────────────────────┘
+   POST /v1/rag/chat  (JWT-gated)
+     1. embed query   ── HTTP ─►  POST {RAG_API_BASE_URL}/embeddings      (bge-m3)
+     2. cosine top-k over the committed JSON index          (in-process)
+     3. build grounded prompt with citations                (in-process)
+     4. generate      ── HTTP ─►  POST {RAG_API_BASE_URL}/chat/completions (qwen3.6-35b)
+     → SSE: sources event, then the proxied OpenAI chunks, then [DONE]
+
+   Both HTTP calls carry RAG_API_KEY, so they flow through the standard
+   /v1/embeddings and /v1/chat/completions handlers → logged to api_logs and
+   counted toward cost / quota / concurrency.
 ```
 
 - **Corpus:** `docs/free_inference/docs/source/*.md` — the same markdown that
@@ -26,10 +30,11 @@ docs/free_inference/docs/source/*.md            ┌─────────�
   index is **committed** (embeddings rounded to 6 decimals, ~0.9 MB) and lives
   inside the `serving` package so it ships in the Docker image — a fresh
   container serves retrieval immediately, with no build-time embedding call.
-- **Embeddings & chat route through the gateway.** Ingest calls the
-  OpenAI-compatible `/v1/embeddings` endpoint; the serving endpoint embeds the
-  query with the in-process embedding adapter and generates the answer with the
-  routing engine — no self-HTTP round-trip.
+- **Why call the gateway as a user (over HTTP) instead of the in-process
+  router?** So RAG requests are observable and metered. Direct
+  `RouteExecutor` / adapter calls bypass the per-request logging, cost, quota,
+  and concurrency that live in the `/v1/*` route handlers. Routing the model
+  work back through those endpoints reuses all of it for free.
 
 ## Code map
 
@@ -77,6 +82,15 @@ step is required. To refresh it, rebuild the image after re-running
 and chunk count for a post-deploy check. If the embedding backend is unavailable
 at query time, `/v1/rag/chat` returns a graceful `503` rather than a 500.
 
+**Required env per deployment:** set `RAG_API_KEY` to a valid user API key, and
+point `RAG_API_BASE_URL` at the gateway's own address for that environment — the
+default `http://localhost:8080/v1` matches the prod Docker container's port, but
+staging (systemd) binds `8000`, so it needs `RAG_API_BASE_URL=http://localhost:8000/v1`.
+Because the inner calls authenticate as a single service account, all RAG cost /
+quota / logs attribute to `RAG_API_KEY`, and the outer `/v1/rag/chat` has no
+per-user concurrency limit of its own — size the `RAG_API_KEY` account's quota
+accordingly.
+
 ## Endpoints
 
 Both live under the gateway and authenticate with the dashboard JWT
@@ -84,10 +98,21 @@ Both live under the gateway and authenticate with the dashboard JWT
 it already holds.
 
 - `GET /v1/rag/status` — whether the index is built, chunk count, models.
-- `POST /v1/rag/chat` — body `{ messages, model?, top_k?, stream? }`.
+- `POST /v1/rag/chat` — body `{ messages, top_k?, stream? }`. The generation
+  model is fixed server-side (`RAG_CHAT_MODEL`); it is **not** client-selectable,
+  so the endpoint can't be used to reach role-gated models.
   - Streaming (default): SSE — first a `{"type":"sources", ...}` event, then
     OpenAI-format completion chunks, then `[DONE]`.
   - Non-streaming: `{ answer, sources, model }`.
+
+### Logging & quota
+
+The RAG model calls go through the gateway's own `/v1/embeddings` and
+`/v1/chat/completions`, so they land in `api_logs` and count toward cost, daily
+quota, and per-user concurrency — attributed to the **`RAG_API_KEY` account**
+(not the end user, who authenticates to `/v1/rag/chat` with a JWT). Set
+`RAG_API_KEY` to a valid user API key; when it is unset the endpoint returns
+`503`. An upstream `429` (quota/rate) is passed through to the caller.
 
 ```bash
 curl -sN https://staging.freeinference.org/v1/rag/chat \
@@ -101,10 +126,12 @@ All optional; sensible defaults resolve relative to the repo root.
 
 | Env var | Default | Purpose |
 |---|---|---|
+| `RAG_API_KEY` | _(unset)_ | User API key the handler calls the gateway with (**required** at serving time) |
+| `RAG_API_BASE_URL` | `http://localhost:8080/v1` | Gateway the handler calls (self-call for logging/quota) |
 | `RAG_INDEX_PATH` | `serving/rag/prebuilt/docs_index.json` | Vector index location |
 | `RAG_CORPUS_DIR` | `docs/free_inference/docs/source` | Markdown corpus |
 | `RAG_EMBEDDER` | `gateway` | `gateway` (real bge-m3) or `hash` (offline) |
-| `RAG_GATEWAY_BASE_URL` | `https://freeinference.org/v1` | Gateway used by ingest (gateway mode) |
+| `RAG_GATEWAY_BASE_URL` | `https://freeinference.org/v1` | Gateway used by **ingest** (gateway mode) |
 | `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (gateway mode) |
 | `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer-generation model |
 | `RAG_TOP_K` | `4` | Chunks retrieved per query |
