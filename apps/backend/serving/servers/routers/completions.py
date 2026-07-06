@@ -133,11 +133,6 @@ def _find_unsupported_modality(
     return None
 
 
-def _thinking_is_disabled(thinking: dict[str, Any]) -> bool:
-    """True when a ``thinking`` param expresses reasoning-off (``{"type": "disabled"}``)."""
-    return isinstance(thinking, dict) and thinking.get("type") == "disabled"
-
-
 def _resolve_thinking_param(
     payload: ChatCompletionRequest, model_cfg: ModelConfig | None
 ) -> dict[str, Any] | None:
@@ -152,34 +147,17 @@ def _resolve_thinking_param(
     3. Otherwise fall back to the model's configured ``default_thinking``
        (e.g. ``{"type": "disabled"}``), so reason-by-default providers don't
        silently spend thinking tokens when the client never asked to think.
-    4. Finally, for models flagged ``thinking_disable_by_omission`` (providers
-       like MiniMax M2.x that reason on the mere *presence* of a ``thinking``
-       field, so ``{"type": "disabled"}`` is a no-op), an explicit disable is
-       honored by sending nothing at all. Enable requests still pass through,
-       so clients can opt in to reasoning.
 
     Returns ``None`` when nothing should be sent. The model's
     ``supported_params`` still gates whether the value reaches the upstream.
     """
     if payload.thinking is not None:
-        resolved: dict[str, Any] | None = payload.thinking
-    elif payload.reasoning_effort is not None:
+        return payload.thinking
+    if payload.reasoning_effort is not None:
         return None
-    else:
-        default_thinking = getattr(model_cfg, "default_thinking", None)
-        # Copy so the shared ModelConfig dict is never mutated downstream.
-        resolved = dict(default_thinking) if default_thinking is not None else None
-
-    # Presence-enables providers can't honor an explicit `{"type": "disabled"}`
-    # (it still reasons); the only "off" is omission. Translate disable -> send
-    # nothing for those models, leaving enable requests to pass through normally.
-    if (
-        resolved is not None
-        and _thinking_is_disabled(resolved)
-        and getattr(model_cfg, "thinking_disable_by_omission", False)
-    ):
-        return None
-    return resolved
+    default_thinking = getattr(model_cfg, "default_thinking", None)
+    # Copy so the shared ModelConfig dict is never mutated downstream.
+    return dict(default_thinking) if default_thinking is not None else None
 
 
 async def _should_force_chat_completions_streaming(

@@ -19,11 +19,8 @@ def _payload(thinking=None, reasoning_effort=None):
     return SimpleNamespace(thinking=thinking, reasoning_effort=reasoning_effort)
 
 
-def _cfg(default_thinking=None, thinking_disable_by_omission=False):
-    return SimpleNamespace(
-        default_thinking=default_thinking,
-        thinking_disable_by_omission=thinking_disable_by_omission,
-    )
+def _cfg(default_thinking=None):
+    return SimpleNamespace(default_thinking=default_thinking)
 
 
 @pytest.mark.unit
@@ -61,48 +58,6 @@ def test_no_default_configured_yields_none():
 @pytest.mark.unit
 def test_missing_config_yields_none():
     assert _resolve_thinking_param(_payload(), None) is None
-
-
-@pytest.mark.unit
-def test_disable_by_omission_translates_explicit_disable_to_none():
-    # Presence-enables provider (MiniMax M2.x): a client `{type: disabled}` must
-    # become "send nothing" — forwarding it verbatim would keep reasoning ON.
-    payload = _payload(thinking={"type": "disabled"})
-    cfg = _cfg(thinking_disable_by_omission=True)
-    assert _resolve_thinking_param(payload, cfg) is None
-
-
-@pytest.mark.unit
-def test_disable_by_omission_still_forwards_explicit_enable():
-    # Opt-in must still work: an enable passes through untouched.
-    payload = _payload(thinking={"type": "enabled", "budget_tokens": 1024})
-    cfg = _cfg(thinking_disable_by_omission=True)
-    assert _resolve_thinking_param(payload, cfg) == {
-        "type": "enabled",
-        "budget_tokens": 1024,
-    }
-
-
-@pytest.mark.unit
-def test_disable_by_omission_defaults_to_none_when_silent():
-    # No client param and no default -> nothing sent -> clean answer.
-    assert _resolve_thinking_param(_payload(), _cfg(thinking_disable_by_omission=True)) is None
-
-
-@pytest.mark.unit
-def test_disable_by_omission_neutralizes_disable_shaped_default():
-    # Even a mis-configured default_thinking={type: disabled} is omitted (not
-    # forwarded) for presence-enables models, so it can't turn reasoning on.
-    cfg = _cfg(default_thinking={"type": "disabled"}, thinking_disable_by_omission=True)
-    assert _resolve_thinking_param(_payload(), cfg) is None
-
-
-@pytest.mark.unit
-def test_disable_without_flag_is_forwarded_unchanged():
-    # Regression guard: the flag must not change behavior for other models —
-    # a normal model still forwards an explicit `{type: disabled}` verbatim.
-    payload = _payload(thinking={"type": "disabled"})
-    assert _resolve_thinking_param(payload, _cfg()) == {"type": "disabled"}
 
 
 @pytest.mark.unit

@@ -309,7 +309,6 @@ def register_from_models_yaml(
                     "route_metadata",
                     "extra_body",
                     "default_thinking",
-                    "thinking_disable_by_omission",
                 )
             }
             # NOTE: top-level base_url is intentionally NOT expanded here. It is

@@ -227,14 +227,9 @@ models:
 
   - id: minimax-m2.5
     name: MiniMax M2.5
-    # M2.5 starts reasoning on the mere PRESENCE of a `thinking` field — even
-    # {type: disabled} is a no-op that leaves reasoning ON (unlike M3, where
-    # disabled works). So clients may opt IN to reasoning (`thinking` is in
-    # supported_params, forwarded on enable), but an explicit disable — and the
-    # no-param default — must be honored by sending nothing upstream. That
-    # translation is done by `thinking_disable_by_omission`. No default_thinking
-    # is needed: the natural default (omit) already yields a clean answer.
-    thinking_disable_by_omission: true
+    # NOTE: M2.x treats thinking as mandatory — it accepts {type: disabled} but
+    # keeps reasoning on. Harmless, kept for consistency and forward-compat.
+    default_thinking: {type: disabled}
     provider: minimax
     quantization: "bf16"
     input_modalities: ["text"]
@@ -457,10 +452,6 @@ models:
 
   - id: minimax-m2.7
     name: MiniMax M2.7
-    # Same M2.x quirk as minimax-m2.5: reasoning turns on whenever a `thinking`
-    # field is present, so an explicit disable (and the no-param default) is
-    # honored by omission while enable still passes through. See minimax-m2.5.
-    thinking_disable_by_omission: true
     provider: minimax
     quantization: "bf16"
     input_modalities: ["text", "image"]
@@ -469,7 +460,7 @@ models:
     max_output_length: 131072
     supports_tools: true
     supports_structured_output: true
-    supported_params: [temperature, top_p, top_k, max_tokens, stop, seed, stream, thinking]
+    supported_params: [temperature, top_p, top_k, max_tokens, stop, seed, stream]
     aliases: ["MiniMax-M2.7"]
     # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:
