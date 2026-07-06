@@ -57,10 +57,6 @@ models:
 
   - id: glm-5.1
     name: GLM-5.1
-    # Reasoning OFF unless the client explicitly asks (via `thinking` or
-    # `reasoning_effort`). Providers that reason-by-default otherwise burn
-    # thinking tokens/latency on every request.
-    default_thinking: {type: disabled}
     provider: zai
     quantization: "fp8"
     context_length: 200000
@@ -124,7 +120,6 @@ models:
 
   - id: glm-5.2
     name: GLM-5.2
-    default_thinking: {type: disabled}
     provider: zai
     required_role: internal
     quantization: "fp8"
@@ -180,7 +175,6 @@ models:
 
   - id: glm-5-turbo
     name: GLM-5 Turbo
-    default_thinking: {type: disabled}
     provider: zai
     quantization: "fp8"
     context_length: 200000
@@ -227,9 +221,6 @@ models:
 
   - id: minimax-m2.5
     name: MiniMax M2.5
-    # NOTE: M2.x treats thinking as mandatory — it accepts {type: disabled} but
-    # keeps reasoning on. Harmless, kept for consistency and forward-compat.
-    default_thinking: {type: disabled}
     provider: minimax
     quantization: "bf16"
     input_modalities: ["text"]
@@ -292,7 +283,6 @@ models:
 
   - id: minimax-m3
     name: MiniMax M3
-    default_thinking: {type: disabled}
     provider: minimax
     quantization: "bf16"
     input_modalities: ["text", "image"]
@@ -506,7 +496,6 @@ models:
   # a weighted fallback for when the coding-plan endpoint is unhealthy.
   - id: kimi-k2.7-code
     name: Kimi K2.7 Code (only support coding agents)
-    default_thinking: {type: disabled}
     provider: kimi
     quantization: "fp8"
     input_modalities: ["text"]
@@ -627,13 +616,6 @@ models:
         provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
         api_keys:
           - ${LOCAL_API_KEY}
-        # Local vLLM toggles reasoning through the chat template, not a
-        # top-level `thinking` param. Default it OFF to match the remote
-        # thinking models. (Verify on staging: an unused kwarg is ignored by
-        # the Gemma template.)
-        extra_body:
-          chat_template_kwargs:
-            enable_thinking: false
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
       # so the rest of the model stays available (and staging avoids self-routing
@@ -649,7 +631,6 @@ models:
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
   - id: deepseek-v4-flash
     name: DeepSeek V4 Flash
-    default_thinking: {type: disabled}
     provider: deepseek
     required_role: internal
     provider_model_id: "deepseek-v4-flash"
@@ -698,7 +679,6 @@ models:
 
   - id: deepseek-v4-pro
     name: DeepSeek V4 Pro
-    default_thinking: {type: disabled}
     provider: deepseek
     required_role: internal
     provider_model_id: "deepseek-v4-pro"

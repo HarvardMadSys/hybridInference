@@ -308,7 +308,6 @@ def register_from_models_yaml(
                     "pricing",
                     "route_metadata",
                     "extra_body",
-                    "default_thinking",
                 )
             }
             # NOTE: top-level base_url is intentionally NOT expanded here. It is
