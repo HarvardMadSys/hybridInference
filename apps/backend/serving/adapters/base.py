@@ -157,6 +157,13 @@ class ModelConfig:
     # For local vLLM/sglang models the disable switch is
     # `chat_template_kwargs.enable_thinking` in `extra_body`, not this field.
     default_thinking: dict[str, Any] | None = None
+    # When true, an explicit thinking-DISABLE request is honored by sending NO
+    # `thinking` param upstream instead of `{"type": "disabled"}`. Needed for
+    # providers (MiniMax M2.x) that start reasoning on the mere PRESENCE of a
+    # thinking field, so `{"type": "disabled"}` is a no-op that leaves reasoning
+    # on — the only "off" is omission. Enable requests still pass through (gated
+    # by `supported_params`), so clients can still opt in to reasoning.
+    thinking_disable_by_omission: bool = False
 
     def __post_init__(self) -> None:
         """Normalize never-None collection fields seeded with an explicit None.
