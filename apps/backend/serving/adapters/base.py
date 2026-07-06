@@ -149,21 +149,6 @@ class ModelConfig:
     # Optional OpenRouter provider sorting policy for bare OpenRouter routes.
     # Values accepted by OpenRouter: "price", "throughput", or "latency".
     openrouter_sort: str | None = None
-    # Default `thinking` param injected when the client sends neither `thinking`
-    # nor `reasoning_effort`. Lets a model default to reasoning disabled
-    # (e.g. {"type": "disabled"}) so providers that reason-by-default don't
-    # silently burn thinking tokens/latency. Only reaches the upstream when
-    # `thinking` is in `supported_params` (the adapter passthrough still filters).
-    # For local vLLM/sglang models the disable switch is
-    # `chat_template_kwargs.enable_thinking` in `extra_body`, not this field.
-    default_thinking: dict[str, Any] | None = None
-    # When true, an explicit thinking-DISABLE request is honored by sending NO
-    # `thinking` param upstream instead of `{"type": "disabled"}`. Needed for
-    # providers (MiniMax M2.x) that start reasoning on the mere PRESENCE of a
-    # thinking field, so `{"type": "disabled"}` is a no-op that leaves reasoning
-    # on — the only "off" is omission. Enable requests still pass through (gated
-    # by `supported_params`), so clients can still opt in to reasoning.
-    thinking_disable_by_omission: bool = False
 
     def __post_init__(self) -> None:
         """Normalize never-None collection fields seeded with an explicit None.
