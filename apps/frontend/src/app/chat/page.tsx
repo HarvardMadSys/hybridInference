@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { Button } from '@/components/ui/Button';
+import { Markdown } from '@/components/ui/Markdown';
 import { streamRagChat, type RagSource } from '@/lib/api/chat';
 import { APIError } from '@/lib/utils/errors';
 
@@ -172,10 +173,13 @@ function ChatView() {
                     : 'max-w-[85%] rounded-2xl rounded-bl-sm bg-white px-4 py-3 text-sm text-gray-800 shadow-sm ring-1 ring-gray-200/70'
                 }
               >
-                <div className="whitespace-pre-wrap break-words">
-                  {m.content ||
-                    (m.streaming ? <span className="text-gray-400">Thinking…</span> : '')}
-                </div>
+                {m.role === 'user' ? (
+                  <div className="whitespace-pre-wrap break-words">{m.content}</div>
+                ) : m.content ? (
+                  <Markdown text={m.content} />
+                ) : m.streaming ? (
+                  <span className="text-gray-400">Thinking…</span>
+                ) : null}
                 {m.role === 'assistant' && m.sources && <SourceChips sources={m.sources} />}
               </div>
             </div>
