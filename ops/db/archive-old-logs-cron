@@ -1,4 +1,4 @@
-# Weekly api_logs archive & prune to S3 — runs Sundays at 05:00 UTC
+# Monthly api_logs archive & prune to S3 — runs on the 1st at 05:00 UTC
 # (after the 04:00 UTC full DB backup).
 # Install: sudo cp ops/db/archive-old-logs-cron /etc/cron.d/freeinference-archive-logs
 # Requires: freeinference user in docker group (sudo usermod -aG docker freeinference)
@@ -13,4 +13,4 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 HOME=/home/freeinference
 
-0 5 * * 0 freeinference /srv/hybridInference/ops/db/archive-old-logs.sh --retention-days 180 --s3-archive s3://harvardsys-backup/freeinference/archive/api_logs >> /home/freeinference/archive-logs.log 2>&1
+0 5 1 * * freeinference /srv/hybridInference/ops/db/archive-old-logs.sh --retention-days 180 --s3-archive s3://harvardsys-backup/freeinference/archive/api_logs >> /home/freeinference/archive-logs.log 2>&1

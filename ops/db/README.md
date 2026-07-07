@@ -58,7 +58,7 @@ those rows from the database.
 ./ops/db/archive-old-logs.sh --retention-days 90 --s3-archive s3://bucket/prefix
 ```
 
-Install the weekly cron job (Sundays 05:00 UTC, after the nightly backup):
+Install the monthly cron job (1st of each month, 05:00 UTC, after the nightly backup):
 
 ```bash
 sudo cp ops/db/archive-old-logs-cron /etc/cron.d/freeinference-archive-logs
