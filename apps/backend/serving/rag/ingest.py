@@ -95,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
         chunk_overlap_chars=defaults.chunk_overlap_chars,
         max_tokens=defaults.max_tokens,
         temperature=defaults.temperature,
+        api_base_url=defaults.api_base_url,
+        api_key=defaults.api_key,
         gateway_base_url=defaults.gateway_base_url,
         gateway_api_key=defaults.gateway_api_key,
     )
