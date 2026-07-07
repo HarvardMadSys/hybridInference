@@ -38,6 +38,41 @@ ls -lh backups/
 ./ops/db/restore.sh --backup-dir backups/backup_20250114_153000 --sqlite-only
 ```
 
+### Archive & prune old `api_logs` rows
+
+`archive-old-logs.sh` exports `api_logs` rows older than a retention window to a
+compressed CSV, uploads it to S3, verifies the upload, and only then deletes
+those rows from the database.
+
+```bash
+# Preview: how many rows are older than 180 days (no changes made)
+./ops/db/archive-old-logs.sh --dry-run
+
+# Archive to S3, verify, then delete (recommended)
+./ops/db/archive-old-logs.sh --s3-archive s3://harvardsys-backup/freeinference/archive/api_logs
+
+# Keep the archive on local disk only (no S3), then delete
+./ops/db/archive-old-logs.sh --local-only
+
+# Custom retention window
+./ops/db/archive-old-logs.sh --retention-days 90 --s3-archive s3://bucket/prefix
+```
+
+Install the weekly cron job (Sundays 05:00 UTC, after the nightly backup):
+
+```bash
+sudo cp ops/db/archive-old-logs-cron /etc/cron.d/freeinference-archive-logs
+sudo chmod 644 /etc/cron.d/freeinference-archive-logs
+```
+
+> ⚠️ `api_logs` contains user prompts/responses (**PII**). The `--s3-archive`
+> target must be a location you are authorized to store that data in. Deletion
+> only runs after the archive is written, integrity-checked, row-count-verified,
+> and (if uploading) size-verified on S3; the delete itself is guarded by a
+> transaction that rolls back if the deleted count doesn't match the archive.
+> Note that `DELETE` frees space for reuse inside the table but does **not**
+> return disk to the OS (the script does not run `VACUUM FULL`).
+
 ## Typical use cases
 
 ### Case 1: Backup before schema changes
@@ -119,6 +154,22 @@ Each backup directory contains:
 --postgres-only       Only restore PostgreSQL
 --sqlite-only         Only restore SQLite databases
 --force               Skip confirmation prompts (dangerous!)
+--help                Show help and usage information
+```
+
+### `archive-old-logs.sh`
+
+```text
+--retention-days N    Archive+delete rows older than N days (default: 180)
+--s3-archive URI      S3 prefix for archives; uploaded and size-verified
+                      before any delete
+--local-only          Keep the archive on local disk only (no S3); required
+                      to permit deletion when --s3-archive is unset
+--backup-dir PATH     Local dir for the archive file (default: ./backups/archive)
+--keep-local          Keep the local archive after a successful S3 upload
+--table NAME          Table to prune (default: api_logs)
+--ts-column NAME      Timestamp column to compare (default: timestamp)
+--dry-run             Report counts/size only; write nothing, delete nothing
 --help                Show help and usage information
 ```
 

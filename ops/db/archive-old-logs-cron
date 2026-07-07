@@ -1,0 +1,16 @@
+# Weekly api_logs archive & prune to S3 — runs Sundays at 05:00 UTC
+# (after the 04:00 UTC full DB backup).
+# Install: sudo cp ops/db/archive-old-logs-cron /etc/cron.d/freeinference-archive-logs
+# Requires: freeinference user in docker group (sudo usermod -aG docker freeinference)
+#           AWS CLI configured for the freeinference user (~freeinference/.aws)
+#
+# Archives api_logs rows older than 180 days to S3, verifies the upload, then
+# deletes them from the DB. NOTE: api_logs holds user prompts/responses (PII);
+# the S3 target below must be an authorized location for that data.
+# Logs: ~freeinference/archive-logs.log (writable without root)
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+HOME=/home/freeinference
+
+0 5 * * 0 freeinference /srv/hybridInference/ops/db/archive-old-logs.sh --retention-days 180 --s3-archive s3://harvardsys-backup/freeinference/archive/api_logs >> /home/freeinference/archive-logs.log 2>&1
