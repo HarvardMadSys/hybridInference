@@ -368,6 +368,7 @@ class TestRenderSamples:
                 "model_id": "m",
                 "provider": "p",
                 "user_agent": "ua",
+                "referer": None,
                 "system_opener": big,
                 "user_messages": [big],
             }

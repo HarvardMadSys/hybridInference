@@ -1518,6 +1518,49 @@ async def test_streaming_recovers_usage_on_client_disconnect(anthropic_test_clie
     assert captured["metadata"].get("usage_estimated") is True
 
 
+@pytest.mark.asyncio
+async def test_referer_header_captured_in_logged_metadata(anthropic_test_client, monkeypatch):
+    """The inbound Referer header is persisted into the request metadata so it is
+    queryable as metadata->>'referer', mirroring user_agent."""
+    upstream_resp = {
+        "id": "msg_ref",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-opus-4-7",
+        "content": [{"type": "text", "text": "Hi"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 1},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return upstream_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    captured: dict = {}
+
+    from serving.servers.routers import anthropic_messages as amod
+
+    def fake_schedule(log_store, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(amod, "_schedule_log_store_task", fake_schedule)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    headers = {**_auth(), "Referer": "https://example.com/playground"}
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=headers)
+    assert r.status_code == 200
+
+    assert captured, "_schedule_log_store_task should run on the success path"
+    assert captured["metadata"]["referer"] == "https://example.com/playground"
+
+
 # ---------------------------------------------------------------------------
 # Streaming keepalive heartbeat + max-idle abort (slow-backend disconnect fix)
 # ---------------------------------------------------------------------------

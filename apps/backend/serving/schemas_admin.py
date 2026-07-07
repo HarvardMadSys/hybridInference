@@ -610,6 +610,9 @@ class AdminRecentRequestItem(BaseModel):
     ip_source: str | None = None
     x_forwarded_for: str | None = None
     user_agent: str | None = None
+    # Inbound HTTP Referer header (metadata->>'referer'), e.g. which site/app
+    # origin drove the request. None when the client sent no Referer.
+    referer: str | None = None
     # Calling agent's self-declared identity, parsed from the opening "You are
     # <Name>" line of the system prompt (e.g. "Claude" from Claude Code). None
     # when no such opener is present; the dashboard then falls back to deriving

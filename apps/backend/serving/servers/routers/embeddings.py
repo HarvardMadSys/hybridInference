@@ -163,6 +163,7 @@ async def create_embeddings(
     metadata: dict[str, Any] = {
         "request_type": "embedding",
         "user_agent": http_request.headers.get("user-agent"),
+        "referer": http_request.headers.get("referer"),
         "ip": get_client_ip(http_request),
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,

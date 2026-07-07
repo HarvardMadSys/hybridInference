@@ -98,3 +98,14 @@ def user_agent_from_metadata(metadata: Any) -> str | None:
         except json.JSONDecodeError:
             md = {}
     return md.get("user_agent") if isinstance(md, dict) else None
+
+
+def referer_from_metadata(metadata: Any) -> str | None:
+    """Pull the ``referer`` out of a stored metadata blob (dict or JSON string)."""
+    md = metadata
+    if isinstance(md, str):
+        try:
+            md = json.loads(md)
+        except json.JSONDecodeError:
+            md = {}
+    return md.get("referer") if isinstance(md, dict) else None

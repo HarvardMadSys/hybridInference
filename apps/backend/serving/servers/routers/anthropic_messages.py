@@ -947,6 +947,7 @@ async def anthropic_messages(
     ip_info = get_client_ip_info(request)
     metadata = {
         "user_agent": request.headers.get("user-agent"),
+        "referer": request.headers.get("referer"),
         "ip": ip_info.client_ip,
         "peer_ip": ip_info.peer_ip,
         "ip_source": ip_info.source,
