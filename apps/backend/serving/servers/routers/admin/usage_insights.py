@@ -40,6 +40,7 @@ from serving.servers.deps import (
 from serving.utils.logging import get_logger
 from serving.utils.prompt_sampling import (
     as_payload_dict,
+    referer_from_metadata,
     system_opener,
     user_agent_from_metadata,
     user_messages,
@@ -221,6 +222,7 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
                 "model_id": r["model_id"],
                 "provider": r["provider"],
                 "user_agent": user_agent_from_metadata(r["metadata"]),
+                "referer": referer_from_metadata(r["metadata"]),
                 "system_opener": system_opener(body, payload.max_chars),
                 "user_messages": user_messages(body, payload.max_chars),
             }
@@ -242,6 +244,7 @@ def _render_samples(samples: list[dict]) -> tuple[str, int]:
             f"- time: {s['timestamp']}",
             f"- model: {s['model_id']} ({s['provider']})",
             f"- user_agent: {s['user_agent'] or 'unknown'}",
+            f"- referer: {s['referer'] or 'unknown'}",
         ]
         if s["system_opener"]:
             lines.append(f"- system prompt opener: {s['system_opener']}")

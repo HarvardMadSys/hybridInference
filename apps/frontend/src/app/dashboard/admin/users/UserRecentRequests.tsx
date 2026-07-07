@@ -274,6 +274,12 @@ export function UserRecentRequests({ userId }: { userId: string }) {
                                   {req.user_agent || '—'}
                                 </span>
                               </div>
+                              <div className="col-span-full">
+                                <span className="text-gray-500">Referer:</span>{' '}
+                                <span className="font-mono text-gray-700 break-all">
+                                  {req.referer || '—'}
+                                </span>
+                              </div>
                               {routewiseDecision && (
                                 <div className="col-span-full">
                                   <span className="text-gray-500">RouteWise:</span>{' '}

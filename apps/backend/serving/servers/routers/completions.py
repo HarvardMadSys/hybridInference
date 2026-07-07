@@ -513,6 +513,7 @@ async def chat_completions(
 
     metadata = {
         "user_agent": request.headers.get("user-agent"),
+        "referer": request.headers.get("referer"),
         "ip": get_client_ip(request),
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,

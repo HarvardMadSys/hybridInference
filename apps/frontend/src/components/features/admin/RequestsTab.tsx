@@ -1130,6 +1130,12 @@ export function RequestsTab() {
                                   {req.user_agent || '—'}
                                 </span>
                               </div>
+                              <div className="col-span-full">
+                                <span className="text-gray-500">Referer:</span>{' '}
+                                <span className="text-gray-700 font-mono break-all">
+                                  {req.referer || '—'}
+                                </span>
+                              </div>
                               {(() => {
                                 const content = reqContentCache.get(req.request_id);
                                 if (!content || content.loading) {
