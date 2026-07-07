@@ -69,8 +69,16 @@ repos:
           - eslint-plugin-react-hooks@5.2.0
           - eslint-plugin-jsx-a11y@6.10.2
 
-  - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v3.1.0
+  # Use the maintained fork: pre-commit/mirrors-prettier is archived and stopped
+  # tagging after v3.1.0, which pinned prettier 3.1.0 here while the frontend
+  # (package-lock.json) and CI's `npm run format:check` use 3.8.3. That skew made
+  # the hook rewrap template-literal/ternary lines that CI accepts, so every
+  # frontend PR either churned unrelated lines or had to bypass the hook. rev
+  # tracks the prettier release and additional_dependencies pins the ACTUAL
+  # version to match the lockfile — keep both in sync when bumping prettier.
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.8.3
     hooks:
       - id: prettier
+        additional_dependencies: ["prettier@3.8.3"]
         files: ^apps/frontend/.*\.(ts|tsx|js|jsx|json|css|md)$
