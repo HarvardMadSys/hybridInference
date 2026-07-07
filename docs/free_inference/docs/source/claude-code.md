@@ -31,10 +31,12 @@ public models, then translated back into Anthropic format for Claude Code. You
 authenticate with your FreeInference API key (`hyi-...`) — no `ANTHROPIC_API_KEY`
 from Anthropic is needed.
 
-> **Pick a FreeInference model.** Claude Code's built-in defaults ask for
-> Anthropic model IDs (`claude-sonnet-4-*`, etc.), which are **not** part of the
-> public catalog — leaving them unset results in a `404`. Set `ANTHROPIC_MODEL`
-> to a public model such as `glm-5.1` (see [Choosing a model](#choosing-a-model)).
+> **Defaults work, but pinning is better.** Claude Code's built-in default
+> model IDs (`claude-opus-4-8`, `claude-sonnet-5`, `claude-haiku-4-5`) are
+> recognized and served by budget models from the public catalog
+> (see [Choosing a model](#choosing-a-model)). For predictable quality and
+> availability, set `ANTHROPIC_MODEL` explicitly to a public model such as
+> `glm-5.1`.
 
 ## One-click setup (macOS / Linux)
 
@@ -119,10 +121,15 @@ curl https://freeinference.org/v1/models \
   -H "Authorization: Bearer hyi-your-api-key"
 ```
 
-> **Note on Claude model IDs.** FreeInference does recognize Anthropic IDs like
-> `claude-3-5-sonnet-latest` and resolves them to its own Claude models, but
-> those require elevated (internal) access. Public keys should use a catalog
-> model from the table above; otherwise the request returns a `404`.
+> **Note on Claude model IDs.** Claude Code's current default IDs are served
+> by public catalog models: `claude-opus-4-8` (and the `[1m]` long-context
+> variant) resolves to `minimax-m3`, while `claude-sonnet-5` and
+> `claude-haiku-4-5` resolve to `qwen3.6-35b`. So Claude Code works without
+> setting any model — just be aware the defaults are budget models, and
+> `qwen3.6-35b` is hosted on FreeInference's own GPUs, which can be briefly
+> unavailable during maintenance. Legacy IDs like `claude-3-5-sonnet-latest`
+> resolve to internal Claude models and require elevated access; on a public
+> key they return a `404`.
 
 See the [Available Models](models.md) page for the full catalog and the
 [API Headers Reference](api_headers.md) for supported headers such as
@@ -140,13 +147,19 @@ curl -X POST https://freeinference.org/anthropic/v1/messages \
   -H "anthropic-version: 2023-06-01" \
   -d '{
     "model": "glm-5.1",
-    "max_tokens": 64,
+    "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Say hello in one word."}]
   }'
 ```
 
 A `200` with a `message` payload means you're set. A `429` means the key works
 but you're momentarily rate limited — your configuration is still correct.
+
+> **Keep `max_tokens` generous.** GLM models are reasoning models: they spend
+> hidden thinking tokens before emitting visible text. With a very small
+> `max_tokens` (say 64) the whole budget can go to reasoning and the response
+> comes back `200` with **empty** `content` and
+> `stop_reason: "max_tokens"` — that's a budget problem, not a setup problem.
 
 Then just run:
 
@@ -158,8 +171,10 @@ claude
 
 | Error | Cause | Fix |
 |-------|-------|-----|
+| "There's an issue with the selected model (…). It may not exist or you may not have access to it." | The configured model is not currently in the catalog — either a typo'd ID, or a FreeInference-hosted model (e.g. `qwen3.6-35b`) that is temporarily offline for GPU maintenance | List the live catalog (`https://freeinference.org/v1/models`) and switch to an available model — set `ANTHROPIC_MODEL` (e.g. `glm-5.1`) or use `/model` inside Claude Code, then restart |
 | 401 Authentication error | Bad or missing API key | Check `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json` |
-| 404 Model not found | Model ID not in the public catalog (e.g. an unset Claude default) | Set `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` to a model from `https://freeinference.org/v1/models` (e.g. `glm-5.1`) |
+| 404 Model not found | Model ID not in the public catalog | Set `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` to a model from `https://freeinference.org/v1/models` (e.g. `glm-5.1`) |
+| 200 but empty `content`, `stop_reason: "max_tokens"` | Reasoning model spent the whole tiny `max_tokens` budget on hidden thinking | Raise `max_tokens` (1024+), or use a non-reasoning model for small calls |
 | 429 Rate limited | Too many concurrent/total requests | Wait a moment and retry |
 | 503 Accounts unavailable | Upstream pool exhausted | Wait a moment and retry |
 | Connection timeout | Network issue | Confirm connectivity to `freeinference.org`; raise `API_TIMEOUT_MS` |
