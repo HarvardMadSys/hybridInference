@@ -18,6 +18,17 @@ def test_already_canonical_passes_through():
     assert resolve_anthropic_alias("claude-opus-4.7") == "claude-opus-4.7"
 
 
+def test_context_window_marker_is_stripped():
+    # Claude Code appends "[1m]" when the 1M-context variant is selected.
+    assert resolve_anthropic_alias("claude-opus-4-8[1m]") == "claude-opus-4-8"
+    assert resolve_anthropic_alias("claude-sonnet-5[1m]") == "claude-sonnet-5"
+    # Marker is stripped before the alias map is consulted.
+    assert resolve_anthropic_alias("claude-sonnet-4-6[1m]") == "claude-sonnet-4.6"
+    # Only a trailing bracketed size marker is treated as a marker.
+    assert resolve_anthropic_alias("model[1m]x") == "model[1m]x"
+    assert resolve_anthropic_alias("model[big]") == "model[big]"
+
+
 def test_alias_map_has_required_entries():
     required_aliases = {
         "claude-3-5-sonnet-latest",

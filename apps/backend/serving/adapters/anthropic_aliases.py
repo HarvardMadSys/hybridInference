@@ -9,6 +9,14 @@ existing Anthropic SDK code works without reconfiguration.
 
 from __future__ import annotations
 
+import re
+
+# Claude Code suffixes model IDs with a bracketed context-window marker when
+# the user opts into a long-context variant (e.g. ``claude-opus-4-8[1m]``).
+# No upstream of ours serves distinct context variants, so the marker is
+# stripped before alias/registry resolution.
+_CONTEXT_MARKER_RE = re.compile(r"\[\d+[km]\]$")
+
 ANTHROPIC_MODEL_ALIASES: dict[str, str] = {
     # Sonnet family
     "claude-3-5-sonnet-latest": "claude-sonnet-4.6",
@@ -27,7 +35,9 @@ ANTHROPIC_MODEL_ALIASES: dict[str, str] = {
 def resolve_anthropic_alias(model_id: str) -> str:
     """Return the registry ID for ``model_id``, or ``model_id`` if unknown.
 
-    Unknown IDs pass through; the router then attempts a direct registry
-    lookup and returns 404 if that also fails.
+    A trailing context-window marker (``[1m]``-style, appended by Claude
+    Code) is stripped first. Unknown IDs pass through; the router then
+    attempts a direct registry lookup and returns 404 if that also fails.
     """
-    return ANTHROPIC_MODEL_ALIASES.get(model_id, model_id)
+    base = _CONTEXT_MARKER_RE.sub("", model_id)
+    return ANTHROPIC_MODEL_ALIASES.get(base, base)

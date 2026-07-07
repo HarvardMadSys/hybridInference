@@ -40,3 +40,17 @@ def test_load_rag_settings_does_not_raise():
     settings = load_rag_settings()
     assert settings.index_path.name == "docs_index.json"
     assert settings.embedder_mode in ("gateway", "hash")
+
+
+def test_ingest_cli_builds_settings_with_all_required_fields(tmp_path):
+    # Regression: RagSettings grew required api_base_url/api_key fields (#911)
+    # and the ingest CLI's manual construction missed them, so every
+    # `make rag-ingest` run died with a TypeError before reaching embedding.
+    from serving.rag.ingest import main
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "hello.md").write_text("# Hello\n\nSome documentation text.\n")
+    out = tmp_path / "index.json"
+    assert main(["--corpus", str(corpus), "--out", str(out), "--embedder", "hash"]) == 0
+    assert out.exists()
