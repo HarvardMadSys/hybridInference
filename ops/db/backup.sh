@@ -8,7 +8,8 @@
 #
 # Options:
 #   --backup-dir PATH     Custom backup directory (default: ./backups)
-#   --compress            Compress backups with zstd
+#   --compress            Compress backups with zstd (default: on)
+#   --no-compress         Write an uncompressed .sql dump instead
 #   --s3-bucket URI       Upload backup to S3 (e.g. s3://freeinference/backup)
 #   --s3-only             Upload to S3 and remove local backup after success
 #   --keep-daily N        Keep N most recent daily backups (default: 3)
@@ -44,7 +45,7 @@ readonly NC='\033[0m' # No Color
 
 # Default configuration
 BACKUP_DIR="./backups"
-COMPRESS=false
+COMPRESS=true
 S3_BUCKET=""
 S3_ONLY=false
 KEEP_DAILY=3
@@ -102,6 +103,10 @@ parse_args() {
                 ;;
             --compress)
                 COMPRESS=true
+                shift
+                ;;
+            --no-compress)
+                COMPRESS=false
                 shift
                 ;;
             --s3-bucket)
@@ -185,31 +190,47 @@ backup_postgres() {
     # Use pg_dump via docker exec with password and host
     log_info "Dumping database '${DB_NAME}'..."
 
-    if docker exec -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" pg_dump \
-        -h localhost \
-        -U "${DB_USER}" \
-        -d "${DB_NAME}" \
-        --clean \
-        --if-exists \
-        --create \
-        --verbose \
-        > "${backup_file}"; then
+    # pipefail (set at the top of the script) ensures a pg_dump failure
+    # propagates through the zstd pipe below.
+    local dump_ok=false
+    if [[ "$COMPRESS" == true ]]; then
+        # Compress on the fly: pipe pg_dump straight into zstd so the full
+        # uncompressed dump never touches disk.
+        backup_file="${backup_file}.zst"
+        log_info "Compressing on the fly with zstd..."
+        if docker exec -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" pg_dump \
+            -h localhost \
+            -U "${DB_USER}" \
+            -d "${DB_NAME}" \
+            --clean \
+            --if-exists \
+            --create \
+            --verbose \
+            | zstd -q -o "${backup_file}"; then
+            dump_ok=true
+        fi
+    else
+        if docker exec -e PGPASSWORD="${DB_PASSWORD}" "${POSTGRES_CONTAINER}" pg_dump \
+            -h localhost \
+            -U "${DB_USER}" \
+            -d "${DB_NAME}" \
+            --clean \
+            --if-exists \
+            --create \
+            --verbose \
+            > "${backup_file}"; then
+            dump_ok=true
+        fi
+    fi
 
+    if [[ "$dump_ok" == true ]]; then
         local size
         size=$(du -h "${backup_file}" | cut -f1)
         log_success "PostgreSQL backup completed: ${backup_file} (${size})"
-
-        # Compress if requested
-        if [[ "$COMPRESS" == true ]]; then
-            log_info "Compressing PostgreSQL backup..."
-            zstd --rm -q "${backup_file}"
-            backup_file="${backup_file}.zst"
-            size=$(du -h "${backup_file}" | cut -f1)
-            log_success "Compressed to: ${backup_file} (${size})"
-        fi
-
         return 0
     else
+        # Remove any partial output so it can't be uploaded or restored.
+        rm -f "${backup_file}"
         log_error "PostgreSQL backup failed"
         return 1
     fi
