@@ -182,10 +182,10 @@ restore_postgres() {
     # Find the most recent PostgreSQL backup
     # First try root directory, then fallback to postgres subdirectory
     local backup_file
-    backup_file=$(find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name "*.sql" -o -name "*.sql.gz" \) | sort -r | head -n 1)
+    backup_file=$(find "${BACKUP_DIR}" -maxdepth 1 -type f \( -name "*.sql" -o -name "*.sql.gz" -o -name "*.sql.zst" \) | sort -r | head -n 1)
 
     if [[ -z "$backup_file" && -d "${BACKUP_DIR}/postgres" ]]; then
-        backup_file=$(find "${BACKUP_DIR}/postgres" -type f \( -name "*.sql" -o -name "*.sql.gz" \) | sort -r | head -n 1)
+        backup_file=$(find "${BACKUP_DIR}/postgres" -type f \( -name "*.sql" -o -name "*.sql.gz" -o -name "*.sql.zst" \) | sort -r | head -n 1)
     fi
 
     if [[ -z "$backup_file" ]]; then
@@ -195,40 +195,41 @@ restore_postgres() {
 
     log_info "Found backup: ${backup_file}"
 
-    # Decompress if needed
-    local temp_file=""
-    if [[ "$backup_file" == *.gz ]]; then
-        log_info "Decompressing backup..."
-        temp_file="${backup_file%.gz}"
-        gunzip -c "$backup_file" > "$temp_file"
-        backup_file="$temp_file"
-    fi
+    # Pick a reader that streams the dump into psql based on its compression,
+    # so a compressed dump is never fully decompressed to disk first.
+    # pipefail (set at the top of the script) propagates a decompression
+    # failure through the pipe below.
+    local reader
+    case "$backup_file" in
+        *.zst)
+            if ! command -v zstd &> /dev/null; then
+                log_error "zstd not found — cannot decompress ${backup_file}"
+                return 1
+            fi
+            log_info "Decompressing zstd backup on the fly..."
+            reader="zstd -dc"
+            ;;
+        *.gz)
+            log_info "Decompressing gzip backup on the fly..."
+            reader="gunzip -c"
+            ;;
+        *)
+            reader="cat"
+            ;;
+    esac
 
     # Restore database with password and host
     log_info "Restoring database '${DB_NAME}'..."
 
-    if docker exec -e PGPASSWORD="${DB_PASSWORD}" -i "${POSTGRES_CONTAINER}" psql \
+    if $reader "$backup_file" | docker exec -e PGPASSWORD="${DB_PASSWORD}" -i "${POSTGRES_CONTAINER}" psql \
         -h localhost \
         -U "${DB_USER}" \
-        -d postgres \
-        < "$backup_file"; then
+        -d postgres; then
 
         log_success "PostgreSQL restore completed successfully"
-
-        # Clean up temp file
-        if [[ -n "$temp_file" ]]; then
-            rm -f "$temp_file"
-        fi
-
         return 0
     else
         log_error "PostgreSQL restore failed"
-
-        # Clean up temp file
-        if [[ -n "$temp_file" ]]; then
-            rm -f "$temp_file"
-        fi
-
         return 1
     fi
 }
