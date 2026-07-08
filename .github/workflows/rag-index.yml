@@ -1,0 +1,103 @@
+name: RAG Index
+
+# Keep the docs-assistant RAG index in sync with the public docs.
+#
+# The index (apps/backend/serving/rag/prebuilt/docs_index.json) is a committed
+# artifact baked into the backend image, so editing the docs corpus does NOT
+# update what the assistant retrieves until the index is rebuilt. CI ignores
+# docs/** entirely, so docs-only pushes also never reach the staging deploy.
+#
+# This workflow closes both gaps: when the corpus (or the chunking/ingest
+# code) changes on dev, it re-embeds via the production gateway (bge-m3),
+# commits the refreshed index back to dev, and dispatches the staging deploy
+# so the running assistant picks it up. Production receives it through the
+# normal sync-main flow.
+#
+# Loop safety: the auto-commit only touches prebuilt/docs_index.json, which is
+# not in the trigger paths — and pushes made with GITHUB_TOKEN do not trigger
+# workflows anyway.
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'docs/free_inference/docs/source/**'
+      - 'apps/backend/serving/rag/chunker.py'
+      - 'apps/backend/serving/rag/ingest.py'
+      - '.github/workflows/rag-index.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: rag-index
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.12"
+  UV_VERSION: "0.5.0"
+  UV_SYSTEM_PYTHON: 1
+
+jobs:
+  rebuild:
+    name: Rebuild docs RAG index
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          # Jobs sharing this self-hosted runner share one UV_CACHE_DIR; a
+          # prune here can race another job's mid-write extraction (see ci.yml).
+          prune-cache: false
+
+      - name: Set up Python
+        run: uv python install ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          uv venv
+          uv sync --group dev
+
+      - name: Rebuild index (gateway bge-m3 embeddings)
+        env:
+          RAG_GATEWAY_BASE_URL: https://freeinference.org/v1
+          RAG_GATEWAY_API_KEY: ${{ secrets.RAG_GATEWAY_API_KEY }}
+        run: |
+          if [ -z "${RAG_GATEWAY_API_KEY}" ]; then
+            echo "::error title=Missing secret::RAG_GATEWAY_API_KEY is not configured (any valid FreeInference API key works)"
+            exit 1
+          fi
+          make rag-ingest
+
+      - name: Commit refreshed index
+        id: commit
+        run: |
+          set -euo pipefail
+          INDEX=apps/backend/serving/rag/prebuilt/docs_index.json
+          if git diff --quiet -- "${INDEX}"; then
+            echo "Index unchanged; nothing to commit."
+            echo "pushed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${INDEX}"
+          git commit -m "chore(rag): rebuild docs index for ${GITHUB_SHA:0:8}"
+          git push origin HEAD:dev
+          echo "pushed=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Deploy staging with the fresh index
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run deploy-staging.yml --ref dev
