@@ -94,8 +94,23 @@ rather than overwriting it.
 | `ANTHROPIC_SMALL_FAST_MODEL` | The model Claude Code uses for lightweight background tasks. |
 | `API_TIMEOUT_MS` | Request timeout. `600000` (10 min) is recommended for long agentic turns. |
 
-Restart any running `claude` session after editing the file, then run
-`claude` in a project directory to start.
+> **Claude Code ≥ 2.1.198 also needs a shell export.** Recent Claude Code
+> versions no longer apply `ANTHROPIC_BASE_URL` from the settings-file `env`
+> block — requests silently go to `api.anthropic.com`, which rejects
+> FreeInference keys with `Failed to authenticate. API Error: 401 Invalid
+> bearer token`. Add the base URL to your shell profile as well
+> (`~/.bashrc`, `~/.zshrc`, or equivalent):
+>
+> ```bash
+> export ANTHROPIC_BASE_URL="https://freeinference.org/anthropic"
+> ```
+>
+> The other variables (auth token, models) still work from
+> `settings.json`, which keeps your API key out of shell config files. The
+> [one-click script](#one-click-setup-macos--linux) does both steps for you.
+
+Restart any running `claude` session (and open a new terminal so the export
+takes effect), then run `claude` in a project directory to start.
 
 ## Choosing a model
 
@@ -171,6 +186,7 @@ claude
 
 | Error | Cause | Fix |
 |-------|-------|-----|
+| "Failed to authenticate. API Error: 401 Invalid bearer token" | Claude Code ≥ 2.1.198 ignored `ANTHROPIC_BASE_URL` from `settings.json` and sent your FreeInference key to `api.anthropic.com` | Export `ANTHROPIC_BASE_URL` in your shell profile (see [Manual setup](#manual-setup)), open a new terminal, retry |
 | "There's an issue with the selected model (…). It may not exist or you may not have access to it." | The configured model is not currently in the catalog — either a typo'd ID, or a FreeInference-hosted model (e.g. `qwen3.6-35b`) that is temporarily offline for GPU maintenance | List the live catalog (`https://freeinference.org/v1/models`) and switch to an available model — set `ANTHROPIC_MODEL` (e.g. `glm-5.1`) or use `/model` inside Claude Code, then restart |
 | 401 Authentication error | Bad or missing API key | Check `ANTHROPIC_AUTH_TOKEN` in `~/.claude/settings.json` |
 | 404 Model not found | Model ID not in the public catalog | Set `ANTHROPIC_MODEL` / `ANTHROPIC_SMALL_FAST_MODEL` to a model from `https://freeinference.org/v1/models` (e.g. `glm-5.1`) |

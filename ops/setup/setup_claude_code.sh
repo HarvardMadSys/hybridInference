@@ -147,6 +147,45 @@ fi
 
 ok "Settings written to ${SETTINGS_FILE}"
 
+# ── 3b. Shell profile export for ANTHROPIC_BASE_URL ─────────────
+# Claude Code >= 2.1.198 no longer applies ANTHROPIC_BASE_URL from the
+# settings.json env block (it withholds API-routing variables and falls back
+# to api.anthropic.com, which rejects FreeInference keys with
+# "401 Invalid bearer token"). A process-level environment variable still
+# works, so the base URL is also exported from the shell profile. The auth
+# token stays in settings.json only — no secrets are written to the profile.
+RC_MARKER_BEGIN="# >>> freeinference claude-code >>>"
+RC_MARKER_END="# <<< freeinference claude-code <<<"
+
+shell_profile_for() {
+    case "$(basename "${SHELL:-/bin/bash}")" in
+        zsh)  echo "${ZDOTDIR:-$HOME}/.zshrc" ;;
+        bash) echo "$HOME/.bashrc" ;;
+        *)    echo "" ;;
+    esac
+}
+
+RC_FILE=$(shell_profile_for)
+if [[ -n "$RC_FILE" ]]; then
+    # Replace any previous block so re-runs stay idempotent.
+    if [[ -f "$RC_FILE" ]] && grep -qF "$RC_MARKER_BEGIN" "$RC_FILE"; then
+        TMP_RC=$(mktemp)
+        awk -v begin="$RC_MARKER_BEGIN" -v end="$RC_MARKER_END" \
+            '$0 == begin {skip=1; next} $0 == end {skip=0; next} !skip' \
+            "$RC_FILE" > "$TMP_RC" && mv "$TMP_RC" "$RC_FILE"
+    fi
+    {
+        printf '%s\n' "$RC_MARKER_BEGIN"
+        printf 'export ANTHROPIC_BASE_URL="%s"\n' "$FREEINFERENCE_BASE_URL"
+        printf '%s\n' "$RC_MARKER_END"
+    } >> "$RC_FILE"
+    ok "Exported ANTHROPIC_BASE_URL in ${RC_FILE} (required by Claude Code >= 2.1.198)"
+    info "Open a new terminal (or run: source ${RC_FILE}) before starting claude."
+else
+    warn "Unrecognized shell '$(basename "${SHELL:-unknown}")' — add this line to your shell profile:"
+    printf '    export ANTHROPIC_BASE_URL="%s"\n' "$FREEINFERENCE_BASE_URL"
+fi
+
 # ── 4. Connectivity test ─────────────────────────────────────────
 printf "\n"
 info "Testing connectivity to FreeInference API ..."
