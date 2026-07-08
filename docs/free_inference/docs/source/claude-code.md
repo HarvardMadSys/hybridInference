@@ -40,13 +40,13 @@ from Anthropic is needed.
 
 ## One-click setup (macOS / Linux)
 
-The repository ships a setup script that configures
+FreeInference ships a setup script that configures
 `~/.claude/settings.json` and runs a connectivity check.
 
 ```bash
 # Download first so you can inspect it, then run it
 curl -fsSL -o setup_claude_code.sh \
-  https://raw.githubusercontent.com/HarvardMadSys/hybridInference/main/ops/setup/setup_claude_code.sh
+  https://doc.freeinference.org/setup_claude_code.sh
 bash setup_claude_code.sh
 ```
 
@@ -64,8 +64,8 @@ check. To use a different model, override `FREEINFERENCE_MODEL` (and
 `ANTHROPIC_MODEL` afterwards as shown in [Manual setup](#manual-setup).
 
 > **Security note:** Always review remote shell scripts before executing them.
-> You can also clone the repository and run
-> `ops/setup/setup_claude_code.sh` from your local checkout.
+> If you have repository access, you can instead run
+> `ops/setup/setup_claude_code.sh` from a local checkout.
 
 ## Manual setup
 

@@ -81,7 +81,12 @@ html_css_files = [
 # Emit a .nojekyll marker for static hosts that understand it. Cloudflare Pages
 # does not require the marker, but keeping it is harmless and preserves the
 # standalone docs build behavior.
-html_extra_path = []
+#
+# The Claude Code setup script is published at the site root
+# (https://doc.freeinference.org/setup_claude_code.sh) because the repository
+# is private: raw.githubusercontent.com links 404 for the public. The single
+# source of truth stays in ops/setup/.
+html_extra_path = ["../../../../ops/setup/setup_claude_code.sh"]
 
 
 def setup(app):
