@@ -90,7 +90,10 @@ def _upstream_error_message(exc: aiohttp.ClientResponseError) -> str:
 def _safe_probe_detail(value: str, *, api_key: str) -> str:
     if api_key:
         value = value.replace(api_key, "[redacted]")
-    return truncate_probe_detail(scrub_provider_identity(value))
+    # Admin-only surface: the operator already picked which provider they're
+    # probing, so keep vendor-name tokens (strip_vendor_names=False) rather
+    # than blanking them out of the response body.
+    return truncate_probe_detail(scrub_provider_identity(value, strip_vendor_names=False))
 
 
 def probe_error_detail(

@@ -50,6 +50,8 @@ _STRUCTURED_LOG_KEYS = (
     "ttft_ms",
     "endpoint_id",
     "key_index",
+    "status",
+    "stage",
     "outcome",
     "remaining",
     "cooldown_sec",

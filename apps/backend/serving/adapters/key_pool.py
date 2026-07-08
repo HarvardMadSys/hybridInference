@@ -14,6 +14,16 @@ failures such as timeouts and connection errors. Request-scoped client errors
 key, so muting would take the whole pool down. The net effect is "use one key
 until it runs out of quota or errors, then move to the next".
 
+Key-specific failures (429/401/402/403) normally mute even the *last* usable
+key, since retrying that key immediately cannot succeed. But for a pool with
+only one key configured, that means every rate-limit blip costs a flat
+5-minute total blackout with nothing to rotate to. To keep that blip-tolerant
+without giving up the safety net for a genuinely dead/exhausted key, the sole
+remaining key instead gets a couple of free passes
+(``SOLE_KEY_BACKOFF_THRESHOLD``) before it starts muting, then backs off
+exponentially from ``SOLE_KEY_BACKOFF_BASE_SECONDS`` up to the same
+``MUTE_SECONDS`` ceiling as a sustained failure streak continues.
+
 See docs/agents/specs/archive/2026-04-30-multi-key-rotation-design.md for the
 original (least-loaded) design this supersedes.
 """
@@ -77,6 +87,11 @@ class _KeyState:
     request_count: int = 0
     cooldown_until: float = 0.0  # monotonic timestamp
     removed: bool = False
+    # Consecutive mute-worthy failures since the last 2xx, used to back off
+    # the sole-remaining-key mute duration (see release()). Reset on success;
+    # request-scoped 4xx (never mute-worthy either way) leaves it untouched
+    # since it says nothing about this key's own health.
+    consecutive_failures: int = 0
 
 
 @dataclass
@@ -94,11 +109,18 @@ class Lease:
 
 
 class KeyPool:
-    """Hands out API keys sequentially, muting a key for 5 minutes on a key error."""
+    """Hands out API keys sequentially, muting a key on a key-specific error."""
 
     AFFINITY_TTL_SECONDS: float = 300.0  # 5 minutes
     MUTE_SECONDS: float = 300.0  # 5 minutes — key-specific/transient errors mute the key
     SWEEP_THRESHOLD: int = 1000
+    # Sole-remaining-key backoff for key-specific failures (429/401/402/403):
+    # tolerate this many consecutive failures with no mute at all, then start
+    # muting at BASE_SECONDS and double on each further consecutive failure,
+    # capped at MUTE_SECONDS. Multi-key mutes are unaffected — they mute
+    # immediately since another key can still serve traffic.
+    SOLE_KEY_BACKOFF_THRESHOLD: int = 2
+    SOLE_KEY_BACKOFF_BASE_SECONDS: float = 15.0
 
     def __init__(self, keys: list[str], provider_label: str) -> None:
         if not keys:
@@ -216,17 +238,27 @@ class KeyPool:
     def release(self, lease: Lease, *, status_code: int) -> bool:
         """Report the request outcome; return True iff the key was muted.
 
-        Mutes the leased key for ``MUTE_SECONDS`` (5 minutes) when
-        ``should_mute_status(status_code)`` is true — i.e. for key-specific or
-        transient failures (429, 401/402/403, 408/425, 5xx, and non-HTTP
-        failures signalled by ``status_code == 0``). A 2xx response and
-        request-scoped client errors (other 4xx) leave the key usable.
+        Mutes the leased key when ``should_mute_status(status_code)`` is true
+        — i.e. for key-specific or transient failures (429, 401/402/403,
+        408/425, 5xx, and non-HTTP failures signalled by ``status_code ==
+        0``). A 2xx response and request-scoped client errors (other 4xx)
+        leave the key usable.
 
-        Guard: a transient / provider-side failure never mutes the *last*
-        usable key, so a single upstream blip cannot take a sole-key route
-        offline (subsequent requests would otherwise hit KeyPoolExhausted
-        without even attempting the provider). Key-specific failures
-        (quota/auth/payment) always mute, since retrying that key cannot help.
+        Guard: a transient / provider-side failure (408/425/5xx/network)
+        never mutes the *last* usable key, so a single upstream blip cannot
+        take a sole-key route offline (subsequent requests would otherwise
+        hit KeyPoolExhausted without even attempting the provider).
+
+        Key-specific failures (quota/auth/payment: 429/401/402/403) mute
+        immediately at the full ``MUTE_SECONDS`` when another key can take
+        over. When this is the *last* usable key, though, there is nowhere to
+        rotate to — muting immediately at the full 5 minutes would turn every
+        rate-limit blip into a flat 5-minute blackout. Instead the sole key
+        gets ``SOLE_KEY_BACKOFF_THRESHOLD`` consecutive failures for free,
+        then backs off from ``SOLE_KEY_BACKOFF_BASE_SECONDS``, doubling per
+        additional consecutive failure, capped at ``MUTE_SECONDS`` — tolerant
+        of a momentary blip, still self-protecting against a sustained outage
+        or genuinely exhausted key.
 
         Args:
             lease: the lease returned by ``acquire``.
@@ -238,15 +270,40 @@ class KeyPool:
             False otherwise (caller should propagate the error).
         """
         if not should_mute_status(status_code):
+            if 200 <= status_code < 300:
+                with self._lock:
+                    self._keys[lease.key_index].consecutive_failures = 0
             return False
         with self._lock:
             now = time.monotonic()
-            if not is_key_specific_status(status_code) and not self._has_other_usable_key_locked(
-                lease.key_index, now
-            ):
-                # Transient error on the only usable key — keep it in service.
-                return False
-            self._keys[lease.key_index].cooldown_until = now + self.MUTE_SECONDS
+            state = self._keys[lease.key_index]
+            state.consecutive_failures += 1
+            is_sole_key = not self._has_other_usable_key_locked(lease.key_index, now)
+
+            if not is_key_specific_status(status_code):
+                if is_sole_key:
+                    # Transient error on the only usable key — keep it in service.
+                    return False
+                state.cooldown_until = now + self.MUTE_SECONDS
+                return True
+
+            if is_sole_key:
+                if state.consecutive_failures <= self.SOLE_KEY_BACKOFF_THRESHOLD:
+                    # A couple of free passes — there's no key to rotate to
+                    # anyway, so a single blip shouldn't cost 5 minutes.
+                    return False
+                backoff_step = min(
+                    state.consecutive_failures - self.SOLE_KEY_BACKOFF_THRESHOLD - 1,
+                    8,  # 2**8 * BASE already exceeds MUTE_SECONDS; caps the exponent
+                )
+                duration = min(
+                    self.SOLE_KEY_BACKOFF_BASE_SECONDS * (2**backoff_step),
+                    self.MUTE_SECONDS,
+                )
+                state.cooldown_until = now + duration
+                return True
+
+            state.cooldown_until = now + self.MUTE_SECONDS
             return True
 
     def _has_other_usable_key_locked(self, exclude_idx: int, now: float) -> bool:

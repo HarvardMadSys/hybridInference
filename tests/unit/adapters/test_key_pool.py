@@ -3,7 +3,11 @@
 Selection is sequential: the pool hands out the earliest usable key and only
 advances to a later key once an earlier one is muted. *Any* upstream error
 (429, other 4xx/5xx, or a non-HTTP failure signalled by ``status_code=0``)
-mutes the leased key for ``MUTE_SECONDS`` (5 minutes).
+mutes the leased key for ``MUTE_SECONDS`` (5 minutes) — except that a
+key-specific failure (429/401/402/403) landing on the *sole* usable key gets
+``SOLE_KEY_BACKOFF_THRESHOLD`` free passes first, then backs off
+exponentially from ``SOLE_KEY_BACKOFF_BASE_SECONDS`` up to the same
+``MUTE_SECONDS`` ceiling, since there is nowhere to rotate to.
 """
 
 from __future__ import annotations
@@ -146,16 +150,70 @@ def test_release_transient_error_does_not_mute_sole_key(status_code):
 
 
 @pytest.mark.parametrize("status_code", [429, 401, 402, 403])
-def test_release_key_specific_error_mutes_sole_key(monkeypatch, status_code):
-    """Quota/auth/payment failures mute even the only key — retrying can't help."""
+def test_release_key_specific_error_gives_sole_key_free_passes(monkeypatch, status_code):
+    """Quota/auth/payment failures get free passes on the sole key before muting.
+
+    There's nowhere to rotate to, so a single blip must not cost the full
+    5-minute mute — only a sustained streak past SOLE_KEY_BACKOFF_THRESHOLD
+    starts muting (see test_release_key_specific_error_backs_off_sole_key).
+    """
     pool = KeyPool(keys=["only"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
     _, lease = pool.acquire("user-A")
-    muted = pool.release(lease, status_code=status_code)
-    assert muted is True
-    assert pool._keys[0].cooldown_until == pytest.approx(1000.0 + MUTE)
+    for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD):
+        muted = pool.release(lease, status_code=status_code)
+        assert muted is False
+        assert pool._keys[0].cooldown_until == 0.0
+        _, lease = pool.acquire("user-A")
+
+
+def test_release_key_specific_error_backs_off_sole_key_exponentially(monkeypatch):
+    """Past the free-pass threshold, sole-key mutes grow exponentially to the 5-min cap."""
+    pool = KeyPool(keys=["only"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    # Burn through the free passes first.
+    for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD):
+        _, lease = pool.acquire("user-A")
+        assert pool.release(lease, status_code=429) is False
+        fake_now[0] += 1
+
+    expected_durations = [pool.SOLE_KEY_BACKOFF_BASE_SECONDS * (2**step) for step in range(5)]
+    for expected in expected_durations:
+        _, lease = pool.acquire("user-A")
+        before = fake_now[0]
+        assert pool.release(lease, status_code=429) is True
+        assert pool._keys[0].cooldown_until == pytest.approx(before + min(expected, MUTE))
+        # Jump past this cooldown so the next iteration can acquire again.
+        fake_now[0] = pool._keys[0].cooldown_until + 1
+
+    # Enough consecutive failures have now accrued that the mute is pinned at
+    # the full 5-minute ceiling, same as the always-mutes-immediately case.
+    _, lease = pool.acquire("user-A")
+    before = fake_now[0]
+    assert pool.release(lease, status_code=429) is True
+    assert pool._keys[0].cooldown_until == pytest.approx(before + MUTE)
+
+
+def test_success_resets_sole_key_backoff_streak(monkeypatch):
+    """A 2xx clears the consecutive-failure streak, restoring the free passes."""
+    pool = KeyPool(keys=["only"], provider_label="test")
+    fake_now = [1000.0]
+    monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
+
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=429)  # 1st free pass, consecutive_failures=1
+    _, lease = pool.acquire("user-A")
+    pool.release(lease, status_code=200)  # success — resets the streak
+    assert pool._keys[0].consecutive_failures == 0
+
+    _, lease = pool.acquire("user-A")
+    muted = pool.release(lease, status_code=429)  # back to the 1st free pass
+    assert muted is False
+    assert pool._keys[0].cooldown_until == 0.0
 
 
 def test_release_transient_error_keeps_last_usable_key(monkeypatch):
@@ -236,29 +294,45 @@ def test_mid_affinity_user_re_picks_when_bound_key_muted(monkeypatch):
 
 
 def test_all_keys_muted_raises_keypoolexhausted(monkeypatch):
+    """Once k0 is muted, k1 becomes the sole usable key and gets free passes
+    before it too mutes — only after burning through those does the pool
+    exhaust."""
     pool = KeyPool(keys=["k0", "k1"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
-    # Both keys hit a key-specific failure (429), so even the last one is muted.
+    # k0 fails while k1 is still available — mutes immediately (multi-key path).
     _, lease0 = pool.acquire("user-A")
     pool.release(lease0, status_code=429)
+
+    # k1 is now the sole usable key: burn its free passes, then mute it.
+    lease1 = None
+    for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD):
+        _, lease1 = pool.acquire("user-B")
+        assert pool.release(lease1, status_code=429) is False
     _, lease1 = pool.acquire("user-B")
-    pool.release(lease1, status_code=429)
+    assert pool.release(lease1, status_code=429) is True
 
     with pytest.raises(KeyPoolExhausted):
         pool.acquire("user-C")
 
 
-def test_mute_recovers_after_five_minutes(monkeypatch):
+def test_mute_recovers_after_backoff_window(monkeypatch):
     pool = KeyPool(keys=["k0"], provider_label="test")
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
+    # Burn through the free passes, then trigger the first backoff mute.
+    for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD):
+        _, lease = pool.acquire("user-A")
+        pool.release(lease, status_code=429)
     _, lease = pool.acquire("user-A")
     pool.release(lease, status_code=429)
+    duration = pool._keys[0].cooldown_until - fake_now[0]
+    assert duration == pytest.approx(pool.SOLE_KEY_BACKOFF_BASE_SECONDS)
+
     # Still muted just before the window closes.
-    fake_now[0] += MUTE - 1
+    fake_now[0] += duration - 1
     with pytest.raises(KeyPoolExhausted):
         pool.acquire("user-B")
 
