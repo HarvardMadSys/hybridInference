@@ -36,7 +36,7 @@ from Anthropic is needed.
 > recognized and served by budget models from the public catalog
 > (see [Choosing a model](#choosing-a-model)). For predictable quality and
 > availability, set `ANTHROPIC_MODEL` explicitly to a public model such as
-> `glm-5.1`.
+> `minimax-m3`.
 
 ## One-click setup (macOS / Linux)
 
@@ -57,11 +57,11 @@ key through the `FREEINFERENCE_API_KEY` environment variable:
 FREEINFERENCE_API_KEY="hyi-your-api-key" bash setup_claude_code.sh
 ```
 
-The script configures the base URL, auth token, and a public default model
-(`glm-5.1`, with `glm-5-turbo` for background tasks), then runs a connectivity
-check. To use a different model, override `FREEINFERENCE_MODEL` (and
-`FREEINFERENCE_SMALL_FAST_MODEL`) in the environment before running it, or edit
-`ANTHROPIC_MODEL` afterwards as shown in [Manual setup](#manual-setup).
+The script configures the base URL, auth token, and public default models
+(`minimax-m3` for main work, `qwen3.6-35b` for background tasks), then runs a
+connectivity check. To use a different model, override `FREEINFERENCE_MODEL`
+(and `FREEINFERENCE_SMALL_FAST_MODEL`) in the environment before running it, or
+edit `ANTHROPIC_MODEL` afterwards as shown in [Manual setup](#manual-setup).
 
 > **Security note:** Always review remote shell scripts before executing them.
 > If you have repository access, you can instead run
@@ -79,8 +79,8 @@ rather than overwriting it.
   "env": {
     "ANTHROPIC_BASE_URL": "https://freeinference.org/anthropic",
     "ANTHROPIC_AUTH_TOKEN": "hyi-your-api-key",
-    "ANTHROPIC_MODEL": "glm-5.1",
-    "ANTHROPIC_SMALL_FAST_MODEL": "glm-5-turbo",
+    "ANTHROPIC_MODEL": "minimax-m3",
+    "ANTHROPIC_SMALL_FAST_MODEL": "qwen3.6-35b",
     "API_TIMEOUT_MS": "600000"
   }
 }
@@ -120,13 +120,15 @@ Code at one with `ANTHROPIC_MODEL`:
 
 | Model | Best for |
 |-------|----------|
-| `glm-5.1` | Balanced default for everyday coding |
-| `glm-5-turbo` | Faster edit loops and background tasks |
+| `minimax-m3` | Default main model — long context and image input |
+| `qwen3.6-35b` | Default background model — fast, non-reasoning |
+| `glm-5.1` | Balanced alternative for everyday coding |
+| `glm-5-turbo` | Faster edit loops |
 | `minimax-m2.5` | Ultra-long context and image input |
 
 Claude Code also runs a lightweight model for background tasks — set
 `ANTHROPIC_SMALL_FAST_MODEL` so that one resolves to a public model too (e.g.
-`glm-5-turbo`). Both variables are in the [Manual setup](#manual-setup) block
+`qwen3.6-35b`). Both variables are in the [Manual setup](#manual-setup) block
 above.
 
 Fetch the live catalog at any time:
@@ -161,7 +163,7 @@ curl -X POST https://freeinference.org/anthropic/v1/messages \
   -H "x-api-key: hyi-your-api-key" \
   -H "anthropic-version: 2023-06-01" \
   -d '{
-    "model": "glm-5.1",
+    "model": "minimax-m3",
     "max_tokens": 1024,
     "messages": [{"role": "user", "content": "Say hello in one word."}]
   }'
@@ -170,8 +172,9 @@ curl -X POST https://freeinference.org/anthropic/v1/messages \
 A `200` with a `message` payload means you're set. A `429` means the key works
 but you're momentarily rate limited — your configuration is still correct.
 
-> **Keep `max_tokens` generous.** GLM models are reasoning models: they spend
-> hidden thinking tokens before emitting visible text. With a very small
+> **Keep `max_tokens` generous.** MiniMax and GLM models are reasoning
+> models: they spend hidden thinking tokens before emitting visible text.
+> With a very small
 > `max_tokens` (say 64) the whole budget can go to reasoning and the response
 > comes back `200` with **empty** `content` and
 > `stop_reason: "max_tokens"` — that's a budget problem, not a setup problem.

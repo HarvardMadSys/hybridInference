@@ -20,10 +20,11 @@ set -euo pipefail
 
 # ── Configurable defaults ────────────────────────────────────────
 FREEINFERENCE_BASE_URL="https://freeinference.org/anthropic"
-# Claude Code's built-in Anthropic model defaults are not part of the public
-# catalog, so we pin public models. Override via env if you have access to others.
-FREEINFERENCE_MODEL="${FREEINFERENCE_MODEL:-glm-5.1}"
-FREEINFERENCE_SMALL_FAST_MODEL="${FREEINFERENCE_SMALL_FAST_MODEL:-glm-5-turbo}"
+# Pin explicit public models for predictable quality/availability. Large:
+# minimax-m3 (long context, image input). Small/fast: qwen3.6-35b (fast,
+# non-reasoning — ideal for background calls). Override via env for others.
+FREEINFERENCE_MODEL="${FREEINFERENCE_MODEL:-minimax-m3}"
+FREEINFERENCE_SMALL_FAST_MODEL="${FREEINFERENCE_SMALL_FAST_MODEL:-qwen3.6-35b}"
 SETTINGS_FILE="${HOME}/.claude/settings.json"
 API_TIMEOUT_MS="600000"
 TEST_ENDPOINT="https://freeinference.org/anthropic/v1/messages"
@@ -218,8 +219,8 @@ printf "\n${GREEN}${BOLD}All set!${NC}\n\n"
 info "Run ${BOLD}claude${NC} in any project directory to start coding."
 info "Configured model: ${BOLD}${FREEINFERENCE_MODEL}${NC} (small/fast: ${BOLD}${FREEINFERENCE_SMALL_FAST_MODEL}${NC})"
 info "Other public models you can set via ANTHROPIC_MODEL:"
-printf "    • ${BOLD}glm-5.1${NC}  (default)\n"
-printf "    • ${BOLD}glm-5-turbo${NC}, ${BOLD}minimax-m2.5${NC}\n"
+printf "    • ${BOLD}minimax-m3${NC}  (default)\n"
+printf "    • ${BOLD}glm-5.1${NC}, ${BOLD}glm-5-turbo${NC}, ${BOLD}minimax-m2.5${NC}\n"
 printf "    See https://freeinference.org/v1/models for the full list.\n"
 printf "\n"
 info "To change settings later, edit: ${SETTINGS_FILE}"
