@@ -10,6 +10,10 @@ const nextConfig = {
   async rewrites() {
     return [
       { source: '/v1/:path*', destination: `${BACKEND_INTERNAL_URL}/v1/:path*` },
+      // Anthropic Messages endpoint (Claude Code et al.). The public docs
+      // advertise https://freeinference.org/anthropic as the base URL; without
+      // this rewrite those requests fall through to the Next.js 404 page.
+      { source: '/anthropic/:path*', destination: `${BACKEND_INTERNAL_URL}/anthropic/:path*` },
       { source: '/auth/:path*', destination: `${BACKEND_INTERNAL_URL}/auth/:path*` },
       { source: '/user/:path*', destination: `${BACKEND_INTERNAL_URL}/user/:path*` },
       { source: '/admin/:path*', destination: `${BACKEND_INTERNAL_URL}/admin/:path*` },
