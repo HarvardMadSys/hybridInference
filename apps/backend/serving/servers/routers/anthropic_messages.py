@@ -23,6 +23,7 @@ import copy
 import json
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -35,7 +36,7 @@ from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user
 from serving.observability.rejection_log import log_rejection
-from serving.servers.auth import verify_api_key
+from serving.servers.auth import verify_api_key, verify_api_key_for_balance
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
 from serving.utils import context as req_ctx
@@ -1371,3 +1372,52 @@ async def anthropic_count_tokens(
         return _anthropic_error(500, "Failed to count tokens")
 
     return JSONResponse(content={"input_tokens": int(input_tokens)})
+
+
+def _next_utc_midnight() -> datetime:
+    """Return the next UTC midnight timestamp (when the daily quota resets)."""
+    now = datetime.now(timezone.utc)
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+@router.get("/anthropic/user/balance")
+async def anthropic_user_balance(
+    user_ctx: dict = Depends(verify_api_key_for_balance),
+):
+    """Return the caller's remaining daily quota as an Anthropic-surface balance check.
+
+    FreeInference has no persistent prepaid balance -- quota is a per-user
+    daily USD allowance that resets at UTC midnight. This endpoint exists for
+    Anthropic-compatible clients that, when pointed at a custom
+    ``ANTHROPIC_BASE_URL``, probe a conventional ``/user/balance`` path (as
+    popularized by DeepSeek's API) for a status display. Deliberately uses
+    :func:`verify_api_key_for_balance` rather than :func:`verify_api_key` so
+    that checking a near-zero balance never itself fails with a quota-exceeded
+    error.
+    """
+    if not user_ctx.get("authenticated"):
+        # Auth disabled -- no per-user quota is tracked or enforced.
+        return JSONResponse(
+            content={
+                "is_available": True,
+                "currency": "USD",
+                "balance_usd": None,
+                "daily_limit_usd": None,
+                "spent_today_usd": None,
+                "reset_at": None,
+            }
+        )
+
+    daily_limit = float(user_ctx.get("quota_daily_cost_usd") or 0.0)
+    spent_today = float(user_ctx.get("spent_today_usd") or 0.0)
+    remaining = max(0.0, daily_limit - spent_today)
+    return JSONResponse(
+        content={
+            "is_available": remaining > 0,
+            "currency": "USD",
+            "balance_usd": round(remaining, 4),
+            "daily_limit_usd": round(daily_limit, 4),
+            "spent_today_usd": round(spent_today, 4),
+            "reset_at": _next_utc_midnight().isoformat(),
+        }
+    )

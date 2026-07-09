@@ -79,28 +79,21 @@ def constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a, b)
 
 
-async def verify_api_key(
+async def _authenticate_by_api_key(
     request: Request,
-    authorization: str | None = Header(None),
-    x_api_key: str | None = Header(None, alias="X-API-Key"),
-    op_store=Depends(get_operational_store),
-    log_store=Depends(get_log_store),
-) -> dict[str, Any]:
-    """Verify API key and enforce quotas.
+    authorization: str | None,
+    x_api_key: str | None,
+    op_store: Any,
+) -> tuple[dict[str, Any], str]:
+    """Resolve and validate the caller's API key against the database.
 
-    Returns user context dict with user_id, role, etc.
-    Raises HTTPException(401/429) on auth/quota failures.
+    Shared by :func:`verify_api_key` and :func:`verify_api_key_for_balance` --
+    both need the same identity/email-verification checks, but only
+    ``verify_api_key`` additionally enforces the daily cost quota gate.
+
+    Returns ``(user_row, key_hash)``. Raises ``HTTPException(401)`` for a
+    missing/invalid key and ``HTTPException(403)`` for an unverified email.
     """
-    # Check if auth is enabled
-    if not is_user_auth_enabled():
-        # Auth disabled - allow all, mark as anonymous
-        return {
-            "user_id": "anonymous",
-            "role": "admin",
-            "authenticated": False,
-            "is_admin": True,
-        }
-
     # Extract API key from headers
     api_key = None
     if authorization and authorization.startswith("Bearer "):
@@ -187,6 +180,33 @@ async def verify_api_key(
             detail="Email not verified. Please verify your email to continue.",
         )
 
+    return user, key_hash
+
+
+async def verify_api_key(
+    request: Request,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
+) -> dict[str, Any]:
+    """Verify API key and enforce quotas.
+
+    Returns user context dict with user_id, role, etc.
+    Raises HTTPException(401/429) on auth/quota failures.
+    """
+    # Check if auth is enabled
+    if not is_user_auth_enabled():
+        # Auth disabled - allow all, mark as anonymous
+        return {
+            "user_id": "anonymous",
+            "role": "admin",
+            "authenticated": False,
+            "is_admin": True,
+        }
+
+    user, key_hash = await _authenticate_by_api_key(request, authorization, x_api_key, op_store)
+
     # Pre-check daily cost quota via operational store counter table
     cost_spent = 0.0
     if op_store:
@@ -247,6 +267,8 @@ async def verify_api_key(
         "user_name": user["user_name"],
         "role": user_role,
         "authenticated": True,
+        "quota_daily_cost_usd": quota_daily_cost_usd,
+        "spent_today_usd": cost_spent,
         "quota_remaining_cost_usd": quota_daily_cost_usd - cost_spent,
         "is_admin": user_role == "admin",
         "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
@@ -254,6 +276,38 @@ async def verify_api_key(
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,
+    }
+
+
+async def verify_api_key_for_balance(
+    request: Request,
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    op_store=Depends(get_operational_store),
+) -> dict[str, Any]:
+    """Authenticate an API key for a balance check, without the quota gate.
+
+    Unlike :func:`verify_api_key`, this never raises 429 for an exhausted
+    quota -- checking remaining balance must keep working exactly when the
+    balance is low or zero. Read-only: does not update ``last_used_at``.
+    """
+    if not is_user_auth_enabled():
+        return {"user_id": "anonymous", "authenticated": False}
+
+    user, _key_hash = await _authenticate_by_api_key(request, authorization, x_api_key, op_store)
+
+    cost_spent = 0.0
+    if op_store:
+        cost_spent = await op_store.get_user_cost_today(user["user_id"])
+
+    quota_daily_cost_usd = user.get("quota_daily_cost_usd")
+    quota_daily_cost_usd = 1000.0 if quota_daily_cost_usd is None else float(quota_daily_cost_usd)
+
+    return {
+        "user_id": user["user_id"],
+        "authenticated": True,
+        "quota_daily_cost_usd": quota_daily_cost_usd,
+        "spent_today_usd": cost_spent,
     }
 
 

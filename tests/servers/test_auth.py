@@ -13,6 +13,7 @@ from serving.servers.auth import (
     hash_api_key,
     optional_verify_api_key,
     verify_api_key,
+    verify_api_key_for_balance,
 )
 
 
@@ -492,3 +493,97 @@ async def test_optional_verify_api_key_respects_runtime_flag_enabled(
         _mod._runtime_settings = old
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_balance_auth_disabled_returns_anonymous(monkeypatch, mock_request):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    result = await verify_api_key_for_balance(request=mock_request)
+    assert result == {"user_id": "anonymous", "authenticated": False}
+
+
+@pytest.mark.asyncio
+async def test_balance_missing_headers_returns_401(monkeypatch, mock_request, mock_op_store):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key_for_balance(
+            request=mock_request, authorization=None, x_api_key=None, op_store=mock_op_store
+        )
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_balance_invalid_key_returns_401(monkeypatch, mock_request, mock_op_store):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+    mock_op_store.get_auth_context_by_key_hash.return_value = None
+
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key_for_balance(
+            request=mock_request,
+            authorization="Bearer hyi-does-not-exist",
+            op_store=mock_op_store,
+        )
+
+    assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_balance_returns_quota_and_spend_without_gating(
+    monkeypatch, mock_request, mock_op_store
+):
+    """Unlike verify_api_key, a balance check must succeed even over quota."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    plaintext_key = "hyi-over-quota-balance"
+    _hashed_key(monkeypatch, plaintext_key)
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 9,
+        "user_id": "heavy-user",
+        "user_name": "Over Quota",
+        "quota_daily_cost_usd": 10.0,
+        "role": "free",
+        "email": "heavy@example.com",
+    }
+    mock_op_store.get_user_cost_today.return_value = 12.5
+
+    result = await verify_api_key_for_balance(
+        request=mock_request,
+        authorization=f"Bearer {plaintext_key}",
+        op_store=mock_op_store,
+    )
+
+    assert result["user_id"] == "heavy-user"
+    assert result["authenticated"] is True
+    assert result["quota_daily_cost_usd"] == 10.0
+    assert result["spent_today_usd"] == 12.5
+    mock_op_store.update_key_last_used.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_balance_quota_null_uses_default_1000(monkeypatch, mock_request, mock_op_store):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    plaintext_key = "hyi-null-quota-balance"
+    _hashed_key(monkeypatch, plaintext_key)
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 10,
+        "user_id": "user-null-quota",
+        "user_name": "Null Quota",
+        "quota_daily_cost_usd": None,
+        "role": "free",
+        "email": "null@example.com",
+    }
+    mock_op_store.get_user_cost_today.return_value = 0.5
+
+    result = await verify_api_key_for_balance(
+        request=mock_request,
+        authorization=f"Bearer {plaintext_key}",
+        op_store=mock_op_store,
+    )
+
+    assert result["quota_daily_cost_usd"] == 1000.0
+    assert result["spent_today_usd"] == 0.5
