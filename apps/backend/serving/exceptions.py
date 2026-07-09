@@ -332,15 +332,26 @@ def _extract_upstream_message(raw: str) -> str:
     return text.strip()
 
 
-def scrub_provider_identity(text: str) -> str:
+def scrub_provider_identity(text: str, *, strip_vendor_names: bool = True) -> str:
     """Strip provider identity (URLs, hostnames, vendor names) and secrets.
 
     Leaves the human-readable substance of the message intact.
+
+    ``strip_vendor_names`` controls the ``_PROVIDER_NAME_RE`` pass, which
+    blanks out bare tokens like "zai" or "openai" wherever they appear —
+    including inside our own internal diagnostic text (e.g. ``KeyPoolExhausted``:
+    "All 1 keys for provider 'zai' are muted"), not just upstream response
+    bodies. That's correct for user-facing output (customers should never
+    learn which upstream vendor we route to), but wrong for operator-facing
+    surfaces like Slack alerts, which exist specifically so operators can see
+    which provider is failing. Callers writing to an operator surface should
+    pass ``strip_vendor_names=False``.
     """
     text = _AIOHTTP_URL_RE.sub("", text)
     text = _URL_RE.sub("", text)
     text = _HOSTNAME_RE.sub("", text)
-    text = _PROVIDER_NAME_RE.sub("", text)
+    if strip_vendor_names:
+        text = _PROVIDER_NAME_RE.sub("", text)
     text = _SECRET_RE.sub(r"\1\2[REDACTED]\3", text)
     text = _API_KEY_TOKEN_RE.sub("[REDACTED]", text)
     text = _BEARER_RE.sub("Bearer [REDACTED]", text)
@@ -463,7 +474,11 @@ def operator_safe_error(exc: BaseException | None, *, max_len: int = 500) -> str
     request URL in ``str(exc)``, and some adapters embed the API key in the
     URL (e.g. Gemini's ``?key=<api_key>``). We therefore prefer the safe
     extraction path (``error_body`` / aiohttp ``message``) over ``str(exc)``
-    and scrub URLs/secrets from whatever we surface.
+    and scrub URLs/secrets from whatever we surface. Unlike the user-facing
+    scrubber, this keeps vendor-name tokens (``strip_vendor_names=False``):
+    operators need to know *which* provider failed, and internal diagnostics
+    (e.g. ``KeyPoolExhausted``) legitimately name the provider in text that
+    isn't an upstream response body at all.
 
     Returns ``None`` when there is no usable text after scrubbing.
     """
@@ -489,7 +504,7 @@ def operator_safe_error(exc: BaseException | None, *, max_len: int = 500) -> str
     # ever surfaced. A margin above ``max_len`` keeps scrubbing context intact.
     if len(raw) > max_len * 4:
         raw = raw[: max_len * 4]
-    cleaned = scrub_provider_identity(raw)
+    cleaned = scrub_provider_identity(raw, strip_vendor_names=False)
     if not cleaned:
         return None
     if len(cleaned) > max_len:

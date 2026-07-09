@@ -195,6 +195,24 @@ def test_scrub_provider_identity_redacts_bare_key_token():
     assert "sk-abcdef123456" not in scrub_provider_identity("token sk-abcdef123456 invalid")
 
 
+def test_operator_safe_error_keeps_internal_provider_name():
+    """Regression: KeyPoolExhausted's own diagnostic text names the provider
+    (e.g. "All 1 keys for provider 'zai' are muted"). operator_safe_error is
+    for operator-facing surfaces (Slack alerts) where the whole point is to
+    show *which* provider is failing, so — unlike the user-facing scrubber —
+    it must not blank vendor-name tokens out of that text.
+    """
+    detail = operator_safe_error(RuntimeError("All 1 keys for provider 'zai' are muted"))
+    assert detail == "All 1 keys for provider 'zai' are muted"
+
+
+def test_scrub_provider_identity_keeps_vendor_name_when_disabled():
+    assert (
+        scrub_provider_identity("provider 'zai' failed", strip_vendor_names=False)
+        == "provider 'zai' failed"
+    )
+
+
 def test_operator_safe_error_none_for_no_exception():
     assert operator_safe_error(None) is None
 

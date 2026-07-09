@@ -309,21 +309,28 @@ async def test_all_keys_500_keeps_last_key_usable():
 
 
 async def test_all_keys_429_mute_entire_pool():
-    """Every key 429s (key-specific) -> all keys muted, including the last."""
+    """Every key 429s (key-specific) -> eventually all keys muted, including the last.
+
+    k1 mutes on its very first 429 since k2 is still available to take over.
+    From then on k2 is the *sole* usable key, so it gets
+    ``SOLE_KEY_BACKOFF_THRESHOLD`` free passes (429 propagates but k2 stays
+    usable) before it too mutes — there's nowhere left to rotate to, so a
+    single blip on the last key must not cost the full mute duration.
+    """
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+    assert adapter._key_pool is not None
 
     async def always_429(url, json, headers, timeout):
         raise _make_response_error(429, retry_after="1")
 
-    with (
-        patch.object(adapter.http, "json_post", side_effect=always_429),
-        pytest.raises(aiohttp.ClientResponseError) as exc_info,
-    ):
-        await adapter.chat_completion([{"role": "user", "content": "hi"}])
+    with patch.object(adapter.http, "json_post", side_effect=always_429):
+        # k1's mute (call 1, first iteration) plus k2's free passes and final
+        # mute together take SOLE_KEY_BACKOFF_THRESHOLD + 1 calls.
+        for _ in range(adapter._key_pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
+            with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+                await adapter.chat_completion([{"role": "user", "content": "hi"}])
+            assert exc_info.value.status == 429
 
-    assert exc_info.value.status == 429
-    # Quota is key-specific, so even the last key is muted.
-    assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until > 0
     assert adapter._key_pool._keys[1].cooldown_until > 0
 
@@ -446,22 +453,25 @@ async def test_streaming_open_io_error_does_not_replay_on_another_key():
 
 
 async def test_streaming_pool_exhausted_propagates():
-    """Every key 429s on stream open → final 429 propagates to the caller."""
+    """Every key 429s on stream open → final 429 propagates to the caller.
+
+    Same sole-key free-pass behavior as test_all_keys_429_mute_entire_pool:
+    k1 mutes immediately (k2 was still available), then k2 — now the sole
+    usable key — gets its free passes before it too mutes.
+    """
     adapter = OpenAICompatAdapter(_make_config(["k1", "k2"]))
+    assert adapter._key_pool is not None
 
     def always_429(*args, **kwargs):
         return _make_stream_gen(status=429, retry_after="1")
 
-    with (
-        patch.object(adapter.http, "stream_post", side_effect=always_429),
-        pytest.raises(aiohttp.ClientResponseError) as exc_info,
-    ):
-        async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
-            pass  # pragma: no cover — generator is expected to raise before yielding
+    with patch.object(adapter.http, "stream_post", side_effect=always_429):
+        for _ in range(adapter._key_pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
+            with pytest.raises(aiohttp.ClientResponseError) as exc_info:
+                async for _ in adapter.stream_chat_completion([{"role": "user", "content": "hi"}]):
+                    pass  # pragma: no cover — generator is expected to raise before yielding
+            assert exc_info.value.status == 429
 
-    assert exc_info.value.status == 429
-    # Both keys cooled down.
-    assert adapter._key_pool is not None
     assert adapter._key_pool._keys[0].cooldown_until > 0
     assert adapter._key_pool._keys[1].cooldown_until > 0
 

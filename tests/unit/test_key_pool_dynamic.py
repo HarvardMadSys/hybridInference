@@ -108,8 +108,13 @@ def test_add_key_made_available_for_acquire(monkeypatch):
     fake_now = [1000.0]
     monkeypatch.setattr("serving.adapters.key_pool.time.monotonic", lambda: fake_now[0])
 
-    _, lease = pool.acquire("user-A")
-    pool.release(lease, status_code=429)  # mute the only existing key
+    # k0 is the sole key, so a 429 gets free passes before it actually mutes
+    # (see key_pool.py's sole-key backoff) — burn through those first.
+    for _ in range(pool.SOLE_KEY_BACKOFF_THRESHOLD + 1):
+        _, lease = pool.acquire("user-A")
+        pool.release(lease, status_code=429)
+    assert pool._keys[0].cooldown_until > fake_now[0]  # k0 now actually muted
+
     pool.add_key("k1")
     # With k0 muted, the freshly added key carries the next user.
     key, _ = pool.acquire("user-B")
