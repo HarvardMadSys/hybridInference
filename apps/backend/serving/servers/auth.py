@@ -193,7 +193,7 @@ async def verify_api_key(
     """Verify API key and enforce quotas.
 
     Returns user context dict with user_id, role, etc.
-    Raises HTTPException(401/429) on auth/quota failures.
+    Raises HTTPException(401/403/429) on auth/quota failures.
     """
     # Check if auth is enabled
     if not is_user_auth_enabled():

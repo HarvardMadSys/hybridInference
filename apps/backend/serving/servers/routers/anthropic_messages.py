@@ -23,7 +23,6 @@ import copy
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -36,7 +35,11 @@ from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user
 from serving.observability.rejection_log import log_rejection
-from serving.servers.auth import verify_api_key, verify_api_key_for_balance
+from serving.servers.auth import (
+    _next_utc_midnight,
+    verify_api_key,
+    verify_api_key_for_balance,
+)
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
 from serving.utils import context as req_ctx
@@ -1372,12 +1375,6 @@ async def anthropic_count_tokens(
         return _anthropic_error(500, "Failed to count tokens")
 
     return JSONResponse(content={"input_tokens": int(input_tokens)})
-
-
-def _next_utc_midnight() -> datetime:
-    """Return the next UTC midnight timestamp (when the daily quota resets)."""
-    now = datetime.now(timezone.utc)
-    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 @router.get("/anthropic/user/balance")
