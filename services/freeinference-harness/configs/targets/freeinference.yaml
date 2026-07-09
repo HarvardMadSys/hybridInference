@@ -7,36 +7,9 @@ defaults:
 targets:
   # Public chat models
 
-  - name: glm-4.7-public
-    model: glm-4.7
+  - name: glm-5-turbo-public
+    model: glm-5-turbo
     suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: true
-      embeddings: false
-      anthropic_messages: false
-      admin_required: false
-    tags: [glm, public]
-
-  - name: glm-4.7-flash-public
-    model: glm-4.7-flash
-    suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: true
-      embeddings: false
-      anthropic_messages: false
-      admin_required: false
-    tags: [glm, public]
-
-  - name: glm-5-public
-    model: glm-5
-    suite_type: gateway-public
-    sampling_count: 10
     capabilities:
       chat: true
       streaming: true
@@ -61,8 +34,8 @@ targets:
       admin_required: false
     tags: [glm, public]
 
-  - name: qwen3.5-27b-public
-    model: qwen3.5-27b
+  - name: qwen3.6-35b-public
+    model: qwen3.6-35b
     suite_type: gateway-public
     capabilities:
       chat: true
@@ -100,42 +73,44 @@ targets:
       admin_required: false
     tags: [minimax, public]
 
-  # Admin-only chat models
-  - name: claude-sonnet-4.6-admin
-    model: claude-sonnet-4.6
-    suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: false
-      embeddings: false
-      anthropic_messages: true
-      admin_required: true
-    tags: [claude, admin]
+  # Admin-only chat models — claude-sonnet-4.6, claude-opus-4.6/4.7, and
+  # gpt-5.5 are all commented out in config/models.yaml (disabled), so their
+  # targets are commented out here too until one is re-enabled.
+  # - name: claude-sonnet-4.6-admin
+  #   model: claude-sonnet-4.6
+  #   suite_type: gateway-public
+  #   capabilities:
+  #     chat: true
+  #     streaming: true
+  #     tools: true
+  #     structured_output: false
+  #     embeddings: false
+  #     anthropic_messages: true
+  #     admin_required: true
+  #   tags: [claude, admin]
 
-  - name: claude-opus-4.6-admin
-    model: claude-opus-4.6
-    suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: false
-      embeddings: false
-      anthropic_messages: true
-      admin_required: true
-    tags: [claude, admin]
+  # - name: claude-opus-4.6-admin
+  #   model: claude-opus-4.6
+  #   suite_type: gateway-public
+  #   capabilities:
+  #     chat: true
+  #     streaming: true
+  #     tools: true
+  #     structured_output: false
+  #     embeddings: false
+  #     anthropic_messages: true
+  #     admin_required: true
+  #   tags: [claude, admin]
 
-  - name: gpt-5.5-internal
-    model: gpt-5.5
-    suite_type: gateway-public
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-      structured_output: true
-      embeddings: false
-      anthropic_messages: false
-      admin_required: true
-    tags: [openai, cliproxy, internal]
+  # - name: gpt-5.5-internal
+  #   model: gpt-5.5
+  #   suite_type: gateway-public
+  #   capabilities:
+  #     chat: true
+  #     streaming: true
+  #     tools: true
+  #     structured_output: true
+  #     embeddings: false
+  #     anthropic_messages: false
+  #     admin_required: true
+  #   tags: [openai, cliproxy, internal]

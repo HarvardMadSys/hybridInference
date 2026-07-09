@@ -15,115 +15,53 @@ defaults:
     X-Reasoning-Passthrough: "true"
 
 targets:
-  # ── glm-4.7: zai + ollama + chutes + featherless ──────────────────
-  - name: glm-4.7@zai-gw
-    model: glm-4.7
-    tags: [zai, glm, pinned]
-    extra_headers:
-      X-Route-Pin: zai
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: glm-4.7@ollama-gw
-    model: glm-4.7
-    tags: [ollama, glm, pinned]
-    extra_headers:
-      X-Route-Pin: ollama
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: glm-4.7@chutes-gw
-    model: glm-4.7
-    tags: [chutes, glm, pinned]
-    extra_headers:
-      X-Route-Pin: chutes
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: glm-4.7@featherless-gw
-    model: glm-4.7
-    tags: [featherless, glm, pinned]
-    extra_headers:
-      X-Route-Pin: featherless
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  # ── glm-4.7-flash: local vLLM + featherless ─────────────────────────
-  - name: glm-4.7-flash@local-gw
-    model: glm-4.7-flash
-    tags: [local, glm, pinned]
-    extra_headers:
-      X-Route-Pin: openai_compat
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: glm-4.7-flash@featherless-gw
-    model: glm-4.7-flash
-    tags: [featherless, glm, pinned]
-    extra_headers:
-      X-Route-Pin: featherless
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  # ── glm-5: zai + ollama + chutes + featherless ────────────────────
-  - name: glm-5@zai-gw
-    model: glm-5
-    tags: [zai, glm, pinned]
-    extra_headers:
-      X-Route-Pin: zai
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: glm-5@ollama-gw
-    model: glm-5
-    tags: [ollama, glm, pinned]
-    extra_headers:
-      X-Route-Pin: ollama
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: glm-5@chutes-gw
-    model: glm-5
-    tags: [chutes, glm, pinned]
-    extra_headers:
-      X-Route-Pin: chutes
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: glm-5@featherless-gw
-    model: glm-5
-    tags: [featherless, glm, pinned]
-    extra_headers:
-      X-Route-Pin: featherless
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  # ── glm-5.1: zai only ─────────────────────────────────────────────
+  # ── glm-5.1: zai + ollama + chutes ──────────────────
   - name: glm-5.1@zai-gw
     model: glm-5.1
     tags: [zai, glm, pinned]
     extra_headers:
       X-Route-Pin: zai
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-5.1@ollama-gw
+    model: glm-5.1
+    tags: [ollama, glm, pinned]
+    extra_headers:
+      X-Route-Pin: ollama
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-5.1@chutes-gw
+    model: glm-5.1
+    tags: [chutes, glm, pinned]
+    extra_headers:
+      X-Route-Pin: chutes
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  # ── glm-5-turbo: zai + chutes ─────────────────────────
+  - name: glm-5-turbo@zai-gw
+    model: glm-5-turbo
+    tags: [zai, glm, pinned]
+    extra_headers:
+      X-Route-Pin: zai
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+
+  - name: glm-5-turbo@chutes-gw
+    model: glm-5-turbo
+    tags: [chutes, glm, pinned]
+    extra_headers:
+      X-Route-Pin: chutes
     capabilities:
       chat: true
       streaming: true
@@ -191,22 +129,12 @@ targets:
       streaming: true
       tools: true
 
-  # ── qwen3.5-27b: local sglang + featherless ─────────────────────────
-  - name: qwen3.5-27b@sglang-gw
-    model: qwen3.5-27b
+  # ── qwen3.6-35b: local sglang only ─────────────────────────
+  - name: qwen3.6-35b@sglang-gw
+    model: qwen3.6-35b
     tags: [sglang, qwen, pinned]
     extra_headers:
       X-Route-Pin: sglang
-    capabilities:
-      chat: true
-      streaming: true
-      tools: true
-
-  - name: qwen3.5-27b@featherless-gw
-    model: qwen3.5-27b
-    tags: [featherless, qwen, pinned]
-    extra_headers:
-      X-Route-Pin: featherless
     capabilities:
       chat: true
       streaming: true
