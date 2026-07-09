@@ -233,8 +233,12 @@ def merge_leading_system_messages(messages: list[dict[str, Any]]) -> list[dict[s
     if len(systems) <= 1 and (not systems or messages[0].get("role") == "system"):
         return messages
     others = [m for m in messages if m.get("role") != "system"]
+    if len(systems) == 1:
+        return [systems[0], *others]
     merged_text = "\n\n".join(t for t in (_system_text(m.get("content")) for m in systems) if t)
-    return [{"role": "system", "content": merged_text}, *others]
+    leading = dict(systems[0])
+    leading["content"] = merged_text
+    return [leading, *others]
 
 
 def _convert_tools(tools: Any) -> tuple[list[dict[str, Any]], list[str]]:

@@ -136,6 +136,28 @@ def test_merge_leading_system_combines_instructions_and_developer():
     ]
 
 
+def test_merge_leading_system_preserves_extra_keys():
+    # Hoisting/merging must not drop fields beyond role/content (e.g. `name`).
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "system", "content": "be terse", "name": "policy"},
+    ]
+    assert merge_leading_system_messages(msgs) == [
+        {"role": "system", "content": "be terse", "name": "policy"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    msgs2 = [
+        {"role": "system", "content": "top-level", "name": "policy"},
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "hi"},
+    ]
+    assert merge_leading_system_messages(msgs2) == [
+        {"role": "system", "content": "top-level\n\nbe terse", "name": "policy"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
 def test_merge_leading_system_hoists_mid_transcript_stray():
     # Clients that resend the full transcript each turn (no
     # previous_response_id) can have a stray system/developer message mid
