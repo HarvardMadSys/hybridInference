@@ -24,7 +24,7 @@ Choose your coding agent below and follow the steps. If you want the fastest age
 6. Select a model:
    - `glm-5.1` for general coding tasks
    - `glm-5-turbo` for faster edits and shorter loops
-   - `minimax-m2.5` for long-context or image-aware work
+   - `minimax-m3` for long-context or image-aware work
 7. Save the settings
 8. Start a new Kilo Code session and send a short prompt to verify the connection
 

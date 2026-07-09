@@ -33,8 +33,8 @@ If you are choosing one default setup path, use Kilo Code. It works directly wit
    |----------|-------------------|
    | Default coding assistant | `glm-5.1` |
    | Faster edit loops | `glm-5-turbo` |
-   | Long context or image input | `minimax-m2.5` |
-   | Strong bilingual coding | `glm-4.7` |
+   | Long context or image input | `minimax-m3` |
+   | Agentic coding | `kimi-k2.7-code` |
 
 7. Save the settings.
 
@@ -201,7 +201,7 @@ the [Claude Code guide](claude-code.md) for details.
    API Key: your-api-key-here
    ```
 
-5. Select your preferred model such as `glm-5.1`, `glm-5-turbo`, `glm-4.7`, or `minimax-m2.5`.
+5. Select your preferred model such as `glm-5.1`, `glm-5-turbo`, `minimax-m3`, or `kimi-k2.7-code`.
 
 6. Save settings and start using FreeInference.
 
@@ -414,7 +414,7 @@ If you get "model not found" errors:
 
 - Check the [available models](models.md) list
 - Ensure the model name is exactly as listed (case-sensitive)
-- Try switching to a different model like `glm-5.1` or `glm-4.7`
+- Try switching to a different model like `glm-5.1` or `glm-5-turbo`
 
 ### Cursor-Specific Issues
 
