@@ -59,6 +59,22 @@ def filter_response_format(
     return response_format
 
 
+def filter_sampling_params(
+    profile: ProviderProfile, validated_params: dict[str, Any]
+) -> dict[str, Any]:
+    """Drop sampling params the provider rejects outside a fixed value.
+
+    Moonshot's Kimi coding-plan endpoint 400s any ``top_p`` other than its
+    hardcoded 0.95 ("invalid top_p: only 0.95 is allowed for this model"),
+    which real client defaults (e.g. Claude Code's ``top_p: 1``) routinely
+    violate. Rather than clamp to a value the client didn't ask for, drop the
+    field so Kimi applies its own compliant default.
+    """
+    if profile != ProviderProfile.KIMI or "top_p" not in validated_params:
+        return validated_params
+    return {k: v for k, v in validated_params.items() if k != "top_p"}
+
+
 def supports_guided_json(profile: ProviderProfile) -> bool:
     """Whether the provider supports the vLLM-style guided_json extension."""
     # Kimi (Moonshot) is a proprietary API: it speaks OpenAI-style

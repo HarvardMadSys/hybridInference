@@ -8,6 +8,7 @@ import pytest
 
 from serving.adapters.profiles import (
     ProviderProfile,
+    filter_sampling_params,
     function_call_delta_to_tool_calls,
     get_stream_idle_timeout_seconds,
     normalize_messages_for_profile,
@@ -201,6 +202,26 @@ def test_normalize_usage_deepseek_miss_only_reported() -> None:
 # ---------------------------------------------------------------------------
 # Tool schema normalization: normalize_tools_for_profile
 # ---------------------------------------------------------------------------
+
+
+def test_filter_sampling_params_kimi_drops_top_p() -> None:
+    """Kimi 400s any top_p != 0.95; drop it so upstream applies its default."""
+    validated = {"temperature": 0.7, "top_p": 1.0, "max_tokens": 100}
+    result = filter_sampling_params(ProviderProfile.KIMI, validated)
+    assert result == {"temperature": 0.7, "max_tokens": 100}
+
+
+def test_filter_sampling_params_kimi_no_top_p_passthrough() -> None:
+    """Nothing to drop -> same dict returned unchanged."""
+    validated = {"temperature": 0.7}
+    assert filter_sampling_params(ProviderProfile.KIMI, validated) == validated
+
+
+@pytest.mark.parametrize("profile", [ProviderProfile.DEFAULT, ProviderProfile.DEEPSEEK])
+def test_filter_sampling_params_non_kimi_passthrough(profile) -> None:
+    """Other profiles forward top_p unchanged."""
+    validated = {"top_p": 1.0}
+    assert filter_sampling_params(profile, validated) is validated
 
 
 def test_normalize_tools_default_profile_passthrough() -> None:

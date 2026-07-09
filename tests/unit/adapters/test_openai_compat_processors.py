@@ -610,6 +610,51 @@ async def test_extra_body_defaults_are_forwarded_to_non_streaming_requests():
 
 
 @pytest.mark.asyncio
+async def test_kimi_profile_drops_top_p_from_non_streaming_payload():
+    """Kimi's coding endpoint 400s any top_p != 0.95; the gateway omits it."""
+    response = {
+        "choices": [{"message": {"role": "assistant", "content": "42"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+    }
+    adapter = _make_adapter(processor="default", provider_profile="kimi")
+    mock_post = AsyncMock(return_value=response)
+    adapter._post_with_pool = mock_post
+
+    await adapter.chat_completion(
+        [{"role": "user", "content": "hi"}],
+        temperature=0.7,
+        top_p=1.0,
+    )
+
+    payload = mock_post.call_args.args[1]
+    assert "top_p" not in payload
+    assert payload["temperature"] == 0.7
+
+
+@pytest.mark.asyncio
+async def test_kimi_profile_drops_top_p_from_streaming_payload():
+    sent_payloads = []
+
+    async def fake_stream_post(*args, **kwargs):
+        sent_payloads.append(kwargs["json"])
+        yield _make_chunk(delta={"content": "hi"}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor="default", provider_profile="kimi")
+    adapter.http.stream_post = fake_stream_post
+
+    _ = [
+        c
+        async for c in adapter.stream_chat_completion(
+            [{"role": "user", "content": "hi"}], temperature=0.7, top_p=1.0
+        )
+    ]
+
+    assert "top_p" not in sent_payloads[0]
+    assert sent_payloads[0]["temperature"] == 0.7
+
+
+@pytest.mark.asyncio
 async def test_extra_body_defaults_are_forwarded_to_streaming_requests():
     captured_payload: dict = {}
 
