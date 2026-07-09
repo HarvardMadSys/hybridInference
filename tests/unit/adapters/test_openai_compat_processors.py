@@ -255,6 +255,91 @@ async def test_default_profile_streaming_includes_stream_options_when_opted_in()
     assert stream_payload["stream_options"] == {"include_usage": True}
 
 
+# --- fallback usage for tool-call-only streams (no upstream usage chunk) ---
+
+
+def _final_usage_from_chunks(chunks: list[str]) -> dict:
+    """Extract the usage dict from the streamed final chunk."""
+    payloads = [
+        json.loads(c[6:]) for c in chunks if c.startswith("data: ") and c.strip() != "data: [DONE]"
+    ]
+    usage_chunks = [p for p in payloads if p.get("usage")]
+    assert usage_chunks, "expected a final chunk carrying usage"
+    return usage_chunks[-1]["usage"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_native_tool_calls_only_reports_nonzero_completion_tokens():
+    """A tool-call-only stream with NO upstream usage must estimate tool tokens.
+
+    Regression: tool-call deltas were never accumulated, so the fallback
+    estimate saw an empty string and reported completion_tokens=0.
+    """
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(
+            delta={
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": ""},
+                    }
+                ],
+            }
+        )
+        yield _make_chunk(
+            delta={
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "function": {"arguments": '{"city": "Paris", "unit": "celsius"}'},
+                    }
+                ],
+            }
+        )
+        yield _make_chunk(delta={}, finish_reason="tool_calls")
+        yield "data: [DONE]"
+
+    # No include_usage_in_stream => provider sends no usage chunk => fallback path.
+    adapter = _make_adapter(processor="default", provider_profile=None)
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        c async for c in adapter.stream_chat_completion([{"role": "user", "content": "weather?"}])
+    ]
+
+    usage = _final_usage_from_chunks(chunks)
+    assert usage["completion_tokens"] > 0
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+
+
+def test_build_fallback_usage_counts_tool_text():
+    """`_build_fallback_usage` adds tool-text tokens to the content estimate."""
+    adapter = _make_adapter(processor="default", provider_profile=None)
+
+    messages = [{"role": "user", "content": "hi"}]
+    content_only = adapter._build_fallback_usage(
+        messages=messages,
+        total_content="",
+        prompt_tokens_override=None,
+    )
+    with_tools = adapter._build_fallback_usage(
+        messages=messages,
+        total_content="",
+        prompt_tokens_override=None,
+        tool_text='get_weather{"city": "Paris", "unit": "celsius"}',
+    )
+
+    assert content_only["completion_tokens"] == 0
+    assert with_tools["completion_tokens"] > 0
+    assert with_tools["total_tokens"] == (
+        with_tools["prompt_tokens"] + with_tools["completion_tokens"]
+    )
+
+
 # --- DeepSeek profile usage normalization tests ---
 
 

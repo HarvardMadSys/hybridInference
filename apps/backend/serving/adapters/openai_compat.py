@@ -736,6 +736,7 @@ class OpenAICompatAdapter(BaseAdapter):
         processor = get_processor(self._processor_model_id, override=self._processor_override)
 
         total_content = ""
+        total_tool_text = ""
         finish_reason = "stop"
         upstream_usage: dict[str, Any] | None = None
         prompt_tokens_override: int | None = None
@@ -745,6 +746,7 @@ class OpenAICompatAdapter(BaseAdapter):
         def format_and_yield(processed_chunk: dict[str, Any]) -> str | None:
             nonlocal \
                 total_content, \
+                total_tool_text, \
                 finish_reason, \
                 upstream_usage, \
                 prompt_tokens_override, \
@@ -785,6 +787,16 @@ class OpenAICompatAdapter(BaseAdapter):
             )
             if legacy_tool_calls:
                 saw_tool_calls = True
+                # Accumulate tool-call text so the fallback usage estimate can
+                # count tool tokens when the provider omits a usage chunk.
+                for entry in legacy_tool_calls:
+                    fn = (entry.get("function") if isinstance(entry, dict) else None) or {}
+                    name = fn.get("name") or ""
+                    args = fn.get("arguments") or ""
+                    if isinstance(name, str):
+                        total_tool_text += name
+                    if isinstance(args, str):
+                        total_tool_text += args
                 chunk_copy = dict(processed_chunk)
                 chunk_copy["model"] = self.config.id
                 new_choices = list(chunk_copy.get("choices") or [])
@@ -811,6 +823,17 @@ class OpenAICompatAdapter(BaseAdapter):
             if has_reasoning or has_tool_calls:
                 if has_tool_calls:
                     saw_tool_calls = True
+                    # Accumulate tool-call text so the fallback usage estimate
+                    # can count tool tokens when the provider omits a usage
+                    # chunk.
+                    for entry in delta.get("tool_calls") or []:
+                        fn = (entry.get("function") if isinstance(entry, dict) else None) or {}
+                        name = fn.get("name") or ""
+                        args = fn.get("arguments") or ""
+                        if isinstance(name, str):
+                            total_tool_text += name
+                        if isinstance(args, str):
+                            total_tool_text += args
                 return self._format_passthrough_chunk(processed_chunk)
 
             if isinstance(content, str) and content:
@@ -929,6 +952,7 @@ class OpenAICompatAdapter(BaseAdapter):
                 messages=cleaned_messages,
                 total_content=total_content,
                 prompt_tokens_override=prompt_tokens_override,
+                tool_text=total_tool_text,
             )
         final_chunk_str = self._build_final_chunk(
             usage=final_usage,
@@ -997,13 +1021,16 @@ class OpenAICompatAdapter(BaseAdapter):
         messages: list[dict[str, Any]],
         total_content: str,
         prompt_tokens_override: int | None,
+        tool_text: str = "",
     ) -> dict[str, int]:
         prompt_tokens = (
             int(prompt_tokens_override)
             if prompt_tokens_override is not None and prompt_tokens_override > 0
             else int(estimate_prompt_tokens(messages))
         )
-        completion_tokens = int(estimate_text_tokens(total_content))
+        completion_tokens = int(estimate_text_tokens(total_content)) + int(
+            estimate_text_tokens(tool_text)
+        )
         return {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
