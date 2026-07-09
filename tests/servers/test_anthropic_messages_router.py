@@ -1880,6 +1880,26 @@ async def test_user_balance_reflects_spend(anthropic_test_client):
 
 
 @pytest.mark.asyncio
+async def test_user_balance_tiny_remainder_rounds_to_unavailable(anthropic_test_client):
+    """A sub-rounding-precision remainder must not claim is_available while balance_usd shows 0.0."""
+    from serving.servers.auth import verify_api_key_for_balance
+
+    app = anthropic_test_client._transport.app
+    app.dependency_overrides[verify_api_key_for_balance] = lambda: {
+        "authenticated": True,
+        "user_id": "test-user",
+        "quota_daily_cost_usd": 10.0,
+        "spent_today_usd": 9.99999,
+    }
+
+    r = await anthropic_test_client.get("/anthropic/user/balance", headers=_auth())
+    assert r.status_code == 200
+    body = r.json()
+    assert body["balance_usd"] == 0.0
+    assert body["is_available"] is False
+
+
+@pytest.mark.asyncio
 async def test_user_balance_exhausted_quota_does_not_401_or_429(anthropic_test_client):
     """Checking balance must keep working exactly when quota is exhausted."""
     from serving.servers.auth import verify_api_key_for_balance

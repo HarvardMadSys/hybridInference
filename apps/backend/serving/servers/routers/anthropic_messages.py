@@ -1410,12 +1410,14 @@ async def anthropic_user_balance(
 
     daily_limit = float(user_ctx.get("quota_daily_cost_usd") or 0.0)
     spent_today = float(user_ctx.get("spent_today_usd") or 0.0)
-    remaining = max(0.0, daily_limit - spent_today)
+    # Round before comparing so is_available can't say True while balance_usd
+    # displays as 0.0 (e.g. a remainder of 0.00001 rounds down to 0.0).
+    remaining = round(max(0.0, daily_limit - spent_today), 4)
     return JSONResponse(
         content={
             "is_available": remaining > 0,
             "currency": "USD",
-            "balance_usd": round(remaining, 4),
+            "balance_usd": remaining,
             "daily_limit_usd": round(daily_limit, 4),
             "spent_today_usd": round(spent_today, 4),
             "reset_at": _next_utc_midnight().isoformat(),
