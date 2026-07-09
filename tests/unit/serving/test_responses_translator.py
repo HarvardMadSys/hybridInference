@@ -13,6 +13,7 @@ from serving.responses_translator import (
     ResponsesStreamTranslator,
     assistant_message_from_chat,
     chat_response_to_responses,
+    merge_leading_system_messages,
     responses_input_to_messages,
     responses_request_to_chat_params,
 )
@@ -107,6 +108,51 @@ def test_input_developer_role_mapped_to_system():
         [{"type": "message", "role": "developer", "content": "be terse"}]
     )
     assert msgs == [{"role": "system", "content": "be terse"}]
+
+
+def test_merge_leading_system_noop_when_already_single_and_first():
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    assert merge_leading_system_messages(msgs) == msgs
+
+
+def test_merge_leading_system_noop_when_no_system():
+    msgs = [{"role": "user", "content": "hi"}]
+    assert merge_leading_system_messages(msgs) == msgs
+
+
+def test_merge_leading_system_combines_instructions_and_developer():
+    # e.g. top-level `instructions` plus a "developer" item folded to
+    # system within `input` — both meant as leading context, sent as two
+    # separate system messages. Backends like sglang reject >1 system
+    # message, so they must collapse into one.
+    msgs = [
+        {"role": "system", "content": "top-level instructions"},
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "hi"},
+    ]
+    assert merge_leading_system_messages(msgs) == [
+        {"role": "system", "content": "top-level instructions\n\nbe terse"},
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_merge_leading_system_hoists_mid_transcript_stray():
+    # Clients that resend the full transcript each turn (no
+    # previous_response_id) can have a stray system/developer message mid
+    # history (e.g. re-sent after a failed turn). It must be hoisted to
+    # the front, not just left in place.
+    msgs = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "again"},
+    ]
+    assert merge_leading_system_messages(msgs) == [
+        {"role": "system", "content": "be terse"},
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "again"},
+    ]
 
 
 def test_input_function_call_output_non_string_serialized():

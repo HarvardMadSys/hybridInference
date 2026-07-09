@@ -35,6 +35,7 @@ __all__ = [
     "ResponsesStreamTranslator",
     "assistant_message_from_chat",
     "chat_response_to_responses",
+    "merge_leading_system_messages",
     "new_response_id",
     "responses_input_to_messages",
     "responses_request_to_chat_params",
@@ -203,6 +204,37 @@ def responses_input_to_messages(
         # reasoning / item_reference / other types: skipped (no chat analogue).
 
     return messages
+
+
+def _system_text(content: Any) -> str:
+    """Flatten a chat message's ``content`` (str or content-block list) to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        return "\n".join(p for p in parts if p)
+    return "" if content is None else str(content)
+
+
+def merge_leading_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse every ``system`` message into a single leading one.
+
+    Some backends (e.g. sglang) reject a request unless at most one message
+    has role ``system`` and it is first. A Responses-API request can produce
+    more than one: the top-level ``instructions`` field and a "developer"
+    item folded to ``system`` (see :func:`responses_input_to_messages`) are
+    both meant to read as system-level context but land as separate entries.
+    Merge their text and drop the duplicates, preserving the relative order
+    of everything else.
+    """
+    systems = [m for m in messages if m.get("role") == "system"]
+    if len(systems) <= 1 and (not systems or messages[0].get("role") == "system"):
+        return messages
+    others = [m for m in messages if m.get("role") != "system"]
+    merged_text = "\n\n".join(t for t in (_system_text(m.get("content")) for m in systems) if t)
+    return [{"role": "system", "content": merged_text}, *others]
 
 
 def _convert_tools(tools: Any) -> tuple[list[dict[str, Any]], list[str]]:
