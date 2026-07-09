@@ -30,6 +30,7 @@ from serving.responses_translator import (
     ResponsesStreamTranslator,
     assistant_message_from_chat,
     chat_response_to_responses,
+    merge_leading_system_messages,
     new_response_id,
     now_ts,
     responses_input_to_messages,
@@ -162,6 +163,12 @@ async def create_response(
     if instructions:
         chat_messages.append({"role": "system", "content": instructions})
     chat_messages.extend(convo_messages)
+    # Collapse multiple system-role messages (top-level `instructions` +
+    # a "developer" item folded to system within `input`, or a stray one
+    # resent mid-transcript by clients that don't use previous_response_id)
+    # into one leading system message — some backends (e.g. sglang) reject
+    # a request with more than one, or one not in position 0.
+    chat_messages = merge_leading_system_messages(chat_messages)
 
     chat_body: dict[str, Any] = {"model": model, "messages": chat_messages, **params}
 
