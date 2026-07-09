@@ -17,6 +17,7 @@ from serving.adapters.processors import (
     ThinkBlockProcessor,
     get_processor,
 )
+from serving.utils.tokens import estimate_text_tokens
 
 
 def _make_chunk(
@@ -312,6 +313,40 @@ async def test_streaming_native_tool_calls_only_reports_nonzero_completion_token
     ]
 
     usage = _final_usage_from_chunks(chunks)
+    # Exact equality catches double-counting regressions: the accumulated tool
+    # text is the concatenated function name + argument deltas, nothing more.
+    assert usage["completion_tokens"] == estimate_text_tokens(
+        'get_weather{"city": "Paris", "unit": "celsius"}'
+    )
+    assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_streaming_glm_xml_flushed_tool_call_reports_nonzero_completion_tokens():
+    """GLM XML tool calls surfaced by processor.flush() reach the fallback estimate.
+
+    The GLMProcessor buffers `<tool_call>` XML and only emits the converted
+    tool_calls chunk from flush() at end of stream; that chunk must still be
+    accumulated for the fallback usage estimate when upstream sends no usage.
+    """
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"role": "assistant", "content": "<tool_call>get_weather\n"})
+        yield _make_chunk(
+            delta={"content": "<arg_key>city</arg_key>\n<arg_value>Paris</arg_value>\n"}
+        )
+        yield _make_chunk(delta={"content": "</tool_call>"})
+        yield _make_chunk(delta={}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor="glm", provider_profile=None)
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        c async for c in adapter.stream_chat_completion([{"role": "user", "content": "weather?"}])
+    ]
+
+    usage = _final_usage_from_chunks(chunks)
     assert usage["completion_tokens"] > 0
     assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
 
@@ -326,15 +361,17 @@ def test_build_fallback_usage_counts_tool_text():
         total_content="",
         prompt_tokens_override=None,
     )
+    tool_text = 'get_weather{"city": "Paris", "unit": "celsius"}'
     with_tools = adapter._build_fallback_usage(
         messages=messages,
         total_content="",
         prompt_tokens_override=None,
-        tool_text='get_weather{"city": "Paris", "unit": "celsius"}',
+        tool_text=tool_text,
     )
 
     assert content_only["completion_tokens"] == 0
-    assert with_tools["completion_tokens"] > 0
+    # Exact equality catches double-counting regressions.
+    assert with_tools["completion_tokens"] == estimate_text_tokens(tool_text)
     assert with_tools["total_tokens"] == (
         with_tools["prompt_tokens"] + with_tools["completion_tokens"]
     )

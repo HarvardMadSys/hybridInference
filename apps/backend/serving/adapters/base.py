@@ -137,9 +137,11 @@ class ModelConfig:
     quota: dict[str, Any] | None = None
     concurrency: dict[str, Any] | None = None
     # Whether to send `stream_options: {"include_usage": True}` on streaming requests.
-    # Enable for OpenAI / vLLM / sglang upstreams that support it. Leave False for
-    # providers that strictly validate the request body and reject unknown fields
-    # (e.g. some Ollama/Chutes/Featherless deployments).
+    # Enable for upstreams that support it (local vLLM/SGLang and most
+    # OpenAI-compatible providers; see servers/registry.py _make_adapter for the
+    # enabled set). Leave False for providers that strictly validate the request
+    # body and reject unknown fields (e.g. some Ollama/Chutes/Featherless
+    # deployments).
     include_usage_in_stream: bool = False
     # When set, OpenRouterAdapter pins requests to this OpenRouter upstream
     # provider via `provider.order=[<slug>]` and `allow_fallbacks=false`.

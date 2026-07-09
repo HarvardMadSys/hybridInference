@@ -789,8 +789,12 @@ class OpenAICompatAdapter(BaseAdapter):
                 saw_tool_calls = True
                 # Accumulate tool-call text so the fallback usage estimate can
                 # count tool tokens when the provider omits a usage chunk.
+                # Skip malformed entries (non-dict entry or `function` value)
+                # rather than crashing the stream.
                 for entry in legacy_tool_calls:
-                    fn = (entry.get("function") if isinstance(entry, dict) else None) or {}
+                    fn = entry.get("function") if isinstance(entry, dict) else None
+                    if not isinstance(fn, dict):
+                        continue
                     name = fn.get("name") or ""
                     args = fn.get("arguments") or ""
                     if isinstance(name, str):
@@ -825,9 +829,12 @@ class OpenAICompatAdapter(BaseAdapter):
                     saw_tool_calls = True
                     # Accumulate tool-call text so the fallback usage estimate
                     # can count tool tokens when the provider omits a usage
-                    # chunk.
+                    # chunk. Skip malformed entries (non-dict entry or
+                    # `function` value) rather than crashing the stream.
                     for entry in delta.get("tool_calls") or []:
-                        fn = (entry.get("function") if isinstance(entry, dict) else None) or {}
+                        fn = entry.get("function") if isinstance(entry, dict) else None
+                        if not isinstance(fn, dict):
+                            continue
                         name = fn.get("name") or ""
                         args = fn.get("arguments") or ""
                         if isinstance(name, str):
@@ -1028,6 +1035,9 @@ class OpenAICompatAdapter(BaseAdapter):
             if prompt_tokens_override is not None and prompt_tokens_override > 0
             else int(estimate_prompt_tokens(messages))
         )
+        # The tool-text estimate intentionally skews low: it counts only the
+        # function name + arguments text, not the per-call function-calling
+        # scaffolding overhead (~4-11 tokens per call depending on the model).
         completion_tokens = int(estimate_text_tokens(total_content)) + int(
             estimate_text_tokens(tool_text)
         )
