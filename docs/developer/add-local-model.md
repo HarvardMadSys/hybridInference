@@ -58,10 +58,10 @@ curl http://127.0.0.1:8001/v1/models | jq
 Start the model with your preferred serving runtime. Example with vLLM:
 
 ```bash
-vllm serve Qwen/Qwen3.5-27B \
+vllm serve Qwen/Qwen3-32B-example \
   --host 0.0.0.0 \
   --port 8007 \
-  --served-model-name Qwen3.5-27B
+  --served-model-name Qwen3-32B-example
 ```
 
 Check that the local server responds before changing the gateway config:
@@ -71,7 +71,7 @@ curl http://localhost:8007/v1/models | jq
 curl -s -X POST http://localhost:8007/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen3.5-27B",
+    "model": "Qwen3-32B-example",
     "messages": [{"role": "user", "content": "Hello"}],
     "max_tokens": 32
   }' | jq
@@ -87,8 +87,8 @@ Add a new entry under `models:`. Keep the public `id` short and stable because
 clients use it in the `model` field.
 
 ```yaml
-  - id: qwen3.5-27b
-    name: Qwen3.5 27B
+  - id: qwen3-32b-example
+    name: Qwen3 32B (example)
     provider: sglang
     quantization: "unknown"
     input_modalities: ["text"]
@@ -98,7 +98,7 @@ clients use it in the `model` field.
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream]
-    aliases: ["Qwen3.5-27B"]
+    aliases: ["Qwen3-32B-example"]
     pricing:
       prompt: "0"
       completion: "0"
@@ -110,7 +110,7 @@ clients use it in the `model` field.
       - kind: sglang
         weight: 1.0
         base_url: "http://host.docker.internal:8007"
-        provider_model_id: "Qwen3.5-27B"
+        provider_model_id: "Qwen3-32B-example"
         pricing:
           prompt: "0"
           completion: "0"
@@ -138,7 +138,7 @@ If you want automatic fallback, add another route with a lower or equal weight:
       - kind: sglang
         weight: 1.0
         base_url: "http://host.docker.internal:8007"
-        provider_model_id: "Qwen3.5-27B"
+        provider_model_id: "Qwen3-32B-example"
         pricing:
           prompt: "0"
           completion: "0"
@@ -146,7 +146,7 @@ If you want automatic fallback, add another route with a lower or equal weight:
         weight: 0
         base_url: ${FEATHERLESS_BASE_URL}
         api_key: ${FEATHERLESS_API_KEY}
-        provider_model_id: "Qwen/Qwen3.5-27B"
+        provider_model_id: "Qwen/Qwen3-32B-example"
         pricing:
           prompt: "0"
           completion: "0"
@@ -183,7 +183,7 @@ Run a chat completion through the gateway:
 curl -s -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3.5-27b",
+    "model": "qwen3-32b-example",
     "messages": [{"role": "user", "content": "Hello from the gateway"}],
     "max_tokens": 32
   }' | jq
@@ -195,7 +195,7 @@ Test streaming:
 curl -N -s -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3.5-27b",
+    "model": "qwen3-32b-example",
     "messages": [{"role": "user", "content": "Stream one sentence"}],
     "stream": true,
     "max_tokens": 64

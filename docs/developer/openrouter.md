@@ -146,7 +146,7 @@ env \
   curl -N -X POST http://localhost:8080/v1/chat/completions \
     -H "Content-Type: application/json" \
     -d '{
-          "model": "deepseek-chat",
+          "model": "glm-5.1",
           "messages": [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Describe the architecture."}

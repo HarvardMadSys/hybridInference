@@ -211,5 +211,5 @@ rm -rf backups/backup_20250101_*
 
 ## Related documentation
 
-- [Database management guide](../../docs/developer/developer/database.md)
+- [Database management guide](../../docs/developer/database.md)
 - [Docker Compose configuration](../../deploy/docker/docker-compose.yml)

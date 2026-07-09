@@ -27,7 +27,7 @@ apps/
     benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
 config/           # Model, routing, routewise, and alert configuration
-services/         # Prober, API harness, alert logger
+services/         # status-monitor-worker, freeinference-harness
 tests/            # Unit, API, integration, e2e, and external tests
 ops/              # Deployment, setup, runtime, admin, perf, DB, Cloudflare tooling
 deploy/           # Docker, systemd, observability manifests

@@ -2,7 +2,7 @@
 
 ## Environment Variables
 - Update `.env` with `PGADMIN_EMAIL`, `PGADMIN_PASSWORD`, and `PGADMIN_CONFIG_SERVER_MODE=True`.
-- Master password support is optional; skip `PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED` and `PGADMIN_CONFIG_MASTER_PASSWORD` if the team does not use it.
+- Master password support is hardcoded off (`PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"` in `deploy/docker/docker-compose.yml`); there is no env var to enable it.
 - Keep `.env` out of version control and rotate the secrets periodically.
 
 ## Restart Admin Stack

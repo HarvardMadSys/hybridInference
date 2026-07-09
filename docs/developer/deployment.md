@@ -81,12 +81,11 @@ For bare-metal development without Docker, replace `host.docker.internal` with `
 
 ## Nginx and HTTPS
 
-Nginx runs on the host (not in Docker) to terminate TLS. An example configuration is
-at `deploy/nginx/freeinference.conf`.
+Nginx runs on the host (not in Docker) to terminate TLS. The example config
+that used to ship at `deploy/nginx/freeinference.conf` was removed from the
+repo; write a host-level site config yourself, then:
 
 ```bash
-sudo cp deploy/nginx/freeinference.conf /etc/nginx/sites-available/
-sudo ln -s /etc/nginx/sites-available/freeinference.conf /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
