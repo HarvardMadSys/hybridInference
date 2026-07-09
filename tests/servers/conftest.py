@@ -685,7 +685,7 @@ async def anthropic_test_app(anthropic_app_services):
     app = FastAPI(title="Anthropic Compat Test App", lifespan=lifespan)
     app.state.services = anthropic_app_services
 
-    from serving.servers.auth import verify_api_key
+    from serving.servers.auth import verify_api_key, verify_api_key_for_balance
 
     async def fake_verify(
         authorization: str | None = Header(None),
@@ -701,6 +701,26 @@ async def anthropic_test_app(anthropic_app_services):
         return {"authenticated": True, "user_id": "test-user", "role": "internal"}
 
     app.dependency_overrides[verify_api_key] = fake_verify
+
+    async def fake_verify_balance(
+        authorization: str | None = Header(None),
+        x_api_key: str | None = Header(None, alias="X-API-Key"),
+    ):
+        token = None
+        if authorization and authorization.startswith("Bearer "):
+            token = authorization[len("Bearer ") :]
+        elif x_api_key:
+            token = x_api_key
+        if token != ANTHROPIC_TEST_API_KEY:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        return {
+            "authenticated": True,
+            "user_id": "test-user",
+            "quota_daily_cost_usd": 100.0,
+            "spent_today_usd": 0.0,
+        }
+
+    app.dependency_overrides[verify_api_key_for_balance] = fake_verify_balance
 
     from serving.servers.concurrency import enforce_user_concurrency
 
