@@ -36,13 +36,16 @@ On Windows the file is at `%USERPROFILE%\.claude\settings.json`.
 
 ## Available Models
 
-> **Note:** These models require internal role access and are not available to general users.
+Claude Code's default model IDs (`claude-opus-4-8`, `claude-sonnet-5`,
+`claude-haiku-4-5`) resolve via alias to public catalog models — no internal
+role needed. See [Choosing a model](https://doc.freeinference.org/claude-code.html#choosing-a-model)
+for the current mapping and the full public catalog.
 
-| Model | Description |
-|-------|-------------|
-| `claude-sonnet-4.6` | Default model in Claude Code |
-| `claude-opus-4.6` | Most capable |
-| `claude-opus-4.7` | Latest Opus (1M context) |
+Legacy dated Anthropic IDs (`claude-3-5-sonnet-latest`,
+`claude-sonnet-4-5`, etc.) resolve to internal Claude models
+(`claude-sonnet-4.6`, `claude-opus-4.6`, `claude-opus-4.7` in
+`config/models.yaml`), which require internal role access and are currently
+disabled (commented out) — a public key gets a `404`.
 
 ## Usage
 

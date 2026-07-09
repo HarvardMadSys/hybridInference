@@ -30,7 +30,7 @@ See the [Configuration guide](configuration.md) for detailed options and example
 ### Example Configuration (60/40 split):
 
 ```yaml
-routing_strategy: fixed
+default_router: fixed
 routing_parameter:
   local_fraction: 0.6
 timeout: 2
@@ -74,7 +74,7 @@ class RoundRobinStrategy:
         # Implementation
 ```
 
-2. Update `routing/manager.py` to use the new strategy based on `routing_strategy` config.
+2. Update `routing/manager.py` to use the new strategy based on `default_router` config.
 
 ### RouteWise Strategy
 

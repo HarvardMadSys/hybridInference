@@ -124,7 +124,6 @@ Code at one with `ANTHROPIC_MODEL`:
 | `qwen3.6-35b` | Default background model — fast, non-reasoning |
 | `glm-5.1` | Balanced alternative for everyday coding |
 | `glm-5-turbo` | Faster edit loops |
-| `minimax-m2.5` | Ultra-long context and image input |
 
 Claude Code also runs a lightweight model for background tasks — set
 `ANTHROPIC_SMALL_FAST_MODEL` so that one resolves to a public model too (e.g.

@@ -13,7 +13,7 @@ This guide is for contributors, maintainers, and operators working directly in t
 ## Setup
 
 ```bash
-git clone --recurse-submodules https://github.com/HarvardMadSys/hybridInference.git
+git clone https://github.com/HarvardMadSys/hybridInference.git
 cd hybridInference
 
 make setup-dev
@@ -22,7 +22,6 @@ make setup-dev
 Manual setup:
 
 ```bash
-git submodule update --init --recursive
 uv venv -p 3.12
 source .venv/bin/activate
 uv sync
@@ -102,7 +101,7 @@ apps/
     benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, routewise, alerts
-services/         # status-monitor-worker, freeinference-harness, alert-logger
+services/         # status-monitor-worker, freeinference-harness
 tests/            # Unit, API, integration, e2e, external tests
 ops/              # Operational tooling
 deploy/           # Systemd units, Docker, observability manifests

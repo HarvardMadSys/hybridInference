@@ -274,14 +274,13 @@ if kind in (
     "ollama",
     "openai_compat",
     "deepseek",
-    "zai",
     "minimax",
     "your_provider",  # <-- add it here
 ):
     return OpenAICompatAdapter(model_cfg)
 ```
 
-This is how `deepseek`, `zai`, and `minimax` are integrated today: a per-provider profile in `serving/adapters/profiles.py` carries any usage-metric or path quirks, and `OpenAICompatAdapter` does the rest.
+This is how `deepseek` and `minimax` are integrated today: a per-provider profile in `serving/adapters/profiles.py` carries any usage-metric or path quirks, and `OpenAICompatAdapter` does the rest. `zai` and `kimi_coding` follow the same profile pattern but are gated on a coding-tool identity, so they short-circuit to `CodingIdentityAdapter` (a thin `OpenAICompatAdapter` subclass) before reaching this dispatch tuple — see `serving/servers/registry.py:_make_adapter`.
 
 **B) Genuinely custom protocols.** If the provider speaks a non-OpenAI wire format (e.g., Gemini's `generateContent`, the Anthropic Messages API, OpenRouter's provider-pinning header), add a dedicated adapter class and a dispatch branch:
 
@@ -424,7 +423,9 @@ The `kind` field in each route entry selects the backend adapter. All kinds mark
 | `chutes` | OpenAI-compat | Chutes.ai hosted inference |
 | `featherless` | OpenAI-compat | Featherless.ai hosted inference |
 | `deepseek` | OpenAI-compat | DeepSeek API (applies DeepSeek usage profile) |
-| `zai` | OpenAI-compat | Z.AI API (uses non-`/v1` chat path) |
+| `zai` | OpenAI-compat | Z.AI API (uses non-`/v1` chat path); dispatches to `CodingIdentityAdapter`, which presents a coding-tool `User-Agent` and leading OpenCode system message for the coding-plan endpoint |
+| `kimi` | OpenAI-compat | Moonshot/Kimi pay-per-token API (applies Kimi usage profile) |
+| `kimi_coding` | OpenAI-compat | Kimi Code coding-plan subscription endpoint; also dispatches to `CodingIdentityAdapter` |
 | `minimax` | OpenAI-compat | MiniMax API (applies MiniMax usage profile) |
 | `cliproxy` | OpenAI-compat | CLI proxy endpoint for OpenAI-compatible models |
 | `openrouter` | Custom | OpenRouter aggregator. Use the bracket form `openrouter[<slug>]` (e.g. `openrouter[deepinfra]`) to pin a sub-provider. |

@@ -3,23 +3,23 @@
 A lightweight reverse proxy that lazily starts and stops sglang Docker containers for multiple models. The proxy port stays open permanently; GPU-heavy containers are only running when there is active traffic. The least-used GPU is auto-selected.
 
 Serves both **chat** and **embedding** models from one proxy/port. Supports
-**Qwen3.6-35B-A3B-FP8**, **GLM-4.7-Flash**, and the **bge-m3** embedding model
-out of the box. Add more by editing `models.json` (set `"is_embedding": true`
-for embedding models). Every model is loaded on-demand and stopped when idle.
+**Qwen3.6-35B-A3B-FP8** and the **bge-m3** embedding model out of the box (both
+via the vLLM engine). Add more by editing `models.json` (set
+`"is_embedding": true` for embedding models). Every model is loaded on-demand
+and stopped when idle.
 
 ## How it works
 
 ```
 Client → spark2:8001 ──SSH tunnel──→ GPU box :8001 (proxy)
-                                        ├─ model="Qwen/..."             → :18001 (sglang on GPU 1)
-                                        ├─ model="zai-org/GLM-4.7-Flash" → :18002 (sglang on GPU 2)
-                                        └─ model="BAAI/bge-m3"          → :18012 (sglang --is-embedding on GPU 1)
+                                        ├─ model="Qwen/..."    → :18001 (vLLM, colocated)
+                                        └─ model="BAAI/bge-m3" → :18012 (vLLM --is-embedding, colocated)
 ```
 
 1. The proxy listens on port 8001 and accepts all incoming HTTP requests.
 2. Requests are routed to the correct backend based on the `model` field in the request body.
 3. If an `hf_repo` model is not installed, the first request downloads it from Hugging Face.
-4. It picks the configured/least-used GPU and launches the sglang container.
+4. It picks the configured/least-used GPU and launches the container (sglang by default, or vLLM when `engine: vllm`).
 5. It waits for the container's `/v1/models` health endpoint, then proxies all traffic.
 6. After **24 minutes** with no incoming requests for a model, that container is stopped.
 7. The proxy keeps listening — the next request re-starts the container automatically.
@@ -126,12 +126,6 @@ resp = client.chat.completions.create(
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(resp.choices[0].message.content)
-
-# GLM
-resp = client.chat.completions.create(
-    model="zai-org/GLM-4.7-Flash",
-    messages=[{"role": "user", "content": "Hello!"}],
-)
 ```
 
 If `LOCAL_API_KEY` is set, pass it as the `api_key` to the client or via `Authorization: Bearer` header.
@@ -152,24 +146,29 @@ Models are defined in `local_deployment_proxy/models.json`:
 ```json
 {
     "Qwen/Qwen3.6-35B-A3B-FP8": {
-        "container": "qwen36-sglang",
-        "gpu_index": "1",
+        "container": "qwen36-vllm",
+        "engine": "vllm",
         "backend_port": 18001,
-        "model_dir": "/netscratch/juncheng/models/Qwen3.6-35B-A3B-FP8",
+        "model_dir": "/scratch/juncheng/models/Qwen3.6-35B-A3B-FP8",
         "served_name": "Qwen/Qwen3.6-35B-A3B-FP8",
         "max_model_len": 135168,
-        "mem_fraction": "0.90",
-        "tool_call_parser": "qwen3_coder"
+        "mem_fraction": "0.80",
+        "tool_call_parser": "qwen3_coder",
+        "reasoning_parser": "qwen3",
+        "colocate_group": "primary"
     },
-    "zai-org/GLM-4.7-Flash": {
-        "container": "glm47-sglang",
-        "gpu_index": "2",
-        "backend_port": 18002,
-        "model_dir": "/netscratch/juncheng/models/GLM-4.7-Flash",
-        "served_name": "zai-org/GLM-4.7-Flash",
-        "max_model_len": 131072,
-        "mem_fraction": "0.90",
-        "tool_call_parser": "glm47"
+    "BAAI/bge-m3": {
+        "container": "bge-m3-vllm",
+        "engine": "vllm",
+        "backend_port": 18012,
+        "model_dir": "/scratch/juncheng/models/bge-m3",
+        "hf_repo": "BAAI/bge-m3",
+        "hf_ignore_patterns": ["onnx/*", "imgs/*", "*.jpg"],
+        "served_name": "BAAI/bge-m3",
+        "max_model_len": 8192,
+        "mem_fraction": "0.10",
+        "is_embedding": true,
+        "colocate_group": "primary"
     }
 }
 ```
@@ -252,21 +251,9 @@ Models with an `hf_repo` are downloaded into `model_dir` on first use. A `.downl
 - Python 3.10+
 - Docker with NVIDIA Container Toolkit
 - `huggingface_hub` when any model uses `hf_repo`
-- `lmsysorg/sglang:latest` Docker image
+- `lmsysorg/sglang:latest` Docker image (sglang models), or a vLLM image (`engine: vllm` models)
 - Model weights at the paths in `models.json`
 - `nvidia-smi` (for GPU auto-selection; falls back to GPU 0)
-
-## Prefill throughput
-
-Measured on a single GPU (97 GB H100), `max_tokens=1`, 3 trials, sglang backend. Both models loaded concurrently on separate GPUs.
-
-| Prompt length | Qwen3.6-35B-A3B (FP8) | GLM-4.7-Flash (BF16) |
-|---|---|---|
-| ~16 tokens | 279 tok/s | 512 tok/s |
-| ~1,000 tokens | 18,405 tok/s | 26,856 tok/s |
-| ~5,000 tokens | 29,946 tok/s | 63,602 tok/s |
-
-GLM-4.7-Flash has ~2x higher prefill throughput than Qwen3.6-35B across all prompt lengths.
 
 ## Tests
 

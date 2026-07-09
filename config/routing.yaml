@@ -34,9 +34,6 @@ remote_deployment:
       - minimax-m2.5
   - endpoint: ${ZAI_BASE_URL}
     models:
-      - glm-4.7
-      - glm-4.7-flash
-      - glm-5
       - glm-5-turbo
       - glm-5.1
       - glm-5.2

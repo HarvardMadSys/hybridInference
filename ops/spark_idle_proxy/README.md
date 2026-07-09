@@ -4,14 +4,14 @@ A lightweight reverse proxy that lazily starts and stops vLLM Docker containers 
 **DGX Spark**. The proxy port stays open permanently; GPU-heavy containers are only
 running when there is active traffic.
 
-Serves **openai/gpt-oss-20b** with NVFP4 kernels on Blackwell (`sm_121`) out of
-the box. Add more models by editing `models.json`.
+Serves **nvidia/diffusiongemma-26B-A4B-it-NVFP4** with NVFP4 kernels on Blackwell
+(`sm_121`) out of the box. Add more models by editing `models.json`.
 
 ## How it works
 
 ```
 Client → spark2:8002 ──SSH tunnel──→ DGX Spark :8002 (proxy)
-                                        └─ model="openai/gpt-oss-20b" → :18003 (vLLM)
+                                        └─ model="nvidia/diffusiongemma-26B-A4B-it-NVFP4" → :18004 (vLLM)
 ```
 
 1. The proxy listens on port **8002** and accepts all incoming HTTP requests.
@@ -50,7 +50,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://spark2:8002/v1", api_key="unused")
 resp = client.chat.completions.create(
-    model="openai/gpt-oss-20b",
+    model="nvidia/diffusiongemma-26B-A4B-it-NVFP4",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(resp.choices[0].message.content)
@@ -66,20 +66,28 @@ Models are defined in `spark_idle_proxy/models.json`:
 
 ```json
 {
-    "openai/gpt-oss-20b": {
-        "container": "gpt-oss-20b-vllm",
+    "nvidia/diffusiongemma-26B-A4B-it-NVFP4": {
+        "container": "diffusiongemma-vllm",
         "gpu_index": "0",
-        "backend_port": 18003,
-        "hf_repo": "openai/gpt-oss-20b",
+        "backend_port": 18004,
+        "hf_repo": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
         "hf_cache_dir": "/home/juncheng/.cache/huggingface",
         "serve_hf_repo": true,
-        "served_name": "openai/gpt-oss-20b",
-        "docker_image": "nvcr.io/nvidia/vllm:26.01-py3",
-        "max_model_len": 65536,
+        "served_name": "nvidia/diffusiongemma-26B-A4B-it-NVFP4",
+        "docker_image": "vllm/vllm-openai:gemma",
+        "max_model_len": 262144,
         "gpu_memory_utilization": 0.64,
-        "max_num_seqs": 1,
+        "max_num_seqs": 4,
         "trust_remote_code": true,
-        "vllm_extra_args": ["--quantization", "mxfp4"]
+        "enable_auto_tool_choice": true,
+        "tool_call_parser": "gemma4",
+        "reasoning_parser": "gemma4",
+        "docker_env": {"VLLM_USE_V2_MODEL_RUNNER": "1"},
+        "vllm_extra_args": [
+            "--attention-backend", "TRITON_ATTN",
+            "--override-generation-config", "{\"max_new_tokens\": null}",
+            "--default-chat-template-kwargs", "{\"enable_thinking\": true}"
+        ]
     }
 }
 ```
@@ -93,7 +101,7 @@ Models are defined in `spark_idle_proxy/models.json`:
 | `hf_repo` | Hugging Face repo id; also used for on-demand download into `model_dir` |
 | `hf_cache_dir` | Host Hugging Face cache mounted at `/root/.cache/huggingface` |
 | `serve_hf_repo` | `true` → serve `hf_repo` from cache (required for HF hub snapshots with blob symlinks) |
-| `docker_image` | vLLM OpenAI server image (Spark-validated: `nvcr.io/nvidia/vllm:26.01-py3`) |
+| `docker_image` | vLLM OpenAI server image (default: `vllm/vllm-openai:cu130-nightly`; diffusiongemma uses `vllm/vllm-openai:gemma`) |
 | `served_name` | `--served-model-name` for vLLM |
 | `max_model_len` | `--max-model-len` |
 | `gpu_memory_utilization` | `--gpu-memory-utilization` |

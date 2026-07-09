@@ -32,14 +32,13 @@ See [Deployment](deployment.md) for full production setup including Nginx and mo
 ### Using uv (Recommended)
 
 ```bash
-git clone --recurse-submodules https://github.com/HarvardMadSys/hybridInference.git
+git clone https://github.com/HarvardMadSys/hybridInference.git
 cd hybridInference
 
-# Set up Python environment, submodules, and pre-commit hooks
+# Set up Python environment and pre-commit hooks
 make setup-dev
 
 # Or manually:
-git submodule update --init --recursive
 uv venv -p 3.12
 source .venv/bin/activate
 uv sync
@@ -52,7 +51,7 @@ cp .env.example .env
 uvicorn serving.servers.app:app --host 0.0.0.0 --port 8080
 
 # In another terminal — run the frontend
-cd frontend
+cd apps/frontend
 npm install
 npm run dev
 ```
@@ -103,18 +102,13 @@ This repository hosts both documentation sites used by the project:
 - **Developer documentation** (deployment, architecture, internals) lives at
   `docs/developer/` and is published to <https://internaldoc.freeinference.org/>.
 - **User-facing documentation** (API quickstart, models, IDE integrations)
-  lives at `docs/free_inference/docs/developer/` and is published to
+  lives at `docs/free_inference/docs/source/` and is published to
   <https://doc.freeinference.org/>.
 
 Both sites are deployed automatically by Cloudflare Pages on push to `main`.
 To update either site, edit the relevant Markdown/reStructuredText files and
-open a pull request against this repository; no submodule sync step is
-required. Cloudflare Pages builds both sites on each push and surfaces
-Sphinx errors as failed deployments.
-
-The repository still uses `git submodule` for the `llm-prober` benchmarking
-tool. After `git pull`, run `git submodule update --init --recursive` (or
-`make setup-dev`) to keep that submodule in sync.
+open a pull request against this repository. Cloudflare Pages builds both
+sites on each push and surfaces Sphinx errors as failed deployments.
 
 ## Troubleshooting
 
