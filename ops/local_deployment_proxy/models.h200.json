@@ -2,13 +2,13 @@
     "deepseek-v4-flash": {
         "container": "deepseek-v4-flash-sglang",
         "engine": "sglang",
-        "gpu_index": "0,2,3",
-        "tensor_parallel_size": 3,
+        "gpu_index": "0,2",
+        "tensor_parallel_size": 2,
         "backend_port": 18003,
         "model_dir": "/netscratch/juncheng/models/DeepSeek-V4-Flash-FP8",
         "hf_repo": "sgl-project/DeepSeek-V4-Flash-FP8",
         "served_name": "deepseek-v4-flash",
-        "max_model_len": 131072,
+        "max_model_len": 65536,
         "mem_fraction": "0.95",
         "tool_call_parser": "deepseekv3",
         "reasoning_parser": "deepseek-r1"

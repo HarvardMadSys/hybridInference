@@ -29,7 +29,7 @@ MODELS_CONFIG  : Path to a JSON config file               (see below)
 
 When ``MODELS_CONFIG`` is unset the proxy auto-selects a hardware profile from
 ``nvidia-smi``: ``models.h200.json`` on a 4+ x H200 box (DeepSeek-V4-Flash at
-``tensor_parallel_size`` 3 on GPUs 0+2+3, skipping GPU 1), ``models.rtx6000.json``
+``tensor_parallel_size`` 3 on GPUs 0+2, skipping GPU 1), ``models.rtx6000.json``
 on an RTX (PRO) 6000 (Qwen3.6-35B), else ``models.json``. See
 ``_detect_profile_config``. For the dedicated H200 service (port 8003 +
 staging/prod tunnels) use ``ops/h200_idle_proxy`` instead.
@@ -139,7 +139,7 @@ def _detect_profile_config() -> Path:
     machine should serve the model that fits it. We inspect ``nvidia-smi`` once
     at import and map the hardware to a profile JSON next to this script:
 
-      * **4+ x H200**       -> ``models.h200.json``     (DeepSeek-V4-Flash, TP=3 on 0+2+3)
+      * **4+ x H200**       -> ``models.h200.json``     (DeepSeek-V4-Flash, TP=2 on 0+2)
       * **RTX (PRO) 6000**  -> ``models.rtx6000.json``  (Qwen3.6-35B)
       * anything else / no ``nvidia-smi`` → ``models.json`` (default fallback)
 
@@ -475,7 +475,7 @@ class BackendManager:
         """Return ``docker run`` flags that pin ``gpu`` without toolkit conflicts.
 
         Recent nvidia-container-toolkit builds reject multi-id ``--gpus
-        device=0,2,3`` with *cannot set both Count and DeviceIDs*. Pass
+        device=0,2`` with *cannot set both Count and DeviceIDs*. Pass
         ``--gpus all`` and restrict via ``CUDA_VISIBLE_DEVICES`` instead when
         more than one device is listed; keep ``--gpus device=N`` for the
         single-GPU case (and for auto-picked devices).
