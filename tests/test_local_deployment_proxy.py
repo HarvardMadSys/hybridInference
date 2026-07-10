@@ -686,7 +686,7 @@ def _gpu_query_result(stdout: str) -> Any:
 
 
 def test_detect_profile_selects_h200_for_four_h200s(monkeypatch: Any, tmp_path: Path) -> None:
-    # A box with 4x H200 must serve the DeepSeek-V4-Flash (TP=2, skip GPU1) profile.
+    # A box with 4x H200 must serve the DeepSeek-V4-Flash (TP=3, skip GPU1) profile.
     proxy = _load_proxy(monkeypatch, tmp_path)
     monkeypatch.setattr(
         proxy.subprocess,
@@ -696,8 +696,8 @@ def test_detect_profile_selects_h200_for_four_h200s(monkeypatch: Any, tmp_path: 
     assert proxy._detect_profile_config().name == "models.h200.json"
 
 
-def test_h200_profile_uses_tp2_and_skips_gpu1() -> None:
-    """Canonical H200 profile pins TP=2 on GPUs 0+2 (GPU 1 free)."""
+def test_h200_profile_uses_tp3_and_skips_gpu1() -> None:
+    """Canonical H200 profile pins TP=3 on GPUs 0+2+3 (GPU 1 free)."""
     import json
     from pathlib import Path
 
@@ -706,8 +706,8 @@ def test_h200_profile_uses_tp2_and_skips_gpu1() -> None:
     )
     cfg = json.loads(cfg_path.read_text())
     model = cfg["deepseek-v4-flash"]
-    assert model["tensor_parallel_size"] == 2
-    assert model["gpu_index"] == "0,2"
+    assert model["tensor_parallel_size"] == 3
+    assert model["gpu_index"] == "0,2,3"
     assert "1" not in str(model["gpu_index"]).split(",")
 
 

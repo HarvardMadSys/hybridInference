@@ -234,13 +234,13 @@ The same proxy runs on machines with different GPUs and serves the model set tha
 
 | Detected hardware | Profile | Serves |
 |---|---|---|
-| 4+ × H200 | `models.h200.json` | `deepseek-v4-flash` — sglang, `tensor_parallel_size: 2` on GPUs **0,2** (GPU 1 free) |
+| 4+ × H200 | `models.h200.json` | `deepseek-v4-flash` — sglang, `tensor_parallel_size: 3` on GPUs **0,2,3** (GPU 1 free) |
 | RTX (PRO) 6000 | `models.rtx6000.json` | `Qwen/Qwen3.6-35B-A3B-FP8` + `BAAI/bge-m3` (single GPU) |
 | anything else / no `nvidia-smi` | `models.json` | default fallback |
 
 A matched-but-missing profile falls back to `models.json`; setting `MODELS_CONFIG` explicitly bypasses detection entirely.
 
-The H200 profile serves `sgl-project/DeepSeek-V4-Flash-FP8` on GPUs 0+2 (TP=2; GPU 1 left free for other workloads). For the dedicated port-8003 service with reverse tunnels to staging and production, prefer [`ops/h200_idle_proxy`](../h200_idle_proxy/README.md). Its `tool_call_parser` / `reasoning_parser` default to the DeepSeek-V3 values (`deepseekv3` / `deepseek-r1`) as the closest registered sglang parsers — adjust if your sglang build ships V4-specific names.
+The H200 profile serves `sgl-project/DeepSeek-V4-Flash-FP8` on GPUs 0+2+3 (TP=3; GPU 1 left free for other workloads). For the dedicated port-8003 service with reverse tunnels to staging and production, prefer [`ops/h200_idle_proxy`](../h200_idle_proxy/README.md). Its `tool_call_parser` / `reasoning_parser` default to the DeepSeek-V3 values (`deepseekv3` / `deepseek-r1`) as the closest registered sglang parsers — adjust if your sglang build ships V4-specific names.
 
 ## On-demand Hugging Face download
 

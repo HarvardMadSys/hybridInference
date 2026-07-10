@@ -2,7 +2,7 @@
 # ops/h200_idle_proxy/h200_idle_service.sh — start/stop the H200 idle proxy daemon.
 #
 # Reuses ops/local_deployment_proxy/local_deployment_proxy.py with this package's
-# models.json (DeepSeek-V4-Flash FP8, TP=2 on GPUs 0+2 — GPU 1 left free).
+# models.json (DeepSeek-V4-Flash FP8, TP=3 on GPUs 0+2+3 — GPU 1 left free).
 #
 # Usage:
 #   ./ops/h200_idle_proxy/h200_idle_service.sh start

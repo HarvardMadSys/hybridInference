@@ -8,19 +8,19 @@ with a dedicated model profile and port.
 |---|---|
 | Listen port | **8003** (8001 = local RTX Qwen, 8002 = Spark) |
 | Model | `deepseek-v4-flash` → `sgl-project/DeepSeek-V4-Flash-FP8` |
-| Engine | sglang, `tensor_parallel_size: 2` |
-| GPUs | **0,2** (GPU **1** left free for other tenants) |
+| Engine | sglang, `tensor_parallel_size: 3` |
+| GPUs | **0,2,3** (GPU **1** left free for other tenants) |
 | Idle stop | 24 min (`IDLE_TIMEOUT=1440`) |
 
 ## How it works
 
 ```
 Client → staging/prod host:8003 ──SSH tunnel──→ H200 box :8003 (proxy)
-                                                  └─ model="deepseek-v4-flash" → :18003 (sglang, TP=2 on GPU 0+2)
+                                                  └─ model="deepseek-v4-flash" → :18003 (sglang, TP=3 on GPU 0+2+3)
 ```
 
 1. Proxy listens on port **8003**.
-2. First request for `deepseek-v4-flash` starts the sglang container on GPUs 0 and 2.
+2. First request for `deepseek-v4-flash` starts the sglang container on GPUs 0, 2, and 3.
 3. After 24 minutes with no traffic the container stops; the proxy stays up.
 
 ## Quick start
@@ -73,21 +73,20 @@ See [`models.json`](models.json):
 
 | Field | Value |
 |---|---|
-| `gpu_index` | `"0,2"` — pins TP ranks; GPU 1 is never claimed |
-| `tensor_parallel_size` | `2` |
+| `gpu_index` | `"0,2,3"` — pins TP ranks; GPU 1 is never claimed |
+| `tensor_parallel_size` | `3` |
 | `backend_port` | `18003` |
 | `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash-FP8` |
-| `max_model_len` | `65536` (tight on 2×H200; raise if VRAM allows) |
+| `max_model_len` | `131072` |
 | `mem_fraction` | `0.95` |
 
-> **VRAM note:** FP8 weights are ~274 GB on disk. At TP=2 each rank needs ~137 GB
-> before KV/activations on a 143 GB H200, so context is intentionally capped.
-> This layout is deliberate so GPU 1 stays free for other tenants; if cold-start
-> OOMs, lower `max_model_len` further or revisit TP.
+> **VRAM note:** FP8 weights are ~274 GB on disk. At TP=3 each rank needs ~91 GB
+> before KV/activations on a 143 GB H200, leaving room for longer context than TP=2.
+> GPU 1 stays free for other tenants.
 
 ## Requirements
 
-- 4× NVIDIA H200 (or at least GPUs 0 and 2 free)
+- 4× NVIDIA H200 (GPUs 0, 2, and 3 free; GPU 1 may be occupied)
 - Docker + NVIDIA Container Toolkit
 - `lmsysorg/sglang:latest`
 - Weights at `model_dir` (or `hf_repo` download on first request)
