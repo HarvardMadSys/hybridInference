@@ -29,8 +29,10 @@ MODELS_CONFIG  : Path to a JSON config file               (see below)
 
 When ``MODELS_CONFIG`` is unset the proxy auto-selects a hardware profile from
 ``nvidia-smi``: ``models.h200.json`` on a 4+ x H200 box (DeepSeek-V4-Flash at
-``tensor_parallel_size`` 4), ``models.rtx6000.json`` on an RTX (PRO) 6000
-(Qwen3.6-35B), else ``models.json``. See ``_detect_profile_config``.
+``tensor_parallel_size`` 2 on GPUs 0+2, skipping GPU 1), ``models.rtx6000.json``
+on an RTX (PRO) 6000 (Qwen3.6-35B), else ``models.json``. See
+``_detect_profile_config``. For the dedicated H200 service (port 8003 +
+staging/prod tunnels) use ``ops/h200_idle_proxy`` instead.
 
 Model configuration
 -------------------
@@ -137,7 +139,7 @@ def _detect_profile_config() -> Path:
     machine should serve the model that fits it. We inspect ``nvidia-smi`` once
     at import and map the hardware to a profile JSON next to this script:
 
-      * **4+ x H200**       -> ``models.h200.json``     (DeepSeek-V4-Flash, TP=4)
+      * **4+ x H200**       -> ``models.h200.json``     (DeepSeek-V4-Flash, TP=2 on 0+2)
       * **RTX (PRO) 6000**  -> ``models.rtx6000.json``  (Qwen3.6-35B)
       * anything else / no ``nvidia-smi`` → ``models.json`` (default fallback)
 

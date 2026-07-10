@@ -633,6 +633,7 @@ models:
         provider_model_id: "diffusiongemma"
 
   # ── DeepSeek V4 (kind: deepseek) ─────────────────────────
+  # Local H200 idle proxy: ops/h200_idle_proxy (sglang TP=2 on GPUs 0+2, port 8003).
   - id: deepseek-v4-flash
     name: DeepSeek V4 Flash
     provider: deepseek
@@ -657,6 +658,15 @@ models:
       input_cache_reads: "0.0028"
       input_cache_writes: "0"
     route:
+      # H200 local sglang (key via H200_DEPLOYMENT_URL + LOCAL_API_KEY).
+      # optional: skipped when H200_DEPLOYMENT_URL is unset/blank.
+      - kind: sglang
+        weight: 1.0
+        optional: true
+        base_url: ${H200_DEPLOYMENT_URL}
+        api_keys:
+          - ${LOCAL_API_KEY}
+        provider_model_id: "deepseek-v4-flash"
       - kind: deepseek
         weight: 1.0
         base_url: ${DEEPSEEK_BASE_URL}

@@ -35,6 +35,19 @@ def test_spark_route_uses_spark_deployment_url() -> None:
     assert vllm_route["provider_model_id"] == "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
 
 
+def test_deepseek_v4_flash_has_optional_h200_sglang_route() -> None:
+    """Local H200 idle proxy route must use H200_DEPLOYMENT_URL and be optional."""
+    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
+
+    ds = next((model for model in models["models"] if model["id"] == "deepseek-v4-flash"), None)
+    assert ds is not None, "Model 'deepseek-v4-flash' not found in config/models.yaml"
+    sglang_route = next((route for route in ds["route"] if route["kind"] == "sglang"), None)
+    assert sglang_route is not None, "sglang route not found for deepseek-v4-flash"
+    assert sglang_route["base_url"] == "${H200_DEPLOYMENT_URL}"
+    assert sglang_route.get("optional") is True
+    assert sglang_route["provider_model_id"] == "deepseek-v4-flash"
+
+
 def test_routing_local_deployment_uses_local_deployment_url() -> None:
     """Routing local_deployment must match the SGLang deployment env var."""
     routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())
@@ -42,7 +55,20 @@ def test_routing_local_deployment_uses_local_deployment_url() -> None:
     endpoints = [deployment["endpoint"] for deployment in routing["local_deployment"]]
 
     assert "${LOCAL_DEPLOYMENT_URL}" in endpoints
+    assert "${H200_DEPLOYMENT_URL}" in endpoints
     assert "${LOCAL_BASE_URL}" not in endpoints
+
+
+def test_routing_h200_local_deployment_lists_deepseek_v4_flash() -> None:
+    """H200 local_deployment entry must register deepseek-v4-flash."""
+    routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())
+
+    h200 = next(
+        (d for d in routing["local_deployment"] if d.get("endpoint") == "${H200_DEPLOYMENT_URL}"),
+        None,
+    )
+    assert h200 is not None
+    assert "deepseek-v4-flash" in h200["models"]
 
 
 def test_minimax_fast_uses_routewise() -> None:

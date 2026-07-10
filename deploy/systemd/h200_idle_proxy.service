@@ -1,0 +1,28 @@
+[Unit]
+Description=H200 idle proxy — lazy start/stop of DeepSeek-V4-Flash (TP=2, skip GPU1)
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=__REPO_ROOT__/ops/h200_idle_proxy
+ExecStart=__REPO_ROOT__/.venv/bin/python3 __REPO_ROOT__/ops/local_deployment_proxy/local_deployment_proxy.py
+
+Restart=on-failure
+RestartSec=10s
+
+Environment=LISTEN_PORT=8003
+Environment=IDLE_TIMEOUT=1440
+Environment=HEALTH_TIMEOUT=900
+Environment=HEALTH_INTERVAL=10
+Environment=MODELS_CONFIG=__REPO_ROOT__/ops/h200_idle_proxy/models.json
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=h200-idle-proxy
+
+[Install]
+WantedBy=multi-user.target

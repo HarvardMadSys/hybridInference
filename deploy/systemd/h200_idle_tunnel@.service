@@ -1,0 +1,40 @@
+[Unit]
+# Reverse SSH tunnel that exposes the h200_idle_proxy (port LISTEN_PORT on this
+# H200 box) to a public router, binding REMOTE_PORT there so the router's
+# backend container can reach the model at host.docker.internal:REMOTE_PORT.
+#
+# Templated per router host: the instance name (%i) is the SSH destination, e.g.
+#   systemctl enable --now h200_idle_tunnel@spark2
+#   systemctl enable --now h200_idle_tunnel@jason@internal.freeinference.org
+#
+# Defaults target staging (spark2) and production (internal.freeinference.org)
+# on port 8003 (see ops/h200_idle_proxy/install.sh).
+Description=H200 idle reverse tunnel to %i (autossh)
+Wants=network-online.target h200_idle_proxy.service
+After=network-online.target h200_idle_proxy.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+Environment=AUTOSSH_GATETIME=0
+Environment=LISTEN_PORT=8003
+Environment=REMOTE_PORT=8003
+Environment=REMOTE_BIND=0.0.0.0
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -R ${REMOTE_BIND}:${REMOTE_PORT}:localhost:${LISTEN_PORT} \
+  %i
+
+Restart=always
+RestartSec=10s
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=h200-idle-tunnel@%i
+
+[Install]
+WantedBy=multi-user.target
