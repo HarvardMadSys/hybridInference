@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from routing.routers import FixedRouter
 from routing.routewise.router import ProviderType, RouteWiseRouter
 from serving.servers.registry import _make_adapter, _make_provider_id, register_from_models_yaml
@@ -94,6 +96,27 @@ def test_minimax_routes_request_stream_usage() -> None:
 
     assert adapter.config.include_usage_in_stream is True
     assert adapter.config.provider_profile == "minimax"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["deepseek", "zai", "kimi", "kimi_coding", "vllm"],
+)
+def test_tool_capable_kinds_request_stream_usage(kind: str) -> None:
+    # Regression: tool-call-only streams reported completion_tokens=0 because
+    # these providers never sent an upstream usage chunk. Requesting
+    # stream_options.include_usage makes upstream report real completion tokens.
+    adapter = _make_adapter(
+        kind,
+        {
+            "id": f"{kind}-model",
+            "name": f"{kind} model",
+            "provider": kind,
+            "base_url": "https://api.example.com/v1",
+        },
+    )
+
+    assert adapter.config.include_usage_in_stream is True
 
 
 def test_register_from_models_yaml_merges_route_entry_route_metadata(tmp_path) -> None:

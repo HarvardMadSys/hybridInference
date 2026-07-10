@@ -174,22 +174,29 @@ def _make_adapter(kind: str, cfg: dict[str, Any]):
         }
         kind = base_kind  # subsequent dispatch checks compare against the bare kind
 
-    # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile
+    # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile.
+    # Request upstream usage in the stream so tool-call-only responses report
+    # non-zero completion tokens instead of falling back to a text estimate.
     if kind == "deepseek":
-        cfg = {**cfg, "provider_profile": "deepseek"}
+        cfg = {**cfg, "provider_profile": "deepseek", "include_usage_in_stream": True}
     # ZAI is the Z.AI GLM coding plan: a non-/v1 chat path, and (like the Kimi
     # coding plan) gated on a coding-tool identity, so it uses CodingIdentityAdapter.
     elif kind == "zai":
-        cfg = {**cfg, "provider_profile": "zai", "chat_path": "/chat/completions"}
+        cfg = {
+            **cfg,
+            "provider_profile": "zai",
+            "chat_path": "/chat/completions",
+            "include_usage_in_stream": True,
+        }
     # Kimi (Moonshot) routes through OpenAICompatAdapter; both the Kimi Code
     # coding-plan endpoint and the pay-per-token Moonshot API are OpenAI-compatible.
     # ``kimi_coding`` shares the usage profile but uses the dedicated
     # CodingIdentityAdapter (coding-tool User-Agent + leading OpenCode system message).
     elif kind in ("kimi", "kimi_coding"):
-        cfg = {**cfg, "provider_profile": "kimi"}
+        cfg = {**cfg, "provider_profile": "kimi", "include_usage_in_stream": True}
     elif kind == "minimax":
         cfg = {**cfg, "provider_profile": "minimax", "include_usage_in_stream": True}
-    elif kind == "sglang":
+    elif kind == "sglang" or kind == "vllm":
         cfg = {**cfg, "include_usage_in_stream": True}
 
     model_cfg = ModelConfig(**cfg)
