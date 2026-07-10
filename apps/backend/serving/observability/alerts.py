@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import enum
+import hashlib
+import json
 import logging
 import os
 import platform
@@ -16,16 +18,23 @@ import socket
 import threading
 import time
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
+
+from serving.triage.models import AlertEvent, sanitize_for_agent
+
+if TYPE_CHECKING:
+    from pydantic import JsonValue
 
 log = logging.getLogger(__name__)
 
 _HOST = socket.gethostname()
 _DEDUPE_LOCK = asyncio.Lock()
 _LAST_FIRED: dict[str, float] = defaultdict(float)
+_IN_FLIGHT: set[str] = set()
 
 # Hostnames that always indicate a non-deployed (local/dev) gateway.
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"))
@@ -160,6 +169,7 @@ def _monotonic() -> float:
 def reset_dedupe_state() -> None:
     """Test helper — clears in-memory dedupe table."""
     _LAST_FIRED.clear()
+    _IN_FLIGHT.clear()
 
 
 class AlertSeverity(str, enum.Enum):
@@ -227,6 +237,76 @@ async def _post_to_slack(webhook_url: str, message: str) -> bool:
         return False
 
 
+async def _post_to_triage(relay_url: str, token: str, event: AlertEvent) -> bool:
+    """Post a structured alert to the triage relay. Returns True on 2xx."""
+    endpoint = f"{relay_url.rstrip('/')}/v1/alerts"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {token}"},
+                json=event.model_dump(mode="json"),
+            )
+        if 200 <= response.status_code < 300:
+            return True
+        log.error("codex triage relay returned HTTP %s", response.status_code)
+    except Exception:
+        log.exception("codex triage relay post failed")
+    return False
+
+
+def _triage_fingerprint(environment: str, dedupe_key: str) -> str:
+    """Build a readable bounded fingerprint for relay-level incident dedupe."""
+    value = f"gateway:{environment}:{dedupe_key}"
+    if len(value) <= 512:
+        return value
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    return f"gateway:{environment}:sha256:{digest}"
+
+
+def _triage_context(context: dict[str, Any]) -> dict[str, JsonValue]:
+    """Convert arbitrary alert values to bounded, redacted JSON."""
+    serializable = json.loads(json.dumps(context, default=str))
+    sanitized = sanitize_for_agent(cast("JsonValue", serializable))
+    return cast("dict[str, JsonValue]", sanitized)
+
+
+def _deployment_sha() -> str | None:
+    for name in ("DEPLOYMENT_SHA", "GIT_COMMIT", "COMMIT_SHA"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value[:128]
+    return None
+
+
+def _build_triage_event(
+    severity: AlertSeverity,
+    title: str,
+    context: dict[str, Any],
+    message: str,
+    key: str,
+    status: Literal["firing", "resolved"],
+    cooldown_sec: int,
+) -> AlertEvent:
+    """Create a bounded relay event from the existing Slack alert."""
+    info = server_info()
+    return AlertEvent(
+        alert_id=str(uuid4()),
+        fingerprint=_triage_fingerprint(info["environment"], key),
+        source="hybrid-inference-gateway",
+        status=status,
+        severity=severity.value,
+        title=title[:500],
+        environment=info["environment"],
+        occurred_at=dt.datetime.now(dt.timezone.utc),
+        summary=title[:4_000],
+        context=_triage_context(context),
+        slack_text=message[:40_000],
+        deployment_sha=_deployment_sha(),
+        dedupe_window_seconds=min(max(cooldown_sec, 0), 604_800),
+    )
+
+
 async def alert_slack(
     severity: AlertSeverity,
     title: str,
@@ -234,15 +314,19 @@ async def alert_slack(
     *,
     dedupe_key: str | None = None,
     cooldown_sec: int = 300,
+    status: Literal["firing", "resolved"] = "firing",
 ) -> bool:
-    """Send a Slack alert. No-op if webhook unset or within cooldown.
+    """Send an alert through the triage relay, falling back to Slack directly.
 
     Returns True if a message was actually sent, False otherwise.
     """
     webhook_url = os.environ.get("SLACK_ALERTS_WEBHOOK_URL", "") or os.environ.get(
         "SLACK_WEBHOOK_URL", ""
     )
-    if not webhook_url:
+    relay_url = os.environ.get("CODEX_TRIAGE_RELAY_URL", "").strip()
+    relay_token = os.environ.get("CODEX_TRIAGE_RELAY_TOKEN", "").strip()
+    relay_configured = bool(relay_url and relay_token)
+    if not webhook_url and not relay_configured:
         return False
 
     # Admin-controlled global snooze: pause all alerts until a deadline.
@@ -258,13 +342,37 @@ async def alert_slack(
     now = _monotonic()
     async with _DEDUPE_LOCK:
         last = _LAST_FIRED.get(key, 0.0)
-        if last > 0.0 and now - last < cooldown_sec:
+        if key in _IN_FLIGHT or (last > 0.0 and now - last < cooldown_sec):
             return False
-        _LAST_FIRED[key] = now
+        _IN_FLIGHT.add(key)
 
-    message = _format_message(severity, title, context)
+    sent = False
     try:
-        return await _post_to_slack(webhook_url, message)
+        message = _format_message(severity, title, context)
+        if relay_configured:
+            try:
+                event = _build_triage_event(
+                    severity,
+                    title,
+                    context,
+                    message,
+                    key,
+                    status,
+                    cooldown_sec,
+                )
+            except Exception:
+                log.exception("codex triage event construction failed")
+            else:
+                if await _post_to_triage(relay_url, relay_token, event):
+                    sent = True
+        if not sent and webhook_url:
+            sent = await _post_to_slack(webhook_url, message)
+        return sent
     except Exception:
         log.exception("alert_slack post raised; suppressing")
         return False
+    finally:
+        async with _DEDUPE_LOCK:
+            _IN_FLIGHT.discard(key)
+            if sent:
+                _LAST_FIRED[key] = _monotonic()

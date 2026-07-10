@@ -194,6 +194,7 @@ var/**
 !var/data/
 var/data/**
 !var/data/.gitkeep
+.codex-triage/
 
 # Back-compat (legacy data/ paths)
 data/db/*.db

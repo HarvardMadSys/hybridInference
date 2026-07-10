@@ -17,10 +17,15 @@ Targets are discovered from the gateway's authenticated `/models` catalog, which
 already applies role and runtime visibility rules — so the Worker probes exactly
 what the prober key can actually call.
 
-## Slack alerts
+## Slack alerts and Codex triage
 
-When the optional `SLACK_WEBHOOK_URL` secret is set, each cron cycle pages a
-Slack incoming webhook for any model that has failed `ALERT_FAILURE_THRESHOLD`
+When `CODEX_TRIAGE_RELAY_URL` and `CODEX_TRIAGE_RELAY_TOKEN` are set, each alert
+is sent to the triage relay first. The relay posts the original Slack message,
+runs a read-only Codex investigation asynchronously, and replies in the same
+thread. If relay delivery fails, the Worker falls back to `SLACK_WEBHOOK_URL`.
+
+With only the optional `SLACK_WEBHOOK_URL` secret set, each cron cycle pages the
+Slack incoming webhook directly for any model that has failed `ALERT_FAILURE_THRESHOLD`
 **consecutive** probes (default **2**, i.e. ~two 20-minute cycles — enough to
 distinguish a sustained outage from a single transient blip). Alerts are
 **edge-triggered**: a model pages once when it crosses the threshold and again
@@ -28,12 +33,11 @@ only after it recovers and fails anew, so a multi-hour outage doesn't repeat the
 page every 20 minutes. A short recovery notice is posted when the model's next
 probe succeeds. The per-model alert state lives in the D1 `meta` table, so it
 survives Worker restarts and is never raced (alert evaluation runs while the
-cycle holds its lock). Leave `SLACK_WEBHOOK_URL` unset to disable alerting
-entirely.
+cycle holds its lock). Leave both delivery paths unset to disable alerting.
 
-Every page is committed to the alert state only **after** its Slack POST is
-confirmed delivered, so a transient webhook failure (rate limit, network blip)
-is retried on the next cron cycle rather than being silently dropped.
+Every page is committed to the alert state only **after** either the relay or
+fallback Slack POST is confirmed delivered, so a transient failure is retried
+on the next cron cycle rather than being silently dropped.
 
 Two whole-deployment cases are also covered:
 
@@ -79,9 +83,10 @@ working without JavaScript).
 `ALERT_STORM_THRESHOLD` (models changing state in one cycle before pages collapse
 into a summary).
 
-`PROBER_API_KEY` is a **secret**, not a var. `SLACK_WEBHOOK_URL` is an optional
-**secret** — set it to enable Slack alerting (see above), leave it unset to
-disable.
+`PROBER_API_KEY` is a **secret**, not a var. `CODEX_TRIAGE_RELAY_URL`,
+`CODEX_TRIAGE_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both
+relay values are required to enable triage; retain the Slack webhook as its
+delivery fallback.
 
 ## Deploy
 
@@ -112,6 +117,10 @@ npx wrangler secret put PROBER_API_KEY
 
 # 3a. (Optional) Set the Slack incoming-webhook URL to enable failure alerts.
 npx wrangler secret put SLACK_WEBHOOK_URL
+
+# 3b. (Optional) Send alerts through Codex triage before the Slack fallback.
+npx wrangler secret put CODEX_TRIAGE_RELAY_URL
+npx wrangler secret put CODEX_TRIAGE_RELAY_TOKEN
 
 # 4. Deploy (registers the Worker and its 20-minute cron trigger).
 npx wrangler deploy

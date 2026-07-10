@@ -240,9 +240,139 @@ async function cycle(
 describe("runAlerts", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  function envWith(db: FakeD1, webhook: string | undefined): Env {
-    return { SLACK_WEBHOOK_URL: webhook, DB: db as unknown as D1Database } as unknown as Env;
+  function envWith(
+    db: FakeD1,
+    webhook: string | undefined,
+    relayUrl?: string,
+    relayToken?: string,
+  ): Env {
+    return {
+      SLACK_WEBHOOK_URL: webhook,
+      CODEX_TRIAGE_RELAY_URL: relayUrl,
+      CODEX_TRIAGE_RELAY_TOKEN: relayToken,
+      DB: db as unknown as D1Database,
+    } as unknown as Env;
   }
+
+  it("sends an authenticated triage event and skips Slack when the relay succeeds", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x", "https://relay.test/", "relay-token");
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
+      return new Response(null, { status: 202 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://relay.test/v1/alerts");
+    expect(init.headers).toEqual({
+      Authorization: "Bearer relay-token",
+      "Content-Type": "application/json",
+    });
+    const payload = JSON.parse(String(init.body));
+    expect(payload).toMatchObject({
+      version: "1",
+      fingerprint: "status-monitor:model:a",
+      source: "status-monitor-worker",
+      status: "firing",
+      severity: "error",
+      title: "Model down: a",
+      environment: "staging",
+      occurred_at: "2026-06-25T00:00:00Z",
+      context: {
+        alert_type: "model",
+        gateway_base_url: "https://staging.freeinference.org",
+        failure_threshold: 1,
+        probe: { model_id: "a", ok: false, error: "boom" },
+      },
+    });
+    expect(payload.alert_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(payload.summary).toContain("a failed 1 consecutive probes");
+    expect(payload.slack_text).toContain("Model down: `a`");
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty("a");
+  });
+
+  it("uses the same model fingerprint for relay firing and recovery events", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, undefined, "https://relay.test", "relay-token");
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        events.push(JSON.parse(String(init.body)));
+        return new Response(null, { status: 200 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, { a: true }, cfg(1));
+
+    expect(events.map((event) => event.status)).toEqual(["firing", "resolved"]);
+    expect(events.map((event) => event.fingerprint)).toEqual([
+      "status-monitor:model:a",
+      "status-monitor:model:a",
+    ]);
+    expect(events.map((event) => event.severity)).toEqual(["error", "info"]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+  });
+
+  it("falls back to Slack and commits state when the relay returns non-2xx", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x", "https://relay.test", "relay-token");
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        requests.push({ url, body: JSON.parse(String(init.body)) });
+        return url.includes("relay.test")
+          ? new Response(null, { status: 503 })
+          : new Response("ok", { status: 200 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://relay.test/v1/alerts",
+      "https://hook.test/x",
+    ]);
+    expect(requests[1].body.text).toContain("Model down: `a`");
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty("a");
+  });
+
+  it("falls back to Slack when the relay request times out", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x", "https://relay.test", "relay-token");
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        if (url.includes("relay.test")) throw new DOMException("timed out", "TimeoutError");
+        return new Response("ok", { status: 200 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(urls).toEqual(["https://relay.test/v1/alerts", "https://hook.test/x"]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty("a");
+  });
+
+  it("does not commit state when both the relay and Slack fallback fail", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, "https://hook.test/x", "https://relay.test", "relay-token");
+    const fetchMock = vi.fn(async () => new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const state = db.meta.has("alert_state") ? JSON.parse(db.meta.get("alert_state")!) : {};
+    expect(state).not.toHaveProperty("a");
+  });
 
   it("pages once on the second consecutive failure, not on the first or third", async () => {
     const db = new FakeD1();
@@ -316,7 +446,7 @@ describe("runAlerts", () => {
     expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty("a");
   });
 
-  it("does nothing when no webhook is configured", async () => {
+  it("does nothing when no destination is configured", async () => {
     const db = new FakeD1();
     const env = envWith(db, undefined);
     const posts = stubFetch();
@@ -472,8 +602,18 @@ describe("formatCycleDownAlert", () => {
 describe("runCycleAlert", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  function envWith(db: FakeD1, webhook: string | undefined): Env {
-    return { SLACK_WEBHOOK_URL: webhook, DB: db as unknown as D1Database } as unknown as Env;
+  function envWith(
+    db: FakeD1,
+    webhook: string | undefined,
+    relayUrl?: string,
+    relayToken?: string,
+  ): Env {
+    return {
+      SLACK_WEBHOOK_URL: webhook,
+      CODEX_TRIAGE_RELAY_URL: relayUrl,
+      CODEX_TRIAGE_RELAY_TOKEN: relayToken,
+      DB: db as unknown as D1Database,
+    } as unknown as Env;
   }
   const failing = { ok: false, checkedAt: "2026-06-25T00:00:00Z", error: "gateway down" };
   const healthy = { ok: true, checkedAt: "2026-06-25T00:20:00Z", error: null };
@@ -501,6 +641,30 @@ describe("runCycleAlert", () => {
     await runCycleAlert(env, config, healthy); // recovered (2)
     expect(posts).toHaveLength(2);
     expect(posts[1].text).toContain("Monitoring cycle recovered");
+    expect(db.meta.has("cycle_alert")).toBe(false);
+  });
+
+  it("uses the fixed cycle fingerprint for relay firing and recovery events", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, undefined, "https://relay.test", "relay-token");
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        events.push(JSON.parse(String(init.body)));
+        return new Response(null, { status: 200 });
+      }),
+    );
+
+    await runCycleAlert(env, config, failing);
+    await runCycleAlert(env, config, healthy);
+
+    expect(events.map((event) => event.fingerprint)).toEqual([
+      "status-monitor:cycle",
+      "status-monitor:cycle",
+    ]);
+    expect(events.map((event) => event.status)).toEqual(["firing", "resolved"]);
+    expect(events.map((event) => event.severity)).toEqual(["critical", "info"]);
     expect(db.meta.has("cycle_alert")).toBe(false);
   });
 

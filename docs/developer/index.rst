@@ -12,6 +12,7 @@ see the `FreeInference docs <https://doc.freeinference.org/>`_.
 
    installation
    deployment
+   codex-alert-triage
    architecture
    routing
    add-local-model

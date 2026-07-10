@@ -16,7 +16,9 @@ from serving.observability.alerts import (
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
+def reset_state(monkeypatch):
+    monkeypatch.delenv("CODEX_TRIAGE_RELAY_URL", raising=False)
+    monkeypatch.delenv("CODEX_TRIAGE_RELAY_TOKEN", raising=False)
     reset_dedupe_state()
     yield
     reset_dedupe_state()
@@ -43,6 +45,84 @@ async def test_alert_slack_posts_when_webhook_set(monkeypatch):
         assert url == "https://hooks.slack.com/x"
         assert "test title" in message
         assert "Foo" in message and "bar" in message
+
+
+async def test_alert_slack_prefers_triage_relay(monkeypatch):
+    monkeypatch.setenv("CODEX_TRIAGE_RELAY_URL", "https://triage.internal/")
+    monkeypatch.setenv("CODEX_TRIAGE_RELAY_TOKEN", "relay-secret")
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
+    with (
+        patch(
+            "serving.observability.alerts._post_to_triage",
+            new=AsyncMock(return_value=True),
+        ) as mock_triage,
+        patch("serving.observability.alerts._post_to_slack", new=AsyncMock()) as mock_slack,
+    ):
+        sent = await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider failed",
+            {"provider": "openai", "api_key": "must-not-leak"},
+            dedupe_key="provider:openai",
+        )
+
+    assert sent is True
+    mock_slack.assert_not_called()
+    relay_url, token, event = mock_triage.call_args.args
+    assert relay_url == "https://triage.internal/"
+    assert token == "relay-secret"
+    assert event.fingerprint.endswith(":provider:openai")
+    assert event.context["provider"] == "openai"
+    assert event.context["api_key"] == "[REDACTED]"
+
+
+async def test_alert_slack_falls_back_when_triage_relay_fails(monkeypatch):
+    monkeypatch.setenv("CODEX_TRIAGE_RELAY_URL", "https://triage.internal")
+    monkeypatch.setenv("CODEX_TRIAGE_RELAY_TOKEN", "relay-secret")
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
+    with (
+        patch(
+            "serving.observability.alerts._post_to_triage",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_slack,
+    ):
+        sent = await alert_slack(AlertSeverity.ERROR, "Provider failed", {})
+
+    assert sent is True
+    mock_slack.assert_awaited_once()
+    assert mock_slack.call_args.args[0] == "https://hooks.slack.com/fallback"
+
+
+async def test_alert_slack_can_deliver_through_relay_without_webhook(monkeypatch):
+    monkeypatch.setenv("CODEX_TRIAGE_RELAY_URL", "https://triage.internal")
+    monkeypatch.setenv("CODEX_TRIAGE_RELAY_TOKEN", "relay-secret")
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "")
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
+    with patch(
+        "serving.observability.alerts._post_to_triage",
+        new=AsyncMock(return_value=True),
+    ) as mock_triage:
+        sent = await alert_slack(AlertSeverity.WARN, "Latency high", {"p95_ms": 70_000})
+
+    assert sent is True
+    mock_triage.assert_awaited_once()
+
+
+async def test_failed_delivery_does_not_consume_cooldown(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
+    with patch(
+        "serving.observability.alerts._post_to_slack",
+        new=AsyncMock(side_effect=[False, True]),
+    ) as mock_slack:
+        first = await alert_slack(AlertSeverity.ERROR, "Provider failed", {}, dedupe_key="K")
+        second = await alert_slack(AlertSeverity.ERROR, "Provider failed", {}, dedupe_key="K")
+
+    assert first is False
+    assert second is True
+    assert mock_slack.await_count == 2
 
 
 async def test_alert_slack_dedupes_within_cooldown(monkeypatch):

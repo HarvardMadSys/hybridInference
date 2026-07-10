@@ -14,6 +14,7 @@ import {
 import { type Config, loadConfig, type Env } from "./env";
 import { discoverModels } from "./models";
 import { probeModel, type ProbeResult } from "./probe";
+import { hasAlertDestination } from "./triage";
 
 /**
  * Records the cycle's health and, edge-triggered, pages Slack when the whole
@@ -74,13 +75,12 @@ async function runProbeCycle(env: Env): Promise<void> {
     return;
   }
 
-  // Alerting is opt-in via the SLACK_WEBHOOK_URL secret; unset, runAlerts and
-  // runCycleAlert silently no-op. Log it once per cycle so a missing secret is
-  // visible in `wrangler tail` instead of looking identical to "all healthy".
-  if (!env.SLACK_WEBHOOK_URL) {
+  // Alerting is opt-in via either the Codex relay or direct Slack fallback.
+  // Log once per cycle when neither complete path is configured.
+  if (!hasAlertDestination(env)) {
     console.warn(
-      "SLACK_WEBHOOK_URL unset; Slack alerting disabled " +
-        "(enable with `wrangler secret put SLACK_WEBHOOK_URL`).",
+      "alert delivery disabled; configure the Codex triage relay or " +
+        "set SLACK_WEBHOOK_URL.",
     );
   }
 
