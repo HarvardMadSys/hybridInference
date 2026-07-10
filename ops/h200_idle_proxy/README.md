@@ -43,7 +43,7 @@ SSH_HOST='spark2|jason@internal.freeinference.org' REMOTE_PORT=8003 \
 ./ops/h200_idle_proxy/h200_idle_service.sh stop
 ```
 
-Logs: `/tmp/h200_idle_proxy_8003.log`.
+Logs: `/tmp/h200_idle_proxy_<uid>_8003/proxy.log` (per-user run dir, mode 700).
 
 ### systemd (recommended)
 
@@ -79,6 +79,11 @@ See [`models.json`](models.json):
 | `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash-FP8` |
 | `max_model_len` | `65536` (tight on 2×H200; raise if VRAM allows) |
 | `mem_fraction` | `0.95` |
+
+> **VRAM note:** FP8 weights are ~274 GB on disk. At TP=2 each rank needs ~137 GB
+> before KV/activations on a 143 GB H200, so context is intentionally capped.
+> This layout is deliberate so GPU 1 stays free for other tenants; if cold-start
+> OOMs, lower `max_model_len` further or revisit TP.
 
 ## Requirements
 

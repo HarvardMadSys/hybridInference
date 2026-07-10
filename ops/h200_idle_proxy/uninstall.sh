@@ -62,7 +62,10 @@ rm -f "${SYSTEMD_DST}/${TUNNEL_TMPL}"
 rm -rf "$DROPIN_DIR" "$PROXY_DROPIN_DIR"
 
 systemctl daemon-reload
-systemctl reset-failed "${PROXY_UNIT}" 'h200_idle_tunnel@*' 2>/dev/null || true
+systemctl reset-failed "${PROXY_UNIT}" 2>/dev/null || true
+for unit in "${INSTANCES[@]}"; do
+  systemctl reset-failed "$unit" 2>/dev/null || true
+done
 
 echo
 echo "Done. The h200 idle proxy and its reverse tunnel(s) have been removed."
