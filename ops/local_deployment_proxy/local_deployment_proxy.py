@@ -470,6 +470,20 @@ class BackendManager:
         log.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=True, capture_output=True)
 
+    @staticmethod
+    def _docker_gpu_args(gpu: str) -> list[str]:
+        """Return ``docker run`` flags that pin ``gpu`` without toolkit conflicts.
+
+        Recent nvidia-container-toolkit builds reject multi-id ``--gpus
+        device=0,2,3`` with *cannot set both Count and DeviceIDs*. Pass
+        ``--gpus all`` and restrict via ``CUDA_VISIBLE_DEVICES`` instead when
+        more than one device is listed; keep ``--gpus device=N`` for the
+        single-GPU case (and for auto-picked devices).
+        """
+        if "," in str(gpu):
+            return ["--gpus", "all", "-e", f"CUDA_VISIBLE_DEVICES={gpu}"]
+        return ["--gpus", f"device={gpu}"]
+
     def _vllm_run_cmd(self, gpu: str) -> list[str]:
         """Build the ``docker run`` command for a vLLM backend.
 
@@ -494,8 +508,7 @@ class BackendManager:
             "-d",
             "--name",
             self.container,
-            "--gpus",
-            f"device={gpu}",
+            *self._docker_gpu_args(gpu),
             "--shm-size",
             "16g",
             # Tensor-parallel backends span several GPUs inside one container;
@@ -557,8 +570,7 @@ class BackendManager:
             "-d",
             "--name",
             self.container,
-            "--gpus",
-            f"device={gpu}",
+            *self._docker_gpu_args(gpu),
             "--shm-size",
             "16g",
             # Tensor-parallel backends span several GPUs inside one container;

@@ -772,7 +772,9 @@ def test_vllm_tensor_parallel_spans_multiple_gpus(monkeypatch: Any, tmp_path: Pa
     cmd = backend._vllm_run_cmd("0,1,2,3")
 
     assert cmd[cmd.index("--tensor-parallel-size") + 1] == "4"
-    assert cmd[cmd.index("--gpus") + 1] == "device=0,1,2,3"
+    # Multi-id device= lists break recent nvidia-container-toolkit; use env pin.
+    assert cmd[cmd.index("--gpus") + 1] == "all"
+    assert "CUDA_VISIBLE_DEVICES=0,1,2,3" in cmd
     # Multi-GPU NCCL needs host IPC.
     assert "--ipc=host" in cmd
 
@@ -797,7 +799,8 @@ def test_sglang_tensor_parallel_sets_tp_and_ipc(monkeypatch: Any, tmp_path: Path
     cmd = backend._sglang_run_cmd("0,1,2,3")
 
     assert cmd[cmd.index("--tp") + 1] == "4"
-    assert cmd[cmd.index("--gpus") + 1] == "device=0,1,2,3"
+    assert cmd[cmd.index("--gpus") + 1] == "all"
+    assert "CUDA_VISIBLE_DEVICES=0,1,2,3" in cmd
     assert "--ipc=host" in cmd
 
 
