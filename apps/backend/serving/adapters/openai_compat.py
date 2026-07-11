@@ -26,6 +26,7 @@ from .profiles import (
     default_chat_path,
     extract_tool_calls_for_profile,
     filter_response_format,
+    filter_sampling_params,
     function_call_delta_to_tool_calls,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
@@ -635,7 +636,7 @@ class OpenAICompatAdapter(BaseAdapter):
         Returns:
             OpenAI-compatible response dict
         """
-        validated = self.validate_params(params)
+        validated = filter_sampling_params(self._usage_profile, self.validate_params(params))
 
         # Clean messages to remove None fields (some APIs reject them)
         cleaned_messages = self._prepare_messages(messages)
@@ -696,7 +697,7 @@ class OpenAICompatAdapter(BaseAdapter):
         Yields:
             SSE-formatted chunks
         """
-        validated = self.validate_params(params)
+        validated = filter_sampling_params(self._usage_profile, self.validate_params(params))
 
         # Clean messages to remove None fields (some APIs reject them)
         cleaned_messages = self._prepare_messages(messages)
