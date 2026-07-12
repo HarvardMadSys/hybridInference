@@ -2240,8 +2240,10 @@ class RouteWiseRouter(BaseRouter):
         # Failed observations must not consume the stash: the logging path
         # emits one failed observation per failed attempt BEFORE the final
         # success observation, and popping here would leave nothing for the
-        # winning fallback/hedge leg to warm. Final-failure entries are
-        # reclaimed by the _PREFIX_CACHE_PENDING_MAX cap.
+        # winning fallback/hedge leg to warm. Final-failure entries are not
+        # leaked: the pending-decisions TTL sweep and size-cap eviction both
+        # drop the sibling _prefix_cache_pending entry, and
+        # _stash_prefix_for_commit bounds the dict at _PREFIX_CACHE_PENDING_MAX.
         if not obs.success:
             return
         with self._route_commit_lock:

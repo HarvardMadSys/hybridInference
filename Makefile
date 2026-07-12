@@ -38,7 +38,9 @@ lint:  ## Run linters (ruff format check, ruff lint, pydocstyle)
 
 test:  ## Run unit/integration tests (exclude external and db-dependent)
 	@echo "$(YELLOW)Running tests (not external, not dbtest)...$(RESET)"
-	$(UV_RUN) pytest -q -m "not external and not dbtest"
+	@# -n auto --dist loadfile: parallelize across cores at file granularity
+	@# (same isolation unit as CI's file-based shards); ~3x faster wall time.
+	$(UV_RUN) pytest -q -m "not external and not dbtest" -n auto --dist loadfile
 	@echo "$(GREEN)OK Tests passed$(RESET)"
 
 test-verbose: ## Run tests with verbose output (exclude external and db-dependent)
@@ -54,7 +56,7 @@ test-db:  ## Run tests that require PostgreSQL (set TEST_DB_* env vars)
 
 test-all:  ## Run all tests except external (includes db-dependent)
 	@echo "$(YELLOW)Running all tests (not external)...$(RESET)"
-	$(UV_RUN) pytest -q -m "not external"
+	$(UV_RUN) pytest -q -m "not external" -n auto --dist loadfile
 	@echo "$(GREEN)OK All tests passed$(RESET)"
 
 test-e2e: ## Run external/E2E tests (may require local server)
