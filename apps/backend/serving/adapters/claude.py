@@ -111,8 +111,10 @@ class ClaudeAdapter(BaseAdapter):
         if "top_p" in validated_params:
             payload["top_p"] = validated_params["top_p"]
 
-        if "top_k" in validated_params and "top_k" in self.config.supported_params:
-            payload["top_k"] = validated_params["top_k"]
+        # top_k is never emitted by validate_params -- read the raw params
+        # (same as openai_compat's supported-params passthrough).
+        if "top_k" in params and "top_k" in self.config.supported_params:
+            payload["top_k"] = params["top_k"]
 
         if "stop" in validated_params:
             # Claude calls these "stop_sequences"
@@ -136,12 +138,17 @@ class ClaudeAdapter(BaseAdapter):
             "api-key": self.config.api_key,
         }
 
+        # retries=1 => exactly one attempt, NO retry: a completion POST is
+        # non-idempotent. Re-sending after the 120s total timeout fires (i.e.
+        # after Vertex may have already generated and billed the response) or
+        # on a deterministic 4xx would double-bill and add latency; resilience
+        # comes from the router's fallback chain (same policy as openai_compat).
         data = await self.http.json_post_with_retry(
             endpoint,
             json=payload,
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=120),
-            retries=3,
+            retries=1,
         )
 
         if "Code" in data and "Error" in data:
@@ -197,8 +204,10 @@ class ClaudeAdapter(BaseAdapter):
         if "top_p" in validated_params:
             payload["top_p"] = validated_params["top_p"]
 
-        if "top_k" in validated_params and "top_k" in self.config.supported_params:
-            payload["top_k"] = validated_params["top_k"]
+        # top_k is never emitted by validate_params -- read the raw params
+        # (same as openai_compat's supported-params passthrough).
+        if "top_k" in params and "top_k" in self.config.supported_params:
+            payload["top_k"] = params["top_k"]
 
         if "stop" in validated_params:
             payload["stop_sequences"] = validated_params["stop"]
@@ -336,8 +345,10 @@ class ClaudeAdapter(BaseAdapter):
                         logger.debug(f"Yielding {len(tool_calls_list)} tool calls")
                         yield tool_chunk
 
-                        # Ensure finish_reason reflects tool_calls for OpenAI clients
-                        finish_reason = "tool_calls"
+                        # Ensure finish_reason reflects tool_calls for OpenAI
+                        # clients -- but never mask a "length" truncation.
+                        if finish_reason in (None, "", "stop"):
+                            finish_reason = "tool_calls"
                         finish_chunk = self.format_stream_chunk(
                             "", self.config.id, finish_reason=finish_reason
                         )
@@ -410,36 +421,6 @@ class ClaudeAdapter(BaseAdapter):
                     finish_reason = result.finish_reason
 
                 if result.is_done:
-                    # Emit collected tool calls (if any) at message_stop
-                    completed_tools = accumulator.get_completed()
-                    if completed_tools:
-                        yield self.format_tool_chunk(completed_tools, self.config.id)
-                        finish_reason = "tool_calls"
-
-                    # Build and emit final usage chunk with _routing metadata
-                    usage_obj = build_final_usage(
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        cache_read_input_tokens=cache_read_input_tokens,
-                        cache_creation_input_tokens=cache_creation_input_tokens,
-                        cache_read_reported=cache_read_reported,
-                    )
-                    final_chunk = {
-                        "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
-                        "object": "chat.completion.chunk",
-                        "created": int(time.time()),
-                        "model": self.config.id,
-                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
-                        "usage": usage_obj,
-                        "_routing": {
-                            "provider": self.config.provider,
-                            "base_url": self.config.base_url,
-                            "endpoint_id": getattr(self.config, "endpoint_id", None)
-                            or self.config.provider,
-                        },
-                    }
-                    yield f"data: {json.dumps(final_chunk)}\n\n"
-                    yield done_sentinel()
                     break
         except Exception as e:
             logger.error(f"[CLAUDE STREAM ERROR] {type(e).__name__}: {e}")
@@ -454,6 +435,44 @@ class ClaudeAdapter(BaseAdapter):
                     logger.error("Response body: No response body available")
             # Fail-fast: propagate error immediately instead of fallback
             raise
+
+        # Always emit collected tool calls, the final usage chunk, and [DONE]
+        # after the upstream closes -- even if message_stop was never received
+        # (truncated upstream). Otherwise the client sees a stream that ends
+        # with no finish_reason/usage and the DB logs zero usage (mirrors
+        # anthropic.py).
+        completed_tools = accumulator.get_completed()
+        if completed_tools:
+            yield self.format_tool_chunk(completed_tools, self.config.id)
+            # Do NOT override a "length" finish: a tool call truncated at
+            # max_tokens must stay "length" so the client sees max_tokens
+            # rather than a spuriously complete tool call.
+            if finish_reason in (None, "", "stop"):
+                finish_reason = "tool_calls"
+
+        # Build and emit final usage chunk with _routing metadata
+        usage_obj = build_final_usage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_input_tokens=cache_read_input_tokens,
+            cache_creation_input_tokens=cache_creation_input_tokens,
+            cache_read_reported=cache_read_reported,
+        )
+        final_chunk = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.config.id,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+            "usage": usage_obj,
+            "_routing": {
+                "provider": self.config.provider,
+                "base_url": self.config.base_url,
+                "endpoint_id": getattr(self.config, "endpoint_id", None) or self.config.provider,
+            },
+        }
+        yield f"data: {json.dumps(final_chunk)}\n\n"
+        yield done_sentinel()
 
     def _convert_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert OpenAI-format messages to Claude format.

@@ -15,6 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+try:
+    # aiohttp's marker for "use the session default timeout". An explicit
+    # timeout=None is NOT equivalent: aiohttp treats it as "no timeout at all".
+    from aiohttp.helpers import sentinel as _aiohttp_sentinel
+except ImportError:  # pragma: no cover - aiohttp is stubbed in unit tests
+    _aiohttp_sentinel = object()
+
 from serving.servers.sse import SSEParser
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -67,9 +74,19 @@ class AsyncHTTPClient:
         raised ``ClientResponseError`` as ``error_body`` so the actual provider
         error message survives for logging and user-facing display (the URL is
         scrubbed downstream before any user sees it).
+
+        ``timeout=None`` means "use the session default" (60s). It must NOT be
+        forwarded verbatim: aiohttp treats an explicit ``None`` as *no timeout
+        at all*, which would let a black-holed upstream hold the request (and
+        its connection-pool slot) forever.
         """
         session = await self._ensure_session()
-        async with session.post(url, json=json, headers=headers, timeout=timeout) as resp:
+        async with session.post(
+            url,
+            json=json,
+            headers=headers,
+            timeout=timeout if timeout is not None else _aiohttp_sentinel,
+        ) as resp:
             if resp.status >= 400:
                 from contextlib import suppress
 
@@ -137,9 +154,14 @@ class AsyncHTTPClient:
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
     ) -> dict[str, Any]:
-        """Send a GET request and return JSON response."""
+        """Send a GET request and return JSON response.
+
+        ``timeout=None`` falls back to the session default (see json_post).
+        """
         session = await self._ensure_session()
-        async with session.get(url, headers=headers, timeout=timeout) as resp:
+        async with session.get(
+            url, headers=headers, timeout=timeout if timeout is not None else _aiohttp_sentinel
+        ) as resp:
             resp.raise_for_status()
             from typing import cast
 
@@ -360,10 +382,15 @@ class AsyncHTTPClient:
         """Send an arbitrary HTTP request and return (status, body, content_type).
 
         Intended for proxy-style forwarding where we need the raw response.
+        ``timeout=None`` falls back to the session default (see json_post).
         """
         session = await self._ensure_session()
         async with session.request(
-            method, url, data=data, headers=headers, timeout=timeout
+            method,
+            url,
+            data=data,
+            headers=headers,
+            timeout=timeout if timeout is not None else _aiohttp_sentinel,
         ) as resp:
             body = await resp.read()
             content_type = resp.headers.get("content-type", "application/json")

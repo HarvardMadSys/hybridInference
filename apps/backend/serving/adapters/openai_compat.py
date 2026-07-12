@@ -563,7 +563,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 # body-phase errors propagate so the upstream is never asked to
                 # regenerate (duplicate work / double billing). Mirror that: do
                 # not mute or rotate — release the key unchanged and propagate.
-                self._key_pool.release(lease, status_code=200)
+                # Neutral (None), NOT 200: crediting a success here would reset
+                # the sole-key backoff streak mid-outage.
+                self._key_pool.release(lease, status_code=None)
                 raise
 
             # First chunk read successfully — commit the lease (caller releases on stream end)

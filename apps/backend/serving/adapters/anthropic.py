@@ -43,6 +43,7 @@ from .claude_format import (
     parse_response_content,
     parse_usage,
 )
+from .openai_compat import _COMPLETION_TIMEOUT_S
 
 logger = get_logger(__name__)
 
@@ -142,8 +143,10 @@ class AnthropicAdapter(BaseAdapter):
             if k in validated:
                 payload[k] = validated[k]
 
-        if "top_k" in validated and "top_k" in self.config.supported_params:
-            payload["top_k"] = validated["top_k"]
+        # top_k is never emitted by validate_params -- read the raw params
+        # (same as openai_compat's supported-params passthrough).
+        if "top_k" in params and "top_k" in self.config.supported_params:
+            payload["top_k"] = params["top_k"]
 
         if "stop" in validated:
             payload["stop_sequences"] = validated["stop"]
@@ -156,12 +159,16 @@ class AnthropicAdapter(BaseAdapter):
                     convert_tool_choice(params["tool_choice"], payload)
 
         http = AsyncHTTPClient.shared()
+        # retries=1 => exactly one attempt, NO retry: a messages POST is
+        # non-idempotent (re-sending after a post-generation timeout or on a
+        # deterministic 4xx double-bills / hammers a 429'd provider). Resilience
+        # comes from the router's fallback chain (same policy as openai_compat).
         upstream = await http.json_post_with_retry(
             self._upstream_url(),
             json=payload,
             headers=self._upstream_headers(streaming=False),
-            timeout=None,
-            retries=2,
+            timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+            retries=1,
         )
 
         # Translate Anthropic response -> OpenAI Chat Completion shape.
@@ -283,7 +290,12 @@ class AnthropicAdapter(BaseAdapter):
         completed_tools = accum.get_completed()
         if completed_tools:
             yield self.format_tool_chunk(completed_tools, self.config.id)
-            finish_reason = "tool_calls"
+            # Do NOT override a "length" finish: a tool call truncated at
+            # max_tokens must stay "length" so the client sees max_tokens
+            # (truncated/unparseable arguments) rather than a spuriously
+            # complete tool call (same policy as openai_compat).
+            if finish_reason in (None, "", "stop"):
+                finish_reason = "tool_calls"
 
         usage_obj = build_final_usage(
             input_tokens=input_tokens,
@@ -319,12 +331,13 @@ class AnthropicAdapter(BaseAdapter):
         forward["model"] = self._upstream_model()
 
         http = AsyncHTTPClient.shared()
+        # retries=1: non-idempotent POST, see chat_completion.
         return await http.json_post_with_retry(
             self._upstream_url(),
             json=forward,
             headers=self._upstream_headers(streaming=False, extra_headers=extra_headers),
-            timeout=None,
-            retries=2,
+            timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+            retries=1,
         )
 
     async def stream_messages(
