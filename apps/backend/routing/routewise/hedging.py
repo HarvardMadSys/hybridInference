@@ -83,6 +83,12 @@ class HedgedAdapter(BaseAdapter):
         event_sink: Callback for per-provider health reporting.
     """
 
+    # The event sink reports every leg's outcome (including the winner's
+    # success) under its endpoint_id. BaseRouter checks this marker to skip
+    # its own post-execution success recording, which would otherwise
+    # double-count the winning endpoint (inflated EWMA, double breaker reset).
+    reports_leg_outcomes = True
+
     def __init__(
         self,
         primary: BaseAdapter,
