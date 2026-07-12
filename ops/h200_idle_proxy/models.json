@@ -2,15 +2,17 @@
     "deepseek-v4-flash": {
         "container": "deepseek-v4-flash-sglang",
         "engine": "sglang",
-        "gpu_index": "0,2,3",
-        "tensor_parallel_size": 1,
-        "pipeline_parallel_size": 3,
+        "gpu_index": "2,3",
+        "tensor_parallel_size": 2,
         "backend_port": 18003,
-        "model_dir": "/netscratch/juncheng/models/DeepSeek-V4-Flash-FP8",
-        "hf_repo": "sgl-project/DeepSeek-V4-Flash-FP8",
+        "model_dir": "/netscratch/juncheng/models/DeepSeek-V4-Flash",
+        "hf_repo": "nvidia/DeepSeek-V4-Flash-NVFP4",
         "served_name": "deepseek-v4-flash",
         "max_model_len": 1048576,
         "mem_fraction": "0.90",
+        "moe_runner_backend": "marlin",
+        "mtp": true,
+        "speculative_algorithm": "EAGLE",
         "tool_call_parser": "deepseekv3",
         "reasoning_parser": "deepseek-r1"
     }

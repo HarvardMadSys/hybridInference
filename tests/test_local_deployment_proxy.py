@@ -862,6 +862,56 @@ def test_sglang_tensor_parallel_sets_tp_and_ipc(monkeypatch: Any, tmp_path: Path
     assert "--ipc=host" in cmd
 
 
+def test_sglang_moe_runner_backend_override(monkeypatch: Any, tmp_path: Path) -> None:
+    # NVFP4 / FP4-expert models on SM90 (H200) need --moe-runner-backend marlin;
+    # the flag must appear only when the config sets it.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    base = {
+        "container": "ds-sglang",
+        "engine": "sglang",
+        "gpu_index": "2,3",
+        "tensor_parallel_size": 2,
+        "backend_port": 18003,
+        "model_dir": "/tmp/ds",
+        "served_name": MODEL_NAME,
+        "max_model_len": 4096,
+        "mem_fraction": "0.90",
+    }
+
+    without = proxy.BackendManager(MODEL_NAME, dict(base))._sglang_run_cmd("2,3")
+    assert "--moe-runner-backend" not in without
+
+    with_marlin = proxy.BackendManager(
+        MODEL_NAME, {**base, "moe_runner_backend": "marlin"}
+    )._sglang_run_cmd("2,3")
+    assert with_marlin[with_marlin.index("--moe-runner-backend") + 1] == "marlin"
+
+
+def test_sglang_mtp_algorithm_override(monkeypatch: Any, tmp_path: Path) -> None:
+    # DeepSeek-V4-Flash requires EAGLE (not the NEXTN default) for its MTP layer.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "ds-sglang",
+            "engine": "sglang",
+            "gpu_index": "2,3",
+            "tensor_parallel_size": 2,
+            "backend_port": 18003,
+            "model_dir": "/tmp/ds",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.90",
+            "mtp": True,
+            "speculative_algorithm": "EAGLE",
+        },
+    )
+
+    cmd = backend._sglang_run_cmd("2,3")
+
+    assert cmd[cmd.index("--speculative-algorithm") + 1] == "EAGLE"
+
+
 def test_single_gpu_backend_omits_ipc_host(monkeypatch: Any, tmp_path: Path) -> None:
     # The default TP=1 path must not add --ipc=host (single-GPU, no NCCL).
     proxy = _load_proxy(monkeypatch, tmp_path)

@@ -90,15 +90,21 @@ Set ``"engine": "vllm"`` to serve a model with vLLM (``vllm/vllm-openai``)
 instead of sglang (the default). vLLM listens on container port 8000 rather
 than sglang's 8001, but callers, the health check, and the proxy all reach the
 backend through the host ``backend_port``, so the switch is transparent. The
-sglang-only knobs (``mtp``, ``mamba``, ``attention_backend``, …) are ignored
-for vLLM backends; see ``_vllm_run_cmd`` for the vLLM-specific options.
+sglang-only knobs (``mtp``, ``mamba``, ``moe_runner_backend``,
+``attention_backend``, …) are ignored for vLLM backends; see ``_vllm_run_cmd``
+for the vLLM-specific options.
 
 Set ``"mtp": true`` on a generative model that ships native Multi-Token
 Prediction layers (Qwen3.6 MoE, DeepSeek V3, …) to enable speculative decoding
 via sglang's ``NEXTN`` algorithm. The defaults (1 step, eagle-topk 1, 2 draft
 tokens) suit a single MTP layer; override with ``speculative_num_steps``,
 ``speculative_eagle_topk``, ``speculative_num_draft_tokens``, or
-``speculative_algorithm`` if needed.
+``speculative_algorithm`` if needed. DeepSeek-V4-Flash requires
+``"speculative_algorithm": "EAGLE"`` (sglang rejects ``NEXTN`` for that arch).
+
+Set ``"moe_runner_backend"`` (e.g. ``"marlin"``) to override the MoE runner.
+NVFP4 / FP4-expert checkpoints need ``"marlin"`` on pre-Blackwell (SM90, e.g.
+H200) GPUs; the default ``triton`` runner asserts on the packed FP4 shapes.
 
 Additionally set ``"mamba": true`` on hybrid Mamba/linear-attention models
 (Qwen3.5/3.6 MoE). sglang rejects MTP spec decoding alongside the default
@@ -626,6 +632,12 @@ class BackendManager:
             str(tp),
             *(["--pp-size", str(pp)] if pp > 1 else []),
         ]
+        # MoE runner backend override (e.g. "marlin"). Required for NVFP4 / FP4-expert
+        # models on pre-Blackwell (SM90, e.g. H200) GPUs, where the default "triton"
+        # MoE runner asserts "Hidden size mismatch" on the packed FP4 expert weights.
+        moe_backend = self.config.get("moe_runner_backend")
+        if moe_backend:
+            cmd += ["--moe-runner-backend", str(moe_backend)]
         if self.config.get("is_embedding"):
             # Embedding models run sglang in encode-only mode; tool-call parsing
             # and chat-completion endpoints are irrelevant for them.

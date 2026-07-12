@@ -1,15 +1,15 @@
 # h200-idle-proxy
 
-Idle reverse proxy for **DeepSeek-V4-Flash (FP8)** on a multi-GPU **H200** box.
+Idle reverse proxy for **DeepSeek-V4-Flash (NVFP4)** on a multi-GPU **H200** box.
 Reuses [`local_deployment_proxy.py`](../local_deployment_proxy/local_deployment_proxy.py)
 with a dedicated model profile and port.
 
 | Setting | Value |
 |---|---|
 | Listen port | **8003** (8001 = local RTX Qwen, 8002 = Spark) |
-| Model | `deepseek-v4-flash` → `sgl-project/DeepSeek-V4-Flash-FP8` |
-| Engine | sglang, `pipeline_parallel_size: 3` |
-| GPUs | **0,2,3** (GPU **1** left free for other tenants) |
+| Model | `deepseek-v4-flash` → `nvidia/DeepSeek-V4-Flash-NVFP4` |
+| Engine | sglang, `tensor_parallel_size: 2`, MTP (EAGLE), `marlin` MoE |
+| GPUs | **2,3** (GPUs **0,1** left free for other tenants) |
 | Max context | **1,048,576** tokens (1M — model's YARN-extended architectural max) |
 | Idle stop | 24 min (`IDLE_TIMEOUT=1440`) |
 
@@ -17,12 +17,14 @@ with a dedicated model profile and port.
 
 ```
 Client → staging/prod host:8003 ──SSH tunnel──→ H200 box :8003 (proxy)
-                                                  └─ model="deepseek-v4-flash" → :18003 (sglang, PP=3 on GPUs 0,2,3)
+                                                  └─ model="deepseek-v4-flash" → :18003 (sglang, TP=2 on GPUs 2,3)
 ```
 
 1. Proxy listens on port **8003**.
-2. First request for `deepseek-v4-flash` starts the sglang container on GPUs 0, 2 and 3.
+2. First request for `deepseek-v4-flash` starts the sglang container on GPUs 2 and 3.
 3. After 24 minutes with no traffic the container stops; the proxy stays up.
+
+> First cold start takes several minutes (marlin CUDA-graph capture).
 
 ## Quick start
 
@@ -74,57 +76,48 @@ See [`models.json`](models.json):
 
 | Field | Value |
 |---|---|
-| `gpu_index` | `"0,2,3"` — pins the 3 pipeline stages; GPU 1 is never claimed |
-| `tensor_parallel_size` | `1` |
-| `pipeline_parallel_size` | `3` |
+| `gpu_index` | `"2,3"` — pins the 2 TP ranks; GPUs 0,1 are never claimed |
+| `tensor_parallel_size` | `2` |
 | `backend_port` | `18003` |
-| `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash-FP8` |
-| `max_model_len` | `1048576` (1M — the model's YARN architectural max; KV cache holds ~5.7M tokens so context is not VRAM-bound) |
+| `model_dir` | `/netscratch/juncheng/models/DeepSeek-V4-Flash` (NVFP4) |
+| `max_model_len` | `1048576` (1M — the model's YARN architectural max; not VRAM-bound at NVFP4) |
 | `mem_fraction` | `0.90` |
+| `moe_runner_backend` | `marlin` — **required** for NVFP4 on H200 (SM90) |
+| `mtp` / `speculative_algorithm` | `true` / `EAGLE` — native MTP speculative decoding |
 
-> **Why PP=3, not TP=2?** The FP8 weights are ~274 GiB. At TP=2 each rank would
-> need ~137 GiB, which does not fit alongside KV/activations on a 143 GiB H200
-> (the two GPUs' combined 281 GiB barely exceed the weights) — cold-start OOMs.
-> TP=3 is illegal (64 attention heads are not divisible by 3). Pipeline
-> parallelism splits the model by *layer*, so PP=3 puts ~91 GiB per GPU on GPUs
-> 0, 2 and 3 with ~35–49 GiB free each for KV cache — all while GPU 1 stays free
-> for other tenants. Measured KV capacity at PP=3: `max_total_num_tokens`
-> ≈ 5.7M (FP8 KV cache), i.e. ~5.4× the 1M context.
+> **Why NVFP4 + TP=2 (not FP8 PP=3)?** The FP8 weights are ~274 GiB, which does
+> not fit at TP=2 on two 143 GiB H200s — the earlier profile worked around this
+> with PP=3 across 3 GPUs (0,2,3). The **NVFP4** checkpoint (4-bit MoE experts,
+> FP8 attention) is only ~149 GiB, i.e. **~91 GiB per rank at TP=2** with ~13 GiB
+> free per GPU for KV even at the full 1M context — so it fits on **two** GPUs and
+> frees a third. `marlin` is mandatory: on pre-Blackwell (SM90) GPUs the default
+> `triton` MoE runner asserts "Hidden size mismatch" on the packed FP4 experts.
+> MTP uses `EAGLE` (sglang rejects `NEXTN` for this arch); the checkpoint ships a
+> single native MTP layer, and speculative decoding (accept length ~2.0) roughly
+> doubles single-stream decode.
 
 ## Benchmarks
 
-Decode throughput measured on **h200a** (PP=3 on GPUs 0,2,3, FP8 weights + FP8
-KV cache, sglang 0.5.14) with [`bench_decode.sh`](bench_decode.sh) — output
-length fixed via `ignore_eos` to isolate decode from prefill.
+Serving throughput measured at **TP=2 NVFP4 on 2×H200** with sglang's
+`bench_serving` (1024-token input / 512-token output, output length fixed via
+`ignore_eos`, saturating load). Output-token throughput (tok/s):
 
-**Concurrency sweep** (128-token input, 256-token output):
+| Concurrency | No MTP | With MTP (EAGLE) |
+|---:|---:|---:|
+| 1 | 122 | 207 |
+| 16 | 935 | 1,260 |
+| 64 | 1,979 | 2,456 |
+| 256 | 2,297 | 2,181 |
 
-| Concurrency | Aggregate decode (tok/s) | Per-stream (tok/s) | Median ITL (ms) |
-|---:|---:|---:|---:|
-| 1 | 95 | ~99 | 10.1 |
-| 16 | 531 | ~35 | 28.6 |
-| 64 | 1,443 | ~24 | 41.2 |
-| 128 | 2,216 | ~19 | 52.8 |
-| 256 | 3,369 | ~15 | 65.5 |
-
-Peak ≈ **3.4k tok/s** at concurrency 256 (the `max_running_requests` cap; VRAM
-is not the limit — the KV pool holds ~5.7M tokens).
-
-**Long-context decode** (single stream, 128-token output):
-
-| Context | Median ITL (ms) | Per-stream decode (tok/s) | Prefill (TTFT) |
-|---:|---:|---:|---:|
-| 128 | 10.1 | ~99 | 0.1 s |
-| 32k | 10.2 | ~98 | 1.1 s |
-| 128k | 10.3 | ~97 | 1.7 s |
-
-Decode per-token latency stays ~10 ms from 128 to 128k tokens: MLA
-(Multi-head Latent Attention) keeps the KV cache tiny, so long context costs
-**prefill** (TTFT), not decode.
+MTP (accept length ~2.0) roughly **doubles single-stream decode** (c=1) and helps
+through mid concurrency; at saturation the extra draft/verify work no longer pays
+off. Peak aggregate ≈ **2.5k tok/s** with MTP at moderate concurrency. VRAM is not
+the limit — the KV pool holds >2M tokens. See
+[`bench_decode.sh`](bench_decode.sh) to reproduce decode-latency profiles.
 
 ## Requirements
 
-- 4× NVIDIA H200 (or at least GPUs 0, 2 and 3 free)
+- 4× NVIDIA H200 (or at least GPUs 2 and 3 free)
 - Docker + NVIDIA Container Toolkit
 - `lmsysorg/sglang:latest`
 - Weights at `model_dir` (or `hf_repo` download on first request)

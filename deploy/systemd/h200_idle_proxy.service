@@ -1,5 +1,5 @@
 [Unit]
-Description=H200 idle proxy — lazy start/stop of DeepSeek-V4-Flash (PP=3 on GPUs 0,2,3, skip GPU1)
+Description=H200 idle proxy — lazy start/stop of DeepSeek-V4-Flash NVFP4 (TP=2 on GPUs 2,3)
 Wants=network-online.target
 After=network-online.target docker.service
 Requires=docker.service
