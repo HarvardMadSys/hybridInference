@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -73,6 +74,7 @@ class GLMProcessor(BaseProcessor):
         self.buffer = ""
         self.in_tool_mode = False
         self.model_id = "glm-4"  # Default placeholder
+        self.upstream_finish_reason: str | None = None
 
     def process_stream_chunk(self, chunk: dict[str, Any]) -> list[dict[str, Any]]:
         """Process a streaming chunk from GLM-4 models.
@@ -88,6 +90,10 @@ class GLMProcessor(BaseProcessor):
         choices = chunk.get("choices", [])
         if not choices:
             return [chunk]
+
+        fr = choices[0].get("finish_reason")
+        if fr:
+            self.upstream_finish_reason = fr
 
         delta = choices[0].get("delta", {})
         content = delta.get("content", "")
@@ -140,6 +146,11 @@ class GLMProcessor(BaseProcessor):
                 new_chunk["choices"][0]["delta"]["content"] = text_to_emit
                 to_yield.append(new_chunk)
 
+        if not to_yield and _has_stream_signals(chunk):
+            # The chunk was fully buffered/empty but carries finish_reason or
+            # usage -- forward those signals so they aren't lost.
+            to_yield.append(_signal_only_chunk(chunk))
+
         return to_yield
 
     def flush(self) -> list[dict[str, Any]]:
@@ -153,8 +164,15 @@ class GLMProcessor(BaseProcessor):
             # We have a buffered tool call string. Parse it!
             tool_calls = self._parse_glm_tool_xml(self.buffer)
             if tool_calls:
-                # Emit a chunk with tool_calls
-                # IMPORTANT: Set finish_reason to "tool_calls" to override upstream "stop"
+                # Emit a chunk with tool_calls.
+                # IMPORTANT: Set finish_reason to "tool_calls" to override
+                # upstream "stop" -- but never mask a truncation: a tool call
+                # cut off at max_tokens must stay "length" so the client sees
+                # truncated arguments rather than a spuriously complete call.
+                if self.upstream_finish_reason in (None, "", "stop"):
+                    finish_reason = "tool_calls"
+                else:
+                    finish_reason = self.upstream_finish_reason
                 chunk = {
                     "id": f"chatcmpl-{int(time.time())}",
                     "object": "chat.completion.chunk",
@@ -164,7 +182,7 @@ class GLMProcessor(BaseProcessor):
                         {
                             "index": 0,
                             "delta": {"tool_calls": tool_calls, "content": None},
-                            "finish_reason": "tool_calls",
+                            "finish_reason": finish_reason,
                         }
                     ],
                 }
@@ -197,55 +215,66 @@ class GLMProcessor(BaseProcessor):
 
         self.buffer = ""
         self.in_tool_mode = False
+        self.upstream_finish_reason = None
         return to_yield
 
     def _parse_glm_tool_xml(self, xml_text: str) -> list[dict[str, Any]] | None:
-        """Parse GLM tool XML into OpenAI tool_calls format."""
-        # Try to find tool name
-        # Format varies: <tool_call>NAME</tool_call>... or <tool_call>NAME\n<arg_key>...
+        """Parse GLM tool XML into OpenAI tool_calls format.
 
-        # Heuristic 1: Extract tool name
-        # Look for text after <tool_call> and before next tag or newline
-        name_match = re.search(r"<tool_call>\s*([^<\n]+)", xml_text)
-        if not name_match:
+        Supports multiple ``<tool_call>`` blocks (parallel tool calls): args
+        are harvested per block, not from the whole buffer, so one call's
+        arguments never leak into another's.
+        """
+        # Split the buffer into one segment per <tool_call> block. The last
+        # block may lack its closing tag (stream cut off), so split on the
+        # opening tag rather than requiring </tool_call>.
+        segments = [seg for seg in xml_text.split("<tool_call>")[1:] if seg.strip()]
+        if not segments:
             return None
-        name = name_match.group(1).strip()
 
-        # Heuristic 2: Extract args
-        # GLM usually emits <arg_key>K</arg_key><arg_value>V</arg_value>
-        args = {}
-        keys = re.findall(r"<arg_key>(.*?)</arg_key>", xml_text, re.DOTALL)
-        values = re.findall(r"<arg_value>(.*?)</arg_value>", xml_text, re.DOTALL)
+        tool_calls: list[dict[str, Any]] = []
+        for segment in segments:
+            # Tool name: text after <tool_call> and before the next tag/newline.
+            # Format varies: <tool_call>NAME</tool_call>... or <tool_call>NAME\n<arg_key>...
+            name_match = re.match(r"\s*([^<\n]+)", segment)
+            if not name_match:
+                continue
+            name = name_match.group(1).strip()
+            if not name:
+                continue
 
-        for k, v in zip(keys, values, strict=False):
-            k = k.strip()
-            v = v.strip()
-            # Value might be a JSON string (e.g. ["ls", "-la"]) or raw string
-            try:
-                # If it looks like JSON, try to parse it to clean it up, then dump back?
-                # Actually, OpenAI expects 'arguments' to be a JSON string of the *whole* object.
-                # GLM gives us separate keys.
-                # We construct the dict then dump it.
+            # Args: GLM usually emits <arg_key>K</arg_key><arg_value>V</arg_value>
+            args = {}
+            keys = re.findall(r"<arg_key>(.*?)</arg_key>", segment, re.DOTALL)
+            values = re.findall(r"<arg_value>(.*?)</arg_value>", segment, re.DOTALL)
 
-                # GLM sometimes puts JSON in the value: <arg_value>["bash", "-lc", ...]</arg_value>
-                if (v.startswith("[") and v.endswith("]")) or (
-                    v.startswith("{") and v.endswith("}")
-                ):
-                    args[k] = json.loads(v)
-                else:
+            for k, v in zip(keys, values, strict=False):
+                k = k.strip()
+                v = v.strip()
+                # OpenAI expects 'arguments' to be a JSON string of the whole
+                # object; GLM gives us separate keys, so build the dict and dump
+                # it. GLM sometimes puts JSON in the value:
+                # <arg_value>["bash", "-lc", ...]</arg_value>
+                try:
+                    if (v.startswith("[") and v.endswith("]")) or (
+                        v.startswith("{") and v.endswith("}")
+                    ):
+                        args[k] = json.loads(v)
+                    else:
+                        args[k] = v
+                except Exception:
                     args[k] = v
-            except Exception:
-                args[k] = v
 
-        # Construct OpenAI tool call
-        return [
-            {
-                "index": 0,
-                "id": f"call_glm_{int(time.time())}",
-                "type": "function",
-                "function": {"name": name, "arguments": json.dumps(args)},
-            }
-        ]
+            tool_calls.append(
+                {
+                    "index": len(tool_calls),
+                    "id": f"call_glm_{uuid.uuid4().hex[:24]}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
+                }
+            )
+
+        return tool_calls or None
 
     def process_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Process non-streaming response."""
@@ -290,6 +319,7 @@ class QwenCoderProcessor(BaseProcessor):
         self.buffer = ""
         self.in_tool_mode = False
         self.model_id = "qwen3-coder"
+        self.upstream_finish_reason: str | None = None
 
     def process_stream_chunk(self, chunk: dict[str, Any]) -> list[dict[str, Any]]:
         """Process a streaming chunk from Qwen3-Coder models.
@@ -302,13 +332,27 @@ class QwenCoderProcessor(BaseProcessor):
         if not choices:
             return [chunk]
 
+        fr = choices[0].get("finish_reason")
+        if fr:
+            self.upstream_finish_reason = fr
+
         delta = choices[0].get("delta", {})
 
         # Pass through native tool_calls untouched (but ignore null/empty)
         if delta.get("tool_calls"):
             return [chunk]
 
-        content = delta.get("content")
+        to_yield = self._process_content(chunk, delta.get("content"))
+
+        if not to_yield and _has_stream_signals(chunk):
+            # The chunk was fully buffered/empty but carries finish_reason or
+            # usage -- forward those signals so they aren't lost.
+            to_yield.append(_signal_only_chunk(chunk))
+
+        return to_yield
+
+    def _process_content(self, chunk: dict[str, Any], content: Any) -> list[dict[str, Any]]:
+        """Buffer/emit a chunk's text content; returns chunks to yield."""
         if not isinstance(content, str):
             return []
 
@@ -359,6 +403,14 @@ class QwenCoderProcessor(BaseProcessor):
         if self.in_tool_mode:
             tool_calls = self._parse_qwen_tool_xml(self.buffer)
             if tool_calls:
+                # Report "tool_calls" over an upstream "stop", but never mask a
+                # truncation: a tool call cut off at max_tokens must stay
+                # "length" so the client sees truncated arguments rather than a
+                # spuriously complete call.
+                if self.upstream_finish_reason in (None, "", "stop"):
+                    finish_reason = "tool_calls"
+                else:
+                    finish_reason = self.upstream_finish_reason
                 chunk = {
                     "id": f"chatcmpl-{int(time.time())}",
                     "object": "chat.completion.chunk",
@@ -368,7 +420,7 @@ class QwenCoderProcessor(BaseProcessor):
                         {
                             "index": 0,
                             "delta": {"tool_calls": tool_calls, "content": None},
-                            "finish_reason": "tool_calls",
+                            "finish_reason": finish_reason,
                         }
                     ],
                 }
@@ -399,6 +451,7 @@ class QwenCoderProcessor(BaseProcessor):
 
         self.buffer = ""
         self.in_tool_mode = False
+        self.upstream_finish_reason = None
         return to_yield
 
     def _parse_qwen_tool_xml(self, xml_text: str) -> list[dict[str, Any]] | None:
@@ -448,7 +501,7 @@ class QwenCoderProcessor(BaseProcessor):
             tool_calls.append(
                 {
                     "index": i,
-                    "id": f"call_qwen_{int(time.time())}_{i}",
+                    "id": f"call_qwen_{uuid.uuid4().hex[:24]}",
                     "type": "function",
                     "function": {"name": func_name, "arguments": json.dumps(args)},
                 }
@@ -519,8 +572,9 @@ class ThinkBlockProcessor(BaseProcessor):
         content = delta.get("content")
 
         if not isinstance(content, str):
-            if chunk.get("usage"):
-                return [chunk]
+            if _has_stream_signals(chunk):
+                # Forward finish_reason/usage even when there is no text.
+                return [_signal_only_chunk(chunk)]
             return []
 
         if not content and chunk.get("usage"):
@@ -570,6 +624,11 @@ class ThinkBlockProcessor(BaseProcessor):
                         to_yield.append(new_chunk)
                     break
 
+        if not to_yield and _has_stream_signals(chunk):
+            # The chunk was fully buffered/discarded but carries finish_reason
+            # or usage -- forward those signals so they aren't lost.
+            to_yield.append(_signal_only_chunk(chunk))
+
         return to_yield
 
     def flush(self) -> list[dict[str, Any]]:
@@ -618,6 +677,28 @@ def _clone_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
         for _i, c in enumerate(new_chunk["choices"]):
             if "delta" in c:
                 c["delta"] = c["delta"].copy()
+    return new_chunk
+
+
+def _has_stream_signals(chunk: dict[str, Any]) -> bool:
+    """True if *chunk* carries stream-level signals (finish_reason / usage)."""
+    if chunk.get("usage") is not None:
+        return True
+    return any(c.get("finish_reason") for c in chunk.get("choices") or [])
+
+
+def _signal_only_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
+    """Copy of *chunk* with the delta emptied but finish_reason/usage intact.
+
+    Buffering processors swallow content chunks; when a swallowed chunk also
+    carries the upstream ``finish_reason`` (e.g. "length" on truncation) or a
+    ``usage`` object attached to a choice-bearing chunk, those signals must
+    still reach the adapter's bookkeeping or the final chunk misreports the
+    finish reason and falls back to estimated usage.
+    """
+    new_chunk = _clone_chunk(chunk)
+    for c in new_chunk.get("choices") or []:
+        c["delta"] = {}
     return new_chunk
 
 

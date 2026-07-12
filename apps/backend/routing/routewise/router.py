@@ -2040,13 +2040,19 @@ class RouteWiseRouter(BaseRouter):
     # BaseRouter integration
     # ------------------------------------------------------------------
 
-    def on_provider_success(self, provider: str) -> None:
-        """Record a provider success emitted by HedgedAdapter."""
-        self._on_success(provider)
+    def on_provider_success(self, endpoint_id: str) -> None:
+        """Record a hedge-leg success emitted by HedgedAdapter (endpoint_id-keyed)."""
+        self._on_success(endpoint_id)
 
-    def on_provider_failure(self, provider: str, reason: str) -> None:
-        """Record a provider failure emitted by HedgedAdapter."""
-        self._on_failure(provider, reason=reason)
+    def on_provider_failure(
+        self, endpoint_id: str, reason: str, exc: BaseException | None = None
+    ) -> None:
+        """Record a hedge-leg failure emitted by HedgedAdapter (endpoint_id-keyed).
+
+        Passing ``exc`` through preserves the client-error (4xx) breaker
+        exemption for hedge legs, matching the non-hedged path.
+        """
+        self._on_failure(endpoint_id, reason=reason, exc=exc)
 
     @staticmethod
     def _ensure_response_routing(
@@ -2231,10 +2237,17 @@ class RouteWiseRouter(BaseRouter):
         request_id = str(req_ctx.get().get("request_id") or "")
         if not request_id:
             return
-        with self._route_commit_lock:
-            stashed = self._prefix_cache_pending.pop(request_id, None)
+        # Failed observations must not consume the stash: the logging path
+        # emits one failed observation per failed attempt BEFORE the final
+        # success observation, and popping here would leave nothing for the
+        # winning fallback/hedge leg to warm. Final-failure entries are not
+        # leaked: the pending-decisions TTL sweep and size-cap eviction both
+        # drop the sibling _prefix_cache_pending entry, and
+        # _stash_prefix_for_commit bounds the dict at _PREFIX_CACHE_PENDING_MAX.
         if not obs.success:
             return
+        with self._route_commit_lock:
+            stashed = self._prefix_cache_pending.pop(request_id, None)
         if stashed is None:
             return
         blocks, scopes = stashed
@@ -2519,9 +2532,11 @@ class RouteWiseRouter(BaseRouter):
                 and request_id in self._pending_decisions
             ):
                 self._pending_decisions[request_id]["backup_won"] = True
-            self._apply_hedge_execution_metadata(adapter, request_id)
             return result
         finally:
+            # Single call site: _record_hedge_explorer_samples appends a
+            # latency sample per invocation, so calling this in both try and
+            # finally double-recorded the losing leg's TTFT on success.
             self._apply_hedge_execution_metadata(adapter, request_id)
             self._release_execution_primary_capacity(request_id, primary_adapter)
 
@@ -2617,15 +2632,21 @@ class RouteWiseRouter(BaseRouter):
                 except Exception as exc:
                     last_error = exc
                     endpoint_id = _get_endpoint_id(primary)
-                    self._on_failure(
-                        endpoint_id,
-                        reason=exc.__class__.__name__,
-                        detail=operator_safe_error(exc),
-                        # Pass the exception so the base router can skip the
-                        # breaker on a client (4xx) error — otherwise one user's
-                        # bad request opens the circuit for every user.
-                        exc=exc,
-                    )
+                    # A HedgedAdapter already recorded each failed leg through
+                    # its event sink under the leg's endpoint_id; recording the
+                    # composite failure here as well would give the primary
+                    # endpoint two failure samples for one request.
+                    if not getattr(primary, "reports_leg_outcomes", False):
+                        self._on_failure(
+                            endpoint_id,
+                            reason=exc.__class__.__name__,
+                            detail=operator_safe_error(exc),
+                            # Pass the exception so the base router can skip the
+                            # breaker on a client (4xx) error — otherwise one
+                            # user's bad request opens the circuit for every
+                            # user.
+                            exc=exc,
+                        )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
@@ -2641,6 +2662,12 @@ class RouteWiseRouter(BaseRouter):
                     continue
         except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)
+            # Terminal failure: no success observation will ever consume the
+            # prefix stash, and the TTL sweep only reaches it through the
+            # pending-decisions sibling popped above — reclaim it here instead
+            # of waiting for the size-cap eviction.
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(request_id, None)
             routing = getattr(exc, "_routing", None)
             if not isinstance(routing, dict):
                 adapter = last_attempted
@@ -2735,15 +2762,24 @@ class RouteWiseRouter(BaseRouter):
                 except Exception as exc:
                     last_error = exc
                     endpoint_id = _get_endpoint_id(primary)
-                    self._on_failure(
-                        endpoint_id,
-                        reason="stream_exception",
-                        detail=operator_safe_error(exc),
-                        # Pass the exception so the base router can skip the
-                        # breaker on a client (4xx) error — otherwise one user's
-                        # bad request opens the circuit for every user.
-                        exc=exc,
-                    )
+                    # A HedgedAdapter records race-time leg failures through
+                    # its event sink under the leg's endpoint_id; recording
+                    # those here as well would double-count them. But the sink
+                    # stops at the race: a failure AFTER the winner started
+                    # streaming (chunks_yielded) is not sink-recorded, and by
+                    # then the hedged adapter's config points at the winner, so
+                    # endpoint_id attributes it correctly.
+                    if chunks_yielded or not getattr(primary, "reports_leg_outcomes", False):
+                        self._on_failure(
+                            endpoint_id,
+                            reason="stream_exception",
+                            detail=operator_safe_error(exc),
+                            # Pass the exception so the base router can skip the
+                            # breaker on a client (4xx) error — otherwise one
+                            # user's bad request opens the circuit for every
+                            # user.
+                            exc=exc,
+                        )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     if (
@@ -2761,6 +2797,12 @@ class RouteWiseRouter(BaseRouter):
                     continue
         except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)
+            # Terminal failure: no success observation will ever consume the
+            # prefix stash, and the TTL sweep only reaches it through the
+            # pending-decisions sibling popped above — reclaim it here instead
+            # of waiting for the size-cap eviction.
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(request_id, None)
             routing = getattr(exc, "_routing", None)
             if not isinstance(routing, dict):
                 adapter = last_attempted

@@ -9,9 +9,20 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 from typing import Any
 
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+
+
+def _chunk_id() -> str:
+    """Return a unique chunk id.
+
+    Millisecond timestamps collide across concurrent streams (and between
+    chunks minted in the same ms), confusing clients that group or trace by
+    completion id.
+    """
+    return f"chatcmpl-{uuid.uuid4().hex[:24]}"
 
 
 def make_stream_chunk(
@@ -43,7 +54,7 @@ def make_stream_chunk(
         delta = {"content": content}
 
     chunk: dict[str, Any] = {
-        "id": f"chatcmpl-{int(time.time() * 1000)}",
+        "id": _chunk_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
@@ -126,7 +137,7 @@ def make_final_usage_chunk(
         usage["cache_write_tokens"] = cache_write_tokens
 
     chunk: dict[str, Any] = {
-        "id": f"chatcmpl-{int(time.time() * 1000)}",
+        "id": _chunk_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
@@ -152,7 +163,7 @@ def make_role_chunk(*, model: str) -> str:
     This helper emits that role-only chunk without content.
     """
     chunk: dict[str, Any] = {
-        "id": f"chatcmpl-{int(time.time() * 1000)}",
+        "id": _chunk_id(),
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,

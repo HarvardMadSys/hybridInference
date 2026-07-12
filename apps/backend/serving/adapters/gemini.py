@@ -2,12 +2,16 @@
 
 import json
 import time
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
+
+import aiohttp
 
 from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
+from .openai_compat import _COMPLETION_TIMEOUT_S
 
 
 class GeminiAdapter(BaseAdapter):
@@ -318,7 +322,17 @@ class GeminiAdapter(BaseAdapter):
             f"{self.config.base_url}/models/{model_name}:generateContent?key={self.config.api_key}"
         )
 
-        data = await self.http.json_post_with_retry(url, json=request_body)
+        # retries=1 => exactly one attempt, NO retry: a completion POST is
+        # non-idempotent (re-sending double-bills generations and hammers
+        # rate-limited providers). Resilience comes from the router's fallback
+        # chain (same policy as openai_compat). The explicit timeout replaces
+        # the previous unbounded wait.
+        data = await self.http.json_post_with_retry(
+            url,
+            json=request_body,
+            timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+            retries=1,
+        )
 
         if "candidates" not in data or not data["candidates"]:
             raise ValueError(f"Unexpected Gemini response structure: {json.dumps(data)}")
@@ -344,9 +358,12 @@ class GeminiAdapter(BaseAdapter):
                 text_content += part["text"]
             elif "functionCall" in part:
                 func_call = part["functionCall"]
+                # IDs must be unique per call: parallel calls arrive in the
+                # same parts array (and same millisecond), so a timestamp id
+                # would collide and mispair role:"tool" results.
                 tool_calls.append(
                     {
-                        "id": f"call_{int(time.time() * 1000)}",
+                        "id": f"call_{uuid.uuid4().hex}",
                         "type": "function",
                         "function": {
                             "name": func_call["name"],
@@ -411,6 +428,11 @@ class GeminiAdapter(BaseAdapter):
             "OTHER": "stop",
         }
         finish_reason = finish_reason_map.get(candidate.get("finishReason", "STOP"), "stop")
+        # Gemini reports STOP for successful tool calls; OpenAI clients expect
+        # "tool_calls". Never mask "length"/"content_filter" (truncated calls
+        # must stay "length" -- same policy as openai_compat / the stream path).
+        if tool_calls and finish_reason == "stop":
+            finish_reason = "tool_calls"
 
         return self.format_response(
             content=text_content,
@@ -463,6 +485,7 @@ class GeminiAdapter(BaseAdapter):
         total_tokens_upstream = 0
         finish_reason_raw = "STOP"
         has_function_call = False
+        tool_call_count = 0
 
         # Auto-detect upstream streaming format (SSE vs NDJSON) and parse both.
         headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
@@ -518,8 +541,13 @@ class GeminiAdapter(BaseAdapter):
                             # Emit OpenAI-compatible tool_calls delta
                             # Note: Gemini returns complete functionCall in one chunk,
                             # unlike incremental streaming. We still follow OpenAI spec.
+                            # Clients accumulate streamed tool calls by `index`, so
+                            # parallel calls need distinct, increasing indices (a
+                            # constant 0 merges them into one corrupted call), and
+                            # ids must be unique (same-millisecond timestamps
+                            # collide).
                             chunk = {
-                                "id": f"chatcmpl-{int(time.time() * 1000)}",
+                                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
                                 "model": self.config.id,
@@ -529,8 +557,8 @@ class GeminiAdapter(BaseAdapter):
                                         "delta": {
                                             "tool_calls": [
                                                 {
-                                                    "index": 0,  # Required by OpenAI spec
-                                                    "id": f"call_{int(time.time() * 1000)}",
+                                                    "index": tool_call_count,
+                                                    "id": f"call_{uuid.uuid4().hex}",
                                                     "type": "function",
                                                     "function": {
                                                         "name": name or "",
@@ -543,6 +571,7 @@ class GeminiAdapter(BaseAdapter):
                                     }
                                 ],
                             }
+                            tool_call_count += 1
                             yield f"data: {json.dumps(chunk)}\n\n"
                             emitted_any = True
 
@@ -606,14 +635,17 @@ class GeminiAdapter(BaseAdapter):
         }
         mapped_finish_reason = finish_reason_map.get(finish_reason_raw, "stop")
 
-        # Override finish_reason to "tool_calls" if we emitted tool_calls in this response
-        # This is required by OpenAI protocol for consistency
-        if has_function_call:
+        # Override finish_reason to "tool_calls" if we emitted tool_calls in this
+        # response (Gemini reports STOP for successful tool calls). Do NOT
+        # override a "length"/"content_filter" finish -- a tool call truncated at
+        # max_tokens must stay "length" so the client sees the truncation rather
+        # than a spuriously complete call (same policy as openai_compat).
+        if has_function_call and mapped_finish_reason == "stop":
             mapped_finish_reason = "tool_calls"
 
         # Build final usage chunk
         usage_chunk = {
-            "id": f"chatcmpl-{int(time.time() * 1000)}",
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
             "object": "chat.completion.chunk",
             "created": int(time.time()),
             "model": self.config.id,

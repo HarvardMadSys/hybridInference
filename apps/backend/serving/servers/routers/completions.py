@@ -299,7 +299,8 @@ async def _streaming_response_with_keepalive(
     response_id = request_id
     created = int(time.time())
 
-    time.monotonic()
+    last_client_byte = time.monotonic()
+    yielded_any = False
     chunk_queue: Any = asyncio.Queue()
 
     async def _reader() -> None:
@@ -320,30 +321,67 @@ async def _streaming_response_with_keepalive(
                 )
             except asyncio.TimeoutError:
                 yield b" "
-                time.monotonic()
+                yielded_any = True
+                last_client_byte = time.monotonic()
                 continue
 
             if chunk is None:
                 break
             if isinstance(chunk, Exception):
+                # Handle BEFORE the idle-keepalive emission below: yielding a
+                # byte first would commit a 200 only to abort it immediately.
+                if yielded_any:
+                    # Bytes already committed a 200 -- emit the error envelope
+                    # as the JSON body instead of aborting mid-body.
+                    logger.error(
+                        f"Upstream exception in stream: {chunk!r}",
+                        extra={"request_id": request_id},
+                    )
+                    detail = scrub_error_for_user(None, request_id, 500)
+                    yield json.dumps({"error": {"message": detail, "code": 500}}).encode()
+                    return
                 raise chunk
 
-            if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
-                continue
-            try:
-                chunk_json = json.loads(chunk[6:])
-            except json.JSONDecodeError:
-                continue
+            chunk_json = None
+            if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                try:
+                    chunk_json = json.loads(chunk[6:])
+                except json.JSONDecodeError:
+                    chunk_json = None
 
-            error = chunk_json.get("error")
+            # StreamSession.stream converts adapter exceptions into in-band
+            # error frames, so like the Exception guard above they must be
+            # handled BEFORE the idle-keepalive emission below -- a keepalive
+            # byte would commit a 200 and downgrade the clean HTTPException
+            # (real status code) into a 200-with-error-body.
+            error = chunk_json.get("error") if isinstance(chunk_json, dict) else None
             if isinstance(error, dict):
                 code = error.get("code")
                 status_code = code if isinstance(code, int) else 500
                 logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
-                raise HTTPException(
-                    status_code=status_code,
-                    detail=scrub_error_for_user(None, request_id, status_code),
-                )
+                detail = scrub_error_for_user(None, request_id, status_code)
+                if yielded_any:
+                    # A keepalive byte already committed a 200 response --
+                    # raising now would abort the connection mid-body with no
+                    # error payload. Emit the error envelope as the JSON body
+                    # instead (parsers ignore the leading whitespace).
+                    yield json.dumps({"error": {"message": detail, "code": status_code}}).encode()
+                    return
+                raise HTTPException(status_code=status_code, detail=detail)
+
+            # Inner traffic (buffered content chunks, SSE keepalive comments)
+            # re-arms the wait_for timer above without sending the client a
+            # single byte -- the JSON body is only emitted at the end. Track
+            # the last client-visible byte ourselves and emit a keepalive
+            # whenever the client has been idle a full interval, or proxies
+            # (e.g. Cloudflare) time the connection out mid-generation.
+            if time.monotonic() - last_client_byte >= _FORCE_STREAMING_KEEPALIVE_S:
+                yield b" "
+                yielded_any = True
+                last_client_byte = time.monotonic()
+
+            if chunk_json is None:
+                continue
 
             response_id = chunk_json.get("id") or response_id
             created = int(chunk_json.get("created") or created)

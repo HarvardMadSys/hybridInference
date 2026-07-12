@@ -983,12 +983,29 @@ class TestThinkBlockProcessor:
         assert result[0] is chunk
         assert result[0]["choices"][0]["delta"][field] == "thinking..."
 
-    def test_empty_chunk_without_usage_dropped(self):
-        """Chunk with empty content and no usage should still be dropped."""
+    def test_empty_chunk_with_finish_reason_forwards_signal(self):
+        """Empty-content chunk carrying finish_reason forwards a signal-only chunk.
+
+        The finish_reason must reach the adapter's bookkeeping (a swallowed
+        "length" would otherwise be misreported as "stop"); the emptied delta
+        produces no client-visible output.
+        """
         proc = ThinkBlockProcessor()
         chunk = {
             "id": "test",
-            "choices": [{"finish_reason": "stop", "index": 0, "delta": {"content": ""}}],
+            "choices": [{"finish_reason": "length", "index": 0, "delta": {"content": ""}}],
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert len(result) == 1
+        assert result[0]["choices"][0]["finish_reason"] == "length"
+        assert result[0]["choices"][0]["delta"] == {}
+
+    def test_empty_chunk_without_signals_dropped(self):
+        """Chunk with empty content, no usage, and no finish_reason is dropped."""
+        proc = ThinkBlockProcessor()
+        chunk = {
+            "id": "test",
+            "choices": [{"finish_reason": None, "index": 0, "delta": {"content": ""}}],
         }
         result = proc.process_stream_chunk(chunk)
         assert result == []
@@ -1078,3 +1095,93 @@ class TestCloneChunk:
         cloned["choices"][0]["finish_reason"] = "CHANGED"
 
         assert original["choices"][0]["finish_reason"] == "stop"
+
+
+# ---------------------------------------------------------------------------
+# Stream-signal preservation and parallel tool calls (S-01 .. S-07)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamSignalPreservation:
+    """Buffering processors must not swallow finish_reason/usage signals."""
+
+    def test_s01_glm_finish_reason_forwarded_while_buffering(self):
+        """GLM in tool mode forwards a swallowed finish_reason chunk."""
+        proc = GLMProcessor()
+        assert proc.process_stream_chunk(_make_stream_chunk("<tool_call>get_weather\n")) == []
+        out = proc.process_stream_chunk(_make_stream_chunk(None, finish_reason="length"))
+        assert len(out) == 1
+        assert out[0]["choices"][0]["finish_reason"] == "length"
+        assert out[0]["choices"][0]["delta"] == {}
+
+    def test_s02_glm_flush_preserves_length_finish(self):
+        """A tool call truncated at max_tokens must flush as "length"."""
+        proc = GLMProcessor()
+        proc.process_stream_chunk(
+            _make_stream_chunk("<tool_call>get_weather\n<arg_key>city</arg_key>")
+        )
+        proc.process_stream_chunk(_make_stream_chunk(None, finish_reason="length"))
+        flushed = proc.flush()
+        assert flushed[0]["choices"][0]["finish_reason"] == "length"
+
+    def test_s03_glm_flush_promotes_stop_to_tool_calls(self):
+        """A complete tool call still overrides upstream "stop"."""
+        proc = GLMProcessor()
+        proc.process_stream_chunk(
+            _make_stream_chunk(
+                "<tool_call>get_weather\n<arg_key>city</arg_key>"
+                "<arg_value>Beijing</arg_value></tool_call>"
+            )
+        )
+        proc.process_stream_chunk(_make_stream_chunk(None, finish_reason="stop"))
+        flushed = proc.flush()
+        assert flushed[0]["choices"][0]["finish_reason"] == "tool_calls"
+
+    def test_s04_qwen_finish_and_usage_forwarded_while_buffering(self):
+        """Qwen in tool mode forwards finish_reason and choice-attached usage."""
+        proc = QwenCoderProcessor()
+        assert proc.process_stream_chunk(_make_stream_chunk("<tool_call>\n")) == []
+        chunk = _make_stream_chunk(None, finish_reason="length")
+        chunk["usage"] = {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12}
+        out = proc.process_stream_chunk(chunk)
+        assert len(out) == 1
+        assert out[0]["choices"][0]["finish_reason"] == "length"
+        assert out[0]["usage"]["total_tokens"] == 12
+        assert out[0]["choices"][0]["delta"] == {}
+
+    def test_s05_qwen_flush_preserves_length_finish(self):
+        """A Qwen tool call truncated at max_tokens must flush as "length"."""
+        proc = QwenCoderProcessor()
+        proc.process_stream_chunk(
+            _make_stream_chunk("<tool_call>\n<function=get_weather>\n<parameter=city>Paris")
+        )
+        proc.process_stream_chunk(_make_stream_chunk(None, finish_reason="length"))
+        flushed = proc.flush()
+        assert flushed[0]["choices"][0]["finish_reason"] == "length"
+
+    def test_s06_glm_parallel_tool_calls_parsed_separately(self):
+        """Two <tool_call> blocks produce two calls with per-block args."""
+        proc = GLMProcessor()
+        proc.process_stream_chunk(
+            _make_stream_chunk(
+                "<tool_call>get_weather\n"
+                "<arg_key>city</arg_key><arg_value>Paris</arg_value></tool_call>"
+                "<tool_call>get_time\n"
+                "<arg_key>tz</arg_key><arg_value>UTC</arg_value></tool_call>"
+            )
+        )
+        flushed = proc.flush()
+        tool_calls = _get_tool_calls(flushed)
+        assert len(tool_calls) == 2
+        assert tool_calls[0]["function"]["name"] == "get_weather"
+        assert json.loads(tool_calls[0]["function"]["arguments"]) == {"city": "Paris"}
+        assert tool_calls[1]["function"]["name"] == "get_time"
+        assert json.loads(tool_calls[1]["function"]["arguments"]) == {"tz": "UTC"}
+        assert tool_calls[0]["index"] != tool_calls[1]["index"]
+        assert tool_calls[0]["id"] != tool_calls[1]["id"]
+
+    def test_s07_glm_no_signal_chunks_still_dropped(self):
+        """Buffered chunks without finish_reason/usage stay swallowed."""
+        proc = GLMProcessor()
+        proc.process_stream_chunk(_make_stream_chunk("<tool_call>get_weather\n"))
+        assert proc.process_stream_chunk(_make_stream_chunk("<arg_key>a</arg_key>")) == []

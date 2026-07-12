@@ -1453,7 +1453,7 @@ class PostgresOperationalStore(OperationalStore):
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
-        metadata: str | None = None,
+        metadata: str | dict[str, Any] | None = None,
         account_id: str | None = None,
     ) -> Row:
         """Insert a new API key. Returns the inserted row."""
@@ -1465,6 +1465,11 @@ class PostgresOperationalStore(OperationalStore):
         # would otherwise persist NULL and hide the key from the user. This
         # stops the ongoing NULL-producing path at its single source (#630).
         effective_account_id = account_id if account_id is not None else user_id
+
+        # asyncpg has no jsonb codec registered on this pool, so jsonb
+        # parameters must be JSON strings; admin routes pass dicts through.
+        if isinstance(metadata, dict):
+            metadata = json.dumps(metadata)
 
         async with self._pool.acquire() as conn:
             try:
@@ -1549,19 +1554,45 @@ class PostgresOperationalStore(OperationalStore):
         return total, [dict(r) for r in rows]
 
     async def get_key_detail(self, user_id: str) -> Row | None:
-        """Fetch full key row for a given *user_id*."""
+        """Fetch the current key row for a given *user_id*.
+
+        A user accumulates rows over time (revoke + re-create leaves the
+        revoked row behind), so prefer the live key: active first, then
+        suspended, then revoked, newest first within each status.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT user_id, user_name, key_prefix, status, "
                 "quota_daily_cost_usd, quota_monthly_cost_usd, "
                 "created_at, last_used_at, expires_at, notes, metadata "
-                "FROM api_keys WHERE user_id = $1",
+                "FROM api_keys WHERE user_id = $1 "
+                "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'suspended' THEN 1 ELSE 2 END, "
+                "created_at DESC "
+                "LIMIT 1",
                 user_id,
             )
-        return dict(row) if row else None
+        if row is None:
+            return None
+        d = dict(row)
+        # asyncpg returns jsonb as a raw string without a codec; callers
+        # (e.g. APIKeyDetailResponse) expect a dict.
+        val = d.get("metadata")
+        if isinstance(val, str):
+            try:
+                parsed = json.loads(val)
+                d["metadata"] = parsed if isinstance(parsed, dict) else None
+            except (json.JSONDecodeError, TypeError):
+                d["metadata"] = None
+        return d
 
     async def update_key(self, user_id: str, **fields: Any) -> None:
-        """Dynamically update key columns for *user_id*."""
+        """Dynamically update key columns for *user_id*'s current key.
+
+        Revoked rows are never touched: a user keeps old revoked rows after
+        regenerating a key, and updating them would silently resurrect dead
+        keys (``status='active'`` on every row also violates the
+        one-active-key-per-user partial unique index).
+        """
         if not fields:
             return
         from .base import API_KEYS_MUTABLE_COLUMNS
@@ -1573,9 +1604,14 @@ class PostgresOperationalStore(OperationalStore):
         params: list[Any] = [user_id]
         for idx, (key, val) in enumerate(fields.items(), start=2):
             col = API_KEYS_MUTABLE_COLUMNS[key]
+            if key == "metadata" and isinstance(val, dict):
+                # jsonb params must be JSON strings (no codec on this pool).
+                val = json.dumps(val)
             set_parts.append(f"{col} = ${idx}")
             params.append(val)
-        sql = f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = $1"
+        sql = (
+            f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = $1 AND status <> 'revoked'"
+        )
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
 
@@ -1597,15 +1633,22 @@ class PostgresOperationalStore(OperationalStore):
         new_key_hash: str,
         new_key_prefix: str,
     ) -> str:
-        """Atomically replace the key hash/prefix. Returns old key_prefix."""
+        """Atomically replace the active key's hash/prefix. Returns old key_prefix.
+
+        Scoped to the active row: users keep old revoked rows around, and
+        rewriting key_hash on all of them would violate the unique key_hash
+        constraint (and resurrect revoked credentials).
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             old_row = await conn.fetchrow(
-                "SELECT key_prefix FROM api_keys WHERE user_id = $1", user_id
+                "SELECT key_prefix FROM api_keys WHERE user_id = $1 AND status = 'active'",
+                user_id,
             )
             if not old_row:
-                raise ValueError(f"No key found for user_id={user_id}")
+                raise ValueError(f"No active key found for user_id={user_id}")
             await conn.execute(
-                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE user_id = $3",
+                "UPDATE api_keys SET key_hash = $1, key_prefix = $2 "
+                "WHERE user_id = $3 AND status = 'active'",
                 new_key_hash,
                 new_key_prefix,
                 user_id,

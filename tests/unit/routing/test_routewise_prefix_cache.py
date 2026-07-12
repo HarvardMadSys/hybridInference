@@ -406,13 +406,21 @@ class TestRouteWiseRouterPrefixCacheWarm:
         assert signal.has_history is True
         assert signal.matched_prefix_tokens > 0
 
-    def test_failed_does_not_warm_and_clears_stash(self):
+    def test_failed_does_not_warm_and_keeps_stash_for_fallback_winner(self):
+        # The logging path emits one failed observation per failed attempt
+        # BEFORE the final success observation. The failure must not consume
+        # the stash, or the winning fallback/hedge leg could never warm.
         router = self._router()
         scope_a = self._scope(router, "prov-a", "prov-a:h:1")
-        self._stash(router, "r1", {"prov-a:h:1": scope_a})
+        scope_b = self._scope(router, "prov-b", "prov-b:h:1")
+        self._stash(router, "r1", {"prov-a:h:1": scope_a, "prov-b:h:1": scope_b})
         self._observe(router, "r1", "prov-a:h:1", success=False)  # primary failed
-        assert "r1" not in router._prefix_cache_pending  # popped even on failure
+        assert "r1" in router._prefix_cache_pending  # kept for the winner
         assert self._lookup(router, scope_a).has_history is False
+        self._observe(router, "r1", "prov-b:h:1")  # fallback succeeded
+        assert self._lookup(router, scope_b).has_history is True  # winner warmed
+        assert self._lookup(router, scope_a).has_history is False  # loser not warmed
+        assert "r1" not in router._prefix_cache_pending  # consumed by the success
 
     def test_warms_winner_among_eligible_not_others(self):
         # Both prov-a and prov-b were eligible (in scopes); prov-b actually served

@@ -235,8 +235,15 @@ class KeyPool:
         for k in expired:
             del self._affinity[k]
 
-    def release(self, lease: Lease, *, status_code: int) -> bool:
+    def release(self, lease: Lease, *, status_code: int | None) -> bool:
         """Report the request outcome; return True iff the key was muted.
+
+        ``status_code=None`` is a NEUTRAL release: the outcome is unknown
+        (e.g. a mid-open I/O error that may have fired after the upstream
+        already returned 2xx). The key is released completely unchanged —
+        neither muted nor credited with a success. Releasing such failures
+        as 200 would reset ``consecutive_failures`` and defeat the sole-key
+        backoff during a sustained outage that mixes 429s with resets.
 
         Mutes the leased key when ``should_mute_status(status_code)`` is true
         — i.e. for key-specific or transient failures (429, 401/402/403,
@@ -262,13 +269,15 @@ class KeyPool:
 
         Args:
             lease: the lease returned by ``acquire``.
-            status_code: HTTP status code, or 0 for non-HTTP failures
-                (timeouts / network errors).
+            status_code: HTTP status code, 0 for non-HTTP failures
+                (timeouts / network errors), or None for a neutral release.
 
         Returns:
             True if the key was muted (caller should rotate to another key),
             False otherwise (caller should propagate the error).
         """
+        if status_code is None:
+            return False
         if not should_mute_status(status_code):
             if 200 <= status_code < 300:
                 with self._lock:
