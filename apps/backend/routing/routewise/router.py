@@ -2762,11 +2762,14 @@ class RouteWiseRouter(BaseRouter):
                 except Exception as exc:
                     last_error = exc
                     endpoint_id = _get_endpoint_id(primary)
-                    # A HedgedAdapter already recorded each failed leg through
-                    # its event sink under the leg's endpoint_id; recording the
-                    # composite failure here as well would give the primary
-                    # endpoint two failure samples for one request.
-                    if not getattr(primary, "reports_leg_outcomes", False):
+                    # A HedgedAdapter records race-time leg failures through
+                    # its event sink under the leg's endpoint_id; recording
+                    # those here as well would double-count them. But the sink
+                    # stops at the race: a failure AFTER the winner started
+                    # streaming (chunks_yielded) is not sink-recorded, and by
+                    # then the hedged adapter's config points at the winner, so
+                    # endpoint_id attributes it correctly.
+                    if chunks_yielded or not getattr(primary, "reports_leg_outcomes", False):
                         self._on_failure(
                             endpoint_id,
                             reason="stream_exception",
