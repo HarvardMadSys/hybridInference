@@ -109,7 +109,9 @@ case "$cmd" in
       if [[ ${#TUNNEL_PIDS[@]} -gt 0 ]]; then
         printf "%s\n" "${TUNNEL_PIDS[@]}" > "$TUNNEL_PID_FILE"
       fi
-      [[ $TUNNEL_EXIT -ne 0 ]] && exit 1
+      if [[ $TUNNEL_EXIT -ne 0 ]]; then
+        exit 1
+      fi
     fi
     ;;
   stop)

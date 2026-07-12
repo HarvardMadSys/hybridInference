@@ -72,7 +72,7 @@ targets:
     model: minimax-m2.7
     tags: [minimax, pinned]
     extra_headers:
-      X-Route-Pin: openai_compat
+      X-Route-Pin: minimax
     capabilities:
       chat: true
       streaming: true
@@ -93,7 +93,7 @@ targets:
     model: minimax-m2.5
     tags: [minimax, pinned]
     extra_headers:
-      X-Route-Pin: openai_compat
+      X-Route-Pin: minimax
     capabilities:
       chat: true
       streaming: true

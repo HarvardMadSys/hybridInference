@@ -110,7 +110,10 @@ export async function readAlertState(db: D1Database): Promise<Record<string, str
     try {
       const parsed = JSON.parse(row.value);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const out: Record<string, string> = {};
+        // Null prototype: model ids are attacker-adjacent map keys, and a
+        // plain object would drop "__proto__" and inherit "constructor"
+        // (same hardening as the dashboard's payload map).
+        const out: Record<string, string> = Object.create(null);
         for (const [k, v] of Object.entries(parsed)) {
           if (typeof v === "string") out[k] = v;
         }

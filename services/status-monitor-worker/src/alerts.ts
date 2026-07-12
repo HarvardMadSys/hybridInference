@@ -171,7 +171,9 @@ export function decideAlerts(
   failing: Set<string>,
   prevState: Record<string, string>,
 ): AlertDecision {
-  const baseState: Record<string, string> = { ...prevState };
+  // Null prototype so model ids like "constructor" don't read as already
+  // alerted (inherited property) and "__proto__" persists as a real key.
+  const baseState: Record<string, string> = Object.assign(Object.create(null), prevState);
   const present = new Set(results.map((r) => r.modelId));
   for (const id of Object.keys(baseState)) {
     if (!present.has(id)) delete baseState[id];
@@ -180,7 +182,7 @@ export function decideAlerts(
   const down: ProbeResult[] = [];
   const recovered: ProbeResult[] = [];
   for (const r of results) {
-    const alerted = baseState[r.modelId] != null;
+    const alerted = Object.hasOwn(baseState, r.modelId);
     if (failing.has(r.modelId)) {
       if (!alerted) down.push(r);
     } else if (r.ok && alerted) {
@@ -214,7 +216,7 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   const prevState = await readAlertState(env.DB);
   const { down, recovered, baseState } = decideAlerts(results, failing, prevState);
 
-  const nextState: Record<string, string> = { ...baseState };
+  const nextState: Record<string, string> = Object.assign(Object.create(null), baseState);
   const storm = config.alertStormThreshold;
 
   // A provider-wide blip can take down many models at once. Past `storm`, collapse
