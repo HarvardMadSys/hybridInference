@@ -985,7 +985,7 @@ class DatabaseLogger:
                 ORDER BY hour DESC
                 LIMIT 1000
                 """,
-                hours,
+                str(hours),
                 model_id,
                 provider,
             )

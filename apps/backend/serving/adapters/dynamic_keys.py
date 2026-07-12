@@ -231,7 +231,7 @@ def configured_env_keys_for_provider(provider: str) -> list[str]:
     base_value = os.getenv(base_var, "")
     keys = [base_value] if base_value else []
     start_index = 2 if base_value else 1
-    for index in range(start_index, _MAX_NUMBERED_ENV_KEYS):
+    for index in range(start_index, _MAX_NUMBERED_ENV_KEYS + 1):
         value = os.getenv(f"{numbered_prefix}{index}", "")
         if not value:
             break

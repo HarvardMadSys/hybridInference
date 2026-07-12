@@ -71,7 +71,7 @@ def _discover_env_keys(base_var: str, numbered_prefix: str) -> list[tuple[int, s
     if not val:
         return keys
     keys.append((1, val))
-    for i in range(2, _MAX_KEYS):
+    for i in range(2, _MAX_KEYS + 1):
         val = os.getenv(f"{numbered_prefix}{i}", "")
         if not val:
             break
