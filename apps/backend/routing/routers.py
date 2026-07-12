@@ -753,7 +753,10 @@ class BaseRouter:
         with req_ctx.push(model=model_id, provider=adapter.config.provider):
             self._ensure_health(endpoint_id)
             resp = await adapter.chat_completion(messages, **params)
-            self._on_success(endpoint_id)
+            # Recompute after the call: a HedgedAdapter swaps its config to the
+            # winning leg's config, and crediting the pre-race endpoint would
+            # boost a failing primary while the real winner gets nothing.
+            self._on_success(_get_endpoint_id(adapter))
         return resp
 
     async def _execute_stream_adapter(
@@ -775,7 +778,9 @@ class BaseRouter:
             async for chunk in adapter.stream_chat_completion(messages, **params):
                 if first and _has_non_empty_content(chunk):
                     first = False
-                    self._on_success(endpoint_id)
+                    # Recompute: a HedgedAdapter swaps its config to the
+                    # winning leg's config by the time content flows.
+                    self._on_success(_get_endpoint_id(adapter))
                 yield chunk
 
     # ------------------------------------------------------------------

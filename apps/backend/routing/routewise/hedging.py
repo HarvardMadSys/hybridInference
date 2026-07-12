@@ -33,19 +33,28 @@ class HedgeStreamRaceTimeout(TimeoutError):
 
 @runtime_checkable
 class ProviderEventSink(Protocol):
-    """Protocol for reporting per-provider request outcomes.
+    """Protocol for reporting per-endpoint request outcomes.
 
     HedgedAdapter uses this to inform the router's health tracking about
-    individual provider successes and failures, so circuit breakers see
-    the real per-provider outcomes rather than just the composite result.
+    individual leg successes and failures, so circuit breakers see the real
+    per-leg outcomes rather than just the composite result. Outcomes are keyed
+    by **endpoint_id** -- the key health/circuit state is stored and consulted
+    under at selection time (a provider name like "chutes" would land on an
+    orphan entry that selection never reads).
     """
 
-    def on_provider_success(self, provider: str) -> None:
-        """Record a successful request for *provider*."""
+    def on_provider_success(self, endpoint_id: str) -> None:
+        """Record a successful request for *endpoint_id*."""
         ...
 
-    def on_provider_failure(self, provider: str, reason: str) -> None:
-        """Record a failed request for *provider*."""
+    def on_provider_failure(
+        self, endpoint_id: str, reason: str, exc: BaseException | None = None
+    ) -> None:
+        """Record a failed request for *endpoint_id*.
+
+        ``exc`` lets the sink apply its client-error (4xx) exemption -- a leg
+        that was correctly rejected for a bad request must not trip breakers.
+        """
         ...
 
 
@@ -183,7 +192,7 @@ class HedgedAdapter(BaseAdapter):
         config so that BaseRouter reads the real winner's provider/endpoint_id
         for ``_routing`` metadata and ``req_ctx``.
         """
-        primary_provider = self.primary.config.provider
+        primary_endpoint = _endpoint_id_from_adapter(self.primary)
 
         # Tracks whether the backup task has progressed past its initial
         # sleep(h*) delay.  When primary fails, we only cancel+relaunch the
@@ -242,8 +251,9 @@ class HedgedAdapter(BaseAdapter):
                     if exc is not None:
                         if task is primary_task:
                             self.event_sink.on_provider_failure(
-                                primary_provider,
+                                primary_endpoint,
                                 reason=exc.__class__.__name__,
+                                exc=exc,
                             )
                             self.failed_attempts.append(_failed_attempt(self.primary, exc))
                             primary_error = exc
@@ -260,23 +270,24 @@ class HedgedAdapter(BaseAdapter):
                                 pending.add(backup_task)
                         else:
                             if not isinstance(exc, HedgeBackupUnavailable):
-                                backup_provider = _provider_name_from_adapter(self.backup)
                                 self.event_sink.on_provider_failure(
-                                    backup_provider,
+                                    _endpoint_id_from_adapter(self.backup),
                                     reason=exc.__class__.__name__,
+                                    exc=exc,
                                 )
                                 self.failed_attempts.append(_failed_attempt(self.backup, exc))
                     else:
                         # Winner found -- cancel the loser.
                         winner_result = task.result()
                         if task is primary_task:
-                            self.event_sink.on_provider_success(primary_provider)
+                            self.event_sink.on_provider_success(primary_endpoint)
                             # self.config stays as primary.config (already correct).
                             backup_task.cancel()
                             await _safe_await_task(backup_task)
                         else:
-                            backup_provider = _provider_name_from_adapter(self.backup)
-                            self.event_sink.on_provider_success(backup_provider)
+                            self.event_sink.on_provider_success(
+                                _endpoint_id_from_adapter(self.backup)
+                            )
                             # Swap config so BaseRouter attributes to real winner.
                             assert self.backup is not None
                             self.config = self.backup.config
@@ -391,6 +402,10 @@ class HedgedAdapter(BaseAdapter):
         backup_started = False
         backup_gen: AsyncGenerator[str, None] | None = None
         backup_provider: str | None = None
+        # Health/circuit outcomes are keyed by endpoint_id (what selection
+        # consults), not the provider label used for logging.
+        primary_endpoint = _endpoint_id_from_adapter(self.primary)
+        backup_endpoint: str | None = None
         primary_error: BaseException | None = None
         checkpoint_index = 0
         schedule_start = asyncio.get_running_loop().time()
@@ -424,7 +439,8 @@ class HedgedAdapter(BaseAdapter):
             return asyncio.ensure_future(_checkpoint_timer(elapsed_sec))
 
         def _start_stream_backup(elapsed_sec: float) -> bool:
-            nonlocal backup_gen, backup_provider, backup_started, backup_next_task, backup_start
+            nonlocal backup_gen, backup_provider, backup_endpoint
+            nonlocal backup_started, backup_next_task, backup_start
             dispatch = self._start_backup_at(elapsed_sec)
             if dispatch is None:
                 return False
@@ -437,6 +453,7 @@ class HedgedAdapter(BaseAdapter):
             )
             backup_gen = self._stream_backup_gen
             backup_provider = dispatch.backup.config.provider
+            backup_endpoint = _endpoint_id_from_adapter(dispatch.backup)
             backup_next_task = asyncio.ensure_future(backup_gen.__anext__())
             return True
 
@@ -505,7 +522,7 @@ class HedgedAdapter(BaseAdapter):
                         primary_done = True
                         primary_next_task = None
                         self.event_sink.on_provider_failure(
-                            primary_provider, reason=e.__class__.__name__
+                            primary_endpoint, reason=e.__class__.__name__, exc=e
                         )
                         self.failed_attempts.append(_failed_attempt(self.primary, e))
                         # Start backup immediately if not already running.
@@ -539,9 +556,9 @@ class HedgedAdapter(BaseAdapter):
                         backup_next_task = None
                     except Exception as e:
                         if not isinstance(e, HedgeBackupUnavailable):
-                            provider = backup_provider or _provider_name_from_adapter(self.backup)
+                            endpoint = backup_endpoint or _endpoint_id_from_adapter(self.backup)
                             self.event_sink.on_provider_failure(
-                                provider, reason=e.__class__.__name__
+                                endpoint, reason=e.__class__.__name__, exc=e
                             )
                             self.failed_attempts.append(_failed_attempt(self.backup, e))
                         backup_next_task = None
@@ -549,21 +566,21 @@ class HedgedAdapter(BaseAdapter):
                 # Decide winner.
                 if primary_has_content and backup_has_content:
                     # Tiebreaker: primary wins.
-                    self.event_sink.on_provider_success(primary_provider)
+                    self.event_sink.on_provider_success(primary_endpoint)
                     # self.config stays as primary.config (already correct).
                     _cancel_task(backup_next_task)
                     _cancel_task(hedge_timer_task)
                     _cancel_task(race_deadline_task)
                     return primary_gen, backup_gen, primary_buffer
                 elif primary_has_content:
-                    self.event_sink.on_provider_success(primary_provider)
+                    self.event_sink.on_provider_success(primary_endpoint)
                     _cancel_task(backup_next_task)
                     _cancel_task(hedge_timer_task)
                     _cancel_task(race_deadline_task)
                     return primary_gen, backup_gen, primary_buffer
                 elif backup_has_content:
-                    provider = backup_provider or _provider_name_from_adapter(self.backup)
-                    self.event_sink.on_provider_success(provider)
+                    endpoint = backup_endpoint or _endpoint_id_from_adapter(self.backup)
+                    self.event_sink.on_provider_success(endpoint)
                     # Swap config so BaseRouter attributes to real winner.
                     assert self.backup is not None
                     self.config = self.backup.config
@@ -592,12 +609,14 @@ class HedgedAdapter(BaseAdapter):
                     )
                     if not primary_done:
                         self.event_sink.on_provider_failure(
-                            primary_provider, reason=exc.__class__.__name__
+                            primary_endpoint, reason=exc.__class__.__name__, exc=exc
                         )
                         self.failed_attempts.append(_failed_attempt(self.primary, exc))
                     if backup_started and backup_next_task is not None:
-                        provider = backup_provider or _provider_name_from_adapter(self.backup)
-                        self.event_sink.on_provider_failure(provider, reason=exc.__class__.__name__)
+                        endpoint = backup_endpoint or _endpoint_id_from_adapter(self.backup)
+                        self.event_sink.on_provider_failure(
+                            endpoint, reason=exc.__class__.__name__, exc=exc
+                        )
                         self.failed_attempts.append(_failed_attempt(self.backup, exc))
                     raise exc
 
@@ -613,7 +632,7 @@ class HedgedAdapter(BaseAdapter):
                 raise primary_error  # type: ignore[misc]
 
             # Return primary's buffer (even if empty -- no content from either).
-            self.event_sink.on_provider_success(primary_provider)
+            self.event_sink.on_provider_success(primary_endpoint)
             _cancel_task(race_deadline_task)
             return primary_gen, backup_gen, primary_buffer
 

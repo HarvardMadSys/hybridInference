@@ -24,17 +24,21 @@ if TYPE_CHECKING:
 
 
 class _FakeEventSink:
-    """Test double for ProviderEventSink."""
+    """Test double for ProviderEventSink (outcomes are endpoint_id-keyed)."""
 
     def __init__(self) -> None:
         self.successes: list[str] = []
         self.failures: list[tuple[str, str]] = []
+        self.failure_excs: list[BaseException | None] = []
 
-    def on_provider_success(self, provider: str) -> None:
-        self.successes.append(provider)
+    def on_provider_success(self, endpoint_id: str) -> None:
+        self.successes.append(endpoint_id)
 
-    def on_provider_failure(self, provider: str, reason: str) -> None:
-        self.failures.append((provider, reason))
+    def on_provider_failure(
+        self, endpoint_id: str, reason: str, exc: BaseException | None = None
+    ) -> None:
+        self.failures.append((endpoint_id, reason))
+        self.failure_excs.append(exc)
 
 
 def _quota_pool(router):
@@ -82,7 +86,7 @@ def _make_model_config(
 
 def _make_fake_adapter(
     provider: str = "provider-a",
-    endpoint_id: str = "test:ep-a",
+    endpoint_id: str | None = None,
     chat_result: dict[str, Any] | None = None,
     chat_delay: float = 0.0,
     chat_error: Exception | None = None,
@@ -92,7 +96,11 @@ def _make_fake_adapter(
 ) -> MagicMock:
     """Create a mock adapter with async chat_completion and stream_chat_completion."""
     adapter = MagicMock()
-    adapter.config = _make_model_config(provider=provider, endpoint_id=endpoint_id)
+    # Health/circuit outcomes are endpoint_id-keyed; derive a distinct
+    # endpoint per provider so sink assertions can tell the legs apart.
+    adapter.config = _make_model_config(
+        provider=provider, endpoint_id=endpoint_id or f"test:{provider}"
+    )
 
     if chat_result is None:
         chat_result = {"choices": [{"message": {"content": "hello"}}]}
@@ -171,7 +179,7 @@ class TestHedgedAdapterNonStreaming:
         )
         result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
         assert result["source"] == "primary"
-        assert "fast-primary" in sink.successes
+        assert "test:fast-primary" in sink.successes
 
     @pytest.mark.asyncio
     async def test_primary_slow_backup_wins(self):
@@ -195,7 +203,7 @@ class TestHedgedAdapterNonStreaming:
         )
         result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
         assert result["source"] == "backup"
-        assert "fast-backup" in sink.successes
+        assert "test:fast-backup" in sink.successes
 
     @pytest.mark.asyncio
     async def test_primary_fails_backup_succeeds(self):
@@ -218,12 +226,12 @@ class TestHedgedAdapterNonStreaming:
         )
         result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
         assert result["source"] == "backup"
-        assert ("fail-primary", "RuntimeError") in sink.failures
-        assert "good-backup" in sink.successes
+        assert ("test:fail-primary", "RuntimeError") in sink.failures
+        assert "test:good-backup" in sink.successes
         assert hedged.failed_attempts == [
             {
                 "provider": "fail-primary",
-                "endpoint_id": "test:ep-a",
+                "endpoint_id": "test:fail-primary",
                 "error_type": "RuntimeError",
                 "error": "primary failed",
             }
@@ -249,17 +257,17 @@ class TestHedgedAdapterNonStreaming:
         )
         with pytest.raises(RuntimeError, match="primary boom"):
             await hedged.chat_completion([{"role": "user", "content": "hi"}])
-        assert ("fail-primary", "RuntimeError") in sink.failures
-        assert ("fail-backup", "ValueError") in sink.failures
+        assert ("test:fail-primary", "RuntimeError") in sink.failures
+        assert ("test:fail-backup", "ValueError") in sink.failures
         assert {
             "provider": "fail-primary",
-            "endpoint_id": "test:ep-a",
+            "endpoint_id": "test:fail-primary",
             "error_type": "RuntimeError",
             "error": "primary boom",
         } in hedged.failed_attempts
         assert {
             "provider": "fail-backup",
-            "endpoint_id": "test:ep-a",
+            "endpoint_id": "test:fail-backup",
             "error_type": "ValueError",
             "error": "backup boom",
         } in hedged.failed_attempts
@@ -288,7 +296,7 @@ class TestHedgedAdapterNonStreaming:
         await hedged.chat_completion([{"role": "user", "content": "hi"}])
         # Primary wins (fast); exactly one success recorded.
         assert len(sink.successes) == 1
-        assert sink.successes[0] == "p1"
+        assert sink.successes[0] == "test:p1"
 
 
 # ===========================================================================
@@ -331,7 +339,7 @@ class TestHedgedAdapterStreaming:
         # Should contain primary's content.
         combined = "".join(chunks)
         assert "fast" in combined
-        assert "fast-primary" in sink.successes
+        assert "test:fast-primary" in sink.successes
 
     @pytest.mark.asyncio
     async def test_backup_content_wins_after_threshold(self):
@@ -365,7 +373,7 @@ class TestHedgedAdapterStreaming:
 
         combined = "".join(chunks)
         assert "quick" in combined
-        assert "fast-backup" in sink.successes
+        assert "test:fast-backup" in sink.successes
 
     @pytest.mark.asyncio
     async def test_primary_tiebreaker(self):
@@ -401,7 +409,7 @@ class TestHedgedAdapterStreaming:
         combined = "".join(chunks)
         # Primary should win the tiebreak.
         assert "p-content" in combined
-        assert "primary" in sink.successes
+        assert "test:primary" in sink.successes
         assert "test:primary" in hedged.leg_first_content_ttft_ms
         assert hedged.leg_first_content_ttft_ms["test:primary"] >= 0.0
 
@@ -465,7 +473,7 @@ class TestHedgedAdapterStreaming:
 
         combined = "".join(chunks)
         assert "backup ok" in combined
-        assert ("fail-primary", "ConnectionError") in sink.failures
+        assert ("test:fail-primary", "ConnectionError") in sink.failures
 
     @pytest.mark.asyncio
     async def test_cleanup_on_cancellation(self):
@@ -1275,7 +1283,7 @@ class TestToolCallsWinnerDetection:
 
         combined = "".join(chunks)
         assert "get_weather" in combined
-        assert "tool-primary" in sink.successes
+        assert "test:tool-primary" in sink.successes
 
     @pytest.mark.asyncio
     async def test_reasoning_content_detected(self):
@@ -1306,7 +1314,7 @@ class TestToolCallsWinnerDetection:
 
         combined = "".join(chunks)
         assert "thinking" in combined
-        assert "reasoning-primary" in sink.successes
+        assert "test:reasoning-primary" in sink.successes
 
     @pytest.mark.asyncio
     async def test_reasoning_content_resolves_race_before_visible_content(self):
@@ -1334,7 +1342,7 @@ class TestToolCallsWinnerDetection:
             await stream.aclose()
 
         assert "thinking" in first_chunk
-        assert "reasoning-primary" in sink.successes
+        assert "test:reasoning-primary" in sink.successes
 
     @pytest.mark.asyncio
     async def test_stream_race_buffer_cap_resolves_pre_content_stream(
@@ -1370,7 +1378,7 @@ class TestToolCallsWinnerDetection:
 
         assert len(buffered_chunks) == 3
         assert all("assistant" in chunk for chunk in buffered_chunks)
-        assert "pre-content-primary" in sink.successes
+        assert "test:pre-content-primary" in sink.successes
 
     @pytest.mark.asyncio
     async def test_stream_race_deadline_fails_no_yield_stream(self):
@@ -1402,7 +1410,7 @@ class TestToolCallsWinnerDetection:
         finally:
             await stream.aclose()
 
-        assert ("hidden-think-primary", "HedgeStreamRaceTimeout") in sink.failures
+        assert ("test:hidden-think-primary", "HedgeStreamRaceTimeout") in sink.failures
 
 
 # ===========================================================================
@@ -1442,8 +1450,8 @@ class TestNonStreamingFailFastBackup:
         assert result["source"] == "backup"
         # Must not wait 60s for backup; should complete in well under 1s.
         assert elapsed < 2.0, f"Expected fast failover, took {elapsed:.2f}s"
-        assert ("fail-primary", "RuntimeError") in sink.failures
-        assert "good-backup" in sink.successes
+        assert ("test:fail-primary", "RuntimeError") in sink.failures
+        assert "test:good-backup" in sink.successes
         # Config should be swapped to backup (winner attribution).
         assert hedged.config.provider == "good-backup"
 
@@ -1619,5 +1627,5 @@ class TestNonStreamingBackupPhaseTracking:
         # Backup was NOT cancelled and relaunched -- it continued its in-flight request.
         # Total time ~ 0.3s (backup's delay), not 0.15 + 0.3 = 0.45s (relaunch).
         assert elapsed < 0.6, f"Expected backup to continue, took {elapsed:.2f}s"
-        assert ("fail-primary", "RuntimeError") in sink.failures
-        assert "good-backup" in sink.successes
+        assert ("test:fail-primary", "RuntimeError") in sink.failures
+        assert "test:good-backup" in sink.successes

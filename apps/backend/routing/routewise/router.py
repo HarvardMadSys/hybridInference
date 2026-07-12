@@ -2040,13 +2040,19 @@ class RouteWiseRouter(BaseRouter):
     # BaseRouter integration
     # ------------------------------------------------------------------
 
-    def on_provider_success(self, provider: str) -> None:
-        """Record a provider success emitted by HedgedAdapter."""
-        self._on_success(provider)
+    def on_provider_success(self, endpoint_id: str) -> None:
+        """Record a hedge-leg success emitted by HedgedAdapter (endpoint_id-keyed)."""
+        self._on_success(endpoint_id)
 
-    def on_provider_failure(self, provider: str, reason: str) -> None:
-        """Record a provider failure emitted by HedgedAdapter."""
-        self._on_failure(provider, reason=reason)
+    def on_provider_failure(
+        self, endpoint_id: str, reason: str, exc: BaseException | None = None
+    ) -> None:
+        """Record a hedge-leg failure emitted by HedgedAdapter (endpoint_id-keyed).
+
+        Passing ``exc`` through preserves the client-error (4xx) breaker
+        exemption for hedge legs, matching the non-hedged path.
+        """
+        self._on_failure(endpoint_id, reason=reason, exc=exc)
 
     @staticmethod
     def _ensure_response_routing(
@@ -2231,10 +2237,15 @@ class RouteWiseRouter(BaseRouter):
         request_id = str(req_ctx.get().get("request_id") or "")
         if not request_id:
             return
-        with self._route_commit_lock:
-            stashed = self._prefix_cache_pending.pop(request_id, None)
+        # Failed observations must not consume the stash: the logging path
+        # emits one failed observation per failed attempt BEFORE the final
+        # success observation, and popping here would leave nothing for the
+        # winning fallback/hedge leg to warm. Final-failure entries are
+        # reclaimed by the _PREFIX_CACHE_PENDING_MAX cap.
         if not obs.success:
             return
+        with self._route_commit_lock:
+            stashed = self._prefix_cache_pending.pop(request_id, None)
         if stashed is None:
             return
         blocks, scopes = stashed
@@ -2519,9 +2530,11 @@ class RouteWiseRouter(BaseRouter):
                 and request_id in self._pending_decisions
             ):
                 self._pending_decisions[request_id]["backup_won"] = True
-            self._apply_hedge_execution_metadata(adapter, request_id)
             return result
         finally:
+            # Single call site: _record_hedge_explorer_samples appends a
+            # latency sample per invocation, so calling this in both try and
+            # finally double-recorded the losing leg's TTFT on success.
             self._apply_hedge_execution_metadata(adapter, request_id)
             self._release_execution_primary_capacity(request_id, primary_adapter)
 
