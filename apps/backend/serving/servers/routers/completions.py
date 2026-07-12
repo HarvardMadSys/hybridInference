@@ -299,7 +299,8 @@ async def _streaming_response_with_keepalive(
     response_id = request_id
     created = int(time.time())
 
-    time.monotonic()
+    last_client_byte = time.monotonic()
+    yielded_any = False
     chunk_queue: Any = asyncio.Queue()
 
     async def _reader() -> None:
@@ -320,8 +321,23 @@ async def _streaming_response_with_keepalive(
                 )
             except asyncio.TimeoutError:
                 yield b" "
-                time.monotonic()
+                yielded_any = True
+                last_client_byte = time.monotonic()
                 continue
+
+            # Inner traffic (buffered content chunks, SSE keepalive comments)
+            # re-arms the wait_for timer above without sending the client a
+            # single byte -- the JSON body is only emitted at the end. Track
+            # the last client-visible byte ourselves and emit a keepalive
+            # whenever the client has been idle a full interval, or proxies
+            # (e.g. Cloudflare) time the connection out mid-generation.
+            if (
+                chunk is not None
+                and time.monotonic() - last_client_byte >= _FORCE_STREAMING_KEEPALIVE_S
+            ):
+                yield b" "
+                yielded_any = True
+                last_client_byte = time.monotonic()
 
             if chunk is None:
                 break
@@ -340,10 +356,15 @@ async def _streaming_response_with_keepalive(
                 code = error.get("code")
                 status_code = code if isinstance(code, int) else 500
                 logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
-                raise HTTPException(
-                    status_code=status_code,
-                    detail=scrub_error_for_user(None, request_id, status_code),
-                )
+                detail = scrub_error_for_user(None, request_id, status_code)
+                if yielded_any:
+                    # A keepalive byte already committed a 200 response --
+                    # raising now would abort the connection mid-body with no
+                    # error payload. Emit the error envelope as the JSON body
+                    # instead (parsers ignore the leading whitespace).
+                    yield json.dumps({"error": {"message": detail, "code": status_code}}).encode()
+                    return
+                raise HTTPException(status_code=status_code, detail=detail)
 
             response_id = chunk_json.get("id") or response_id
             created = int(chunk_json.get("created") or created)
