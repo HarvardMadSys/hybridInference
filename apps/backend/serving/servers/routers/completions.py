@@ -342,25 +342,19 @@ async def _streaming_response_with_keepalive(
                     return
                 raise chunk
 
-            # Inner traffic (buffered content chunks, SSE keepalive comments)
-            # re-arms the wait_for timer above without sending the client a
-            # single byte -- the JSON body is only emitted at the end. Track
-            # the last client-visible byte ourselves and emit a keepalive
-            # whenever the client has been idle a full interval, or proxies
-            # (e.g. Cloudflare) time the connection out mid-generation.
-            if time.monotonic() - last_client_byte >= _FORCE_STREAMING_KEEPALIVE_S:
-                yield b" "
-                yielded_any = True
-                last_client_byte = time.monotonic()
+            chunk_json = None
+            if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                try:
+                    chunk_json = json.loads(chunk[6:])
+                except json.JSONDecodeError:
+                    chunk_json = None
 
-            if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
-                continue
-            try:
-                chunk_json = json.loads(chunk[6:])
-            except json.JSONDecodeError:
-                continue
-
-            error = chunk_json.get("error")
+            # StreamSession.stream converts adapter exceptions into in-band
+            # error frames, so like the Exception guard above they must be
+            # handled BEFORE the idle-keepalive emission below -- a keepalive
+            # byte would commit a 200 and downgrade the clean HTTPException
+            # (real status code) into a 200-with-error-body.
+            error = chunk_json.get("error") if isinstance(chunk_json, dict) else None
             if isinstance(error, dict):
                 code = error.get("code")
                 status_code = code if isinstance(code, int) else 500
@@ -374,6 +368,20 @@ async def _streaming_response_with_keepalive(
                     yield json.dumps({"error": {"message": detail, "code": status_code}}).encode()
                     return
                 raise HTTPException(status_code=status_code, detail=detail)
+
+            # Inner traffic (buffered content chunks, SSE keepalive comments)
+            # re-arms the wait_for timer above without sending the client a
+            # single byte -- the JSON body is only emitted at the end. Track
+            # the last client-visible byte ourselves and emit a keepalive
+            # whenever the client has been idle a full interval, or proxies
+            # (e.g. Cloudflare) time the connection out mid-generation.
+            if time.monotonic() - last_client_byte >= _FORCE_STREAMING_KEEPALIVE_S:
+                yield b" "
+                yielded_any = True
+                last_client_byte = time.monotonic()
+
+            if chunk_json is None:
+                continue
 
             response_id = chunk_json.get("id") or response_id
             created = int(chunk_json.get("created") or created)
