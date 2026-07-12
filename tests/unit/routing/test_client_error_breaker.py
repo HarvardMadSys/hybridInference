@@ -9,6 +9,7 @@ overload-signalling 408/429) must still count.
 """
 
 import asyncio
+import threading
 import types
 
 import pytest
@@ -126,6 +127,9 @@ class _CaptureRouteWise(RouteWiseRouter):
     def __init__(self) -> None:
         self.captured: list[dict] = []
         self._pending_decisions: dict = {}
+        # Terminal-failure cleanup reclaims the prefix stash on the except path.
+        self._route_commit_lock = threading.RLock()
+        self._prefix_cache_pending: dict = {}
         # fallback_mode != "policy" so both paths re-raise right after recording.
         self.config = types.SimpleNamespace(fallback_mode="off")
         self._fake = _FakeAdapter()

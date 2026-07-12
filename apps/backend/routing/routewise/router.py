@@ -2632,15 +2632,21 @@ class RouteWiseRouter(BaseRouter):
                 except Exception as exc:
                     last_error = exc
                     endpoint_id = _get_endpoint_id(primary)
-                    self._on_failure(
-                        endpoint_id,
-                        reason=exc.__class__.__name__,
-                        detail=operator_safe_error(exc),
-                        # Pass the exception so the base router can skip the
-                        # breaker on a client (4xx) error — otherwise one user's
-                        # bad request opens the circuit for every user.
-                        exc=exc,
-                    )
+                    # A HedgedAdapter already recorded each failed leg through
+                    # its event sink under the leg's endpoint_id; recording the
+                    # composite failure here as well would give the primary
+                    # endpoint two failure samples for one request.
+                    if not getattr(primary, "reports_leg_outcomes", False):
+                        self._on_failure(
+                            endpoint_id,
+                            reason=exc.__class__.__name__,
+                            detail=operator_safe_error(exc),
+                            # Pass the exception so the base router can skip the
+                            # breaker on a client (4xx) error — otherwise one
+                            # user's bad request opens the circuit for every
+                            # user.
+                            exc=exc,
+                        )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
@@ -2656,6 +2662,12 @@ class RouteWiseRouter(BaseRouter):
                     continue
         except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)
+            # Terminal failure: no success observation will ever consume the
+            # prefix stash, and the TTL sweep only reaches it through the
+            # pending-decisions sibling popped above — reclaim it here instead
+            # of waiting for the size-cap eviction.
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(request_id, None)
             routing = getattr(exc, "_routing", None)
             if not isinstance(routing, dict):
                 adapter = last_attempted
@@ -2750,15 +2762,21 @@ class RouteWiseRouter(BaseRouter):
                 except Exception as exc:
                     last_error = exc
                     endpoint_id = _get_endpoint_id(primary)
-                    self._on_failure(
-                        endpoint_id,
-                        reason="stream_exception",
-                        detail=operator_safe_error(exc),
-                        # Pass the exception so the base router can skip the
-                        # breaker on a client (4xx) error — otherwise one user's
-                        # bad request opens the circuit for every user.
-                        exc=exc,
-                    )
+                    # A HedgedAdapter already recorded each failed leg through
+                    # its event sink under the leg's endpoint_id; recording the
+                    # composite failure here as well would give the primary
+                    # endpoint two failure samples for one request.
+                    if not getattr(primary, "reports_leg_outcomes", False):
+                        self._on_failure(
+                            endpoint_id,
+                            reason="stream_exception",
+                            detail=operator_safe_error(exc),
+                            # Pass the exception so the base router can skip the
+                            # breaker on a client (4xx) error — otherwise one
+                            # user's bad request opens the circuit for every
+                            # user.
+                            exc=exc,
+                        )
                     attempt = _failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     if (
@@ -2776,6 +2794,12 @@ class RouteWiseRouter(BaseRouter):
                     continue
         except BaseException as exc:
             decision_info = self._pending_decisions.pop(request_id, None)
+            # Terminal failure: no success observation will ever consume the
+            # prefix stash, and the TTL sweep only reaches it through the
+            # pending-decisions sibling popped above — reclaim it here instead
+            # of waiting for the size-cap eviction.
+            with self._route_commit_lock:
+                self._prefix_cache_pending.pop(request_id, None)
             routing = getattr(exc, "_routing", None)
             if not isinstance(routing, dict):
                 adapter = last_attempted
