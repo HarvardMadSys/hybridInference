@@ -78,7 +78,7 @@ async def test_service_dedupes_and_posts_analysis_in_original_thread(tmp_path):
     assert len(runner.events) == 1
     assert runner.events[0].fingerprint == alert().fingerprint
     assert slack.messages[1][1] == first.slack_thread_ts
-    assert "Codex triage" in slack.messages[1][0]
+    assert "Codex triage (DeepSeek)" in slack.messages[1][0]
     assert "&lt;!channel&gt;" in slack.messages[1][0]
 
 

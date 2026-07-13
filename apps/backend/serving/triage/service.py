@@ -169,7 +169,7 @@ class TriageService:
     async def _post_failure_notice(self, job: TriageJob) -> None:
         try:
             await self._slack.post(
-                "*Codex triage unavailable*\n"
+                "*Codex triage (DeepSeek) unavailable*\n"
                 f"Analysis failed after {job.attempts} attempts. Check the triage service logs.",
                 thread_ts=job.slack_thread_ts,
             )
@@ -202,7 +202,7 @@ def format_analysis(analysis: TriageAnalysis, thread_id: str | None) -> str:
         for index, item in enumerate(analysis.recommended_actions, start=1)
     )
     lines = [
-        "*Codex triage*",
+        "*Codex triage (DeepSeek)*",
         f"• *Classification:* `{analysis.classification}`",
         f"• *Confidence:* {analysis.confidence:.0%}",
         f"• *Summary:* {_escape_slack(analysis.summary)}",

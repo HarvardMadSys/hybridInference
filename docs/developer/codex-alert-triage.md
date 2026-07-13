@@ -1,4 +1,4 @@
-# Codex Alert Triage
+# Codex Alert Triage with DeepSeek
 
 The alert triage relay turns structured gateway and status-monitor alerts into
 read-only Codex investigations. The original alert is delivered immediately;
@@ -12,7 +12,10 @@ triage relay ──► Slack top-level alert
         │
         ├──► SQLite queue + incident dedupe
         │
-        └──► codex exec (read-only) ──► Slack thread reply
+        └──► codex exec (read-only)
+                  │  Responses API
+                  ▼
+             HybridInference ──► deepseek-v4-pro ──► Slack thread reply
 ```
 
 This first phase does not hold GitHub credentials and cannot create issues,
@@ -28,7 +31,9 @@ whether an issue or draft PR would be appropriate for human follow-up.
 - `codex exec` runs with a read-only sandbox, user config/rules disabled, web
   search disabled, and no hooks, apps, or subagents.
 - Only `PATH`, `HOME`, `LANG`, and `LC_ALL` reach shell commands started by
-  Codex. The Codex API key, Slack token, and relay token are not forwarded.
+  Codex. A dedicated HybridInference API key is available to the Codex HTTP
+  client but is not forwarded to those commands. The upstream DeepSeek key,
+  Slack token, and relay token never enter the Codex process.
 - Alert context is bounded and redacted before it reaches Codex. The original
   Slack text is never included in the model prompt.
 - Codex sessions are persisted under `CODEX_TRIAGE_CODEX_HOME`; each Slack
@@ -53,15 +58,26 @@ Populate `/etc/hybrid-inference/codex-triage.env`:
 CODEX_TRIAGE_RELAY_TOKEN=<random shared bearer token>
 CODEX_TRIAGE_SLACK_BOT_TOKEN=xoxb-...
 CODEX_TRIAGE_SLACK_CHANNEL_ID=C0123456789
-CODEX_API_KEY=...
+CODEX_TRIAGE_HYBRID_API_KEY=hyi-...
 
 # Optional overrides
 CODEX_TRIAGE_CODEX_BINARY=/absolute/path/to/codex
-CODEX_TRIAGE_CODEX_MODEL=
+CODEX_TRIAGE_CODEX_MODEL=deepseek-v4-pro
+CODEX_TRIAGE_HYBRID_BASE_URL=https://freeinference.org/v1
 CODEX_TRIAGE_TIMEOUT_SECONDS=600
 CODEX_TRIAGE_MAX_ATTEMPTS=2
 CODEX_TRIAGE_MAX_PENDING_JOBS=100
 ```
+
+`CODEX_TRIAGE_HYBRID_API_KEY` must belong to a dedicated service user with the
+`internal` role, because `deepseek-v4-pro` is internal-only. Do not put
+`DEEPSEEK_API_KEY` in the relay environment: HybridInference owns that upstream
+credential and applies its configured DeepSeek routing and fallback policy.
+
+Codex is still the read-only agent runtime: it inspects the repository and runs
+the tool loop. Its custom Responses provider points at HybridInference, which
+translates the requests to DeepSeek's chat-completions API. This avoids OpenAI
+API billing while preserving the Codex sandbox and thread trace.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
 service intentionally uses `chat.postMessage`, rather than an incoming webhook,
@@ -132,7 +148,7 @@ curl -i http://127.0.0.1:8091/v1/alerts \
     "occurred_at":"2026-07-10T00:00:00Z",
     "summary":"Synthetic event; no production impact",
     "context":{"provider":"example"},
-    "slack_text":"Synthetic Codex triage smoke test"
+    "slack_text":"Synthetic DeepSeek-backed Codex triage smoke test"
   }'
 ```
 

@@ -38,6 +38,7 @@ class CodexRunner:
     def build_command(self, schema_path: Path, output_path: Path) -> list[str]:
         """Build the subprocess argument vector without involving a shell."""
         repository_path = self._settings.repository_path.expanduser().resolve()
+        base_url = self._settings.hybrid_inference_base_url.strip().rstrip("/")
         command = [
             self._settings.codex_binary,
             "exec",
@@ -56,15 +57,25 @@ class CodexRunner:
             'web_search="disabled"',
             "-c",
             'shell_environment_policy.include_only=["PATH","HOME","LANG","LC_ALL"]',
+            "-c",
+            'model_provider="hybrid_inference"',
+            "-c",
+            'model_providers.hybrid_inference.name="HybridInference"',
+            "-c",
+            f"model_providers.hybrid_inference.base_url={json.dumps(base_url)}",
+            "-c",
+            'model_providers.hybrid_inference.env_key="CODEX_TRIAGE_HYBRID_API_KEY"',
+            "-c",
+            'model_providers.hybrid_inference.wire_api="responses"',
             "-C",
             str(repository_path),
+            "--model",
+            self._settings.codex_model.strip(),
             "--output-schema",
             str(schema_path),
             "--output-last-message",
             str(output_path),
         ]
-        if self._settings.codex_model:
-            command.extend(("--model", self._settings.codex_model))
         command.append("-")
         return command
 
@@ -91,7 +102,7 @@ class CodexRunner:
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
-                    process.communicate(self._prompt(event).encode()),
+                    process.communicate(self._prompt(event, schema).encode()),
                     timeout=self._settings.codex_timeout_seconds,
                 )
             except asyncio.TimeoutError as exc:
@@ -124,15 +135,18 @@ class CodexRunner:
         }
         if self._settings.codex_home is not None:
             environment["CODEX_HOME"] = str(self._settings.codex_home.expanduser().resolve())
-        api_key = self._settings.codex_api_key.get_secret_value()
+        api_key = self._settings.hybrid_inference_api_key.get_secret_value().strip()
         if api_key:
-            environment["CODEX_API_KEY"] = api_key
+            environment["CODEX_TRIAGE_HYBRID_API_KEY"] = api_key
         return environment
 
     @staticmethod
-    def _prompt(event: AlertEvent) -> str:
+    def _prompt(event: AlertEvent, schema: str | None = None) -> str:
         safe_event = sanitize_for_agent(event.model_dump(mode="json", exclude={"slack_text"}))
         payload = json.dumps(safe_event, indent=2, sort_keys=True)
+        required_schema = schema or json.dumps(
+            TriageAnalysis.model_json_schema(), indent=2, sort_keys=True
+        )
         return f"""You are the read-only incident triage agent for HybridInference.
 
 Investigate the structured alert below against the checked-out repository. You may use only
@@ -146,7 +160,12 @@ provider, configuration, capacity, and authentication failures. Base conclusions
 evidence and lower confidence when runtime evidence is unavailable. Recommendations for an issue
 or draft PR are advisory only; no action may be taken.
 
-Return only the JSON object required by the supplied output schema.
+Return only one JSON object that matches the required schema exactly. Do not use Markdown or add
+text outside the JSON object.
+
+<required_output_json_schema>
+{required_schema}
+</required_output_json_schema>
 
 <untrusted_alert_json>
 {payload}

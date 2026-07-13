@@ -1,5 +1,5 @@
 [Unit]
-Description=HybridInference Codex Alert Triage Relay
+Description=HybridInference DeepSeek-backed Codex Alert Triage Relay
 Wants=network-online.target
 After=network-online.target
 

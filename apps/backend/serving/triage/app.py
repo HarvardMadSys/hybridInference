@@ -60,7 +60,7 @@ def create_app(
                 await triage_service.stop()
 
     application = FastAPI(
-        title="HybridInference Codex Alert Triage",
+        title="HybridInference DeepSeek-backed Codex Alert Triage",
         version="1.0.0",
         lifespan=lifespan,
     )

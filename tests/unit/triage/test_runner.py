@@ -25,11 +25,14 @@ def event() -> AlertEvent:
     )
 
 
-def test_build_command_is_read_only_and_filters_shell_environment(tmp_path):
+def test_build_command_uses_hybrid_inference_without_exposing_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_API_KEY", "inherited-openai-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "upstream-deepseek-secret")
     settings = TriageSettings(
         repository_path=tmp_path,
         state_dir=tmp_path / "state",
-        codex_api_key=SecretStr("top-secret"),
+        hybrid_inference_base_url="https://staging.freeinference.org/v1/",
+        hybrid_inference_api_key=SecretStr("service-secret"),
     )
     runner = CodexRunner(settings)
 
@@ -39,7 +42,33 @@ def test_build_command_is_read_only_and_filters_shell_environment(tmp_path):
     assert "--sandbox read-only" in joined
     assert "--ignore-user-config" in command
     assert "shell_environment_policy.include_only" in joined
-    assert "top-secret" not in joined
+    assert 'model_provider="hybrid_inference"' in command
+    assert (
+        'model_providers.hybrid_inference.base_url="https://staging.freeinference.org/v1"'
+        in command
+    )
+    assert 'model_providers.hybrid_inference.wire_api="responses"' in command
+    assert command[command.index("--model") + 1] == "deepseek-v4-pro"
+    assert "service-secret" not in joined
+
+    environment = runner._subprocess_env()
+    assert environment["CODEX_TRIAGE_HYBRID_API_KEY"] == "service-secret"
+    assert "CODEX_API_KEY" not in environment
+    assert "DEEPSEEK_API_KEY" not in environment
+
+
+def test_settings_require_dedicated_hybrid_inference_key():
+    settings = TriageSettings(
+        relay_token=SecretStr("relay-secret"),
+        slack_bot_token=SecretStr("slack-secret"),
+        slack_channel_id="C0123456789",
+        hybrid_inference_api_key=SecretStr(""),
+    )
+
+    assert settings.configured is False
+    assert settings.model_copy(
+        update={"hybrid_inference_api_key": SecretStr("service-secret")}
+    ).configured
 
 
 def test_prompt_excludes_slack_text_and_redacts_context():
@@ -49,6 +78,8 @@ def test_prompt_excludes_slack_text_and_redacts_context():
     assert "sk-secret" not in prompt
     assert "Bearer [REDACTED]" in prompt
     assert "[REDACTED]" in prompt
+    assert "<required_output_json_schema>" in prompt
+    assert '"classification"' in prompt
 
 
 def test_parse_thread_id_ignores_non_json_lines():

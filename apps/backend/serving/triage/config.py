@@ -24,8 +24,15 @@ class TriageSettings(BaseSettings):
     state_dir: Path = Field(default=Path(".codex-triage"), alias="CODEX_TRIAGE_STATE_DIR")
     codex_home: Path | None = Field(default=None, alias="CODEX_TRIAGE_CODEX_HOME")
     codex_binary: str = Field(default="codex", alias="CODEX_TRIAGE_CODEX_BINARY")
-    codex_model: str = Field(default="", alias="CODEX_TRIAGE_CODEX_MODEL")
-    codex_api_key: SecretStr = Field(default=SecretStr(""), alias="CODEX_API_KEY")
+    codex_model: str = Field(default="deepseek-v4-pro", alias="CODEX_TRIAGE_CODEX_MODEL")
+    hybrid_inference_base_url: str = Field(
+        default="https://freeinference.org/v1",
+        alias="CODEX_TRIAGE_HYBRID_BASE_URL",
+    )
+    hybrid_inference_api_key: SecretStr = Field(
+        default=SecretStr(""),
+        alias="CODEX_TRIAGE_HYBRID_API_KEY",
+    )
     codex_timeout_seconds: int = Field(
         default=600,
         ge=30,
@@ -53,4 +60,7 @@ class TriageSettings(BaseSettings):
             self.relay_token.get_secret_value().strip()
             and self.slack_bot_token.get_secret_value().strip()
             and self.slack_channel_id.strip()
+            and self.codex_model.strip()
+            and self.hybrid_inference_base_url.strip()
+            and self.hybrid_inference_api_key.get_secret_value().strip()
         )
