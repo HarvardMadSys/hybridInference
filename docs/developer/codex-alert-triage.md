@@ -5,17 +5,20 @@ read-only Codex investigations. The original alert is delivered immediately;
 analysis runs asynchronously and is posted as a reply in the same Slack thread.
 
 ```text
-gateway / status-monitor
-        │  POST /v1/alerts
-        ▼
-triage relay ──► Slack top-level alert
-        │
-        ├──► SQLite queue + incident dedupe
-        │
-        └──► codex exec (read-only)
-                  │  Responses API
-                  ▼
-             HybridInference ──► deepseek-v4-pro ──► Slack thread reply
+Cloudflare status-monitor ── restricted HTTPS ─┐
+                                               │
+Docker Compose network                         ▼
+gateway backend ───────────────────────► codex-triage ──► Slack alert
+                                               │              │
+                                               │              └─ thread reply
+                                               ▼
+                                          codex exec
+                                               │ Responses API
+                                               ▼
+                                      backend:8080/v1
+                                               │
+                                               ▼
+                                        deepseek-v4-pro
 ```
 
 This first phase does not hold GitHub credentials and cannot create issues,
@@ -30,106 +33,95 @@ whether an issue or draft PR would be appropriate for human follow-up.
   or non-2xx response therefore does not drop the page.
 - `codex exec` runs with a read-only sandbox, user config/rules disabled, web
   search disabled, and no hooks, apps, or subagents.
+- The image runs as an unprivileged user with a read-only root filesystem, all
+  Linux capabilities dropped, and `no-new-privileges` enabled. Only the named
+  queue/session volume and a bounded `/tmp` tmpfs are writable.
+- The repository is copied into the image at build time through a dedicated
+  Docker ignore policy. Host `.env` files, runtime data, local dependencies, and
+  test fixtures are excluded; no host repository or secret directory is mounted.
+- The relay image skips the private RouteWise package, which it does not import,
+  so external users can build it without repository credentials.
 - Only `PATH`, `HOME`, `LANG`, and `LC_ALL` reach shell commands started by
   Codex. A dedicated HybridInference API key is available to the Codex HTTP
   client but is not forwarded to those commands. The upstream DeepSeek key,
   Slack token, and relay token never enter the Codex process.
-- The systemd unit runs under a dedicated unprivileged UID. On Linux the relay also
-  marks itself non-dumpable before starting its worker, preventing the Codex
-  child from reading the parent's secrets through same-UID `/proc` access;
-  `ProtectProc=ptraceable` hides the protected parent from the child as well.
+- On Linux the relay marks itself non-dumpable before starting its worker, so a
+  Codex child cannot read the parent's secrets through `/proc`.
 - Alert context is bounded and redacted before it reaches Codex. The original
   Slack text is never included in the model prompt.
-- Codex sessions are persisted under `CODEX_TRIAGE_CODEX_HOME`; each Slack
-  analysis includes its thread ID so an operator with relay-host access can
-  resume the investigation deliberately.
-- Fingerprints deduplicate transport retries. Firing alerts can be analyzed
-  again after their producer cooldown; recovery events close the active
-  incident and reply in its Slack thread.
+- Codex sessions and the SQLite queue persist in the `codex_triage_data` volume.
+  Each Slack analysis includes its thread ID for deliberate operator follow-up.
+- Fingerprints deduplicate transport retries. Recovery events close the active
+  incident and reply in its original Slack thread.
 
-## Relay configuration
+## Configure the relay
 
-Install the Codex CLI on the relay host and create a dedicated secret file:
+Create the relay-only environment file. Do not put these secrets in the shared
+backend `.env`, because the backend container loads that whole file.
 
 ```bash
-sudo useradd --system --user-group --no-create-home \
-  --home-dir /var/lib/hybrid-inference-codex-triage \
-  --shell /usr/sbin/nologin codex-triage
-sudo setfacl -m u:codex-triage:rx /srv/hybridInference
-sudo install -d -m 0750 /etc/hybrid-inference
-sudo install -m 0600 /dev/null /etc/hybrid-inference/codex-triage.env
+cp .env.triage.example .env.triage
+chmod 0600 .env.triage
+openssl rand -hex 32
 ```
 
-Populate `/etc/hybrid-inference/codex-triage.env`:
+Populate `.env.triage` with the generated token and credentials:
 
 ```text
 CODEX_TRIAGE_RELAY_TOKEN=<random shared bearer token>
 CODEX_TRIAGE_SLACK_BOT_TOKEN=xoxb-...
 CODEX_TRIAGE_SLACK_CHANNEL_ID=C0123456789
 CODEX_API_KEY=hyi-...
-
-# Optional overrides
-CODEX_TRIAGE_CODEX_BINARY=/absolute/path/to/codex
 CODEX_TRIAGE_CODEX_MODEL=deepseek-v4-pro
-CODEX_TRIAGE_HYBRID_BASE_URL=https://freeinference.org/v1
-CODEX_TRIAGE_TIMEOUT_SECONDS=600
-CODEX_TRIAGE_MAX_ATTEMPTS=2
-CODEX_TRIAGE_MAX_PENDING_JOBS=100
+CODEX_TRIAGE_HYBRID_BASE_URL=http://backend:8080/v1
 ```
 
 `CODEX_API_KEY` must be a HybridInference `hyi-...` key owned by an `internal`
 or `admin` user, because `deepseek-v4-pro` is internal-only. Use a dedicated
 service key for production; an admin's personal key is suitable only for a
-one-off smoke test and should then be removed. Despite the generic variable
-name, do not put an OpenAI key or `DEEPSEEK_API_KEY` in the relay environment.
-HybridInference owns the upstream DeepSeek credential and applies its configured
-routing and fallback policy.
-
-Codex is still the read-only agent runtime: it inspects the repository and runs
-the tool loop. Its custom Responses provider points at HybridInference, which
-translates the requests to DeepSeek's chat-completions API. This avoids OpenAI
-API billing while preserving the Codex sandbox and thread trace.
+one-off smoke test. Do not put an OpenAI key or `DEEPSEEK_API_KEY` in this file.
+HybridInference owns the upstream DeepSeek credential and applies its routing
+and fallback policy.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
-service intentionally uses `chat.postMessage`, rather than an incoming webhook,
-so it can capture the original message timestamp and post threaded replies.
+relay uses `chat.postMessage` so it can post the analysis in the original alert
+thread.
 
-Install and start the unit:
+## Enable the Compose profile
 
-```bash
-sudo cp deploy/systemd/codex-alert-triage.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now codex-alert-triage
-curl http://127.0.0.1:8091/healthz
-```
-
-The unit binds only to loopback, runs as the dedicated `codex-triage` user,
-mounts `/srv/hybridInference` read-only, and writes queue/session data under
-`/var/lib/hybrid-inference-codex-triage`. The ACL above grants that user access
-to the otherwise group-private repository root without adding it to the broader
-`freeinference` group. The mount namespace also hides the relay secret file,
-`.env`, runtime data, and server logs from the service and every Codex
-subprocess. Relay settings are read from the systemd environment; the triage
-application does not parse the repository `.env` file.
-
-## Producer configuration
-
-The backend producer reads these variables:
+Set the producer values in the shared backend `.env`. The relay token must match
+`.env.triage`.
 
 ```text
-CODEX_TRIAGE_RELAY_URL=http://127.0.0.1:8091
+COMPOSE_PROFILES=triage
+CODEX_TRIAGE_RELAY_URL=http://codex-triage:8091
 CODEX_TRIAGE_RELAY_TOKEN=<same shared token>
 SLACK_ALERTS_WEBHOOK_URL=<existing fallback webhook>
 ```
 
-`127.0.0.1` is correct for a bare-metal backend on the relay host. The
-production backend currently runs in Docker, where loopback points at the
-container; configure the same restricted TLS relay URL used by the Worker (or
-another host-reachable reverse-proxy address) instead.
+Set `ALERTS_ENABLED=true` as well when enabling the gateway's rule-based alert
+engine. Other existing gateway alert producers use the relay automatically when
+the URL and token are present.
 
-The Cloudflare status-monitor needs a TLS endpoint that forwards to the relay;
-do not expose the loopback listener directly. Put it behind the existing
-reverse proxy or a restricted Cloudflare Tunnel, then set Worker secrets:
+Build and start the existing Compose stack:
+
+```bash
+make build
+curl -fsS http://127.0.0.1:8091/healthz
+docker compose -f deploy/docker/docker-compose.yml --env-file .env \
+  exec codex-triage codex --version
+```
+
+The health response must contain `"ready":true`. The image pins its Codex CLI
+version through `CODEX_TRIAGE_CODEX_CLI_VERSION` in `.env`; updating that value
+and rebuilding upgrades the CLI. Each rebuild also refreshes the read-only
+repository snapshot inspected by Codex.
+
+## Configure the status monitor
+
+The Cloudflare Worker cannot reach the internal Compose hostname. The relay
+publishes port `8091` only on host loopback; expose it through a restricted TLS
+reverse-proxy route or Cloudflare Tunnel, then set Worker secrets:
 
 ```bash
 cd services/status-monitor-worker
@@ -138,12 +130,14 @@ npx wrangler secret put CODEX_TRIAGE_RELAY_TOKEN
 npx wrangler secret put SLACK_WEBHOOK_URL
 ```
 
-Keep `SLACK_WEBHOOK_URL` during the initial rollout. It is used only when the
-relay cannot confirm delivery.
+Use the restricted HTTPS URL for `CODEX_TRIAGE_RELAY_URL` and retain
+`SLACK_WEBHOOK_URL` during rollout. The webhook is used only when the relay
+cannot confirm delivery.
 
 ## Smoke test
 
-Send a synthetic event from the relay host:
+Send a synthetic event from the Compose host, using the token from
+`.env.triage`:
 
 ```bash
 curl -i http://127.0.0.1:8091/v1/alerts \
@@ -167,17 +161,16 @@ curl -i http://127.0.0.1:8091/v1/alerts \
 
 A successful request returns `202`, posts the synthetic alert immediately, and
 adds a Codex analysis reply after the queued job finishes. Reusing the same
-fingerprint inside the dedupe window returns `duplicate: true` without posting
-another top-level message.
+fingerprint inside the dedupe window returns `duplicate: true` without another
+top-level message.
 
 ## Rollout
 
-1. Deploy the relay with only a staging producer configured.
+1. Enable the `triage` profile on staging and configure only one producer.
 2. Confirm raw-alert latency, analysis usefulness, timeout rate, and false
    conclusions for at least one week.
 3. Enable the production gateway producer while retaining webhook fallback.
-4. Add status-monitor delivery after the relay has a restricted public TLS
-   endpoint.
+4. Add status-monitor delivery after the restricted public TLS route is ready.
 5. Consider GitHub Issue and Draft PR actions in a separate change with
-   separate credentials, explicit policy gates, and branch protection. Automatic
-   merge remains out of scope.
+   separate credentials, explicit policy gates, and branch protection.
+   Automatic merge remains out of scope.

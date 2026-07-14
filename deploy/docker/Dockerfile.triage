@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1.7
+
+ARG CODEX_CLI_VERSION=0.144.4
+
+FROM node:22-bookworm-slim AS codex-cli
+
+ARG CODEX_CLI_VERSION
+RUN npm install --global --omit=dev --no-audit --no-fund "@openai/codex@${CODEX_CLI_VERSION}" \
+    && npm cache clean --force
+
+FROM python:3.12-slim AS python-builder
+
+RUN pip install --no-cache-dir uv
+
+WORKDIR /app
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project --no-install-package routewise
+
+FROM alpine:3.21 AS repository-snapshot
+
+ARG REPOSITORY_SHA=local
+RUN apk add --no-cache git
+WORKDIR /repository
+COPY . .
+RUN printf '%s\n' "${REPOSITORY_SHA}" > .deployment-sha \
+    && git init --quiet --initial-branch=snapshot \
+    && git add --all \
+    && git -c user.name=HybridInference -c user.email=noreply@freeinference.org \
+        commit --quiet --message "Deployment snapshot ${REPOSITORY_SHA}"
+
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        libstdc++6 \
+        ripgrep \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 triage \
+    && useradd --uid 10001 --gid triage --create-home \
+        --home-dir /var/lib/codex-triage --shell /usr/sbin/nologin triage \
+    && install -d -o triage -g triage -m 0700 \
+        /var/lib/codex-triage /var/lib/codex-triage/codex-home
+
+COPY --from=python-builder /app/.venv /app/.venv
+COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+COPY --from=repository-snapshot /repository /workspace/repository
+
+ENV PATH="/app/.venv/bin:/usr/local/bin:${PATH}" \
+    PYTHONPATH=/workspace/repository/apps/backend \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/var/lib/codex-triage \
+    CODEX_TRIAGE_REPOSITORY_PATH=/workspace/repository \
+    CODEX_TRIAGE_STATE_DIR=/var/lib/codex-triage \
+    CODEX_TRIAGE_CODEX_HOME=/var/lib/codex-triage/codex-home \
+    CODEX_TRIAGE_CODEX_BINARY=/usr/local/bin/codex
+
+WORKDIR /workspace/repository
+USER triage
+
+EXPOSE 8091
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -fsS http://localhost:8091/healthz | grep -q '"ready":true'
+
+CMD ["uvicorn", "serving.triage.app:app", \
+     "--host", "0.0.0.0", "--port", "8091", "--no-server-header"]

@@ -47,6 +47,42 @@ services:
     networks:
       - hybridinference
 
+  codex-triage:
+    profiles: ["triage"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.triage
+      args:
+        CODEX_CLI_VERSION: ${CODEX_TRIAGE_CODEX_CLI_VERSION:-0.144.4}
+        REPOSITORY_SHA: ${BUILD_SHA:-local}
+    container_name: hybridinference-codex-triage
+    restart: unless-stopped
+    init: true
+    env_file:
+      - ${CODEX_TRIAGE_ENV_FILE:-../../.env.triage}
+    environment:
+      CODEX_TRIAGE_REPOSITORY_PATH: /workspace/repository
+      CODEX_TRIAGE_STATE_DIR: /var/lib/codex-triage
+      CODEX_TRIAGE_CODEX_HOME: /var/lib/codex-triage/codex-home
+      CODEX_TRIAGE_CODEX_BINARY: /usr/local/bin/codex
+      HOME: /var/lib/codex-triage
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    volumes:
+      - codex_triage_data:/var/lib/codex-triage
+    ports:
+      - "127.0.0.1:${CODEX_TRIAGE_PORT:-8091}:8091"
+    depends_on:
+      backend:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - hybridinference
+
   frontend:
     build:
       context: ../..
@@ -135,6 +171,8 @@ volumes:
     external: true
     name: hybridinference_postgres_data
   pgadmin_data:
+    driver: local
+  codex_triage_data:
     driver: local
 
 networks:
