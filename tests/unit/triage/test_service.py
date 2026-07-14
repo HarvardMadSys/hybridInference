@@ -98,6 +98,51 @@ async def test_service_posts_recovery_to_existing_incident_thread(tmp_path):
     assert slack.messages[-1] == ("Slack resolved", firing.slack_thread_ts)
     incident = await store.get_incident(alert().fingerprint)
     assert incident is not None and incident.status == "resolved"
+    assert incident.alert_id == "alert-resolved"
+
+
+async def test_service_dedupes_recovery_retries(tmp_path):
+    store = TriageStore(tmp_path / "triage.sqlite3")
+    await store.initialize()
+    slack = FakeSlack()
+    service = TriageService(store, slack, FakeRunner(analysis()))
+
+    firing = await service.submit(alert())
+    recovery = alert("resolved", alert_id="recovery-1")
+    first = await service.submit(recovery)
+    window_retry = await service.submit(alert("resolved", alert_id="recovery-2"))
+    incident = await store.get_incident(alert().fingerprint)
+    assert incident is not None
+    with patch(
+        "serving.triage.service.time.time",
+        return_value=incident.updated_at + 301,
+    ):
+        id_retry = await service.submit(recovery)
+
+    assert first.duplicate is False
+    assert window_retry.duplicate is True
+    assert id_retry.duplicate is True
+    assert first.slack_thread_ts == firing.slack_thread_ts
+    assert len(slack.messages) == 2
+
+
+async def test_service_dedupes_unmatched_recovery_retries(tmp_path):
+    store = TriageStore(tmp_path / "triage.sqlite3")
+    await store.initialize()
+    slack = FakeSlack()
+    service = TriageService(store, slack, FakeRunner(analysis()))
+
+    recovery = alert("resolved", alert_id="recovery-1")
+    first = await service.submit(recovery)
+    duplicate = await service.submit(recovery)
+
+    assert first.duplicate is False
+    assert duplicate.duplicate is True
+    assert duplicate.slack_thread_ts == first.slack_thread_ts
+    assert slack.messages == [("Slack resolved", None)]
+    incident = await store.get_incident(recovery.fingerprint)
+    assert incident is not None and incident.status == "resolved"
+    assert incident.alert_id == recovery.alert_id
 
 
 async def test_service_allows_new_incident_after_dedupe_window(tmp_path):

@@ -98,7 +98,23 @@ class TriageService:
                     or time.time() - incident.created_at < event.dedupe_window_seconds
                 )
             )
+            duplicate_resolved = bool(
+                incident is not None
+                and incident.status == "resolved"
+                and (
+                    incident.alert_id == event.alert_id
+                    or time.time() - incident.updated_at < event.dedupe_window_seconds
+                )
+            )
             if event.status == "firing" and duplicate_firing:
+                assert incident is not None
+                return SubmitAlertResponse(
+                    accepted=True,
+                    duplicate=True,
+                    fingerprint=event.fingerprint,
+                    slack_thread_ts=incident.slack_thread_ts,
+                )
+            if event.status == "resolved" and duplicate_resolved:
                 assert incident is not None
                 return SubmitAlertResponse(
                     accepted=True,
@@ -118,6 +134,7 @@ class TriageService:
                         slack_thread_ts=incident.slack_thread_ts,
                     )
                 timestamp = await self._slack.post(event.slack_text)
+                await self.store.create_resolved(event, timestamp)
                 return SubmitAlertResponse(
                     accepted=True,
                     duplicate=False,

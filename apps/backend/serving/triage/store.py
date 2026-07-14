@@ -184,10 +184,40 @@ class TriageStore:
             connection.execute(
                 """
                 UPDATE incidents
-                SET status = 'resolved', event_json = ?, updated_at = ?
+                SET alert_id = ?, status = 'resolved', event_json = ?, updated_at = ?
                 WHERE fingerprint = ?
                 """,
-                (event.model_dump_json(), time.time(), fingerprint),
+                (event.alert_id, event.model_dump_json(), time.time(), fingerprint),
+            )
+
+    async def create_resolved(self, event: AlertEvent, slack_thread_ts: str) -> None:
+        """Persist a recovery that had no active incident to thread against."""
+        await asyncio.to_thread(self._create_resolved, event, slack_thread_ts)
+
+    def _create_resolved(self, event: AlertEvent, slack_thread_ts: str) -> None:
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO incidents (
+                    fingerprint, alert_id, status, slack_thread_ts,
+                    codex_thread_id, event_json, created_at, updated_at
+                ) VALUES (?, ?, 'resolved', ?, NULL, ?, ?, ?)
+                ON CONFLICT(fingerprint) DO UPDATE SET
+                    alert_id = excluded.alert_id,
+                    status = 'resolved',
+                    slack_thread_ts = excluded.slack_thread_ts,
+                    event_json = excluded.event_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    event.fingerprint,
+                    event.alert_id,
+                    slack_thread_ts,
+                    event.model_dump_json(),
+                    now,
+                    now,
+                ),
             )
 
     async def claim_next_job(self) -> TriageJob | None:
