@@ -10,6 +10,7 @@ def test_sanitize_for_agent_redacts_nested_secrets_and_bearer_tokens():
         "nested": {
             "message": "Authorization: Bearer abcdefghijklmnop",
             "password_hint": "do not include",
+            "detail": "response contained hyi-abcdefghijklmnopqrstuvwxyz0123456789",
         },
     }
 
@@ -19,6 +20,7 @@ def test_sanitize_for_agent_redacts_nested_secrets_and_bearer_tokens():
         "nested": {
             "message": "Authorization: Bearer [REDACTED]",
             "password_hint": "[REDACTED]",
+            "detail": "response contained [REDACTED]",
         },
     }
 

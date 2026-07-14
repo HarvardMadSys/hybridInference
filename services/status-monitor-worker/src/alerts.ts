@@ -192,9 +192,13 @@ function modelDownEvent(config: Config, result: ProbeResult, threshold: number):
   });
 }
 
-function modelRecoveredEvent(config: Config, result: ProbeResult): CodexAlertEvent {
+function modelRecoveredEvent(
+  config: Config,
+  result: ProbeResult,
+  fingerprint = modelAlertFingerprint(result.modelId),
+): CodexAlertEvent {
   return workerAlertEvent(config, {
-    fingerprint: modelAlertFingerprint(result.modelId),
+    fingerprint,
     status: "resolved",
     severity: "info",
     title: `Model recovered: ${result.modelId}`,
@@ -237,9 +241,13 @@ function modelsDownEvent(
   });
 }
 
-function modelsRecoveredEvent(config: Config, results: ProbeResult[]): CodexAlertEvent {
+function modelsRecoveredEvent(
+  config: Config,
+  results: ProbeResult[],
+  fingerprint = stormAlertFingerprint(results.map((result) => result.modelId)),
+): CodexAlertEvent {
   return workerAlertEvent(config, {
-    fingerprint: stormAlertFingerprint(results.map((result) => result.modelId)),
+    fingerprint,
     status: "resolved",
     severity: "info",
     title: `${results.length} models recovered`,
@@ -288,6 +296,12 @@ async function deliverAlert(env: Env, event: CodexAlertEvent): Promise<boolean> 
   return webhookUrl ? postSlack(webhookUrl, event.slack_text) : false;
 }
 
+function incidentFingerprint(modelId: string, stateValue: string): string {
+  return stateValue.startsWith("status-monitor:")
+    ? stateValue
+    : modelAlertFingerprint(modelId);
+}
+
 /** Which models to page this cycle, plus the carried-over alert state. */
 export interface AlertDecision {
   /** Models that newly crossed the failure threshold and should page as down. */
@@ -306,11 +320,12 @@ export interface AlertDecision {
  * Edge-triggered alert decision.
  *
  * `failing` holds the models whose most recent `threshold` probes were all
- * failures. `prevState` maps a model to the ISO time we last alerted it is down;
- * its presence means we've already paged for the current outage. A model is
- * paged *down* only on the transition into the failing set (so a sustained
- * outage pages once, not every 20-minute cron), and *recovered* only when a
- * probe succeeds after a down alert.
+ * failures. `prevState` maps a model to the incident fingerprint used when it
+ * was alerted as down; its presence means we've already paged for the current
+ * outage. Legacy timestamp values are treated as individual model incidents.
+ * A model is paged *down* only on the transition into the failing set (so a
+ * sustained outage pages once, not every 20-minute cron), and *recovered* only
+ * when a probe succeeds after a down alert.
  *
  * This function is pure: it decides *what* to send but does not record that it
  * was sent. {@link runAlerts} applies the state transition only for an alert
@@ -374,32 +389,57 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   // transition is committed only once its page is confirmed delivered, so a failed
   // POST retries next cycle instead of dropping the alert.
   if (down.length > storm) {
-    if (await deliverAlert(env, modelsDownEvent(config, down, threshold))) {
-      for (const r of down) nextState[r.modelId] = r.checkedAt;
+    const event = modelsDownEvent(config, down, threshold);
+    if (await deliverAlert(env, event)) {
+      for (const r of down) nextState[r.modelId] = event.fingerprint;
     }
   } else {
     const sent = await Promise.all(
-      down.map(async (r) => ({
-        modelId: r.modelId,
-        checkedAt: r.checkedAt,
-        ok: await deliverAlert(env, modelDownEvent(config, r, threshold)),
-      })),
+      down.map(async (r) => {
+        const event = modelDownEvent(config, r, threshold);
+        return {
+          modelId: r.modelId,
+          fingerprint: event.fingerprint,
+          ok: await deliverAlert(env, event),
+        };
+      }),
     );
-    for (const r of sent) if (r.ok) nextState[r.modelId] = r.checkedAt;
+    for (const r of sent) if (r.ok) nextState[r.modelId] = r.fingerprint;
   }
 
-  if (recovered.length > storm) {
-    if (await deliverAlert(env, modelsRecoveredEvent(config, recovered))) {
-      for (const r of recovered) delete nextState[r.modelId];
+  const activeModelsByFingerprint = new Map<string, string[]>();
+  for (const [modelId, stateValue] of Object.entries(baseState)) {
+    const fingerprint = incidentFingerprint(modelId, stateValue);
+    const activeModels = activeModelsByFingerprint.get(fingerprint) ?? [];
+    activeModels.push(modelId);
+    activeModelsByFingerprint.set(fingerprint, activeModels);
+  }
+
+  const recoveredByFingerprint = new Map<string, ProbeResult[]>();
+  for (const result of recovered) {
+    const fingerprint = incidentFingerprint(result.modelId, baseState[result.modelId]);
+    const grouped = recoveredByFingerprint.get(fingerprint) ?? [];
+    grouped.push(result);
+    recoveredByFingerprint.set(fingerprint, grouped);
+  }
+
+  const resolvedModelIds = await Promise.all(
+    [...recoveredByFingerprint.entries()].map(async ([fingerprint, grouped]) => {
+      const activeModelIds = activeModelsByFingerprint.get(fingerprint) ?? [];
+      const stormIncident = fingerprint.startsWith("status-monitor:storm:");
+      if (stormIncident && grouped.length !== activeModelIds.length) {
+        return [];
+      }
+      const event = stormIncident
+        ? modelsRecoveredEvent(config, grouped, fingerprint)
+        : modelRecoveredEvent(config, grouped[0], fingerprint);
+      return (await deliverAlert(env, event)) ? activeModelIds : [];
+    }),
+  );
+  for (const modelIds of resolvedModelIds) {
+    for (const modelId of modelIds) {
+      delete nextState[modelId];
     }
-  } else {
-    const sent = await Promise.all(
-      recovered.map(async (r) => ({
-        modelId: r.modelId,
-        ok: await deliverAlert(env, modelRecoveredEvent(config, r)),
-      })),
-    );
-    for (const r of sent) if (r.ok) delete nextState[r.modelId];
   }
 
   if (JSON.stringify(nextState) !== JSON.stringify(prevState)) {

@@ -572,6 +572,42 @@ describe("runAlerts", () => {
     expect(posts).toHaveLength(1); // sustained outage doesn't repeat
   });
 
+  it("resolves a storm with its original relay fingerprint once the whole group recovers", async () => {
+    const db = new FakeD1();
+    const env = envWith(db, undefined, "https://relay.test", "relay-token");
+    const events: Array<Record<string, unknown>> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        events.push(JSON.parse(String(init.body)));
+        return new Response(null, { status: 202 });
+      }),
+    );
+    const conf = cfg(1, 2);
+
+    await cycle(db, env, { a: false, b: false, c: false }, conf);
+    const firingFingerprint = String(events[0].fingerprint);
+    expect(events).toHaveLength(1);
+    expect(firingFingerprint).toMatch(/^status-monitor:storm:/);
+    expect(Object.values(JSON.parse(db.meta.get("alert_state")!))).toEqual([
+      firingFingerprint,
+      firingFingerprint,
+      firingFingerprint,
+    ]);
+
+    await cycle(db, env, { a: true, b: false, c: false }, conf);
+    expect(events).toHaveLength(1);
+
+    await cycle(db, env, { a: true, b: true, c: true }, conf);
+    expect(events).toHaveLength(2);
+    expect(events.map((event) => event.status)).toEqual(["firing", "resolved"]);
+    expect(events.map((event) => event.fingerprint)).toEqual([
+      firingFingerprint,
+      firingFingerprint,
+    ]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).toEqual({});
+  });
+
   it("pages individually at or below the storm threshold", async () => {
     const db = new FakeD1();
     const env = envWith(db, "https://hook.test/x");

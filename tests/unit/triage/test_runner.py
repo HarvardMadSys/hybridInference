@@ -1,12 +1,14 @@
 """Tests for the hardened Codex command and JSONL parsing."""
 
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from pydantic import SecretStr
 
 from serving.triage.config import TriageSettings
 from serving.triage.models import AlertEvent
-from serving.triage.runner import CodexRunner, parse_thread_id
+from serving.triage.runner import CodexRunError, CodexRunner, parse_thread_id
 
 
 def event() -> AlertEvent:
@@ -77,6 +79,25 @@ def test_prompt_excludes_slack_text_and_redacts_context():
     assert "[REDACTED]" in prompt
     assert "<required_output_json_schema>" in prompt
     assert '"classification"' in prompt
+
+
+async def test_run_reports_process_start_failure(tmp_path):
+    runner = CodexRunner(
+        TriageSettings(
+            repository_path=tmp_path,
+            state_dir=tmp_path / "state",
+            codex_binary="missing-codex",
+        )
+    )
+
+    with (
+        patch(
+            "serving.triage.runner.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=FileNotFoundError("missing-codex")),
+        ),
+        pytest.raises(CodexRunError, match="failed to start Codex process: missing-codex"),
+    ):
+        await runner.run(event())
 
 
 def test_parse_thread_id_ignores_non_json_lines():

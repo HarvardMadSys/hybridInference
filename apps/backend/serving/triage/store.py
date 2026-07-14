@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from serving.triage.models import AlertEvent, TriageAnalysis
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -92,11 +94,17 @@ class TriageStore:
                 (time.time(),),
             )
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a transactional connection and always close it on exit."""
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=5000")
-        return connection
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     async def get_incident(self, fingerprint: str) -> Incident | None:
         """Return the incident for a fingerprint, if one exists."""
@@ -187,8 +195,7 @@ class TriageStore:
         return await asyncio.to_thread(self._claim_next_job)
 
     def _claim_next_job(self) -> TriageJob | None:
-        connection = self._connect()
-        try:
+        with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
@@ -201,7 +208,6 @@ class TriageStore:
                 """
             ).fetchone()
             if row is None:
-                connection.commit()
                 return None
             attempts = int(row["attempts"]) + 1
             connection.execute(
@@ -212,9 +218,6 @@ class TriageStore:
                 """,
                 (attempts, time.time(), row["id"]),
             )
-            connection.commit()
-        finally:
-            connection.close()
         result = (
             TriageAnalysis.model_validate_json(row["result_json"]) if row["result_json"] else None
         )

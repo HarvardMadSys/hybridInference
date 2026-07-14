@@ -22,6 +22,7 @@ _SECRET_KEY_PARTS = (
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _KEY_VALUE_RE = re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+")
+_HYBRID_API_KEY_RE = re.compile(r"\bhyi-[A-Za-z0-9_-]{20,}\b")
 
 
 class AlertEvent(BaseModel):
@@ -106,5 +107,6 @@ def sanitize_for_agent(value: JsonValue, *, key: str = "", depth: int = 0) -> Js
     if isinstance(value, str):
         redacted = _BEARER_RE.sub("Bearer [REDACTED]", value)
         redacted = _KEY_VALUE_RE.sub(lambda match: f"{match.group(1)}=[REDACTED]", redacted)
+        redacted = _HYBRID_API_KEY_RE.sub("[REDACTED]", redacted)
         return redacted[:2_000]
     return value

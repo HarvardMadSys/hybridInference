@@ -96,10 +96,11 @@ export async function modelsFailingStreak(
 const ALERT_STATE_KEY = "alert_state";
 
 /**
- * Reads the per-model down-alert state: a map of model id → ISO time it was last
- * alerted as down. A model's presence means an alert has already fired for its
- * current outage, so the next cron doesn't re-page. Returns `{}` when unset or
- * corrupt (a corrupt value simply re-arms alerting rather than wedging it).
+ * Reads the per-model down-alert state: a map of model id → incident fingerprint.
+ * A model's presence means an alert has already fired for its current outage, so
+ * the next cron doesn't re-page. Legacy ISO timestamp values remain readable and
+ * are normalized by the caller. Returns `{}` when unset or corrupt (a corrupt
+ * value simply re-arms alerting rather than wedging it).
  */
 export async function readAlertState(db: D1Database): Promise<Record<string, string>> {
   const row = await db

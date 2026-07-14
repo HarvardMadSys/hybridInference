@@ -92,14 +92,17 @@ class CodexRunner:
         try:
             schema = json.dumps(TriageAnalysis.model_json_schema(), indent=2, sort_keys=True)
             await asyncio.to_thread(schema_path.write_text, schema, encoding="utf-8")
-            process = await asyncio.create_subprocess_exec(
-                *self.build_command(schema_path, output_path),
-                cwd=self._settings.repository_path.expanduser().resolve(),
-                env=self._subprocess_env(),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *self.build_command(schema_path, output_path),
+                    cwd=self._settings.repository_path.expanduser().resolve(),
+                    env=self._subprocess_env(),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except OSError as exc:
+                raise CodexRunError(f"failed to start Codex process: {exc}") from exc
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(self._prompt(event, schema).encode()),

@@ -52,7 +52,10 @@ def analysis() -> TriageAnalysis:
         classification="upstream_provider",
         confidence=0.7,
         impact="Some requests fail",
-        evidence=["<!channel> provider errors"],
+        evidence=[
+            "<!channel> provider errors",
+            "hyi-abcdefghijklmnopqrstuvwxyz0123456789",
+        ],
         likely_cause="Upstream availability",
         recommended_actions=["Check provider dashboard"],
         issue_recommendation="none",
@@ -142,4 +145,6 @@ def test_format_analysis_is_bounded_and_mention_safe():
     message = format_analysis(analysis(), "thread-1")
     assert "<!channel>" not in message
     assert "&lt;!channel&gt;" in message
+    assert "hyi-" not in message
+    assert "[REDACTED]" in message
     assert "thread-1" in message

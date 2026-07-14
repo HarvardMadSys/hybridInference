@@ -1,6 +1,7 @@
 """Tests for relay authentication and HTTP acknowledgement."""
 
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -68,3 +69,22 @@ def test_alert_endpoint_requires_bearer_token(tmp_path):
     assert accepted.status_code == 202
     assert accepted.json()["slack_thread_ts"] == "123.45"
     assert len(service.events) == 1
+
+
+def test_configured_relay_protects_process_before_starting_worker(tmp_path):
+    settings = TriageSettings(
+        relay_token=SecretStr("relay-secret"),
+        slack_bot_token=SecretStr("slack-secret"),
+        slack_channel_id="C0123456789",
+        codex_api_key=SecretStr("service-secret"),
+        state_dir=tmp_path,
+        repository_path=tmp_path,
+    )
+
+    with (
+        patch("serving.triage.app.protect_process_secrets") as protect,
+        TestClient(create_app(settings)) as client,
+    ):
+        assert client.get("/healthz").json()["ready"] is True
+
+    protect.assert_called_once_with()

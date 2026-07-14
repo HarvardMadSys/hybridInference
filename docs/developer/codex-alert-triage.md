@@ -34,6 +34,10 @@ whether an issue or draft PR would be appropriate for human follow-up.
   Codex. A dedicated HybridInference API key is available to the Codex HTTP
   client but is not forwarded to those commands. The upstream DeepSeek key,
   Slack token, and relay token never enter the Codex process.
+- The systemd unit runs under a dedicated unprivileged UID. On Linux the relay also
+  marks itself non-dumpable before starting its worker, preventing the Codex
+  child from reading the parent's secrets through same-UID `/proc` access;
+  `ProtectProc=ptraceable` hides the protected parent from the child as well.
 - Alert context is bounded and redacted before it reaches Codex. The original
   Slack text is never included in the model prompt.
 - Codex sessions are persisted under `CODEX_TRIAGE_CODEX_HOME`; each Slack
@@ -48,6 +52,10 @@ whether an issue or draft PR would be appropriate for human follow-up.
 Install the Codex CLI on the relay host and create a dedicated secret file:
 
 ```bash
+sudo useradd --system --user-group --no-create-home \
+  --home-dir /var/lib/hybrid-inference-codex-triage \
+  --shell /usr/sbin/nologin codex-triage
+sudo setfacl -m u:codex-triage:rx /srv/hybridInference
 sudo install -d -m 0750 /etc/hybrid-inference
 sudo install -m 0600 /dev/null /etc/hybrid-inference/codex-triage.env
 ```
@@ -70,12 +78,12 @@ CODEX_TRIAGE_MAX_PENDING_JOBS=100
 ```
 
 `CODEX_API_KEY` must be a HybridInference `hyi-...` key owned by an `internal`
-or `admin` user, because `deepseek-v4-pro` is internal-only. An admin's personal
-key is sufficient for initial rollout; use a dedicated service user for
-long-lived production ownership. Despite the generic variable name, do not put
-an OpenAI key or `DEEPSEEK_API_KEY` in the relay environment. HybridInference
-owns the upstream DeepSeek credential and applies its configured routing and
-fallback policy.
+or `admin` user, because `deepseek-v4-pro` is internal-only. Use a dedicated
+service key for production; an admin's personal key is suitable only for a
+one-off smoke test and should then be removed. Despite the generic variable
+name, do not put an OpenAI key or `DEEPSEEK_API_KEY` in the relay environment.
+HybridInference owns the upstream DeepSeek credential and applies its configured
+routing and fallback policy.
 
 Codex is still the read-only agent runtime: it inspects the repository and runs
 the tool loop. Its custom Responses provider points at HybridInference, which
@@ -95,12 +103,14 @@ sudo systemctl enable --now codex-alert-triage
 curl http://127.0.0.1:8091/healthz
 ```
 
-The unit binds only to loopback, mounts `/srv/hybridInference` read-only, and
-writes queue/session data under `/var/lib/hybrid-inference-codex-triage`. Its
-mount namespace also hides the relay secret file, `.env`, runtime data, and
-server logs from the service and every Codex subprocess. Relay settings are
-read from the systemd environment; the triage application does not parse the
-repository `.env` file.
+The unit binds only to loopback, runs as the dedicated `codex-triage` user,
+mounts `/srv/hybridInference` read-only, and writes queue/session data under
+`/var/lib/hybrid-inference-codex-triage`. The ACL above grants that user access
+to the otherwise group-private repository root without adding it to the broader
+`freeinference` group. The mount namespace also hides the relay secret file,
+`.env`, runtime data, and server logs from the service and every Codex
+subprocess. Relay settings are read from the systemd environment; the triage
+application does not parse the repository `.env` file.
 
 ## Producer configuration
 

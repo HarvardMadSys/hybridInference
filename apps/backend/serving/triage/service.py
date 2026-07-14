@@ -8,7 +8,12 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
-from serving.triage.models import AlertEvent, SubmitAlertResponse, TriageAnalysis
+from serving.triage.models import (
+    AlertEvent,
+    SubmitAlertResponse,
+    TriageAnalysis,
+    sanitize_for_agent,
+)
 
 if TYPE_CHECKING:
     from serving.triage.runner import CodexRun
@@ -191,7 +196,9 @@ class TriageService:
 
 
 def _escape_slack(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    sanitized = sanitize_for_agent(text)
+    assert isinstance(sanitized, str)
+    return sanitized.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def format_analysis(analysis: TriageAnalysis, thread_id: str | None) -> str:

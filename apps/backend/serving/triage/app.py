@@ -11,6 +11,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from serving.triage.config import TriageSettings
 from serving.triage.models import AlertEvent, SubmitAlertResponse
 from serving.triage.runner import CodexRunner
+from serving.triage.security import protect_process_secrets
 from serving.triage.service import TriageOverloadedError, TriageService
 from serving.triage.slack import SlackClient, SlackDeliveryError
 from serving.triage.store import TriageStore
@@ -49,6 +50,7 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         triage_service = service
         if triage_service is None and resolved_settings.configured:
+            protect_process_secrets()
             triage_service = build_service(resolved_settings)
         application.state.triage_service = triage_service
         if triage_service is not None:

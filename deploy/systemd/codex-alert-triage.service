@@ -4,8 +4,8 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-User=freeinference
-Group=freeinference
+User=codex-triage
+Group=codex-triage
 Type=simple
 WorkingDirectory=/srv/hybridInference
 EnvironmentFile=/etc/hybrid-inference/codex-triage.env
@@ -25,6 +25,7 @@ KillMode=mixed
 
 StateDirectory=hybrid-inference-codex-triage
 UMask=0077
+LimitCORE=0
 NoNewPrivileges=true
 CapabilityBoundingSet=
 PrivateTmp=true
@@ -37,7 +38,7 @@ InaccessiblePaths=-/srv/hybridInference/.env
 InaccessiblePaths=-/srv/hybridInference/server.log
 InaccessiblePaths=-/srv/hybridInference/var
 InaccessiblePaths=-/srv/hybridInference/data
-ProtectProc=invisible
+ProtectProc=ptraceable
 ProcSubset=pid
 RestrictSUIDSGID=true
 

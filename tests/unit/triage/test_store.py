@@ -1,6 +1,9 @@
 """Tests for persistent incident and staged-job state."""
 
+import sqlite3
 from datetime import datetime, timezone
+
+import pytest
 
 from serving.triage.models import AlertEvent, TriageAnalysis
 from serving.triage.store import TriageStore
@@ -34,6 +37,16 @@ def analysis() -> TriageAnalysis:
         issue_recommendation="none",
         draft_pr_recommendation="none",
     )
+
+
+def test_store_closes_connections_on_context_exit(tmp_path):
+    store = TriageStore(tmp_path / "triage.sqlite3")
+
+    with store._connect() as connection:
+        connection.execute("CREATE TABLE connection_test (id INTEGER)")
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        connection.execute("SELECT 1")
 
 
 async def test_store_persists_analysis_before_posting(tmp_path):
