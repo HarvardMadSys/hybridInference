@@ -64,7 +64,7 @@ class CodexRunner:
             "-c",
             f"model_providers.hybrid_inference.base_url={json.dumps(base_url)}",
             "-c",
-            'model_providers.hybrid_inference.env_key="CODEX_TRIAGE_HYBRID_API_KEY"',
+            'model_providers.hybrid_inference.env_key="CODEX_API_KEY"',
             "-c",
             'model_providers.hybrid_inference.wire_api="responses"',
             "-C",
@@ -135,9 +135,9 @@ class CodexRunner:
         }
         if self._settings.codex_home is not None:
             environment["CODEX_HOME"] = str(self._settings.codex_home.expanduser().resolve())
-        api_key = self._settings.hybrid_inference_api_key.get_secret_value().strip()
+        api_key = self._settings.codex_api_key.get_secret_value().strip()
         if api_key:
-            environment["CODEX_TRIAGE_HYBRID_API_KEY"] = api_key
+            environment["CODEX_API_KEY"] = api_key
         return environment
 
     @staticmethod

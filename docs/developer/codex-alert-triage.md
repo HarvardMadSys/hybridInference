@@ -58,7 +58,7 @@ Populate `/etc/hybrid-inference/codex-triage.env`:
 CODEX_TRIAGE_RELAY_TOKEN=<random shared bearer token>
 CODEX_TRIAGE_SLACK_BOT_TOKEN=xoxb-...
 CODEX_TRIAGE_SLACK_CHANNEL_ID=C0123456789
-CODEX_TRIAGE_HYBRID_API_KEY=hyi-...
+CODEX_API_KEY=hyi-...
 
 # Optional overrides
 CODEX_TRIAGE_CODEX_BINARY=/absolute/path/to/codex
@@ -69,10 +69,13 @@ CODEX_TRIAGE_MAX_ATTEMPTS=2
 CODEX_TRIAGE_MAX_PENDING_JOBS=100
 ```
 
-`CODEX_TRIAGE_HYBRID_API_KEY` must belong to a dedicated service user with the
-`internal` role, because `deepseek-v4-pro` is internal-only. Do not put
-`DEEPSEEK_API_KEY` in the relay environment: HybridInference owns that upstream
-credential and applies its configured DeepSeek routing and fallback policy.
+`CODEX_API_KEY` must be a HybridInference `hyi-...` key owned by an `internal`
+or `admin` user, because `deepseek-v4-pro` is internal-only. An admin's personal
+key is sufficient for initial rollout; use a dedicated service user for
+long-lived production ownership. Despite the generic variable name, do not put
+an OpenAI key or `DEEPSEEK_API_KEY` in the relay environment. HybridInference
+owns the upstream DeepSeek credential and applies its configured routing and
+fallback policy.
 
 Codex is still the read-only agent runtime: it inspects the repository and runs
 the tool loop. Its custom Responses provider points at HybridInference, which

@@ -32,7 +32,7 @@ def test_build_command_uses_hybrid_inference_without_exposing_secret(tmp_path, m
         repository_path=tmp_path,
         state_dir=tmp_path / "state",
         hybrid_inference_base_url="https://staging.freeinference.org/v1/",
-        hybrid_inference_api_key=SecretStr("service-secret"),
+        codex_api_key=SecretStr("service-secret"),
     )
     runner = CodexRunner(settings)
 
@@ -52,23 +52,20 @@ def test_build_command_uses_hybrid_inference_without_exposing_secret(tmp_path, m
     assert "service-secret" not in joined
 
     environment = runner._subprocess_env()
-    assert environment["CODEX_TRIAGE_HYBRID_API_KEY"] == "service-secret"
-    assert "CODEX_API_KEY" not in environment
+    assert environment["CODEX_API_KEY"] == "service-secret"
     assert "DEEPSEEK_API_KEY" not in environment
 
 
-def test_settings_require_dedicated_hybrid_inference_key():
+def test_settings_require_codex_api_key():
     settings = TriageSettings(
         relay_token=SecretStr("relay-secret"),
         slack_bot_token=SecretStr("slack-secret"),
         slack_channel_id="C0123456789",
-        hybrid_inference_api_key=SecretStr(""),
+        codex_api_key=SecretStr(""),
     )
 
     assert settings.configured is False
-    assert settings.model_copy(
-        update={"hybrid_inference_api_key": SecretStr("service-secret")}
-    ).configured
+    assert settings.model_copy(update={"codex_api_key": SecretStr("service-secret")}).configured
 
 
 def test_prompt_excludes_slack_text_and_redacts_context():
