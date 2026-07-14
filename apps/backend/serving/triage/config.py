@@ -24,7 +24,7 @@ class TriageSettings(BaseSettings):
     state_dir: Path = Field(default=Path(".codex-triage"), alias="CODEX_TRIAGE_STATE_DIR")
     codex_home: Path | None = Field(default=None, alias="CODEX_TRIAGE_CODEX_HOME")
     codex_binary: str = Field(default="codex", alias="CODEX_TRIAGE_CODEX_BINARY")
-    codex_model: str = Field(default="deepseek-v4-pro", alias="CODEX_TRIAGE_CODEX_MODEL")
+    codex_model: str = Field(default="deepseek-v4-flash", alias="CODEX_TRIAGE_CODEX_MODEL")
     hybrid_inference_base_url: str = Field(
         default="https://freeinference.org/v1",
         alias="CODEX_TRIAGE_HYBRID_BASE_URL",

@@ -50,7 +50,7 @@ def test_build_command_uses_hybrid_inference_without_exposing_secret(tmp_path, m
         in command
     )
     assert 'model_providers.hybrid_inference.wire_api="responses"' in command
-    assert command[command.index("--model") + 1] == "deepseek-v4-pro"
+    assert command[command.index("--model") + 1] == "deepseek-v4-flash"
     assert "service-secret" not in joined
 
     environment = runner._subprocess_env()

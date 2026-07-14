@@ -18,7 +18,7 @@ gateway backend ─────────────────────�
                                       backend:8080/v1
                                                │
                                                ▼
-                                        deepseek-v4-pro
+                                       deepseek-v4-flash
 ```
 
 This first phase does not hold GitHub credentials and cannot create issues,
@@ -72,16 +72,22 @@ CODEX_TRIAGE_RELAY_TOKEN=<random shared bearer token>
 CODEX_TRIAGE_SLACK_BOT_TOKEN=xoxb-...
 CODEX_TRIAGE_SLACK_CHANNEL_ID=C0123456789
 CODEX_API_KEY=hyi-...
-CODEX_TRIAGE_CODEX_MODEL=deepseek-v4-pro
+CODEX_TRIAGE_CODEX_MODEL=deepseek-v4-flash
 CODEX_TRIAGE_HYBRID_BASE_URL=http://backend:8080/v1
 ```
 
 `CODEX_API_KEY` must be a HybridInference `hyi-...` key owned by an `internal`
-or `admin` user, because `deepseek-v4-pro` is internal-only. Use a dedicated
+or `admin` user, because `deepseek-v4-flash` is internal-only. Use a dedicated
 service key for production; an admin's personal key is suitable only for a
 one-off smoke test. Do not put an OpenAI key or `DEEPSEEK_API_KEY` in this file.
 HybridInference owns the upstream DeepSeek credential and applies its routing
 and fallback policy.
+
+`deepseek-v4-flash` is the default analysis model because it has a local H200
+sglang route with the official DeepSeek API as fallback, and it is an order of
+magnitude cheaper per token than `deepseek-v4-pro` — each triage run sends tens
+of thousands of prompt tokens through an agentic loop. Override with
+`CODEX_TRIAGE_CODEX_MODEL` when a stronger model is worth the cost.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
 relay uses `chat.postMessage` so it can post the analysis in the original alert
