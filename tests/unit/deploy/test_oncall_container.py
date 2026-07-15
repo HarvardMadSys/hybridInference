@@ -74,6 +74,15 @@ def test_analysis_workflow_is_dispatch_triggered_and_least_privilege():
     for step in job["steps"]:
         assert "github.event" not in step.get("run", "")
 
+    # Secrets stay step-scoped; the model and base URL come from the relay
+    # payload, and the wire protocol stays pinned to the Responses API (chat
+    # wire support no longer exists in Codex, openai/codex#7782).
+    codex_step = steps["Run Codex analysis"]
+    assert codex_step["env"]["CODEX_API_KEY"] == "${{ secrets.CODEX_ONCALL_MODEL_API_KEY }}"
+    assert "jq -c '.base_url'" in codex_step["run"]
+    assert 'wire_api="responses"' in codex_step["run"]
+    assert "CODEX_API_KEY" not in steps["Post analysis to Slack thread"].get("env", {})
+
 
 def test_systemd_deployment_was_removed():
     assert not (ROOT / "deploy/systemd/codex-oncall.service").exists()

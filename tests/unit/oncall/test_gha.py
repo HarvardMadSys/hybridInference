@@ -18,8 +18,8 @@ def _payload_file(tmp_path):
         "alert_id": "alert-1",
         "slack_channel_id": "C123",
         "slack_thread_ts": "171.1",
-        "model": "deepseek-v4-flash",
-        "responses_base_url": "https://freeinference.org/v1",
+        "model": "glm-5.2",
+        "base_url": "https://freeinference.org/v1",
     }
     path = tmp_path / "payload.json"
     path.write_text(json.dumps(payload), encoding="utf-8")

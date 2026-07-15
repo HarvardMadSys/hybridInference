@@ -19,8 +19,8 @@ def settings(**overrides) -> OnCallSettings:
         "slack_channel_id": "C123",
         "github_token": SecretStr("github-secret"),
         "github_repository": "HarvardMadSys/hybridInference",
-        "codex_model": "deepseek-v4-flash",
-        "hybrid_inference_base_url": "https://freeinference.org/v1/",
+        "codex_model": "glm-5.1",
+        "model_base_url": "https://freeinference.org/v1/",
     }
     base.update(overrides)
     return OnCallSettings(**base)
@@ -74,8 +74,8 @@ def test_payload_is_sanitized_and_excludes_slack_text():
     assert oncall["fingerprint"] == "gateway:production:test"
     assert oncall["slack_channel_id"] == "C123"
     assert oncall["slack_thread_ts"] == "171.1"
-    assert oncall["model"] == "deepseek-v4-flash"
-    assert oncall["responses_base_url"] == "https://freeinference.org/v1"
+    assert oncall["model"] == "glm-5.1"
+    assert oncall["base_url"] == "https://freeinference.org/v1"
     assert "github-secret" not in json.dumps(payload)
 
 
@@ -106,8 +106,12 @@ def test_configured_requires_github_credentials():
     assert settings(github_repository="").configured is False
 
 
-def test_default_model_is_glm_until_v4_flash_serving_fix_is_deployed(monkeypatch):
-    # deepseek-v4-flash returns empty content until the H200 V4 parser fix
-    # (PR #939) is deployed and verified; flip the default back then.
-    monkeypatch.delenv("CODEX_ONCALL_CODEX_MODEL", raising=False)
-    assert OnCallSettings().codex_model == "glm-5.2"
+def test_defaults_point_at_the_gateway_responses_api(monkeypatch):
+    # Codex is Responses-API-only (openai/codex#7782), so the base URL must be
+    # the gateway. glm-5.2 stays the default until the H200 V4 parser fix
+    # (PR #939) is deployed and verified; then flip to deepseek-v4-flash.
+    for var in ("CODEX_ONCALL_CODEX_MODEL", "CODEX_ONCALL_MODEL_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    defaults = OnCallSettings()
+    assert defaults.codex_model == "glm-5.2"
+    assert defaults.model_base_url == "https://freeinference.org/v1"

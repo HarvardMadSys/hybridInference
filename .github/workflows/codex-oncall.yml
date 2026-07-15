@@ -79,23 +79,27 @@ jobs:
 
       - name: Run Codex analysis
         env:
-          CODEX_API_KEY: ${{ secrets.CODEX_ONCALL_HYBRID_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.CODEX_ONCALL_MODEL_API_KEY }}
           SANDBOX_MODE: ${{ steps.sandbox.outputs.mode }}
         run: |
           export CODEX_HOME="$RUNNER_TEMP/codex-home"
           mkdir -p "$CODEX_HOME"
           MODEL=$(jq -r '.model' "$RUNNER_TEMP/oncall-payload.json")
-          BASE_URL_JSON=$(jq -c '.responses_base_url' "$RUNNER_TEMP/oncall-payload.json")
+          BASE_URL_JSON=$(jq -c '.base_url' "$RUNNER_TEMP/oncall-payload.json")
+          # Codex is Responses-API-only (chat wire support was removed
+          # upstream, openai/codex#7782): the base URL must serve
+          # /v1/responses. Our gateway does, translating to Chat Completions
+          # southbound; raw provider chat endpoints will not work here.
           codex exec --json --sandbox "$SANDBOX_MODE" \
             --ignore-user-config --ignore-rules \
             --disable hooks --disable apps --disable multi_agent \
             -c 'web_search="disabled"' \
             -c 'shell_environment_policy.include_only=["PATH","HOME","LANG","LC_ALL"]' \
-            -c 'model_provider="hybrid_inference"' \
-            -c 'model_providers.hybrid_inference.name="HybridInference"' \
-            -c "model_providers.hybrid_inference.base_url=${BASE_URL_JSON}" \
-            -c 'model_providers.hybrid_inference.env_key="CODEX_API_KEY"' \
-            -c 'model_providers.hybrid_inference.wire_api="responses"' \
+            -c 'model_provider="oncall_model"' \
+            -c 'model_providers.oncall_model.name="On-Call Model"' \
+            -c "model_providers.oncall_model.base_url=${BASE_URL_JSON}" \
+            -c 'model_providers.oncall_model.env_key="CODEX_API_KEY"' \
+            -c 'model_providers.oncall_model.wire_api="responses"' \
             -C "$GITHUB_WORKSPACE" \
             --model "$MODEL" \
             --output-schema "$RUNNER_TEMP/schema.json" \

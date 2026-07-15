@@ -13,9 +13,9 @@ class OnCallSettings(BaseSettings):
 
     The relay no longer runs Codex itself: analysis executes in the
     ``codex-oncall`` GitHub Actions workflow, triggered through
-    ``repository_dispatch``. ``codex_model`` and ``hybrid_inference_base_url``
-    are passed through in the dispatch payload so the workflow and the relay
-    stay configured from one place.
+    ``repository_dispatch``. ``codex_model`` and ``model_base_url`` are passed
+    through in the dispatch payload so the workflow and the relay stay
+    configured from one place.
     """
 
     model_config = SettingsConfigDict(
@@ -42,10 +42,14 @@ class OnCallSettings(BaseSettings):
     # glm-5.2 until the H200 DeepSeek-V4 parser fix (PR #939) is deployed and
     # verified; then flip to deepseek-v4-flash (cheaper local route).
     codex_model: str = Field(default="glm-5.2", alias="CODEX_ONCALL_CODEX_MODEL")
-    # Must be reachable from GitHub-hosted runners, so the public gateway URL.
-    hybrid_inference_base_url: str = Field(
+    # Codex speaks only the OpenAI Responses API (chat wire support was
+    # removed upstream, openai/codex#7782), so this must be an endpoint that
+    # serves /v1/responses — in practice our own gateway, which translates to
+    # Chat Completions southbound. Must be reachable from GitHub-hosted
+    # runners, so the public gateway URL.
+    model_base_url: str = Field(
         default="https://freeinference.org/v1",
-        alias="CODEX_ONCALL_HYBRID_BASE_URL",
+        alias="CODEX_ONCALL_MODEL_BASE_URL",
     )
     worker_poll_seconds: float = Field(
         default=1.0,
@@ -71,5 +75,5 @@ class OnCallSettings(BaseSettings):
             and self.github_token.get_secret_value().strip()
             and self.github_repository.strip()
             and self.codex_model.strip()
-            and self.hybrid_inference_base_url.strip()
+            and self.model_base_url.strip()
         )

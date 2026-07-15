@@ -4,8 +4,8 @@ The Codex On-Call pipeline turns structured gateway and status-monitor alerts
 into read-only Codex investigations. A small always-on relay receives alerts,
 posts the original message to Slack immediately, and hands the analysis to a
 GitHub Actions workflow; the workflow checks out the current `dev` branch,
-runs `codex exec` against the gateway's Responses API, and replies in the same
-Slack thread.
+runs `codex exec` against the relay-configured Responses API endpoint (the
+gateway), and replies in the same Slack thread.
 
 ```text
 Cloudflare status-monitor ── restricted HTTPS ─┐
@@ -79,7 +79,7 @@ would be appropriate for human follow-up.
 
    | Secret | Purpose |
    |---|---|
-   | `CODEX_ONCALL_HYBRID_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. Must see the configured model (both `glm-5.2` and `deepseek-v4-flash` are internal-only, so an `internal`/`admin` service key). Not an OpenAI or upstream provider key. |
+   | `CODEX_ONCALL_MODEL_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. Must see the configured model (`glm-5.2` and `deepseek-v4-flash` are internal-only, so an `internal`/`admin` service key). Not an upstream provider key — Codex cannot call providers directly (see below). |
    | `CODEX_ONCALL_SLACK_BOT_TOKEN` | Same Slack bot token the relay uses (`chat:write`, invited to the channel). |
 
 3. Create a **fine-grained PAT** for the relay with *Contents: read & write*
@@ -106,24 +106,36 @@ CODEX_ONCALL_SLACK_CHANNEL_ID=C0123456789
 CODEX_ONCALL_GITHUB_TOKEN=github_pat_...
 CODEX_ONCALL_GITHUB_REPOSITORY=HarvardMadSys/hybridInference
 CODEX_ONCALL_CODEX_MODEL=glm-5.2
-CODEX_ONCALL_HYBRID_BASE_URL=https://freeinference.org/v1
+CODEX_ONCALL_MODEL_BASE_URL=https://freeinference.org/v1
 ```
 
-`CODEX_ONCALL_CODEX_MODEL` and `CODEX_ONCALL_HYBRID_BASE_URL` are forwarded in
+`CODEX_ONCALL_CODEX_MODEL` and `CODEX_ONCALL_MODEL_BASE_URL` are forwarded in
 each dispatch payload, so model policy is controlled from one place — changing
 the model is an `.env.oncall` edit plus a relay restart, no code or workflow
-change. The base URL must be reachable from GitHub-hosted runners — use the
-public gateway, not a Compose-internal hostname.
+change (the API key is the one exception: it lives in the
+`CODEX_ONCALL_MODEL_API_KEY` Actions secret). The base URL must be reachable
+from GitHub-hosted runners — use the public gateway, not a Compose-internal
+hostname.
+
+Why the base URL must be the gateway: Codex speaks only the OpenAI Responses
+API — chat-wire support was removed upstream
+([openai/codex#7782](https://github.com/openai/codex/discussions/7782)) — and
+provider chat endpoints (DeepSeek, ZAI, Tencent Token Plan, …) do not serve
+`/v1/responses`. The gateway's northbound Responses translator is what makes
+those models reachable for Codex at all; pointing the workflow straight at a
+provider fails at config load. To pay for analysis tokens through a specific
+provider, wire that provider into the gateway's `config/models.yaml` routes
+instead and keep the workflow on the gateway.
 
 Model choice: `glm-5.2` is the launch default because it is verified working
-end-to-end through the Responses API today and rides the flat-fee ZAI coding
-plan. The intended steady-state model is `deepseek-v4-flash` (local H200 sglang
-route with the official DeepSeek API as fallback, an order of magnitude cheaper
-per token than `deepseek-v4-pro` — each analysis run sends tens of thousands of
-prompt tokens through an agentic loop). It is blocked on the H200 V4 parser fix
-(PR #939): until that deployment is restarted and verified, the model returns
-empty `content` and unparsed tool calls, which breaks the agentic loop. Flip
-the env var once verified.
+end-to-end through the Responses API today. The intended steady-state model is
+`deepseek-v4-flash` (local H200 sglang route with the official DeepSeek API as
+fallback, an order of magnitude cheaper per token than `deepseek-v4-pro` —
+each analysis run sends tens of thousands of prompt tokens through an agentic
+loop). It is blocked on the H200 V4 parser fix (PR #939): until that
+deployment is restarted and verified, the model returns empty `content` and
+unparsed tool calls, which breaks the agentic loop. Flip the env var once
+verified.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
 relay uses `chat.postMessage` so the workflow can reply in the original alert

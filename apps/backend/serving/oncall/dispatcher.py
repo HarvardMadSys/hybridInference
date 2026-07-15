@@ -21,8 +21,9 @@ class GitHubDispatcher:
 
     The relay never runs Codex itself: it posts the original alert to Slack,
     then hands the sanitized alert to a GitHub Actions workflow that checks out
-    the current ``dev`` branch, runs ``codex exec`` against the gateway's
-    Responses API, and replies in the same Slack thread.
+    the current ``dev`` branch, runs ``codex exec`` against the relay-configured
+    Responses API endpoint (in practice the gateway), and replies in the same
+    Slack thread.
     """
 
     def __init__(self, settings: OnCallSettings, *, timeout_seconds: float = 15.0) -> None:
@@ -42,9 +43,7 @@ class GitHubDispatcher:
                     "slack_channel_id": self._settings.slack_channel_id.strip(),
                     "slack_thread_ts": slack_thread_ts,
                     "model": self._settings.codex_model.strip(),
-                    "responses_base_url": (
-                        self._settings.hybrid_inference_base_url.strip().rstrip("/")
-                    ),
+                    "base_url": self._settings.model_base_url.strip().rstrip("/"),
                 }
             },
         }
