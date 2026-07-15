@@ -118,9 +118,11 @@ def check_chat(base, api_key, model, timeout, thinking):
         "messages": [{"role": "user", "content": "Reply with a short greeting."}],
         "max_tokens": 64,
         "temperature": 0,
-        # Reasoning models (e.g. Qwen3.6) otherwise spend the budget "thinking"
-        # and return empty content; the gateway disables thinking the same way.
-        "chat_template_kwargs": {"enable_thinking": thinking},
+        # Reasoning models otherwise spend the budget "thinking" and return
+        # empty content. Qwen-style chat templates read ``enable_thinking``
+        # while DeepSeek-V4 templates read ``thinking``; send both so the
+        # --thinking toggle works everywhere (templates ignore unknown kwargs).
+        "chat_template_kwargs": {"enable_thinking": thinking, "thinking": thinking},
     }
     _note(f"chat: {model} (cold start may take minutes; timeout {timeout}s) ...")
     status, body, dt = request("POST", f"{base}/v1/chat/completions", api_key, payload, timeout)

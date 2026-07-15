@@ -740,6 +740,39 @@ def test_h200_profiles_use_deepseek_v4_parsers() -> None:
         assert model["tool_call_parser"] == "deepseekv4", cfg_path
 
 
+def _load_smoke_test() -> Any:
+    """Load ops/local_deployment_proxy/smoke_test.py as a throwaway module."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "ops" / "local_deployment_proxy" / "smoke_test.py"
+    spec = importlib.util.spec_from_file_location("_smoke_test_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_smoke_chat_rejects_reasoning_only_answers(monkeypatch: Any) -> None:
+    """An answer that only lands in ``reasoning_content`` must fail loudly.
+
+    The pre-fix smoke test fell back to ``reasoning_content`` when ``content``
+    was empty and passed — masking the misconfigured reasoning parser that
+    left every standard client (which reads ``content``) with empty replies.
+    """
+    smoke = _load_smoke_test()
+    body = json.dumps({"choices": [{"message": {"content": "", "reasoning_content": "OK"}}]})
+    monkeypatch.setattr(smoke, "request", lambda *a, **k: (200, body, 0.1))
+    assert smoke.check_chat("http://proxy", "key", "deepseek-v4-flash", 5, False) is False
+
+
+def test_smoke_chat_accepts_content_answers(monkeypatch: Any) -> None:
+    smoke = _load_smoke_test()
+    body = json.dumps({"choices": [{"message": {"content": "hello", "reasoning_content": ""}}]})
+    monkeypatch.setattr(smoke, "request", lambda *a, **k: (200, body, 0.1))
+    assert smoke.check_chat("http://proxy", "key", "deepseek-v4-flash", 5, False) is True
+
+
 def test_sglang_pipeline_parallel_sets_pp_size_and_ipc(monkeypatch: Any, tmp_path: Path) -> None:
     # A pipeline-parallel sglang backend gets --pp-size, --ipc=host, and a quoted
     # multi-GPU device list; --tp stays at its (1) default.
