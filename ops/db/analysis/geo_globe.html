@@ -17,103 +17,129 @@
   Everything else is local; no request data leaves your machine.
 -->
 <style>
+  /* Dark-only "mission control" theme. Series hues are the validated dark
+     categorical palette (see ops docs / dataviz palette); continents get
+     fixed slots so colors never depend on data rank. */
   :root {
-    --bg: #f5f6f8; --fg: #1c2330; --card: #ffffff; --border: #d8dde6;
-    --muted: #eceff4; --muted-fg: #66707f; --accent-soft: #dde6f2;
-    --s1: #3f88c5; --s2: #e8871e; --s3: #9d6fd0; --s4: #3fa46a; --s5: #d4566a; --s6: #c9a227;
-    --night: rgba(24, 32, 58, 0.20); --day: rgba(255, 244, 205, 0.28);
-    --terminator: rgba(60, 70, 110, 0.45);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0e1116; --fg: #e6e9ef; --card: #161b23; --border: #2a3140;
-      --muted: #232a36; --muted-fg: #8b94a5; --accent-soft: #223048;
-      --s1: #5aa9e6; --s2: #f2a65a; --s3: #b48ce6; --s4: #6fcf97; --s5: #e6707e; --s6: #e6c86e;
-      --night: rgba(0, 0, 10, 0.32); --day: rgba(255, 250, 220, 0.075);
-      --terminator: rgba(220, 228, 255, 0.35);
-    }
+    color-scheme: dark;
+    --bg: #0b0e14; --surface: rgba(20, 25, 37, 0.92); --surface-solid: #141925;
+    --ink: #f2f4f8; --ink-2: #aab2c2; --muted-fg: #7d8697;
+    --hairline: rgba(255, 255, 255, 0.09); --hairline-soft: rgba(255, 255, 255, 0.05);
+    --cont-as: #3987e5; --cont-na: #199e70; --cont-eu: #c98500;
+    --cont-sa: #008300; --cont-af: #9085e9; --cont-oc: #e66767;
+    --cont-unknown: #898781;
+    --heat: #d95926; --node: #3987e5;
+    --day: rgba(255, 244, 214, 0.085); --night: rgba(2, 4, 12, 0.48);
+    --terminator: rgba(205, 220, 255, 0.30);
+    --warn: #fab219;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 18px; background: var(--bg); color: var(--fg);
-    font: 14px/1.5 -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+    margin: 0; padding: 20px; color: var(--ink);
+    background:
+      radial-gradient(1100px 600px at 28% 12%, rgba(57, 135, 229, 0.10), transparent 60%),
+      radial-gradient(900px 620px at 76% 74%, rgba(144, 133, 233, 0.08), transparent 62%),
+      var(--bg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .row.space { justify-content: space-between; align-items: flex-end; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--hairline);
+    border-radius: 12px; padding: 12px 14px;
+  }
   .btn {
-    background: var(--muted); color: var(--fg); border: 1px solid var(--border);
-    border-radius: 8px; padding: 5px 12px; cursor: pointer; font: inherit;
+    background: rgba(255, 255, 255, 0.06); color: var(--ink);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px; padding: 5px 12px; cursor: pointer; font: inherit; font-size: 13px;
   }
-  .btn.on { background: var(--s1); border-color: transparent; color: #fff; }
-  .btn.mini { padding: 2px 8px; font-size: 12px; }
+  .btn:hover { background: rgba(255, 255, 255, 0.11); }
+  .btn.on { background: var(--node); border-color: transparent; color: #fff; }
+  .btn.mini { padding: 3px 9px; font-size: 12px; }
   select {
-    background: var(--muted); color: var(--fg); border: 1px solid var(--border);
-    border-radius: 8px; padding: 4px 8px; font: inherit;
+    background: rgba(255, 255, 255, 0.06); color: var(--ink);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 8px; padding: 5px 8px; font: inherit; font-size: 13px;
   }
-  label.ctl { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted-fg); }
-  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  label.ctl {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted-fg);
+  }
+  .seg { display: inline-flex; border: 1px solid rgba(255, 255, 255, 0.10); border-radius: 8px; overflow: hidden; }
   .seg .btn { border: none; border-radius: 0; }
   .small { font-size: 12px; } .muted { color: var(--muted-fg); }
   .badge-demo {
-    background: var(--s2); color: #201200; font-weight: 700; font-size: 11px;
+    background: var(--warn); color: #201400; font-weight: 700; font-size: 11px;
     border-radius: 6px; padding: 2px 8px; letter-spacing: 0.5px;
   }
   .clock { text-align: right; white-space: nowrap; }
-  .clock-main { font-weight: 600; font-size: 15px; }
+  .clock-main { font-weight: 650; font-size: 17px; }
 
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; margin: 12px 0 10px; }
-  .stat-value { font-size: 21px; font-weight: 650; margin-top: 2px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 14px 0 10px; }
+  .stat-value { font-size: 22px; font-weight: 650; margin-top: 2px; }
 
   .map-wrap { position: relative; }
   .stage {
     position: relative; height: clamp(380px, 52vh, 640px); overflow: hidden;
-    border: 1px solid var(--border); border-radius: 12px;
-    background: radial-gradient(circle at 50% 46%, var(--accent-soft) 0%, transparent 55%);
+    border: 1px solid var(--hairline-soft); border-radius: 14px;
+    background:
+      radial-gradient(circle at 47% 45%, rgba(57, 135, 229, 0.10), transparent 44%),
+      radial-gradient(circle at 55% 58%, rgba(144, 133, 233, 0.07), transparent 62%);
   }
   svg.globe { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
   svg.globe:active { cursor: grabbing; }
-  .sphere { fill: var(--card); stroke: var(--border); stroke-width: 1.5; }
-  .graticule { fill: none; stroke: var(--border); stroke-width: 0.6; opacity: 0.5; }
-  .country { fill: var(--muted); stroke: var(--border); stroke-width: 0.5; }
+  .sphere { fill: rgba(16, 21, 32, 0.92); stroke: var(--hairline); stroke-width: 1; }
+  .graticule { fill: none; stroke: rgba(255, 255, 255, 0.05); stroke-width: 0.6; }
+  .country { fill: #1f2836; stroke: rgba(255, 255, 255, 0.05); stroke-width: 0.5; }
   .day-side { fill: var(--day); pointer-events: none; }
   .night-side { fill: var(--night); pointer-events: none; }
   .terminator { fill: none; stroke: var(--terminator); stroke-width: 1.1; stroke-dasharray: 5 4; pointer-events: none; }
-  .heat-ring { fill: var(--s2); opacity: 0.17; pointer-events: none; }
-  .heat-core { fill: var(--s2); stroke: var(--card); stroke-width: 1; cursor: pointer; }
+  .heat-ring { fill: var(--heat); opacity: 0.15; pointer-events: none; }
+  .heat-core { fill: var(--heat); stroke: rgba(11, 14, 20, 0.9); stroke-width: 1; cursor: pointer; }
   .arc {
     fill: none; stroke-linecap: round; stroke-dasharray: 4 9;
-    animation: flow 2.2s linear infinite; opacity: 0.75; cursor: pointer;
+    animation: flow 2.2s linear infinite; opacity: 0.8; cursor: pointer;
   }
   .no-anim .arc { animation: none; }
   @keyframes flow { to { stroke-dashoffset: -26; } }
   @media (prefers-reduced-motion: reduce) { .arc { animation: none; } }
-  .prov-halo { fill: var(--s1); opacity: 0.16; pointer-events: none; }
-  .prov-core { fill: var(--s1); stroke: var(--card); stroke-width: 2; cursor: pointer; }
+  .prov-halo { fill: var(--node); opacity: 0.15; pointer-events: none; }
+  .prov-core { fill: var(--node); stroke: #0b0e14; stroke-width: 2; cursor: pointer; }
   .prov-label {
-    fill: var(--fg); font-size: 11px; font-weight: 600; pointer-events: none;
-    paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round;
+    fill: var(--ink); font-size: 11px; font-weight: 600; pointer-events: none;
+    paint-order: stroke; stroke: #0b0e14; stroke-width: 3px; stroke-linejoin: round;
   }
-  .side { position: absolute; top: 12px; right: 12px; width: min(250px, 36%); display: flex; flex-direction: column; gap: 8px; z-index: 2; }
-  .side .card { padding: 10px; }
+  .side { position: absolute; top: 12px; right: 12px; width: min(252px, 36%); display: flex; flex-direction: column; gap: 8px; z-index: 2; }
+  .side .card { padding: 10px 12px; background: rgba(13, 17, 26, 0.90); }
   .detail-title { font-weight: 600; margin: 2px 0 6px; }
   .rail-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 2px 0; }
-  .rail-bar { height: 4px; border-radius: 2px; background: var(--s3); margin-top: 2px; }
-  .legend { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted-fg); font-size: 12px; pointer-events: none; }
+  .rail-bar { height: 3px; border-radius: 2px; background: var(--node); opacity: 0.75; margin-top: 1px; }
+  .legend { position: absolute; left: 14px; bottom: 12px; display: flex; gap: 14px; flex-wrap: wrap; color: var(--muted-fg); font-size: 12px; pointer-events: none; }
   .key { display: inline-flex; align-items: center; gap: 5px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; }
-  .hint { position: absolute; right: 14px; bottom: 10px; font-size: 12px; color: var(--muted-fg); pointer-events: none; }
+  .hint { position: absolute; right: 14px; bottom: 12px; font-size: 12px; color: var(--muted-fg); pointer-events: none; }
 
   .timeline { margin-top: 10px; }
   .ribbon { display: block; width: 100%; height: 96px; overflow: visible; }
-  .ribbon-grid { stroke: var(--border); stroke-width: 1; opacity: 0.6; }
+  .ribbon-grid { stroke: rgba(255, 255, 255, 0.07); stroke-width: 1; }
   .ribbon-line { fill: none; stroke-width: 2; }
-  .ribbon-marker { stroke: var(--fg); stroke-width: 1.2; }
-  .ribbon-text { fill: var(--muted-fg); font-size: 11px; }
-  input[type=range] { width: 100%; }
-  .foot { margin-top: 10px; font-size: 12px; color: var(--muted-fg); line-height: 1.6; }
+  .ribbon-marker { stroke: rgba(242, 244, 248, 0.9); stroke-width: 1.2; }
+  .ribbon-text { fill: var(--muted-fg); font-size: 10px; }
+  .ribbon-lbl { fill: var(--ink-2); font-size: 10px; font-weight: 600; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 18px; background: transparent; }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.14); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--ink); border: 3px solid var(--node); margin-top: -5px; cursor: pointer;
+  }
+  input[type=range]::-moz-range-track { height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.14); }
+  input[type=range]::-moz-range-thumb {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--ink); border: 3px solid var(--node); cursor: pointer;
+  }
+  .foot { margin-top: 10px; font-size: 11px; color: var(--muted-fg); line-height: 1.7; }
   .error-panel { max-width: 640px; margin: 60px auto; }
-  .error-panel code { background: var(--muted); padding: 2px 6px; border-radius: 5px; display: inline-block; margin: 2px 0; }
+  .error-panel code { background: rgba(255, 255, 255, 0.07); padding: 2px 6px; border-radius: 5px; display: inline-block; margin: 2px 0; }
   .loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted-fg); }
   [hidden] { display: none !important; }
 </style>
@@ -260,7 +286,10 @@
   for (const hour of data.hours) for (const r of hour.b) if (!countryCont.has(r[B.c])) countryCont.set(r[B.c], r[B.cont]);
 
   const CONT_NAMES = { AS: 'Asia', EU: 'Europe', NA: 'N. America', SA: 'S. America', AF: 'Africa', OC: 'Oceania', AN: 'Antarctica' };
-  const CONT_COLORS = { AS: 'var(--s1)', EU: 'var(--s3)', NA: 'var(--s5)', SA: 'var(--s4)', AF: 'var(--s2)', OC: 'var(--s6)', AN: 'var(--muted-fg)' };
+  const CONT_COLORS = {
+    AS: 'var(--cont-as)', NA: 'var(--cont-na)', EU: 'var(--cont-eu)',
+    SA: 'var(--cont-sa)', AF: 'var(--cont-af)', OC: 'var(--cont-oc)', AN: 'var(--cont-unknown)',
+  };
 
   const clsMatch = (rowCls, filter) => filter === 'all' || rowCls === filter;
   const bucketsAt = (h, filter) => data.hours[h].b.filter((r) => clsMatch(r[B.cls], filter));
@@ -561,6 +590,19 @@
       for (let h = idx0; h <= idxN; h++) pts.push([h, series.get(c)[h]]);
       rsvg.append('path').datum(pts).attr('class', 'ribbon-line').attr('stroke', CONT_COLORS[c] || 'var(--muted-fg)').attr('d', line);
     }
+    // direct labels on the top series at the line end (secondary encoding for CVD)
+    const labeled = conts.slice(0, 3)
+      .map((c) => ({ c, ly: Math.min(Hh - margin.bottom - 2, Math.max(margin.top + 6, y(series.get(c)[idxN]) + 3)) }))
+      .sort((a, b) => a.ly - b.ly);
+    for (let i = labeled.length - 2; i >= 0; i--) {
+      if (labeled[i + 1].ly - labeled[i].ly < 10) labeled[i].ly = labeled[i + 1].ly - 10;
+    }
+    for (const { c, ly } of labeled) {
+      rsvg.append('text').attr('class', 'ribbon-lbl')
+        .attr('x', x(idxN) + 5)
+        .attr('y', ly)
+        .text(c);
+    }
     rsvg.append('line').attr('class', 'ribbon-marker')
       .attr('x1', x(state.hour)).attr('x2', x(state.hour)).attr('y1', margin.top - 2).attr('y2', Hh - margin.bottom + 3);
 
@@ -574,8 +616,8 @@
     $('#ribbon-legend').innerHTML = conts.map((c) =>
       `<span class="key"><span class="dot" style="background:${CONT_COLORS[c]}"></span>${CONT_NAMES[c] || c}</span>`).join(' ');
     $('#legend').innerHTML = [
-      '<span class="key"><span class="dot" style="background:var(--s2)"></span>request origin</span>',
-      '<span class="key"><span class="dot" style="background:var(--s1)"></span>local provider</span>',
+      '<span class="key"><span class="dot" style="background:var(--heat)"></span>request origin</span>',
+      '<span class="key"><span class="dot" style="background:var(--node)"></span>local provider</span>',
       '<span class="key"><span class="dot" style="background:var(--terminator)"></span>day/night terminator</span>',
     ].join('');
   }
