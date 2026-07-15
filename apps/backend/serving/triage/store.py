@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from serving.triage.models import AlertEvent, TriageAnalysis
+from serving.triage.models import AlertEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -24,22 +24,19 @@ class Incident:
     alert_id: str
     status: str
     slack_thread_ts: str
-    codex_thread_id: str | None
     created_at: float
     updated_at: float
 
 
 @dataclass(frozen=True)
 class TriageJob:
-    """Persisted unit of analysis or Slack-result delivery work."""
+    """Persisted unit of GitHub Actions hand-off work."""
 
     id: int
     fingerprint: str
     event: AlertEvent
     stage: str
     attempts: int
-    result: TriageAnalysis | None
-    codex_thread_id: str | None
     slack_thread_ts: str
 
 
@@ -64,7 +61,6 @@ class TriageStore:
                     alert_id TEXT NOT NULL,
                     status TEXT NOT NULL,
                     slack_thread_ts TEXT NOT NULL,
-                    codex_thread_id TEXT,
                     event_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
@@ -75,11 +71,9 @@ class TriageStore:
                     fingerprint TEXT NOT NULL,
                     event_json TEXT NOT NULL,
                     slack_thread_ts TEXT NOT NULL,
-                    stage TEXT NOT NULL DEFAULT 'analysis',
+                    stage TEXT NOT NULL DEFAULT 'dispatch',
                     status TEXT NOT NULL DEFAULT 'queued',
                     attempts INTEGER NOT NULL DEFAULT 0,
-                    result_json TEXT,
-                    codex_thread_id TEXT,
                     last_error TEXT,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
@@ -114,7 +108,7 @@ class TriageStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT fingerprint, alert_id, status, slack_thread_ts, codex_thread_id,
+                SELECT fingerprint, alert_id, status, slack_thread_ts,
                        created_at, updated_at
                 FROM incidents
                 WHERE fingerprint = ?
@@ -128,13 +122,12 @@ class TriageStore:
             alert_id=row["alert_id"],
             status=row["status"],
             slack_thread_ts=row["slack_thread_ts"],
-            codex_thread_id=row["codex_thread_id"],
             created_at=float(row["created_at"]),
             updated_at=float(row["updated_at"]),
         )
 
     async def create_firing(self, event: AlertEvent, slack_thread_ts: str) -> None:
-        """Open or replace a resolved incident and enqueue its analysis."""
+        """Open or replace a resolved incident and enqueue its hand-off."""
         await asyncio.to_thread(self._create_firing, event, slack_thread_ts)
 
     def _create_firing(self, event: AlertEvent, slack_thread_ts: str) -> None:
@@ -145,13 +138,12 @@ class TriageStore:
                 """
                 INSERT INTO incidents (
                     fingerprint, alert_id, status, slack_thread_ts,
-                    codex_thread_id, event_json, created_at, updated_at
-                ) VALUES (?, ?, 'firing', ?, NULL, ?, ?, ?)
+                    event_json, created_at, updated_at
+                ) VALUES (?, ?, 'firing', ?, ?, ?, ?)
                 ON CONFLICT(fingerprint) DO UPDATE SET
                     alert_id = excluded.alert_id,
                     status = 'firing',
                     slack_thread_ts = excluded.slack_thread_ts,
-                    codex_thread_id = NULL,
                     event_json = excluded.event_json,
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at
@@ -170,7 +162,7 @@ class TriageStore:
                 INSERT INTO triage_jobs (
                     fingerprint, event_json, slack_thread_ts, stage, status,
                     attempts, created_at, updated_at
-                ) VALUES (?, ?, ?, 'analysis', 'queued', 0, ?, ?)
+                ) VALUES (?, ?, ?, 'dispatch', 'queued', 0, ?, ?)
                 """,
                 (event.fingerprint, event_json, slack_thread_ts, now, now),
             )
@@ -201,8 +193,8 @@ class TriageStore:
                 """
                 INSERT INTO incidents (
                     fingerprint, alert_id, status, slack_thread_ts,
-                    codex_thread_id, event_json, created_at, updated_at
-                ) VALUES (?, ?, 'resolved', ?, NULL, ?, ?, ?)
+                    event_json, created_at, updated_at
+                ) VALUES (?, ?, 'resolved', ?, ?, ?, ?)
                 ON CONFLICT(fingerprint) DO UPDATE SET
                     alert_id = excluded.alert_id,
                     status = 'resolved',
@@ -229,8 +221,7 @@ class TriageStore:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts,
-                       result_json, codex_thread_id
+                SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts
                 FROM triage_jobs
                 WHERE status = 'queued'
                 ORDER BY id
@@ -248,69 +239,17 @@ class TriageStore:
                 """,
                 (attempts, time.time(), row["id"]),
             )
-        result = (
-            TriageAnalysis.model_validate_json(row["result_json"]) if row["result_json"] else None
-        )
         return TriageJob(
             id=int(row["id"]),
             fingerprint=row["fingerprint"],
             event=AlertEvent.model_validate_json(row["event_json"]),
             stage=row["stage"],
             attempts=attempts,
-            result=result,
-            codex_thread_id=row["codex_thread_id"],
             slack_thread_ts=row["slack_thread_ts"],
         )
 
-    async def save_analysis(
-        self,
-        job_id: int,
-        fingerprint: str,
-        alert_id: str,
-        analysis: TriageAnalysis,
-        codex_thread_id: str,
-    ) -> None:
-        """Persist an analysis before attempting its Slack delivery."""
-        await asyncio.to_thread(
-            self._save_analysis,
-            job_id,
-            fingerprint,
-            alert_id,
-            analysis,
-            codex_thread_id,
-        )
-
-    def _save_analysis(
-        self,
-        job_id: int,
-        fingerprint: str,
-        alert_id: str,
-        analysis: TriageAnalysis,
-        codex_thread_id: str,
-    ) -> None:
-        now = time.time()
-        with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE triage_jobs
-                SET stage = 'posting', status = 'queued', attempts = 0,
-                    result_json = ?, codex_thread_id = ?, last_error = NULL,
-                    updated_at = ?
-                WHERE id = ?
-                """,
-                (analysis.model_dump_json(), codex_thread_id, now, job_id),
-            )
-            connection.execute(
-                """
-                UPDATE incidents
-                SET codex_thread_id = ?, updated_at = ?
-                WHERE fingerprint = ? AND alert_id = ?
-                """,
-                (codex_thread_id, now, fingerprint, alert_id),
-            )
-
     async def complete_job(self, job_id: int) -> None:
-        """Mark a result as delivered."""
+        """Mark a hand-off as delivered."""
         await asyncio.to_thread(self._complete_job, job_id)
 
     def _complete_job(self, job_id: int) -> None:

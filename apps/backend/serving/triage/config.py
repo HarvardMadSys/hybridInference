@@ -9,7 +9,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class TriageSettings(BaseSettings):
-    """Settings used only by the standalone triage service."""
+    """Settings used only by the standalone triage relay.
+
+    The relay no longer runs Codex itself: analysis executes in the
+    ``codex-triage`` GitHub Actions workflow, triggered through
+    ``repository_dispatch``. ``codex_model`` and ``hybrid_inference_base_url``
+    are passed through in the dispatch payload so the workflow and the relay
+    stay configured from one place.
+    """
 
     model_config = SettingsConfigDict(
         case_sensitive=False,
@@ -20,21 +27,23 @@ class TriageSettings(BaseSettings):
     relay_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_TRIAGE_RELAY_TOKEN")
     slack_bot_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_TRIAGE_SLACK_BOT_TOKEN")
     slack_channel_id: str = Field(default="", alias="CODEX_TRIAGE_SLACK_CHANNEL_ID")
-    repository_path: Path = Field(default=Path.cwd(), alias="CODEX_TRIAGE_REPOSITORY_PATH")
     state_dir: Path = Field(default=Path(".codex-triage"), alias="CODEX_TRIAGE_STATE_DIR")
-    codex_home: Path | None = Field(default=None, alias="CODEX_TRIAGE_CODEX_HOME")
-    codex_binary: str = Field(default="codex", alias="CODEX_TRIAGE_CODEX_BINARY")
+    github_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_TRIAGE_GITHUB_TOKEN")
+    # "owner/repo" that hosts the codex-triage workflow.
+    github_repository: str = Field(default="", alias="CODEX_TRIAGE_GITHUB_REPOSITORY")
+    github_api_base_url: str = Field(
+        default="https://api.github.com",
+        alias="CODEX_TRIAGE_GITHUB_API_BASE_URL",
+    )
+    dispatch_event_type: str = Field(
+        default="codex-triage",
+        alias="CODEX_TRIAGE_DISPATCH_EVENT_TYPE",
+    )
     codex_model: str = Field(default="deepseek-v4-flash", alias="CODEX_TRIAGE_CODEX_MODEL")
+    # Must be reachable from GitHub-hosted runners, so the public gateway URL.
     hybrid_inference_base_url: str = Field(
         default="https://freeinference.org/v1",
         alias="CODEX_TRIAGE_HYBRID_BASE_URL",
-    )
-    codex_api_key: SecretStr = Field(default=SecretStr(""), alias="CODEX_API_KEY")
-    codex_timeout_seconds: int = Field(
-        default=600,
-        ge=30,
-        le=3_600,
-        alias="CODEX_TRIAGE_TIMEOUT_SECONDS",
     )
     worker_poll_seconds: float = Field(
         default=1.0,
@@ -57,7 +66,8 @@ class TriageSettings(BaseSettings):
             self.relay_token.get_secret_value().strip()
             and self.slack_bot_token.get_secret_value().strip()
             and self.slack_channel_id.strip()
+            and self.github_token.get_secret_value().strip()
+            and self.github_repository.strip()
             and self.codex_model.strip()
             and self.hybrid_inference_base_url.strip()
-            and self.codex_api_key.get_secret_value().strip()
         )

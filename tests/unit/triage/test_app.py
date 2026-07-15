@@ -54,7 +54,6 @@ def test_alert_endpoint_requires_bearer_token(tmp_path):
     settings = TriageSettings(
         relay_token=SecretStr("expected-token"),
         state_dir=tmp_path,
-        repository_path=tmp_path,
     )
     service = FakeService()
     with TestClient(create_app(settings, service=service)) as client:
@@ -76,9 +75,9 @@ def test_configured_relay_protects_process_before_starting_worker(tmp_path):
         relay_token=SecretStr("relay-secret"),
         slack_bot_token=SecretStr("slack-secret"),
         slack_channel_id="C0123456789",
-        codex_api_key=SecretStr("service-secret"),
+        github_token=SecretStr("github-secret"),
+        github_repository="HarvardMadSys/hybridInference",
         state_dir=tmp_path,
-        repository_path=tmp_path,
     )
 
     with (

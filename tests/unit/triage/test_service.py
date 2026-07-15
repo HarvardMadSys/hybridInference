@@ -1,4 +1,4 @@
-"""Tests for incident dedupe, recovery threading, and analysis delivery."""
+"""Tests for incident dedupe, recovery threading, and dispatch hand-off."""
 
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -6,7 +6,6 @@ from unittest.mock import patch
 import pytest
 
 from serving.triage.models import AlertEvent, TriageAnalysis
-from serving.triage.runner import CodexRun
 from serving.triage.service import TriageOverloadedError, TriageService, format_analysis
 from serving.triage.store import TriageStore
 
@@ -20,14 +19,16 @@ class FakeSlack:
         return thread_ts or f"ts-{len(self.messages)}"
 
 
-class FakeRunner:
-    def __init__(self, result: TriageAnalysis) -> None:
-        self.result = result
-        self.events: list[AlertEvent] = []
+class FakeDispatcher:
+    def __init__(self, fail_times: int = 0) -> None:
+        self.dispatched: list[tuple[AlertEvent, str]] = []
+        self._fail_times = fail_times
 
-    async def run(self, event: AlertEvent) -> CodexRun:
-        self.events.append(event)
-        return CodexRun(thread_id="codex-thread-1", analysis=self.result)
+    async def dispatch(self, event: AlertEvent, slack_thread_ts: str) -> None:
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise RuntimeError("github unavailable")
+        self.dispatched.append((event, slack_thread_ts))
 
 
 def alert(status: str = "firing", alert_id: str | None = None) -> AlertEvent:
@@ -63,12 +64,12 @@ def analysis() -> TriageAnalysis:
     )
 
 
-async def test_service_dedupes_and_posts_analysis_in_original_thread(tmp_path):
+async def test_service_dedupes_and_dispatches_to_github_once(tmp_path):
     store = TriageStore(tmp_path / "triage.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    runner = FakeRunner(analysis())
-    service = TriageService(store, slack, runner)
+    dispatcher = FakeDispatcher()
+    service = TriageService(store, slack, dispatcher)
 
     first = await service.submit(alert())
     duplicate = await service.submit(alert())
@@ -77,19 +78,19 @@ async def test_service_dedupes_and_posts_analysis_in_original_thread(tmp_path):
     assert len(slack.messages) == 1
 
     assert await service.process_one() is True
-    assert await service.process_one() is True
-    assert len(runner.events) == 1
-    assert runner.events[0].fingerprint == alert().fingerprint
-    assert slack.messages[1][1] == first.slack_thread_ts
-    assert "Codex triage (DeepSeek)" in slack.messages[1][0]
-    assert "&lt;!channel&gt;" in slack.messages[1][0]
+    assert await service.process_one() is False
+    assert len(dispatcher.dispatched) == 1
+    dispatched_event, thread_ts = dispatcher.dispatched[0]
+    assert dispatched_event.fingerprint == alert().fingerprint
+    assert thread_ts == first.slack_thread_ts
+    assert await store.job_counts() == {"queued": 0, "running": 0, "done": 1, "failed": 0}
 
 
 async def test_service_posts_recovery_to_existing_incident_thread(tmp_path):
     store = TriageStore(tmp_path / "triage.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeRunner(analysis()))
+    service = TriageService(store, slack, FakeDispatcher())
 
     firing = await service.submit(alert())
     resolved = await service.submit(alert("resolved"))
@@ -105,7 +106,7 @@ async def test_service_dedupes_recovery_retries(tmp_path):
     store = TriageStore(tmp_path / "triage.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeRunner(analysis()))
+    service = TriageService(store, slack, FakeDispatcher())
 
     firing = await service.submit(alert())
     recovery = alert("resolved", alert_id="recovery-1")
@@ -130,7 +131,7 @@ async def test_service_dedupes_unmatched_recovery_retries(tmp_path):
     store = TriageStore(tmp_path / "triage.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeRunner(analysis()))
+    service = TriageService(store, slack, FakeDispatcher())
 
     recovery = alert("resolved", alert_id="recovery-1")
     first = await service.submit(recovery)
@@ -149,7 +150,8 @@ async def test_service_allows_new_incident_after_dedupe_window(tmp_path):
     store = TriageStore(tmp_path / "triage.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeRunner(analysis()))
+    dispatcher = FakeDispatcher()
+    service = TriageService(store, slack, dispatcher)
 
     first = await service.submit(alert(alert_id="alert-1"))
     incident = await store.get_incident(alert().fingerprint)
@@ -163,18 +165,21 @@ async def test_service_allows_new_incident_after_dedupe_window(tmp_path):
     assert second.duplicate is False
     assert second.slack_thread_ts != first.slack_thread_ts
 
-    # The first queued analysis still replies to its original Slack thread even
+    # Each queued hand-off still targets its own original Slack thread even
     # though the current incident row now points at the newer occurrence.
     assert await service.process_one() is True
     assert await service.process_one() is True
-    assert slack.messages[2][1] == first.slack_thread_ts
+    assert [ts for _, ts in dispatcher.dispatched] == [
+        first.slack_thread_ts,
+        second.slack_thread_ts,
+    ]
 
 
 async def test_service_rejects_new_analysis_when_queue_is_full(tmp_path):
     store = TriageStore(tmp_path / "triage.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeRunner(analysis()), max_pending_jobs=1)
+    service = TriageService(store, slack, FakeDispatcher(), max_pending_jobs=1)
 
     await service.submit(alert(alert_id="alert-1"))
     second = alert(alert_id="alert-2").model_copy(
@@ -186,8 +191,28 @@ async def test_service_rejects_new_analysis_when_queue_is_full(tmp_path):
     assert len(slack.messages) == 1
 
 
+async def test_service_posts_failure_notice_when_dispatch_finally_fails(tmp_path):
+    store = TriageStore(tmp_path / "triage.sqlite3")
+    await store.initialize()
+    slack = FakeSlack()
+    dispatcher = FakeDispatcher(fail_times=2)
+    service = TriageService(store, slack, dispatcher, max_attempts=2)
+
+    first = await service.submit(alert())
+    assert await service.process_one() is True
+    assert await service.process_one() is True
+
+    assert dispatcher.dispatched == []
+    assert (await store.job_counts())["failed"] == 1
+    failure_text, failure_thread = slack.messages[-1]
+    assert "Codex triage unavailable" in failure_text
+    assert "GitHub Actions" in failure_text
+    assert failure_thread == first.slack_thread_ts
+
+
 def test_format_analysis_is_bounded_and_mention_safe():
     message = format_analysis(analysis(), "thread-1")
+    assert message.startswith("*Codex triage*")
     assert "<!channel>" not in message
     assert "&lt;!channel&gt;" in message
     assert "hyi-" not in message

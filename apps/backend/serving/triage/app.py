@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from serving.triage.config import TriageSettings
+from serving.triage.dispatcher import GitHubDispatcher
 from serving.triage.models import AlertEvent, SubmitAlertResponse
-from serving.triage.runner import CodexRunner
 from serving.triage.security import protect_process_secrets
 from serving.triage.service import TriageOverloadedError, TriageService
 from serving.triage.slack import SlackClient, SlackDeliveryError
@@ -27,11 +27,11 @@ def build_service(settings: TriageSettings) -> TriageService:
         settings.slack_bot_token.get_secret_value().strip(),
         settings.slack_channel_id.strip(),
     )
-    runner = CodexRunner(settings)
+    dispatcher = GitHubDispatcher(settings)
     return TriageService(
         store,
         slack,
-        runner,
+        dispatcher,
         poll_seconds=settings.worker_poll_seconds,
         max_attempts=settings.max_attempts,
         max_pending_jobs=settings.max_pending_jobs,
@@ -62,7 +62,7 @@ def create_app(
                 await triage_service.stop()
 
     application = FastAPI(
-        title="HybridInference DeepSeek-backed Codex Alert Triage",
+        title="HybridInference Codex Alert Triage",
         version="1.0.0",
         lifespan=lifespan,
     )

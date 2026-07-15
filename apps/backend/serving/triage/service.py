@@ -1,4 +1,4 @@
-"""Incident orchestration for Slack delivery and asynchronous Codex analysis."""
+"""Incident orchestration: Slack delivery and GitHub Actions hand-off."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from serving.triage.models import (
 )
 
 if TYPE_CHECKING:
-    from serving.triage.runner import CodexRun
     from serving.triage.store import TriageJob, TriageStore
 
 log = logging.getLogger(__name__)
@@ -33,21 +32,21 @@ class SlackPoster(Protocol):
         """Post text and return the resulting Slack timestamp."""
 
 
-class AnalysisRunner(Protocol):
-    """Codex capability required by the orchestrator."""
+class AnalysisDispatcher(Protocol):
+    """GitHub Actions hand-off capability required by the orchestrator."""
 
-    async def run(self, event: AlertEvent) -> CodexRun:
-        """Analyze one firing alert."""
+    async def dispatch(self, event: AlertEvent, slack_thread_ts: str) -> None:
+        """Trigger the analysis workflow for one firing alert."""
 
 
 class TriageService:
-    """Deduplicate incidents and process durable analysis jobs."""
+    """Deduplicate incidents and hand durable analysis jobs to GitHub Actions."""
 
     def __init__(
         self,
         store: TriageStore,
         slack: SlackPoster,
-        runner: AnalysisRunner,
+        dispatcher: AnalysisDispatcher,
         *,
         poll_seconds: float = 1.0,
         max_attempts: int = 2,
@@ -55,7 +54,7 @@ class TriageService:
     ) -> None:
         self.store = store
         self._slack = slack
-        self._runner = runner
+        self._dispatcher = dispatcher
         self._poll_seconds = poll_seconds
         self._max_attempts = max_attempts
         self._max_pending_jobs = max_pending_jobs
@@ -156,43 +155,35 @@ class TriageService:
             )
 
     async def process_one(self) -> bool:
-        """Process one ready stage; return False when the queue is empty."""
+        """Hand one queued job to GitHub Actions; return False when idle.
+
+        The workflow owns everything after a successful dispatch: it runs the
+        Codex analysis and replies (or posts its own failure notice) in the
+        original Slack thread. The relay only retries the hand-off itself.
+        """
         job = await self.store.claim_next_job()
         if job is None:
             return False
         try:
-            if job.stage == "analysis":
-                result = await self._runner.run(job.event)
-                await self.store.save_analysis(
-                    job.id,
-                    job.fingerprint,
-                    job.event.alert_id,
-                    result.analysis,
-                    result.thread_id,
-                )
-                self._wake.set()
-            elif job.stage == "posting" and job.result is not None:
-                await self._slack.post(
-                    format_analysis(job.result, job.codex_thread_id),
-                    thread_ts=job.slack_thread_ts,
-                )
-                await self.store.complete_job(job.id)
-            else:
+            if job.stage != "dispatch":
                 raise RuntimeError(f"invalid triage job stage: {job.stage}")
+            await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
+            await self.store.complete_job(job.id)
         except Exception as exc:
             log.exception("triage job %s failed during %s", job.id, job.stage)
             final = await self.store.retry_or_fail(job, str(exc), self._max_attempts)
-            if final and job.stage == "analysis":
+            if final:
                 await self._post_failure_notice(job)
-            elif not final:
+            else:
                 self._wake.set()
         return True
 
     async def _post_failure_notice(self, job: TriageJob) -> None:
         try:
             await self._slack.post(
-                "*Codex triage (DeepSeek) unavailable*\n"
-                f"Analysis failed after {job.attempts} attempts. Check the triage service logs.",
+                "*Codex triage unavailable*\n"
+                f"Hand-off to the GitHub Actions analysis workflow failed after "
+                f"{job.attempts} attempts. Check the triage relay logs.",
                 thread_ts=job.slack_thread_ts,
             )
         except Exception:
@@ -219,14 +210,19 @@ def _escape_slack(text: str) -> str:
 
 
 def format_analysis(analysis: TriageAnalysis, thread_id: str | None) -> str:
-    """Render a bounded, mention-safe Codex result for a Slack thread."""
+    """Render a bounded, mention-safe Codex result for a Slack thread.
+
+    Used by the ``codex-triage`` GitHub Actions workflow (via
+    ``serving.triage.gha``) to post the structured analysis back into the
+    original alert thread.
+    """
     evidence = "\n".join(f"• {_escape_slack(item)}" for item in analysis.evidence) or "• None"
     actions = "\n".join(
         f"{index}. {_escape_slack(item)}"
         for index, item in enumerate(analysis.recommended_actions, start=1)
     )
     lines = [
-        "*Codex triage (DeepSeek)*",
+        "*Codex triage*",
         f"• *Classification:* `{analysis.classification}`",
         f"• *Confidence:* {analysis.confidence:.0%}",
         f"• *Summary:* {_escape_slack(analysis.summary)}",
