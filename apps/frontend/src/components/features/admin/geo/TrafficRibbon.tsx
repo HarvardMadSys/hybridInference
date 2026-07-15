@@ -78,8 +78,8 @@ export function TrafficRibbon({
   const handleChartClick = (event: MouseEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     if (!rect.width) return;
-    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    onHourChange(Math.max(start, Math.min(end, Math.round(start + fraction * (dayLength - 1)))));
+    const svgX = ((event.clientX - rect.left) / rect.width) * WIDTH;
+    onHourChange(Math.max(start, Math.min(end, Math.round(x.invert(svgX)))));
   };
 
   return (

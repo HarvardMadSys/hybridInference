@@ -178,8 +178,11 @@ describe('GeoGlobe', () => {
     render(<GeoGlobe />);
 
     expect(await screen.findByText('2026-07-15 01:00 UTC')).toBeInTheDocument();
+    const staticCountryPath = document.querySelector('g[data-layer="countries"] path');
+    expect(staticCountryPath).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '−24h' }));
     expect(screen.getByText('2026-07-15 00:00 UTC')).toBeInTheDocument();
+    expect(document.querySelector('g[data-layer="countries"] path')).toBe(staticCountryPath);
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Metric' }), {
       target: { value: 'tout' },
@@ -189,6 +192,26 @@ describe('GeoGlobe', () => {
     fireEvent.click(screen.getByRole('button', { name: '▶ Play' }));
     expect(screen.getByRole('button', { name: '⏸ Pause' })).toHaveAttribute('aria-pressed', 'true');
     fireEvent.click(screen.getByRole('button', { name: '⏸ Pause' }));
+  });
+
+  it('maps timeline clicks through the plotted area instead of the SVG margins', async () => {
+    const data = response();
+    data.hours_index = Array.from(
+      { length: 24 },
+      (_, hour) => `2026-07-15T${String(hour).padStart(2, '0')}:00:00+00:00`,
+    );
+    data.hours = Array.from({ length: 24 }, () => ({ b: [], f: [] }));
+    mockedGetGeoAnalytics.mockResolvedValue(data);
+    render(<GeoGlobe />);
+
+    expect(await screen.findByText('2026-07-15 23:00 UTC')).toBeInTheDocument();
+    const timeline = screen.getByRole('img', {
+      name: 'Demand timeline for the selected UTC day',
+    });
+    timeline.getBoundingClientRect = () => ({ left: 0, width: 1_000 }) as DOMRect;
+    fireEvent.click(timeline, { clientX: 952 });
+
+    expect(screen.getByText('2026-07-15 23:00 UTC')).toBeInTheDocument();
   });
 
   it('shows demo, degraded, and stale states without DB-IP attribution', async () => {
@@ -223,6 +246,18 @@ describe('GeoGlobe', () => {
       await screen.findByRole('img', { name: /Globe of IP-based request origins/ }),
     ).toBeInTheDocument();
     await waitFor(() => expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows a controlled error for a malformed API response', async () => {
+    mockedGetGeoAnalytics.mockResolvedValue({
+      ...response(),
+      hours: undefined,
+    } as unknown as GeoAnalyticsResponse);
+    render(<GeoGlobe />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The geographic demand response has an invalid structure',
+    );
   });
 
   it('shows an empty state for a successful window with no requests', async () => {

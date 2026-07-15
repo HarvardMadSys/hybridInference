@@ -1,6 +1,19 @@
 'use client';
 
-import * as d3 from 'd3';
+import {
+  geoCentroid,
+  geoCircle,
+  geoDistance,
+  geoGraticule10,
+  geoInterpolate,
+  geoOrthographic,
+  geoPath,
+  max,
+  range,
+  scaleSqrt,
+  select,
+} from 'd3';
+import type { GeoPermissibleObjects } from 'd3';
 import type { Feature, Geometry } from 'geojson';
 import { useEffect, useRef } from 'react';
 import { feature } from 'topojson-client';
@@ -91,7 +104,7 @@ export function prepareAtlas(raw: unknown): PreparedAtlas {
     const id = country.properties?.id;
     if (!id) continue;
     byId.set(id, country);
-    const centroid = d3.geoCentroid(country);
+    const centroid = geoCentroid(country);
     if (centroid.every(Number.isFinite)) coordinates.set(id, centroid as [number, number]);
   }
   for (const [id, coordinate] of Object.entries(COORDINATE_OVERRIDES)) {
@@ -134,16 +147,16 @@ function dayNightGeometry(date: Date) {
   const subsolarLongitude = ((180 - utcHour * 15 + 540) % 360) - 180;
   const antipodeLongitude = ((subsolarLongitude + 360) % 360) - 180;
   return {
-    day: d3.geoCircle().center([subsolarLongitude, declination]).radius(90)(),
-    night: d3.geoCircle().center([antipodeLongitude, -declination]).radius(90)(),
+    day: geoCircle().center([subsolarLongitude, declination]).radius(90)(),
+    night: geoCircle().center([antipodeLongitude, -declination]).radius(90)(),
   };
 }
 
 function greatCircle(from: [number, number], to: [number, number]): GeoJSON.LineString {
-  const interpolate = d3.geoInterpolate(from, to);
+  const interpolate = geoInterpolate(from, to);
   return {
     type: 'LineString',
-    coordinates: d3.range(31).map((index) => interpolate(index / 30)),
+    coordinates: range(31).map((index) => interpolate(index / 30)),
   };
 }
 
@@ -183,9 +196,10 @@ export function GlobeCanvas({
   const stageRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const projectionRef = useRef(
-    d3.geoOrthographic().clipAngle(90).precision(0.4).rotate([-100, -28, 0]),
+    geoOrthographic().clipAngle(90).precision(0.4).rotate([-100, -28, 0]),
   );
-  const redrawRef = useRef<() => void>(() => undefined);
+  const staticRedrawRef = useRef<() => void>(() => undefined);
+  const dynamicRedrawRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const stageElement = stageRef.current;
@@ -193,22 +207,24 @@ export function GlobeCanvas({
     if (!stageElement || !svgElement) return;
 
     const projection = projectionRef.current;
-    const path = d3.geoPath(projection);
-    const svg = d3.select(svgElement);
+    const path = geoPath(projection);
+    const svg = select(svgElement);
     svg.selectAll('*').remove();
 
     const sphere = svg
       .append('path')
-      .datum({ type: 'Sphere' } as d3.GeoPermissibleObjects)
+      .attr('data-layer', 'sphere')
+      .datum({ type: 'Sphere' } as GeoPermissibleObjects)
       .attr('fill', 'rgba(16,21,32,0.96)')
       .attr('stroke', 'rgba(255,255,255,0.12)');
     const graticule = svg
       .append('path')
-      .datum(d3.geoGraticule10())
+      .attr('data-layer', 'graticule')
+      .datum(geoGraticule10())
       .attr('fill', 'none')
       .attr('stroke', 'rgba(255,255,255,0.055)')
       .attr('stroke-width', 0.6);
-    const countriesLayer = svg.append('g');
+    const countriesLayer = svg.append('g').attr('data-layer', 'countries');
     const countryPaths = countriesLayer
       .selectAll<SVGPathElement, CountryFeature>('path')
       .data(atlas.countries)
@@ -216,17 +232,89 @@ export function GlobeCanvas({
       .attr('fill', '#1f2836')
       .attr('stroke', 'rgba(255,255,255,0.06)')
       .attr('stroke-width', 0.5);
-    const daySide = svg.append('path').attr('fill', 'rgba(255,244,214,0.08)');
-    const nightSide = svg.append('path').attr('fill', 'rgba(2,4,12,0.48)');
-    const terminator = svg
+    svg.append('path').attr('data-layer', 'day').attr('fill', 'rgba(255,244,214,0.08)');
+    svg.append('path').attr('data-layer', 'night').attr('fill', 'rgba(2,4,12,0.48)');
+    svg
       .append('path')
+      .attr('data-layer', 'terminator')
       .attr('fill', 'none')
       .attr('stroke', 'rgba(205,220,255,0.34)')
       .attr('stroke-width', 1.1)
       .attr('stroke-dasharray', '5 4');
-    const arcsLayer = svg.append('g');
-    const heatLayer = svg.append('g');
-    const providersLayer = svg.append('g');
+    svg.append('g').attr('data-layer', 'arcs');
+    svg.append('g').attr('data-layer', 'heat');
+    svg.append('g').attr('data-layer', 'providers');
+
+    const redrawStatic = () => {
+      sphere.attr('d', path);
+      graticule.attr('d', path);
+      countryPaths.attr('d', path);
+    };
+    staticRedrawRef.current = redrawStatic;
+
+    const resize = () => {
+      const bounds = stageElement.getBoundingClientRect();
+      const width = Math.max(320, bounds.width || 800);
+      const height = Math.max(360, bounds.height || 520);
+      svg.attr('viewBox', `0 0 ${width} ${height}`);
+      projection.translate([width * 0.5, height * 0.5]).scale(Math.min(width, height) * 0.46);
+      redrawStatic();
+      dynamicRedrawRef.current();
+    };
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
+    observer?.observe(stageElement);
+    resize();
+
+    let dragStart: [number, number] | null = null;
+    let rotationStart: [number, number, number] | null = null;
+    const pointerDown = (event: PointerEvent) => {
+      dragStart = [event.clientX, event.clientY];
+      rotationStart = projection.rotate();
+      svgElement.setPointerCapture?.(event.pointerId);
+    };
+    const pointerMove = (event: PointerEvent) => {
+      if (!dragStart || !rotationStart) return;
+      projection.rotate([
+        rotationStart[0] + (event.clientX - dragStart[0]) * 0.28,
+        Math.max(-75, Math.min(75, rotationStart[1] - (event.clientY - dragStart[1]) * 0.22)),
+        0,
+      ]);
+      redrawStatic();
+      dynamicRedrawRef.current();
+    };
+    const pointerEnd = () => {
+      dragStart = null;
+      rotationStart = null;
+    };
+    svgElement.addEventListener('pointerdown', pointerDown);
+    svgElement.addEventListener('pointermove', pointerMove);
+    svgElement.addEventListener('pointerup', pointerEnd);
+    svgElement.addEventListener('pointercancel', pointerEnd);
+
+    return () => {
+      observer?.disconnect();
+      svgElement.removeEventListener('pointerdown', pointerDown);
+      svgElement.removeEventListener('pointermove', pointerMove);
+      svgElement.removeEventListener('pointerup', pointerEnd);
+      svgElement.removeEventListener('pointercancel', pointerEnd);
+      staticRedrawRef.current = () => undefined;
+      svg.selectAll('*').remove();
+    };
+  }, [atlas]);
+
+  useEffect(() => {
+    const svgElement = svgRef.current;
+    if (!svgElement) return;
+
+    const projection = projectionRef.current;
+    const path = geoPath(projection);
+    const svg = select(svgElement);
+    const daySide = svg.select<SVGPathElement>('path[data-layer="day"]');
+    const nightSide = svg.select<SVGPathElement>('path[data-layer="night"]');
+    const terminator = svg.select<SVGPathElement>('path[data-layer="terminator"]');
+    const arcsLayer = svg.select<SVGGElement>('g[data-layer="arcs"]');
+    const heatLayer = svg.select<SVGGElement>('g[data-layer="heat"]');
+    const providersLayer = svg.select<SVGGElement>('g[data-layer="providers"]');
 
     const bucketIndex = buildColumnIndex(data.bucket_cols);
     const countryPosition = bucketIndex.c;
@@ -255,9 +343,8 @@ export function GlobeCanvas({
         return coordinate ? { ...dot, coordinate } : null;
       })
       .filter((dot): dot is CountryDot => dot !== null && !dot.country.startsWith('?'));
-    const radius = d3
-      .scaleSqrt()
-      .domain([0, d3.max(dots, (dot) => dot.value) ?? 1])
+    const radius = scaleSqrt()
+      .domain([0, max(dots, (dot) => dot.value) ?? 1])
       .range([2.5, 26]);
 
     const providersById = new Map(data.providers.map((provider) => [provider.id, provider]));
@@ -276,9 +363,8 @@ export function GlobeCanvas({
       .filter((flow): flow is GlobeFlow => flow !== null)
       .sort((a, b) => b.requests - a.requests)
       .slice(0, 14);
-    const flowWidth = d3
-      .scaleSqrt()
-      .domain([0, d3.max(flows, (flow) => flow.requests) ?? 1])
+    const flowWidth = scaleSqrt()
+      .domain([0, max(flows, (flow) => flow.requests) ?? 1])
       .range([0.6, 4]);
     const countryContinents = buildCountryContinentMap(data);
 
@@ -408,12 +494,9 @@ export function GlobeCanvas({
 
     const isFront = (coordinate: [number, number]) => {
       const rotation = projection.rotate();
-      return d3.geoDistance([-rotation[0], -rotation[1]], coordinate) < Math.PI / 2;
+      return geoDistance([-rotation[0], -rotation[1]], coordinate) < Math.PI / 2;
     };
-    const redraw = () => {
-      sphere.attr('d', path);
-      graticule.attr('d', path);
-      countryPaths.attr('d', path);
+    const redrawDynamic = () => {
       daySide.attr('d', path(day));
       nightSide.attr('d', path(night));
       terminator.attr('d', path(day));
@@ -431,59 +514,20 @@ export function GlobeCanvas({
         })
         .attr('display', (provider) => (isFront(provider.coord) ? null : 'none'));
     };
-    redrawRef.current = redraw;
-
-    const resize = () => {
-      const bounds = stageElement.getBoundingClientRect();
-      const width = Math.max(320, bounds.width || 800);
-      const height = Math.max(360, bounds.height || 520);
-      svg.attr('viewBox', `0 0 ${width} ${height}`);
-      projection.translate([width * 0.5, height * 0.5]).scale(Math.min(width, height) * 0.46);
-      redraw();
-    };
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
-    observer?.observe(stageElement);
-    resize();
-
-    let dragStart: [number, number] | null = null;
-    let rotationStart: [number, number, number] | null = null;
-    const pointerDown = (event: PointerEvent) => {
-      dragStart = [event.clientX, event.clientY];
-      rotationStart = projection.rotate();
-      svgElement.setPointerCapture?.(event.pointerId);
-    };
-    const pointerMove = (event: PointerEvent) => {
-      if (!dragStart || !rotationStart) return;
-      projection.rotate([
-        rotationStart[0] + (event.clientX - dragStart[0]) * 0.28,
-        Math.max(-75, Math.min(75, rotationStart[1] - (event.clientY - dragStart[1]) * 0.22)),
-        0,
-      ]);
-      redraw();
-    };
-    const pointerEnd = () => {
-      dragStart = null;
-      rotationStart = null;
-    };
-    svgElement.addEventListener('pointerdown', pointerDown);
-    svgElement.addEventListener('pointermove', pointerMove);
-    svgElement.addEventListener('pointerup', pointerEnd);
-    svgElement.addEventListener('pointercancel', pointerEnd);
+    dynamicRedrawRef.current = redrawDynamic;
+    redrawDynamic();
 
     return () => {
-      observer?.disconnect();
-      svgElement.removeEventListener('pointerdown', pointerDown);
-      svgElement.removeEventListener('pointermove', pointerMove);
-      svgElement.removeEventListener('pointerup', pointerEnd);
-      svgElement.removeEventListener('pointercancel', pointerEnd);
-      redrawRef.current = () => undefined;
-      svg.selectAll('*').remove();
+      if (dynamicRedrawRef.current === redrawDynamic) {
+        dynamicRedrawRef.current = () => undefined;
+      }
     };
   }, [animateFlows, atlas, data, hourIndex, metric, onSelect]);
 
   useEffect(() => {
     projectionRef.current.rotate([viewRequest.rotation[0], viewRequest.rotation[1], 0]);
-    redrawRef.current();
+    staticRedrawRef.current();
+    dynamicRedrawRef.current();
   }, [viewRequest]);
 
   return (

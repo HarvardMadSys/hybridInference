@@ -39,6 +39,16 @@ const viewPresets: { label: string; rotation: [number, number] }[] = [
 ];
 
 function validateResponse(data: GeoAnalyticsResponse): void {
+  if (
+    !data ||
+    !Array.isArray(data.bucket_cols) ||
+    !Array.isArray(data.flow_cols) ||
+    !Array.isArray(data.providers) ||
+    !Array.isArray(data.hours_index) ||
+    !Array.isArray(data.hours)
+  ) {
+    throw new Error('The geographic demand response has an invalid structure');
+  }
   const bucketColumns = ['c', 'cc', 'cont', 'n', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'];
   const flowColumns = ['c', 'p', 'e', 'n'];
   const actualBucketColumns = new Set<string>(data.bucket_cols);
