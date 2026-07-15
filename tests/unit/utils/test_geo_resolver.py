@@ -90,14 +90,14 @@ def test_missing_module_and_reader_open_failure_degrade_safely(tmp_path, monkeyp
     monkeypatch.setattr(geo_resolver, "maxminddb", None)
     missing_module = GeoResolver(country_db=str(database))
     assert missing_module.country_enabled is False
-    assert missing_module.degraded_reasons == ("maxminddb_unavailable",)
+    assert missing_module.degraded_reasons == ("mmdb_reader_unavailable",)
 
-    class BrokenMaxMind:
+    class BrokenMMDBModule:
         @staticmethod
         def open_database(path):
             raise RuntimeError("corrupt database")
 
-    monkeypatch.setattr(geo_resolver, "maxminddb", BrokenMaxMind())
+    monkeypatch.setattr(geo_resolver, "maxminddb", BrokenMMDBModule())
     broken_database = GeoResolver(country_db=str(database))
     assert broken_database.country_enabled is False
     assert broken_database.degraded_reasons == ("country_database_open_failed",)
@@ -110,3 +110,24 @@ def test_close_closes_injected_reader() -> None:
     resolver.close()
 
     assert reader.closed is True
+
+
+def test_provider_attribution_is_explicit_and_only_for_enabled_dbip(monkeypatch) -> None:
+    monkeypatch.setenv("GEOIP_COUNTRY_PROVIDER", "dbip-lite")
+    unattributed = GeoResolver(country_reader=FakeReader({}))
+    assert unattributed.country_provider is None
+    assert unattributed.country_attribution is None
+
+    dbip = GeoResolver(country_reader=FakeReader({}), country_provider="dbip-lite")
+    assert dbip.country_provider == "dbip-lite"
+    assert dbip.country_attribution == {
+        "label": "IP Geolocation by DB-IP",
+        "url": "https://db-ip.com",
+    }
+
+    unavailable = GeoResolver(
+        country_db="/does/not/exist.mmdb",
+        country_provider="dbip-lite",
+    )
+    assert unavailable.country_provider is None
+    assert unavailable.country_attribution is None

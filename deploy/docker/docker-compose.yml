@@ -34,11 +34,13 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-1}
+      GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
+      GEOIP_COUNTRY_PROVIDER: dbip-lite
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ../../config:/app/config:ro
-      - ../../var/data:/app/var/data          # subscription adapter credentials (read-write)
+      - ../../var/data:/app/var/data          # credentials and downloaded GeoIP data (read-write)
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:

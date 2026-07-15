@@ -1,13 +1,14 @@
 """Export hourly geo-temporal demand aggregates for ``geo_globe.html``.
 
 The real-data path streams ``api_logs`` and resolves network-origin IPs with
-an offline GeoLite2 Country database. The output contains aggregates only: no
+an offline DB-IP Country Lite database. The output contains aggregates only: no
 IPs, user ids, or prompts leave the database.
 
 Typical runs::
 
   uv run python ops/db/analysis/geo_hourly_export.py --days 30 \
-      --geoip-country /srv/geoip/GeoLite2-Country.mmdb \
+      --geoip-country var/data/geoip/dbip-country-lite.mmdb \
+      --geoip-provider dbip-lite \
       --out data.json
   uv run python ops/db/analysis/geo_hourly_export.py --demo --out data.json
 """
@@ -175,7 +176,7 @@ def generate_demo(days: int) -> dict:
         "hours": len(hours_index),
         "rows_total": total,
         "rows_with_ip": total,
-        "geoip": {"country": False},
+        "geoip": {"country": False, "provider": None, "attribution": None},
         "degraded": False,
         "degraded_reasons": [],
         "unmapped_alpha2": [],
@@ -212,7 +213,12 @@ def cli() -> None:
     parser.add_argument(
         "--geoip-country",
         default=os.environ.get("GEOIP_COUNTRY_DB"),
-        help="Path to GeoLite2-Country.mmdb (env: GEOIP_COUNTRY_DB)",
+        help="Path to a Country MMDB file (env: GEOIP_COUNTRY_DB)",
+    )
+    parser.add_argument(
+        "--geoip-provider",
+        default=os.environ.get("GEOIP_COUNTRY_PROVIDER"),
+        help="Country data provider id, e.g. dbip-lite (env: GEOIP_COUNTRY_PROVIDER)",
     )
     parser.add_argument("--env-file", default=None, help="Path to .env with DB_* variables")
     parser.add_argument("--demo", action="store_true", help="Generate synthetic demo data")
@@ -225,7 +231,7 @@ def cli() -> None:
 
     _load_env(args.env_file)
     if not args.geoip_country:
-        print("WARNING: no GeoLite2-Country.mmdb - all origins will be country '?'.")
+        print("WARNING: no Country MMDB configured - all origins will be country '?'.")
 
     until = (
         datetime.fromisoformat(args.until).astimezone(timezone.utc)
@@ -237,7 +243,7 @@ def cli() -> None:
         if args.since
         else until - timedelta(days=args.days)
     )
-    resolver = GeoResolver(args.geoip_country)
+    resolver = GeoResolver(args.geoip_country, country_provider=args.geoip_provider)
     try:
         payload = asyncio.run(export_real(since, until, resolver))
     finally:

@@ -16,7 +16,7 @@ except ImportError:  # pragma: no cover - dependency is present in production in
 
 
 class GeoReader(Protocol):
-    """Subset of the MaxMind reader API used by :class:`GeoResolver`."""
+    """Subset of the MMDB reader API used by :class:`GeoResolver`."""
 
     def get(self, ip: str) -> dict[str, Any] | None:
         """Return the database record for an IP."""
@@ -25,7 +25,7 @@ class GeoReader(Protocol):
         """Close the underlying database."""
 
 
-# MaxMind returns alpha-2 codes while the globe's Natural Earth atlas uses
+# Country MMDB records use alpha-2 codes while the Natural Earth atlas uses
 # alpha-3 identifiers. Unknown-but-valid codes deliberately become ``?XX``.
 ALPHA2_TO_ALPHA3 = {
     "AD": "AND",
@@ -324,6 +324,7 @@ class GeoResolver:
         country_db: str | None = None,
         *,
         country_reader: GeoReader | None = None,
+        country_provider: str | None = None,
         cache_size: int = 100_000,
     ) -> None:
         """Configure readers; database files are opened only on first use."""
@@ -332,6 +333,11 @@ class GeoResolver:
         self._country_path = country_db or os.environ.get("GEOIP_COUNTRY_DB")
         self._country = country_reader
         self._country_injected = country_reader is not None
+        self._country_provider = (
+            country_provider
+            if self._country_injected
+            else country_provider or os.environ.get("GEOIP_COUNTRY_PROVIDER")
+        )
         self._readers_initialized = country_reader is not None
         self._cache_size = cache_size
         self._cache: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
@@ -343,14 +349,14 @@ class GeoResolver:
             self._degraded_reasons.add("country_database_not_configured")
             return None
         if maxminddb is None:
-            self._degraded_reasons.add("maxminddb_unavailable")
+            self._degraded_reasons.add("mmdb_reader_unavailable")
             return None
         if not Path(path).is_file():
             self._degraded_reasons.add("country_database_missing")
             return None
         try:
             return maxminddb.open_database(path)
-        except Exception:  # MaxMind raises backend-specific errors for invalid files.
+        except Exception:  # MMDB readers raise backend-specific errors for invalid files.
             self._degraded_reasons.add("country_database_open_failed")
             return None
 
@@ -366,6 +372,21 @@ class GeoResolver:
         """Whether the country reader is available."""
         self._ensure_readers()
         return self._country is not None
+
+    @property
+    def country_provider(self) -> str | None:
+        """Configured data provider, only when country resolution is enabled."""
+        return self._country_provider if self.country_enabled else None
+
+    @property
+    def country_attribution(self) -> dict[str, str] | None:
+        """Required public attribution for the configured country database."""
+        if self.country_provider == "dbip-lite":
+            return {
+                "label": "IP Geolocation by DB-IP",
+                "url": "https://db-ip.com",
+            }
+        return None
 
     @property
     def degraded(self) -> bool:

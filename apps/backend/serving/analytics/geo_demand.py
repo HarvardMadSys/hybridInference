@@ -213,7 +213,11 @@ async def aggregate_geo_demand(
         "hours": len(hours_index),
         "rows_total": rows_total,
         "rows_with_ip": rows_with_ip,
-        "geoip": {"country": resolver.country_enabled},
+        "geoip": {
+            "country": resolver.country_enabled,
+            "provider": resolver.country_provider,
+            "attribution": resolver.country_attribution,
+        },
         "degraded": resolver.degraded,
         "degraded_reasons": list(resolver.degraded_reasons),
         "unmapped_alpha2": sorted(resolver.unmapped_a2),

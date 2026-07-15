@@ -4,9 +4,9 @@
 
 **Goal:** Bring the standalone geo-temporal demand globe (research instrument, implemented as ops tooling on this branch) into the freeinference product as an admin page at `/dashboard/admin/analytics/geo`, backed by a live admin API — **without touching the `api_logs` schema or the request/logging write path**.
 
-**Architecture:** Two sequential, separately reviewable PRs. **PR A (backend):** a read-only admin endpoint `GET /admin/analytics/geo` that scans the requested `api_logs` window, resolves `metadata->>'ip'` through an offline GeoLite2 Country database at query time, aggregates into the already-validated `data.json` contract, and caches the result in-process (hourly refresh). **PR B (frontend, based on PR A):** a Next.js sub-route `analytics/geo` hosting a React port of the globe (route-level code split keeps d3/atlas out of the base Analytics bundle), plus a lightweight Geography entry card on the Analytics landing. A future phase (deliberately deferred) would move geo resolution to log time via two `api_logs` columns; its triggers are listed at the end — do not implement it as part of this plan.
+**Architecture:** Two sequential, separately reviewable PRs. **PR A (backend):** a read-only admin endpoint `GET /admin/analytics/geo` that scans the requested `api_logs` window, resolves `metadata->>'ip'` through the offline DB-IP Country Lite database at query time, aggregates into the already-validated `data.json` contract, and caches the result in-process (hourly refresh). The deploy scripts refresh the monthly database before each build on a best-effort, atomic basis. **PR B (frontend, based on PR A):** a Next.js sub-route `analytics/geo` hosting a React port of the globe (route-level code split keeps d3/atlas out of the base Analytics bundle), plus a lightweight Geography entry card on the Analytics landing. A future phase (deliberately deferred) would prefer trusted Cloudflare country/continent headers at log time and use the local database as fallback; its triggers are listed at the end — do not implement it as part of this plan.
 
-**Tech Stack:** Python 3.12, FastAPI, asyncpg/Postgres, `maxminddb` (new backend dependency), Next.js 15.5, React 18, TypeScript, d3 + topojson-client (new frontend dependencies), pytest, vitest.
+**Tech Stack:** Python 3.12, FastAPI, asyncpg/Postgres, DB-IP Country Lite data read by the generic `maxminddb` MMDB library, Next.js 15.5, React 18, TypeScript, d3 + topojson-client (new frontend dependencies), pytest, vitest.
 
 **Spec:** inlined below (Background, Design decisions, Data contract). No separate spec file.
 
@@ -37,8 +37,11 @@ Facts verified against the real system (2026-07-15):
 - Exporter SQL runs clean against the real schema (validated on a schema-true dev DB).
 - DB access conventions for scripts: `.env` / `DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME`
   (same as [ops/db/export_logs.py](../../../ops/db/export_logs.py)).
-- The GeoLite2 Country `.mmdb` file is **not** on any server yet. PR A adds `maxminddb` as a
-  project dependency; deploying the database file remains an operational prerequisite.
+- [DB-IP Country Lite](https://db-ip.com/db/download/ip-to-country-lite) requires no account or
+  secret. It is a reduced-accuracy/coverage monthly database under CC BY 4.0, so product surfaces
+  using it must retain DB-IP's clickable attribution. PR A includes an atomic monthly updater and
+  runs it best-effort during staging and production deploys. The database lives in ignored
+  `var/data/geoip/`; the generic `maxminddb` package reads its MMDB format.
 - Admin tab nav supports sub-routes: active state uses `pathname.startsWith(href + '/')`
   ([AdminTabNav.tsx](../../../apps/frontend/src/components/features/admin/AdminTabNav.tsx)),
   and the Analytics tab is a thin wrapper
@@ -66,9 +69,9 @@ Facts verified against the real system (2026-07-15):
    unknown `#898781`); color follows the entity across filters. Ribbon carries line-end direct
    labels as the secondary encoding. The globe stage stays dark ("instrument panel") in the
    product; surrounding chrome adopts the app theme.
-7. **Why query-time GeoIP (PR A) instead of log-time columns (PR C):** the globe only needs a read
+7. **Why query-time GeoIP (PR A) instead of log-time columns:** the globe only needs a read
    endpoint; the column migration is the riskiest kind of change in this repo (the five-place
-   `api_logs` sync — see PR C) and its real payoffs (SQL geo filters on the Requests tab, IP
+   `api_logs` sync — see the future phase) and its real payoffs (SQL geo filters on the Requests tab, IP
    retention/TTL policy, frozen-at-observation resolution) are not prerequisites for this page.
 
 ## Data contract (existing `data.json` shape → PR A response body)
@@ -87,7 +90,11 @@ columns by `flow_cols`, so it remains compatible via
     "hours": 720,
     "rows_total": 123456,
     "rows_with_ip": 120000,
-    "geoip": {"country": true},
+    "geoip": {
+      "country": true,
+      "provider": "dbip-lite",
+      "attribution": {"label": "IP Geolocation by DB-IP", "url": "https://db-ip.com"}
+    },
     "degraded": false,
     "degraded_reasons": [],
     "unmapped_alpha2": [],
@@ -109,7 +116,7 @@ columns by `flow_cols`, so it remains compatible via
 ```
 
 Row semantics: `c` ISO-3166 alpha-3 (`?XX` when unmapped, `?` when unknown), `cc` alpha-2, `cont`
-MaxMind continent code, `n` requests, `err` errored requests, `users` distinct non-null
+MMDB continent code, `n` requests, `err` errored requests, `users` distinct non-null
 `user_id`s, `tin`/`tout` prompt/completion tokens, `gs` Σ `latency_ms`/1000 (compute-time estimate),
 `p50`/`p90` TTFT ms (nearest-rank, null when no samples). In flow rows, `p` is the provider label
 and `e` is `served_endpoint_id` (falling back to `p` for older rows); flows from distinct serving
@@ -135,14 +142,15 @@ endpoints are not merged even when they share a provider.
 
 **Files:**
 - New: `apps/backend/serving/utils/geo_resolver.py`
-- Modify: `pyproject.toml` and `uv.lock` (add `maxminddb` as a project dependency)
+- Modify: `pyproject.toml` and `uv.lock` (add `maxminddb` as a generic MMDB reader dependency)
 - Test: `tests/unit/utils/test_geo_resolver.py` (new)
 
 - [x] Port `GeoResolver` and `ALPHA2_TO_ALPHA3` from
   [ops/db/analysis/geo_hourly_export.py](../../../ops/db/analysis/geo_hourly_export.py) into the
   util (the exporter should import from the util afterwards — one implementation, two callers).
-- [x] Lazy-open the reader from the `GEOIP_COUNTRY_DB` env var; a missing file or missing
-  `maxminddb` degrades to `country='?'` and sets a `degraded` flag (never crash the admin page).
+- [x] Lazy-open the reader from the `GEOIP_COUNTRY_DB` env var; identify its provider through
+  `GEOIP_COUNTRY_PROVIDER`; a missing file or MMDB reader degrades to `country='?'` and sets a
+  `degraded` flag (never crash the admin page).
 - [x] Unit tests with an injected fake reader: private/loopback/invalid → unknown geography;
   unmapped alpha-2 → `?XX` + recorded in `unmapped_a2`; cache hit path.
 
@@ -177,11 +185,12 @@ endpoints are not merged even when they share a provider.
   `serving.utils.geo_resolver`; `--demo` and CSV behavior unchanged. Re-run
   `uv run python ops/db/analysis/geo_hourly_export.py --demo --out /dev/null` as regression.
 
-### Task 4: post-merge staging verification (gate for starting PR B)
+### Task 4: deployment data + post-merge staging verification (gate for starting PR B)
 
-- [ ] Provision GeoLite2 on staging: free MaxMind account → download `GeoLite2-Country.mmdb` to
-  `/srv/geoip/`; set `GEOIP_COUNTRY_DB` in the service env. **The `.mmdb` file must not enter the
-  repo** (MaxMind EULA); add a weekly refresh cron later.
+- [x] Add `ops/setup/update_dbip_country_lite.sh`: download the current UTC `YYYY-MM` DB-IP
+  Country Lite release without credentials, validate gzip/MMDB shape, then atomically install it
+  under ignored `var/data/geoip/`. Deploys call it best-effort and keep the last good file on
+  failure. Compose sets `GEOIP_COUNTRY_DB` and `GEOIP_COUNTRY_PROVIDER=dbip-lite`.
 - [ ] Hit `/admin/analytics/geo?days=7` on staging (test account `admin@admin.com`); confirm
   latency of the cold scan and the cached hit; confirm `meta.geoip` flags true.
 - [ ] Fetch the aggregate with an authenticated request (for example, `curl -H 'Authorization:
@@ -219,6 +228,9 @@ endpoints are not merged even when they share a provider.
 - [ ] Adapt: cards/typography/buttons to the app's design tokens; the globe stage may stay dark.
 - [ ] Loading/error/staleness states (`meta.generated_at`), and an "unlocated %" stat — keep the
   honesty affordances.
+- [ ] When `meta.geoip.provider === 'dbip-lite'`, render the clickable attribution
+  "IP Geolocation by DB-IP" linking to `https://db-ip.com`; never show it for synthetic or
+  unattributed data.
 
 ### Task 7: Analytics landing entry card
 
@@ -234,8 +246,8 @@ endpoints are not merged even when they share a provider.
 
 ## Operational prerequisites (not code)
 
-- [ ] GeoLite2 Country on prod + staging (`/srv/geoip/`, env var, weekly refresh cron; EULA: the
-  file stays out of the repo).
+- [x] DB-IP Country Lite updater wired into prod + staging deploys, with ignored
+  `var/data/geoip/dbip-country-lite.mmdb` mounted into the backend container.
 - [ ] Deploy the updated project environment containing the Task 1 `maxminddb` dependency.
 - [ ] **Go/no-go before investing in PR B:** run the offline exporter (or the PR A endpoint) on
   prod for ≥14 days of history and check whether demand shows time-zone-separated peaks across
@@ -249,8 +261,10 @@ an IP retention/TTL policy (keep coarse geo, delete raw IPs), reproducible froze
 resolution for the paper dataset, or scan cost outgrowing the hourly cache.
 
 Scope when triggered: two columns `origin_country_code` / `origin_continent_code`; enrichment at
-the single logging choke point (not per-router); backfill script
-reusing `GeoResolver`. **Five-place sync checklist** (the historical split-brain incident):
+the single logging choke point (not per-router). Prefer `cf-ipcountry` / `cf-ipcontinent` only when
+the request came through the trusted Cloudflare proxy path—never trust client-supplied copies—and
+fall back to `GeoResolver`. DB-IP remains necessary for historical backfill. **Five-place sync
+checklist** (the historical split-brain incident):
 [log_schema.py](../../../apps/backend/serving/storage/log_schema.py) (CREATE TABLE + migration
 list) + both hand-duplicated INSERTs (`postgres_log.py`, `database.py`) + the LogStore ABC +
 `ops/db/export_logs.py` alignment.

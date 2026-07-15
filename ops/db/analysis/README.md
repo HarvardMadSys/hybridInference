@@ -27,8 +27,8 @@ These scripts are intended for one-off analysis work after exporting logs from `
 - `geo_hourly_export.py`
   - aggregates the live DB into privacy-safe hourly country demand buckets and
     `country x provider x served-endpoint` flows
-    (`data.json` + CSV), resolving `metadata->>'ip'` with offline GeoLite2
-    Country data; `--demo` emits synthetic data with the same shape
+    (`data.json` + CSV), resolving `metadata->>'ip'` with offline DB-IP Country
+    Lite data; `--demo` emits synthetic data with the same shape
     (no DB / GeoIP needed)
 - `geo_globe.html`
   - standalone browser viewer for `geo_hourly_export.py` output: rotating globe
@@ -93,11 +93,12 @@ and how much cross-region pooling could save. Aggregates only — no raw IPs,
 user ids, or prompts leave the database.
 
 ```bash
-# one-time: download GeoLite2 Country with a free MaxMind account
-# (`maxminddb` itself is installed by the project environment)
+# Download the current UTC monthly release (no account or secret required).
+ops/setup/update_dbip_country_lite.sh
 
 uv run python ops/db/analysis/geo_hourly_export.py --days 30 \
-  --geoip-country /srv/geoip/GeoLite2-Country.mmdb \
+  --geoip-country var/data/geoip/dbip-country-lite.mmdb \
+  --geoip-provider dbip-lite \
   --out data.json --csv geo_hourly.csv
 
 # viewer (same directory as data.json)
@@ -105,9 +106,17 @@ cp ops/db/analysis/geo_globe.html .
 python3 -m http.server 8000   # open http://localhost:8000/geo_globe.html
 ```
 
-Without the GeoLite2 Country file the export still runs, but origins degrade to
-country `?`. `--demo` generates synthetic data for viewer development (clearly
-badged in the UI). Local provider coordinates are a hand-maintained map
+The deploy scripts run the same updater before each build on a best-effort
+basis. A failed download retains the last good monthly database; without any
+Country MMDB the endpoint and exporter still run, but origins degrade to
+country `?`. The Python `maxminddb` package is only the generic MMDB reader.
+Real [DB-IP Country Lite](https://db-ip.com/db/download/ip-to-country-lite)
+data is lower-accuracy/coverage than DB-IP's paid database and is licensed
+under CC BY 4.0. The viewer renders the required clickable "IP Geolocation by
+DB-IP" attribution; synthetic demo data does not.
+
+`--demo` generates synthetic data for viewer development (clearly badged in
+the UI). Local provider coordinates are a hand-maintained map
 (`PROVIDER_SITES`) — edit it when deployments move; API providers are
 deliberately shown without a location claim.
 

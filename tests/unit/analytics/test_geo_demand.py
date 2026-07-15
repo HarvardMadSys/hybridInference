@@ -193,8 +193,34 @@ async def test_aggregation_contract_percentiles_and_no_raw_identifiers() -> None
     assert "8.8.8.8" not in serialized
     assert "secret-user-id" not in serialized
     assert "another-secret" not in serialized
-    assert payload["meta"]["geoip"] == {"country": True}
+    assert payload["meta"]["geoip"] == {
+        "country": True,
+        "provider": None,
+        "attribution": None,
+    }
     assert payload["meta"]["degraded"] is False
+
+
+@pytest.mark.asyncio
+async def test_aggregation_identifies_dbip_lite_and_required_attribution() -> None:
+    connection = FakeConnection([row(0)])
+    dbip_resolver = GeoResolver(
+        country_reader=FakeReader(
+            {"8.8.8.8": {"country": {"iso_code": "US"}, "continent": {"code": "NA"}}}
+        ),
+        country_provider="dbip-lite",
+    )
+
+    payload = await aggregate_geo_demand(connection, utc(0), utc(1), dbip_resolver)
+
+    assert payload["meta"]["geoip"] == {
+        "country": True,
+        "provider": "dbip-lite",
+        "attribution": {
+            "label": "IP Geolocation by DB-IP",
+            "url": "https://db-ip.com",
+        },
+    }
 
 
 @pytest.mark.asyncio

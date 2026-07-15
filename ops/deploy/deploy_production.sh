@@ -85,6 +85,11 @@ main() {
   export BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   log "Build metadata: SHA=${BUILD_SHA} TIMESTAMP=${BUILD_TIMESTAMP}."
 
+  log "Refreshing DB-IP Country Lite data (best effort)."
+  if ! ops/setup/update_dbip_country_lite.sh; then
+    log "WARNING: DB-IP Country Lite update failed; retaining the last good database."
+  fi
+
   log "Rebuilding and restarting Docker Compose services."
   make build
 

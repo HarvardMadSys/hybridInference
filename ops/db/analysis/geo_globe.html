@@ -705,9 +705,12 @@
   if (data.meta.source === 'synthetic-demo') $('#demo-badge').hidden = false;
   const unplotted = new Set();
   for (const a3 of countryCont.keys()) if (!a3.startsWith('?') && !centroidOf(a3)) unplotted.add(a3);
+  const geoAttribution = data.meta.geoip?.provider === 'dbip-lite'
+    ? ' · <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">IP Geolocation by DB-IP</a>'
+    : '';
   $('#foot').innerHTML = [
     `source: <b>${data.meta.source}</b> · generated ${data.meta.generated_at?.slice(0, 16).replace('T', ' ')}Z · ${fmt(data.meta.rows_total || 0)} requests over ${H} hours`,
-    `geoip: country=${data.meta.geoip?.country}` +
+    `geoip: country=${data.meta.geoip?.country}` + geoAttribution +
       (unplotted.size ? ` · not plotted (no centroid): ${[...unplotted].join(', ')}` : '') +
       (data.meta.unmapped_alpha2?.length ? ` · unmapped alpha-2: ${data.meta.unmapped_alpha2.join(', ')}` : ''),
     (data.meta.notes || []).join(' · '),
