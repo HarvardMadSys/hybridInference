@@ -13,7 +13,7 @@
         "moe_runner_backend": "marlin",
         "mtp": true,
         "speculative_algorithm": "EAGLE",
-        "tool_call_parser": "deepseekv3",
-        "reasoning_parser": "deepseek-v3"
+        "tool_call_parser": "deepseekv4",
+        "reasoning_parser": "deepseek-v4"
     }
 }

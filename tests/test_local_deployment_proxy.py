@@ -717,13 +717,15 @@ def test_h200_profile_uses_pp3_and_skips_gpu1() -> None:
     assert "1" not in str(model["gpu_index"]).split(",")
 
 
-def test_h200_profiles_use_hybrid_thinking_reasoning_parser() -> None:
-    """Both H200 configs must use the DeepSeek-V3 hybrid-thinking parser.
+def test_h200_profiles_use_deepseek_v4_parsers() -> None:
+    """Both H200 configs must use the DeepSeek-V4 parser pairing.
 
-    The ``deepseek-r1`` parser assumes the whole generation is reasoning until
-    a ``</think>`` close tag; requests are sent with thinking disabled, so that
-    tag never appears and every completion returned empty ``content`` with the
-    full answer classified as ``reasoning_content``.
+    The ``deepseek-r1`` reasoning parser assumes the whole generation is
+    reasoning until a ``</think>`` close tag; requests here do not enable
+    thinking, so that tag never appears and every completion returned empty
+    ``content`` with the full answer classified as ``reasoning_content``.
+    The ``deepseekv3`` tool-call parser does not recognize V4's DSML tool-call
+    markup, so ``tool_calls`` stays null and agentic clients cannot run tools.
     """
     import json
     from pathlib import Path
@@ -734,7 +736,8 @@ def test_h200_profiles_use_hybrid_thinking_reasoning_parser() -> None:
         repo / "ops" / "h200_idle_proxy" / "models.json",
     ):
         model = json.loads(cfg_path.read_text())["deepseek-v4-flash"]
-        assert model["reasoning_parser"] == "deepseek-v3", cfg_path
+        assert model["reasoning_parser"] == "deepseek-v4", cfg_path
+        assert model["tool_call_parser"] == "deepseekv4", cfg_path
 
 
 def test_sglang_pipeline_parallel_sets_pp_size_and_ipc(monkeypatch: Any, tmp_path: Path) -> None:
