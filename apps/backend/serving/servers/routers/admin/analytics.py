@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from serving.analytics.geo_demand import geo_demand_cache, normalize_window
 from serving.schemas_admin import (
     AdminAnalyticsResponse,
     AnalyticsBreakdownEntry,
@@ -28,6 +29,28 @@ _ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
     "week": (10080, 1440),
     "month": (43200, 1440),
 }
+
+
+@router.get("/analytics/geo")
+async def admin_get_geo_analytics(
+    days: int = Query(14, ge=1, le=90),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> dict:
+    """Return hourly aggregate network-origin demand for the admin globe."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+
+    end = until or datetime.now(timezone.utc)
+    start = since if since is not None else end - timedelta(days=days)
+    try:
+        start, end = normalize_window(start, end)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return await geo_demand_cache.get(db_logger.pool, start, end)
 
 
 @router.get("/analytics", response_model=AdminAnalyticsResponse)
