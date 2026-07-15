@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FreeInference · Geo-temporal demand</title>
+<!--
+  Standalone research viewer for geo_hourly_export.py output.
+
+  Usage:
+    uv run python ops/db/analysis/geo_hourly_export.py --days 30 --out data.json   (real)
+    uv run python ops/db/analysis/geo_hourly_export.py --demo --out data.json      (synthetic)
+    python3 -m http.server 8000        # serve this directory
+    open http://localhost:8000/geo_globe.html          (?data=other.json to switch files)
+
+  Needs network access for d3 / topojson / world atlas ES modules (esm.sh).
+  Everything else is local; no request data leaves your machine.
+-->
+<style>
+  :root {
+    --bg: #f5f6f8; --fg: #1c2330; --card: #ffffff; --border: #d8dde6;
+    --muted: #eceff4; --muted-fg: #66707f; --accent-soft: #dde6f2;
+    --s1: #3f88c5; --s2: #e8871e; --s3: #9d6fd0; --s4: #3fa46a; --s5: #d4566a; --s6: #c9a227;
+    --night: rgba(24, 32, 58, 0.20); --day: rgba(255, 244, 205, 0.28);
+    --terminator: rgba(60, 70, 110, 0.45);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1116; --fg: #e6e9ef; --card: #161b23; --border: #2a3140;
+      --muted: #232a36; --muted-fg: #8b94a5; --accent-soft: #223048;
+      --s1: #5aa9e6; --s2: #f2a65a; --s3: #b48ce6; --s4: #6fcf97; --s5: #e6707e; --s6: #e6c86e;
+      --night: rgba(0, 0, 10, 0.32); --day: rgba(255, 250, 220, 0.075);
+      --terminator: rgba(220, 228, 255, 0.35);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 18px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+  }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .row.space { justify-content: space-between; align-items: flex-end; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .btn {
+    background: var(--muted); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 12px; cursor: pointer; font: inherit;
+  }
+  .btn.on { background: var(--s1); border-color: transparent; color: #fff; }
+  .btn.mini { padding: 2px 8px; font-size: 12px; }
+  select {
+    background: var(--muted); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px 8px; font: inherit;
+  }
+  label.ctl { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted-fg); }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg .btn { border: none; border-radius: 0; }
+  .small { font-size: 12px; } .muted { color: var(--muted-fg); }
+  .badge-demo {
+    background: var(--s2); color: #201200; font-weight: 700; font-size: 11px;
+    border-radius: 6px; padding: 2px 8px; letter-spacing: 0.5px;
+  }
+  .clock { text-align: right; white-space: nowrap; }
+  .clock-main { font-weight: 600; font-size: 15px; }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr)); gap: 10px; margin: 12px 0 10px; }
+  .stat-value { font-size: 21px; font-weight: 650; margin-top: 2px; }
+
+  .map-wrap { position: relative; }
+  .stage {
+    position: relative; height: clamp(380px, 52vh, 640px); overflow: hidden;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: radial-gradient(circle at 50% 46%, var(--accent-soft) 0%, transparent 55%);
+  }
+  svg.globe { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+  svg.globe:active { cursor: grabbing; }
+  .sphere { fill: var(--card); stroke: var(--border); stroke-width: 1.5; }
+  .graticule { fill: none; stroke: var(--border); stroke-width: 0.6; opacity: 0.5; }
+  .country { fill: var(--muted); stroke: var(--border); stroke-width: 0.5; }
+  .day-side { fill: var(--day); pointer-events: none; }
+  .night-side { fill: var(--night); pointer-events: none; }
+  .terminator { fill: none; stroke: var(--terminator); stroke-width: 1.1; stroke-dasharray: 5 4; pointer-events: none; }
+  .heat-ring { fill: var(--s2); opacity: 0.17; pointer-events: none; }
+  .heat-core { fill: var(--s2); stroke: var(--card); stroke-width: 1; cursor: pointer; }
+  .arc {
+    fill: none; stroke-linecap: round; stroke-dasharray: 4 9;
+    animation: flow 2.2s linear infinite; opacity: 0.75; cursor: pointer;
+  }
+  .no-anim .arc { animation: none; }
+  @keyframes flow { to { stroke-dashoffset: -26; } }
+  @media (prefers-reduced-motion: reduce) { .arc { animation: none; } }
+  .prov-halo { fill: var(--s1); opacity: 0.16; pointer-events: none; }
+  .prov-core { fill: var(--s1); stroke: var(--card); stroke-width: 2; cursor: pointer; }
+  .prov-label {
+    fill: var(--fg); font-size: 11px; font-weight: 600; pointer-events: none;
+    paint-order: stroke; stroke: var(--card); stroke-width: 3px; stroke-linejoin: round;
+  }
+  .side { position: absolute; top: 12px; right: 12px; width: min(250px, 36%); display: flex; flex-direction: column; gap: 8px; z-index: 2; }
+  .side .card { padding: 10px; }
+  .detail-title { font-weight: 600; margin: 2px 0 6px; }
+  .rail-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 2px 0; }
+  .rail-bar { height: 4px; border-radius: 2px; background: var(--s3); margin-top: 2px; }
+  .legend { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted-fg); font-size: 12px; pointer-events: none; }
+  .key { display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .hint { position: absolute; right: 14px; bottom: 10px; font-size: 12px; color: var(--muted-fg); pointer-events: none; }
+
+  .timeline { margin-top: 10px; }
+  .ribbon { display: block; width: 100%; height: 96px; overflow: visible; }
+  .ribbon-grid { stroke: var(--border); stroke-width: 1; opacity: 0.6; }
+  .ribbon-line { fill: none; stroke-width: 2; }
+  .ribbon-marker { stroke: var(--fg); stroke-width: 1.2; }
+  .ribbon-text { fill: var(--muted-fg); font-size: 11px; }
+  input[type=range] { width: 100%; }
+  .foot { margin-top: 10px; font-size: 12px; color: var(--muted-fg); line-height: 1.6; }
+  .error-panel { max-width: 640px; margin: 60px auto; }
+  .error-panel code { background: var(--muted); padding: 2px 6px; border-radius: 5px; display: inline-block; margin: 2px 0; }
+  .loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted-fg); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+
+<div id="app" hidden>
+  <div class="row space">
+    <div class="row">
+      <button class="btn" id="play">▶ Play</button>
+      <button class="btn mini" id="prev-day">−24h</button>
+      <button class="btn mini" id="next-day">+24h</button>
+      <label class="ctl">Traffic class
+        <span class="seg" id="cls-seg">
+          <button class="btn on" data-cls="all">All</button>
+          <button class="btn" data-cls="nondc">Non-DC</button>
+          <button class="btn" data-cls="dc">Datacenter</button>
+        </span>
+      </label>
+      <label class="ctl" for="metric">Metric
+        <select id="metric">
+          <option value="n">Requests</option>
+          <option value="tout">Output tokens</option>
+          <option value="gs">Compute seconds (est.)</option>
+        </select>
+      </label>
+      <label class="ctl">View
+        <span class="seg">
+          <button class="btn mini" data-view="-100,-28">AS</button>
+          <button class="btn mini" data-view="-15,-48">EU</button>
+          <button class="btn mini" data-view="95,-38">NA</button>
+        </span>
+      </label>
+      <label class="ctl" style="flex-direction:row;align-items:center;gap:5px;margin-top:14px">
+        <input type="checkbox" id="anim" checked> flow anim
+      </label>
+    </div>
+    <div class="clock">
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <span class="badge-demo" id="demo-badge" hidden>SYNTHETIC DEMO</span>
+        <span class="clock-main" id="clock-main">–</span>
+      </div>
+      <div class="small muted" id="clock-sub">–</div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="card">
+      <div class="muted small">Requests in hour</div>
+      <div class="stat-value" id="k-req">–</div>
+      <div class="small muted" id="k-req-sub">–</div>
+    </div>
+    <div class="card">
+      <div class="muted small">Origin mix</div>
+      <div class="stat-value" id="k-mix">–</div>
+      <div class="small muted" id="k-mix-sub">–</div>
+    </div>
+    <div class="card">
+      <div class="muted small">Serving split (this hour)</div>
+      <div class="stat-value" id="k-route">–</div>
+      <div class="small muted" id="k-route-sub">–</div>
+    </div>
+    <div class="card" title="Range-wide: 1 − global peak / Σ regional peaks, on the selected metric + class. Transferable: capacity proxy = per-continent mean over the range.">
+      <div class="muted small">Pooling potential (range)</div>
+      <div class="stat-value" id="k-pool">–</div>
+      <div class="small muted" id="k-pool-sub">–</div>
+    </div>
+  </div>
+
+  <div class="map-wrap">
+    <div class="stage">
+      <svg class="globe" id="globe" role="img" aria-label="Globe of request origins, day/night terminator, and flows to local providers"></svg>
+      <div class="legend" id="legend"></div>
+      <div class="hint">Drag to rotate · click a dot or node</div>
+    </div>
+    <div class="side">
+      <div class="card" id="detail" aria-live="polite">
+        <div class="small muted" id="detail-eyebrow">SELECTION</div>
+        <div class="detail-title" id="detail-title">Click a country or provider</div>
+        <div class="small" id="detail-body"></div>
+      </div>
+      <div class="card" id="rail">
+        <div class="small muted" style="margin-bottom:4px">EXTERNAL APIs (no location claimed)</div>
+        <div id="rail-rows"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="timeline card" style="margin-top:10px">
+    <div class="row space">
+      <span class="small" id="ribbon-label">Demand by continent · UTC day</span>
+      <span class="small muted" id="ribbon-legend"></span>
+    </div>
+    <svg class="ribbon" id="ribbon"></svg>
+    <input type="range" id="time" min="0" max="0" step="1" value="0" aria-label="Selected hour">
+  </div>
+
+  <div class="foot" id="foot"></div>
+</div>
+
+<div class="card error-panel" id="error-panel" hidden>
+  <h3 style="margin-top:0">No data.json found</h3>
+  <p>This viewer reads an aggregate file produced by <code>geo_hourly_export.py</code>. Generate one next to this HTML file:</p>
+  <p><code>uv run python ops/db/analysis/geo_hourly_export.py --days 30 --out data.json</code><br>
+     <code>uv run python ops/db/analysis/geo_hourly_export.py --demo --out data.json</code> (synthetic)</p>
+  <p>Then serve the directory (<code>python3 -m http.server</code>) and reload. Use <code>?data=file.json</code> to point at a different export.</p>
+  <p class="small muted" id="error-detail"></p>
+</div>
+
+<div class="loading" id="loading">Loading…</div>
+
+<script type="module">
+(async () => {
+  const $ = (sel) => document.querySelector(sel);
+  const fmt = (v) => v >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e4 ? Math.round(v / 1e3) + 'k' : Math.round(v).toLocaleString();
+  const pct = (v) => (100 * v).toFixed(v >= 0.095 ? 0 : 1) + '%';
+
+  // ---------- data ----------
+  let data;
+  try {
+    const url = new URLSearchParams(location.search).get('data') || './data.json';
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText} for ${url}`);
+    data = await resp.json();
+    if (!data.hours_index?.length) throw new Error('empty hours_index');
+  } catch (err) {
+    $('#loading').hidden = true;
+    $('#error-panel').hidden = false;
+    $('#error-detail').textContent = String(err);
+    return;
+  }
+
+  const HOURS = data.hours_index.map((s) => new Date(s));
+  const H = HOURS.length;
+  const B = Object.fromEntries(data.bucket_cols.map((c, i) => [c, i]));
+  const F = Object.fromEntries(data.flow_cols.map((c, i) => [c, i]));
+  const providers = data.providers;
+  const provById = new Map(providers.map((p) => [p.id, p]));
+  const localProviders = providers.filter((p) => p.kind === 'local' && p.coord);
+  const remoteProviders = providers.filter((p) => p.kind !== 'local' || !p.coord);
+
+  // country -> continent (stable across hours)
+  const countryCont = new Map();
+  for (const hour of data.hours) for (const r of hour.b) if (!countryCont.has(r[B.c])) countryCont.set(r[B.c], r[B.cont]);
+
+  const CONT_NAMES = { AS: 'Asia', EU: 'Europe', NA: 'N. America', SA: 'S. America', AF: 'Africa', OC: 'Oceania', AN: 'Antarctica' };
+  const CONT_COLORS = { AS: 'var(--s1)', EU: 'var(--s3)', NA: 'var(--s5)', SA: 'var(--s4)', AF: 'var(--s2)', OC: 'var(--s6)', AN: 'var(--muted-fg)' };
+
+  const clsMatch = (rowCls, filter) => filter === 'all' || rowCls === filter;
+  const bucketsAt = (h, filter) => data.hours[h].b.filter((r) => clsMatch(r[B.cls], filter));
+  const flowsAt = (h, filter) => data.hours[h].f.filter((r) => clsMatch(r[F.cls], filter));
+  const mVal = (r, metric) => r[B[metric]] || 0;
+
+  // per-continent series, cached per metric|class
+  const seriesCache = new Map();
+  function seriesFor(metric, filter) {
+    const key = metric + '|' + filter;
+    if (seriesCache.has(key)) return seriesCache.get(key);
+    const out = new Map();
+    for (let h = 0; h < H; h++) {
+      for (const r of bucketsAt(h, filter)) {
+        const cont = r[B.cont];
+        if (cont === '?') continue;
+        if (!out.has(cont)) out.set(cont, new Float64Array(H));
+        out.get(cont)[h] += mVal(r, metric);
+      }
+    }
+    seriesCache.set(key, out);
+    return out;
+  }
+
+  function rangePooling(metric, filter) {
+    const series = seriesFor(metric, filter);
+    if (series.size < 2) return { pooling: 0, conts: series.size };
+    let globalPeak = 0;
+    const total = new Float64Array(H);
+    let sumPeaks = 0;
+    for (const arr of series.values()) {
+      let peak = 0;
+      for (let h = 0; h < H; h++) { total[h] += arr[h]; if (arr[h] > peak) peak = arr[h]; }
+      sumPeaks += peak;
+    }
+    for (let h = 0; h < H; h++) if (total[h] > globalPeak) globalPeak = total[h];
+    return { pooling: sumPeaks > 0 ? 1 - globalPeak / sumPeaks : 0, conts: series.size };
+  }
+
+  function transferableAt(h, metric, filter) {
+    const series = seriesFor(metric, filter);
+    let over = 0, slack = 0, totalNow = 0;
+    for (const arr of series.values()) {
+      let mean = 0;
+      for (let i = 0; i < H; i++) mean += arr[i];
+      mean /= H;
+      const v = arr[h];
+      totalNow += v;
+      if (v > mean) over += v - mean; else slack += mean - v;
+    }
+    return totalNow > 0 ? Math.min(over, slack) / totalNow : 0;
+  }
+
+  // ---------- modules & atlas ----------
+  const d3 = await import('https://esm.sh/d3@7.9.0');
+  const { feature } = await import('https://esm.sh/topojson-client@3.1.0');
+  const atlasModule = await import('https://esm.sh/@d3-maps/atlas@1.0.0/world/countries/countries-110m');
+  const world = atlasModule.default;
+  const countries = feature(world, world.objects.features).features;
+  const atlasById = new Map(countries.map((c) => [c.properties.id, c]));
+
+  // centroids for territories missing from the 110m atlas
+  const COORD_OVERRIDES = {
+    SGP: [103.82, 1.35], HKG: [114.17, 22.30], MAC: [113.55, 22.20], BHR: [50.55, 26.05],
+    MLT: [14.44, 35.90], MUS: [57.55, -20.30], MDV: [73.50, 4.20], AND: [1.52, 42.55],
+    LIE: [9.55, 47.15], MCO: [7.42, 43.73], SMR: [12.45, 43.94], BRB: [-59.55, 13.18],
+  };
+  const centroidCache = new Map();
+  function centroidOf(a3) {
+    if (centroidCache.has(a3)) return centroidCache.get(a3);
+    let c = null;
+    if (atlasById.has(a3)) c = d3.geoCentroid(atlasById.get(a3));
+    else if (COORD_OVERRIDES[a3]) c = COORD_OVERRIDES[a3];
+    centroidCache.set(a3, c);
+    return c;
+  }
+  const NAME_OVERRIDES = {
+    SGP: 'Singapore', HKG: 'Hong Kong', MAC: 'Macao', BHR: 'Bahrain', MLT: 'Malta',
+    MUS: 'Mauritius', MDV: 'Maldives', AND: 'Andorra', LIE: 'Liechtenstein',
+    MCO: 'Monaco', SMR: 'San Marino', BRB: 'Barbados', USA: 'United States',
+  };
+  const countryName = (a3) => NAME_OVERRIDES[a3] || atlasById.get(a3)?.properties.name || a3;
+
+  // ---------- state ----------
+  const state = { hour: H - 1, cls: 'all', metric: 'n', playing: null, selection: null };
+
+  // ---------- svg scaffolding ----------
+  const svg = d3.select('#globe');
+  const projection = d3.geoOrthographic().clipAngle(90).precision(0.4).rotate([-100, -28, 0]);
+  const path = d3.geoPath(projection);
+  const layers = {
+    sphere: svg.append('path').attr('class', 'sphere').datum({ type: 'Sphere' }),
+    graticule: svg.append('path').attr('class', 'graticule').datum(d3.geoGraticule10()),
+    countries: svg.append('g'),
+    day: svg.append('path').attr('class', 'day-side'),
+    night: svg.append('path').attr('class', 'night-side'),
+    terminator: svg.append('path').attr('class', 'terminator'),
+    arcs: svg.append('g'),
+    heat: svg.append('g'),
+    providers: svg.append('g'),
+  };
+  layers.countries.selectAll('path').data(countries).join('path').attr('class', 'country');
+
+  let width = 800, height = 520;
+  const isFront = (coord) => {
+    const r = projection.rotate();
+    return d3.geoDistance([-r[0], -r[1]], coord) < Math.PI / 2;
+  };
+  const greatArc = (a, b) => ({ type: 'LineString', coordinates: d3.range(31).map((i) => d3.geoInterpolate(a, b)(i / 30)) });
+
+  // ---------- sun ----------
+  function sunGeometry(date) {
+    const dayOfYear = Math.floor((date - Date.UTC(date.getUTCFullYear(), 0, 0)) / 86400000);
+    const decl = 23.44 * Math.sin((2 * Math.PI * (284 + dayOfYear)) / 365);
+    const utcH = date.getUTCHours() + date.getUTCMinutes() / 60;
+    const subsolarLon = ((180 - utcH * 15) + 540) % 360 - 180;
+    const day = d3.geoCircle().center([subsolarLon, decl]).radius(90)();
+    const antipodeLon = ((subsolarLon + 360) % 360) - 180;
+    const night = d3.geoCircle().center([antipodeLon, -decl]).radius(90)();
+    return { day, night };
+  }
+
+  // ---------- rendering ----------
+  function drawGlobe() {
+    layers.sphere.attr('d', path);
+    layers.graticule.attr('d', path);
+    layers.countries.selectAll('path').attr('d', path);
+
+    const when = HOURS[state.hour];
+    const { day, night } = sunGeometry(when);
+    layers.day.attr('d', path(day));
+    layers.night.attr('d', path(night));
+    layers.terminator.attr('d', path(day));
+
+    const buckets = bucketsAt(state.hour, state.cls);
+    const byCountry = new Map();
+    for (const r of buckets) {
+      const a3 = r[B.c];
+      const cur = byCountry.get(a3) || { a3, cont: r[B.cont], v: 0, n: 0, users: 0, cls: {} };
+      cur.v += mVal(r, state.metric);
+      cur.n += r[B.n];
+      cur.users += r[B.users];
+      cur.cls[r[B.cls]] = (cur.cls[r[B.cls]] || 0) + r[B.n];
+      byCountry.set(a3, cur);
+    }
+    const dots = [...byCountry.values()].map((d) => ({ ...d, coord: centroidOf(d.a3) })).filter((d) => d.coord);
+    const maxV = d3.max(dots, (d) => d.v) || 1;
+    const rScale = d3.scaleSqrt().domain([0, maxV]).range([2.5, 26]);
+
+    const heat = layers.heat.selectAll('g').data(dots, (d) => d.a3).join((enter) => {
+      const g = enter.append('g');
+      g.append('circle').attr('class', 'heat-ring');
+      g.append('circle').attr('class', 'heat-core');
+      g.append('title');
+      return g;
+    })
+      .attr('transform', (d) => { const p = projection(d.coord); return p ? `translate(${p[0]},${p[1]})` : 'translate(-999,-999)'; })
+      .attr('display', (d) => isFront(d.coord) ? null : 'none')
+      .on('click', (_, d) => selectCountry(d.a3));
+    heat.select('.heat-ring').attr('r', (d) => rScale(d.v));
+    heat.select('.heat-core').attr('r', (d) => Math.max(2, rScale(d.v) * 0.22));
+    heat.select('title').text((d) => `${countryName(d.a3)}: ${fmt(d.v)} ${metricLabel()} · ${d.n} req`);
+
+    // flows to LOCAL providers only (we don't claim API vendor locations)
+    const flows = flowsAt(state.hour, state.cls)
+      .filter((r) => provById.get(r[F.p])?.kind === 'local' && provById.get(r[F.p])?.coord)
+      .map((r) => ({ a3: r[F.c], p: provById.get(r[F.p]), n: r[F.n], coord: centroidOf(r[F.c]) }))
+      .filter((r) => r.coord)
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 14);
+    const maxFlow = d3.max(flows, (f) => f.n) || 1;
+    const wScale = d3.scaleSqrt().domain([0, maxFlow]).range([0.6, 4]);
+    layers.arcs.selectAll('path').data(flows, (f) => f.a3 + '>' + f.p.id).join('path')
+      .attr('class', 'arc')
+      .attr('d', (f) => path(greatArc(f.coord, f.p.coord)))
+      .attr('stroke', (f) => CONT_COLORS[countryCont.get(f.a3)] || 'var(--muted-fg)')
+      .attr('stroke-width', (f) => wScale(f.n))
+      .on('click', (_, f) => selectFlow(f))
+      .selectAll('title').data((f) => [f]).join('title')
+      .text((f) => `${countryName(f.a3)} → ${f.p.label}: ${f.n} req`);
+
+    // local provider nodes sized by inbound
+    const inbound = new Map(localProviders.map((p) => [p.id, 0]));
+    for (const r of flowsAt(state.hour, state.cls)) if (inbound.has(r[F.p])) inbound.set(r[F.p], inbound.get(r[F.p]) + r[F.n]);
+    const maxIn = Math.max(1, ...inbound.values());
+    const provs = layers.providers.selectAll('g').data(localProviders, (p) => p.id).join((enter) => {
+      const g = enter.append('g');
+      g.append('circle').attr('class', 'prov-halo');
+      g.append('circle').attr('class', 'prov-core');
+      g.append('text').attr('class', 'prov-label').attr('x', 11).attr('y', -8);
+      g.append('title');
+      return g;
+    })
+      .attr('transform', (p) => { const pt = projection(p.coord); return pt ? `translate(${pt[0]},${pt[1]})` : 'translate(-999,-999)'; })
+      .attr('display', (p) => isFront(p.coord) ? null : 'none')
+      .on('click', (_, p) => selectProvider(p));
+    provs.select('.prov-halo').attr('r', (p) => 9 + 16 * Math.sqrt((inbound.get(p.id) || 0) / maxIn));
+    provs.select('.prov-core').attr('r', 4.5);
+    provs.select('.prov-label').text((p) => p.label);
+    provs.select('title').text((p) => `${p.label} (${p.region || 'region?'}): ${inbound.get(p.id) || 0} req inbound`);
+
+    drawRail();
+    drawStats(byCountry);
+    drawClock();
+    drawRibbon();
+    renderSelection();
+  }
+
+  function metricLabel() {
+    return state.metric === 'n' ? 'requests' : state.metric === 'tout' ? 'output tokens' : 'compute-sec';
+  }
+
+  function drawRail() {
+    const rows = new Map(remoteProviders.map((p) => [p.id, 0]));
+    let localN = 0;
+    for (const r of flowsAt(state.hour, state.cls)) {
+      if (rows.has(r[F.p])) rows.set(r[F.p], rows.get(r[F.p]) + r[F.n]);
+      else localN += r[F.n];
+    }
+    const entries = [...rows.entries()].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+    const maxN = Math.max(1, ...entries.map(([, n]) => n), localN);
+    const html = entries.map(([id, n]) =>
+      `<div class="rail-row" data-prov="${id}" style="cursor:pointer"><span>${provById.get(id).label}</span><b>${fmt(n)}</b></div>
+       <div class="rail-bar" style="width:${Math.round(100 * n / maxN)}%"></div>`).join('');
+    $('#rail-rows').innerHTML = html || '<span class="small muted">no external traffic this hour</span>';
+    $('#rail-rows').querySelectorAll('[data-prov]').forEach((el) =>
+      el.addEventListener('click', () => selectProvider(provById.get(el.dataset.prov))));
+  }
+
+  function drawStats(byCountry) {
+    const buckets = bucketsAt(state.hour, state.cls);
+    const totalReq = d3.sum(buckets, (r) => r[B.n]);
+    const located = d3.sum(buckets.filter((r) => r[B.cont] !== '?'), (r) => r[B.n]);
+    const countriesActive = [...byCountry.keys()].filter((a3) => !a3.startsWith('?')).length;
+    $('#k-req').textContent = fmt(totalReq);
+    $('#k-req-sub').textContent = `${countriesActive} countries · ${totalReq ? pct(1 - located / totalReq) : '0%'} unlocated`;
+
+    const byCont = new Map();
+    for (const r of buckets) if (r[B.cont] !== '?') byCont.set(r[B.cont], (byCont.get(r[B.cont]) || 0) + mVal(r, state.metric));
+    const ranked = [...byCont.entries()].sort((a, b) => b[1] - a[1]);
+    const contTotal = d3.sum(ranked, (e) => e[1]);
+    $('#k-mix').textContent = ranked.length ? `${CONT_NAMES[ranked[0][0]] || ranked[0][0]} ${pct(ranked[0][1] / contTotal)}` : '–';
+    $('#k-mix-sub').textContent = ranked.slice(1, 4).map(([c, v]) => `${c} ${pct(v / contTotal)}`).join(' · ') || 'single-continent hour';
+
+    const flows = flowsAt(state.hour, state.cls);
+    let ext = 0, localSame = 0, localCross = 0;
+    for (const r of flows) {
+      const p = provById.get(r[F.p]);
+      if (!p || p.kind !== 'local' || !p.cont) { ext += r[F.n]; continue; }
+      if (countryCont.get(r[F.c]) === p.cont) localSame += r[F.n]; else localCross += r[F.n];
+    }
+    const flowTotal = ext + localSame + localCross;
+    $('#k-route').textContent = flowTotal ? `${pct(ext / flowTotal)} external` : '–';
+    $('#k-route-sub').textContent = flowTotal
+      ? `local same-cont ${pct(localSame / flowTotal)} · cross-cont ${pct(localCross / flowTotal)}` : 'no flows';
+
+    const { pooling, conts } = rangePooling(state.metric, state.cls);
+    $('#k-pool').textContent = pct(pooling);
+    $('#k-pool-sub').textContent = `${conts} continents · transferable now ${pct(transferableAt(state.hour, state.metric, state.cls))}`;
+  }
+
+  function drawClock() {
+    const t = HOURS[state.hour];
+    const utc = t.toISOString().slice(0, 16).replace('T', ' ');
+    const local = (offset) => `${String((t.getUTCHours() + offset + 24) % 24).padStart(2, '0')}:00`;
+    $('#clock-main').textContent = `${utc} UTC`;
+    $('#clock-sub').textContent = `${t.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' })} · ${local(8)} Shanghai · ${local(-4)} Boston`;
+  }
+
+  function drawRibbon() {
+    const el = $('#ribbon');
+    const box = el.getBoundingClientRect();
+    const W = Math.max(320, box.width), Hh = 96;
+    const rsvg = d3.select(el).attr('viewBox', `0 0 ${W} ${Hh}`);
+    rsvg.selectAll('*').remove();
+    const margin = { top: 8, right: 8, bottom: 18, left: 8 };
+
+    const sel = HOURS[state.hour];
+    const dayStartMs = Date.UTC(sel.getUTCFullYear(), sel.getUTCMonth(), sel.getUTCDate());
+    const idx0 = Math.max(0, Math.round((dayStartMs - HOURS[0].getTime()) / 3600000));
+    const idxN = Math.min(H - 1, idx0 + 23);
+
+    const series = seriesFor(state.metric, state.cls);
+    const conts = [...series.keys()].sort((a, b) => d3.sum(series.get(b)) - d3.sum(series.get(a)));
+    const x = d3.scaleLinear().domain([idx0, idx0 + 24]).range([margin.left, W - margin.right]);
+    let maxV = 1;
+    for (const c of conts) for (let h = idx0; h <= idxN; h++) maxV = Math.max(maxV, series.get(c)[h]);
+    const y = d3.scaleLinear().domain([0, maxV]).range([Hh - margin.bottom, margin.top]);
+
+    for (let hh = 0; hh <= 24; hh += 6) {
+      rsvg.append('line').attr('class', 'ribbon-grid').attr('x1', x(idx0 + hh)).attr('x2', x(idx0 + hh)).attr('y1', margin.top).attr('y2', Hh - margin.bottom);
+      rsvg.append('text').attr('class', 'ribbon-text').attr('x', x(idx0 + hh)).attr('y', Hh - 4)
+        .attr('text-anchor', hh === 0 ? 'start' : hh === 24 ? 'end' : 'middle').text(String(hh).padStart(2, '0') + ':00');
+    }
+    const line = d3.line().x((d) => x(d[0])).y((d) => y(d[1])).curve(d3.curveMonotoneX);
+    for (const c of conts) {
+      const pts = [];
+      for (let h = idx0; h <= idxN; h++) pts.push([h, series.get(c)[h]]);
+      rsvg.append('path').datum(pts).attr('class', 'ribbon-line').attr('stroke', CONT_COLORS[c] || 'var(--muted-fg)').attr('d', line);
+    }
+    rsvg.append('line').attr('class', 'ribbon-marker')
+      .attr('x1', x(state.hour)).attr('x2', x(state.hour)).attr('y1', margin.top - 2).attr('y2', Hh - margin.bottom + 3);
+
+    el.onclick = (ev) => {
+      const rect = el.getBoundingClientRect();
+      const frac = (ev.clientX - rect.left) / rect.width;
+      setHour(Math.round(idx0 + frac * 24));
+    };
+
+    $('#ribbon-label').textContent = `Demand by continent · ${sel.toISOString().slice(0, 10)} UTC · ${metricLabel()}`;
+    $('#ribbon-legend').innerHTML = conts.map((c) =>
+      `<span class="key"><span class="dot" style="background:${CONT_COLORS[c]}"></span>${CONT_NAMES[c] || c}</span>`).join(' ');
+    $('#legend').innerHTML = [
+      '<span class="key"><span class="dot" style="background:var(--s2)"></span>request origin</span>',
+      '<span class="key"><span class="dot" style="background:var(--s1)"></span>local provider</span>',
+      '<span class="key"><span class="dot" style="background:var(--terminator)"></span>day/night terminator</span>',
+    ].join('');
+  }
+
+  // ---------- selection detail ----------
+  function selectCountry(a3) { state.selection = { type: 'country', a3 }; renderSelection(); }
+  function selectProvider(p) { state.selection = { type: 'provider', id: p.id }; renderSelection(); }
+  function selectFlow(f) { state.selection = { type: 'flow', a3: f.a3, id: f.p.id }; renderSelection(); }
+
+  function renderSelection() {
+    const s = state.selection;
+    if (!s) return;
+    const h = state.hour;
+    if (s.type === 'country') {
+      const rows = bucketsAt(h, 'all').filter((r) => r[B.c] === s.a3);
+      const n = d3.sum(rows, (r) => r[B.n]);
+      const cls = Object.fromEntries(['nondc', 'dc', 'internal', 'unknown'].map((c) => [c, d3.sum(rows.filter((r) => r[B.cls] === c), (r) => r[B.n])]));
+      const p90 = d3.max(rows, (r) => r[B.p90]);
+      const tops = flowsAt(h, state.cls).filter((r) => r[F.c] === s.a3).sort((a, b) => b[F.n] - a[F.n]).slice(0, 3);
+      const coord = centroidOf(s.a3);
+      const localH = coord ? (HOURS[h].getUTCHours() + Math.round(coord[0] / 15) + 24) % 24 : null;
+      $('#detail-eyebrow').textContent = 'REQUEST ORIGIN';
+      $('#detail-title').textContent = `${countryName(s.a3)} · ${CONT_NAMES[countryCont.get(s.a3)] || '?'}`;
+      $('#detail-body').innerHTML = [
+        `${fmt(n)} req this hour${localH !== null ? ` · ~${String(localH).padStart(2, '0')}:00 local` : ''}`,
+        `non-DC ${fmt(cls.nondc)} · DC ${fmt(cls.dc)}${cls.internal ? ` · internal ${fmt(cls.internal)}` : ''}${cls.unknown ? ` · unknown ${fmt(cls.unknown)}` : ''}`,
+        p90 != null ? `p90 TTFT ${(p90 / 1000).toFixed(2)} s` : '',
+        tops.length ? 'to: ' + tops.map((r) => `${provById.get(r[F.p])?.label || r[F.p]} (${fmt(r[F.n])})`).join(', ') : '',
+      ].filter(Boolean).join('<br>');
+    } else if (s.type === 'provider') {
+      const p = provById.get(s.id);
+      const inRows = flowsAt(h, state.cls).filter((r) => r[F.p] === s.id).sort((a, b) => b[F.n] - a[F.n]);
+      const total = d3.sum(inRows, (r) => r[F.n]);
+      $('#detail-eyebrow').textContent = p.kind === 'local' ? 'LOCAL PROVIDER' : 'EXTERNAL API';
+      $('#detail-title').textContent = p.label + (p.region ? ` · ${p.region}` : '');
+      $('#detail-body').innerHTML = [
+        `${fmt(total)} req inbound this hour`,
+        p.kind !== 'local' ? '<span class="muted">GPU location unknown — not drawn on map</span>' : '',
+        inRows.slice(0, 4).map((r) => `${countryName(r[F.c])} ${fmt(r[F.n])}`).join(' · '),
+      ].filter(Boolean).join('<br>');
+    } else if (s.type === 'flow') {
+      const p = provById.get(s.id);
+      const row = flowsAt(h, state.cls).find((r) => r[F.c] === s.a3 && r[F.p] === s.id);
+      $('#detail-eyebrow').textContent = 'FLOW';
+      $('#detail-title').textContent = `${countryName(s.a3)} → ${p.label}`;
+      $('#detail-body').textContent = row ? `${fmt(row[F.n])} req this hour (${state.cls})` : 'no traffic at this hour';
+    }
+  }
+
+  // ---------- interactions ----------
+  function setHour(h) {
+    state.hour = Math.max(0, Math.min(H - 1, h));
+    $('#time').value = String(state.hour);
+    drawGlobe();
+  }
+
+  $('#time').max = String(H - 1);
+  $('#time').value = String(state.hour);
+  $('#time').addEventListener('input', () => setHour(Number($('#time').value)));
+  $('#prev-day').addEventListener('click', () => setHour(state.hour - 24));
+  $('#next-day').addEventListener('click', () => setHour(state.hour + 24));
+  $('#metric').addEventListener('change', () => { state.metric = $('#metric').value; drawGlobe(); });
+  $('#cls-seg').querySelectorAll('.btn').forEach((b) => b.addEventListener('click', () => {
+    state.cls = b.dataset.cls;
+    $('#cls-seg').querySelectorAll('.btn').forEach((x) => x.classList.toggle('on', x === b));
+    drawGlobe();
+  }));
+  document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
+    const [lon, lat] = b.dataset.view.split(',').map(Number);
+    projection.rotate([lon, lat, 0]);
+    drawGlobe();
+  }));
+  $('#anim').addEventListener('change', () => $('#globe').classList.toggle('no-anim', !$('#anim').checked));
+  $('#play').addEventListener('click', () => {
+    if (state.playing) { clearInterval(state.playing); state.playing = null; $('#play').textContent = '▶ Play'; return; }
+    $('#play').textContent = '⏸ Pause';
+    state.playing = setInterval(() => setHour(state.hour + 1 >= H ? 0 : state.hour + 1), 150);
+  });
+
+  let dragStart = null, rotStart = null;
+  const globeEl = $('#globe');
+  globeEl.addEventListener('pointerdown', (e) => { dragStart = [e.clientX, e.clientY]; rotStart = projection.rotate(); globeEl.setPointerCapture(e.pointerId); });
+  globeEl.addEventListener('pointermove', (e) => {
+    if (!dragStart) return;
+    projection.rotate([rotStart[0] + (e.clientX - dragStart[0]) * 0.28, Math.max(-75, Math.min(75, rotStart[1] - (e.clientY - dragStart[1]) * 0.22)), 0]);
+    drawGlobe();
+  });
+  ['pointerup', 'pointercancel'].forEach((ev) => globeEl.addEventListener(ev, () => { dragStart = null; rotStart = null; }));
+
+  function resize() {
+    const b = $('#globe').getBoundingClientRect();
+    width = Math.max(320, b.width); height = Math.max(360, b.height);
+    svg.attr('viewBox', `0 0 ${width} ${height}`);
+    const rightPad = width > 720 ? 60 : 0;
+    projection.translate([(width - rightPad) * 0.48, height * 0.5]).scale(Math.min(width - rightPad, height) * 0.46);
+    drawGlobe();
+  }
+  new ResizeObserver(resize).observe($('.stage'));
+
+  // ---------- boot ----------
+  if (data.meta.source === 'synthetic-demo') $('#demo-badge').hidden = false;
+  const unplotted = new Set();
+  for (const a3 of countryCont.keys()) if (!a3.startsWith('?') && !centroidOf(a3)) unplotted.add(a3);
+  $('#foot').innerHTML = [
+    `source: <b>${data.meta.source}</b> · generated ${data.meta.generated_at?.slice(0, 16).replace('T', ' ')}Z · ${fmt(data.meta.rows_total || 0)} requests over ${H} hours`,
+    `geoip: country=${data.meta.geoip?.country} asn=${data.meta.geoip?.asn}` +
+      (unplotted.size ? ` · not plotted (no centroid): ${[...unplotted].join(', ')}` : '') +
+      (data.meta.unmapped_alpha2?.length ? ` · unmapped alpha-2: ${data.meta.unmapped_alpha2.join(', ')}` : ''),
+    (data.meta.notes || []).join(' · '),
+    'origin = network origin (IP-based) · non-DC/DC = ASN heuristic · compute-sec = Σ server latency (estimate) · local times are approximate (longitude-based)',
+  ].join('<br>');
+
+  $('#loading').hidden = true;
+  $('#app').hidden = false;
+  resize();
+})();
+</script>
+</body>
+</html>

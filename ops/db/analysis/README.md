@@ -24,8 +24,18 @@ These scripts are intended for one-off analysis work after exporting logs from `
     (robust to history compaction), prints per-(model, harness) statistics, and
     writes the longest trajectories per pair to per-pair JSON files (last turn
     of each request only)
+- `geo_hourly_export.py`
+  - aggregates the live DB into privacy-safe hourly `country x traffic-class`
+    demand buckets and `country x class x provider` flows (`data.json` + CSV),
+    resolving `metadata->>'ip'` with offline GeoLite2 Country/ASN databases;
+    `--demo` emits synthetic data with the same shape (no DB / GeoIP needed)
+- `geo_globe.html`
+  - standalone browser viewer for `geo_hourly_export.py` output: rotating globe
+    with request-origin heat, day/night terminator, flows to local providers,
+    external-API rail, per-continent demand ribbon, traffic-class filter, and a
+    range-wide pooling-potential KPI
 
-The last three connect directly to PostgreSQL (via `.env` / `DB_*` env vars) rather than reading a JSONL export.
+`user_usage_pattern.py`, `user_automation_score.py`, `sample_trajectories.py`, and `geo_hourly_export.py` (without `--demo`) connect directly to PostgreSQL (via `.env` / `DB_*` env vars) rather than reading a JSONL export.
 
 ## Typical workflows
 
@@ -74,6 +84,32 @@ uv run python ops/db/analysis/interleave_per_session_requests.py per_session_qwe
   --concurrency 32 \
   --output replay.jsonl
 ```
+
+### 5. Geo-temporal demand globe
+
+Use this to study where requests come from, how demand moves with time zones,
+and how much cross-region pooling could save. Aggregates only — no raw IPs,
+user ids, or prompts leave the database.
+
+```bash
+# one-time: GeoLite2 databases (free MaxMind account) + reader
+uv pip install maxminddb
+
+uv run python ops/db/analysis/geo_hourly_export.py --days 30 \
+  --geoip-country /srv/geoip/GeoLite2-Country.mmdb \
+  --geoip-asn /srv/geoip/GeoLite2-ASN.mmdb \
+  --out data.json --csv geo_hourly.csv
+
+# viewer (same directory as data.json)
+cp ops/db/analysis/geo_globe.html .
+python3 -m http.server 8000   # open http://localhost:8000/geo_globe.html
+```
+
+Without the GeoLite2 files the export still runs, but origins degrade to
+country `?` / class `unknown`. `--demo` generates synthetic data for viewer
+development (clearly badged in the UI). Local provider coordinates are a
+hand-maintained map (`PROVIDER_SITES`) — edit it when deployments move; API
+providers are deliberately shown without a location claim.
 
 ## `pretty_print_logs.py`
 
