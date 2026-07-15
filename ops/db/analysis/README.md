@@ -26,9 +26,10 @@ These scripts are intended for one-off analysis work after exporting logs from `
     of each request only)
 - `geo_hourly_export.py`
   - aggregates the live DB into privacy-safe hourly `country x traffic-class`
-    demand buckets and `country x class x provider` flows (`data.json` + CSV),
-    resolving `metadata->>'ip'` with offline GeoLite2 Country/ASN databases;
-    `--demo` emits synthetic data with the same shape (no DB / GeoIP needed)
+    demand buckets and `country x class x provider x served-endpoint` flows
+    (`data.json` + CSV), resolving `metadata->>'ip'` with offline GeoLite2
+    Country/ASN databases; `--demo` emits synthetic data with the same shape
+    (no DB / GeoIP needed)
 - `geo_globe.html`
   - standalone browser viewer for `geo_hourly_export.py` output: rotating globe
     with request-origin heat, day/night terminator, flows to local providers,
@@ -92,8 +93,8 @@ and how much cross-region pooling could save. Aggregates only — no raw IPs,
 user ids, or prompts leave the database.
 
 ```bash
-# one-time: GeoLite2 databases (free MaxMind account) + reader
-uv pip install maxminddb
+# one-time: download GeoLite2 databases with a free MaxMind account
+# (`maxminddb` itself is installed by the project environment)
 
 uv run python ops/db/analysis/geo_hourly_export.py --days 30 \
   --geoip-country /srv/geoip/GeoLite2-Country.mmdb \
