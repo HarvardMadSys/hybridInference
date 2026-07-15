@@ -207,7 +207,7 @@ endpoints are not merged even when they share a provider.
 - Modify: `apps/frontend/package.json` (`d3`, `topojson-client`, and their types)
 - New: `apps/frontend/public/atlas/countries-110m.json` (vendored — no esm.sh/CDN at runtime)
 
-- [ ] Vendor the world atlas topology (alpha-3 `properties.id`, same as the standalone viewer
+- [x] Vendor the world atlas topology (alpha-3 `properties.id`, same as the standalone viewer
   verified) and load it with `fetch('/atlas/countries-110m.json')`.
 
 ### Task 6: `GeoGlobe` component + sub-route
@@ -219,16 +219,16 @@ endpoints are not merged even when they share a provider.
 - Modify: `apps/frontend/src/lib/api/admin.ts` (typed fetcher for `/admin/analytics/geo`)
 - Test: vitest for the pure helpers (series/pooling/transferable math), snapshot-light for markup
 
-- [ ] Port from [ops/db/analysis/geo_globe.html](../../../ops/db/analysis/geo_globe.html): d3 owns
+- [x] Port from [ops/db/analysis/geo_globe.html](../../../ops/db/analysis/geo_globe.html): d3 owns
   the SVG interior inside a ref'd `<svg>`; React owns state (hour, metric, selection) and
   the chrome. Pooling/transferable/series builders move to a pure TS module (unit-testable).
-- [ ] Keep: timeline scrub + play, declination-correct day/night terminator, metric select, fixed
+- [x] Keep: timeline scrub + play, declination-correct day/night terminator, metric select, fixed
   continent palette + ribbon direct labels, external-API rail, detail panel, DEMO badge honored
   from `meta.source`, and `prefers-reduced-motion`.
-- [ ] Adapt: cards/typography/buttons to the app's design tokens; the globe stage may stay dark.
-- [ ] Loading/error/staleness states (`meta.generated_at`), and an "unlocated %" stat — keep the
+- [x] Adapt: cards/typography/buttons to the app's design tokens; the globe stage may stay dark.
+- [x] Loading/error/staleness states (`meta.generated_at`), and an "unlocated %" stat — keep the
   honesty affordances.
-- [ ] When `meta.geoip.provider === 'dbip-lite'`, render the clickable attribution
+- [x] When `meta.geoip.provider === 'dbip-lite'`, render the clickable attribution
   "IP Geolocation by DB-IP" linking to `https://db-ip.com`; never show it for synthetic or
   unattributed data.
 
@@ -237,7 +237,7 @@ endpoints are not merged even when they share a provider.
 **Files:**
 - Modify: `apps/frontend/src/app/dashboard/admin/AnalyticsTab.tsx`
 
-- [ ] Add a compact Geography entry card with an "Open globe →" link to `analytics/geo`. Do not
+- [x] Add a compact Geography entry card with an "Open globe →" link to `analytics/geo`. Do not
   fetch the full 14-day globe payload from the Analytics landing merely to show a KPI: the server
   cache avoids a repeated DB scan but not cold-scan latency, serialization, or network transfer.
   Add a KPI later only with a dedicated lightweight summary/rollup endpoint.

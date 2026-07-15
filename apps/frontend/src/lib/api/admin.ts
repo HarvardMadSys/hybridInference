@@ -641,6 +641,108 @@ export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyt
   return jsonOrThrow<AdminAnalyticsResponse>(resp);
 }
 
+export type GeoBucketColumn =
+  | 'c'
+  | 'cc'
+  | 'cont'
+  | 'n'
+  | 'err'
+  | 'users'
+  | 'tin'
+  | 'tout'
+  | 'gs'
+  | 'p50'
+  | 'p90';
+
+export type GeoFlowColumn = 'c' | 'p' | 'e' | 'n';
+export type GeoMetric = 'n' | 'tout' | 'gs';
+
+export type GeoBucketRow = [
+  countryAlpha3: string,
+  countryAlpha2: string,
+  continent: string,
+  requests: number,
+  errors: number,
+  distinctUsers: number,
+  inputTokens: number,
+  outputTokens: number,
+  computeSeconds: number,
+  ttftP50Ms: number | null,
+  ttftP90Ms: number | null,
+];
+
+export type GeoFlowRow = [
+  countryAlpha3: string,
+  providerId: string,
+  endpointId: string,
+  requests: number,
+];
+
+export interface GeoIpAttribution {
+  label: string;
+  url: string;
+}
+
+export interface GeoAnalyticsMeta {
+  source: string;
+  generated_at: string;
+  start: string | null;
+  hours: number;
+  rows_total: number;
+  rows_with_ip: number;
+  geoip: {
+    country: boolean;
+    provider: string | null;
+    attribution: GeoIpAttribution | null;
+  };
+  degraded: boolean;
+  degraded_reasons: string[];
+  unmapped_alpha2: string[];
+  notes: string[];
+}
+
+export interface GeoProvider {
+  id: string;
+  label: string;
+  kind: 'local' | 'remote_api' | string;
+  region: string | null;
+  cont: string | null;
+  coord: [longitude: number, latitude: number] | null;
+}
+
+export interface GeoHour {
+  b: GeoBucketRow[];
+  f: GeoFlowRow[];
+}
+
+export interface GeoAnalyticsResponse {
+  meta: GeoAnalyticsMeta;
+  bucket_cols: GeoBucketColumn[];
+  flow_cols: GeoFlowColumn[];
+  providers: GeoProvider[];
+  hours_index: string[];
+  hours: GeoHour[];
+}
+
+export interface GetGeoAnalyticsOptions {
+  days?: number;
+  since?: string;
+  until?: string;
+  signal?: AbortSignal;
+}
+
+export async function getGeoAnalytics(
+  options: GetGeoAnalyticsOptions = {},
+): Promise<GeoAnalyticsResponse> {
+  const params = new URLSearchParams({ days: String(options.days ?? 14) });
+  if (options.since) params.set('since', options.since);
+  if (options.until) params.set('until', options.until);
+  const resp = await fetchWithAuth(API_BASE, `/admin/analytics/geo?${params.toString()}`, {
+    signal: options.signal,
+  });
+  return jsonOrThrow<GeoAnalyticsResponse>(resp);
+}
+
 // ========================================
 // Usage Insights (LLM-powered request analysis)
 // ========================================

@@ -6,6 +6,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  getGeoAnalytics,
   getRoutewiseDecisions,
   listProviderKeyProviders,
   listOpenRouterProviderOptions,
@@ -82,6 +83,36 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+});
+
+describe('geo analytics client', () => {
+  it('requests an authenticated bounded window and forwards cancellation', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ hours_index: [], hours: [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const controller = new AbortController();
+
+    await getGeoAnalytics({
+      days: 30,
+      since: '2026-07-01T00:00:00Z',
+      until: '2026-07-15T00:00:00Z',
+      signal: controller.signal,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe('/admin/analytics/geo');
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({
+      days: '30',
+      since: '2026-07-01T00:00:00Z',
+      until: '2026-07-15T00:00:00Z',
+    });
+    expect(init.signal).toBe(controller.signal);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
   });
 });
 
