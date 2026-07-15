@@ -717,6 +717,26 @@ def test_h200_profile_uses_pp3_and_skips_gpu1() -> None:
     assert "1" not in str(model["gpu_index"]).split(",")
 
 
+def test_h200_profiles_use_hybrid_thinking_reasoning_parser() -> None:
+    """Both H200 configs must use the DeepSeek-V3 hybrid-thinking parser.
+
+    The ``deepseek-r1`` parser assumes the whole generation is reasoning until
+    a ``</think>`` close tag; requests are sent with thinking disabled, so that
+    tag never appears and every completion returned empty ``content`` with the
+    full answer classified as ``reasoning_content``.
+    """
+    import json
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[1]
+    for cfg_path in (
+        repo / "ops" / "local_deployment_proxy" / "models.h200.json",
+        repo / "ops" / "h200_idle_proxy" / "models.json",
+    ):
+        model = json.loads(cfg_path.read_text())["deepseek-v4-flash"]
+        assert model["reasoning_parser"] == "deepseek-v3", cfg_path
+
+
 def test_sglang_pipeline_parallel_sets_pp_size_and_ipc(monkeypatch: Any, tmp_path: Path) -> None:
     # A pipeline-parallel sglang backend gets --pp-size, --ipc=host, and a quoted
     # multi-GPU device list; --tp stays at its (1) default.

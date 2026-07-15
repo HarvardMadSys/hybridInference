@@ -129,12 +129,24 @@ def check_chat(base, api_key, model, timeout, thinking):
         return False
     try:
         message = json.loads(body)["choices"][0]["message"]
-        text = (message.get("content") or message.get("reasoning_content") or "").strip()
+        # The answer must be in ``content``: standard OpenAI clients never read
+        # ``reasoning_content``, so falling back to it here would mask a broken
+        # deployment (e.g. a reasoning parser that classifies the entire
+        # generation as reasoning and leaves ``content`` empty).
+        text = (message.get("content") or "").strip()
+        reasoning = (message.get("reasoning_content") or "").strip()
     except Exception as exc:
         _failed(f"chat {model} -> 200 but unparseable: {exc}")
         return False
     if not text:
-        _failed(f"chat {model} -> 200 but empty content ({dt:.1f}s)")
+        if reasoning:
+            _failed(
+                f"chat {model} -> 200 but content is empty; the answer landed in "
+                f"reasoning_content ({dt:.1f}s) — reasoning parser misconfigured, "
+                f"or the thinking budget swallowed the reply"
+            )
+        else:
+            _failed(f"chat {model} -> 200 but empty content ({dt:.1f}s)")
         return False
     _passed(f"chat {model} -> 200 ({dt:.1f}s)")
     _note(f'reply: "{text[:120]}"')

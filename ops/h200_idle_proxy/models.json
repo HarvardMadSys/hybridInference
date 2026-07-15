@@ -14,6 +14,6 @@
         "mtp": true,
         "speculative_algorithm": "EAGLE",
         "tool_call_parser": "deepseekv3",
-        "reasoning_parser": "deepseek-r1"
+        "reasoning_parser": "deepseek-v3"
     }
 }

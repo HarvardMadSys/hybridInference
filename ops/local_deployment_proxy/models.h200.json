@@ -12,6 +12,6 @@
         "max_model_len": 1048576,
         "mem_fraction": "0.90",
         "tool_call_parser": "deepseekv3",
-        "reasoning_parser": "deepseek-r1"
+        "reasoning_parser": "deepseek-v3"
     }
 }
