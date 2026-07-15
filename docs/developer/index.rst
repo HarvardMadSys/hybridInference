@@ -12,6 +12,7 @@ see the `FreeInference docs <https://doc.freeinference.org/>`_.
 
    installation
    deployment
+   codex-oncall
    architecture
    routing
    add-local-model

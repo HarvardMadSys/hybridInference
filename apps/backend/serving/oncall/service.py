@@ -1,0 +1,243 @@
+"""Incident orchestration: Slack delivery and GitHub Actions hand-off."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from contextlib import suppress
+from typing import TYPE_CHECKING, Protocol
+
+from serving.oncall.models import (
+    AlertEvent,
+    OnCallAnalysis,
+    SubmitAlertResponse,
+    sanitize_for_agent,
+)
+
+if TYPE_CHECKING:
+    from serving.oncall.store import OnCallJob, OnCallStore
+
+log = logging.getLogger(__name__)
+
+
+class OnCallOverloadedError(RuntimeError):
+    """Raised when accepting another analysis would exceed the queue limit."""
+
+
+class SlackPoster(Protocol):
+    """Slack capability required by the orchestrator."""
+
+    async def post(self, text: str, *, thread_ts: str | None = None) -> str:
+        """Post text and return the resulting Slack timestamp."""
+
+
+class AnalysisDispatcher(Protocol):
+    """GitHub Actions hand-off capability required by the orchestrator."""
+
+    async def dispatch(self, event: AlertEvent, slack_thread_ts: str) -> None:
+        """Trigger the analysis workflow for one firing alert."""
+
+
+class OnCallService:
+    """Deduplicate incidents and hand durable analysis jobs to GitHub Actions."""
+
+    def __init__(
+        self,
+        store: OnCallStore,
+        slack: SlackPoster,
+        dispatcher: AnalysisDispatcher,
+        *,
+        poll_seconds: float = 1.0,
+        max_attempts: int = 2,
+        max_pending_jobs: int = 100,
+    ) -> None:
+        self.store = store
+        self._slack = slack
+        self._dispatcher = dispatcher
+        self._poll_seconds = poll_seconds
+        self._max_attempts = max_attempts
+        self._max_pending_jobs = max_pending_jobs
+        self._submit_lock = asyncio.Lock()
+        self._wake = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._worker_task: asyncio.Task[None] | None = None
+
+    @property
+    def running(self) -> bool:
+        """Return whether the background worker is alive."""
+        return self._worker_task is not None and not self._worker_task.done()
+
+    async def start(self) -> None:
+        """Initialize persistence and start the queue worker."""
+        await self.store.initialize()
+        if self.running:
+            return
+        self._stop.clear()
+        self._worker_task = asyncio.create_task(self._worker(), name="codex-oncall-worker")
+
+    async def stop(self) -> None:
+        """Stop the worker without accepting another job."""
+        self._stop.set()
+        self._wake.set()
+        task = self._worker_task
+        self._worker_task = None
+        if task is not None:
+            await task
+
+    async def submit(self, event: AlertEvent) -> SubmitAlertResponse:
+        """Deliver the original alert and queue firing incidents for analysis."""
+        async with self._submit_lock:
+            incident = await self.store.get_incident(event.fingerprint)
+            duplicate_firing = bool(
+                incident is not None
+                and incident.status == "firing"
+                and (
+                    incident.alert_id == event.alert_id
+                    or time.time() - incident.created_at < event.dedupe_window_seconds
+                )
+            )
+            duplicate_resolved = bool(
+                incident is not None
+                and incident.status == "resolved"
+                and (
+                    incident.alert_id == event.alert_id
+                    or time.time() - incident.updated_at < event.dedupe_window_seconds
+                )
+            )
+            if event.status == "firing" and duplicate_firing:
+                assert incident is not None
+                return SubmitAlertResponse(
+                    accepted=True,
+                    duplicate=True,
+                    fingerprint=event.fingerprint,
+                    slack_thread_ts=incident.slack_thread_ts,
+                )
+            if event.status == "resolved" and duplicate_resolved:
+                assert incident is not None
+                return SubmitAlertResponse(
+                    accepted=True,
+                    duplicate=True,
+                    fingerprint=event.fingerprint,
+                    slack_thread_ts=incident.slack_thread_ts,
+                )
+
+            if event.status == "resolved":
+                if incident is not None and incident.status == "firing":
+                    await self._slack.post(event.slack_text, thread_ts=incident.slack_thread_ts)
+                    await self.store.mark_resolved(event.fingerprint, event)
+                    return SubmitAlertResponse(
+                        accepted=True,
+                        duplicate=False,
+                        fingerprint=event.fingerprint,
+                        slack_thread_ts=incident.slack_thread_ts,
+                    )
+                timestamp = await self._slack.post(event.slack_text)
+                await self.store.create_resolved(event, timestamp)
+                return SubmitAlertResponse(
+                    accepted=True,
+                    duplicate=False,
+                    fingerprint=event.fingerprint,
+                    slack_thread_ts=timestamp,
+                )
+
+            counts = await self.store.job_counts()
+            if counts["queued"] + counts["running"] >= self._max_pending_jobs:
+                raise OnCallOverloadedError("oncall queue is full")
+            timestamp = await self._slack.post(event.slack_text)
+            await self.store.create_firing(event, timestamp)
+            self._wake.set()
+            return SubmitAlertResponse(
+                accepted=True,
+                duplicate=False,
+                fingerprint=event.fingerprint,
+                slack_thread_ts=timestamp,
+            )
+
+    async def process_one(self) -> bool:
+        """Hand one queued job to GitHub Actions; return False when idle.
+
+        The workflow owns everything after a successful dispatch: it runs the
+        Codex analysis and replies (or posts its own failure notice) in the
+        original Slack thread. The relay only retries the hand-off itself.
+        """
+        job = await self.store.claim_next_job()
+        if job is None:
+            return False
+        try:
+            if job.stage != "dispatch":
+                raise RuntimeError(f"invalid oncall job stage: {job.stage}")
+            await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
+            await self.store.complete_job(job.id)
+        except Exception as exc:
+            log.exception("oncall job %s failed during %s", job.id, job.stage)
+            final = await self.store.retry_or_fail(job, str(exc), self._max_attempts)
+            if final:
+                await self._post_failure_notice(job)
+            else:
+                self._wake.set()
+        return True
+
+    async def _post_failure_notice(self, job: OnCallJob) -> None:
+        try:
+            await self._slack.post(
+                "*Codex on-call unavailable*\n"
+                f"Hand-off to the GitHub Actions analysis workflow failed after "
+                f"{job.attempts} attempts. Check the oncall relay logs.",
+                thread_ts=job.slack_thread_ts,
+            )
+        except Exception:
+            log.exception("failed to post final oncall failure notice for job %s", job.id)
+
+    async def _worker(self) -> None:
+        while not self._stop.is_set():
+            try:
+                processed = await self.process_one()
+            except Exception:
+                log.exception("oncall worker loop failed; retrying")
+                processed = False
+            if processed:
+                continue
+            self._wake.clear()
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._wake.wait(), timeout=self._poll_seconds)
+
+
+def _escape_slack(text: str) -> str:
+    sanitized = sanitize_for_agent(text)
+    assert isinstance(sanitized, str)
+    return sanitized.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def format_analysis(analysis: OnCallAnalysis, thread_id: str | None) -> str:
+    """Render a bounded, mention-safe Codex result for a Slack thread.
+
+    Used by the ``codex-oncall`` GitHub Actions workflow (via
+    ``serving.oncall.gha``) to post the structured analysis back into the
+    original alert thread.
+    """
+    evidence = "\n".join(f"• {_escape_slack(item)}" for item in analysis.evidence) or "• None"
+    actions = "\n".join(
+        f"{index}. {_escape_slack(item)}"
+        for index, item in enumerate(analysis.recommended_actions, start=1)
+    )
+    lines = [
+        "*Codex on-call*",
+        f"• *Classification:* `{analysis.classification}`",
+        f"• *Confidence:* {analysis.confidence:.0%}",
+        f"• *Summary:* {_escape_slack(analysis.summary)}",
+        f"• *Impact:* {_escape_slack(analysis.impact)}",
+        f"• *Likely cause:* {_escape_slack(analysis.likely_cause)}",
+        "",
+        "*Evidence*",
+        evidence,
+        "",
+        "*Recommended actions*",
+        actions,
+        "",
+        f"• *Issue:* `{analysis.issue_recommendation}`",
+        f"• *Draft PR:* `{analysis.draft_pr_recommendation}`",
+    ]
+    if thread_id:
+        lines.append(f"• *Codex thread:* `{_escape_slack(thread_id)}`")
+    return "\n".join(lines)[:40_000]
