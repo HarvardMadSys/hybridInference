@@ -152,13 +152,6 @@
       <button class="btn" id="play">▶ Play</button>
       <button class="btn mini" id="prev-day">−24h</button>
       <button class="btn mini" id="next-day">+24h</button>
-      <label class="ctl">Traffic class
-        <span class="seg" id="cls-seg">
-          <button class="btn on" data-cls="all">All</button>
-          <button class="btn" data-cls="nondc">Non-DC</button>
-          <button class="btn" data-cls="dc">Datacenter</button>
-        </span>
-      </label>
       <label class="ctl" for="metric">Metric
         <select id="metric">
           <option value="n">Requests</option>
@@ -202,7 +195,7 @@
       <div class="stat-value" id="k-route">–</div>
       <div class="small muted" id="k-route-sub">–</div>
     </div>
-    <div class="card" title="Range-wide: 1 − global peak / Σ regional peaks, on the selected metric + class. Transferable: capacity proxy = per-continent mean over the range.">
+    <div class="card" title="Range-wide: 1 − global peak / Σ regional peaks, on the selected metric. Transferable: capacity proxy = per-continent mean over the range.">
       <div class="muted small">Pooling potential (range)</div>
       <div class="stat-value" id="k-pool">–</div>
       <div class="small muted" id="k-pool-sub">–</div>
@@ -291,19 +284,18 @@
     SA: 'var(--cont-sa)', AF: 'var(--cont-af)', OC: 'var(--cont-oc)', AN: 'var(--cont-unknown)',
   };
 
-  const clsMatch = (rowCls, filter) => filter === 'all' || rowCls === filter;
-  const bucketsAt = (h, filter) => data.hours[h].b.filter((r) => clsMatch(r[B.cls], filter));
-  const flowsAt = (h, filter) => data.hours[h].f.filter((r) => clsMatch(r[F.cls], filter));
+  const bucketsAt = (h) => data.hours[h].b;
+  const flowsAt = (h) => data.hours[h].f;
   const mVal = (r, metric) => r[B[metric]] || 0;
 
-  // per-continent series, cached per metric|class
+  // per-continent series, cached per metric
   const seriesCache = new Map();
-  function seriesFor(metric, filter) {
-    const key = metric + '|' + filter;
+  function seriesFor(metric) {
+    const key = metric;
     if (seriesCache.has(key)) return seriesCache.get(key);
     const out = new Map();
     for (let h = 0; h < H; h++) {
-      for (const r of bucketsAt(h, filter)) {
+      for (const r of bucketsAt(h)) {
         const cont = r[B.cont];
         if (cont === '?') continue;
         if (!out.has(cont)) out.set(cont, new Float64Array(H));
@@ -314,8 +306,8 @@
     return out;
   }
 
-  function rangePooling(metric, filter) {
-    const series = seriesFor(metric, filter);
+  function rangePooling(metric) {
+    const series = seriesFor(metric);
     if (series.size < 2) return { pooling: 0, conts: series.size };
     let globalPeak = 0;
     const total = new Float64Array(H);
@@ -329,8 +321,8 @@
     return { pooling: sumPeaks > 0 ? 1 - globalPeak / sumPeaks : 0, conts: series.size };
   }
 
-  function transferableAt(h, metric, filter) {
-    const series = seriesFor(metric, filter);
+  function transferableAt(h, metric) {
+    const series = seriesFor(metric);
     let over = 0, slack = 0, totalNow = 0;
     for (const arr of series.values()) {
       let mean = 0;
@@ -374,7 +366,7 @@
   const countryName = (a3) => NAME_OVERRIDES[a3] || atlasById.get(a3)?.properties.name || a3;
 
   // ---------- state ----------
-  const state = { hour: H - 1, cls: 'all', metric: 'n', playing: null, selection: null };
+  const state = { hour: H - 1, metric: 'n', playing: null, selection: null };
 
   // ---------- svg scaffolding ----------
   const svg = d3.select('#globe');
@@ -424,15 +416,14 @@
     layers.night.attr('d', path(night));
     layers.terminator.attr('d', path(day));
 
-    const buckets = bucketsAt(state.hour, state.cls);
+    const buckets = bucketsAt(state.hour);
     const byCountry = new Map();
     for (const r of buckets) {
       const a3 = r[B.c];
-      const cur = byCountry.get(a3) || { a3, cont: r[B.cont], v: 0, n: 0, users: 0, cls: {} };
+      const cur = byCountry.get(a3) || { a3, cont: r[B.cont], v: 0, n: 0, users: 0 };
       cur.v += mVal(r, state.metric);
       cur.n += r[B.n];
       cur.users += r[B.users];
-      cur.cls[r[B.cls]] = (cur.cls[r[B.cls]] || 0) + r[B.n];
       byCountry.set(a3, cur);
     }
     const dots = [...byCountry.values()].map((d) => ({ ...d, coord: centroidOf(d.a3) })).filter((d) => d.coord);
@@ -454,7 +445,7 @@
     heat.select('title').text((d) => `${countryName(d.a3)}: ${fmt(d.v)} ${metricLabel()} · ${d.n} req`);
 
     // flows to LOCAL providers only (we don't claim API vendor locations)
-    const flows = flowsAt(state.hour, state.cls)
+    const flows = flowsAt(state.hour)
       .filter((r) => provById.get(r[F.p])?.kind === 'local' && provById.get(r[F.p])?.coord)
       .map((r) => ({ a3: r[F.c], p: provById.get(r[F.p]), n: r[F.n], coord: centroidOf(r[F.c]) }))
       .filter((r) => r.coord)
@@ -473,7 +464,7 @@
 
     // local provider nodes sized by inbound
     const inbound = new Map(localProviders.map((p) => [p.id, 0]));
-    for (const r of flowsAt(state.hour, state.cls)) if (inbound.has(r[F.p])) inbound.set(r[F.p], inbound.get(r[F.p]) + r[F.n]);
+    for (const r of flowsAt(state.hour)) if (inbound.has(r[F.p])) inbound.set(r[F.p], inbound.get(r[F.p]) + r[F.n]);
     const maxIn = Math.max(1, ...inbound.values());
     const provs = layers.providers.selectAll('g').data(localProviders, (p) => p.id).join((enter) => {
       const g = enter.append('g');
@@ -505,7 +496,7 @@
   function drawRail() {
     const rows = new Map(remoteProviders.map((p) => [p.id, 0]));
     let localN = 0;
-    for (const r of flowsAt(state.hour, state.cls)) {
+    for (const r of flowsAt(state.hour)) {
       if (rows.has(r[F.p])) rows.set(r[F.p], rows.get(r[F.p]) + r[F.n]);
       else localN += r[F.n];
     }
@@ -520,7 +511,7 @@
   }
 
   function drawStats(byCountry) {
-    const buckets = bucketsAt(state.hour, state.cls);
+    const buckets = bucketsAt(state.hour);
     const totalReq = d3.sum(buckets, (r) => r[B.n]);
     const located = d3.sum(buckets.filter((r) => r[B.cont] !== '?'), (r) => r[B.n]);
     const countriesActive = [...byCountry.keys()].filter((a3) => !a3.startsWith('?')).length;
@@ -534,7 +525,7 @@
     $('#k-mix').textContent = ranked.length ? `${CONT_NAMES[ranked[0][0]] || ranked[0][0]} ${pct(ranked[0][1] / contTotal)}` : '–';
     $('#k-mix-sub').textContent = ranked.slice(1, 4).map(([c, v]) => `${c} ${pct(v / contTotal)}`).join(' · ') || 'single-continent hour';
 
-    const flows = flowsAt(state.hour, state.cls);
+    const flows = flowsAt(state.hour);
     let ext = 0, localSame = 0, localCross = 0;
     for (const r of flows) {
       const p = provById.get(r[F.p]);
@@ -546,9 +537,9 @@
     $('#k-route-sub').textContent = flowTotal
       ? `local same-cont ${pct(localSame / flowTotal)} · cross-cont ${pct(localCross / flowTotal)}` : 'no flows';
 
-    const { pooling, conts } = rangePooling(state.metric, state.cls);
+    const { pooling, conts } = rangePooling(state.metric);
     $('#k-pool').textContent = pct(pooling);
-    $('#k-pool-sub').textContent = `${conts} continents · transferable now ${pct(transferableAt(state.hour, state.metric, state.cls))}`;
+    $('#k-pool-sub').textContent = `${conts} continents · transferable now ${pct(transferableAt(state.hour, state.metric))}`;
   }
 
   function drawClock() {
@@ -572,7 +563,7 @@
     const idx0 = Math.max(0, Math.round((dayStartMs - HOURS[0].getTime()) / 3600000));
     const idxN = Math.min(H - 1, idx0 + 23);
 
-    const series = seriesFor(state.metric, state.cls);
+    const series = seriesFor(state.metric);
     const conts = [...series.keys()].sort((a, b) => d3.sum(series.get(b)) - d3.sum(series.get(a)));
     const x = d3.scaleLinear().domain([idx0, idx0 + 24]).range([margin.left, W - margin.right]);
     let maxV = 1;
@@ -632,24 +623,22 @@
     if (!s) return;
     const h = state.hour;
     if (s.type === 'country') {
-      const rows = bucketsAt(h, 'all').filter((r) => r[B.c] === s.a3);
+      const rows = bucketsAt(h).filter((r) => r[B.c] === s.a3);
       const n = d3.sum(rows, (r) => r[B.n]);
-      const cls = Object.fromEntries(['nondc', 'dc', 'internal', 'unknown'].map((c) => [c, d3.sum(rows.filter((r) => r[B.cls] === c), (r) => r[B.n])]));
       const p90 = d3.max(rows, (r) => r[B.p90]);
-      const tops = flowsAt(h, state.cls).filter((r) => r[F.c] === s.a3).sort((a, b) => b[F.n] - a[F.n]).slice(0, 3);
+      const tops = flowsAt(h).filter((r) => r[F.c] === s.a3).sort((a, b) => b[F.n] - a[F.n]).slice(0, 3);
       const coord = centroidOf(s.a3);
       const localH = coord ? (HOURS[h].getUTCHours() + Math.round(coord[0] / 15) + 24) % 24 : null;
       $('#detail-eyebrow').textContent = 'REQUEST ORIGIN';
       $('#detail-title').textContent = `${countryName(s.a3)} · ${CONT_NAMES[countryCont.get(s.a3)] || '?'}`;
       $('#detail-body').innerHTML = [
         `${fmt(n)} req this hour${localH !== null ? ` · ~${String(localH).padStart(2, '0')}:00 local` : ''}`,
-        `non-DC ${fmt(cls.nondc)} · DC ${fmt(cls.dc)}${cls.internal ? ` · internal ${fmt(cls.internal)}` : ''}${cls.unknown ? ` · unknown ${fmt(cls.unknown)}` : ''}`,
         p90 != null ? `p90 TTFT ${(p90 / 1000).toFixed(2)} s` : '',
         tops.length ? 'to: ' + tops.map((r) => `${provById.get(r[F.p])?.label || r[F.p]} (${fmt(r[F.n])})`).join(', ') : '',
       ].filter(Boolean).join('<br>');
     } else if (s.type === 'provider') {
       const p = provById.get(s.id);
-      const inRows = flowsAt(h, state.cls).filter((r) => r[F.p] === s.id).sort((a, b) => b[F.n] - a[F.n]);
+      const inRows = flowsAt(h).filter((r) => r[F.p] === s.id).sort((a, b) => b[F.n] - a[F.n]);
       const total = d3.sum(inRows, (r) => r[F.n]);
       $('#detail-eyebrow').textContent = p.kind === 'local' ? 'LOCAL PROVIDER' : 'EXTERNAL API';
       $('#detail-title').textContent = p.label + (p.region ? ` · ${p.region}` : '');
@@ -660,10 +649,10 @@
       ].filter(Boolean).join('<br>');
     } else if (s.type === 'flow') {
       const p = provById.get(s.id);
-      const row = flowsAt(h, state.cls).find((r) => r[F.c] === s.a3 && r[F.p] === s.id);
+      const row = flowsAt(h).find((r) => r[F.c] === s.a3 && r[F.p] === s.id);
       $('#detail-eyebrow').textContent = 'FLOW';
       $('#detail-title').textContent = `${countryName(s.a3)} → ${p.label}`;
-      $('#detail-body').textContent = row ? `${fmt(row[F.n])} req this hour (${state.cls})` : 'no traffic at this hour';
+      $('#detail-body').textContent = row ? `${fmt(row[F.n])} req this hour` : 'no traffic at this hour';
     }
   }
 
@@ -680,11 +669,6 @@
   $('#prev-day').addEventListener('click', () => setHour(state.hour - 24));
   $('#next-day').addEventListener('click', () => setHour(state.hour + 24));
   $('#metric').addEventListener('change', () => { state.metric = $('#metric').value; drawGlobe(); });
-  $('#cls-seg').querySelectorAll('.btn').forEach((b) => b.addEventListener('click', () => {
-    state.cls = b.dataset.cls;
-    $('#cls-seg').querySelectorAll('.btn').forEach((x) => x.classList.toggle('on', x === b));
-    drawGlobe();
-  }));
   document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
     const [lon, lat] = b.dataset.view.split(',').map(Number);
     projection.rotate([lon, lat, 0]);
@@ -723,11 +707,11 @@
   for (const a3 of countryCont.keys()) if (!a3.startsWith('?') && !centroidOf(a3)) unplotted.add(a3);
   $('#foot').innerHTML = [
     `source: <b>${data.meta.source}</b> · generated ${data.meta.generated_at?.slice(0, 16).replace('T', ' ')}Z · ${fmt(data.meta.rows_total || 0)} requests over ${H} hours`,
-    `geoip: country=${data.meta.geoip?.country} asn=${data.meta.geoip?.asn}` +
+    `geoip: country=${data.meta.geoip?.country}` +
       (unplotted.size ? ` · not plotted (no centroid): ${[...unplotted].join(', ')}` : '') +
       (data.meta.unmapped_alpha2?.length ? ` · unmapped alpha-2: ${data.meta.unmapped_alpha2.join(', ')}` : ''),
     (data.meta.notes || []).join(' · '),
-    'origin = network origin (IP-based) · non-DC/DC = ASN heuristic · compute-sec = Σ server latency (estimate) · local times are approximate (longitude-based)',
+    'origin = network origin (IP-based) · compute-sec = Σ server latency (estimate) · local times are approximate (longitude-based)',
   ].join('<br>');
 
   $('#loading').hidden = true;

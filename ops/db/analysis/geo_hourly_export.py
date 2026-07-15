@@ -1,15 +1,14 @@
 """Export hourly geo-temporal demand aggregates for ``geo_globe.html``.
 
 The real-data path streams ``api_logs`` and resolves network-origin IPs with
-offline GeoLite2 databases. The output contains aggregates only: no IPs, user
-ids, or prompts leave the database. ``dc`` and ``nondc`` are ASN network-origin
-heuristics; they do not identify a human or an agent.
+an offline GeoLite2 Country database. The output contains aggregates only: no
+IPs, user ids, or prompts leave the database.
 
 Typical runs::
 
   uv run python ops/db/analysis/geo_hourly_export.py --days 30 \
       --geoip-country /srv/geoip/GeoLite2-Country.mmdb \
-      --geoip-asn /srv/geoip/GeoLite2-ASN.mmdb --out data.json
+      --out data.json
   uv run python ops/db/analysis/geo_hourly_export.py --demo --out data.json
 """
 
@@ -84,28 +83,28 @@ async def export_real(since: datetime, until: datetime, resolver: GeoResolver) -
     return payload
 
 
-# (alpha2, continent, utc_offset_hours, nondc_base, dc_base)
+# (alpha2, continent, utc_offset_hours, hourly_base)
 _DEMO_COUNTRIES = [
-    ("CN", "AS", 8, 300, 45),
-    ("US", "NA", -5, 220, 260),
-    ("SG", "AS", 8, 40, 95),
-    ("DE", "EU", 1, 95, 55),
-    ("GB", "EU", 0, 70, 30),
-    ("JP", "AS", 9, 80, 20),
-    ("IN", "AS", 5.5, 60, 15),
-    ("KR", "AS", 9, 45, 10),
-    ("HK", "AS", 8, 30, 25),
-    ("FR", "EU", 1, 40, 15),
-    ("NL", "EU", 1, 25, 45),
-    ("RU", "EU", 3, 25, 10),
-    ("CA", "NA", -5, 40, 12),
-    ("BR", "SA", -3, 35, 8),
-    ("AU", "OC", 10, 30, 8),
-    ("AE", "AS", 4, 15, 6),
-    ("TW", "AS", 8, 25, 6),
-    ("VN", "AS", 7, 18, 4),
-    ("NG", "AF", 1, 12, 2),
-    ("ZA", "AF", 2, 10, 3),
+    ("CN", "AS", 8, 345),
+    ("US", "NA", -5, 480),
+    ("SG", "AS", 8, 135),
+    ("DE", "EU", 1, 150),
+    ("GB", "EU", 0, 100),
+    ("JP", "AS", 9, 100),
+    ("IN", "AS", 5.5, 75),
+    ("KR", "AS", 9, 55),
+    ("HK", "AS", 8, 55),
+    ("FR", "EU", 1, 55),
+    ("NL", "EU", 1, 70),
+    ("RU", "EU", 3, 35),
+    ("CA", "NA", -5, 52),
+    ("BR", "SA", -3, 43),
+    ("AU", "OC", 10, 38),
+    ("AE", "AS", 4, 21),
+    ("TW", "AS", 8, 31),
+    ("VN", "AS", 7, 22),
+    ("NG", "AF", 1, 14),
+    ("ZA", "AF", 2, 13),
 ]
 
 _DEMO_PROVIDER_WEIGHTS = {
@@ -122,23 +121,17 @@ def _demo_hour_rate(
     rng: random.Random,
     hour_utc: datetime,
     offset: float,
-    nondc: int,
-    dc: int,
-) -> tuple[int, int]:
-    """Return synthetic non-datacenter and datacenter request counts."""
+    base: int,
+) -> int:
+    """Return a synthetic request count with a local-time demand curve."""
     local = (hour_utc.hour + offset) % 24
     evening = math.exp(-((min(abs(local - 20.5), 24 - abs(local - 20.5))) ** 2) / 9)
     midday = math.exp(-((min(abs(local - 11.0), 24 - abs(local - 11.0))) ** 2) / 18)
     weekend = 0.72 if hour_utc.weekday() >= 5 else 1.0
-    nondc_rate = nondc * (0.12 + 0.85 * evening + 0.40 * midday) * weekend
-    dc_rate = dc * (0.80 + 0.20 * math.sin((hour_utc.hour + offset) * math.pi / 12))
+    rate = base * (0.18 + 0.85 * evening + 0.40 * midday) * weekend
     if rng.random() < 0.02:
-        dc_rate *= rng.uniform(2.5, 4.5)
-    noise = rng.lognormvariate(0, 0.25)
-    return (
-        max(0, round(nondc_rate * noise)),
-        max(0, round(dc_rate * rng.lognormvariate(0, 0.35))),
-    )
+        rate *= rng.uniform(2.5, 4.5)
+    return max(0, round(rate * rng.lognormvariate(0, 0.3)))
 
 
 def generate_demo(days: int) -> dict:
@@ -148,36 +141,31 @@ def generate_demo(days: int) -> dict:
     start = until - timedelta(days=days)
     hours_index = [start + timedelta(hours=index) for index in range(days * 24)]
 
-    buckets: dict[tuple[datetime, str, str, str, str], GeoBucket] = defaultdict(GeoBucket)
-    flows: dict[tuple[datetime, str, str, str, str], int] = defaultdict(int)
+    buckets: dict[tuple[datetime, str, str, str], GeoBucket] = defaultdict(GeoBucket)
+    flows: dict[tuple[datetime, str, str, str], int] = defaultdict(int)
     providers_seen: set[str] = set()
 
     for hour in hours_index:
-        for alpha2, continent, offset, nondc_base, dc_base in _DEMO_COUNTRIES:
+        for alpha2, continent, offset, base in _DEMO_COUNTRIES:
             alpha3 = ALPHA2_TO_ALPHA3[alpha2]
-            for network_class, count in zip(
-                ("nondc", "dc"),
-                _demo_hour_rate(rng, hour, offset, nondc_base, dc_base),
-                strict=True,
-            ):
-                if count <= 0:
-                    continue
-                bucket = buckets[(hour, alpha3, alpha2, continent, network_class)]
-                bucket.n += count
-                bucket.err += max(0, round(count * 0.012 * rng.lognormvariate(0, 0.5)))
-                bucket.users.update(f"u{rng.randrange(3000)}" for _ in range(max(1, count // 22)))
-                bucket.tin += int(count * rng.lognormvariate(7.4, 0.3))
-                bucket.tout += int(count * rng.lognormvariate(5.8, 0.3))
-                bucket.gs += count * rng.uniform(2.5, 9.0)
-                base_ttft = 550 if network_class == "nondc" else 420
-                bucket.ttfts.extend(
-                    int(base_ttft * rng.lognormvariate(0, 0.45)) for _ in range(min(count, 40))
-                )
-                for provider, weight in _DEMO_PROVIDER_WEIGHTS[continent]:
-                    provider_count = round(count * weight * rng.uniform(0.8, 1.2))
-                    if provider_count > 0:
-                        flows[(hour, alpha3, network_class, provider, provider)] += provider_count
-                        providers_seen.add(provider)
+            count = _demo_hour_rate(rng, hour, offset, base)
+            if count <= 0:
+                continue
+            bucket = buckets[(hour, alpha3, alpha2, continent)]
+            bucket.n += count
+            bucket.err += max(0, round(count * 0.012 * rng.lognormvariate(0, 0.5)))
+            bucket.users.update(f"u{rng.randrange(3000)}" for _ in range(max(1, count // 22)))
+            bucket.tin += int(count * rng.lognormvariate(7.4, 0.3))
+            bucket.tout += int(count * rng.lognormvariate(5.8, 0.3))
+            bucket.gs += count * rng.uniform(2.5, 9.0)
+            bucket.ttfts.extend(
+                int(500 * rng.lognormvariate(0, 0.45)) for _ in range(min(count, 40))
+            )
+            for provider, weight in _DEMO_PROVIDER_WEIGHTS[continent]:
+                provider_count = round(count * weight * rng.uniform(0.8, 1.2))
+                if provider_count > 0:
+                    flows[(hour, alpha3, provider, provider)] += provider_count
+                    providers_seen.add(provider)
 
     total = sum(bucket.n for bucket in buckets.values())
     meta = {
@@ -187,7 +175,7 @@ def generate_demo(days: int) -> dict:
         "hours": len(hours_index),
         "rows_total": total,
         "rows_with_ip": total,
-        "geoip": {"country": False, "asn": False},
+        "geoip": {"country": False},
         "degraded": False,
         "degraded_reasons": [],
         "unmapped_alpha2": [],
@@ -226,11 +214,6 @@ def cli() -> None:
         default=os.environ.get("GEOIP_COUNTRY_DB"),
         help="Path to GeoLite2-Country.mmdb (env: GEOIP_COUNTRY_DB)",
     )
-    parser.add_argument(
-        "--geoip-asn",
-        default=os.environ.get("GEOIP_ASN_DB"),
-        help="Path to GeoLite2-ASN.mmdb (env: GEOIP_ASN_DB)",
-    )
     parser.add_argument("--env-file", default=None, help="Path to .env with DB_* variables")
     parser.add_argument("--demo", action="store_true", help="Generate synthetic demo data")
     parser.add_argument("--demo-days", type=int, default=14, help="Demo range length")
@@ -243,8 +226,6 @@ def cli() -> None:
     _load_env(args.env_file)
     if not args.geoip_country:
         print("WARNING: no GeoLite2-Country.mmdb - all origins will be country '?'.")
-    if not args.geoip_asn:
-        print("WARNING: no GeoLite2-ASN.mmdb - traffic classes will be 'unknown'.")
 
     until = (
         datetime.fromisoformat(args.until).astimezone(timezone.utc)
@@ -256,7 +237,7 @@ def cli() -> None:
         if args.since
         else until - timedelta(days=args.days)
     )
-    resolver = GeoResolver(args.geoip_country, args.geoip_asn)
+    resolver = GeoResolver(args.geoip_country)
     try:
         payload = asyncio.run(export_real(since, until, resolver))
     finally:

@@ -22,40 +22,31 @@ class FakeReader:
         self.closed = True
 
 
-def test_resolves_country_continent_and_asn_network_class() -> None:
+def test_resolves_country_and_continent() -> None:
     country = FakeReader(
         {
             "8.8.8.8": {"country": {"iso_code": "US"}, "continent": {"code": "NA"}},
             "1.1.1.1": {"country": {"iso_code": "AU"}, "continent": {"code": "OC"}},
         }
     )
-    asn = FakeReader(
-        {
-            "8.8.8.8": {"autonomous_system_organization": "Google LLC"},
-            "1.1.1.1": {"autonomous_system_organization": "Example University"},
-        }
-    )
-    resolver = GeoResolver(country_reader=country, asn_reader=asn)
+    resolver = GeoResolver(country_reader=country)
 
-    assert resolver.resolve("8.8.8.8") == ("USA", "US", "NA", "dc")
-    assert resolver.resolve("1.1.1.1") == ("AUS", "AU", "OC", "nondc")
+    assert resolver.resolve("8.8.8.8") == ("USA", "US", "NA")
+    assert resolver.resolve("1.1.1.1") == ("AUS", "AU", "OC")
     assert resolver.country_enabled is True
-    assert resolver.asn_enabled is True
     assert resolver.degraded is False
 
 
 def test_internal_invalid_and_missing_ips_do_not_hit_readers() -> None:
     country = FakeReader({})
-    asn = FakeReader({})
-    resolver = GeoResolver(country_reader=country, asn_reader=asn)
+    resolver = GeoResolver(country_reader=country)
 
-    assert resolver.resolve("127.0.0.1") == ("?", "?", "?", "internal")
-    assert resolver.resolve("10.0.0.4") == ("?", "?", "?", "internal")
-    assert resolver.resolve("169.254.1.2") == ("?", "?", "?", "internal")
-    assert resolver.resolve("not-an-ip") == ("?", "?", "?", "unknown")
-    assert resolver.resolve(None) == ("?", "?", "?", "unknown")
+    assert resolver.resolve("127.0.0.1") == ("?", "?", "?")
+    assert resolver.resolve("10.0.0.4") == ("?", "?", "?")
+    assert resolver.resolve("169.254.1.2") == ("?", "?", "?")
+    assert resolver.resolve("not-an-ip") == ("?", "?", "?")
+    assert resolver.resolve(None) == ("?", "?", "?")
     assert country.calls == []
-    assert asn.calls == []
 
 
 def test_cache_hit_and_bounded_eviction() -> None:
@@ -64,8 +55,7 @@ def test_cache_hit_and_bounded_eviction() -> None:
         "1.1.1.1": {"country": {"iso_code": "AU"}, "continent": {"code": "OC"}},
     }
     country = FakeReader(records)
-    asn = FakeReader({ip: {"autonomous_system_organization": "ISP"} for ip in records})
-    resolver = GeoResolver(country_reader=country, asn_reader=asn, cache_size=1)
+    resolver = GeoResolver(country_reader=country, cache_size=1)
 
     resolver.resolve("8.8.8.8")
     resolver.resolve("8.8.8.8")
@@ -78,24 +68,19 @@ def test_cache_hit_and_bounded_eviction() -> None:
 
 def test_unmapped_alpha2_is_visible_without_losing_bucket() -> None:
     country = FakeReader({"8.8.8.8": {"country": {"iso_code": "ZZ"}, "continent": {"code": "NA"}}})
-    asn = FakeReader({"8.8.8.8": {"autonomous_system_organization": "Example ISP"}})
-    resolver = GeoResolver(country_reader=country, asn_reader=asn)
+    resolver = GeoResolver(country_reader=country)
 
-    assert resolver.resolve("8.8.8.8") == ("?ZZ", "ZZ", "NA", "nondc")
+    assert resolver.resolve("8.8.8.8") == ("?ZZ", "ZZ", "NA")
     assert resolver.unmapped_a2 == {"ZZ"}
 
 
 def test_missing_database_files_degrade_safely(tmp_path) -> None:
-    resolver = GeoResolver(
-        country_db=str(tmp_path / "missing-country.mmdb"),
-        asn_db=str(tmp_path / "missing-asn.mmdb"),
-    )
+    resolver = GeoResolver(country_db=str(tmp_path / "missing-country.mmdb"))
 
-    assert resolver.resolve("8.8.8.8") == ("?", "?", "?", "unknown")
+    assert resolver.resolve("8.8.8.8") == ("?", "?", "?")
     assert resolver.country_enabled is False
-    assert resolver.asn_enabled is False
     assert resolver.degraded is True
-    assert resolver.degraded_reasons == ("asn_database_missing", "country_database_missing")
+    assert resolver.degraded_reasons == ("country_database_missing",)
 
 
 def test_missing_module_and_reader_open_failure_degrade_safely(tmp_path, monkeypatch) -> None:
@@ -103,7 +88,7 @@ def test_missing_module_and_reader_open_failure_degrade_safely(tmp_path, monkeyp
     database.write_bytes(b"not-a-real-database")
 
     monkeypatch.setattr(geo_resolver, "maxminddb", None)
-    missing_module = GeoResolver(country_db=str(database), asn_reader=FakeReader({}))
+    missing_module = GeoResolver(country_db=str(database))
     assert missing_module.country_enabled is False
     assert missing_module.degraded_reasons == ("maxminddb_unavailable",)
 
@@ -113,14 +98,14 @@ def test_missing_module_and_reader_open_failure_degrade_safely(tmp_path, monkeyp
             raise RuntimeError("corrupt database")
 
     monkeypatch.setattr(geo_resolver, "maxminddb", BrokenMaxMind())
-    broken_database = GeoResolver(country_db=str(database), asn_reader=FakeReader({}))
+    broken_database = GeoResolver(country_db=str(database))
     assert broken_database.country_enabled is False
     assert broken_database.degraded_reasons == ("country_database_open_failed",)
 
 
-def test_close_closes_each_injected_reader_once() -> None:
+def test_close_closes_injected_reader() -> None:
     reader = FakeReader({})
-    resolver = GeoResolver(country_reader=reader, asn_reader=reader)
+    resolver = GeoResolver(country_reader=reader)
 
     resolver.close()
 

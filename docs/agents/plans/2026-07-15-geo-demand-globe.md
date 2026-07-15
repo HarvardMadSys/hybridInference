@@ -4,7 +4,7 @@
 
 **Goal:** Bring the standalone geo-temporal demand globe (research instrument, implemented as ops tooling on this branch) into the freeinference product as an admin page at `/dashboard/admin/analytics/geo`, backed by a live admin API — **without touching the `api_logs` schema or the request/logging write path**.
 
-**Architecture:** Two sequential, separately reviewable PRs. **PR A (backend):** a read-only admin endpoint `GET /admin/analytics/geo` that scans the requested `api_logs` window, resolves `metadata->>'ip'` through offline GeoLite2 databases at query time, aggregates into the already-validated `data.json` contract, and caches the result in-process (hourly refresh). **PR B (frontend, based on PR A):** a Next.js sub-route `analytics/geo` hosting a React port of the globe (route-level code split keeps d3/atlas out of the base Analytics bundle), plus a lightweight Geography entry card on the Analytics landing. A future phase (deliberately deferred) would move geo resolution to log time via three `api_logs` columns; its triggers are listed at the end — do not implement it as part of this plan.
+**Architecture:** Two sequential, separately reviewable PRs. **PR A (backend):** a read-only admin endpoint `GET /admin/analytics/geo` that scans the requested `api_logs` window, resolves `metadata->>'ip'` through an offline GeoLite2 Country database at query time, aggregates into the already-validated `data.json` contract, and caches the result in-process (hourly refresh). **PR B (frontend, based on PR A):** a Next.js sub-route `analytics/geo` hosting a React port of the globe (route-level code split keeps d3/atlas out of the base Analytics bundle), plus a lightweight Geography entry card on the Analytics landing. A future phase (deliberately deferred) would move geo resolution to log time via two `api_logs` columns; its triggers are listed at the end — do not implement it as part of this plan.
 
 **Tech Stack:** Python 3.12, FastAPI, asyncpg/Postgres, `maxminddb` (new backend dependency), Next.js 15.5, React 18, TypeScript, d3 + topojson-client (new frontend dependencies), pytest, vitest.
 
@@ -37,8 +37,8 @@ Facts verified against the real system (2026-07-15):
 - Exporter SQL runs clean against the real schema (validated on a schema-true dev DB).
 - DB access conventions for scripts: `.env` / `DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME`
   (same as [ops/db/export_logs.py](../../../ops/db/export_logs.py)).
-- GeoLite2 `.mmdb` files are **not** on any server yet. PR A adds `maxminddb` as a project
-  dependency; deploying the database files remains an operational prerequisite.
+- The GeoLite2 Country `.mmdb` file is **not** on any server yet. PR A adds `maxminddb` as a
+  project dependency; deploying the database file remains an operational prerequisite.
 - Admin tab nav supports sub-routes: active state uses `pathname.startsWith(href + '/')`
   ([AdminTabNav.tsx](../../../apps/frontend/src/components/features/admin/AdminTabNav.tsx)),
   and the Analytics tab is a thin wrapper
@@ -49,17 +49,14 @@ Facts verified against the real system (2026-07-15):
 
 1. **Origin = network origin.** IP-based, never claimed as user residence. UI copy must say
    "origin (IP-based)"; local times derived from country centroid longitude are labeled `~approx`.
-2. **The primary analysis is continent x time, across all traffic.** Traffic classes remain a
-   secondary ASN-based robustness diagnostic: `nondc` / `dc` / `internal` / `unknown` (keyword
-   list over GeoLite2-ASN org names). The default product view is `all`; the class filter belongs
-   in an advanced/research control and must not compete visually with continent, time, or metric.
-   `dc` means datacenter-origin network and `nondc` means non-datacenter-origin network — neither
-   class identifies a human or an agent, and neither may be labeled as such in UI or paper claims.
+2. **The analysis is continent x time across all requests.** The product deliberately makes no
+   network-type classification. Geography comes only from the Country database and the UI has no
+   network-type filter or breakdown.
 3. **External API providers get no map location.** We do not know where DeepSeek/OpenRouter GPUs
    sit; they render in a side rail ("no location claimed"), never as globe nodes. Only `local`
    providers (hand-maintained site map) get nodes and inbound arcs.
 4. **Pooling potential (range)** = `1 − global_peak / Σ per-continent peaks` on the selected
-   metric+class. **Transferable now** = `min(Σ overflow, Σ slack) / Σ demand` with per-continent
+   metric. **Transferable now** = `min(Σ overflow, Σ slack) / Σ demand` with per-continent
    mean over the range as the capacity proxy (stated in the tooltip; replace with measured
    capacity when donated-GPU telemetry exists).
 5. **Aggregates only ever leave the DB**: counts, token sums, latency percentiles, distinct-user
@@ -76,9 +73,10 @@ Facts verified against the real system (2026-07-15):
 
 ## Data contract (existing `data.json` shape → PR A response body)
 
-Produced today by `geo_hourly_export.py`; consumed today by `geo_globe.html`. PR A preserves this
-columnar shape while adding serving-endpoint attribution to flow rows. The viewer resolves columns
-by `flow_cols`, so it remains compatible via `geo_globe.html?data=/admin/analytics/geo`.
+Produced today by `geo_hourly_export.py`; consumed today by `geo_globe.html`. PR A uses this compact
+columnar shape while retaining serving-endpoint attribution in flow rows. The viewer resolves
+columns by `flow_cols`, so it remains compatible via
+`geo_globe.html?data=/admin/analytics/geo`.
 
 ```jsonc
 {
@@ -89,15 +87,14 @@ by `flow_cols`, so it remains compatible via `geo_globe.html?data=/admin/analyti
     "hours": 720,
     "rows_total": 123456,
     "rows_with_ip": 120000,
-    "geoip": {"country": true, "asn": true},
+    "geoip": {"country": true},
     "degraded": false,
     "degraded_reasons": [],
     "unmapped_alpha2": [],
     "notes": ["..."]
   },
-  "classes": ["nondc", "dc", "internal", "unknown"],
-  "bucket_cols": ["c","cc","cont","cls","n","err","users","tin","tout","gs","p50","p90"],
-  "flow_cols": ["c","cls","p","e","n"],
+  "bucket_cols": ["c","cc","cont","n","err","users","tin","tout","gs","p50","p90"],
+  "flow_cols": ["c","p","e","n"],
   "providers": [{
     "id": "vllm",
     "label": "Local cluster (vLLM)",
@@ -112,8 +109,7 @@ by `flow_cols`, so it remains compatible via `geo_globe.html?data=/admin/analyti
 ```
 
 Row semantics: `c` ISO-3166 alpha-3 (`?XX` when unmapped, `?` when unknown), `cc` alpha-2, `cont`
-MaxMind continent code, `cls` ASN-derived network class (retained for optional robustness analysis,
-not user-type inference), `n` requests, `err` errored requests, `users` distinct non-null
+MaxMind continent code, `n` requests, `err` errored requests, `users` distinct non-null
 `user_id`s, `tin`/`tout` prompt/completion tokens, `gs` Σ `latency_ms`/1000 (compute-time estimate),
 `p50`/`p90` TTFT ms (nearest-rank, null when no samples). In flow rows, `p` is the provider label
 and `e` is `served_endpoint_id` (falling back to `p` for older rows); flows from distinct serving
@@ -142,14 +138,13 @@ endpoints are not merged even when they share a provider.
 - Modify: `pyproject.toml` and `uv.lock` (add `maxminddb` as a project dependency)
 - Test: `tests/unit/utils/test_geo_resolver.py` (new)
 
-- [x] Port `GeoResolver`, `ALPHA2_TO_ALPHA3`, and `DC_ASN_KEYWORDS` from
+- [x] Port `GeoResolver` and `ALPHA2_TO_ALPHA3` from
   [ops/db/analysis/geo_hourly_export.py](../../../ops/db/analysis/geo_hourly_export.py) into the
   util (the exporter should import from the util afterwards — one implementation, two callers).
-- [x] Lazy-open readers from `GEOIP_COUNTRY_DB` / `GEOIP_ASN_DB` env vars; missing files or missing
-  `maxminddb` degrade to `country='?' / cls='unknown'` and set a `degraded` flag (never crash the
-  admin page).
-- [x] Unit tests with an injected fake reader: private/loopback → `internal`; DC keyword match →
-  `dc`; unmapped alpha-2 → `?XX` + recorded in `unmapped_a2`; cache hit path.
+- [x] Lazy-open the reader from the `GEOIP_COUNTRY_DB` env var; a missing file or missing
+  `maxminddb` degrades to `country='?'` and sets a `degraded` flag (never crash the admin page).
+- [x] Unit tests with an injected fake reader: private/loopback/invalid → unknown geography;
+  unmapped alpha-2 → `?XX` + recorded in `unmapped_a2`; cache hit path.
 
 ### Task 2: aggregation service + `GET /admin/analytics/geo`
 
@@ -182,11 +177,11 @@ endpoints are not merged even when they share a provider.
   `serving.utils.geo_resolver`; `--demo` and CSV behavior unchanged. Re-run
   `uv run python ops/db/analysis/geo_hourly_export.py --demo --out /dev/null` as regression.
 
-### Task 4: staging verification (gate for merging PR A)
+### Task 4: post-merge staging verification (gate for starting PR B)
 
-- [ ] Provision GeoLite2 on staging: free MaxMind account → download `GeoLite2-Country.mmdb` +
-  `GeoLite2-ASN.mmdb` to `/srv/geoip/`; set `GEOIP_COUNTRY_DB` / `GEOIP_ASN_DB` in the service env.
-  **The `.mmdb` files must not enter the repo** (MaxMind EULA); add a weekly refresh cron later.
+- [ ] Provision GeoLite2 on staging: free MaxMind account → download `GeoLite2-Country.mmdb` to
+  `/srv/geoip/`; set `GEOIP_COUNTRY_DB` in the service env. **The `.mmdb` file must not enter the
+  repo** (MaxMind EULA); add a weekly refresh cron later.
 - [ ] Hit `/admin/analytics/geo?days=7` on staging (test account `admin@admin.com`); confirm
   latency of the cold scan and the cached hit; confirm `meta.geoip` flags true.
 - [ ] Fetch the aggregate with an authenticated request (for example, `curl -H 'Authorization:
@@ -216,12 +211,11 @@ endpoints are not merged even when they share a provider.
 - Test: vitest for the pure helpers (series/pooling/transferable math), snapshot-light for markup
 
 - [ ] Port from [ops/db/analysis/geo_globe.html](../../../ops/db/analysis/geo_globe.html): d3 owns
-  the SVG interior inside a ref'd `<svg>`; React owns state (hour, class, metric, selection) and
+  the SVG interior inside a ref'd `<svg>`; React owns state (hour, metric, selection) and
   the chrome. Pooling/transferable/series builders move to a pure TS module (unit-testable).
 - [ ] Keep: timeline scrub + play, declination-correct day/night terminator, metric select, fixed
   continent palette + ribbon direct labels, external-API rail, detail panel, DEMO badge honored
-  from `meta.source`, and `prefers-reduced-motion`. Keep the traffic-class filter as a visually
-  subordinate advanced/research control, defaulted to `all`; do not describe it as human/agent.
+  from `meta.source`, and `prefers-reduced-motion`.
 - [ ] Adapt: cards/typography/buttons to the app's design tokens; the globe stage may stay dark.
 - [ ] Loading/error/staleness states (`meta.generated_at`), and an "unlocated %" stat — keep the
   honesty affordances.
@@ -240,15 +234,13 @@ endpoints are not merged even when they share a provider.
 
 ## Operational prerequisites (not code)
 
-- [ ] GeoLite2 on prod + staging (`/srv/geoip/`, env vars, weekly refresh cron; EULA: files stay
-  out of the repo).
+- [ ] GeoLite2 Country on prod + staging (`/srv/geoip/`, env var, weekly refresh cron; EULA: the
+  file stays out of the repo).
 - [ ] Deploy the updated project environment containing the Task 1 `maxminddb` dependency.
 - [ ] **Go/no-go before investing in PR B:** run the offline exporter (or the PR A endpoint) on
-  prod for ≥14 days of history and check whether all-traffic demand shows time-zone-separated
-  peaks across continents. Then repeat after excluding `dc` and `unknown` as a robustness check;
-  report any difference as a network-origin effect, not a human/agent effect. If the primary
-  continent x time signal collapses, stop at PR A (the endpoint still powers future geo analytics)
-  and reassess.
+  prod for ≥14 days of history and check whether demand shows time-zone-separated peaks across
+  continents. If the primary continent x time signal collapses, stop at PR A (the endpoint still
+  powers future geo analytics) and reassess.
 
 ## Future phase — deferred: log-time geo enrichment (do NOT do now)
 
@@ -256,8 +248,8 @@ Triggers that justify it (any one): Requests-tab **filtering** by origin (`WHERE
 an IP retention/TTL policy (keep coarse geo, delete raw IPs), reproducible frozen-at-observation
 resolution for the paper dataset, or scan cost outgrowing the hourly cache.
 
-Scope when triggered: three columns `origin_country_code` / `origin_continent_code` /
-`origin_asn_class`; enrichment at the single logging choke point (not per-router); backfill script
+Scope when triggered: two columns `origin_country_code` / `origin_continent_code`; enrichment at
+the single logging choke point (not per-router); backfill script
 reusing `GeoResolver`. **Five-place sync checklist** (the historical split-brain incident):
 [log_schema.py](../../../apps/backend/serving/storage/log_schema.py) (CREATE TABLE + migration
 list) + both hand-duplicated INSERTs (`postgres_log.py`, `database.py`) + the LogStore ABC +

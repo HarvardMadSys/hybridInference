@@ -280,80 +280,6 @@ ALPHA2_TO_ALPHA3 = {
     "ZW": "ZWE",
 }
 
-DC_ASN_KEYWORDS = (
-    "amazon",
-    "aws",
-    "google",
-    "gcp",
-    "microsoft",
-    "azure",
-    "oracle",
-    "alibaba",
-    "aliyun",
-    "tencent",
-    "huawei",
-    "baidu",
-    "bytedance",
-    "volcengine",
-    "ucloud",
-    "kingsoft",
-    "qiniu",
-    "digitalocean",
-    "hetzner",
-    "ovh",
-    "linode",
-    "akamai",
-    "vultr",
-    "choopa",
-    "constant company",
-    "contabo",
-    "leaseweb",
-    "scaleway",
-    "online s.a.s",
-    "upcloud",
-    "netcup",
-    "ionos",
-    "gcore",
-    "g-core",
-    "cloudflare",
-    "fastly",
-    "m247",
-    "datacamp",
-    "packethub",
-    "hostinger",
-    "namecheap",
-    "godaddy",
-    "dreamhost",
-    "rackspace",
-    "softlayer",
-    "ibm",
-    "salesforce",
-    "zenlayer",
-    "cdn77",
-    "stackpath",
-    "kamatera",
-    "hostwinds",
-    "colocrossing",
-    "quadranet",
-    "psychz",
-    "hivelocity",
-    "equinix",
-    "latitude.sh",
-    "fly.io",
-    "render",
-    "railway",
-    "heroku",
-    "vercel",
-    "netlify",
-    "hosting",
-    "datacenter",
-    "data center",
-    "dedicated server",
-    "vps",
-    "colocation",
-    "cloud",
-)
-
 # External providers intentionally have no coordinates: their serving locations
 # are not known. Only hand-maintained local sites may be drawn on the globe.
 PROVIDER_SITES: dict[str, dict[str, Any]] = {
@@ -391,55 +317,48 @@ PROVIDER_SITES: dict[str, dict[str, Any]] = {
 
 
 class GeoResolver:
-    """Resolve network-origin country/continent and ASN class with bounded caching."""
+    """Resolve network-origin country and continent with bounded caching."""
 
     def __init__(
         self,
         country_db: str | None = None,
-        asn_db: str | None = None,
         *,
         country_reader: GeoReader | None = None,
-        asn_reader: GeoReader | None = None,
         cache_size: int = 100_000,
     ) -> None:
         """Configure readers; database files are opened only on first use."""
         if cache_size < 1:
             raise ValueError("cache_size must be at least 1")
         self._country_path = country_db or os.environ.get("GEOIP_COUNTRY_DB")
-        self._asn_path = asn_db or os.environ.get("GEOIP_ASN_DB")
         self._country = country_reader
-        self._asn = asn_reader
         self._country_injected = country_reader is not None
-        self._asn_injected = asn_reader is not None
-        self._readers_initialized = country_reader is not None and asn_reader is not None
+        self._readers_initialized = country_reader is not None
         self._cache_size = cache_size
-        self._cache: OrderedDict[str, tuple[str, str, str, str]] = OrderedDict()
+        self._cache: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
         self.unmapped_a2: set[str] = set()
         self._degraded_reasons: set[str] = set()
 
-    def _open_reader(self, path: str | None, kind: str) -> GeoReader | None:
+    def _open_reader(self, path: str | None) -> GeoReader | None:
         if not path:
-            self._degraded_reasons.add(f"{kind}_database_not_configured")
+            self._degraded_reasons.add("country_database_not_configured")
             return None
         if maxminddb is None:
             self._degraded_reasons.add("maxminddb_unavailable")
             return None
         if not Path(path).is_file():
-            self._degraded_reasons.add(f"{kind}_database_missing")
+            self._degraded_reasons.add("country_database_missing")
             return None
         try:
             return maxminddb.open_database(path)
         except Exception:  # MaxMind raises backend-specific errors for invalid files.
-            self._degraded_reasons.add(f"{kind}_database_open_failed")
+            self._degraded_reasons.add("country_database_open_failed")
             return None
 
     def _ensure_readers(self) -> None:
         if self._readers_initialized:
             return
         if not self._country_injected:
-            self._country = self._open_reader(self._country_path, "country")
-        if not self._asn_injected:
-            self._asn = self._open_reader(self._asn_path, "asn")
+            self._country = self._open_reader(self._country_path)
         self._readers_initialized = True
 
     @property
@@ -449,14 +368,8 @@ class GeoResolver:
         return self._country is not None
 
     @property
-    def asn_enabled(self) -> bool:
-        """Whether the ASN reader is available."""
-        self._ensure_readers()
-        return self._asn is not None
-
-    @property
     def degraded(self) -> bool:
-        """Whether either configured GeoIP capability is unavailable."""
+        """Whether country resolution is unavailable or encountered an error."""
         self._ensure_readers()
         return bool(self._degraded_reasons)
 
@@ -466,10 +379,10 @@ class GeoResolver:
         self._ensure_readers()
         return tuple(sorted(self._degraded_reasons))
 
-    def resolve(self, ip: str | None) -> tuple[str, str, str, str]:
-        """Return ``(alpha3, alpha2, continent, network_class)`` for an IP."""
+    def resolve(self, ip: str | None) -> tuple[str, str, str]:
+        """Return ``(alpha3, alpha2, continent)`` for an IP."""
         if not ip:
-            return ("?", "?", "?", "unknown")
+            return ("?", "?", "?")
         cached = self._cache.get(ip)
         if cached is not None:
             self._cache.move_to_end(ip)
@@ -482,13 +395,13 @@ class GeoResolver:
             self._cache.popitem(last=False)
         return result
 
-    def _resolve_uncached(self, ip: str) -> tuple[str, str, str, str]:
+    def _resolve_uncached(self, ip: str) -> tuple[str, str, str]:
         try:
             parsed = ipaddress.ip_address(ip)
         except ValueError:
-            return ("?", "?", "?", "unknown")
+            return ("?", "?", "?")
         if parsed.is_private or parsed.is_loopback or parsed.is_link_local:
-            return ("?", "?", "?", "internal")
+            return ("?", "?", "?")
 
         self._ensure_readers()
         a2, continent = "?", "?"
@@ -501,33 +414,16 @@ class GeoResolver:
             a2 = (record.get("country") or {}).get("iso_code") or "?"
             continent = (record.get("continent") or {}).get("code") or "?"
 
-        network_class = "unknown"
-        if self._asn is not None:
-            try:
-                record = self._asn.get(ip) or {}
-            except Exception:  # A corrupt lookup must not break the admin page.
-                self._degraded_reasons.add("asn_lookup_failed")
-                record = {}
-            organization = (record.get("autonomous_system_organization") or "").lower()
-            if organization:
-                network_class = (
-                    "dc" if any(keyword in organization for keyword in DC_ASN_KEYWORDS) else "nondc"
-                )
-
         alpha3 = ALPHA2_TO_ALPHA3.get(a2)
         if alpha3 is None:
             if a2 != "?":
                 self.unmapped_a2.add(a2)
             alpha3 = f"?{a2}" if a2 != "?" else "?"
-        return (alpha3, a2, continent, network_class)
+        return (alpha3, a2, continent)
 
     def close(self) -> None:
         """Close any readers opened or injected into this resolver."""
-        seen: set[int] = set()
-        for reader in (self._country, self._asn):
-            if reader is not None and id(reader) not in seen:
-                with suppress(Exception):
-                    reader.close()
-                seen.add(id(reader))
+        if self._country is not None:
+            with suppress(Exception):
+                self._country.close()
         self._country = None
-        self._asn = None

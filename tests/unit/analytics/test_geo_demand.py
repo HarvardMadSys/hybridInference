@@ -105,10 +105,7 @@ def resolver() -> GeoResolver:
     return GeoResolver(
         country_reader=FakeReader(
             {"8.8.8.8": {"country": {"iso_code": "US"}, "continent": {"code": "NA"}}}
-        ),
-        asn_reader=FakeReader(
-            {"8.8.8.8": {"autonomous_system_organization": "Example University"}}
-        ),
+        )
     )
 
 
@@ -154,8 +151,21 @@ async def test_aggregation_contract_percentiles_and_no_raw_identifiers() -> None
     assert "served_endpoint_id" in connection.cursor_args[0]
     assert payload["bucket_cols"] == BUCKET_COLS
     assert payload["flow_cols"] == FLOW_COLS
-    assert FLOW_COLS == ["c", "cls", "p", "e", "n"]
-    assert payload["classes"] == ["nondc", "dc", "internal", "unknown"]
+    assert BUCKET_COLS == [
+        "c",
+        "cc",
+        "cont",
+        "n",
+        "err",
+        "users",
+        "tin",
+        "tout",
+        "gs",
+        "p50",
+        "p90",
+    ]
+    assert FLOW_COLS == ["c", "p", "e", "n"]
+    assert "classes" not in payload
     assert payload["hours_index"] == [utc(0).isoformat(), utc(1).isoformat()]
     assert payload["hours"][1] == {"b": [], "f": []}
 
@@ -164,7 +174,6 @@ async def test_aggregation_contract_percentiles_and_no_raw_identifiers() -> None
         "c": "USA",
         "cc": "US",
         "cont": "NA",
-        "cls": "nondc",
         "n": 3,
         "err": 1,
         "users": 2,
@@ -184,6 +193,7 @@ async def test_aggregation_contract_percentiles_and_no_raw_identifiers() -> None
     assert "8.8.8.8" not in serialized
     assert "secret-user-id" not in serialized
     assert "another-secret" not in serialized
+    assert payload["meta"]["geoip"] == {"country": True}
     assert payload["meta"]["degraded"] is False
 
 

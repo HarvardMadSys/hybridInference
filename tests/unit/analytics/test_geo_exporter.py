@@ -31,6 +31,7 @@ def test_exporter_demo_command(tmp_path) -> None:
     assert payload["meta"]["source"] == "synthetic-demo"
     assert payload["meta"]["hours"] == 24
     assert payload["bucket_cols"] == BUCKET_COLS
-    assert payload["flow_cols"] == ["c", "cls", "p", "e", "n"]
-    assert all(len(flow) == 5 for hour in payload["hours"] for flow in hour["f"])
+    assert payload["flow_cols"] == ["c", "p", "e", "n"]
+    assert "classes" not in payload
+    assert all(len(flow) == 4 for hour in payload["hours"] for flow in hour["f"])
     assert "wrote" in result.stdout

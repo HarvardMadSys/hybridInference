@@ -15,9 +15,8 @@ from serving.utils.geo_resolver import PROVIDER_SITES, GeoResolver
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-CLASSES = ["nondc", "dc", "internal", "unknown"]
-BUCKET_COLS = ["c", "cc", "cont", "cls", "n", "err", "users", "tin", "tout", "gs", "p50", "p90"]
-FLOW_COLS = ["c", "cls", "p", "e", "n"]
+BUCKET_COLS = ["c", "cc", "cont", "n", "err", "users", "tin", "tout", "gs", "p50", "p90"]
+FLOW_COLS = ["c", "p", "e", "n"]
 MAX_WINDOW = timedelta(days=90)
 
 ROWS_QUERY = """
@@ -39,7 +38,7 @@ ORDER BY timestamp
 
 
 class GeoBucket:
-    """Mutable accumulator for one hour/country/network-class bucket."""
+    """Mutable accumulator for one hour and country bucket."""
 
     __slots__ = ("err", "gs", "n", "tin", "tout", "ttfts", "users")
 
@@ -91,8 +90,8 @@ def build_hours_index(since: datetime, until: datetime) -> list[datetime]:
 
 def finalize_geo_demand(
     hours_index: list[datetime],
-    buckets: dict[tuple[datetime, str, str, str, str], GeoBucket],
-    flows: dict[tuple[datetime, str, str, str, str], int],
+    buckets: dict[tuple[datetime, str, str, str], GeoBucket],
+    flows: dict[tuple[datetime, str, str, str], int],
     providers_seen: set[str],
     meta: dict[str, Any],
 ) -> dict[str, Any]:
@@ -100,7 +99,7 @@ def finalize_geo_demand(
     hour_positions = {hour: index for index, hour in enumerate(hours_index)}
     hours_out: list[dict[str, list[list[Any]]]] = [{"b": [], "f": []} for _ in hours_index]
 
-    for (hour, alpha3, alpha2, continent, network_class), bucket in sorted(
+    for (hour, alpha3, alpha2, continent), bucket in sorted(
         buckets.items(), key=lambda item: (item[0][0], -item[1].n)
     ):
         if hour not in hour_positions:
@@ -111,7 +110,6 @@ def finalize_geo_demand(
                 alpha3,
                 alpha2,
                 continent,
-                network_class,
                 bucket.n,
                 bucket.err,
                 len(bucket.users),
@@ -123,13 +121,11 @@ def finalize_geo_demand(
             ]
         )
 
-    for (hour, alpha3, network_class, provider, endpoint_id), count in sorted(
+    for (hour, alpha3, provider, endpoint_id), count in sorted(
         flows.items(), key=lambda item: (item[0][0], -item[1])
     ):
         if hour in hour_positions:
-            hours_out[hour_positions[hour]]["f"].append(
-                [alpha3, network_class, provider, endpoint_id, count]
-            )
+            hours_out[hour_positions[hour]]["f"].append([alpha3, provider, endpoint_id, count])
 
     providers_out = []
     for provider in sorted(providers_seen):
@@ -147,7 +143,6 @@ def finalize_geo_demand(
 
     return {
         "meta": meta,
-        "classes": CLASSES,
         "bucket_cols": BUCKET_COLS,
         "flow_cols": FLOW_COLS,
         "providers": providers_out,
@@ -159,18 +154,18 @@ def finalize_geo_demand(
 def add_geo_row(
     row: Any,
     resolver: GeoResolver,
-    buckets: dict[tuple[datetime, str, str, str, str], GeoBucket],
-    flows: dict[tuple[datetime, str, str, str, str], int],
+    buckets: dict[tuple[datetime, str, str, str], GeoBucket],
+    flows: dict[tuple[datetime, str, str, str], int],
     providers_seen: set[str],
 ) -> bool:
     """Resolve and add one database row; return whether it carried an IP."""
     ip = row["ip"]
-    alpha3, alpha2, continent, network_class = resolver.resolve(ip)
+    alpha3, alpha2, continent = resolver.resolve(ip)
     provider = row["provider"] or "unknown"
     endpoint_id = row["served_endpoint_id"] or provider
     providers_seen.add(provider)
 
-    bucket = buckets[(row["hour"], alpha3, alpha2, continent, network_class)]
+    bucket = buckets[(row["hour"], alpha3, alpha2, continent)]
     bucket.n += 1
     if row["is_err"]:
         bucket.err += 1
@@ -182,7 +177,7 @@ def add_geo_row(
     if row["ttft_ms"] is not None:
         bucket.ttfts.append(int(row["ttft_ms"]))
 
-    flows[(row["hour"], alpha3, network_class, provider, endpoint_id)] += 1
+    flows[(row["hour"], alpha3, provider, endpoint_id)] += 1
     return bool(ip)
 
 
@@ -196,8 +191,8 @@ async def aggregate_geo_demand(
 ) -> dict[str, Any]:
     """Stream one window from Postgres and return aggregate-only globe data."""
     since, until = normalize_window(since, until)
-    buckets: dict[tuple[datetime, str, str, str, str], GeoBucket] = defaultdict(GeoBucket)
-    flows: dict[tuple[datetime, str, str, str, str], int] = defaultdict(int)
+    buckets: dict[tuple[datetime, str, str, str], GeoBucket] = defaultdict(GeoBucket)
+    flows: dict[tuple[datetime, str, str, str], int] = defaultdict(int)
     providers_seen: set[str] = set()
     rows_total = 0
     rows_with_ip = 0
@@ -218,17 +213,13 @@ async def aggregate_geo_demand(
         "hours": len(hours_index),
         "rows_total": rows_total,
         "rows_with_ip": rows_with_ip,
-        "geoip": {
-            "country": resolver.country_enabled,
-            "asn": resolver.asn_enabled,
-        },
+        "geoip": {"country": resolver.country_enabled},
         "degraded": resolver.degraded,
         "degraded_reasons": list(resolver.degraded_reasons),
         "unmapped_alpha2": sorted(resolver.unmapped_a2),
         "notes": [
             "origin = network origin (IP-based), not user residence",
             "gs = sum of server-side latency seconds (compute-time estimate)",
-            "nondc / dc are ASN-based network-origin heuristics, not user identity",
         ],
     }
     return finalize_geo_demand(hours_index, buckets, flows, providers_seen, meta)
