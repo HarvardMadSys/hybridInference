@@ -3,8 +3,8 @@
 import json
 from typing import ClassVar
 
-from serving.triage import gha
-from serving.triage.models import TriageAnalysis
+from serving.oncall import gha
+from serving.oncall.models import OnCallAnalysis
 
 
 def _payload_file(tmp_path):
@@ -57,7 +57,7 @@ def test_render_writes_prompt_embedding_schema_and_alert(tmp_path):
     assert rc == 0
     prompt = prompt_out.read_text(encoding="utf-8")
     schema = json.loads(schema_out.read_text(encoding="utf-8"))
-    assert "read-only incident triage agent" in prompt
+    assert "read-only incident oncall agent" in prompt
     assert "<untrusted_alert_json>" in prompt
     assert '"api_key": "[REDACTED]"' in prompt
     assert "classification" in schema["properties"]
@@ -75,7 +75,7 @@ def test_post_delivers_formatted_analysis_in_thread(tmp_path, monkeypatch):
     FakeSlackClient.sent = []
     monkeypatch.setattr(gha, "SlackClient", FakeSlackClient)
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
-    analysis = TriageAnalysis(
+    analysis = OnCallAnalysis(
         summary="Upstream 429s",
         classification="upstream_provider",
         confidence=0.6,
@@ -107,7 +107,7 @@ def test_post_delivers_formatted_analysis_in_thread(tmp_path, monkeypatch):
     channel, text, thread_ts = FakeSlackClient.sent[0]
     assert channel == "C123"
     assert thread_ts == "171.1"
-    assert text.startswith("*Codex triage*")
+    assert text.startswith("*Codex on-call*")
     assert "th-9" in text
 
 
@@ -131,5 +131,5 @@ def test_post_failure_notice_includes_run_url(tmp_path, monkeypatch):
     channel, text, thread_ts = FakeSlackClient.sent[0]
     assert channel == "C123"
     assert thread_ts == "171.1"
-    assert "Codex triage unavailable" in text
+    assert "Codex on-call unavailable" in text
     assert "https://github.com/org/repo/actions/runs/1" in text

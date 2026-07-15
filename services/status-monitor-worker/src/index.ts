@@ -14,7 +14,7 @@ import {
 import { type Config, loadConfig, type Env } from "./env";
 import { discoverModels } from "./models";
 import { probeModel, type ProbeResult } from "./probe";
-import { hasAlertDestination } from "./triage";
+import { hasAlertDestination } from "./oncall";
 
 /**
  * Records the cycle's health and, edge-triggered, pages Slack when the whole
@@ -79,7 +79,7 @@ async function runProbeCycle(env: Env): Promise<void> {
   // Log once per cycle when neither complete path is configured.
   if (!hasAlertDestination(env)) {
     console.warn(
-      "alert delivery disabled; configure the Codex triage relay or " +
+      "alert delivery disabled; configure the Codex on-call relay or " +
         "set SLACK_WEBHOOK_URL.",
     );
   }

@@ -120,7 +120,7 @@ celerybeat.pid
 
 # Environments
 .env
-.env.triage
+.env.oncall
 .venv
 env/
 venv/
@@ -195,7 +195,7 @@ var/**
 !var/data/
 var/data/**
 !var/data/.gitkeep
-.codex-triage/
+.codex-oncall/
 
 # Back-compat (legacy data/ paths)
 data/db/*.db

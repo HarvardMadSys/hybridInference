@@ -8,20 +8,20 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Protocol
 
-from serving.triage.models import (
+from serving.oncall.models import (
     AlertEvent,
+    OnCallAnalysis,
     SubmitAlertResponse,
-    TriageAnalysis,
     sanitize_for_agent,
 )
 
 if TYPE_CHECKING:
-    from serving.triage.store import TriageJob, TriageStore
+    from serving.oncall.store import OnCallJob, OnCallStore
 
 log = logging.getLogger(__name__)
 
 
-class TriageOverloadedError(RuntimeError):
+class OnCallOverloadedError(RuntimeError):
     """Raised when accepting another analysis would exceed the queue limit."""
 
 
@@ -39,12 +39,12 @@ class AnalysisDispatcher(Protocol):
         """Trigger the analysis workflow for one firing alert."""
 
 
-class TriageService:
+class OnCallService:
     """Deduplicate incidents and hand durable analysis jobs to GitHub Actions."""
 
     def __init__(
         self,
-        store: TriageStore,
+        store: OnCallStore,
         slack: SlackPoster,
         dispatcher: AnalysisDispatcher,
         *,
@@ -74,7 +74,7 @@ class TriageService:
         if self.running:
             return
         self._stop.clear()
-        self._worker_task = asyncio.create_task(self._worker(), name="codex-triage-worker")
+        self._worker_task = asyncio.create_task(self._worker(), name="codex-oncall-worker")
 
     async def stop(self) -> None:
         """Stop the worker without accepting another job."""
@@ -143,7 +143,7 @@ class TriageService:
 
             counts = await self.store.job_counts()
             if counts["queued"] + counts["running"] >= self._max_pending_jobs:
-                raise TriageOverloadedError("triage queue is full")
+                raise OnCallOverloadedError("oncall queue is full")
             timestamp = await self._slack.post(event.slack_text)
             await self.store.create_firing(event, timestamp)
             self._wake.set()
@@ -166,11 +166,11 @@ class TriageService:
             return False
         try:
             if job.stage != "dispatch":
-                raise RuntimeError(f"invalid triage job stage: {job.stage}")
+                raise RuntimeError(f"invalid oncall job stage: {job.stage}")
             await self._dispatcher.dispatch(job.event, job.slack_thread_ts)
             await self.store.complete_job(job.id)
         except Exception as exc:
-            log.exception("triage job %s failed during %s", job.id, job.stage)
+            log.exception("oncall job %s failed during %s", job.id, job.stage)
             final = await self.store.retry_or_fail(job, str(exc), self._max_attempts)
             if final:
                 await self._post_failure_notice(job)
@@ -178,23 +178,23 @@ class TriageService:
                 self._wake.set()
         return True
 
-    async def _post_failure_notice(self, job: TriageJob) -> None:
+    async def _post_failure_notice(self, job: OnCallJob) -> None:
         try:
             await self._slack.post(
-                "*Codex triage unavailable*\n"
+                "*Codex on-call unavailable*\n"
                 f"Hand-off to the GitHub Actions analysis workflow failed after "
-                f"{job.attempts} attempts. Check the triage relay logs.",
+                f"{job.attempts} attempts. Check the oncall relay logs.",
                 thread_ts=job.slack_thread_ts,
             )
         except Exception:
-            log.exception("failed to post final triage failure notice for job %s", job.id)
+            log.exception("failed to post final oncall failure notice for job %s", job.id)
 
     async def _worker(self) -> None:
         while not self._stop.is_set():
             try:
                 processed = await self.process_one()
             except Exception:
-                log.exception("triage worker loop failed; retrying")
+                log.exception("oncall worker loop failed; retrying")
                 processed = False
             if processed:
                 continue
@@ -209,11 +209,11 @@ def _escape_slack(text: str) -> str:
     return sanitized.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def format_analysis(analysis: TriageAnalysis, thread_id: str | None) -> str:
+def format_analysis(analysis: OnCallAnalysis, thread_id: str | None) -> str:
     """Render a bounded, mention-safe Codex result for a Slack thread.
 
-    Used by the ``codex-triage`` GitHub Actions workflow (via
-    ``serving.triage.gha``) to post the structured analysis back into the
+    Used by the ``codex-oncall`` GitHub Actions workflow (via
+    ``serving.oncall.gha``) to post the structured analysis back into the
     original alert thread.
     """
     evidence = "\n".join(f"• {_escape_slack(item)}" for item in analysis.evidence) or "• None"
@@ -222,7 +222,7 @@ def format_analysis(analysis: TriageAnalysis, thread_id: str | None) -> str:
         for index, item in enumerate(analysis.recommended_actions, start=1)
     )
     lines = [
-        "*Codex triage*",
+        "*Codex on-call*",
         f"• *Classification:* `{analysis.classification}`",
         f"• *Confidence:* {analysis.confidence:.0%}",
         f"• *Summary:* {_escape_slack(analysis.summary)}",

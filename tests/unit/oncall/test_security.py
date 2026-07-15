@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from serving.triage import security
+from serving.oncall import security
 
 
 def test_process_protection_is_linux_only(monkeypatch):

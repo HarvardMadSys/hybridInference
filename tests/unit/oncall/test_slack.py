@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from serving.triage.slack import SlackClient, SlackDeliveryError
+from serving.oncall.slack import SlackClient, SlackDeliveryError
 
 
 class FakeResponse:
@@ -36,7 +36,7 @@ class FakeHttpClient:
 
 async def test_slack_client_posts_thread_reply_and_returns_timestamp():
     fake = FakeHttpClient(FakeResponse({"ok": True, "ts": "123.46"}))
-    with patch("serving.triage.slack.httpx.AsyncClient", return_value=fake):
+    with patch("serving.oncall.slack.httpx.AsyncClient", return_value=fake):
         timestamp = await SlackClient("xoxb-token", "C123").post(
             "analysis",
             thread_ts="123.45",
@@ -55,7 +55,7 @@ async def test_slack_client_posts_thread_reply_and_returns_timestamp():
 async def test_slack_client_rejects_non_object_response():
     fake = FakeHttpClient(FakeResponse([]))
     with (
-        patch("serving.triage.slack.httpx.AsyncClient", return_value=fake),
+        patch("serving.oncall.slack.httpx.AsyncClient", return_value=fake),
         pytest.raises(SlackDeliveryError, match="invalid response"),
     ):
         await SlackClient("xoxb-token", "C123").post("analysis")

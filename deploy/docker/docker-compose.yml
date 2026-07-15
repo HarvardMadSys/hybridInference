@@ -47,26 +47,26 @@ services:
     networks:
       - hybridinference
 
-  codex-triage:
-    profiles: ["triage"]
+  codex-oncall:
+    profiles: ["oncall"]
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile.triage
-    container_name: hybridinference-codex-triage
+      dockerfile: deploy/docker/Dockerfile.oncall
+    container_name: hybridinference-codex-oncall
     restart: unless-stopped
     init: true
     env_file:
-      - ${CODEX_TRIAGE_ENV_FILE:-../../.env.triage}
+      - ${CODEX_ONCALL_ENV_FILE:-../../.env.oncall}
     environment:
-      CODEX_TRIAGE_STATE_DIR: /var/lib/codex-triage
-      HOME: /var/lib/codex-triage
+      CODEX_ONCALL_STATE_DIR: /var/lib/codex-oncall
+      HOME: /var/lib/codex-oncall
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=64m
     volumes:
-      - codex_triage_data:/var/lib/codex-triage
+      - codex_oncall_data:/var/lib/codex-oncall
     ports:
-      - "127.0.0.1:${CODEX_TRIAGE_PORT:-8091}:8091"
+      - "127.0.0.1:${CODEX_ONCALL_PORT:-8091}:8091"
     depends_on:
       backend:
         condition: service_healthy
@@ -166,7 +166,7 @@ volumes:
     name: hybridinference_postgres_data
   pgadmin_data:
     driver: local
-  codex_triage_data:
+  codex_oncall_data:
     driver: local
 
 networks:

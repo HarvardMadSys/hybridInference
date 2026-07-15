@@ -3,7 +3,7 @@ import type { Env } from "./env";
 export type AlertStatus = "firing" | "resolved";
 export type AlertSeverity = "critical" | "error" | "warn" | "info";
 
-/** Alert envelope accepted by the Codex triage relay. */
+/** Alert envelope accepted by the Codex on-call relay. */
 export interface CodexAlertEvent {
   version: "1";
   alert_id: string;
@@ -56,8 +56,8 @@ export function stormAlertFingerprint(modelIds: string[]): string {
 
 /** Returns relay settings only when both required bindings are non-empty. */
 export function codexRelayConfig(env: Env): CodexRelayConfig | null {
-  const baseUrl = env.CODEX_TRIAGE_RELAY_URL?.trim();
-  const token = env.CODEX_TRIAGE_RELAY_TOKEN?.trim();
+  const baseUrl = env.CODEX_ONCALL_RELAY_URL?.trim();
+  const token = env.CODEX_ONCALL_RELAY_TOKEN?.trim();
   return baseUrl && token ? { baseUrl, token } : null;
 }
 
@@ -66,7 +66,7 @@ export function hasAlertDestination(env: Env): boolean {
   return codexRelayConfig(env) != null || Boolean(env.SLACK_WEBHOOK_URL?.trim());
 }
 
-/** Adds worker-owned envelope fields to a triage event. */
+/** Adds worker-owned envelope fields to a oncall event. */
 export function createCodexAlertEvent(event: NewCodexAlertEvent): CodexAlertEvent {
   return {
     version: "1",
@@ -79,7 +79,7 @@ export function createCodexAlertEvent(event: NewCodexAlertEvent): CodexAlertEven
   };
 }
 
-/** POST an alert to the Codex triage relay. Returns true only on 2xx. */
+/** POST an alert to the Codex on-call relay. Returns true only on 2xx. */
 export async function postCodexAlert(
   relay: CodexRelayConfig,
   event: CodexAlertEvent,
@@ -97,12 +97,12 @@ export async function postCodexAlert(
       signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) {
-      console.error(`codex triage relay returned HTTP ${resp.status}`);
+      console.error(`codex oncall relay returned HTTP ${resp.status}`);
     }
     return resp.ok;
   } catch {
     // Keep the relay URL, token, and alert context out of logs.
-    console.error("codex triage relay post failed");
+    console.error("codex oncall relay post failed");
     return false;
   }
 }

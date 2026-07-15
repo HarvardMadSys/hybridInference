@@ -1,4 +1,4 @@
-"""SQLite persistence for incident dedupe and queued triage jobs."""
+"""SQLite persistence for incident dedupe and queued oncall jobs."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from serving.triage.models import AlertEvent
+from serving.oncall.models import AlertEvent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -29,7 +29,7 @@ class Incident:
 
 
 @dataclass(frozen=True)
-class TriageJob:
+class OnCallJob:
     """Persisted unit of GitHub Actions hand-off work."""
 
     id: int
@@ -40,7 +40,7 @@ class TriageJob:
     slack_thread_ts: str
 
 
-class TriageStore:
+class OnCallStore:
     """Concurrency-safe async facade over a small SQLite database."""
 
     def __init__(self, path: Path) -> None:
@@ -66,7 +66,7 @@ class TriageStore:
                     updated_at REAL NOT NULL
                 );
 
-                CREATE TABLE IF NOT EXISTS triage_jobs (
+                CREATE TABLE IF NOT EXISTS oncall_jobs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     fingerprint TEXT NOT NULL,
                     event_json TEXT NOT NULL,
@@ -79,12 +79,12 @@ class TriageStore:
                     updated_at REAL NOT NULL
                 );
 
-                CREATE INDEX IF NOT EXISTS triage_jobs_ready
-                    ON triage_jobs(status, id);
+                CREATE INDEX IF NOT EXISTS oncall_jobs_ready
+                    ON oncall_jobs(status, id);
                 """
             )
             connection.execute(
-                "UPDATE triage_jobs SET status = 'queued', updated_at = ? WHERE status = 'running'",
+                "UPDATE oncall_jobs SET status = 'queued', updated_at = ? WHERE status = 'running'",
                 (time.time(),),
             )
 
@@ -159,7 +159,7 @@ class TriageStore:
             )
             connection.execute(
                 """
-                INSERT INTO triage_jobs (
+                INSERT INTO oncall_jobs (
                     fingerprint, event_json, slack_thread_ts, stage, status,
                     attempts, created_at, updated_at
                 ) VALUES (?, ?, ?, 'dispatch', 'queued', 0, ?, ?)
@@ -212,17 +212,17 @@ class TriageStore:
                 ),
             )
 
-    async def claim_next_job(self) -> TriageJob | None:
+    async def claim_next_job(self) -> OnCallJob | None:
         """Atomically claim the oldest queued job."""
         return await asyncio.to_thread(self._claim_next_job)
 
-    def _claim_next_job(self) -> TriageJob | None:
+    def _claim_next_job(self) -> OnCallJob | None:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
                 SELECT id, fingerprint, event_json, slack_thread_ts, stage, attempts
-                FROM triage_jobs
+                FROM oncall_jobs
                 WHERE status = 'queued'
                 ORDER BY id
                 LIMIT 1
@@ -233,13 +233,13 @@ class TriageStore:
             attempts = int(row["attempts"]) + 1
             connection.execute(
                 """
-                UPDATE triage_jobs
+                UPDATE oncall_jobs
                 SET status = 'running', attempts = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (attempts, time.time(), row["id"]),
             )
-        return TriageJob(
+        return OnCallJob(
             id=int(row["id"]),
             fingerprint=row["fingerprint"],
             event=AlertEvent.model_validate_json(row["event_json"]),
@@ -256,14 +256,14 @@ class TriageStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE triage_jobs
+                UPDATE oncall_jobs
                 SET status = 'done', last_error = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (time.time(), job_id),
             )
 
-    async def retry_or_fail(self, job: TriageJob, error: str, max_attempts: int) -> bool:
+    async def retry_or_fail(self, job: OnCallJob, error: str, max_attempts: int) -> bool:
         """Requeue a failed stage or mark it final; return True when final."""
         final = job.attempts >= max_attempts
         await asyncio.to_thread(self._retry_or_fail, job.id, error, final)
@@ -273,7 +273,7 @@ class TriageStore:
         with self._connect() as connection:
             connection.execute(
                 """
-                UPDATE triage_jobs
+                UPDATE oncall_jobs
                 SET status = ?, last_error = ?, updated_at = ?
                 WHERE id = ?
                 """,
@@ -287,7 +287,7 @@ class TriageStore:
     def _job_counts(self) -> dict[str, int]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT status, COUNT(*) AS count FROM triage_jobs GROUP BY status"
+                "SELECT status, COUNT(*) AS count FROM oncall_jobs GROUP BY status"
             ).fetchall()
         counts = {str(row["status"]): int(row["count"]) for row in rows}
         return {status: counts.get(status, 0) for status in ("queued", "running", "done", "failed")}

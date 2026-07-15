@@ -1,5 +1,5 @@
-# Runs one read-only Codex triage analysis per alert dispatched by the
-# codex-triage relay (apps/backend/serving/triage). The relay has already
+# Runs one read-only Codex on-call analysis per alert dispatched by the
+# codex-oncall relay (apps/backend/serving/oncall). The relay has already
 # posted the original alert to Slack; this workflow investigates the current
 # `dev` checkout and replies in the same thread.
 #
@@ -7,25 +7,25 @@
 # producers. It must only ever reach files (via env indirection), never be
 # interpolated into `run:` scripts. Relay-owned fields (model, base URL,
 # Slack coordinates) are read from the payload file with jq/python.
-name: Codex Alert Triage
+name: Codex On-Call
 
 on:
   repository_dispatch:
-    types: [codex-triage]
+    types: [codex-oncall]
 
 permissions:
   contents: read
 
 # One analysis per incident fingerprint at a time; duplicates queue up.
 concurrency:
-  group: codex-triage-${{ github.event.client_payload.triage.fingerprint }}
+  group: codex-oncall-${{ github.event.client_payload.oncall.fingerprint }}
   cancel-in-progress: false
 
 env:
   CODEX_CLI_VERSION: "0.144.4"
 
 jobs:
-  triage:
+  oncall:
     runs-on: ubuntu-22.04
     timeout-minutes: 15
     steps:
@@ -36,8 +36,8 @@ jobs:
 
       - name: Write dispatch payload
         env:
-          TRIAGE_PAYLOAD: ${{ toJSON(github.event.client_payload.triage) }}
-        run: printf '%s' "$TRIAGE_PAYLOAD" > "$RUNNER_TEMP/triage-payload.json"
+          ONCALL_PAYLOAD: ${{ toJSON(github.event.client_payload.oncall) }}
+        run: printf '%s' "$ONCALL_PAYLOAD" > "$RUNNER_TEMP/oncall-payload.json"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,8 +56,8 @@ jobs:
 
       - name: Render prompt and output schema
         run: |
-          PYTHONPATH=apps/backend python -m serving.triage.gha render \
-            --payload "$RUNNER_TEMP/triage-payload.json" \
+          PYTHONPATH=apps/backend python -m serving.oncall.gha render \
+            --payload "$RUNNER_TEMP/oncall-payload.json" \
             --prompt-out "$RUNNER_TEMP/prompt.txt" \
             --schema-out "$RUNNER_TEMP/schema.json"
 
@@ -79,13 +79,13 @@ jobs:
 
       - name: Run Codex analysis
         env:
-          CODEX_API_KEY: ${{ secrets.CODEX_TRIAGE_HYBRID_API_KEY }}
+          CODEX_API_KEY: ${{ secrets.CODEX_ONCALL_HYBRID_API_KEY }}
           SANDBOX_MODE: ${{ steps.sandbox.outputs.mode }}
         run: |
           export CODEX_HOME="$RUNNER_TEMP/codex-home"
           mkdir -p "$CODEX_HOME"
-          MODEL=$(jq -r '.model' "$RUNNER_TEMP/triage-payload.json")
-          BASE_URL_JSON=$(jq -c '.responses_base_url' "$RUNNER_TEMP/triage-payload.json")
+          MODEL=$(jq -r '.model' "$RUNNER_TEMP/oncall-payload.json")
+          BASE_URL_JSON=$(jq -c '.responses_base_url' "$RUNNER_TEMP/oncall-payload.json")
           codex exec --json --sandbox "$SANDBOX_MODE" \
             --ignore-user-config --ignore-rules \
             --disable hooks --disable apps --disable multi_agent \
@@ -104,19 +104,19 @@ jobs:
 
       - name: Post analysis to Slack thread
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.CODEX_TRIAGE_SLACK_BOT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.CODEX_ONCALL_SLACK_BOT_TOKEN }}
         run: |
-          PYTHONPATH=apps/backend python -m serving.triage.gha post \
-            --payload "$RUNNER_TEMP/triage-payload.json" \
+          PYTHONPATH=apps/backend python -m serving.oncall.gha post \
+            --payload "$RUNNER_TEMP/oncall-payload.json" \
             --analysis "$RUNNER_TEMP/analysis.json" \
             --codex-log "$RUNNER_TEMP/codex-stdout.jsonl"
 
       - name: Post failure notice
         if: failure()
         env:
-          SLACK_BOT_TOKEN: ${{ secrets.CODEX_TRIAGE_SLACK_BOT_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.CODEX_ONCALL_SLACK_BOT_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          PYTHONPATH=apps/backend python -m serving.triage.gha post \
-            --payload "$RUNNER_TEMP/triage-payload.json" \
+          PYTHONPATH=apps/backend python -m serving.oncall.gha post \
+            --payload "$RUNNER_TEMP/oncall-payload.json" \
             --failed --run-url "$RUN_URL"

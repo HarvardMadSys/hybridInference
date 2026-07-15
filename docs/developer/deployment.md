@@ -117,7 +117,7 @@ Set `ALERTS_ENABLED=true` and `SLACK_ALERTS_WEBHOOK_URL=...` in `.env`
 to enable.
 
 For asynchronous read-only Codex investigation and threaded Slack results, see
-[Codex Alert Triage](codex-alert-triage.md). Keep the existing Slack webhook as
+[Codex On-Call](codex-oncall.md). Keep the existing Slack webhook as
 a fallback during rollout.
 
 ## Database

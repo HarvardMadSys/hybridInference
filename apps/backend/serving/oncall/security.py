@@ -1,4 +1,4 @@
-"""Linux process hardening for the triage relay."""
+"""Linux process hardening for the oncall relay."""
 
 from __future__ import annotations
 

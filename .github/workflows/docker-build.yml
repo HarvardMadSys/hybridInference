@@ -22,7 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [frontend, backend, triage]
+        image: [frontend, backend, oncall]
     steps:
       - uses: actions/checkout@v6
         with:

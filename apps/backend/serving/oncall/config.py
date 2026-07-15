@@ -1,4 +1,4 @@
-"""Environment-backed configuration for the triage relay process."""
+"""Environment-backed configuration for the oncall relay process."""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class TriageSettings(BaseSettings):
-    """Settings used only by the standalone triage relay.
+class OnCallSettings(BaseSettings):
+    """Settings used only by the standalone oncall relay.
 
     The relay no longer runs Codex itself: analysis executes in the
-    ``codex-triage`` GitHub Actions workflow, triggered through
+    ``codex-oncall`` GitHub Actions workflow, triggered through
     ``repository_dispatch``. ``codex_model`` and ``hybrid_inference_base_url``
     are passed through in the dispatch payload so the workflow and the relay
     stay configured from one place.
@@ -24,39 +24,39 @@ class TriageSettings(BaseSettings):
         populate_by_name=True,
     )
 
-    relay_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_TRIAGE_RELAY_TOKEN")
-    slack_bot_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_TRIAGE_SLACK_BOT_TOKEN")
-    slack_channel_id: str = Field(default="", alias="CODEX_TRIAGE_SLACK_CHANNEL_ID")
-    state_dir: Path = Field(default=Path(".codex-triage"), alias="CODEX_TRIAGE_STATE_DIR")
-    github_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_TRIAGE_GITHUB_TOKEN")
-    # "owner/repo" that hosts the codex-triage workflow.
-    github_repository: str = Field(default="", alias="CODEX_TRIAGE_GITHUB_REPOSITORY")
+    relay_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_ONCALL_RELAY_TOKEN")
+    slack_bot_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_ONCALL_SLACK_BOT_TOKEN")
+    slack_channel_id: str = Field(default="", alias="CODEX_ONCALL_SLACK_CHANNEL_ID")
+    state_dir: Path = Field(default=Path(".codex-oncall"), alias="CODEX_ONCALL_STATE_DIR")
+    github_token: SecretStr = Field(default=SecretStr(""), alias="CODEX_ONCALL_GITHUB_TOKEN")
+    # "owner/repo" that hosts the codex-oncall workflow.
+    github_repository: str = Field(default="", alias="CODEX_ONCALL_GITHUB_REPOSITORY")
     github_api_base_url: str = Field(
         default="https://api.github.com",
-        alias="CODEX_TRIAGE_GITHUB_API_BASE_URL",
+        alias="CODEX_ONCALL_GITHUB_API_BASE_URL",
     )
     dispatch_event_type: str = Field(
-        default="codex-triage",
-        alias="CODEX_TRIAGE_DISPATCH_EVENT_TYPE",
+        default="codex-oncall",
+        alias="CODEX_ONCALL_DISPATCH_EVENT_TYPE",
     )
-    codex_model: str = Field(default="deepseek-v4-flash", alias="CODEX_TRIAGE_CODEX_MODEL")
+    codex_model: str = Field(default="deepseek-v4-flash", alias="CODEX_ONCALL_CODEX_MODEL")
     # Must be reachable from GitHub-hosted runners, so the public gateway URL.
     hybrid_inference_base_url: str = Field(
         default="https://freeinference.org/v1",
-        alias="CODEX_TRIAGE_HYBRID_BASE_URL",
+        alias="CODEX_ONCALL_HYBRID_BASE_URL",
     )
     worker_poll_seconds: float = Field(
         default=1.0,
         ge=0.05,
         le=60.0,
-        alias="CODEX_TRIAGE_POLL_SECONDS",
+        alias="CODEX_ONCALL_POLL_SECONDS",
     )
-    max_attempts: int = Field(default=2, ge=1, le=5, alias="CODEX_TRIAGE_MAX_ATTEMPTS")
+    max_attempts: int = Field(default=2, ge=1, le=5, alias="CODEX_ONCALL_MAX_ATTEMPTS")
     max_pending_jobs: int = Field(
         default=100,
         ge=1,
         le=10_000,
-        alias="CODEX_TRIAGE_MAX_PENDING_JOBS",
+        alias="CODEX_ONCALL_MAX_PENDING_JOBS",
     )
 
     @property

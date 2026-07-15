@@ -1,13 +1,13 @@
-r"""Workflow-side entrypoints for the ``codex-triage`` GitHub Actions job.
+r"""Workflow-side entrypoints for the ``codex-oncall`` GitHub Actions job.
 
-Runs inside ``.github/workflows/codex-triage.yml`` with
+Runs inside ``.github/workflows/codex-oncall.yml`` with
 ``PYTHONPATH=apps/backend`` and only ``pydantic`` + ``httpx`` installed:
 
-    python -m serving.triage.gha render --payload payload.json \
+    python -m serving.oncall.gha render --payload payload.json \
         --prompt-out prompt.txt --schema-out schema.json
-    python -m serving.triage.gha post --payload payload.json \
+    python -m serving.oncall.gha post --payload payload.json \
         --analysis analysis.json --codex-log codex-stdout.jsonl
-    python -m serving.triage.gha post --payload payload.json \
+    python -m serving.oncall.gha post --payload payload.json \
         --failed --run-url "$RUN_URL"
 
 ``render`` turns the dispatched alert into the Codex prompt and output
@@ -26,9 +26,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from serving.triage.models import TriageAnalysis
-from serving.triage.service import format_analysis
-from serving.triage.slack import SlackClient
+from serving.oncall.models import OnCallAnalysis
+from serving.oncall.service import format_analysis
+from serving.oncall.slack import SlackClient
 
 
 def render_prompt(safe_alert: dict[str, Any], schema: str) -> str:
@@ -38,7 +38,7 @@ def render_prompt(safe_alert: dict[str, Any], schema: str) -> str:
     dispatching, so this function must only ever see redacted data.
     """
     payload = json.dumps(safe_alert, indent=2, sort_keys=True)
-    return f"""You are the read-only incident triage agent for HybridInference.
+    return f"""You are the read-only incident oncall agent for HybridInference.
 
 Investigate the structured alert below against the checked-out repository. You may use only
 read-only inspection commands such as git, rg, sed, and file reads. Do not modify files, run
@@ -79,13 +79,13 @@ def parse_thread_id(json_lines: str) -> str | None:
 def _load_payload(path: str) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or "alert" not in data:
-        raise SystemExit("payload file does not look like a triage dispatch payload")
+        raise SystemExit("payload file does not look like a oncall dispatch payload")
     return data
 
 
 def _cmd_render(args: argparse.Namespace) -> int:
     payload = _load_payload(args.payload)
-    schema = json.dumps(TriageAnalysis.model_json_schema(), indent=2, sort_keys=True)
+    schema = json.dumps(OnCallAnalysis.model_json_schema(), indent=2, sort_keys=True)
     prompt = render_prompt(payload["alert"], schema)
     Path(args.schema_out).write_text(schema, encoding="utf-8")
     Path(args.prompt_out).write_text(prompt, encoding="utf-8")
@@ -107,13 +107,13 @@ def _cmd_post(args: argparse.Namespace) -> int:
 
     if args.failed:
         text = (
-            "*Codex triage unavailable*\n"
+            "*Codex on-call unavailable*\n"
             "The analysis workflow failed; the original alert above still stands."
         )
         if args.run_url:
             text += f"\nRun logs: {args.run_url}"
     else:
-        analysis = TriageAnalysis.model_validate_json(
+        analysis = OnCallAnalysis.model_validate_json(
             Path(args.analysis).read_text(encoding="utf-8")
         )
         thread_id = None
@@ -128,7 +128,7 @@ def _cmd_post(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Parse arguments and run the requested workflow step."""
-    parser = argparse.ArgumentParser(prog="serving.triage.gha")
+    parser = argparse.ArgumentParser(prog="serving.oncall.gha")
     sub = parser.add_subparsers(dest="command", required=True)
 
     render = sub.add_parser("render", help="write the Codex prompt and output schema")

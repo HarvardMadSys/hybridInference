@@ -17,10 +17,10 @@ Targets are discovered from the gateway's authenticated `/models` catalog, which
 already applies role and runtime visibility rules — so the Worker probes exactly
 what the prober key can actually call.
 
-## Slack alerts and Codex triage
+## Slack alerts and Codex on-call analysis
 
-When `CODEX_TRIAGE_RELAY_URL` and `CODEX_TRIAGE_RELAY_TOKEN` are set, each alert
-is sent to the triage relay first. The relay posts the original Slack message,
+When `CODEX_ONCALL_RELAY_URL` and `CODEX_ONCALL_RELAY_TOKEN` are set, each alert
+is sent to the on-call relay first. The relay posts the original Slack message,
 runs a read-only Codex investigation asynchronously, and replies in the same
 thread. If relay delivery fails, the Worker falls back to `SLACK_WEBHOOK_URL`.
 
@@ -83,9 +83,9 @@ working without JavaScript).
 `ALERT_STORM_THRESHOLD` (models changing state in one cycle before pages collapse
 into a summary).
 
-`PROBER_API_KEY` is a **secret**, not a var. `CODEX_TRIAGE_RELAY_URL`,
-`CODEX_TRIAGE_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both
-relay values are required to enable triage; retain the Slack webhook as its
+`PROBER_API_KEY` is a **secret**, not a var. `CODEX_ONCALL_RELAY_URL`,
+`CODEX_ONCALL_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both
+relay values are required to enable on-call analysis; retain the Slack webhook as its
 delivery fallback.
 
 ## Deploy
@@ -118,9 +118,9 @@ npx wrangler secret put PROBER_API_KEY
 # 3a. (Optional) Set the Slack incoming-webhook URL to enable failure alerts.
 npx wrangler secret put SLACK_WEBHOOK_URL
 
-# 3b. (Optional) Send alerts through Codex triage before the Slack fallback.
-npx wrangler secret put CODEX_TRIAGE_RELAY_URL
-npx wrangler secret put CODEX_TRIAGE_RELAY_TOKEN
+# 3b. (Optional) Send alerts through Codex on-call before the Slack fallback.
+npx wrangler secret put CODEX_ONCALL_RELAY_URL
+npx wrangler secret put CODEX_ONCALL_RELAY_TOKEN
 
 # 4. Deploy (registers the Worker and its 20-minute cron trigger).
 npx wrangler deploy

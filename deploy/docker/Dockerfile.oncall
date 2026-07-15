@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 #
-# Codex alert-triage relay. The relay only receives alerts, posts them to
-# Slack, and hands analysis to the codex-triage GitHub Actions workflow via
+# Codex alert-oncall relay. The relay only receives alerts, posts them to
+# Slack, and hands analysis to the codex-oncall GitHub Actions workflow via
 # repository_dispatch — Codex itself, Node, and the repository snapshot are
 # deliberately NOT part of this image.
 
@@ -19,10 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid 10001 triage \
-    && useradd --uid 10001 --gid triage --create-home \
-        --home-dir /var/lib/codex-triage --shell /usr/sbin/nologin triage \
-    && install -d -o triage -g triage -m 0700 /var/lib/codex-triage
+    && groupadd --gid 10001 oncall \
+    && useradd --uid 10001 --gid oncall --create-home \
+        --home-dir /var/lib/codex-oncall --shell /usr/sbin/nologin oncall \
+    && install -d -o oncall -g oncall -m 0700 /var/lib/codex-oncall
 
 COPY --from=python-builder /app/.venv /app/.venv
 COPY apps/backend/serving /app/apps/backend/serving
@@ -30,16 +30,16 @@ COPY apps/backend/serving /app/apps/backend/serving
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONPATH=/app/apps/backend \
     PYTHONDONTWRITEBYTECODE=1 \
-    HOME=/var/lib/codex-triage \
-    CODEX_TRIAGE_STATE_DIR=/var/lib/codex-triage
+    HOME=/var/lib/codex-oncall \
+    CODEX_ONCALL_STATE_DIR=/var/lib/codex-oncall
 
 WORKDIR /app
-USER triage
+USER oncall
 
 EXPOSE 8091
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -fsS http://localhost:8091/healthz | grep -q '"ready":true'
 
-CMD ["uvicorn", "serving.triage.app:app", \
+CMD ["uvicorn", "serving.oncall.app:app", \
      "--host", "0.0.0.0", "--port", "8091", "--no-server-header"]

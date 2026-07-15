@@ -1,4 +1,4 @@
-"""GitHub Actions hand-off for asynchronous Codex triage runs."""
+"""GitHub Actions hand-off for asynchronous Codex on-call runs."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from serving.triage.models import AlertEvent, sanitize_for_agent
+from serving.oncall.models import AlertEvent, sanitize_for_agent
 
 if TYPE_CHECKING:
-    from serving.triage.config import TriageSettings
+    from serving.oncall.config import OnCallSettings
 
 
 class DispatchError(RuntimeError):
@@ -17,7 +17,7 @@ class DispatchError(RuntimeError):
 
 
 class GitHubDispatcher:
-    """Trigger the ``codex-triage`` workflow through ``repository_dispatch``.
+    """Trigger the ``codex-oncall`` workflow through ``repository_dispatch``.
 
     The relay never runs Codex itself: it posts the original alert to Slack,
     then hands the sanitized alert to a GitHub Actions workflow that checks out
@@ -25,7 +25,7 @@ class GitHubDispatcher:
     Responses API, and replies in the same Slack thread.
     """
 
-    def __init__(self, settings: TriageSettings, *, timeout_seconds: float = 15.0) -> None:
+    def __init__(self, settings: OnCallSettings, *, timeout_seconds: float = 15.0) -> None:
         self._settings = settings
         self._timeout_seconds = timeout_seconds
 
@@ -35,7 +35,7 @@ class GitHubDispatcher:
         return {
             "event_type": self._settings.dispatch_event_type.strip(),
             "client_payload": {
-                "triage": {
+                "oncall": {
                     "alert": safe_alert,
                     "fingerprint": event.fingerprint,
                     "alert_id": event.alert_id,

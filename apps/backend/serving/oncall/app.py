@@ -1,4 +1,4 @@
-"""Standalone FastAPI application for the Codex alert triage relay."""
+"""Standalone FastAPI application for the Codex on-call alert relay."""
 
 from __future__ import annotations
 
@@ -8,27 +8,27 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
-from serving.triage.config import TriageSettings
-from serving.triage.dispatcher import GitHubDispatcher
-from serving.triage.models import AlertEvent, SubmitAlertResponse
-from serving.triage.security import protect_process_secrets
-from serving.triage.service import TriageOverloadedError, TriageService
-from serving.triage.slack import SlackClient, SlackDeliveryError
-from serving.triage.store import TriageStore
+from serving.oncall.config import OnCallSettings
+from serving.oncall.dispatcher import GitHubDispatcher
+from serving.oncall.models import AlertEvent, SubmitAlertResponse
+from serving.oncall.security import protect_process_secrets
+from serving.oncall.service import OnCallOverloadedError, OnCallService
+from serving.oncall.slack import SlackClient, SlackDeliveryError
+from serving.oncall.store import OnCallStore
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
-def build_service(settings: TriageSettings) -> TriageService:
+def build_service(settings: OnCallSettings) -> OnCallService:
     """Construct production dependencies without starting background work."""
-    store = TriageStore(settings.state_dir.expanduser().resolve() / "triage.sqlite3")
+    store = OnCallStore(settings.state_dir.expanduser().resolve() / "oncall.sqlite3")
     slack = SlackClient(
         settings.slack_bot_token.get_secret_value().strip(),
         settings.slack_channel_id.strip(),
     )
     dispatcher = GitHubDispatcher(settings)
-    return TriageService(
+    return OnCallService(
         store,
         slack,
         dispatcher,
@@ -39,43 +39,43 @@ def build_service(settings: TriageSettings) -> TriageService:
 
 
 def create_app(
-    settings: TriageSettings | None = None,
+    settings: OnCallSettings | None = None,
     *,
-    service: TriageService | None = None,
+    service: OnCallService | None = None,
 ) -> FastAPI:
     """Create the relay app with optional test dependencies."""
-    resolved_settings = settings or TriageSettings()
+    resolved_settings = settings or OnCallSettings()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        triage_service = service
-        if triage_service is None and resolved_settings.configured:
+        oncall_service = service
+        if oncall_service is None and resolved_settings.configured:
             protect_process_secrets()
-            triage_service = build_service(resolved_settings)
-        application.state.triage_service = triage_service
-        if triage_service is not None:
-            await triage_service.start()
+            oncall_service = build_service(resolved_settings)
+        application.state.oncall_service = oncall_service
+        if oncall_service is not None:
+            await oncall_service.start()
         try:
             yield
         finally:
-            if triage_service is not None:
-                await triage_service.stop()
+            if oncall_service is not None:
+                await oncall_service.stop()
 
     application = FastAPI(
-        title="HybridInference Codex Alert Triage",
+        title="HybridInference Codex On-Call",
         version="1.0.0",
         lifespan=lifespan,
     )
 
     @application.get("/healthz")
     async def health(request: Request) -> dict[str, object]:
-        triage_service: TriageService | None = request.app.state.triage_service
-        if triage_service is None:
+        oncall_service: OnCallService | None = request.app.state.oncall_service
+        if oncall_service is None:
             return {"status": "unconfigured", "ready": False}
         return {
-            "status": "ok" if triage_service.running else "stopped",
-            "ready": triage_service.running,
-            "jobs": await triage_service.store.job_counts(),
+            "status": "ok" if oncall_service.running else "stopped",
+            "ready": oncall_service.running,
+            "jobs": await oncall_service.store.job_counts(),
         }
 
     @application.post(
@@ -90,19 +90,19 @@ def create_app(
     ) -> SubmitAlertResponse:
         expected = resolved_settings.relay_token.get_secret_value().strip()
         if not expected:
-            raise HTTPException(status_code=503, detail="triage relay is not configured")
+            raise HTTPException(status_code=503, detail="oncall relay is not configured")
         scheme, _, provided = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not hmac.compare_digest(provided, expected):
             raise HTTPException(status_code=401, detail="invalid relay token")
-        triage_service: TriageService | None = request.app.state.triage_service
-        if triage_service is None or not triage_service.running:
-            raise HTTPException(status_code=503, detail="triage worker is unavailable")
+        oncall_service: OnCallService | None = request.app.state.oncall_service
+        if oncall_service is None or not oncall_service.running:
+            raise HTTPException(status_code=503, detail="oncall worker is unavailable")
         try:
-            return await triage_service.submit(event)
+            return await oncall_service.submit(event)
         except SlackDeliveryError as exc:
             raise HTTPException(status_code=502, detail="initial Slack delivery failed") from exc
-        except TriageOverloadedError as exc:
-            raise HTTPException(status_code=503, detail="triage queue is full") from exc
+        except OnCallOverloadedError as exc:
+            raise HTTPException(status_code=503, detail="oncall queue is full") from exc
 
     return application
 

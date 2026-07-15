@@ -12,9 +12,9 @@ export interface Env {
   // Slack incoming-webhook URL (a secret, not a var). Unset disables direct
   // Slack delivery.
   SLACK_WEBHOOK_URL?: string;
-  // Optional Codex triage relay. Both values are required to enable relay delivery.
-  CODEX_TRIAGE_RELAY_URL?: string;
-  CODEX_TRIAGE_RELAY_TOKEN?: string;
+  // Optional Codex oncall relay. Both values are required to enable relay delivery.
+  CODEX_ONCALL_RELAY_URL?: string;
+  CODEX_ONCALL_RELAY_TOKEN?: string;
   // Consecutive failed probes before a model pages Slack. Defaults to 2.
   ALERT_FAILURE_THRESHOLD?: string;
   // More than this many models changing state in one cycle collapses into a

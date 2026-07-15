@@ -1,6 +1,6 @@
-# Codex Alert Triage
+# Codex On-Call
 
-The alert triage pipeline turns structured gateway and status-monitor alerts
+The Codex On-Call pipeline turns structured gateway and status-monitor alerts
 into read-only Codex investigations. A small always-on relay receives alerts,
 posts the original message to Slack immediately, and hands the analysis to a
 GitHub Actions workflow; the workflow checks out the current `dev` branch,
@@ -11,11 +11,11 @@ Slack thread.
 Cloudflare status-monitor ── restricted HTTPS ─┐
                                                │
 Docker Compose network                         ▼
-gateway backend ───────────────────────► codex-triage relay ──► Slack alert
+gateway backend ───────────────────────► codex-oncall relay ──► Slack alert
                                                │                    ▲
                                                │ repository_dispatch│ thread reply
                                                ▼                    │
-                                  GitHub Actions: codex-triage ─────┘
+                                  GitHub Actions: codex-oncall ─────┘
                                     checkout dev → codex exec
                                                │ Responses API
                                                ▼
@@ -73,18 +73,18 @@ would be appropriate for human follow-up.
 
 ## Configure GitHub
 
-1. Ensure `.github/workflows/codex-triage.yml` exists on the default branch so
+1. Ensure `.github/workflows/codex-oncall.yml` exists on the default branch so
    `repository_dispatch` can trigger it.
 2. Create two **Actions secrets** in the repository:
 
    | Secret | Purpose |
    |---|---|
-   | `CODEX_TRIAGE_HYBRID_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. Must see the configured model (`deepseek-v4-flash` is internal-only, so an `internal`/`admin` service key). Not an OpenAI or upstream DeepSeek key. |
-   | `CODEX_TRIAGE_SLACK_BOT_TOKEN` | Same Slack bot token the relay uses (`chat:write`, invited to the channel). |
+   | `CODEX_ONCALL_HYBRID_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. Must see the configured model (`deepseek-v4-flash` is internal-only, so an `internal`/`admin` service key). Not an OpenAI or upstream DeepSeek key. |
+   | `CODEX_ONCALL_SLACK_BOT_TOKEN` | Same Slack bot token the relay uses (`chat:write`, invited to the channel). |
 
 3. Create a **fine-grained PAT** for the relay with *Contents: read & write*
    on this repository only — that is the permission `repository_dispatch`
-   requires. It goes into `.env.triage` below, not into Actions secrets.
+   requires. It goes into `.env.oncall` below, not into Actions secrets.
 
 ## Configure the relay
 
@@ -92,31 +92,31 @@ Create the relay-only environment file. Do not put these secrets in the shared
 backend `.env`, because the backend container loads that whole file.
 
 ```bash
-cp .env.triage.example .env.triage
-chmod 0600 .env.triage
+cp .env.oncall.example .env.oncall
+chmod 0600 .env.oncall
 openssl rand -hex 32
 ```
 
-Populate `.env.triage`:
+Populate `.env.oncall`:
 
 ```text
-CODEX_TRIAGE_RELAY_TOKEN=<random shared bearer token>
-CODEX_TRIAGE_SLACK_BOT_TOKEN=xoxb-...
-CODEX_TRIAGE_SLACK_CHANNEL_ID=C0123456789
-CODEX_TRIAGE_GITHUB_TOKEN=github_pat_...
-CODEX_TRIAGE_GITHUB_REPOSITORY=HarvardMadSys/hybridInference
-CODEX_TRIAGE_CODEX_MODEL=deepseek-v4-flash
-CODEX_TRIAGE_HYBRID_BASE_URL=https://freeinference.org/v1
+CODEX_ONCALL_RELAY_TOKEN=<random shared bearer token>
+CODEX_ONCALL_SLACK_BOT_TOKEN=xoxb-...
+CODEX_ONCALL_SLACK_CHANNEL_ID=C0123456789
+CODEX_ONCALL_GITHUB_TOKEN=github_pat_...
+CODEX_ONCALL_GITHUB_REPOSITORY=HarvardMadSys/hybridInference
+CODEX_ONCALL_CODEX_MODEL=deepseek-v4-flash
+CODEX_ONCALL_HYBRID_BASE_URL=https://freeinference.org/v1
 ```
 
-`CODEX_TRIAGE_CODEX_MODEL` and `CODEX_TRIAGE_HYBRID_BASE_URL` are forwarded in
+`CODEX_ONCALL_CODEX_MODEL` and `CODEX_ONCALL_HYBRID_BASE_URL` are forwarded in
 each dispatch payload, so model policy is controlled from one place. The base
 URL must be reachable from GitHub-hosted runners — use the public gateway, not
 a Compose-internal hostname.
 
 `deepseek-v4-flash` is the default analysis model because it has a local H200
 sglang route with the official DeepSeek API as fallback, and it is an order of
-magnitude cheaper per token than `deepseek-v4-pro` — each triage run sends tens
+magnitude cheaper per token than `deepseek-v4-pro` — each analysis run sends tens
 of thousands of prompt tokens through an agentic loop.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
@@ -126,12 +126,12 @@ thread.
 ## Enable the Compose profile
 
 Set the producer values in the shared backend `.env`. The relay token must
-match `.env.triage`.
+match `.env.oncall`.
 
 ```text
-COMPOSE_PROFILES=triage
-CODEX_TRIAGE_RELAY_URL=http://codex-triage:8091
-CODEX_TRIAGE_RELAY_TOKEN=<same shared token>
+COMPOSE_PROFILES=oncall
+CODEX_ONCALL_RELAY_URL=http://codex-oncall:8091
+CODEX_ONCALL_RELAY_TOKEN=<same shared token>
 SLACK_ALERTS_WEBHOOK_URL=<existing fallback webhook>
 ```
 
@@ -148,7 +148,7 @@ curl -fsS http://127.0.0.1:8091/healthz
 
 The health response must contain `"ready":true`. The relay image contains only
 the FastAPI service — the Codex CLI version is pinned inside
-`.github/workflows/codex-triage.yml` (`CODEX_CLI_VERSION`), and each workflow
+`.github/workflows/codex-oncall.yml` (`CODEX_CLI_VERSION`), and each workflow
 run analyzes a fresh checkout of `dev`, so there is no image snapshot to keep
 in sync.
 
@@ -160,23 +160,23 @@ reverse-proxy route or Cloudflare Tunnel, then set Worker secrets:
 
 ```bash
 cd services/status-monitor-worker
-npx wrangler secret put CODEX_TRIAGE_RELAY_URL
-npx wrangler secret put CODEX_TRIAGE_RELAY_TOKEN
+npx wrangler secret put CODEX_ONCALL_RELAY_URL
+npx wrangler secret put CODEX_ONCALL_RELAY_TOKEN
 npx wrangler secret put SLACK_WEBHOOK_URL
 ```
 
-Use the restricted HTTPS URL for `CODEX_TRIAGE_RELAY_URL` and retain
+Use the restricted HTTPS URL for `CODEX_ONCALL_RELAY_URL` and retain
 `SLACK_WEBHOOK_URL` during rollout. The webhook is used only when the relay
 cannot confirm delivery.
 
 ## Smoke test
 
 Send a synthetic event from the Compose host, using the token from
-`.env.triage`:
+`.env.oncall`:
 
 ```bash
 curl -i http://127.0.0.1:8091/v1/alerts \
-  -H "Authorization: Bearer $CODEX_TRIAGE_RELAY_TOKEN" \
+  -H "Authorization: Bearer $CODEX_ONCALL_RELAY_TOKEN" \
   -H "Content-Type: application/json" \
   --data '{
     "version":"1",
@@ -190,12 +190,12 @@ curl -i http://127.0.0.1:8091/v1/alerts \
     "occurred_at":"2026-07-10T00:00:00Z",
     "summary":"Synthetic event; no production impact",
     "context":{"provider":"example"},
-    "slack_text":"Synthetic Codex triage smoke test"
+    "slack_text":"Synthetic Codex on-call smoke test"
   }'
 ```
 
 A successful request returns `202`, posts the synthetic alert immediately, and
-starts a `Codex Alert Triage` run under the repository's Actions tab; the
+starts a `Codex On-Call` run under the repository's Actions tab; the
 analysis reply lands in the alert's Slack thread when the run finishes.
 Reusing the same fingerprint inside the dedupe window returns
 `duplicate: true` without another top-level message. On the first live run,
@@ -203,7 +203,7 @@ check the workflow log for the sandbox self-check result.
 
 ## Rollout
 
-1. Configure the GitHub secrets, enable the `triage` profile on staging, and
+1. Configure the GitHub secrets, enable the `oncall` profile on staging, and
    configure only one producer.
 2. Confirm raw-alert latency, analysis usefulness, workflow duration, and
    false conclusions for at least one week.

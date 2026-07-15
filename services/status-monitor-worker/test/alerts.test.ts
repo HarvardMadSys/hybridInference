@@ -248,13 +248,13 @@ describe("runAlerts", () => {
   ): Env {
     return {
       SLACK_WEBHOOK_URL: webhook,
-      CODEX_TRIAGE_RELAY_URL: relayUrl,
-      CODEX_TRIAGE_RELAY_TOKEN: relayToken,
+      CODEX_ONCALL_RELAY_URL: relayUrl,
+      CODEX_ONCALL_RELAY_TOKEN: relayToken,
       DB: db as unknown as D1Database,
     } as unknown as Env;
   }
 
-  it("sends an authenticated triage event and skips Slack when the relay succeeds", async () => {
+  it("sends an authenticated oncall event and skips Slack when the relay succeeds", async () => {
     const db = new FakeD1();
     const env = envWith(db, "https://hook.test/x", "https://relay.test/", "relay-token");
     const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => {
@@ -646,8 +646,8 @@ describe("runCycleAlert", () => {
   ): Env {
     return {
       SLACK_WEBHOOK_URL: webhook,
-      CODEX_TRIAGE_RELAY_URL: relayUrl,
-      CODEX_TRIAGE_RELAY_TOKEN: relayToken,
+      CODEX_ONCALL_RELAY_URL: relayUrl,
+      CODEX_ONCALL_RELAY_TOKEN: relayToken,
       DB: db as unknown as D1Database,
     } as unknown as Env;
   }

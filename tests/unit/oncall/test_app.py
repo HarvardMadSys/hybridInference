@@ -6,9 +6,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from serving.triage.app import create_app
-from serving.triage.config import TriageSettings
-from serving.triage.models import AlertEvent, SubmitAlertResponse
+from serving.oncall.app import create_app
+from serving.oncall.config import OnCallSettings
+from serving.oncall.models import AlertEvent, SubmitAlertResponse
 
 
 class FakeService:
@@ -51,7 +51,7 @@ def payload() -> dict[str, object]:
 
 
 def test_alert_endpoint_requires_bearer_token(tmp_path):
-    settings = TriageSettings(
+    settings = OnCallSettings(
         relay_token=SecretStr("expected-token"),
         state_dir=tmp_path,
     )
@@ -71,7 +71,7 @@ def test_alert_endpoint_requires_bearer_token(tmp_path):
 
 
 def test_configured_relay_protects_process_before_starting_worker(tmp_path):
-    settings = TriageSettings(
+    settings = OnCallSettings(
         relay_token=SecretStr("relay-secret"),
         slack_bot_token=SecretStr("slack-secret"),
         slack_channel_id="C0123456789",
@@ -81,7 +81,7 @@ def test_configured_relay_protects_process_before_starting_worker(tmp_path):
     )
 
     with (
-        patch("serving.triage.app.protect_process_secrets") as protect,
+        patch("serving.oncall.app.protect_process_secrets") as protect,
         TestClient(create_app(settings)) as client,
     ):
         assert client.get("/healthz").json()["ready"] is True

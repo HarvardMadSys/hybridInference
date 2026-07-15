@@ -8,7 +8,7 @@ import {
   modelAlertFingerprint,
   postCodexAlert,
   stormAlertFingerprint,
-} from "../src/triage";
+} from "../src/oncall";
 
 const event: CodexAlertEvent = {
   version: "1",
@@ -44,18 +44,18 @@ describe("alert fingerprints", () => {
 describe("relay configuration", () => {
   it("requires both relay bindings and trims their values", () => {
     const env = {
-      CODEX_TRIAGE_RELAY_URL: " https://relay.test/ ",
-      CODEX_TRIAGE_RELAY_TOKEN: " token ",
+      CODEX_ONCALL_RELAY_URL: " https://relay.test/ ",
+      CODEX_ONCALL_RELAY_TOKEN: " token ",
     } as Env;
     expect(codexRelayConfig(env)).toEqual({ baseUrl: "https://relay.test/", token: "token" });
-    expect(codexRelayConfig({ CODEX_TRIAGE_RELAY_URL: "https://relay.test" } as Env)).toBeNull();
+    expect(codexRelayConfig({ CODEX_ONCALL_RELAY_URL: "https://relay.test" } as Env)).toBeNull();
   });
 
   it("recognizes relay, Slack, and no-destination configurations", () => {
     expect(
       hasAlertDestination({
-        CODEX_TRIAGE_RELAY_URL: "https://relay.test",
-        CODEX_TRIAGE_RELAY_TOKEN: "token",
+        CODEX_ONCALL_RELAY_URL: "https://relay.test",
+        CODEX_ONCALL_RELAY_TOKEN: "token",
       } as Env),
     ).toBe(true);
     expect(hasAlertDestination({ SLACK_WEBHOOK_URL: "https://hook.test" } as Env)).toBe(true);

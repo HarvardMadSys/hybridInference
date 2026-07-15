@@ -5,9 +5,9 @@ from unittest.mock import patch
 
 import pytest
 
-from serving.triage.models import AlertEvent, TriageAnalysis
-from serving.triage.service import TriageOverloadedError, TriageService, format_analysis
-from serving.triage.store import TriageStore
+from serving.oncall.models import AlertEvent, OnCallAnalysis
+from serving.oncall.service import OnCallOverloadedError, OnCallService, format_analysis
+from serving.oncall.store import OnCallStore
 
 
 class FakeSlack:
@@ -47,8 +47,8 @@ def alert(status: str = "firing", alert_id: str | None = None) -> AlertEvent:
     )
 
 
-def analysis() -> TriageAnalysis:
-    return TriageAnalysis(
+def analysis() -> OnCallAnalysis:
+    return OnCallAnalysis(
         summary="Inspect upstream status",
         classification="upstream_provider",
         confidence=0.7,
@@ -65,11 +65,11 @@ def analysis() -> TriageAnalysis:
 
 
 async def test_service_dedupes_and_dispatches_to_github_once(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     slack = FakeSlack()
     dispatcher = FakeDispatcher()
-    service = TriageService(store, slack, dispatcher)
+    service = OnCallService(store, slack, dispatcher)
 
     first = await service.submit(alert())
     duplicate = await service.submit(alert())
@@ -87,10 +87,10 @@ async def test_service_dedupes_and_dispatches_to_github_once(tmp_path):
 
 
 async def test_service_posts_recovery_to_existing_incident_thread(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeDispatcher())
+    service = OnCallService(store, slack, FakeDispatcher())
 
     firing = await service.submit(alert())
     resolved = await service.submit(alert("resolved"))
@@ -103,10 +103,10 @@ async def test_service_posts_recovery_to_existing_incident_thread(tmp_path):
 
 
 async def test_service_dedupes_recovery_retries(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeDispatcher())
+    service = OnCallService(store, slack, FakeDispatcher())
 
     firing = await service.submit(alert())
     recovery = alert("resolved", alert_id="recovery-1")
@@ -115,7 +115,7 @@ async def test_service_dedupes_recovery_retries(tmp_path):
     incident = await store.get_incident(alert().fingerprint)
     assert incident is not None
     with patch(
-        "serving.triage.service.time.time",
+        "serving.oncall.service.time.time",
         return_value=incident.updated_at + 301,
     ):
         id_retry = await service.submit(recovery)
@@ -128,10 +128,10 @@ async def test_service_dedupes_recovery_retries(tmp_path):
 
 
 async def test_service_dedupes_unmatched_recovery_retries(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeDispatcher())
+    service = OnCallService(store, slack, FakeDispatcher())
 
     recovery = alert("resolved", alert_id="recovery-1")
     first = await service.submit(recovery)
@@ -147,17 +147,17 @@ async def test_service_dedupes_unmatched_recovery_retries(tmp_path):
 
 
 async def test_service_allows_new_incident_after_dedupe_window(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     slack = FakeSlack()
     dispatcher = FakeDispatcher()
-    service = TriageService(store, slack, dispatcher)
+    service = OnCallService(store, slack, dispatcher)
 
     first = await service.submit(alert(alert_id="alert-1"))
     incident = await store.get_incident(alert().fingerprint)
     assert incident is not None
     with patch(
-        "serving.triage.service.time.time",
+        "serving.oncall.service.time.time",
         return_value=incident.created_at + 301,
     ):
         second = await service.submit(alert(alert_id="alert-2"))
@@ -176,27 +176,27 @@ async def test_service_allows_new_incident_after_dedupe_window(tmp_path):
 
 
 async def test_service_rejects_new_analysis_when_queue_is_full(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     slack = FakeSlack()
-    service = TriageService(store, slack, FakeDispatcher(), max_pending_jobs=1)
+    service = OnCallService(store, slack, FakeDispatcher(), max_pending_jobs=1)
 
     await service.submit(alert(alert_id="alert-1"))
     second = alert(alert_id="alert-2").model_copy(
         update={"fingerprint": "gateway:production:different"}
     )
-    with pytest.raises(TriageOverloadedError):
+    with pytest.raises(OnCallOverloadedError):
         await service.submit(second)
 
     assert len(slack.messages) == 1
 
 
 async def test_service_posts_failure_notice_when_dispatch_finally_fails(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     slack = FakeSlack()
     dispatcher = FakeDispatcher(fail_times=2)
-    service = TriageService(store, slack, dispatcher, max_attempts=2)
+    service = OnCallService(store, slack, dispatcher, max_attempts=2)
 
     first = await service.submit(alert())
     assert await service.process_one() is True
@@ -205,14 +205,14 @@ async def test_service_posts_failure_notice_when_dispatch_finally_fails(tmp_path
     assert dispatcher.dispatched == []
     assert (await store.job_counts())["failed"] == 1
     failure_text, failure_thread = slack.messages[-1]
-    assert "Codex triage unavailable" in failure_text
+    assert "Codex on-call unavailable" in failure_text
     assert "GitHub Actions" in failure_text
     assert failure_thread == first.slack_thread_ts
 
 
 def test_format_analysis_is_bounded_and_mention_safe():
     message = format_analysis(analysis(), "thread-1")
-    assert message.startswith("*Codex triage*")
+    assert message.startswith("*Codex on-call*")
     assert "<!channel>" not in message
     assert "&lt;!channel&gt;" in message
     assert "hyi-" not in message

@@ -1,4 +1,4 @@
-"""Validated contracts for the alert triage relay."""
+"""Validated contracts for the on-call alert relay."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class AlertEvent(BaseModel):
         return stripped
 
 
-class TriageAnalysis(BaseModel):
+class OnCallAnalysis(BaseModel):
     """Machine-readable Codex investigation result."""
 
     model_config = ConfigDict(extra="forbid")

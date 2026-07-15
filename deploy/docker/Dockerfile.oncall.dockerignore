@@ -11,7 +11,7 @@
 **/.env
 **/.env.*
 !.env.example
-!.env.triage.example
+!.env.oncall.example
 
 apps/frontend/node_modules
 apps/frontend/.next

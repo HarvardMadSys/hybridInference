@@ -17,7 +17,7 @@ import {
   type NewCodexAlertEvent,
   postCodexAlert,
   stormAlertFingerprint,
-} from "./triage";
+} from "./oncall";
 
 /** Local/dev gateway hosts that never indicate a real deployment. */
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]"]);
@@ -359,7 +359,7 @@ export function decideAlerts(
 /**
  * Evaluates probe results and sends alerts for models that failed
  * `config.alertFailureThreshold` consecutive probes (and recovery notices for
- * those that come back). Codex triage is attempted first when configured, with
+ * those that come back). Codex on-call is attempted first when configured, with
  * the Slack webhook as a fallback. No-op when neither destination is configured.
  *
  * Runs inside the probe cycle while it holds the cycle lock, so the

@@ -1,6 +1,6 @@
-"""Tests for triage event validation and redaction."""
+"""Tests for oncall event validation and redaction."""
 
-from serving.triage.models import sanitize_for_agent
+from serving.oncall.models import sanitize_for_agent
 
 
 def test_sanitize_for_agent_redacts_nested_secrets_and_bearer_tokens():

@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from serving.triage.models import AlertEvent
-from serving.triage.store import TriageStore
+from serving.oncall.models import AlertEvent
+from serving.oncall.store import OnCallStore
 
 
 def event() -> AlertEvent:
@@ -26,7 +26,7 @@ def event() -> AlertEvent:
 
 
 def test_store_closes_connections_on_context_exit(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
 
     with store._connect() as connection:
         connection.execute("CREATE TABLE connection_test (id INTEGER)")
@@ -36,7 +36,7 @@ def test_store_closes_connections_on_context_exit(tmp_path):
 
 
 async def test_store_queues_dispatch_and_completes(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     await store.create_firing(event(), "171.1")
 
@@ -58,7 +58,7 @@ async def test_store_queues_dispatch_and_completes(tmp_path):
 
 
 async def test_store_requeues_then_finalizes_failed_dispatch(tmp_path):
-    store = TriageStore(tmp_path / "triage.sqlite3")
+    store = OnCallStore(tmp_path / "oncall.sqlite3")
     await store.initialize()
     await store.create_firing(event(), "171.1")
 
