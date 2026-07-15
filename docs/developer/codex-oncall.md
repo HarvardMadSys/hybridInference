@@ -22,7 +22,7 @@ gateway backend ─────────────────────�
                                    https://freeinference.org/v1
                                                │
                                                ▼
-                                       deepseek-v4-flash
+                                glm-5.2 (CODEX_ONCALL_CODEX_MODEL)
 ```
 
 Split of responsibilities:
@@ -79,7 +79,7 @@ would be appropriate for human follow-up.
 
    | Secret | Purpose |
    |---|---|
-   | `CODEX_ONCALL_HYBRID_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. Must see the configured model (`deepseek-v4-flash` is internal-only, so an `internal`/`admin` service key). Not an OpenAI or upstream DeepSeek key. |
+   | `CODEX_ONCALL_HYBRID_API_KEY` | HybridInference `hyi-...` key the workflow uses against the gateway's Responses API. Must see the configured model (both `glm-5.2` and `deepseek-v4-flash` are internal-only, so an `internal`/`admin` service key). Not an OpenAI or upstream provider key. |
    | `CODEX_ONCALL_SLACK_BOT_TOKEN` | Same Slack bot token the relay uses (`chat:write`, invited to the channel). |
 
 3. Create a **fine-grained PAT** for the relay with *Contents: read & write*
@@ -105,19 +105,25 @@ CODEX_ONCALL_SLACK_BOT_TOKEN=xoxb-...
 CODEX_ONCALL_SLACK_CHANNEL_ID=C0123456789
 CODEX_ONCALL_GITHUB_TOKEN=github_pat_...
 CODEX_ONCALL_GITHUB_REPOSITORY=HarvardMadSys/hybridInference
-CODEX_ONCALL_CODEX_MODEL=deepseek-v4-flash
+CODEX_ONCALL_CODEX_MODEL=glm-5.2
 CODEX_ONCALL_HYBRID_BASE_URL=https://freeinference.org/v1
 ```
 
 `CODEX_ONCALL_CODEX_MODEL` and `CODEX_ONCALL_HYBRID_BASE_URL` are forwarded in
-each dispatch payload, so model policy is controlled from one place. The base
-URL must be reachable from GitHub-hosted runners — use the public gateway, not
-a Compose-internal hostname.
+each dispatch payload, so model policy is controlled from one place — changing
+the model is an `.env.oncall` edit plus a relay restart, no code or workflow
+change. The base URL must be reachable from GitHub-hosted runners — use the
+public gateway, not a Compose-internal hostname.
 
-`deepseek-v4-flash` is the default analysis model because it has a local H200
-sglang route with the official DeepSeek API as fallback, and it is an order of
-magnitude cheaper per token than `deepseek-v4-pro` — each analysis run sends tens
-of thousands of prompt tokens through an agentic loop.
+Model choice: `glm-5.2` is the launch default because it is verified working
+end-to-end through the Responses API today and rides the flat-fee ZAI coding
+plan. The intended steady-state model is `deepseek-v4-flash` (local H200 sglang
+route with the official DeepSeek API as fallback, an order of magnitude cheaper
+per token than `deepseek-v4-pro` — each analysis run sends tens of thousands of
+prompt tokens through an agentic loop). It is blocked on the H200 V4 parser fix
+(PR #939): until that deployment is restarted and verified, the model returns
+empty `content` and unparsed tool calls, which breaks the agentic loop. Flip
+the env var once verified.
 
 The Slack app needs `chat:write` and must be added to the target channel. The
 relay uses `chat.postMessage` so the workflow can reply in the original alert
@@ -209,6 +215,10 @@ check the workflow log for the sandbox self-check result.
    false conclusions for at least one week.
 3. Enable the production gateway producer while retaining webhook fallback.
 4. Add status-monitor delivery after the restricted public TLS route is ready.
-5. Consider GitHub Issue and Draft PR actions in a separate change with
+5. After the H200 V4 parser fix (PR #939) is deployed (sglang container
+   restarted) and verified — non-empty `content`, populated `tool_calls`, and
+   `/v1/responses` returning message items — set
+   `CODEX_ONCALL_CODEX_MODEL=deepseek-v4-flash` and re-run the smoke test.
+6. Consider GitHub Issue and Draft PR actions in a separate change with
    separate credentials, explicit policy gates, and branch protection.
    Automatic merge remains out of scope.

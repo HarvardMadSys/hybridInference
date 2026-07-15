@@ -39,7 +39,9 @@ class OnCallSettings(BaseSettings):
         default="codex-oncall",
         alias="CODEX_ONCALL_DISPATCH_EVENT_TYPE",
     )
-    codex_model: str = Field(default="deepseek-v4-flash", alias="CODEX_ONCALL_CODEX_MODEL")
+    # glm-5.2 until the H200 DeepSeek-V4 parser fix (PR #939) is deployed and
+    # verified; then flip to deepseek-v4-flash (cheaper local route).
+    codex_model: str = Field(default="glm-5.2", alias="CODEX_ONCALL_CODEX_MODEL")
     # Must be reachable from GitHub-hosted runners, so the public gateway URL.
     hybrid_inference_base_url: str = Field(
         default="https://freeinference.org/v1",

@@ -104,3 +104,10 @@ def test_configured_requires_github_credentials():
     assert settings().configured is True
     assert settings(github_token=SecretStr("")).configured is False
     assert settings(github_repository="").configured is False
+
+
+def test_default_model_is_glm_until_v4_flash_serving_fix_is_deployed(monkeypatch):
+    # deepseek-v4-flash returns empty content until the H200 V4 parser fix
+    # (PR #939) is deployed and verified; flip the default back then.
+    monkeypatch.delenv("CODEX_ONCALL_CODEX_MODEL", raising=False)
+    assert OnCallSettings().codex_model == "glm-5.2"
