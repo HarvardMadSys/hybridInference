@@ -33,11 +33,11 @@ function response(outputTokens = 8): GeoAnalyticsResponse {
       unmapped_alpha2: [],
       notes: [],
     },
-    bucket_cols: ['c', 'cc', 'cont', 'n', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'],
+    bucket_cols: ['c', 'cont', 'n', 'tout'],
     hours_index: ['2026-07-16T00:00:00Z'],
     hours: [
       {
-        b: [['CHN', 'CN', 'AS', 12, 0, 3, 20, outputTokens, 2, 100, 200]],
+        b: [['CHN', 'AS', 12, outputTokens]],
       },
     ],
   };
@@ -49,7 +49,7 @@ class ResizeObserverMock {
   unobserve() {}
 }
 
-function renderGlobe(onSelect = vi.fn(), metric: 'n' | 'tout' | 'gs' = 'n', data = response()) {
+function renderGlobe(onSelect = vi.fn(), metric: 'n' | 'tout' = 'n', data = response()) {
   render(
     <GlobeCanvas
       data={data}

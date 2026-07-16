@@ -16,7 +16,6 @@ interface DayBucket {
 
 function metricLabel(metric: GeoMetric): string {
   if (metric === 'tout') return 'output tokens';
-  if (metric === 'gs') return 'compute seconds (est.)';
   return 'requests';
 }
 

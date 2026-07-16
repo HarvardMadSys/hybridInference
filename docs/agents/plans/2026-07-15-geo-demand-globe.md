@@ -4,7 +4,7 @@
 
 **Goal:** Bring the standalone geo-temporal demand globe (research instrument, implemented as ops tooling on this branch) into the freeinference product as an admin page at `/dashboard/admin/analytics/geo`, backed by a live admin API — **without touching the `api_logs` schema or the request/logging write path**. The product surface is a demand observatory: it shows where FreeInference requests originate and how that demand moves over time, not where inference is served.
 
-**Architecture:** Two sequential, separately reviewable PRs. **PR A (backend):** a read-only admin endpoint `GET /admin/analytics/geo` that scans the requested `api_logs` window, resolves `metadata->>'ip'` through the offline DB-IP Country Lite database at query time, aggregates into the already-validated `data.json` contract, and caches the result in-process (hourly refresh). The deploy scripts refresh the monthly database before each build on a best-effort, atomic basis. **PR B (frontend, based on PR A):** a Next.js sub-route `analytics/geo` hosting a React port of the globe (route-level code split keeps d3/atlas out of the base Analytics bundle), plus a lightweight Geography entry card on the Analytics landing. A future phase (deliberately deferred) would prefer trusted Cloudflare country/continent headers at log time and use the local database as fallback; its triggers are listed at the end — do not implement it as part of this plan.
+**Architecture:** Two sequential, separately reviewable PRs. **PR A (backend):** a read-only admin endpoint `GET /admin/analytics/geo` that scans one of four supported `api_logs` windows (`days=7|14|30|90`), resolves `metadata->>'ip'` through the offline DB-IP Country Lite database at query time, emits a minimal demand-only product contract, and caches the result in-process (hourly refresh). The deploy scripts refresh the monthly database before each build on a best-effort, atomic basis. The richer `data.json` schema remains an offline research-export contract and is not returned by the product API. **PR B (frontend, based on PR A):** a Next.js sub-route `analytics/geo` hosting a React port of the demand globe (route-level code split keeps d3/atlas out of the base Analytics bundle), plus a lightweight Geography entry card on the Analytics landing. A future phase (deliberately deferred) would prefer trusted Cloudflare country/continent headers at log time and use the local database as fallback; its triggers are listed at the end — do not implement it as part of this plan.
 
 **Tech Stack:** Python 3.12, FastAPI, asyncpg/Postgres, DB-IP Country Lite data read by the generic `maxminddb` MMDB library, Next.js 15.5, React 18, TypeScript, d3 + topojson-client (new frontend dependencies), pytest, vitest.
 
@@ -58,14 +58,16 @@ Facts verified against the real system (2026-07-15):
 3. **The globe is request-origin only.** It has no provider nodes, serving routes, endpoint detail,
    external-API rail, or local/remote serving split. FreeInference is the service being observed;
    provider geography is neither needed for this question nor known accurately enough to plot.
-   The backend response may retain `providers` and flow rows for compatibility with the standalone
-   research artifact, but the product viewer deliberately ignores them.
+   The product API therefore emits no providers, endpoints, or flow rows. Those fields remain only
+   in the offline research export used by the standalone viewer.
 4. **Demand complementarity (range)** = `1 − global_peak / Σ per-continent peaks` on the selected
    metric. It describes how much continent-level demand peaks occur at different hours. It is not
    a capacity estimate and must not be labeled as pooling potential, transferable traffic, or a
    routing recommendation until real geographically distributed capacity telemetry exists.
-5. **Aggregates only ever leave the DB**: counts, token sums, latency percentiles, distinct-user
-   counts. No raw IPs, no user ids, no prompts in any API response or exported file.
+5. **Aggregates only ever leave the DB.** The product API emits request counts and output-token
+   sums only. The offline research export may additionally contain aggregate errors, token sums,
+   total request latency, latency percentiles, and distinct-user counts. No raw IPs, user ids, or
+   prompts appear in either artifact.
 6. **Continent colors are fixed slots** of the CVD-validated dark categorical palette
    (AS `#3987e5`, NA `#199e70`, EU `#c98500`, SA `#008300`, AF `#9085e9`, OC `#e66767`,
    unknown `#898781`); color follows the entity across filters. Ribbon carries line-end direct
@@ -75,18 +77,25 @@ Facts verified against the real system (2026-07-15):
    endpoint; the column migration is the riskiest kind of change in this repo (the five-place
    `api_logs` sync — see the future phase) and its real payoffs (SQL geo filters on the Requests tab, IP
    retention/TTL policy, frozen-at-observation resolution) are not prerequisites for this page.
+8. **Temporal playback preserves absolute magnitude.** Scales are fixed across the selected range,
+   not recomputed per hour or day: the globe uses the positive country-hour p99 and the ribbon uses
+   the positive continent-hour p99. Values above p99 are visually capped and the UI discloses that
+   cap. The two views share the rule but not one numeric upper bound. Absolute mode is the product
+   default; a future relative mode, if added, must be explicitly labeled.
 
-## Data contract (existing `data.json` shape → PR A response body)
+## Data contracts
 
-Produced today by `geo_hourly_export.py`; consumed today by `geo_globe.html`. PR A uses this compact
-columnar shape and retains serving-endpoint attribution in flow rows for compatibility with the
-standalone research viewer. The product viewer only consumes `meta`, `bucket_cols`, `hours_index`,
-and each hour's `b` rows; it does not visualize or calculate from `providers` or `f` rows.
+### Minimal product API
+
+`GET /admin/analytics/geo?days=14` accepts only `days=7|14|30|90`; it has no arbitrary
+`since`/`until` query. This keeps the cache/query surface bounded to four supported windows. The
+response is demand-only and intentionally omits alpha-2 country codes, users, error and latency
+diagnostics, providers, endpoints, and flow rows.
 
 ```jsonc
 {
   "meta": {
-    "source": "api_logs",              // or "synthetic-demo"
+    "source": "api_logs",
     "generated_at": "ISO-8601",
     "start": "ISO-8601 first hour",
     "hours": 720,
@@ -102,6 +111,24 @@ and each hour's `b` rows; it does not visualize or calculate from `providers` or
     "unmapped_alpha2": [],
     "notes": ["..."]
   },
+  "bucket_cols": ["c","cont","n","tout"],
+  "hours_index": ["ISO-8601", "..."],   // one entry per hour, gaps included
+  "hours": [{"b": [["USA","NA",123,45678]]}]
+}
+```
+
+Product row semantics: `c` ISO-3166 alpha-3 (`?XX` when unmapped, `?` when unknown), `cont` MMDB
+continent code, `n` requests, and `tout` output tokens. Synthetic probes are excluded even when the
+deployment enables probe logging.
+
+### Rich offline research export
+
+`geo_hourly_export.py` continues to accept arbitrary `--days`, `--since`, and `--until` values and
+emits the richer `data.json` used by `geo_globe.html`:
+
+```jsonc
+{
+  "meta": {"source": "api_logs", "...": "same provenance fields as above"},
   "bucket_cols": ["c","cc","cont","n","err","users","tin","tout","gs","p50","p90"],
   "flow_cols": ["c","p","e","n"],
   "providers": [{
@@ -112,17 +139,17 @@ and each hour's `b` rows; it does not visualize or calculate from `providers` or
     "cont": "NA",
     "coord": [-71.09, 42.36]
   }],
-  "hours_index": ["ISO-8601", "..."],   // one entry per hour, gaps included
-  "hours": [{"b": [[...bucket rows]], "f": [[...flow rows]]}]
+  "hours_index": ["ISO-8601", "..."],
+  "hours": [{"b": [[...rich bucket rows]], "f": [[...flow rows]]}]
 }
 ```
 
-Row semantics: `c` ISO-3166 alpha-3 (`?XX` when unmapped, `?` when unknown), `cc` alpha-2, `cont`
-MMDB continent code, `n` requests, `err` errored requests, `users` distinct non-null
-`user_id`s, `tin`/`tout` prompt/completion tokens, `gs` Σ `latency_ms`/1000 (compute-time estimate),
-`p50`/`p90` TTFT ms (nearest-rank, null when no samples). In flow rows, `p` is the provider label
-and `e` is `served_endpoint_id` (falling back to `p` for older rows); flows from distinct serving
-endpoints are not merged even when they share a provider.
+Research-only row semantics add `cc` alpha-2, `err` errored requests, `users` distinct non-null
+`user_id`s, `tin` prompt tokens, `gs` Σ `latency_ms`/1000 (total request latency seconds), and
+`p50`/`p90` TTFT ms. In flow rows, `p` is the provider label and `e` is `served_endpoint_id`
+(falling back to `p` for older rows); endpoints are not merged when they share a provider. The
+research query applies the same synthetic-probe exclusion as the product API. The standalone
+viewer accepts either contract: product data naturally leaves provider/flow/diagnostic views empty.
 
 ---
 
@@ -163,28 +190,31 @@ endpoints are not merged even when they share a provider.
 - Modify: `apps/backend/serving/servers/routers/admin/analytics.py` (or sibling router file)
 - Test: `tests/unit/analytics/test_geo_demand.py`, `tests/api/admin/test_geo_endpoint.py`
 
-- [x] Aggregation: stream `SELECT date_trunc('hour', timestamp), metadata->>'ip', provider,
-  served_endpoint_id, prompt_tokens, completion_tokens, latency_ms, ttft_ms,
-  (error IS NOT NULL OR COALESCE(status_code,200) >= 400), user_id FROM api_logs
-  WHERE timestamp >= $1 AND timestamp < $2`
-  with a server-side cursor; resolve IPs via `GeoResolver` (per-IP cache); emit the contract above.
-  Reuse/port `_Bucket`, `_percentile`, `_finalize` from the exporter rather than re-deriving.
-- [x] Query params: `days` (default 14, max 90), optional `since`/`until` ISO. Admin-role auth,
-  same dependency as the sibling admin analytics endpoint.
-- [x] **In-process cache**: key `(since_floor, until_floor)` quantized to the hour; TTL 1h;
+- [x] Aggregation: stream hourly timestamp, `metadata->>'ip'`, and `completion_tokens` from
+  `api_logs` over the selected range with a server-side cursor; explicitly exclude
+  `metadata.synthetic_probe=true`; resolve IPs via `GeoResolver` (per-IP cache); emit the minimal
+  product contract above.
+- [x] Query params: `days` enum `{7,14,30,90}` (default 14), with no product `since`/`until`.
+  Admin-role auth uses the same dependency as the sibling admin analytics endpoint.
+- [x] **In-process cache**: key the supported window and hour-quantized end; TTL 1h;
   a single-flight task so concurrent dashboard opens don't fan out N scans. Response carries
   `meta.generated_at` so the UI can show staleness.
-- [x] Provider site metadata: move `PROVIDER_SITES` from the exporter into the util module
-  (single source; exporter imports it). Follow-up (out of scope): promote to `config/`.
 - [x] Update the route snapshot test deliberately with the endpoint.
 
-### Task 3: exporter dedup
+### Task 3: keep research export separate
 
 **Files:**
 - Modify: `ops/db/analysis/geo_hourly_export.py`
+- Modify: `ops/db/analysis/geo_globe.html`
+- Test: `tests/unit/analytics/test_geo_exporter.py`
 
-- [x] Replace the exporter's inlined resolver/site tables with imports from
-  `serving.utils.geo_resolver`; `--demo` and CSV behavior unchanged. Re-run
+- [x] Share only `GeoResolver` and the alpha-2/alpha-3 country mapping with serving code. Keep the
+  richer bucket/flow aggregation and `PROVIDER_SITES` in the research exporter so the product API
+  carries no serving-side contract baggage.
+- [x] Apply the same synthetic-probe exclusion as the product API; retain arbitrary research
+  `--days`, `--since`, `--until`, demo, and CSV behavior.
+- [x] Make the standalone viewer tolerate the minimal product API (missing diagnostic columns,
+  providers, and flows render empty) and label `gs` as total latency rather than compute time. Re-run
   `uv run python ops/db/analysis/geo_hourly_export.py --demo --out /dev/null` as regression.
 
 ### Task 4: deployment data + post-merge staging verification (gate for starting PR B)
@@ -199,7 +229,7 @@ endpoints are not merged even when they share a provider.
   Bearer ...' '<staging>/admin/analytics/geo?days=7' -o data.json`), then serve `data.json` beside
   `ops/db/analysis/geo_globe.html` locally. A localhost viewer cannot rely on staging cookies and
   its bare cross-origin `fetch()` may be blocked by CORS. This is the zero-frontend real-data
-  go/no-go artifact.
+  go/no-go artifact; the standalone viewer must load the minimal product contract without errors.
 
 ## PR B — frontend Geography page
 
@@ -230,6 +260,9 @@ endpoints are not merged even when they share a provider.
   from `meta.source`. Do not port provider nodes, serving routes, external-API rail, serving split,
   endpoint detail, or the flow-animation control.
 - [x] Adapt: cards/typography/buttons to the app's design tokens; the globe stage may stay dark.
+- [ ] Use stable range-wide absolute p99 domains: positive country-hour values for globe dots and
+  positive continent-hour values for ribbon lines. Visually cap larger outliers and disclose the
+  p99 cap so playback never renormalizes away real changes in magnitude.
 - [x] Loading/error/staleness states (`meta.generated_at`), and an "unlocated %" stat — keep the
   honesty affordances.
 - [x] When `meta.geoip.provider === 'dbip-lite'`, render the clickable attribution
@@ -257,6 +290,8 @@ endpoints are not merged even when they share a provider.
   prod for ≥14 days of history and check whether demand shows time-zone-separated peaks across
   continents. If the primary continent x time signal collapses, stop at PR A (the endpoint still
   powers future geo analytics) and reassess.
+- [ ] On staging, play the complete 14-day range and confirm globe bubbles and continent ribbons
+  remain quantitatively comparable across hours rather than rescaling per frame.
 
 ## Future phase — deferred: log-time geo enrichment (do NOT do now)
 

@@ -52,14 +52,14 @@ function response(overrides: Partial<GeoAnalyticsResponse['meta']> = {}): GeoAna
       notes: [],
       ...overrides,
     },
-    bucket_cols: ['c', 'cc', 'cont', 'n', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'],
+    bucket_cols: ['c', 'cont', 'n', 'tout'],
     hours_index: ['2026-07-15T00:00:00+00:00', '2026-07-15T01:00:00+00:00'],
     hours: [
       { b: [] },
       {
         b: [
-          ['USA', 'US', 'NA', 10, 0, 4, 100, 80, 12, 200, 500],
-          ['?', '?', '?', 4, 0, 1, 20, 10, 3, null, null],
+          ['USA', 'NA', 10, 80],
+          ['?', '?', 4, 10],
         ],
       },
     ],
@@ -119,6 +119,9 @@ describe('GeoGlobe', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '▶ Play' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Metric' })).toHaveValue('n');
+    expect(screen.getByRole('option', { name: 'Requests' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Output tokens' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Compute/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'OC' })).toBeInTheDocument();
     expect(
       screen.getByText(/Origin = network origin \(IP-based\), not residence/),
@@ -139,7 +142,8 @@ describe('GeoGlobe', () => {
 
     expect(screen.getByText('United States · N. America')).toBeInTheDocument();
     expect(screen.getByText(/10 requests this hour/)).toBeInTheDocument();
-    expect(screen.getByText(/4 distinct users · 80 output tokens/)).toBeInTheDocument();
+    expect(screen.getByText('80 output tokens')).toBeInTheDocument();
+    expect(screen.queryByText(/distinct users|p90 TTFT/i)).not.toBeInTheDocument();
     expect(document.querySelector('.geo-demand-flow')).not.toBeInTheDocument();
     expect(screen.queryByText(/provider/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Serving split')).not.toBeInTheDocument();
@@ -226,30 +230,6 @@ describe('GeoGlobe', () => {
       await screen.findByRole('group', { name: /Globe of IP-based request origins/ }),
     ).toBeInTheDocument();
     await waitFor(() => expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2));
-  });
-
-  it('shows a controlled error for a malformed API response', async () => {
-    mockedGetGeoAnalytics.mockResolvedValue({
-      ...response(),
-      hours: undefined,
-    } as unknown as GeoAnalyticsResponse);
-    render(<GeoGlobe />);
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'The geographic demand response has an invalid structure',
-    );
-  });
-
-  it('shows a controlled error when nested metadata is malformed', async () => {
-    mockedGetGeoAnalytics.mockResolvedValue({
-      ...response(),
-      meta: undefined,
-    } as unknown as GeoAnalyticsResponse);
-    render(<GeoGlobe />);
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'The geographic demand response has an invalid structure',
-    );
   });
 
   it('shows an empty state for a successful window with no requests', async () => {

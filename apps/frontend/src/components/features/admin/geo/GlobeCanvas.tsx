@@ -115,7 +115,6 @@ export function atlasCountryName(atlas: PreparedAtlas, alpha3: string): string {
 
 function metricLabel(metric: GeoMetric): string {
   if (metric === 'tout') return 'output tokens';
-  if (metric === 'gs') return 'compute seconds';
   return 'requests';
 }
 
@@ -148,7 +147,6 @@ interface CountryDot {
   continent: string;
   value: number;
   requests: number;
-  users: number;
   coordinate: [number, number];
 }
 
@@ -347,7 +345,6 @@ export function GlobeCanvas({
     const countryPosition = bucketIndex.c;
     const continentPosition = bucketIndex.cont;
     const requestPosition = bucketIndex.n;
-    const usersPosition = bucketIndex.users;
     const metricPosition = bucketIndex[metric];
     const countryValues = new Map<string, Omit<CountryDot, 'coordinate'>>();
     for (const row of data.hours[hourIndex]?.b ?? []) {
@@ -357,11 +354,9 @@ export function GlobeCanvas({
         continent: String(row[continentPosition] ?? '?'),
         value: 0,
         requests: 0,
-        users: 0,
       };
       existing.value += positiveNumber(row[metricPosition]);
       existing.requests += positiveNumber(row[requestPosition]);
-      existing.users += positiveNumber(row[usersPosition]);
       countryValues.set(country, existing);
     }
     const dots: CountryDot[] = [...countryValues.values()]

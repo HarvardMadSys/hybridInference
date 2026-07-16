@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { GeoAnalyticsResponse, GeoBucketColumn, GeoBucketRow } from '@/lib/api/admin';
+import type { GeoAnalyticsResponse, GeoBucketRow } from '@/lib/api/admin';
 import {
   CONTINENT_COLORS,
   buildColumnIndex,
@@ -10,40 +10,15 @@ import {
   rangeDemandComplementarity,
 } from './geoMath';
 
-const BUCKET_COLS: GeoBucketColumn[] = [
-  'c',
-  'cc',
-  'cont',
-  'n',
-  'err',
-  'users',
-  'tin',
-  'tout',
-  'gs',
-  'p50',
-  'p90',
-];
+const BUCKET_COLS: GeoAnalyticsResponse['bucket_cols'] = ['c', 'cont', 'n', 'tout'];
 
 function bucket(
   country: string,
   continent: string,
   requests: number,
   outputTokens = requests * 10,
-  computeSeconds = requests * 2,
 ): GeoBucketRow {
-  return [
-    country,
-    country.startsWith('?') ? '?' : country.slice(0, 2),
-    continent,
-    requests,
-    0,
-    requests,
-    requests * 5,
-    outputTokens,
-    computeSeconds,
-    100,
-    200,
-  ];
+  return [country, continent, requests, outputTokens];
 }
 
 function makeData(hours: Array<{ b: GeoBucketRow[] }>): GeoAnalyticsResponse {
@@ -68,23 +43,12 @@ function makeData(hours: Array<{ b: GeoBucketRow[] }>): GeoAnalyticsResponse {
 }
 
 describe('geo column contract', () => {
-  it('builds indices from the response rather than assuming column positions', () => {
-    const data = makeData([{ b: [] }]);
-    data.bucket_cols = ['n', 'c', 'cont', 'cc', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'];
-    data.hours[0].b = [
-      [7, 'SGP', 'AS', 'SG', 0, 1, 10, 20, 2, null, null] as unknown as GeoBucketRow,
-    ];
+  it('builds indices for the compact request-demand contract', () => {
+    const data = makeData([{ b: [bucket('SGP', 'AS', 7, 20)] }]);
 
-    expect(buildColumnIndex(data.bucket_cols)).toMatchObject({ n: 0, c: 1, cont: 2 });
+    expect(buildColumnIndex(data.bucket_cols)).toEqual({ c: 0, cont: 1, n: 2, tout: 3 });
     expect(buildContinentSeries(data, 'n').get('AS')).toEqual([7]);
     expect(buildCountryContinentMap(data)).toEqual(new Map([['SGP', 'AS']]));
-  });
-
-  it('fails clearly when a required column is absent', () => {
-    const data = makeData([{ b: [bucket('SGP', 'AS', 7)] }]);
-    data.bucket_cols = data.bucket_cols.filter((column) => column !== 'tout');
-
-    expect(() => buildContinentSeries(data, 'tout')).toThrow('missing the tout column');
   });
 });
 
@@ -168,7 +132,7 @@ describe('currentHourStats', () => {
   it('returns finite zero fractions for an empty or out-of-range hour', () => {
     const data = makeData([{ b: [] }]);
 
-    expect(currentHourStats(data, 0, 'gs')).toMatchObject({
+    expect(currentHourStats(data, 0, 'tout')).toMatchObject({
       totalRequests: 0,
       locatedFraction: 0,
       unlocatedFraction: 0,
@@ -176,7 +140,7 @@ describe('currentHourStats', () => {
       activeContinents: 0,
       topContinent: null,
     });
-    expect(currentHourStats(data, 4, 'gs')).toMatchObject({
+    expect(currentHourStats(data, 4, 'tout')).toMatchObject({
       totalRequests: 0,
       demandComplementarity: 0,
     });

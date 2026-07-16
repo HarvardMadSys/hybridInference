@@ -27,7 +27,6 @@ const STALE_AFTER_MS = 2 * HOUR_MS;
 const metricOptions: { value: GeoMetric; label: string }[] = [
   { value: 'n', label: 'Requests' },
   { value: 'tout', label: 'Output tokens' },
-  { value: 'gs', label: 'Compute seconds (est.)' },
 ];
 
 const viewPresets: { label: string; rotation: [number, number] }[] = [
@@ -38,54 +37,6 @@ const viewPresets: { label: string; rotation: [number, number] }[] = [
   { label: 'AF', rotation: [-20, -3] },
   { label: 'OC', rotation: [-145, 25] },
 ];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function validateResponse(data: unknown): asserts data is GeoAnalyticsResponse {
-  if (
-    !isRecord(data) ||
-    !isRecord(data.meta) ||
-    !isRecord(data.meta.geoip) ||
-    !Array.isArray(data.bucket_cols) ||
-    !isStringArray(data.hours_index) ||
-    !Array.isArray(data.hours) ||
-    typeof data.meta.source !== 'string' ||
-    typeof data.meta.generated_at !== 'string' ||
-    typeof data.meta.rows_total !== 'number' ||
-    !Number.isFinite(data.meta.rows_total) ||
-    data.meta.rows_total < 0 ||
-    typeof data.meta.degraded !== 'boolean' ||
-    !isStringArray(data.meta.degraded_reasons) ||
-    !isStringArray(data.meta.unmapped_alpha2) ||
-    typeof data.meta.geoip.country !== 'boolean' ||
-    !(data.meta.geoip.provider === null || typeof data.meta.geoip.provider === 'string') ||
-    !(
-      data.meta.geoip.attribution === null ||
-      (isRecord(data.meta.geoip.attribution) &&
-        typeof data.meta.geoip.attribution.label === 'string' &&
-        typeof data.meta.geoip.attribution.url === 'string')
-    ) ||
-    !data.hours.every(
-      (hour) => isRecord(hour) && Array.isArray(hour.b) && hour.b.every(Array.isArray),
-    )
-  ) {
-    throw new Error('The geographic demand response has an invalid structure');
-  }
-  const bucketColumns = ['c', 'cc', 'cont', 'n', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'];
-  const actualBucketColumns = new Set<string>(data.bucket_cols);
-  if (!bucketColumns.every((column) => actualBucketColumns.has(column))) {
-    throw new Error('The geographic demand response is missing required bucket columns');
-  }
-  if (data.hours_index.length !== data.hours.length) {
-    throw new Error('The geographic demand response has mismatched hourly data');
-  }
-}
 
 function formatCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -178,12 +129,7 @@ function SelectionPanel({
     (row) => String(row[bucketIndex.c] ?? '') === selection.country,
   );
   const requests = rows.reduce((sum, row) => sum + Number(row[bucketIndex.n] ?? 0), 0);
-  const users = rows.reduce((sum, row) => sum + Number(row[bucketIndex.users] ?? 0), 0);
   const outputTokens = rows.reduce((sum, row) => sum + Number(row[bucketIndex.tout] ?? 0), 0);
-  const p90Values = rows
-    .map((row) => row[bucketIndex.p90])
-    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-  const p90 = p90Values.length ? Math.max(...p90Values) : null;
   const continent = String(rows[0]?.[bucketIndex.cont] ?? '?');
   const coordinate = atlas.coordinates.get(selection.country);
   const selectedTime = new Date(data.hours_index[hourIndex]);
@@ -207,10 +153,7 @@ function SelectionPanel({
           {formatCount(requests)} requests this hour
           {localHour === null ? '' : ` · ~${String(localHour).padStart(2, '0')}:00 local`}
         </p>
-        <p>
-          {formatCount(users)} distinct users · {formatCount(outputTokens)} output tokens
-        </p>
-        {p90 !== null && <p>p90 TTFT {(p90 / 1_000).toFixed(2)} s</p>}
+        <p>{formatCount(outputTokens)} output tokens</p>
       </div>
     </section>
   );
@@ -410,8 +353,8 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
             ` · unmapped alpha-2: ${data.meta.unmapped_alpha2.join(', ')}`}
         </p>
         <p>
-          Origin = network origin (IP-based), not residence · compute seconds = summed server
-          latency (estimate) · country local times are approximate (longitude-based)
+          Origin = network origin (IP-based), not residence · country local times are approximate
+          (longitude-based)
         </p>
       </footer>
     </div>
@@ -438,7 +381,6 @@ export function GeoGlobe() {
     ])
       .then(([nextData, nextAtlas]) => {
         if (controller.signal.aborted) return;
-        validateResponse(nextData);
         setData(nextData);
         setAtlas(nextAtlas);
         setLoading(false);

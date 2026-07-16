@@ -20,10 +20,10 @@ function response(hoursIndex: string[]): GeoAnalyticsResponse {
       unmapped_alpha2: [],
       notes: [],
     },
-    bucket_cols: ['c', 'cc', 'cont', 'n', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'],
+    bucket_cols: ['c', 'cont', 'n', 'tout'],
     hours_index: hoursIndex,
     hours: hoursIndex.map((_, index) => ({
-      b: [['USA', 'US', 'NA', index + 1, 0, 1, 0, index + 1, index + 1, null, null]],
+      b: [['USA', 'NA', index + 1, index + 1]],
     })),
   };
 }
