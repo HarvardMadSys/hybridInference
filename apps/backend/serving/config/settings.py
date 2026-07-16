@@ -7,7 +7,7 @@ All environment variables are centralized here for easy tracking and testing.
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 
@@ -130,6 +130,20 @@ class Settings(BaseSettings):
     failed_request_alert_threshold: int = Field(default=20, ge=0)
     failed_request_alert_window_minutes: int = Field(default=5, ge=1)
     failed_request_alert_cooldown_minutes: int = Field(default=5, ge=0)
+
+    # Config file paths. Canonical env names are MODELS_CONFIG_PATH /
+    # ROUTING_CONFIG_PATH; the legacy MODELS_CONFIG / ROUTING_CONFIG names stay
+    # honored, with the canonical name winning when both are set. Empty string
+    # means "not configured": callers warn when an explicit override points at
+    # a missing file, but skip the config/*.yaml defaults silently.
+    models_config_path: str = Field(
+        default="",
+        validation_alias=AliasChoices("MODELS_CONFIG_PATH", "MODELS_CONFIG"),
+    )
+    routing_config_path: str = Field(
+        default="",
+        validation_alias=AliasChoices("ROUTING_CONFIG_PATH", "ROUTING_CONFIG"),
+    )
 
     # Alerting framework
     alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")

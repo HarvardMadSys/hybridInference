@@ -379,7 +379,7 @@ async def _init_router_and_models(
 
     # Load models from YAML configuration
     try:
-        models_env = os.getenv("MODELS_CONFIG")
+        models_env = get_settings().models_config_path
         models_path = Path(models_env or "config/models.yaml")
         if models_env and not models_path.exists():
             logger.warning(f"Models config not found: {models_path}")
@@ -411,7 +411,7 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
         otherwise None.
     """
     try:
-        routing_env = os.getenv("ROUTING_CONFIG")
+        routing_env = get_settings().routing_config_path
         routing_cfg_path = Path(routing_env or "config/routing.yaml")
         if routing_env and not routing_cfg_path.exists():
             logger.warning(f"Routing config not found: {routing_cfg_path}")
@@ -571,7 +571,7 @@ async def initialize() -> AppServices:
     try:
         from routing.config import load_routing_config
 
-        routing_env = os.getenv("ROUTING_CONFIG")
+        routing_env = get_settings().routing_config_path
         routing_cfg_path = Path(routing_env or "config/routing.yaml")
         if routing_cfg_path.exists():
             routing_cfg = load_routing_config(routing_cfg_path)
