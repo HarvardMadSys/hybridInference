@@ -133,16 +133,20 @@ class Settings(BaseSettings):
 
     # Config file paths. Canonical env names are MODELS_CONFIG_PATH /
     # ROUTING_CONFIG_PATH; the legacy MODELS_CONFIG / ROUTING_CONFIG names stay
-    # honored, with the canonical name winning when both are set. Empty string
-    # means "not configured": callers warn when an explicit override points at
-    # a missing file, but skip the config/*.yaml defaults silently.
+    # honored, with the canonical name winning when both are set. The field
+    # name itself is the last alias so Settings(models_config_path=...) works
+    # in tests. Empty string means "not configured": callers warn when an
+    # explicit override points at a missing file, but skip the config/*.yaml
+    # defaults silently.
     models_config_path: str = Field(
         default="",
-        validation_alias=AliasChoices("MODELS_CONFIG_PATH", "MODELS_CONFIG"),
+        validation_alias=AliasChoices("MODELS_CONFIG_PATH", "MODELS_CONFIG", "models_config_path"),
     )
     routing_config_path: str = Field(
         default="",
-        validation_alias=AliasChoices("ROUTING_CONFIG_PATH", "ROUTING_CONFIG"),
+        validation_alias=AliasChoices(
+            "ROUTING_CONFIG_PATH", "ROUTING_CONFIG", "routing_config_path"
+        ),
     )
 
     # Alerting framework
