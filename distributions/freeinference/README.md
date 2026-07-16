@@ -51,6 +51,15 @@ distributions/freeinference/
   targets/            # harness/e2e site targets
 ```
 
+Two temporary states to be aware of:
+
+- The `../../config/*.yaml` cross-root aliases are a **Phase 1 expedient
+  only**: once Phase 2 moves the real config in here, `paths:` must point
+  inside the overlay — the directory is the future visibility boundary and
+  must not reach outside itself.
+- `site:` / `features:` in the manifest are declarations only for now:
+  exposed read-only via `GET /site-config`, wired to no runtime behavior.
+
 ## Rules
 
 - Upstream code must never import from this directory (design principle 2).
