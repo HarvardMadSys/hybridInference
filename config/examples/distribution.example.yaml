@@ -7,8 +7,12 @@
 #
 # Config-path precedence: explicit env vars (MODELS_CONFIG_PATH etc.) win
 # over `paths:` below, which wins over the legacy config/*.yaml defaults.
-# DISTRIBUTION_CONFIG_MODE=dark loads and validates this file and logs what
-# would change, while legacy resolution stays effective.
+# DISTRIBUTION_CONFIG_MODE defaults to "dark": this file loads and validates,
+# and divergence is logged, while current resolution stays effective.
+# Applying `paths:` requires an explicit DISTRIBUTION_CONFIG_MODE=active.
+#
+# `site:` and `features:` are declarations only for now — they are exposed
+# read-only via GET /site-config but wired to no runtime behavior yet.
 #
 # Do not put secrets here — credentials stay in the environment. Relative
 # `paths:` entries resolve against this file's directory.

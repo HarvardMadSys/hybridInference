@@ -13,9 +13,12 @@ precedence, per the design doc's compatibility rules:
 The loader is opt-in (``DISTRIBUTION_CONFIG_PATH`` unset means pure legacy
 behavior) and fail-open: a broken manifest logs an error and the process
 falls back to legacy resolution instead of refusing to start.
-``DISTRIBUTION_CONFIG_MODE=dark`` loads and validates the manifest and logs
-what WOULD change while legacy resolution stays effective — the DARK_LOADED /
-SHADOW_COMPARE migration states from the design doc.
+``DISTRIBUTION_CONFIG_MODE`` defaults to ``dark``: the manifest loads,
+validates, and logs what WOULD change while current resolution stays
+effective — the DARK_LOADED / SHADOW_COMPARE migration states from the
+design doc. Applying manifest paths requires an explicit
+``DISTRIBUTION_CONFIG_MODE=active``, so setting only the path can never
+change behavior.
 
 ``site:`` and ``features:`` are parsed and validated here but not yet
 consumed; the frontend site-config endpoint wires them up in a later PR.
@@ -166,6 +169,14 @@ def get_distribution_config() -> DistributionConfig | None:
         f"release={config.distribution.release!r} "
         f"mode={get_settings().distribution_config_mode!r}"
     )
+    if not _env_has("DISTRIBUTION_CONFIG_MODE"):
+        _log_once(
+            ("mode-defaulted",),
+            "DISTRIBUTION_CONFIG_PATH is set but DISTRIBUTION_CONFIG_MODE is "
+            "not: defaulting to 'dark' (manifest compared, not applied). Set "
+            "DISTRIBUTION_CONFIG_MODE=active to apply manifest paths.",
+            level="warning",
+        )
     return config
 
 
@@ -211,10 +222,21 @@ def _effective_mode() -> str:
     return "dark"
 
 
+def _env_has(name: str) -> bool:
+    """Case-insensitive os.environ presence check.
+
+    Settings runs with ``case_sensitive=False``, so ``alerts_config_path=x``
+    in the environment reaches pydantic; an exact-case ``in os.environ`` test
+    would miss it and let the manifest shadow an explicit override.
+    """
+    upper = name.upper()
+    return any(key.upper() == upper for key in os.environ)
+
+
 def _env_override(kind: ConfigKind) -> str:
     settings = get_settings()
     value: str = getattr(settings, f"{kind}_config_path")
-    if kind == "alerts" and "ALERTS_CONFIG_PATH" not in os.environ:
+    if kind == "alerts" and not _env_has("ALERTS_CONFIG_PATH"):
         # alerts_config_path predates this module and its Settings default is
         # the legacy path instead of "". Explicitness therefore comes from the
         # variable actually being present in the environment — an operator who

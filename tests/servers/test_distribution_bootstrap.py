@@ -34,6 +34,7 @@ async def test_manifest_models_path_registers_routes(monkeypatch, tmp_path):
     for var in ("MODELS_CONFIG", "MODELS_CONFIG_PATH"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
 
     router = RouteExecutor()
     _embedding, infos = await bootstrap._init_router_and_models(router)
@@ -48,6 +49,7 @@ async def test_env_var_beats_manifest_in_bootstrap(monkeypatch, tmp_path):
     env_models = tmp_path / "env-models.yaml"
     env_models.write_text(MODELS_YAML.replace("dist-model", "env-model"))
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("MODELS_CONFIG", str(env_models))
 
     router = RouteExecutor()

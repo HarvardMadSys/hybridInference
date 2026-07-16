@@ -156,6 +156,7 @@ def test_unset_manifest_means_legacy_resolution():
 def test_manifest_path_used_when_env_unset(monkeypatch, tmp_path):
     manifest = _write_manifest(tmp_path)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     resolved = resolve_config_path("models")
     assert resolved.source == "distribution"
     assert resolved.path == (tmp_path / "config/models.yaml").resolve()
@@ -164,6 +165,7 @@ def test_manifest_path_used_when_env_unset(monkeypatch, tmp_path):
 def test_env_var_wins_over_manifest(monkeypatch, tmp_path):
     manifest = _write_manifest(tmp_path)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("MODELS_CONFIG_PATH", "env/models.yaml")
     resolved = resolve_config_path("models")
     assert resolved.source == "env"
@@ -183,6 +185,7 @@ def test_manifest_without_entry_falls_back_to_default(monkeypatch, tmp_path):
 def test_alerts_explicit_env_wins_even_at_default_value(monkeypatch, tmp_path):
     manifest = _write_manifest(tmp_path, MANIFEST + "  alerts: ./config/alerts-dist.yaml\n")
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     # Explicitly present in the environment counts as an override even when
     # the value equals the legacy default: env > manifest.
     monkeypatch.setenv("ALERTS_CONFIG_PATH", "config/alerts.yaml")
@@ -238,3 +241,23 @@ def test_mode_is_case_insensitive(monkeypatch, tmp_path):
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "Active")
     get_settings.cache_clear()
     assert resolve_config_path("models").source == "distribution"
+
+
+def test_default_mode_is_dark(monkeypatch, tmp_path):
+    """Setting only the path can never change behavior: dark by default."""
+    manifest = _write_manifest(tmp_path)
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    resolved = resolve_config_path("models")
+    assert resolved.source == "default"
+    assert get_distribution_config() is not None
+
+
+def test_alerts_lowercase_env_var_counts_as_explicit(monkeypatch, tmp_path):
+    """Settings is case-insensitive; the presence check must be too."""
+    manifest = _write_manifest(tmp_path, MANIFEST + "  alerts: ./config/alerts-dist.yaml\n")
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+    monkeypatch.setenv("alerts_config_path", "custom/alerts.yaml")
+    resolved = resolve_config_path("alerts")
+    assert resolved.source == "env"
+    assert resolved.path == Path("custom/alerts.yaml")
