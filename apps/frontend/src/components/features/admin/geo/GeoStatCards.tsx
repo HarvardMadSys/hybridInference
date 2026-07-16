@@ -26,7 +26,13 @@ function StatCard({
   titleText?: string;
 }) {
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4" title={titleText}>
+    <div
+      aria-description={titleText}
+      aria-label={titleText ? `${title}: ${value}` : undefined}
+      className="rounded-xl border border-gray-200 bg-white p-4"
+      role={titleText ? 'group' : undefined}
+      title={titleText}
+    >
       <p className="text-xs font-medium text-gray-500">{title}</p>
       <p className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">{value}</p>
       <p className="mt-1 text-xs text-gray-500">{detail}</p>
@@ -40,13 +46,18 @@ export function GeoStatCards({ stats }: { stats: CurrentHourStats }) {
     .slice(1, 4)
     .map(({ continent, fraction }) => `${continent} ${formatPercent(fraction)}`)
     .join(' · ');
+  const originMixDetail = top
+    ? remainder || 'single-continent hour'
+    : stats.totalRequests
+      ? 'no located volume for selected metric'
+      : 'no demand this hour';
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard
         title="Requests in hour"
         value={formatCount(stats.totalRequests)}
-        detail={`${stats.activeCountries} countries · ${formatPercent(stats.unlocatedFraction)} unlocated`}
+        detail={`${stats.activeCountries} countries · ${stats.activeContinents} continents`}
       />
       <StatCard
         title="Origin mix"
@@ -55,22 +66,18 @@ export function GeoStatCards({ stats }: { stats: CurrentHourStats }) {
             ? `${CONTINENT_NAMES[top.continent] ?? top.continent} ${formatPercent(top.fraction)}`
             : '—'
         }
-        detail={remainder || 'single-continent hour'}
+        detail={originMixDetail}
       />
       <StatCard
-        title="Serving split"
-        value={stats.servingTotal ? `${formatPercent(stats.externalFraction)} external` : '—'}
-        detail={
-          stats.servingTotal
-            ? `local same-cont ${formatPercent(stats.localSameContinentFraction)} · cross-cont ${formatPercent(stats.localCrossContinentFraction)}`
-            : 'no flows'
-        }
+        title="Located coverage"
+        value={stats.totalRequests ? formatPercent(stats.locatedFraction) : '—'}
+        detail={`${formatCount(stats.locatedRequests)} located · ${formatPercent(stats.unlocatedFraction)} unlocated`}
       />
       <StatCard
-        title="Pooling potential"
-        value={formatPercent(stats.poolingPotential)}
-        detail={`${stats.continentCount} continents · transferable now ${formatPercent(stats.transferableFraction)}`}
-        titleText="Range-wide: 1 − global peak / sum of regional peaks. Transferable uses each continent's range mean as a provisional capacity proxy."
+        title="Demand complementarity"
+        value={formatPercent(stats.demandComplementarity)}
+        detail={`Peak timing offset across ${stats.observedContinents} continents · not capacity`}
+        titleText="How much continent demand peaks are offset across the loaded range: 1 − global peak / sum of continent peaks. This describes demand timing only, not routable capacity."
       />
     </div>
   );

@@ -350,7 +350,7 @@ export function AnalyticsTab() {
           <CardTitle>Geography</CardTitle>
           <p className="mt-1 text-[15px] font-semibold text-gray-900">Geo-temporal demand globe</p>
           <p className="mt-1 text-xs leading-5 text-gray-500">
-            Explore network origin (IP-based), hourly demand, and serving flows across regions.
+            Explore request origins (IP-based) and hourly demand shifting across regions.
           </p>
         </div>
         <span className="shrink-0 text-[13px] font-medium text-gray-700 transition group-hover:translate-x-0.5 group-hover:text-gray-900">

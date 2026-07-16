@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bring the standalone geo-temporal demand globe (research instrument, implemented as ops tooling on this branch) into the freeinference product as an admin page at `/dashboard/admin/analytics/geo`, backed by a live admin API — **without touching the `api_logs` schema or the request/logging write path**.
+**Goal:** Bring the standalone geo-temporal demand globe (research instrument, implemented as ops tooling on this branch) into the freeinference product as an admin page at `/dashboard/admin/analytics/geo`, backed by a live admin API — **without touching the `api_logs` schema or the request/logging write path**. The product surface is a demand observatory: it shows where FreeInference requests originate and how that demand moves over time, not where inference is served.
 
 **Architecture:** Two sequential, separately reviewable PRs. **PR A (backend):** a read-only admin endpoint `GET /admin/analytics/geo` that scans the requested `api_logs` window, resolves `metadata->>'ip'` through the offline DB-IP Country Lite database at query time, aggregates into the already-validated `data.json` contract, and caches the result in-process (hourly refresh). The deploy scripts refresh the monthly database before each build on a best-effort, atomic basis. **PR B (frontend, based on PR A):** a Next.js sub-route `analytics/geo` hosting a React port of the globe (route-level code split keeps d3/atlas out of the base Analytics bundle), plus a lightweight Geography entry card on the Analytics landing. A future phase (deliberately deferred) would prefer trusted Cloudflare country/continent headers at log time and use the local database as fallback; its triggers are listed at the end — do not implement it as part of this plan.
 
@@ -55,13 +55,15 @@ Facts verified against the real system (2026-07-15):
 2. **The analysis is continent x time across all requests.** The product deliberately makes no
    network-type classification. Geography comes only from the Country database and the UI has no
    network-type filter or breakdown.
-3. **External API providers get no map location.** We do not know where DeepSeek/OpenRouter GPUs
-   sit; they render in a side rail ("no location claimed"), never as globe nodes. Only `local`
-   providers (hand-maintained site map) get nodes and inbound arcs.
-4. **Pooling potential (range)** = `1 − global_peak / Σ per-continent peaks` on the selected
-   metric. **Transferable now** = `min(Σ overflow, Σ slack) / Σ demand` with per-continent
-   mean over the range as the capacity proxy (stated in the tooltip; replace with measured
-   capacity when donated-GPU telemetry exists).
+3. **The globe is request-origin only.** It has no provider nodes, serving routes, endpoint detail,
+   external-API rail, or local/remote serving split. FreeInference is the service being observed;
+   provider geography is neither needed for this question nor known accurately enough to plot.
+   The backend response may retain `providers` and flow rows for compatibility with the standalone
+   research artifact, but the product viewer deliberately ignores them.
+4. **Demand complementarity (range)** = `1 − global_peak / Σ per-continent peaks` on the selected
+   metric. It describes how much continent-level demand peaks occur at different hours. It is not
+   a capacity estimate and must not be labeled as pooling potential, transferable traffic, or a
+   routing recommendation until real geographically distributed capacity telemetry exists.
 5. **Aggregates only ever leave the DB**: counts, token sums, latency percentiles, distinct-user
    counts. No raw IPs, no user ids, no prompts in any API response or exported file.
 6. **Continent colors are fixed slots** of the CVD-validated dark categorical palette
@@ -77,9 +79,9 @@ Facts verified against the real system (2026-07-15):
 ## Data contract (existing `data.json` shape → PR A response body)
 
 Produced today by `geo_hourly_export.py`; consumed today by `geo_globe.html`. PR A uses this compact
-columnar shape while retaining serving-endpoint attribution in flow rows. The viewer resolves
-columns by `flow_cols`, so it remains compatible via
-`geo_globe.html?data=/admin/analytics/geo`.
+columnar shape and retains serving-endpoint attribution in flow rows for compatibility with the
+standalone research viewer. The product viewer only consumes `meta`, `bucket_cols`, `hours_index`,
+and each hour's `b` rows; it does not visualize or calculate from `providers` or `f` rows.
 
 ```jsonc
 {
@@ -215,16 +217,18 @@ endpoints are not merged even when they share a provider.
 **Files:**
 - New: `apps/frontend/src/app/dashboard/admin/(tabs)/analytics/geo/page.tsx`
 - New: `apps/frontend/src/components/features/admin/geo/GeoGlobe.tsx` (+ small subcomponents:
-  `TrafficRibbon`, `ExternalApiRail`, `GeoStatCards`)
+  `TrafficRibbon`, `GeoStatCards`)
 - Modify: `apps/frontend/src/lib/api/admin.ts` (typed fetcher for `/admin/analytics/geo`)
-- Test: vitest for the pure helpers (series/pooling/transferable math), snapshot-light for markup
+- Test: vitest for the pure helpers (series/demand-complementarity/coverage math), snapshot-light
+  for markup and pointer/time-axis interactions
 
 - [x] Port from [ops/db/analysis/geo_globe.html](../../../ops/db/analysis/geo_globe.html): d3 owns
-  the SVG interior inside a ref'd `<svg>`; React owns state (hour, metric, selection) and
-  the chrome. Pooling/transferable/series builders move to a pure TS module (unit-testable).
+  the SVG interior inside a ref'd `<svg>`; React owns state (hour, metric, country selection) and
+  the chrome. Demand-complementarity and series builders move to a pure TS module (unit-testable).
 - [x] Keep: timeline scrub + play, declination-correct day/night terminator, metric select, fixed
-  continent palette + ribbon direct labels, external-API rail, detail panel, DEMO badge honored
-  from `meta.source`, and `prefers-reduced-motion`.
+  continent palette + ribbon direct labels, request-origin detail panel, and DEMO badge honored
+  from `meta.source`. Do not port provider nodes, serving routes, external-API rail, serving split,
+  endpoint detail, or the flow-animation control.
 - [x] Adapt: cards/typography/buttons to the app's design tokens; the globe stage may stay dark.
 - [x] Loading/error/staleness states (`meta.generated_at`), and an "unlocated %" stat — keep the
   honesty affordances.

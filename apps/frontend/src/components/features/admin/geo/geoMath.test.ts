@@ -1,19 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import type {
-  GeoAnalyticsResponse,
-  GeoBucketColumn,
-  GeoBucketRow,
-  GeoFlowRow,
-} from '@/lib/api/admin';
+import type { GeoAnalyticsResponse, GeoBucketColumn, GeoBucketRow } from '@/lib/api/admin';
 import {
   CONTINENT_COLORS,
-  aggregateFlowsByCountryProvider,
   buildColumnIndex,
   buildContinentSeries,
+  buildCountryContinentMap,
   currentHourStats,
-  rangePooling,
-  transferableAt,
+  rangeDemandComplementarity,
 } from './geoMath';
 
 const BUCKET_COLS: GeoBucketColumn[] = [
@@ -52,16 +46,7 @@ function bucket(
   ];
 }
 
-function flow(
-  country: string,
-  provider: string,
-  requests: number,
-  endpoint = provider,
-): GeoFlowRow {
-  return [country, provider, endpoint, requests];
-}
-
-function makeData(hours: Array<{ b: GeoBucketRow[]; f?: GeoFlowRow[] }>): GeoAnalyticsResponse {
+function makeData(hours: Array<{ b: GeoBucketRow[] }>): GeoAnalyticsResponse {
   return {
     meta: {
       source: 'api_logs',
@@ -77,27 +62,8 @@ function makeData(hours: Array<{ b: GeoBucketRow[]; f?: GeoFlowRow[] }>): GeoAna
       notes: [],
     },
     bucket_cols: BUCKET_COLS,
-    flow_cols: ['c', 'p', 'e', 'n'],
-    providers: [
-      {
-        id: 'vllm',
-        label: 'Local cluster',
-        kind: 'local',
-        region: 'us-east',
-        cont: 'NA',
-        coord: [-71.09, 42.36],
-      },
-      {
-        id: 'openrouter',
-        label: 'OpenRouter API',
-        kind: 'remote_api',
-        region: null,
-        cont: null,
-        coord: null,
-      },
-    ],
     hours_index: hours.map((_, index) => `2026-07-15T${String(index).padStart(2, '0')}:00:00Z`),
-    hours: hours.map((hour) => ({ b: hour.b, f: hour.f ?? [] })),
+    hours: hours.map((hour) => ({ b: hour.b })),
   };
 }
 
@@ -111,6 +77,7 @@ describe('geo column contract', () => {
 
     expect(buildColumnIndex(data.bucket_cols)).toMatchObject({ n: 0, c: 1, cont: 2 });
     expect(buildContinentSeries(data, 'n').get('AS')).toEqual([7]);
+    expect(buildCountryContinentMap(data)).toEqual(new Map([['SGP', 'AS']]));
   });
 
   it('fails clearly when a required column is absent', () => {
@@ -121,7 +88,7 @@ describe('geo column contract', () => {
   });
 });
 
-describe('continent series and pooling', () => {
+describe('continent series and demand complementarity', () => {
   it('keeps zero-filled hourly gaps and excludes unknown geography', () => {
     const data = makeData([
       { b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2)] },
@@ -135,30 +102,39 @@ describe('continent series and pooling', () => {
     expect(series.has('?')).toBe(false);
   });
 
-  it('computes range pooling from global and regional peaks', () => {
+  it('computes range complementarity from global and continent peaks', () => {
     const data = makeData([
       { b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2)] },
       { b: [bucket('CHN', 'AS', 2), bucket('USA', 'NA', 10)] },
     ]);
 
-    expect(rangePooling(data, 'n')).toEqual({ pooling: 0.4, conts: 2 });
-    expect(transferableAt(data, 0, 'n')).toBeCloseTo(1 / 3);
-    expect(transferableAt(data, 1, 'n')).toBeCloseTo(1 / 3);
+    expect(rangeDemandComplementarity(data, 'n')).toEqual({
+      complementarity: 0.4,
+      continents: 2,
+    });
   });
 
-  it('returns zero for empty, single-continent, invalid-hour, and zero-demand cases', () => {
+  it('returns zero for empty, single-continent, and zero-demand cases', () => {
     const empty = makeData([]);
-    expect(rangePooling(empty, 'n')).toEqual({ pooling: 0, conts: 0 });
-    expect(transferableAt(empty, 0, 'n')).toBe(0);
+    expect(rangeDemandComplementarity(empty, 'n')).toEqual({
+      complementarity: 0,
+      continents: 0,
+    });
 
     const oneContinent = makeData([
       { b: [bucket('CHN', 'AS', 0)] },
       { b: [bucket('SGP', 'AS', 5)] },
     ]);
-    expect(rangePooling(oneContinent, 'n')).toEqual({ pooling: 0, conts: 1 });
-    expect(transferableAt(oneContinent, -1, 'n')).toBe(0);
-    expect(transferableAt(oneContinent, 10, 'n')).toBe(0);
-    expect(transferableAt(oneContinent, 0, 'n')).toBe(0);
+    expect(rangeDemandComplementarity(oneContinent, 'n')).toEqual({
+      complementarity: 0,
+      continents: 1,
+    });
+
+    const noDemand = makeData([{ b: [bucket('CHN', 'AS', 0), bucket('USA', 'NA', 0)] }]);
+    expect(rangeDemandComplementarity(noDemand, 'n')).toEqual({
+      complementarity: 0,
+      continents: 2,
+    });
   });
 
   it('keeps continent colors stable independent of demand rank', () => {
@@ -169,16 +145,10 @@ describe('continent series and pooling', () => {
 });
 
 describe('currentHourStats', () => {
-  it('reports origin mix, unlocated traffic, serving split, and range opportunity', () => {
+  it('reports only request-origin coverage, mix, and range complementarity', () => {
     const data = makeData([
       {
         b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2), bucket('?', '?', 3)],
-        f: [
-          flow('CHN', 'vllm', 4),
-          flow('USA', 'vllm', 2),
-          flow('?', 'vllm', 1),
-          flow('CHN', 'openrouter', 5),
-        ],
       },
       { b: [bucket('CHN', 'AS', 2), bucket('USA', 'NA', 10)] },
     ]);
@@ -186,17 +156,13 @@ describe('currentHourStats', () => {
     const stats = currentHourStats(data, 0, 'n');
     expect(stats.totalRequests).toBe(15);
     expect(stats.locatedRequests).toBe(12);
+    expect(stats.locatedFraction).toBeCloseTo(0.8);
     expect(stats.unlocatedFraction).toBeCloseTo(0.2);
     expect(stats.activeCountries).toBe(2);
+    expect(stats.activeContinents).toBe(2);
     expect(stats.topContinent).toEqual({ continent: 'AS', value: 10, fraction: 10 / 12 });
-    expect(stats.externalRequests).toBe(5);
-    expect(stats.localSameContinentRequests).toBe(2);
-    expect(stats.localCrossContinentRequests).toBe(4);
-    expect(stats.localUnlocatedRequests).toBe(1);
-    expect(stats.servingTotal).toBe(12);
-    expect(stats.externalFraction).toBeCloseTo(5 / 12);
-    expect(stats.poolingPotential).toBeCloseTo(0.4);
-    expect(stats.transferableFraction).toBeCloseTo(1 / 3);
+    expect(stats.demandComplementarity).toBeCloseTo(0.4);
+    expect(stats.observedContinents).toBe(2);
   });
 
   it('returns finite zero fractions for an empty or out-of-range hour', () => {
@@ -204,60 +170,42 @@ describe('currentHourStats', () => {
 
     expect(currentHourStats(data, 0, 'gs')).toMatchObject({
       totalRequests: 0,
+      locatedFraction: 0,
       unlocatedFraction: 0,
-      externalFraction: 0,
+      activeCountries: 0,
+      activeContinents: 0,
       topContinent: null,
     });
     expect(currentHourStats(data, 4, 'gs')).toMatchObject({
       totalRequests: 0,
-      transferableFraction: 0,
+      demandComplementarity: 0,
     });
   });
-});
 
-describe('aggregateFlowsByCountryProvider', () => {
-  it('combines duplicate provider flows while retaining endpoint totals', () => {
+  it('counts only positive request origins as active', () => {
     const data = makeData([
       {
-        b: [],
-        f: [
-          flow('SGP', 'vllm', 3, 'vllm:a'),
-          flow('SGP', 'vllm', 7, 'vllm:b'),
-          flow('SGP', 'vllm', 2, 'vllm:a'),
-          flow('USA', 'openrouter', 4, 'openrouter:x'),
-        ],
+        b: [bucket('CHN', 'AS', 0), bucket('USA', 'NA', 2), bucket('?', '?', 3)],
       },
     ]);
 
-    expect(aggregateFlowsByCountryProvider(data, 0)).toEqual([
-      {
-        country: 'SGP',
-        providerId: 'vllm',
-        requests: 12,
-        endpoints: [
-          { endpointId: 'vllm:b', requests: 7 },
-          { endpointId: 'vllm:a', requests: 5 },
-        ],
-      },
-      {
-        country: 'USA',
-        providerId: 'openrouter',
-        requests: 4,
-        endpoints: [{ endpointId: 'openrouter:x', requests: 4 }],
-      },
-    ]);
+    expect(currentHourStats(data, 0, 'n')).toMatchObject({
+      activeCountries: 1,
+      activeContinents: 1,
+    });
   });
 
-  it('uses flow_cols dynamically and returns no flows for an invalid hour', () => {
-    const data = makeData([{ b: [], f: [flow('SGP', 'vllm', 3, 'vllm:a')] }]);
-    data.flow_cols = ['n', 'e', 'c', 'p'];
-    data.hours[0].f = [[3, 'vllm:a', 'SGP', 'vllm'] as unknown as GeoFlowRow];
+  it('does not invent an origin mix when the selected metric is zero', () => {
+    const data = makeData([
+      {
+        b: [bucket('CHN', 'AS', 4, 0), bucket('USA', 'NA', 2, 0)],
+      },
+    ]);
 
-    expect(aggregateFlowsByCountryProvider(data, 0)[0]).toMatchObject({
-      country: 'SGP',
-      providerId: 'vllm',
-      requests: 3,
+    expect(currentHourStats(data, 0, 'tout')).toMatchObject({
+      totalRequests: 6,
+      continentTotals: [],
+      topContinent: null,
     });
-    expect(aggregateFlowsByCountryProvider(data, 2)).toEqual([]);
   });
 });

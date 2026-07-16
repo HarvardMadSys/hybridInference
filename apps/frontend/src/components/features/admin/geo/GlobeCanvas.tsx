@@ -5,11 +5,9 @@ import {
   geoCircle,
   geoDistance,
   geoGraticule10,
-  geoInterpolate,
   geoOrthographic,
   geoPath,
   max,
-  range,
   scaleSqrt,
   select,
 } from 'd3';
@@ -18,14 +16,8 @@ import type { Feature, Geometry } from 'geojson';
 import { useEffect, useRef } from 'react';
 import { feature } from 'topojson-client';
 import type { GeometryCollection, Topology } from 'topojson-specification';
-import type { GeoAnalyticsResponse, GeoProvider } from '@/lib/api/admin';
-import {
-  aggregateFlowsByCountryProvider,
-  buildColumnIndex,
-  buildCountryContinentMap,
-  CONTINENT_COLORS,
-  type GeoMetric,
-} from './geoMath';
+import type { GeoAnalyticsResponse } from '@/lib/api/admin';
+import { buildColumnIndex, CONTINENT_COLORS, type GeoMetric } from './geoMath';
 
 interface AtlasProperties {
   id?: string;
@@ -42,10 +34,7 @@ export interface PreparedAtlas {
   coordinates: Map<string, [number, number]>;
 }
 
-export type GlobeSelection =
-  | { type: 'country'; country: string }
-  | { type: 'provider'; providerId: string }
-  | { type: 'flow'; country: string; providerId: string };
+export type GlobeSelection = { type: 'country'; country: string };
 
 export interface GlobeViewRequest {
   id: number;
@@ -82,6 +71,8 @@ const NAME_OVERRIDES: Readonly<Record<string, string>> = {
   BRB: 'Barbados',
   USA: 'United States',
 };
+
+const DRAG_THRESHOLD_PX = 6;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object';
@@ -152,14 +143,6 @@ function dayNightGeometry(date: Date) {
   };
 }
 
-function greatCircle(from: [number, number], to: [number, number]): GeoJSON.LineString {
-  const interpolate = geoInterpolate(from, to);
-  return {
-    type: 'LineString',
-    coordinates: range(31).map((index) => interpolate(index / 30)),
-  };
-}
-
 interface CountryDot {
   country: string;
   continent: string;
@@ -169,19 +152,11 @@ interface CountryDot {
   coordinate: [number, number];
 }
 
-interface GlobeFlow {
-  country: string;
-  provider: GeoProvider;
-  requests: number;
-  coordinate: [number, number];
-}
-
 export function GlobeCanvas({
   data,
   atlas,
   hourIndex,
   metric,
-  animateFlows,
   viewRequest,
   onSelect,
 }: {
@@ -189,7 +164,6 @@ export function GlobeCanvas({
   atlas: PreparedAtlas;
   hourIndex: number;
   metric: GeoMetric;
-  animateFlows: boolean;
   viewRequest: GlobeViewRequest;
   onSelect: (selection: GlobeSelection) => void;
 }) {
@@ -241,9 +215,7 @@ export function GlobeCanvas({
       .attr('stroke', 'rgba(205,220,255,0.34)')
       .attr('stroke-width', 1.1)
       .attr('stroke-dasharray', '5 4');
-    svg.append('g').attr('data-layer', 'arcs');
     svg.append('g').attr('data-layer', 'heat');
-    svg.append('g').attr('data-layer', 'providers');
 
     const redrawStatic = () => {
       sphere.attr('d', path);
@@ -265,38 +237,95 @@ export function GlobeCanvas({
     observer?.observe(stageElement);
     resize();
 
-    let dragStart: [number, number] | null = null;
-    let rotationStart: [number, number, number] | null = null;
+    let drag:
+      | {
+          pointerId: number;
+          start: [number, number];
+          rotation: [number, number, number];
+          active: boolean;
+        }
+      | undefined;
+    let suppressClick = false;
+    let suppressClickReset: ReturnType<typeof setTimeout> | undefined;
     const pointerDown = (event: PointerEvent) => {
-      dragStart = [event.clientX, event.clientY];
-      rotationStart = projection.rotate();
-      svgElement.setPointerCapture?.(event.pointerId);
+      if (event.button !== 0) return;
+      if (suppressClickReset !== undefined) {
+        clearTimeout(suppressClickReset);
+        suppressClickReset = undefined;
+      }
+      drag = {
+        pointerId: event.pointerId,
+        start: [event.clientX, event.clientY],
+        rotation: projection.rotate(),
+        active: false,
+      };
+      suppressClick = false;
     };
     const pointerMove = (event: PointerEvent) => {
-      if (!dragStart || !rotationStart) return;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const deltaX = event.clientX - drag.start[0];
+      const deltaY = event.clientY - drag.start[1];
+      if (!drag.active && Math.hypot(deltaX, deltaY) < DRAG_THRESHOLD_PX) return;
+      if (!drag.active) {
+        drag.active = true;
+        suppressClick = true;
+        try {
+          svgElement.setPointerCapture(event.pointerId);
+        } catch {
+          // Rotation can continue while the pointer stays over the globe.
+        }
+      }
       projection.rotate([
-        rotationStart[0] + (event.clientX - dragStart[0]) * 0.28,
-        Math.max(-75, Math.min(75, rotationStart[1] - (event.clientY - dragStart[1]) * 0.22)),
+        drag.rotation[0] + deltaX * 0.28,
+        Math.max(-75, Math.min(75, drag.rotation[1] - deltaY * 0.22)),
         0,
       ]);
       redrawStatic();
       dynamicRedrawRef.current();
     };
-    const pointerEnd = () => {
-      dragStart = null;
-      rotationStart = null;
+    const pointerEnd = (event: PointerEvent) => {
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const wasDragging = drag.active;
+      drag = undefined;
+      try {
+        if (svgElement.hasPointerCapture(event.pointerId)) {
+          svgElement.releasePointerCapture(event.pointerId);
+        }
+      } catch {
+        // Pointer capture may be unavailable or already released.
+      }
+      if (wasDragging) {
+        suppressClick = true;
+        suppressClickReset = setTimeout(() => {
+          suppressClick = false;
+          suppressClickReset = undefined;
+        }, 0);
+      }
+    };
+    const clickCapture = (event: MouseEvent) => {
+      if (!suppressClick) return;
+      event.preventDefault();
+      event.stopPropagation();
+      suppressClick = false;
+      if (suppressClickReset !== undefined) {
+        clearTimeout(suppressClickReset);
+        suppressClickReset = undefined;
+      }
     };
     svgElement.addEventListener('pointerdown', pointerDown);
     svgElement.addEventListener('pointermove', pointerMove);
-    svgElement.addEventListener('pointerup', pointerEnd);
-    svgElement.addEventListener('pointercancel', pointerEnd);
+    window.addEventListener('pointerup', pointerEnd);
+    window.addEventListener('pointercancel', pointerEnd);
+    svgElement.addEventListener('click', clickCapture, true);
 
     return () => {
       observer?.disconnect();
       svgElement.removeEventListener('pointerdown', pointerDown);
       svgElement.removeEventListener('pointermove', pointerMove);
-      svgElement.removeEventListener('pointerup', pointerEnd);
-      svgElement.removeEventListener('pointercancel', pointerEnd);
+      window.removeEventListener('pointerup', pointerEnd);
+      window.removeEventListener('pointercancel', pointerEnd);
+      svgElement.removeEventListener('click', clickCapture, true);
+      if (suppressClickReset !== undefined) clearTimeout(suppressClickReset);
       staticRedrawRef.current = () => undefined;
       svg.selectAll('*').remove();
     };
@@ -312,9 +341,7 @@ export function GlobeCanvas({
     const daySide = svg.select<SVGPathElement>('path[data-layer="day"]');
     const nightSide = svg.select<SVGPathElement>('path[data-layer="night"]');
     const terminator = svg.select<SVGPathElement>('path[data-layer="terminator"]');
-    const arcsLayer = svg.select<SVGGElement>('g[data-layer="arcs"]');
     const heatLayer = svg.select<SVGGElement>('g[data-layer="heat"]');
-    const providersLayer = svg.select<SVGGElement>('g[data-layer="providers"]');
 
     const bucketIndex = buildColumnIndex(data.bucket_cols);
     const countryPosition = bucketIndex.c;
@@ -342,43 +369,20 @@ export function GlobeCanvas({
         const coordinate = atlas.coordinates.get(dot.country);
         return coordinate ? { ...dot, coordinate } : null;
       })
-      .filter((dot): dot is CountryDot => dot !== null && !dot.country.startsWith('?'));
+      .filter(
+        (dot): dot is CountryDot => dot !== null && !dot.country.startsWith('?') && dot.value > 0,
+      );
     const radius = scaleSqrt()
-      .domain([0, max(dots, (dot) => dot.value) ?? 1])
+      .domain([0, Math.max(1, max(dots, (dot) => dot.value) ?? 0)])
       .range([2.5, 26]);
-
-    const providersById = new Map(data.providers.map((provider) => [provider.id, provider]));
-    const localProviders = data.providers.filter(
-      (provider): provider is GeoProvider & { coord: [number, number] } =>
-        provider.kind === 'local' && provider.coord !== null,
-    );
-    const aggregatedFlows = aggregateFlowsByCountryProvider(data, hourIndex);
-    const flows: GlobeFlow[] = aggregatedFlows
-      .map((flow) => {
-        const provider = providersById.get(flow.providerId);
-        const coordinate = atlas.coordinates.get(flow.country);
-        if (!provider || provider.kind !== 'local' || !provider.coord || !coordinate) return null;
-        return { country: flow.country, provider, requests: flow.requests, coordinate };
-      })
-      .filter((flow): flow is GlobeFlow => flow !== null)
-      .sort((a, b) => b.requests - a.requests)
-      .slice(0, 14);
-    const flowWidth = scaleSqrt()
-      .domain([0, max(flows, (flow) => flow.requests) ?? 1])
-      .range([0.6, 4]);
-    const countryContinents = buildCountryContinentMap(data);
 
     const heat = heatLayer
       .selectAll<SVGGElement, CountryDot>('g')
       .data(dots, (dot) => dot.country)
       .join((enter) => {
         const group = enter.append('g').attr('role', 'button').attr('tabindex', 0);
-        group.append('circle').attr('fill', '#d95926').attr('opacity', 0.16);
-        group
-          .append('circle')
-          .attr('fill', '#d95926')
-          .attr('stroke', 'rgba(11,14,20,0.9)')
-          .attr('stroke-width', 1);
+        group.append('circle').attr('opacity', 0.16);
+        group.append('circle').attr('stroke', 'rgba(11,14,20,0.9)').attr('stroke-width', 1);
         group.append('title');
         return group;
       })
@@ -387,101 +391,19 @@ export function GlobeCanvas({
       .on('keydown', (event, dot) =>
         keyboardSelect(event, () => onSelect({ type: 'country', country: dot.country })),
       );
-    heat.select('circle:first-of-type').attr('r', (dot) => radius(dot.value));
-    heat.select('circle:nth-of-type(2)').attr('r', (dot) => Math.max(2, radius(dot.value) * 0.22));
+    heat
+      .select('circle:first-of-type')
+      .attr('fill', (dot) => CONTINENT_COLORS[dot.continent] ?? CONTINENT_COLORS['?'])
+      .attr('r', (dot) => radius(dot.value));
+    heat
+      .select('circle:nth-of-type(2)')
+      .attr('fill', (dot) => CONTINENT_COLORS[dot.continent] ?? CONTINENT_COLORS['?'])
+      .attr('r', (dot) => Math.max(2, radius(dot.value) * 0.22));
     heat
       .select('title')
       .text(
         (dot) =>
           `${atlasCountryName(atlas, dot.country)}: ${Math.round(dot.value).toLocaleString()} ${metricLabel(metric)} · ${dot.requests.toLocaleString()} requests`,
-      );
-
-    const arcs = arcsLayer
-      .selectAll<SVGPathElement, GlobeFlow>('path')
-      .data(flows, (flow) => `${flow.country}>${flow.provider.id}`)
-      .join('path')
-      .attr('class', 'geo-demand-flow')
-      .attr('fill', 'none')
-      .attr('stroke', (flow) => CONTINENT_COLORS[countryContinents.get(flow.country) ?? '?'])
-      .attr('stroke-width', (flow) => flowWidth(flow.requests))
-      .attr('stroke-linecap', 'round')
-      .attr('stroke-dasharray', '4 9')
-      .attr('opacity', 0.82)
-      .attr('role', 'button')
-      .attr('tabindex', 0)
-      .attr(
-        'aria-label',
-        (flow) =>
-          `${atlasCountryName(atlas, flow.country)} to ${flow.provider.label}: ${flow.requests} requests`,
-      )
-      .style('animation', animateFlows ? 'geo-demand-flow 2.2s linear infinite' : 'none')
-      .on('click', (_, flow) =>
-        onSelect({ type: 'flow', country: flow.country, providerId: flow.provider.id }),
-      )
-      .on('keydown', (event, flow) =>
-        keyboardSelect(event, () =>
-          onSelect({ type: 'flow', country: flow.country, providerId: flow.provider.id }),
-        ),
-      );
-    arcs
-      .selectAll('title')
-      .data((flow) => [flow])
-      .join('title')
-      .text(
-        (flow) =>
-          `${atlasCountryName(atlas, flow.country)} → ${flow.provider.label}: ${flow.requests.toLocaleString()} requests`,
-      );
-
-    const inbound = new Map(localProviders.map((provider) => [provider.id, 0]));
-    for (const flow of aggregatedFlows) {
-      if (inbound.has(flow.providerId)) {
-        inbound.set(flow.providerId, (inbound.get(flow.providerId) ?? 0) + flow.requests);
-      }
-    }
-    const maximumInbound = Math.max(1, ...inbound.values());
-    const providers = providersLayer
-      .selectAll<SVGGElement, GeoProvider & { coord: [number, number] }>('g')
-      .data(localProviders, (provider) => provider.id)
-      .join((enter) => {
-        const group = enter.append('g').attr('role', 'button').attr('tabindex', 0);
-        group.append('circle').attr('fill', '#3987e5').attr('opacity', 0.16);
-        group
-          .append('circle')
-          .attr('fill', '#3987e5')
-          .attr('stroke', '#0b0e14')
-          .attr('stroke-width', 2);
-        group
-          .append('text')
-          .attr('x', 11)
-          .attr('y', -8)
-          .attr('fill', '#f2f4f8')
-          .attr('font-size', 11)
-          .attr('font-weight', 600)
-          .attr('paint-order', 'stroke')
-          .attr('stroke', '#0b0e14')
-          .attr('stroke-width', 3)
-          .attr('stroke-linejoin', 'round');
-        group.append('title');
-        return group;
-      })
-      .attr('aria-label', (provider) => `${provider.label} local provider`)
-      .on('click', (_, provider) => onSelect({ type: 'provider', providerId: provider.id }))
-      .on('keydown', (event, provider) =>
-        keyboardSelect(event, () => onSelect({ type: 'provider', providerId: provider.id })),
-      );
-    providers
-      .select('circle:first-of-type')
-      .attr(
-        'r',
-        (provider) => 9 + 16 * Math.sqrt((inbound.get(provider.id) ?? 0) / maximumInbound),
-      );
-    providers.select('circle:nth-of-type(2)').attr('r', 4.5);
-    providers.select('text').text((provider) => provider.label);
-    providers
-      .select('title')
-      .text(
-        (provider) =>
-          `${provider.label} (${provider.region ?? 'unknown region'}): ${(inbound.get(provider.id) ?? 0).toLocaleString()} requests inbound`,
       );
 
     const selectedDate = new Date(data.hours_index[hourIndex]);
@@ -506,13 +428,6 @@ export function GlobeCanvas({
           return point ? `translate(${point[0]},${point[1]})` : 'translate(-999,-999)';
         })
         .attr('display', (dot) => (isFront(dot.coordinate) ? null : 'none'));
-      arcs.attr('d', (flow) => path(greatCircle(flow.coordinate, flow.provider.coord!)));
-      providers
-        .attr('transform', (provider) => {
-          const point = projection(provider.coord);
-          return point ? `translate(${point[0]},${point[1]})` : 'translate(-999,-999)';
-        })
-        .attr('display', (provider) => (isFront(provider.coord) ? null : 'none'));
     };
     dynamicRedrawRef.current = redrawDynamic;
     redrawDynamic();
@@ -522,7 +437,7 @@ export function GlobeCanvas({
         dynamicRedrawRef.current = () => undefined;
       }
     };
-  }, [animateFlows, atlas, data, hourIndex, metric, onSelect]);
+  }, [atlas, data, hourIndex, metric, onSelect]);
 
   useEffect(() => {
     projectionRef.current.rotate([viewRequest.rotation[0], viewRequest.rotation[1], 0]);
@@ -535,29 +450,23 @@ export function GlobeCanvas({
       ref={stageRef}
       className="relative h-[clamp(380px,52vh,620px)] min-w-0 overflow-hidden rounded-xl border border-white/10 bg-[#0b0e14]"
     >
-      <style>{`
-        @keyframes geo-demand-flow { to { stroke-dashoffset: -26; } }
-        @media (prefers-reduced-motion: reduce) { .geo-demand-flow { animation: none !important; } }
-      `}</style>
       <svg
         ref={svgRef}
-        aria-label="Globe of IP-based request origins, day and night, and flows to local providers"
+        aria-label="Globe of IP-based request origins and day and night"
         className="block h-full w-full cursor-grab touch-none active:cursor-grabbing"
-        role="img"
+        role="group"
       />
       <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap gap-3 text-[11px] text-gray-400">
         <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-[#d95926]" /> request origin
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-[#3987e5]" /> local provider
+          <span className="h-2 w-2 rounded-full" style={{ background: CONTINENT_COLORS.AS }} />{' '}
+          request origin · color = continent
         </span>
         <span className="inline-flex items-center gap-1">
           <span className="h-2 w-2 rounded-full bg-[#cddcff]/40" /> day/night
         </span>
       </div>
       <p className="pointer-events-none absolute bottom-3 right-3 hidden text-[11px] text-gray-500 sm:block">
-        Drag to rotate · select a dot, route, or node
+        Drag to rotate · select a request origin
       </p>
     </div>
   );

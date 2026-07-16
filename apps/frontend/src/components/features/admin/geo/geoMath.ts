@@ -1,4 +1,4 @@
-import type { GeoAnalyticsResponse, GeoBucketRow, GeoFlowRow, GeoMetric } from '@/lib/api/admin';
+import type { GeoAnalyticsResponse, GeoBucketRow, GeoMetric } from '@/lib/api/admin';
 
 export type { GeoMetric } from '@/lib/api/admin';
 
@@ -28,9 +28,9 @@ export const CONTINENT_COLORS: Readonly<Record<string, string>> = {
 
 export type GeoColumnIndex = Readonly<Record<string, number>>;
 
-export interface PoolingResult {
-  pooling: number;
-  conts: number;
+export interface DemandComplementarityResult {
+  complementarity: number;
+  continents: number;
 }
 
 export interface ContinentTotal {
@@ -39,37 +39,17 @@ export interface ContinentTotal {
   fraction: number;
 }
 
-export interface AggregatedFlowEndpoint {
-  endpointId: string;
-  requests: number;
-}
-
-export interface AggregatedCountryProviderFlow {
-  country: string;
-  providerId: string;
-  requests: number;
-  endpoints: AggregatedFlowEndpoint[];
-}
-
 export interface CurrentHourStats {
   totalRequests: number;
   locatedRequests: number;
+  locatedFraction: number;
   unlocatedFraction: number;
   activeCountries: number;
+  activeContinents: number;
   continentTotals: ContinentTotal[];
   topContinent: ContinentTotal | null;
-  externalRequests: number;
-  localSameContinentRequests: number;
-  localCrossContinentRequests: number;
-  localUnlocatedRequests: number;
-  servingTotal: number;
-  externalFraction: number;
-  localSameContinentFraction: number;
-  localCrossContinentFraction: number;
-  localUnlocatedFraction: number;
-  poolingPotential: number;
-  continentCount: number;
-  transferableFraction: number;
+  demandComplementarity: number;
+  observedContinents: number;
 }
 
 export function buildColumnIndex(columns: readonly string[]): GeoColumnIndex {
@@ -132,13 +112,14 @@ export function buildContinentSeries(
   return series;
 }
 
-/**
- * Range-wide pooling potential: 1 - global peak / sum of per-continent peaks.
- */
-export function rangePooling(data: GeoAnalyticsResponse, metric: GeoMetric): PoolingResult {
+/** Range-wide demand complementarity: 1 - global peak / sum of continent peaks. */
+export function rangeDemandComplementarity(
+  data: GeoAnalyticsResponse,
+  metric: GeoMetric,
+): DemandComplementarityResult {
   const series = buildContinentSeries(data, metric);
   if (series.size < 2 || data.hours_index.length === 0) {
-    return { pooling: 0, conts: series.size };
+    return { complementarity: 0, continents: series.size };
   }
 
   const total = Array(data.hours_index.length).fill(0) as number[];
@@ -154,36 +135,12 @@ export function rangePooling(data: GeoAnalyticsResponse, metric: GeoMetric): Poo
 
   const globalPeak = Math.max(0, ...total);
   return {
-    pooling: sumPeaks > 0 ? clampFraction(1 - globalPeak / sumPeaks) : 0,
-    conts: series.size,
+    complementarity: sumPeaks > 0 ? clampFraction(1 - globalPeak / sumPeaks) : 0,
+    continents: series.size,
   };
 }
 
-/**
- * Transferable demand at one hour, using each continent's range mean as the
- * provisional capacity proxy: min(total overflow, total slack) / demand now.
- */
-export function transferableAt(
-  data: GeoAnalyticsResponse,
-  hourIndex: number,
-  metric: GeoMetric,
-): number {
-  const hourCount = data.hours_index.length;
-  if (hourIndex < 0 || hourIndex >= hourCount || hourCount === 0) return 0;
-
-  let overflow = 0;
-  let slack = 0;
-  let demandNow = 0;
-  for (const values of buildContinentSeries(data, metric).values()) {
-    const mean = values.reduce((sum, value) => sum + value, 0) / hourCount;
-    const value = values[hourIndex] ?? 0;
-    demandNow += value;
-    if (value > mean) overflow += value - mean;
-    else slack += mean - value;
-  }
-  return demandNow > 0 ? clampFraction(Math.min(overflow, slack) / demandNow) : 0;
-}
-
+/** Map each observed request-origin country to its continent. */
 export function buildCountryContinentMap(data: GeoAnalyticsResponse): Map<string, string> {
   const bucketIndex = buildColumnIndex(data.bucket_cols);
   const countryPosition = requiredIndex(bucketIndex, 'c');
@@ -200,84 +157,18 @@ export function buildCountryContinentMap(data: GeoAnalyticsResponse): Map<string
   return result;
 }
 
-/**
- * Combine endpoint-level rows without losing their attribution. The globe
- * draws one country-to-provider arc, while selection detail can still expose
- * every serving endpoint that contributed to it.
- */
-export function aggregateFlowsByCountryProvider(
-  data: GeoAnalyticsResponse,
-  hourIndex: number,
-): AggregatedCountryProviderFlow[] {
-  const hour = data.hours[hourIndex];
-  if (!hour || hourIndex < 0 || hourIndex >= data.hours_index.length) return [];
-
-  const flowIndex = buildColumnIndex(data.flow_cols);
-  const countryPosition = requiredIndex(flowIndex, 'c');
-  const providerPosition = requiredIndex(flowIndex, 'p');
-  const endpointPosition = requiredIndex(flowIndex, 'e');
-  const requestPosition = requiredIndex(flowIndex, 'n');
-  const grouped = new Map<
-    string,
-    Map<string, { requests: number; endpoints: Map<string, number> }>
-  >();
-
-  for (const row of hour.f) {
-    const country = stringAt(row, countryPosition);
-    const providerId = stringAt(row, providerPosition);
-    const endpointId = stringAt(row, endpointPosition) || providerId;
-    const requests = numberAt(row, requestPosition);
-    if (!grouped.has(country)) grouped.set(country, new Map());
-    const byProvider = grouped.get(country)!;
-    if (!byProvider.has(providerId)) {
-      byProvider.set(providerId, { requests: 0, endpoints: new Map() });
-    }
-    const aggregate = byProvider.get(providerId)!;
-    aggregate.requests += requests;
-    aggregate.endpoints.set(endpointId, (aggregate.endpoints.get(endpointId) ?? 0) + requests);
-  }
-
-  const result: AggregatedCountryProviderFlow[] = [];
-  for (const [country, byProvider] of grouped) {
-    for (const [providerId, aggregate] of byProvider) {
-      result.push({
-        country,
-        providerId,
-        requests: aggregate.requests,
-        endpoints: [...aggregate.endpoints.entries()]
-          .map(([endpointId, requests]) => ({ endpointId, requests }))
-          .sort((a, b) => b.requests - a.requests || a.endpointId.localeCompare(b.endpointId)),
-      });
-    }
-  }
-  return result.sort(
-    (a, b) =>
-      b.requests - a.requests ||
-      a.country.localeCompare(b.country) ||
-      a.providerId.localeCompare(b.providerId),
-  );
-}
-
-function emptyCurrentHourStats(pooling: PoolingResult): CurrentHourStats {
+function emptyCurrentHourStats(complementarity: DemandComplementarityResult): CurrentHourStats {
   return {
     totalRequests: 0,
     locatedRequests: 0,
+    locatedFraction: 0,
     unlocatedFraction: 0,
     activeCountries: 0,
+    activeContinents: 0,
     continentTotals: [],
     topContinent: null,
-    externalRequests: 0,
-    localSameContinentRequests: 0,
-    localCrossContinentRequests: 0,
-    localUnlocatedRequests: 0,
-    servingTotal: 0,
-    externalFraction: 0,
-    localSameContinentFraction: 0,
-    localCrossContinentFraction: 0,
-    localUnlocatedFraction: 0,
-    poolingPotential: pooling.pooling,
-    continentCount: pooling.conts,
-    transferableFraction: 0,
+    demandComplementarity: complementarity.complementarity,
+    observedContinents: complementarity.continents,
   };
 }
 
@@ -287,24 +178,21 @@ export function currentHourStats(
   hourIndex: number,
   metric: GeoMetric,
 ): CurrentHourStats {
-  const pooling = rangePooling(data, metric);
+  const complementarity = rangeDemandComplementarity(data, metric);
   const hour = data.hours[hourIndex];
   if (!hour || hourIndex < 0 || hourIndex >= data.hours_index.length) {
-    return emptyCurrentHourStats(pooling);
+    return emptyCurrentHourStats(complementarity);
   }
 
   const bucketIndex = buildColumnIndex(data.bucket_cols);
-  const flowIndex = buildColumnIndex(data.flow_cols);
   const countryPosition = requiredIndex(bucketIndex, 'c');
   const continentPosition = requiredIndex(bucketIndex, 'cont');
   const requestPosition = requiredIndex(bucketIndex, 'n');
-  const flowCountryPosition = requiredIndex(flowIndex, 'c');
-  const flowProviderPosition = requiredIndex(flowIndex, 'p');
-  const flowRequestPosition = requiredIndex(flowIndex, 'n');
 
   let totalRequests = 0;
   let locatedRequests = 0;
   const activeCountries = new Set<string>();
+  const activeContinents = new Set<string>();
   const valuesByContinent = new Map<string, number>();
   for (const row of hour.b) {
     const requests = numberAt(row, requestPosition);
@@ -313,12 +201,13 @@ export function currentHourStats(
     totalRequests += requests;
     if (isLocatedContinent(continent)) {
       locatedRequests += requests;
-      valuesByContinent.set(
-        continent,
-        (valuesByContinent.get(continent) ?? 0) + metricValue(row, metric, bucketIndex),
-      );
+      const value = metricValue(row, metric, bucketIndex);
+      if (value > 0) {
+        valuesByContinent.set(continent, (valuesByContinent.get(continent) ?? 0) + value);
+      }
+      if (requests > 0) activeContinents.add(continent);
     }
-    if (country && !country.startsWith('?')) activeCountries.add(country);
+    if (requests > 0 && country && !country.startsWith('?')) activeCountries.add(country);
   }
 
   const continentValueTotal = [...valuesByContinent.values()].reduce(
@@ -333,53 +222,16 @@ export function currentHourStats(
     }))
     .sort((a, b) => b.value - a.value || a.continent.localeCompare(b.continent));
 
-  const providers = new Map(data.providers.map((provider) => [provider.id, provider]));
-  const countryContinents = buildCountryContinentMap(data);
-  let externalRequests = 0;
-  let localSameContinentRequests = 0;
-  let localCrossContinentRequests = 0;
-  let localUnlocatedRequests = 0;
-  for (const row of hour.f as GeoFlowRow[]) {
-    const requests = numberAt(row, flowRequestPosition);
-    const provider = providers.get(stringAt(row, flowProviderPosition));
-    if (!provider || provider.kind !== 'local' || !provider.cont) {
-      externalRequests += requests;
-      continue;
-    }
-    const originContinent = countryContinents.get(stringAt(row, flowCountryPosition));
-    if (!originContinent || !isLocatedContinent(originContinent)) {
-      localUnlocatedRequests += requests;
-    } else if (originContinent === provider.cont) {
-      localSameContinentRequests += requests;
-    } else {
-      localCrossContinentRequests += requests;
-    }
-  }
-
-  const servingTotal =
-    externalRequests +
-    localSameContinentRequests +
-    localCrossContinentRequests +
-    localUnlocatedRequests;
-
   return {
     totalRequests,
     locatedRequests,
-    unlocatedFraction: totalRequests > 0 ? 1 - locatedRequests / totalRequests : 0,
+    locatedFraction: fraction(locatedRequests, totalRequests),
+    unlocatedFraction: fraction(totalRequests - locatedRequests, totalRequests),
     activeCountries: activeCountries.size,
+    activeContinents: activeContinents.size,
     continentTotals,
     topContinent: continentTotals[0] ?? null,
-    externalRequests,
-    localSameContinentRequests,
-    localCrossContinentRequests,
-    localUnlocatedRequests,
-    servingTotal,
-    externalFraction: fraction(externalRequests, servingTotal),
-    localSameContinentFraction: fraction(localSameContinentRequests, servingTotal),
-    localCrossContinentFraction: fraction(localCrossContinentRequests, servingTotal),
-    localUnlocatedFraction: fraction(localUnlocatedRequests, servingTotal),
-    poolingPotential: pooling.pooling,
-    continentCount: pooling.conts,
-    transferableFraction: transferableAt(data, hourIndex, metric),
+    demandComplementarity: complementarity.complementarity,
+    observedContinents: complementarity.continents,
   };
 }

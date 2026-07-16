@@ -53,38 +53,13 @@ function response(overrides: Partial<GeoAnalyticsResponse['meta']> = {}): GeoAna
       ...overrides,
     },
     bucket_cols: ['c', 'cc', 'cont', 'n', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'],
-    flow_cols: ['c', 'p', 'e', 'n'],
-    providers: [
-      {
-        id: 'vllm',
-        label: 'Local cluster (vLLM)',
-        kind: 'local',
-        region: 'us-east',
-        cont: 'NA',
-        coord: [-71.09, 42.36],
-      },
-      {
-        id: 'deepseek',
-        label: 'DeepSeek API',
-        kind: 'remote_api',
-        region: null,
-        cont: null,
-        coord: null,
-      },
-    ],
     hours_index: ['2026-07-15T00:00:00+00:00', '2026-07-15T01:00:00+00:00'],
     hours: [
-      { b: [], f: [] },
+      { b: [] },
       {
         b: [
           ['USA', 'US', 'NA', 10, 0, 4, 100, 80, 12, 200, 500],
           ['?', '?', '?', 4, 0, 1, 20, 10, 3, null, null],
-        ],
-        f: [
-          ['USA', 'vllm', 'endpoint-a', 3],
-          ['USA', 'vllm', 'endpoint-b', 4],
-          ['USA', 'deepseek', 'deepseek', 3],
-          ['?', 'deepseek', 'deepseek', 4],
         ],
       },
     ],
@@ -135,16 +110,16 @@ describe('GeoGlobe', () => {
     );
   });
 
-  it('renders the globe controls, honesty copy, external rail, and DB-IP attribution', async () => {
+  it('renders request-origin controls, honesty copy, and DB-IP attribution', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     render(<GeoGlobe />);
 
     expect(
-      await screen.findByRole('img', { name: /Globe of IP-based request origins/ }),
+      await screen.findByRole('group', { name: /Globe of IP-based request origins/ }),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '▶ Play' })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Metric' })).toHaveValue('n');
-    expect(screen.getByText('DeepSeek API')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'OC' })).toBeInTheDocument();
     expect(
       screen.getByText(/Origin = network origin \(IP-based\), not residence/),
     ).toBeInTheDocument();
@@ -153,24 +128,21 @@ describe('GeoGlobe', () => {
       'https://db-ip.com',
     );
     expect(screen.getByText(/29% unlocated/)).toBeInTheDocument();
+    expect(screen.getByText(/not capacity/i)).toBeInTheDocument();
   });
 
-  it('aggregates duplicate endpoint rows before rendering and detailing a route', async () => {
+  it('selects a request origin without rendering provider nodes or serving routes', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     render(<GeoGlobe />);
 
-    await waitFor(() => expect(document.querySelectorAll('.geo-demand-flow')).toHaveLength(1));
-    const route = document.querySelector('.geo-demand-flow');
-    expect(route).toHaveAttribute(
-      'aria-label',
-      'United States to Local cluster (vLLM): 7 requests',
-    );
-    if (!route) throw new Error('Expected an aggregated route');
-    fireEvent.click(route);
+    fireEvent.click(await screen.findByRole('button', { name: 'United States request origin' }));
 
-    expect(screen.getByText('United States → Local cluster (vLLM)')).toBeInTheDocument();
-    expect(screen.getByText('7 requests this hour')).toBeInTheDocument();
-    expect(screen.getByText(/endpoint-b 4 · endpoint-a 3/)).toBeInTheDocument();
+    expect(screen.getByText('United States · N. America')).toBeInTheDocument();
+    expect(screen.getByText(/10 requests this hour/)).toBeInTheDocument();
+    expect(screen.getByText(/4 distinct users · 80 output tokens/)).toBeInTheDocument();
+    expect(document.querySelector('.geo-demand-flow')).not.toBeInTheDocument();
+    expect(screen.queryByText(/provider/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Serving split')).not.toBeInTheDocument();
   });
 
   it('changes the selected hour and metric and toggles playback', async () => {
@@ -191,7 +163,15 @@ describe('GeoGlobe', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '▶ Play' }));
     expect(screen.getByRole('button', { name: '⏸ Pause' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Explore origin demand').closest('section')).toHaveAttribute(
+      'aria-live',
+      'off',
+    );
     fireEvent.click(screen.getByRole('button', { name: '⏸ Pause' }));
+    expect(screen.getByText('Explore origin demand').closest('section')).toHaveAttribute(
+      'aria-live',
+      'polite',
+    );
   });
 
   it('maps timeline clicks through the plotted area instead of the SVG margins', async () => {
@@ -200,12 +180,12 @@ describe('GeoGlobe', () => {
       { length: 24 },
       (_, hour) => `2026-07-15T${String(hour).padStart(2, '0')}:00:00+00:00`,
     );
-    data.hours = Array.from({ length: 24 }, () => ({ b: [], f: [] }));
+    data.hours = Array.from({ length: 24 }, () => ({ b: [] }));
     mockedGetGeoAnalytics.mockResolvedValue(data);
     render(<GeoGlobe />);
 
     expect(await screen.findByText('2026-07-15 23:00 UTC')).toBeInTheDocument();
-    const timeline = screen.getByRole('img', {
+    const timeline = screen.getByRole('slider', {
       name: 'Demand timeline for the selected UTC day',
     });
     timeline.getBoundingClientRect = () => ({ left: 0, width: 1_000 }) as DOMRect;
@@ -243,7 +223,7 @@ describe('GeoGlobe', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
     expect(
-      await screen.findByRole('img', { name: /Globe of IP-based request origins/ }),
+      await screen.findByRole('group', { name: /Globe of IP-based request origins/ }),
     ).toBeInTheDocument();
     await waitFor(() => expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2));
   });
@@ -260,29 +240,25 @@ describe('GeoGlobe', () => {
     );
   });
 
+  it('shows a controlled error when nested metadata is malformed', async () => {
+    mockedGetGeoAnalytics.mockResolvedValue({
+      ...response(),
+      meta: undefined,
+    } as unknown as GeoAnalyticsResponse);
+    render(<GeoGlobe />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'The geographic demand response has an invalid structure',
+    );
+  });
+
   it('shows an empty state for a successful window with no requests', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response({ rows_total: 0 }));
     render(<GeoGlobe />);
 
     expect(await screen.findByText('No request origins yet')).toBeInTheDocument();
     expect(
-      screen.queryByRole('img', { name: /Globe of IP-based request origins/ }),
+      screen.queryByRole('group', { name: /Globe of IP-based request origins/ }),
     ).not.toBeInTheDocument();
-  });
-
-  it('starts flow animation disabled when reduced motion is preferred', async () => {
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn().mockReturnValue({
-        matches: true,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      }),
-    );
-    mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
-
-    const toggle = await screen.findByRole('checkbox', { name: 'flow animation' });
-    await waitFor(() => expect(toggle).not.toBeChecked());
   });
 });

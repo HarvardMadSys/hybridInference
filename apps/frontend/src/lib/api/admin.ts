@@ -654,7 +654,6 @@ export type GeoBucketColumn =
   | 'p50'
   | 'p90';
 
-export type GeoFlowColumn = 'c' | 'p' | 'e' | 'n';
 export type GeoMetric = 'n' | 'tout' | 'gs';
 
 export type GeoBucketRow = [
@@ -669,13 +668,6 @@ export type GeoBucketRow = [
   computeSeconds: number,
   ttftP50Ms: number | null,
   ttftP90Ms: number | null,
-];
-
-export type GeoFlowRow = [
-  countryAlpha3: string,
-  providerId: string,
-  endpointId: string,
-  requests: number,
 ];
 
 export interface GeoIpAttribution {
@@ -701,25 +693,13 @@ export interface GeoAnalyticsMeta {
   notes: string[];
 }
 
-export interface GeoProvider {
-  id: string;
-  label: string;
-  kind: 'local' | 'remote_api' | string;
-  region: string | null;
-  cont: string | null;
-  coord: [longitude: number, latitude: number] | null;
-}
-
 export interface GeoHour {
   b: GeoBucketRow[];
-  f: GeoFlowRow[];
 }
 
 export interface GeoAnalyticsResponse {
   meta: GeoAnalyticsMeta;
   bucket_cols: GeoBucketColumn[];
-  flow_cols: GeoFlowColumn[];
-  providers: GeoProvider[];
   hours_index: string[];
   hours: GeoHour[];
 }

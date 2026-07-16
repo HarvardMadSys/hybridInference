@@ -42,7 +42,7 @@ describe('AnalyticsTab geography entry', () => {
       'href',
       '/dashboard/admin/analytics/geo',
     );
-    expect(screen.getByText(/network origin \(IP-based\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/request origins \(IP-based\)/i)).toBeInTheDocument();
     await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith('day'));
     expect(getGeoAnalytics).not.toHaveBeenCalled();
   });

@@ -12,7 +12,7 @@ export default function GeoAnalyticsPage() {
       </Link>
       <h2 className="mt-3 text-xl font-semibold tracking-tight text-gray-900">Geographic demand</h2>
       <p className="mt-1 text-sm text-gray-500">
-        Explore hourly network origins (IP-based) and how they flow to inference providers.
+        Explore where requests originate (IP-based) and how demand moves across time zones.
       </p>
       <GeoGlobe />
     </div>

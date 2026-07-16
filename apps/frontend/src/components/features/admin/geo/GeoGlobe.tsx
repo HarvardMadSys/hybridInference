@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { GeoAnalyticsResponse, GeoMetric } from '@/lib/api/admin';
 import { getGeoAnalytics } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { ExternalApiRail, type ExternalProviderTraffic } from './ExternalApiRail';
 import { GeoStatCards } from './GeoStatCards';
 import {
   atlasCountryName,
@@ -16,7 +15,6 @@ import {
 } from './GlobeCanvas';
 import { TrafficRibbon } from './TrafficRibbon';
 import {
-  aggregateFlowsByCountryProvider,
   buildColumnIndex,
   buildCountryContinentMap,
   CONTINENT_NAMES,
@@ -34,30 +32,55 @@ const metricOptions: { value: GeoMetric; label: string }[] = [
 
 const viewPresets: { label: string; rotation: [number, number] }[] = [
   { label: 'AS', rotation: [-100, -28] },
-  { label: 'EU', rotation: [15, -48] },
+  { label: 'EU', rotation: [-15, -48] },
   { label: 'NA', rotation: [95, -38] },
+  { label: 'SA', rotation: [60, 15] },
+  { label: 'AF', rotation: [-20, -3] },
+  { label: 'OC', rotation: [-145, 25] },
 ];
 
-function validateResponse(data: GeoAnalyticsResponse): void {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function validateResponse(data: unknown): asserts data is GeoAnalyticsResponse {
   if (
-    !data ||
+    !isRecord(data) ||
+    !isRecord(data.meta) ||
+    !isRecord(data.meta.geoip) ||
     !Array.isArray(data.bucket_cols) ||
-    !Array.isArray(data.flow_cols) ||
-    !Array.isArray(data.providers) ||
-    !Array.isArray(data.hours_index) ||
-    !Array.isArray(data.hours)
+    !isStringArray(data.hours_index) ||
+    !Array.isArray(data.hours) ||
+    typeof data.meta.source !== 'string' ||
+    typeof data.meta.generated_at !== 'string' ||
+    typeof data.meta.rows_total !== 'number' ||
+    !Number.isFinite(data.meta.rows_total) ||
+    data.meta.rows_total < 0 ||
+    typeof data.meta.degraded !== 'boolean' ||
+    !isStringArray(data.meta.degraded_reasons) ||
+    !isStringArray(data.meta.unmapped_alpha2) ||
+    typeof data.meta.geoip.country !== 'boolean' ||
+    !(data.meta.geoip.provider === null || typeof data.meta.geoip.provider === 'string') ||
+    !(
+      data.meta.geoip.attribution === null ||
+      (isRecord(data.meta.geoip.attribution) &&
+        typeof data.meta.geoip.attribution.label === 'string' &&
+        typeof data.meta.geoip.attribution.url === 'string')
+    ) ||
+    !data.hours.every(
+      (hour) => isRecord(hour) && Array.isArray(hour.b) && hour.b.every(Array.isArray),
+    )
   ) {
     throw new Error('The geographic demand response has an invalid structure');
   }
   const bucketColumns = ['c', 'cc', 'cont', 'n', 'err', 'users', 'tin', 'tout', 'gs', 'p50', 'p90'];
-  const flowColumns = ['c', 'p', 'e', 'n'];
   const actualBucketColumns = new Set<string>(data.bucket_cols);
-  const actualFlowColumns = new Set<string>(data.flow_cols);
   if (!bucketColumns.every((column) => actualBucketColumns.has(column))) {
     throw new Error('The geographic demand response is missing required bucket columns');
-  }
-  if (!flowColumns.every((column) => actualFlowColumns.has(column))) {
-    throw new Error('The geographic demand response is missing required flow columns');
   }
   if (data.hours_index.length !== data.hours.length) {
     throw new Error('The geographic demand response has mismatched hourly data');
@@ -74,15 +97,6 @@ function formatTimestamp(timestamp: string): string {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return timestamp || 'unknown time';
   return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
-
-function formatZoneTime(date: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date);
 }
 
 function formatAge(timestamp: string): { label: string; stale: boolean } {
@@ -137,129 +151,66 @@ function SelectionPanel({
   atlas,
   hourIndex,
   selection,
+  announce,
 }: {
   data: GeoAnalyticsResponse;
   atlas: PreparedAtlas;
   hourIndex: number;
   selection: GlobeSelection | null;
+  announce: boolean;
 }) {
   if (!selection) {
     return (
-      <section aria-live="polite" className="rounded-xl border border-white/10 bg-[#0d111a]/95 p-3">
+      <section
+        aria-live={announce ? 'polite' : 'off'}
+        className="rounded-xl border border-white/10 bg-[#0d111a]/95 p-3"
+      >
         <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Selection</p>
-        <h3 className="mt-1 text-sm font-semibold text-white">Explore the network</h3>
-        <p className="mt-1 text-xs text-gray-400">Select a country, route, or provider node.</p>
+        <h3 className="mt-1 text-sm font-semibold text-white">Explore origin demand</h3>
+        <p className="mt-1 text-xs text-gray-400">Select a request-origin dot on the globe.</p>
       </section>
     );
   }
 
   const bucketIndex = buildColumnIndex(data.bucket_cols);
-  const flows = aggregateFlowsByCountryProvider(data, hourIndex);
-  const providers = new Map(data.providers.map((provider) => [provider.id, provider]));
   const hour = data.hours[hourIndex];
-
-  if (selection.type === 'country') {
-    const rows = (hour?.b ?? []).filter(
-      (row) => String(row[bucketIndex.c] ?? '') === selection.country,
-    );
-    const requests = rows.reduce((sum, row) => sum + Number(row[bucketIndex.n] ?? 0), 0);
-    const p90Values = rows
-      .map((row) => row[bucketIndex.p90])
-      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
-    const p90 = p90Values.length ? Math.max(...p90Values) : null;
-    const continent = String(rows[0]?.[bucketIndex.cont] ?? '?');
-    const coordinate = atlas.coordinates.get(selection.country);
-    const selectedTime = new Date(data.hours_index[hourIndex]);
-    const localHour =
-      coordinate && !Number.isNaN(selectedTime.getTime())
-        ? (selectedTime.getUTCHours() + Math.round(coordinate[0] / 15) + 24) % 24
-        : null;
-    const destinations = flows.filter((flow) => flow.country === selection.country).slice(0, 3);
-    return (
-      <section aria-live="polite" className="rounded-xl border border-white/10 bg-[#0d111a]/95 p-3">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-          Request origin (IP-based)
-        </p>
-        <h3 className="mt-1 text-sm font-semibold text-white">
-          {atlasCountryName(atlas, selection.country)} · {CONTINENT_NAMES[continent] ?? '?'}
-        </h3>
-        <div className="mt-2 space-y-1 text-xs text-gray-300">
-          <p>
-            {formatCount(requests)} requests this hour
-            {localHour === null ? '' : ` · ~${String(localHour).padStart(2, '0')}:00 local`}
-          </p>
-          {p90 !== null && <p>p90 TTFT {(p90 / 1_000).toFixed(2)} s</p>}
-          {destinations.length > 0 && (
-            <p>
-              To:{' '}
-              {destinations
-                .map(
-                  (flow) =>
-                    `${providers.get(flow.providerId)?.label ?? flow.providerId} (${formatCount(flow.requests)})`,
-                )
-                .join(', ')}
-            </p>
-          )}
-        </div>
-      </section>
-    );
-  }
-
-  if (selection.type === 'provider') {
-    const provider = providers.get(selection.providerId);
-    const inbound = flows.filter((flow) => flow.providerId === selection.providerId);
-    const requests = inbound.reduce((sum, flow) => sum + flow.requests, 0);
-    return (
-      <section aria-live="polite" className="rounded-xl border border-white/10 bg-[#0d111a]/95 p-3">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-          {provider?.kind === 'local' ? 'Local provider' : 'External API'}
-        </p>
-        <h3 className="mt-1 text-sm font-semibold text-white">
-          {provider?.label ?? selection.providerId}
-          {provider?.region ? ` · ${provider.region}` : ''}
-        </h3>
-        <div className="mt-2 space-y-1 text-xs text-gray-300">
-          <p>{formatCount(requests)} requests inbound this hour</p>
-          {provider?.kind !== 'local' && (
-            <p className="text-gray-500">GPU location unknown — not drawn on the map</p>
-          )}
-          {inbound.length > 0 && (
-            <p>
-              {inbound
-                .slice(0, 4)
-                .map(
-                  (flow) =>
-                    `${atlasCountryName(atlas, flow.country)} ${formatCount(flow.requests)}`,
-                )
-                .join(' · ')}
-            </p>
-          )}
-        </div>
-      </section>
-    );
-  }
-
-  const provider = providers.get(selection.providerId);
-  const flow = flows.find(
-    (candidate) =>
-      candidate.country === selection.country && candidate.providerId === selection.providerId,
+  const rows = (hour?.b ?? []).filter(
+    (row) => String(row[bucketIndex.c] ?? '') === selection.country,
   );
+  const requests = rows.reduce((sum, row) => sum + Number(row[bucketIndex.n] ?? 0), 0);
+  const users = rows.reduce((sum, row) => sum + Number(row[bucketIndex.users] ?? 0), 0);
+  const outputTokens = rows.reduce((sum, row) => sum + Number(row[bucketIndex.tout] ?? 0), 0);
+  const p90Values = rows
+    .map((row) => row[bucketIndex.p90])
+    .filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+  const p90 = p90Values.length ? Math.max(...p90Values) : null;
+  const continent = String(rows[0]?.[bucketIndex.cont] ?? '?');
+  const coordinate = atlas.coordinates.get(selection.country);
+  const selectedTime = new Date(data.hours_index[hourIndex]);
+  const localHour =
+    coordinate && !Number.isNaN(selectedTime.getTime())
+      ? (selectedTime.getUTCHours() + Math.round(coordinate[0] / 15) + 24) % 24
+      : null;
   return (
-    <section aria-live="polite" className="rounded-xl border border-white/10 bg-[#0d111a]/95 p-3">
-      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">Flow</p>
+    <section
+      aria-live={announce ? 'polite' : 'off'}
+      className="rounded-xl border border-white/10 bg-[#0d111a]/95 p-3"
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+        Request origin (IP-based)
+      </p>
       <h3 className="mt-1 text-sm font-semibold text-white">
-        {atlasCountryName(atlas, selection.country)} → {provider?.label ?? selection.providerId}
+        {atlasCountryName(atlas, selection.country)} · {CONTINENT_NAMES[continent] ?? '?'}
       </h3>
       <div className="mt-2 space-y-1 text-xs text-gray-300">
-        <p>{flow ? `${formatCount(flow.requests)} requests this hour` : 'No traffic this hour'}</p>
-        {flow && flow.endpoints.length > 1 && (
-          <p className="text-gray-500">
-            Endpoints:{' '}
-            {flow.endpoints
-              .map((endpoint) => `${endpoint.endpointId} ${formatCount(endpoint.requests)}`)
-              .join(' · ')}
-          </p>
-        )}
+        <p>
+          {formatCount(requests)} requests this hour
+          {localHour === null ? '' : ` · ~${String(localHour).padStart(2, '0')}:00 local`}
+        </p>
+        <p>
+          {formatCount(users)} distinct users · {formatCount(outputTokens)} output tokens
+        </p>
+        {p90 !== null && <p>p90 TTFT {(p90 / 1_000).toFixed(2)} s</p>}
       </div>
     </section>
   );
@@ -269,17 +220,11 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
   const [hourIndex, setHourIndex] = useState(Math.max(0, data.hours_index.length - 1));
   const [metric, setMetric] = useState<GeoMetric>('n');
   const [playing, setPlaying] = useState(false);
-  const [animateFlows, setAnimateFlows] = useState(true);
   const [selection, setSelection] = useState<GlobeSelection | null>(null);
   const [viewRequest, setViewRequest] = useState<GlobeViewRequest>({
     id: 0,
     rotation: viewPresets[0].rotation,
   });
-
-  useEffect(() => {
-    const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-    if (media?.matches) setAnimateFlows(false);
-  }, []);
 
   useEffect(() => {
     if (!playing) return;
@@ -297,36 +242,14 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
   );
   const handleSelect = useCallback((next: GlobeSelection) => setSelection(next), []);
   const stats = useMemo(() => currentHourStats(data, hourIndex, metric), [data, hourIndex, metric]);
-  const aggregatedFlows = useMemo(
-    () => aggregateFlowsByCountryProvider(data, hourIndex),
-    [data, hourIndex],
-  );
-  const providerById = useMemo(
-    () => new Map(data.providers.map((provider) => [provider.id, provider])),
-    [data.providers],
-  );
-  const externalTraffic = useMemo(() => {
-    const requests = new Map<string, number>();
-    for (const flow of aggregatedFlows) {
-      const provider = providerById.get(flow.providerId);
-      if (!provider || provider.kind !== 'local' || !provider.coord) {
-        requests.set(flow.providerId, (requests.get(flow.providerId) ?? 0) + flow.requests);
-      }
-    }
-    return [...requests.entries()]
-      .map(([providerId, count]) => {
-        const provider = providerById.get(providerId);
-        return provider ? { provider, requests: count } : null;
-      })
-      .filter((item): item is ExternalProviderTraffic => item !== null)
-      .sort((a, b) => b.requests - a.requests || a.provider.label.localeCompare(b.provider.label));
-  }, [aggregatedFlows, providerById]);
 
-  const selectedDate = new Date(data.hours_index[hourIndex]);
   const age = formatAge(data.meta.generated_at);
-  const countryContinents = buildCountryContinentMap(data);
-  const unplotted = [...countryContinents.keys()].filter(
-    (country) => !country.startsWith('?') && !atlas.coordinates.has(country),
+  const unplotted = useMemo(
+    () =>
+      [...buildCountryContinentMap(data).keys()].filter(
+        (country) => !country.startsWith('?') && !atlas.coordinates.has(country),
+      ),
+    [atlas.coordinates, data],
   );
   const showAttribution =
     data.meta.source !== 'synthetic-demo' &&
@@ -400,17 +323,8 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
               ))}
             </div>
           </div>
-          <label className="ml-1 flex items-center gap-1.5 pt-4 text-xs text-gray-500">
-            <input
-              checked={animateFlows}
-              className="accent-blue-600"
-              onChange={(event) => setAnimateFlows(event.target.checked)}
-              type="checkbox"
-            />
-            flow animation
-          </label>
         </div>
-        <div className="text-right">
+        <div aria-live={playing ? 'off' : 'polite'} className="text-right">
           <div className="flex items-center justify-end gap-2">
             {data.meta.source === 'synthetic-demo' && (
               <span className="rounded bg-amber-400 px-2 py-0.5 text-[10px] font-bold tracking-wide text-amber-950">
@@ -426,12 +340,7 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
               {formatTimestamp(data.hours_index[hourIndex])}
             </p>
           </div>
-          {!Number.isNaN(selectedDate.getTime()) && (
-            <p className="mt-0.5 text-xs text-gray-500">
-              {formatZoneTime(selectedDate, 'Asia/Shanghai')} Shanghai ·{' '}
-              {formatZoneTime(selectedDate, 'America/New_York')} Boston · {age.label}
-            </p>
-          )}
+          <p className="mt-0.5 text-xs text-gray-500">Hourly origin demand · {age.label}</p>
         </div>
       </div>
 
@@ -450,7 +359,6 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
 
       <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_15rem]">
         <GlobeCanvas
-          animateFlows={animateFlows}
           atlas={atlas}
           data={data}
           hourIndex={hourIndex}
@@ -459,10 +367,12 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
           viewRequest={viewRequest}
         />
         <aside className="grid content-start gap-3 sm:grid-cols-2 lg:grid-cols-1">
-          <SelectionPanel atlas={atlas} data={data} hourIndex={hourIndex} selection={selection} />
-          <ExternalApiRail
-            onSelect={(providerId) => setSelection({ type: 'provider', providerId })}
-            traffic={externalTraffic}
+          <SelectionPanel
+            announce={!playing}
+            atlas={atlas}
+            data={data}
+            hourIndex={hourIndex}
+            selection={selection}
           />
         </aside>
       </div>
