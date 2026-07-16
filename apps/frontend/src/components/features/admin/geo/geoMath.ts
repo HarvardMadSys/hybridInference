@@ -230,8 +230,7 @@ export function hourOriginSummary(
   const origins = [...byCountry.values()]
     .filter((origin) => origin.requests > 0 || origin.value > 0)
     .sort(
-      (a, b) =>
-        b.value - a.value || b.requests - a.requests || a.country.localeCompare(b.country),
+      (a, b) => b.value - a.value || b.requests - a.requests || a.country.localeCompare(b.country),
     );
   const top = origins[0] ?? null;
   return {
@@ -245,19 +244,29 @@ export function hourOriginSummary(
   };
 }
 
-/** Rotation that centers the globe on the request-weighted centroid of the window. */
+/**
+ * Rotation that centers the globe on the request-weighted centroid — of one hour
+ * when `hourIndex` is given (what the viewer opens on), else of the whole window.
+ */
 export function demandWeightedRotation(
   data: GeoAnalyticsResponse,
   coordinates: ReadonlyMap<string, [number, number]>,
+  hourIndex?: number,
 ): [number, number] | null {
   const bucketIndex = buildColumnIndex(data.bucket_cols);
   const countryPosition = requiredIndex(bucketIndex, 'c');
   const requestPosition = requiredIndex(bucketIndex, 'n');
+  const hours =
+    hourIndex === undefined
+      ? data.hours
+      : hourIndex >= 0 && hourIndex < data.hours.length
+        ? [data.hours[hourIndex]]
+        : [];
   let x = 0;
   let y = 0;
   let z = 0;
   let total = 0;
-  for (const hour of data.hours) {
+  for (const hour of hours) {
     for (const row of hour.b) {
       const requests = numberAt(row, requestPosition);
       if (requests <= 0) continue;

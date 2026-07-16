@@ -27,10 +27,7 @@ function makeData(hourCount: number): GeoAnalyticsResponse {
       new Date(start + index * 3_600_000).toISOString(),
     ),
     hours: Array.from({ length: hourCount }, (_, index) => ({
-      b: [
-        ['USA', 'NA', 10 + index, 100] as GeoBucketRow,
-        ['CHN', 'AS', 5, 50] as GeoBucketRow,
-      ],
+      b: [['USA', 'NA', 10 + index, 100] as GeoBucketRow, ['CHN', 'AS', 5, 50] as GeoBucketRow],
     })),
   };
 }

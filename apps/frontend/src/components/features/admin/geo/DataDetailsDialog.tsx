@@ -31,12 +31,41 @@ export function DataDetailsDialog({
   metricModel: GeoMetricModel;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+
+  // Focus moves in exactly once per open (never re-stolen by parent re-renders)
+  // and returns to the trigger when the dialog closes.
+  useEffect(() => {
+    if (!open) return;
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
+    return () => restoreFocusRef.current?.focus();
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
-    closeRef.current?.focus();
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const container = containerRef.current;
+      if (!container) return;
+      const focusables = container.querySelectorAll<HTMLElement>('a[href], button:not([disabled])');
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !container.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -74,6 +103,7 @@ export function DataDetailsDialog({
       role="presentation"
     >
       <div
+        ref={containerRef}
         aria-label="Data details"
         aria-modal="true"
         className="w-full max-w-md rounded-xl border border-gray-200 bg-white p-5 shadow-xl"
@@ -116,8 +146,8 @@ export function DataDetailsDialog({
           </dd>
         </dl>
         <p className="mt-3 border-t border-gray-100 pt-3 text-xs leading-relaxed text-gray-500">
-          Origins are network origins estimated from request IP addresses; they may differ from
-          user location (VPNs, proxies, cloud runners).
+          Origins are network origins estimated from request IP addresses; they may differ from user
+          location (VPNs, proxies, cloud runners).
           {data.meta.source === 'synthetic-demo' && (
             <strong className="block pt-1 font-semibold text-amber-700">
               This view is running on synthetic demo data.

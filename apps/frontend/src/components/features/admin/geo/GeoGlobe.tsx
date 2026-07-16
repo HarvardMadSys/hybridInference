@@ -105,6 +105,12 @@ function Segmented<Value extends string | number>({
   );
 }
 
+async function loadAtlas(signal: AbortSignal): Promise<PreparedAtlas> {
+  const response = await fetch('/atlas/countries-110m.json', { signal });
+  if (!response.ok) throw new Error(`World atlas failed to load (HTTP ${response.status})`);
+  return prepareAtlas(await response.json());
+}
+
 function LoadingState() {
   return (
     <div aria-label="Loading request origins" className="mt-6 space-y-3" role="status">
@@ -131,13 +137,23 @@ function ErrorState({ error, onRetry }: { error: string; onRetry: () => void }) 
   );
 }
 
-function EmptyState({ days }: { days: GeoRangeDays }) {
+function EmptyState({
+  days,
+  onDaysChange,
+}: {
+  days: GeoRangeDays;
+  onDaysChange: (next: GeoRangeDays) => void;
+}) {
   return (
     <div className="mt-6 rounded-xl border border-gray-200 bg-gray-50 p-8 text-center">
       <h2 className="font-semibold text-gray-900">No request origins yet</h2>
       <p className="mt-1 text-sm text-gray-500">
         There were no requests in the latest {days}-day window.
       </p>
+      <div className="mt-4 flex justify-center">
+        <Segmented label="Range" onChange={onDaysChange} options={RANGE_OPTIONS} value={days} />
+      </div>
+      <p className="mt-2 text-xs text-gray-400">Try a longer range.</p>
     </div>
   );
 }
@@ -157,6 +173,14 @@ function Hero({
 }) {
   const unit = metricUnit(metric);
   const countryWord = summary.activeCountries === 1 ? 'country' : 'countries';
+  let subline = 'No requests recorded in this hour.';
+  if (summary.totalRequests > 0 && summary.top === null) {
+    subline = 'Origins unknown for all requests this hour.';
+  } else if (summary.top !== null) {
+    const topName = atlasCountryName(atlas, summary.top.country);
+    const topShare = Math.round(summary.topShare * 100);
+    subline = `${topName} ${topShare}% · ${summary.activeCountries} active ${countryWord}`;
+  }
   return (
     <div>
       <p className="text-[28px] font-bold leading-tight tracking-tight text-gray-900">
@@ -168,11 +192,7 @@ function Hero({
         </span>
       </p>
       <p aria-live="polite" className="mt-0.5 text-sm text-gray-600">
-        {summary.top === null
-          ? 'No requests recorded in this hour.'
-          : `${atlasCountryName(atlas, summary.top.country)} ${Math.round(
-            summary.topShare * 100,
-          )}% · ${summary.activeCountries} active ${countryWord}`}
+        {subline}
       </p>
     </div>
   );
@@ -196,13 +216,36 @@ function GeoDashboard({
   const [selection, setSelection] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const initialRotation = useMemo(
-    () => demandWeightedRotation(data, atlas.coordinates) ?? DEFAULT_ROTATION,
-    [atlas.coordinates, data],
+    () =>
+      demandWeightedRotation(data, atlas.coordinates, lastIndex) ??
+      demandWeightedRotation(data, atlas.coordinates) ??
+      DEFAULT_ROTATION,
+    [atlas.coordinates, data, lastIndex],
   );
   const [viewRequest, setViewRequest] = useState<GlobeViewRequest>({
     id: 0,
     rotation: initialRotation,
   });
+  const safeHourIndex = Math.min(hourIndex, lastIndex);
+
+  // A cached range switch swaps `data` without remounting (the key is the range,
+  // and the dashboard first mounts with the previous payload). Re-anchor the
+  // hour, selection, and camera whenever the payload identity changes.
+  const dataRef = useRef(data);
+  useEffect(() => {
+    if (dataRef.current === data) return;
+    dataRef.current = data;
+    const last = Math.max(0, data.hours_index.length - 1);
+    setHourIndex(last);
+    setSelection(null);
+    setViewRequest((request) => ({
+      id: request.id + 1,
+      rotation:
+        demandWeightedRotation(data, atlas.coordinates, last) ??
+        demandWeightedRotation(data, atlas.coordinates) ??
+        DEFAULT_ROTATION,
+    }));
+  }, [atlas.coordinates, data]);
 
   useEffect(() => {
     if (!playing) return;
@@ -242,10 +285,11 @@ function GeoDashboard({
     [atlas.coordinates],
   );
 
+  const closeDetails = useCallback(() => setDetailsOpen(false), []);
   const metricModel = useMemo(() => deriveGeoMetricModel(data, metric), [data, metric]);
   const summary = useMemo(
-    () => hourOriginSummary(data, hourIndex, metricModel),
-    [data, hourIndex, metricModel],
+    () => hourOriginSummary(data, safeHourIndex, metricModel),
+    [data, safeHourIndex, metricModel],
   );
   const stale = isStale(data.meta.generated_at);
 
@@ -270,7 +314,7 @@ function GeoDashboard({
         </div>
       </div>
 
-      <Hero atlas={atlas} data={data} hourIndex={hourIndex} metric={metric} summary={summary} />
+      <Hero atlas={atlas} data={data} hourIndex={safeHourIndex} metric={metric} summary={summary} />
 
       {(data.meta.degraded || !data.meta.geoip.country) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
@@ -278,11 +322,11 @@ function GeoDashboard({
         </div>
       )}
 
-      <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_15rem]">
+      <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,1fr)_15rem]">
         <GlobeCanvas
           atlas={atlas}
           data={data}
-          hourIndex={hourIndex}
+          hourIndex={safeHourIndex}
           metricModel={metricModel}
           onSelect={handleGlobeSelect}
           selectedCountry={selection}
@@ -291,7 +335,7 @@ function GeoDashboard({
         <TopOrigins
           announce={!playing}
           atlas={atlas}
-          hourLabel={hourShortLabel(data.hours_index[hourIndex])}
+          hourLabel={hourShortLabel(data.hours_index[safeHourIndex])}
           metric={metric}
           onSelect={handleOriginSelect}
           selectedCountry={selection}
@@ -301,7 +345,7 @@ function GeoDashboard({
 
       <WindowTimeline
         data={data}
-        hourIndex={hourIndex}
+        hourIndex={safeHourIndex}
         metricModel={metricModel}
         onHourChange={setBoundedHour}
         onTogglePlay={() => setPlaying((current) => !current)}
@@ -322,7 +366,7 @@ function GeoDashboard({
       <DataDetailsDialog
         data={data}
         metricModel={metricModel}
-        onClose={() => setDetailsOpen(false)}
+        onClose={closeDetails}
         open={detailsOpen}
       />
     </div>
@@ -351,16 +395,7 @@ export function GeoGlobe() {
     setError(null);
     Promise.all([
       getGeoAnalytics({ days, signal: controller.signal }),
-      atlas
-        ? Promise.resolve(atlas)
-        : fetch('/atlas/countries-110m.json', { signal: controller.signal }).then(
-          async (response) => {
-            if (!response.ok) {
-              throw new Error(`World atlas failed to load (HTTP ${response.status})`);
-            }
-            return prepareAtlas(await response.json());
-          },
-        ),
+      atlas ? Promise.resolve(atlas) : loadAtlas(controller.signal),
     ])
       .then(([nextData, nextAtlas]) => {
         if (controller.signal.aborted) return;
@@ -390,7 +425,7 @@ export function GeoGlobe() {
     );
   if (loading) return <LoadingState />;
   if (!data.hours_index.length || !data.hours.length || data.meta.rows_total === 0) {
-    return <EmptyState days={days} />;
+    return <EmptyState days={days} onDaysChange={setDays} />;
   }
   return <GeoDashboard key={days} atlas={atlas} data={data} days={days} onDaysChange={setDays} />;
 }

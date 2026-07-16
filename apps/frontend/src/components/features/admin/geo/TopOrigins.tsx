@@ -45,7 +45,9 @@ export function TopOrigins({
       </h3>
       {rows.length === 0 ? (
         <p className="mt-2 text-xs text-gray-500">
-          No requests this hour. Press Play or scrub the timeline.
+          {summary.totalRequests > 0
+            ? 'No located origins this hour — origins are unknown for this traffic.'
+            : 'No requests this hour. Press Play or scrub the timeline.'}
         </p>
       ) : (
         <ul className="mt-2 space-y-1">
@@ -73,9 +75,7 @@ export function TopOrigins({
                     <span className="min-w-0 flex-1 truncate">
                       {atlasCountryName(atlas, origin.country)}
                     </span>
-                    <span className="font-semibold tabular-nums">
-                      {formatValue(origin.value)}
-                    </span>
+                    <span className="font-semibold tabular-nums">{formatValue(origin.value)}</span>
                   </span>
                   <span
                     aria-hidden="true"

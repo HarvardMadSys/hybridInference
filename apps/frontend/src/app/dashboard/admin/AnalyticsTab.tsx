@@ -327,7 +327,10 @@ export function AnalyticsTab() {
         className="mb-4 inline-flex overflow-hidden rounded-lg border border-gray-200 bg-white"
         role="group"
       >
-        <span aria-current="page" className="bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white">
+        <span
+          aria-current="page"
+          className="bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white"
+        >
           Overview
         </span>
         <Link

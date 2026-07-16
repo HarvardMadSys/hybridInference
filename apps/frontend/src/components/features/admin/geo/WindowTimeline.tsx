@@ -85,6 +85,12 @@ export function WindowTimeline({
   const layerArea = area<number>()
     .x((_, index) => x(index))
     .curve(curveMonotoneX);
+  const hourIndices = Array.from({ length: hourCount }, (_, index) => index);
+  const layerPaths = stacked.map((layer) => {
+    layerArea.y0((_, index) => y(layer.lower[index] ?? 0));
+    layerArea.y1((_, index) => y(layer.upper[index] ?? 0));
+    return { continent: layer.continent, d: layerArea(hourIndices) ?? undefined };
+  });
 
   const midnights = useMemo(() => {
     const days = Math.max(1, Math.round(hourCount / 24));
@@ -216,17 +222,11 @@ export function WindowTimeline({
             ) : null}
           </g>
         ))}
-        {stacked.map((layer) => (
+        {layerPaths.map((layer) => (
           <path
             key={layer.continent}
             data-continent={layer.continent}
-            d={
-              layerArea
-                .y0((_, index) => y(layer.lower[index] ?? 0))
-                .y1((_, index) => y(layer.upper[index] ?? 0))(
-                  Array.from({ length: hourCount }, (_, index) => index),
-                ) ?? undefined
-            }
+            d={layer.d}
             fill={CONTINENT_COLORS[layer.continent] ?? CONTINENT_COLORS['?']}
             opacity={0.75}
           />

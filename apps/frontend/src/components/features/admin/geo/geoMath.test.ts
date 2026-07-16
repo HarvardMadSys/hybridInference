@@ -187,6 +187,15 @@ describe('view rotations', () => {
     expect(rotation![0]).toBeLessThan(99);
   });
 
+  it('scopes the centroid to one hour when hourIndex is given', () => {
+    const data = makeData([{ b: [bucket('USA', 'NA', 10)] }, { b: [bucket('CHN', 'AS', 10)] }]);
+
+    const rotation = demandWeightedRotation(data, COORDINATES, 1);
+    expect(rotation![0]).toBeCloseTo(-104);
+    expect(rotation![1]).toBeCloseTo(-36);
+    expect(demandWeightedRotation(data, COORDINATES, 9)).toBeNull();
+  });
+
   it('returns null without located demand and clamps extreme latitudes', () => {
     expect(demandWeightedRotation(makeData([{ b: [bucket('?', '?', 9)] }]), COORDINATES)).toBe(
       null,

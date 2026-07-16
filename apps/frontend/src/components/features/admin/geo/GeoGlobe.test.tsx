@@ -169,9 +169,7 @@ describe('GeoGlobe', () => {
     expect(row).toHaveAttribute('aria-pressed', 'true');
     const dot = screen.getByRole('button', { name: 'United States request origin' });
     expect(dot).toHaveAttribute('aria-pressed', 'true');
-    expect(dot.querySelector('circle[data-layer="selection-ring"]')).not.toHaveAttribute(
-      'display',
-    );
+    expect(dot.querySelector('circle[data-layer="selection-ring"]')).not.toHaveAttribute('display');
 
     fireEvent.click(row);
     expect(row).toHaveAttribute('aria-pressed', 'false');
@@ -188,8 +186,9 @@ describe('GeoGlobe', () => {
     fireEvent.keyDown(timeline, { key: 'ArrowLeft' });
 
     expect(screen.getByText('No requests recorded in this hour.')).toBeInTheDocument();
-    expect(screen.getByText('No requests this hour. Press Play or scrub the timeline.'))
-      .toBeInTheDocument();
+    expect(
+      screen.getByText('No requests this hour. Press Play or scrub the timeline.'),
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '← 1h' })).toBeDisabled();
     expect(screen.getByRole('button', { name: '1h →' })).toBeEnabled();
   });
@@ -201,9 +200,7 @@ describe('GeoGlobe', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '7d' }));
     await waitFor(() =>
-      expect(mockedGetGeoAnalytics).toHaveBeenLastCalledWith(
-        expect.objectContaining({ days: 7 }),
-      ),
+      expect(mockedGetGeoAnalytics).toHaveBeenLastCalledWith(expect.objectContaining({ days: 7 })),
     );
     await screen.findByText('14 requests');
 
@@ -218,14 +215,8 @@ describe('GeoGlobe', () => {
 
     const play = await screen.findByRole('button', { name: '▶ Play' });
     fireEvent.click(play);
-    expect(screen.getByRole('button', { name: '⏸ Pause' })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(screen.getByText(/Top origins ·/).closest('aside')).toHaveAttribute(
-      'aria-live',
-      'off',
-    );
+    expect(screen.getByRole('button', { name: '⏸ Pause' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText(/Top origins ·/).closest('aside')).toHaveAttribute('aria-live', 'off');
     fireEvent.click(screen.getByRole('button', { name: '⏸ Pause' }));
     expect(screen.getByText(/Top origins ·/).closest('aside')).toHaveAttribute(
       'aria-live',
@@ -289,5 +280,72 @@ describe('GeoGlobe', () => {
 
     expect(await screen.findByText('No request origins yet')).toBeInTheDocument();
     expect(screen.getByText(/latest 14-day window/)).toBeInTheDocument();
+  });
+
+  it('distinguishes unlocated traffic from an empty hour', async () => {
+    const data = response();
+    data.hours[1].b = [['?', '?', 96, 10]];
+    data.meta.rows_total = 96;
+    mockedGetGeoAnalytics.mockResolvedValue(data);
+    render(<GeoGlobe />);
+
+    expect(await screen.findByText('96 requests')).toBeInTheDocument();
+    expect(screen.getByText('Origins unknown for all requests this hour.')).toBeInTheDocument();
+    expect(
+      screen.getByText('No located origins this hour — origins are unknown for this traffic.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('No requests recorded in this hour.')).not.toBeInTheDocument();
+  });
+
+  it('re-anchors the hour when a cached range switch swaps the payload', async () => {
+    const fourteen = response();
+    const seven = response();
+    seven.hours_index = ['2026-07-14T05:00:00+00:00'];
+    seven.hours = [{ b: [['CAN', 'NA', 3, 30]] }];
+    seven.meta = { ...seven.meta, hours: 1, rows_total: 3 };
+    mockedGetGeoAnalytics.mockImplementation((options) =>
+      Promise.resolve(options?.days === 7 ? seven : fourteen),
+    );
+    render(<GeoGlobe />);
+    expect(await screen.findByText('at 01:00 UTC · Jul 15')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '7d' }));
+    expect(await screen.findByText('at 05:00 UTC · Jul 14')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '14d' }));
+    expect(await screen.findByText('at 01:00 UTC · Jul 15')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '7d' }));
+    expect(await screen.findByText('at 05:00 UTC · Jul 14')).toBeInTheDocument();
+    expect(screen.getByText('CAN 100% · 1 active country')).toBeInTheDocument();
+    expect(screen.queryByText('unknown hour')).not.toBeInTheDocument();
+    expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the range control reachable on an empty window', async () => {
+    const empty = response({ rows_total: 0 });
+    const thirty = response();
+    mockedGetGeoAnalytics.mockImplementation((options) =>
+      Promise.resolve(options?.days === 30 ? thirty : empty),
+    );
+    render(<GeoGlobe />);
+
+    expect(await screen.findByText('No request origins yet')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '30d' }));
+    expect(await screen.findByText('14 requests')).toBeInTheDocument();
+  });
+
+  it('returns focus to the trigger when data details closes', async () => {
+    mockedGetGeoAnalytics.mockResolvedValue(response());
+    render(<GeoGlobe />);
+
+    const trigger = await screen.findByRole('button', { name: 'Data details' });
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 });
