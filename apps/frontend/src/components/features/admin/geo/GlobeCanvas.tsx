@@ -38,6 +38,7 @@ export type GlobeSelection = { type: 'country'; country: string };
 export interface GlobeViewRequest {
   id: number;
   rotation: [number, number];
+  animate?: boolean;
 }
 
 const COORDINATE_OVERRIDES: Readonly<Record<string, [number, number]>> = {
@@ -115,11 +116,6 @@ export function atlasCountryName(atlas: PreparedAtlas, alpha3: string): string {
 function metricLabel(metric: GeoMetric): string {
   if (metric === 'tout') return 'output tokens';
   return 'requests';
-}
-
-function formatScaleCap(cap: number, metric: GeoMetric): string {
-  if (cap <= 0) return 'absolute scale · no positive volume in range';
-  return `absolute scale · capped at range p99: ${Math.round(cap).toLocaleString()} ${metricLabel(metric)}/country-hour`;
 }
 
 function positiveNumber(value: unknown): number {
@@ -211,13 +207,13 @@ export function GlobeCanvas({
       .attr('fill', '#1f2836')
       .attr('stroke', 'rgba(255,255,255,0.06)')
       .attr('stroke-width', 0.5);
-    svg.append('path').attr('data-layer', 'day').attr('fill', 'rgba(255,244,214,0.08)');
-    svg.append('path').attr('data-layer', 'night').attr('fill', 'rgba(2,4,12,0.48)');
+    svg.append('path').attr('data-layer', 'day').attr('fill', 'rgba(255,244,214,0.05)');
+    svg.append('path').attr('data-layer', 'night').attr('fill', 'rgba(2,4,12,0.30)');
     svg
       .append('path')
       .attr('data-layer', 'terminator')
       .attr('fill', 'none')
-      .attr('stroke', 'rgba(205,220,255,0.34)')
+      .attr('stroke', 'rgba(205,220,255,0.22)')
       .attr('stroke-width', 1.1)
       .attr('stroke-dasharray', '5 4');
     svg.append('g').attr('data-layer', 'heat');
@@ -472,9 +468,36 @@ export function GlobeCanvas({
   }, [atlas, data, hourIndex, metricModel, onSelect, selectedCountry]);
 
   useEffect(() => {
-    projectionRef.current.rotate([viewRequest.rotation[0], viewRequest.rotation[1], 0]);
-    staticRedrawRef.current();
-    dynamicRedrawRef.current();
+    const projection = projectionRef.current;
+    const target: [number, number, number] = [viewRequest.rotation[0], viewRequest.rotation[1], 0];
+    const redraw = () => {
+      staticRedrawRef.current();
+      dynamicRedrawRef.current();
+    };
+    const reduceMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!viewRequest.animate || reduceMotion) {
+      projection.rotate(target);
+      redraw();
+      return;
+    }
+    const from = projection.rotate();
+    // Take the short way around the antimeridian.
+    const deltaLambda = ((target[0] - from[0] + 540) % 360) - 180;
+    const deltaPhi = target[1] - from[1];
+    const durationMs = 600;
+    const startedAt = performance.now();
+    let frame = 0;
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / durationMs);
+      const eased = progress < 0.5 ? 2 * progress * progress : 1 - (-2 * progress + 2) ** 2 / 2;
+      projection.rotate([from[0] + deltaLambda * eased, from[1] + deltaPhi * eased, 0]);
+      redraw();
+      if (progress < 1) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(frame);
   }, [viewRequest]);
 
   return (
@@ -488,23 +511,8 @@ export function GlobeCanvas({
         className="block h-full w-full cursor-grab touch-none active:cursor-grabbing"
         role="group"
       />
-      <p
-        className="pointer-events-none absolute left-3 top-3 rounded bg-black/35 px-2 py-1 text-[11px] text-gray-300"
-        data-testid="globe-scale-note"
-      >
-        {formatScaleCap(metricModel.countryHourP99, metricModel.metric)}
-      </p>
-      <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap gap-3 text-[11px] text-gray-400">
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full" style={{ background: CONTINENT_COLORS.AS }} />{' '}
-          request origin · color = continent
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full bg-[#cddcff]/40" /> day/night
-        </span>
-      </div>
-      <p className="pointer-events-none absolute bottom-3 right-3 hidden text-[11px] text-gray-500 sm:block">
-        Drag to rotate · select a request origin
+      <p className="pointer-events-none absolute bottom-3 left-3 text-[11px] text-gray-400">
+        Drag to rotate · dot color = continent · dot size = volume (fixed scale)
       </p>
     </div>
   );

@@ -322,6 +322,22 @@ export function AnalyticsTab() {
 
   return (
     <div className="mt-6">
+      <div
+        aria-label="Analytics section"
+        className="mb-4 inline-flex overflow-hidden rounded-lg border border-gray-200 bg-white"
+        role="group"
+      >
+        <span aria-current="page" className="bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white">
+          Overview
+        </span>
+        <Link
+          className="px-3.5 py-1.5 text-[13px] font-medium text-gray-600 transition hover:bg-gray-50"
+          href="/dashboard/admin/analytics/geo"
+        >
+          Request origins
+        </Link>
+      </div>
+
       <div className="mb-5 flex gap-2">
         {PERIODS.map(({ key, label }) => (
           <button
@@ -341,22 +357,6 @@ export function AnalyticsTab() {
       {error && (
         <div className="mb-4 rounded-lg bg-red-50 px-4 py-2.5 text-sm text-red-600">{error}</div>
       )}
-
-      <Link
-        href="/dashboard/admin/analytics/geo"
-        className="group mb-4 flex items-center justify-between gap-5 rounded-xl border border-gray-200 bg-white p-5 transition hover:border-gray-300 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-gray-300"
-      >
-        <div className="min-w-0">
-          <CardTitle>Geography</CardTitle>
-          <p className="mt-1 text-[15px] font-semibold text-gray-900">Geo-temporal demand globe</p>
-          <p className="mt-1 text-xs leading-5 text-gray-500">
-            Explore request origins (IP-based) and hourly demand shifting across regions.
-          </p>
-        </div>
-        <span className="shrink-0 text-[13px] font-medium text-gray-700 transition group-hover:translate-x-0.5 group-hover:text-gray-900">
-          Open globe <span aria-hidden="true">→</span>
-        </span>
-      </Link>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {loading || !data ? (

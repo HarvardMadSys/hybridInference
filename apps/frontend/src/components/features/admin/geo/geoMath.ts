@@ -28,36 +28,28 @@ export const CONTINENT_COLORS: Readonly<Record<string, string>> = {
 
 export type GeoColumnIndex = Readonly<Record<string, number>>;
 
-export interface DemandComplementarityResult {
-  complementarity: number;
-  continents: number;
-}
-
 export interface GeoMetricModel {
   metric: GeoMetric;
   continentSeries: Map<string, number[]>;
-  demandComplementarity: DemandComplementarityResult;
   countryHourP99: number;
   continentHourP99: number;
 }
 
-export interface ContinentTotal {
+export interface HourOrigin {
+  country: string;
   continent: string;
+  requests: number;
   value: number;
-  fraction: number;
 }
 
-export interface CurrentHourStats {
+export interface HourOriginSummary {
   totalRequests: number;
-  locatedRequests: number;
-  locatedFraction: number;
-  unlocatedFraction: number;
+  totalValue: number;
   activeCountries: number;
-  activeContinents: number;
-  continentTotals: ContinentTotal[];
-  topContinent: ContinentTotal | null;
-  demandComplementarity: number;
-  observedContinents: number;
+  unlocatedFraction: number;
+  origins: HourOrigin[];
+  top: HourOrigin | null;
+  topShare: number;
 }
 
 export function buildColumnIndex(columns: readonly string[]): GeoColumnIndex {
@@ -134,33 +126,7 @@ export function buildContinentSeries(
   return series;
 }
 
-function demandComplementarityFromSeries(
-  series: ReadonlyMap<string, readonly number[]>,
-  hourCount: number,
-): DemandComplementarityResult {
-  if (series.size < 2 || hourCount === 0) {
-    return { complementarity: 0, continents: series.size };
-  }
-
-  const total = Array(hourCount).fill(0) as number[];
-  let sumPeaks = 0;
-  for (const values of series.values()) {
-    let peak = 0;
-    values.forEach((value, hourIndex) => {
-      total[hourIndex] += value;
-      peak = Math.max(peak, value);
-    });
-    sumPeaks += peak;
-  }
-
-  const globalPeak = Math.max(0, ...total);
-  return {
-    complementarity: sumPeaks > 0 ? clampFraction(1 - globalPeak / sumPeaks) : 0,
-    continents: series.size,
-  };
-}
-
-/** Derive stable range-wide series, complementarity, and separate p99 visual caps. */
+/** Derive stable range-wide series and separate p99 visual caps. */
 export function deriveGeoMetricModel(
   data: GeoAnalyticsResponse,
   metric: GeoMetric,
@@ -188,22 +154,9 @@ export function deriveGeoMetricModel(
   return {
     metric,
     continentSeries,
-    demandComplementarity: demandComplementarityFromSeries(
-      continentSeries,
-      data.hours_index.length,
-    ),
     countryHourP99: positiveNearestRankPercentile(countryHourValues, 0.99),
     continentHourP99: positiveNearestRankPercentile(continentHourValues, 0.99),
   };
-}
-
-/** Range-wide demand complementarity: 1 - global peak / sum of continent peaks. */
-export function rangeDemandComplementarity(
-  data: GeoAnalyticsResponse,
-  metric: GeoMetric,
-): DemandComplementarityResult {
-  const series = buildContinentSeries(data, metric);
-  return demandComplementarityFromSeries(series, data.hours_index.length);
 }
 
 /** Map each observed request-origin country to its continent. */
@@ -223,31 +176,27 @@ export function buildCountryContinentMap(data: GeoAnalyticsResponse): Map<string
   return result;
 }
 
-function emptyCurrentHourStats(complementarity: DemandComplementarityResult): CurrentHourStats {
+function emptyHourOriginSummary(): HourOriginSummary {
   return {
     totalRequests: 0,
-    locatedRequests: 0,
-    locatedFraction: 0,
-    unlocatedFraction: 0,
+    totalValue: 0,
     activeCountries: 0,
-    activeContinents: 0,
-    continentTotals: [],
-    topContinent: null,
-    demandComplementarity: complementarity.complementarity,
-    observedContinents: complementarity.continents,
+    unlocatedFraction: 0,
+    origins: [],
+    top: null,
+    topShare: 0,
   };
 }
 
-/** Summarize the four stat cards for the selected hour. */
-export function currentHourStats(
+/** Per-country demand for one hour: feeds the hero line and the Top origins rail. */
+export function hourOriginSummary(
   data: GeoAnalyticsResponse,
   hourIndex: number,
   metricModel: GeoMetricModel,
-): CurrentHourStats {
-  const complementarity = metricModel.demandComplementarity;
+): HourOriginSummary {
   const hour = data.hours[hourIndex];
   if (!hour || hourIndex < 0 || hourIndex >= data.hours_index.length) {
-    return emptyCurrentHourStats(complementarity);
+    return emptyHourOriginSummary();
   }
 
   const bucketIndex = buildColumnIndex(data.bucket_cols);
@@ -256,48 +205,81 @@ export function currentHourStats(
   const requestPosition = requiredIndex(bucketIndex, 'n');
 
   let totalRequests = 0;
+  let totalValue = 0;
   let locatedRequests = 0;
-  const activeCountries = new Set<string>();
-  const activeContinents = new Set<string>();
-  const valuesByContinent = new Map<string, number>();
+  const byCountry = new Map<string, HourOrigin>();
   for (const row of hour.b) {
     const requests = numberAt(row, requestPosition);
-    const country = stringAt(row, countryPosition);
-    const continent = stringAt(row, continentPosition);
+    const value = metricValue(row, metricModel.metric, bucketIndex);
     totalRequests += requests;
-    if (isLocatedContinent(continent)) {
-      locatedRequests += requests;
-      const value = metricValue(row, metricModel.metric, bucketIndex);
-      if (value > 0) {
-        valuesByContinent.set(continent, (valuesByContinent.get(continent) ?? 0) + value);
-      }
-      if (requests > 0) activeContinents.add(continent);
-    }
-    if (requests > 0 && country && !country.startsWith('?')) activeCountries.add(country);
+    totalValue += value;
+    const country = stringAt(row, countryPosition);
+    if (!country || country.startsWith('?')) continue;
+    locatedRequests += requests;
+    const entry = byCountry.get(country) ?? {
+      country,
+      continent: stringAt(row, continentPosition),
+      requests: 0,
+      value: 0,
+    };
+    entry.requests += requests;
+    entry.value += value;
+    byCountry.set(country, entry);
   }
 
-  const continentValueTotal = [...valuesByContinent.values()].reduce(
-    (sum, value) => sum + value,
-    0,
-  );
-  const continentTotals = [...valuesByContinent.entries()]
-    .map(([continent, value]) => ({
-      continent,
-      value,
-      fraction: fraction(value, continentValueTotal),
-    }))
-    .sort((a, b) => b.value - a.value || a.continent.localeCompare(b.continent));
-
+  const origins = [...byCountry.values()]
+    .filter((origin) => origin.requests > 0 || origin.value > 0)
+    .sort(
+      (a, b) =>
+        b.value - a.value || b.requests - a.requests || a.country.localeCompare(b.country),
+    );
+  const top = origins[0] ?? null;
   return {
     totalRequests,
-    locatedRequests,
-    locatedFraction: fraction(locatedRequests, totalRequests),
-    unlocatedFraction: fraction(totalRequests - locatedRequests, totalRequests),
-    activeCountries: activeCountries.size,
-    activeContinents: activeContinents.size,
-    continentTotals,
-    topContinent: continentTotals[0] ?? null,
-    demandComplementarity: complementarity.complementarity,
-    observedContinents: complementarity.continents,
+    totalValue,
+    activeCountries: origins.filter((origin) => origin.requests > 0).length,
+    unlocatedFraction: clampFraction(fraction(totalRequests - locatedRequests, totalRequests)),
+    origins,
+    top,
+    topShare: top && totalValue > 0 ? clampFraction(top.value / totalValue) : 0,
   };
+}
+
+/** Rotation that centers the globe on the request-weighted centroid of the window. */
+export function demandWeightedRotation(
+  data: GeoAnalyticsResponse,
+  coordinates: ReadonlyMap<string, [number, number]>,
+): [number, number] | null {
+  const bucketIndex = buildColumnIndex(data.bucket_cols);
+  const countryPosition = requiredIndex(bucketIndex, 'c');
+  const requestPosition = requiredIndex(bucketIndex, 'n');
+  let x = 0;
+  let y = 0;
+  let z = 0;
+  let total = 0;
+  for (const hour of data.hours) {
+    for (const row of hour.b) {
+      const requests = numberAt(row, requestPosition);
+      if (requests <= 0) continue;
+      const coordinate = coordinates.get(stringAt(row, countryPosition));
+      if (!coordinate) continue;
+      const latitude = (coordinate[1] * Math.PI) / 180;
+      const longitude = (coordinate[0] * Math.PI) / 180;
+      x += requests * Math.cos(latitude) * Math.cos(longitude);
+      y += requests * Math.cos(latitude) * Math.sin(longitude);
+      z += requests * Math.sin(latitude);
+      total += requests;
+    }
+  }
+  const magnitude = Math.hypot(x, y, z);
+  if (total <= 0 || magnitude === 0) return null;
+  return rotationForCoordinate([
+    (Math.atan2(y, x) * 180) / Math.PI,
+    (Math.asin(z / magnitude) * 180) / Math.PI,
+  ]);
+}
+
+/** Rotation that centers the globe on one coordinate, with a readable latitude clamp. */
+export function rotationForCoordinate(coordinate: [number, number]): [number, number] {
+  return [-coordinate[0], -Math.max(-55, Math.min(55, coordinate[1]))];
 }

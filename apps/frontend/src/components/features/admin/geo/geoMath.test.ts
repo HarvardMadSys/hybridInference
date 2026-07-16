@@ -6,10 +6,11 @@ import {
   buildColumnIndex,
   buildContinentSeries,
   buildCountryContinentMap,
-  currentHourStats,
+  demandWeightedRotation,
   deriveGeoMetricModel,
+  hourOriginSummary,
   positiveNearestRankPercentile,
-  rangeDemandComplementarity,
+  rotationForCoordinate,
 } from './geoMath';
 
 const BUCKET_COLS: GeoAnalyticsResponse['bucket_cols'] = ['c', 'cont', 'n', 'tout'];
@@ -54,8 +55,8 @@ describe('geo column contract', () => {
   });
 });
 
-describe('continent series and demand complementarity', () => {
-  it('uses positive nearest-rank p99 values and keeps globe and ribbon caps separate', () => {
+describe('continent series and fixed scales', () => {
+  it('uses positive nearest-rank p99 values and keeps globe and timeline caps separate', () => {
     expect(positiveNearestRankPercentile([0, -1, Number.NaN, 1, 2, 100], 0.5)).toBe(2);
 
     const data = makeData([
@@ -107,41 +108,6 @@ describe('continent series and demand complementarity', () => {
     expect(series.has('?')).toBe(false);
   });
 
-  it('computes range complementarity from global and continent peaks', () => {
-    const data = makeData([
-      { b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2)] },
-      { b: [bucket('CHN', 'AS', 2), bucket('USA', 'NA', 10)] },
-    ]);
-
-    expect(rangeDemandComplementarity(data, 'n')).toEqual({
-      complementarity: 0.4,
-      continents: 2,
-    });
-  });
-
-  it('returns zero for empty, single-continent, and zero-demand cases', () => {
-    const empty = makeData([]);
-    expect(rangeDemandComplementarity(empty, 'n')).toEqual({
-      complementarity: 0,
-      continents: 0,
-    });
-
-    const oneContinent = makeData([
-      { b: [bucket('CHN', 'AS', 0)] },
-      { b: [bucket('SGP', 'AS', 5)] },
-    ]);
-    expect(rangeDemandComplementarity(oneContinent, 'n')).toEqual({
-      complementarity: 0,
-      continents: 1,
-    });
-
-    const noDemand = makeData([{ b: [bucket('CHN', 'AS', 0), bucket('USA', 'NA', 0)] }]);
-    expect(rangeDemandComplementarity(noDemand, 'n')).toEqual({
-      complementarity: 0,
-      continents: 2,
-    });
-  });
-
   it('keeps continent colors stable independent of demand rank', () => {
     expect(CONTINENT_COLORS.AS).toBe('#3987e5');
     expect(CONTINENT_COLORS.NA).toBe('#199e70');
@@ -149,8 +115,8 @@ describe('continent series and demand complementarity', () => {
   });
 });
 
-describe('currentHourStats', () => {
-  it('reports only request-origin coverage, mix, and range complementarity', () => {
+describe('hourOriginSummary', () => {
+  it('summarizes the hour for the hero line and the top-origins rail', () => {
     const data = makeData([
       {
         b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2), bucket('?', '?', 3)],
@@ -158,60 +124,75 @@ describe('currentHourStats', () => {
       { b: [bucket('CHN', 'AS', 2), bucket('USA', 'NA', 10)] },
     ]);
 
-    const stats = currentHourStats(data, 0, deriveGeoMetricModel(data, 'n'));
-    expect(stats.totalRequests).toBe(15);
-    expect(stats.locatedRequests).toBe(12);
-    expect(stats.locatedFraction).toBeCloseTo(0.8);
-    expect(stats.unlocatedFraction).toBeCloseTo(0.2);
-    expect(stats.activeCountries).toBe(2);
-    expect(stats.activeContinents).toBe(2);
-    expect(stats.topContinent).toEqual({ continent: 'AS', value: 10, fraction: 10 / 12 });
-    expect(stats.demandComplementarity).toBeCloseTo(0.4);
-    expect(stats.observedContinents).toBe(2);
+    const summary = hourOriginSummary(data, 0, deriveGeoMetricModel(data, 'n'));
+    expect(summary.totalRequests).toBe(15);
+    expect(summary.totalValue).toBe(15);
+    expect(summary.activeCountries).toBe(2);
+    expect(summary.unlocatedFraction).toBeCloseTo(0.2);
+    expect(summary.origins.map((origin) => origin.country)).toEqual(['CHN', 'USA']);
+    expect(summary.top).toMatchObject({ country: 'CHN', continent: 'AS', requests: 10 });
+    expect(summary.topShare).toBeCloseTo(10 / 15);
   });
 
-  it('returns finite zero fractions for an empty or out-of-range hour', () => {
+  it('returns an empty summary for an empty or out-of-range hour', () => {
     const data = makeData([{ b: [] }]);
 
     const model = deriveGeoMetricModel(data, 'tout');
-    expect(currentHourStats(data, 0, model)).toMatchObject({
+    expect(hourOriginSummary(data, 0, model)).toMatchObject({
       totalRequests: 0,
-      locatedFraction: 0,
-      unlocatedFraction: 0,
+      totalValue: 0,
       activeCountries: 0,
-      activeContinents: 0,
-      topContinent: null,
+      origins: [],
+      top: null,
+      topShare: 0,
     });
-    expect(currentHourStats(data, 4, model)).toMatchObject({
-      totalRequests: 0,
-      demandComplementarity: 0,
-    });
+    expect(hourOriginSummary(data, 4, model)).toMatchObject({ totalRequests: 0, top: null });
   });
 
-  it('counts only positive request origins as active', () => {
-    const data = makeData([
-      {
-        b: [bucket('CHN', 'AS', 0), bucket('USA', 'NA', 2), bucket('?', '?', 3)],
-      },
-    ]);
-
-    expect(currentHourStats(data, 0, deriveGeoMetricModel(data, 'n'))).toMatchObject({
-      activeCountries: 1,
-      activeContinents: 1,
-    });
-  });
-
-  it('does not invent an origin mix when the selected metric is zero', () => {
+  it('keeps zero-metric origins listed by requests without inventing a share', () => {
     const data = makeData([
       {
         b: [bucket('CHN', 'AS', 4, 0), bucket('USA', 'NA', 2, 0)],
       },
     ]);
 
-    expect(currentHourStats(data, 0, deriveGeoMetricModel(data, 'tout'))).toMatchObject({
-      totalRequests: 6,
-      continentTotals: [],
-      topContinent: null,
-    });
+    const summary = hourOriginSummary(data, 0, deriveGeoMetricModel(data, 'tout'));
+    expect(summary.totalRequests).toBe(6);
+    expect(summary.totalValue).toBe(0);
+    expect(summary.origins.map((origin) => origin.country)).toEqual(['CHN', 'USA']);
+    expect(summary.topShare).toBe(0);
+  });
+});
+
+describe('view rotations', () => {
+  const COORDINATES = new Map<string, [number, number]>([
+    ['USA', [-98, 39]],
+    ['CHN', [104, 36]],
+  ]);
+
+  it('centers on the request-weighted centroid of the window', () => {
+    const data = makeData([{ b: [bucket('USA', 'NA', 10)] }]);
+
+    const rotation = demandWeightedRotation(data, COORDINATES);
+    expect(rotation).not.toBeNull();
+    expect(rotation![0]).toBeCloseTo(98);
+    expect(rotation![1]).toBeCloseTo(-39);
+  });
+
+  it('weights the centroid by request volume', () => {
+    const data = makeData([{ b: [bucket('USA', 'NA', 99), bucket('CHN', 'AS', 1)] }]);
+
+    const rotation = demandWeightedRotation(data, COORDINATES);
+    expect(rotation![0]).toBeGreaterThan(85);
+    expect(rotation![0]).toBeLessThan(99);
+  });
+
+  it('returns null without located demand and clamps extreme latitudes', () => {
+    expect(demandWeightedRotation(makeData([{ b: [bucket('?', '?', 9)] }]), COORDINATES)).toBe(
+      null,
+    );
+    expect(demandWeightedRotation(makeData([{ b: [] }]), COORDINATES)).toBeNull();
+    expect(rotationForCoordinate([10, 78])).toEqual([-10, -55]);
+    expect(rotationForCoordinate([-98, 39])).toEqual([98, -39]);
   });
 });

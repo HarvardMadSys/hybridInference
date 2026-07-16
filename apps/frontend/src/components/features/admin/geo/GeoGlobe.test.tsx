@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
 import { getGeoAnalytics } from '@/lib/api/admin';
@@ -78,11 +78,12 @@ class ResizeObserverMock {
 beforeEach(() => {
   mockedGetGeoAnalytics.mockReset();
   vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+  // Reduced motion keeps view-request rotations instant in tests.
   vi.stubGlobal(
     'matchMedia',
     vi
       .fn()
-      .mockReturnValue({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
+      .mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }),
   );
   vi.stubGlobal(
     'fetch',
@@ -103,159 +104,155 @@ afterEach(() => {
 });
 
 describe('GeoGlobe', () => {
-  it('shows a loading state while the 14-day request is pending', () => {
+  it('shows a loading state while the default 14-day request is pending', () => {
     mockedGetGeoAnalytics.mockReturnValue(new Promise(() => undefined));
     render(<GeoGlobe />);
 
-    expect(screen.getByRole('status', { name: 'Loading geographic demand' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: 'Loading request origins' })).toBeInTheDocument();
     expect(mockedGetGeoAnalytics).toHaveBeenCalledWith(
       expect.objectContaining({ days: 14, signal: expect.any(AbortSignal) }),
     );
   });
 
-  it('renders request-origin controls, honesty copy, and DB-IP attribution', async () => {
+  it('renders the hero, controls, and footer without internal identifiers', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     render(<GeoGlobe />);
 
-    expect(
-      await screen.findByRole('group', { name: /Globe of IP-based request origins/ }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '▶ Play' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Metric' })).toHaveValue('n');
-    expect(screen.getByRole('option', { name: 'Requests' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Output tokens' })).toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: /Compute/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'OC' })).toBeInTheDocument();
-    expect(
-      screen.getByText(/Origin = network origin \(IP-based\), not residence/),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'IP Geolocation by DB-IP' })).toHaveAttribute(
-      'href',
-      'https://db-ip.com/legal/attribution',
+    expect(await screen.findByText('14 requests')).toBeInTheDocument();
+    expect(screen.getByText('at 01:00 UTC · Jul 15')).toBeInTheDocument();
+    expect(screen.getByText('United States 71% · 1 active country')).toBeInTheDocument();
+
+    const metricGroup = screen.getByRole('group', { name: 'Metric' });
+    expect(within(metricGroup).getByRole('button', { name: 'Requests' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
     );
-    expect(screen.getByTestId('globe-scale-note')).toHaveTextContent(
-      'capped at range p99: 10 requests/country-hour',
+    expect(within(metricGroup).getByRole('button', { name: 'Tokens' })).toBeInTheDocument();
+    const rangeGroup = screen.getByRole('group', { name: 'Range' });
+    expect(within(rangeGroup).getByRole('button', { name: '14d' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
     );
-    expect(screen.getByTestId('ribbon-scale-note')).toHaveTextContent(
-      'capped at range p99: 10 requests/continent-hour',
-    );
-    expect(screen.getByText(/29% unlocated/)).toBeInTheDocument();
-    expect(screen.getByText(/not capacity/i)).toBeInTheDocument();
+
+    expect(screen.getByText('Locations are estimated from request IPs.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Data details' })).toBeInTheDocument();
+    expect(screen.queryByText(/api_logs/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/GeoIP country/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/p99/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/complementarity/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/local$/)).not.toBeInTheDocument();
   });
 
-  it('selects a request origin without rendering provider nodes or serving routes', async () => {
+  it('pluralizes active countries and switches the hero with the metric', async () => {
+    const data = response();
+    data.hours[1].b.push(['CAN', 'NA', 3, 30]);
+    data.meta.rows_total = 17;
+    mockedGetGeoAnalytics.mockResolvedValue(data);
+    render(<GeoGlobe />);
+
+    expect(await screen.findByText('17 requests')).toBeInTheDocument();
+    expect(screen.getByText('United States 59% · 2 active countries')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tokens' }));
+    expect(screen.getByText('120 output tokens')).toBeInTheDocument();
+    expect(screen.getByText('United States 67% · 2 active countries')).toBeInTheDocument();
+  });
+
+  it('drives selection through the top-origins rail with a globe ring', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     render(<GeoGlobe />);
 
-    const origin = await screen.findByRole('button', { name: 'United States request origin' });
-    fireEvent.click(origin);
+    const rail = (await screen.findByText(/Top origins ·/)).closest('aside')!;
+    const row = within(rail).getByRole('button', { name: /United States/ });
+    fireEvent.click(row);
 
-    expect(origin).toHaveAttribute('aria-pressed', 'true');
-    expect(origin.querySelector('circle[data-layer="selection-ring"]')).not.toHaveAttribute(
+    expect(row).toHaveAttribute('aria-pressed', 'true');
+    const dot = screen.getByRole('button', { name: 'United States request origin' });
+    expect(dot).toHaveAttribute('aria-pressed', 'true');
+    expect(dot.querySelector('circle[data-layer="selection-ring"]')).not.toHaveAttribute(
       'display',
     );
-    expect(screen.getByText('United States · N. America')).toBeInTheDocument();
-    expect(screen.getByText(/10 requests this hour/)).toBeInTheDocument();
-    expect(screen.getByText('80 output tokens')).toBeInTheDocument();
-    expect(screen.queryByText(/distinct users|p90 TTFT/i)).not.toBeInTheDocument();
-    expect(document.querySelector('.geo-demand-flow')).not.toBeInTheDocument();
-    expect(screen.queryByText(/provider/i)).not.toBeInTheDocument();
-    expect(screen.queryByText('Serving split')).not.toBeInTheDocument();
 
-    fireEvent.change(screen.getByRole('slider', { name: 'Selected hour across loaded range' }), {
-      target: { value: '0' },
-    });
-    expect(screen.getByText('United States · N. America')).toBeInTheDocument();
-    expect(screen.getByText('No requests from United States in this hour')).toBeInTheDocument();
+    fireEvent.click(row);
+    expect(row).toHaveAttribute('aria-pressed', 'false');
+    expect(dot).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('changes the selected hour and metric and toggles playback', async () => {
+  it('shows the empty-hour copy when scrubbed to an hour without requests', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     render(<GeoGlobe />);
 
-    expect(await screen.findByText('2026-07-15 01:00 UTC')).toBeInTheDocument();
-    const staticCountryPath = document.querySelector('g[data-layer="countries"] path');
-    expect(staticCountryPath).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '−24h' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '+24h' })).toBeDisabled();
-    fireEvent.change(screen.getByRole('slider', { name: 'Selected hour across loaded range' }), {
-      target: { value: '0' },
+    const timeline = await screen.findByRole('slider', {
+      name: 'Demand timeline for the loaded window',
     });
-    expect(screen.getByText('2026-07-15 00:00 UTC')).toBeInTheDocument();
-    expect(document.querySelector('g[data-layer="countries"] path')).toBe(staticCountryPath);
+    fireEvent.keyDown(timeline, { key: 'ArrowLeft' });
 
-    fireEvent.change(screen.getByRole('combobox', { name: 'Metric' }), {
-      target: { value: 'tout' },
-    });
-    expect(screen.getByRole('combobox', { name: 'Metric' })).toHaveValue('tout');
-    expect(screen.getByTestId('globe-scale-note')).toHaveTextContent(
-      '80 output tokens/country-hour',
-    );
-    expect(screen.getByTestId('ribbon-scale-note')).toHaveTextContent(
-      '80 output tokens/continent-hour',
-    );
+    expect(screen.getByText('No requests recorded in this hour.')).toBeInTheDocument();
+    expect(screen.getByText('No requests this hour. Press Play or scrub the timeline.'))
+      .toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '← 1h' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '1h →' })).toBeEnabled();
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: '▶ Play' }));
-    expect(screen.getByRole('button', { name: '⏸ Pause' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByText('Explore origin demand').closest('section')).toHaveAttribute(
+  it('refetches when the range changes and remembers cached ranges', async () => {
+    mockedGetGeoAnalytics.mockResolvedValue(response());
+    render(<GeoGlobe />);
+    await screen.findByText('14 requests');
+
+    fireEvent.click(screen.getByRole('button', { name: '7d' }));
+    await waitFor(() =>
+      expect(mockedGetGeoAnalytics).toHaveBeenLastCalledWith(
+        expect.objectContaining({ days: 7 }),
+      ),
+    );
+    await screen.findByText('14 requests');
+
+    fireEvent.click(screen.getByRole('button', { name: '14d' }));
+    await screen.findByText('14 requests');
+    expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2);
+  });
+
+  it('toggles playback and silences the rail announcements while playing', async () => {
+    mockedGetGeoAnalytics.mockResolvedValue(response());
+    render(<GeoGlobe />);
+
+    const play = await screen.findByRole('button', { name: '▶ Play' });
+    fireEvent.click(play);
+    expect(screen.getByRole('button', { name: '⏸ Pause' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByText(/Top origins ·/).closest('aside')).toHaveAttribute(
       'aria-live',
       'off',
     );
     fireEvent.click(screen.getByRole('button', { name: '⏸ Pause' }));
-    expect(screen.getByText('Explore origin demand').closest('section')).toHaveAttribute(
+    expect(screen.getByText(/Top origins ·/).closest('aside')).toHaveAttribute(
       'aria-live',
       'polite',
     );
   });
 
-  it('enables 24-hour navigation only when exactly 24 indices are available', async () => {
-    const data = response();
-    data.hours_index = Array.from({ length: 49 }, (_, index) =>
-      new Date(Date.UTC(2026, 6, 13, index)).toISOString(),
-    );
-    data.hours = Array.from({ length: 49 }, () => ({ b: [['USA', 'NA', 1, 1]] }));
-    data.meta.hours = 49;
-    mockedGetGeoAnalytics.mockResolvedValue(data);
+  it('opens data details with totals, coverage, and DB-IP attribution', async () => {
+    mockedGetGeoAnalytics.mockResolvedValue(response());
     render(<GeoGlobe />);
 
-    expect(await screen.findByText('2026-07-15 00:00 UTC')).toBeInTheDocument();
-    const back = screen.getByRole('button', { name: '−24h' });
-    const forward = screen.getByRole('button', { name: '+24h' });
-    expect(back).toBeEnabled();
-    expect(forward).toBeDisabled();
-
-    fireEvent.click(back);
-    expect(screen.getByText('2026-07-14 00:00 UTC')).toBeInTheDocument();
-    expect(back).toBeEnabled();
-    expect(forward).toBeEnabled();
-
-    fireEvent.click(back);
-    expect(screen.getByText('2026-07-13 00:00 UTC')).toBeInTheDocument();
-    expect(back).toBeDisabled();
-    expect(forward).toBeEnabled();
-  });
-
-  it('maps timeline clicks through the plotted area instead of the SVG margins', async () => {
-    const data = response();
-    data.hours_index = Array.from(
-      { length: 24 },
-      (_, hour) => `2026-07-15T${String(hour).padStart(2, '0')}:00:00+00:00`,
+    fireEvent.click(await screen.findByRole('button', { name: 'Data details' }));
+    const dialog = screen.getByRole('dialog', { name: 'Data details' });
+    expect(within(dialog).getByText('14')).toBeInTheDocument();
+    expect(within(dialog).getByText('90')).toBeInTheDocument();
+    expect(within(dialog).getByText(/71% of requests resolved to a country/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: 'IP Geolocation by DB-IP' })).toHaveAttribute(
+      'href',
+      'https://db-ip.com/legal/attribution',
     );
-    data.hours = Array.from({ length: 24 }, () => ({ b: [] }));
-    mockedGetGeoAnalytics.mockResolvedValue(data);
-    render(<GeoGlobe />);
+    expect(within(dialog).getByText(/99th percentile/)).toBeInTheDocument();
 
-    expect(await screen.findByText('2026-07-15 23:00 UTC')).toBeInTheDocument();
-    const timeline = screen.getByRole('slider', {
-      name: 'Demand timeline for the selected UTC day',
-    });
-    timeline.getBoundingClientRect = () => ({ left: 0, width: 1_000 }) as DOMRect;
-    fireEvent.click(timeline, { clientX: 952 });
-
-    expect(screen.getByText('2026-07-15 23:00 UTC')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
-  it('shows demo, degraded, and stale states without DB-IP attribution', async () => {
+  it('shows demo, degraded, and stale states', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(
       response({
         source: 'synthetic-demo',
@@ -269,9 +266,8 @@ describe('GeoGlobe', () => {
 
     expect(await screen.findByText('SYNTHETIC DEMO')).toBeInTheDocument();
     expect(screen.getByText('STALE')).toBeInTheDocument();
-    expect(screen.getByText(/Geography is degraded/)).toBeInTheDocument();
-    expect(screen.getByText(/country_database_missing/)).toBeInTheDocument();
-    expect(screen.queryByRole('link', { name: 'IP Geolocation by DB-IP' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Location data is degraded/)).toBeInTheDocument();
+    expect(screen.queryByText(/country_database_missing/)).not.toBeInTheDocument();
   });
 
   it('offers a retry after a load error', async () => {
@@ -283,9 +279,7 @@ describe('GeoGlobe', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('scan unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
 
-    expect(
-      await screen.findByRole('group', { name: /Globe of IP-based request origins/ }),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('14 requests')).toBeInTheDocument();
     await waitFor(() => expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2));
   });
 
@@ -294,8 +288,6 @@ describe('GeoGlobe', () => {
     render(<GeoGlobe />);
 
     expect(await screen.findByText('No request origins yet')).toBeInTheDocument();
-    expect(
-      screen.queryByRole('group', { name: /Globe of IP-based request origins/ }),
-    ).not.toBeInTheDocument();
+    expect(screen.getByText(/latest 14-day window/)).toBeInTheDocument();
   });
 });
