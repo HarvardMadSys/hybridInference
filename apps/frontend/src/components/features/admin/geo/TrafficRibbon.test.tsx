@@ -153,4 +153,31 @@ describe('TrafficRibbon', () => {
       'Absolute scale · capped at range p99: 10 requests/continent-hour',
     );
   });
+
+  it('keeps three capped continent labels separated inside the chart', () => {
+    const data = response(['2026-07-15T00:00:00+00:00']);
+    data.hours = [
+      {
+        b: [
+          ['CHN', 'AS', 10, 0],
+          ['USA', 'NA', 10, 0],
+          ['DEU', 'EU', 10, 0],
+        ],
+      },
+    ];
+    renderRibbon(data, 0);
+
+    const labelYs = ['AS', 'NA', 'EU']
+      .map((continent) =>
+        [...document.querySelectorAll('svg text')].find((label) => label.textContent === continent),
+      )
+      .map((label) => Number(label?.getAttribute('y')))
+      .sort((a, b) => a - b);
+
+    expect(labelYs).toHaveLength(3);
+    expect(labelYs[0]).toBeGreaterThanOrEqual(16);
+    expect(labelYs[2]).toBeLessThanOrEqual(80);
+    expect(labelYs[1] - labelYs[0]).toBeGreaterThanOrEqual(11);
+    expect(labelYs[2] - labelYs[1]).toBeGreaterThanOrEqual(11);
+  });
 });

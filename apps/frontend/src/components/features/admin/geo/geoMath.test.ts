@@ -86,6 +86,14 @@ describe('continent series and demand complementarity', () => {
     });
   });
 
+  it('includes plottable countries with an unknown continent in the globe cap only', () => {
+    const model = deriveGeoMetricModel(makeData([{ b: [bucket('USA', '?', 7)] }]), 'n');
+
+    expect(model.countryHourP99).toBe(7);
+    expect(model.continentHourP99).toBe(0);
+    expect(model.continentSeries.has('?')).toBe(false);
+  });
+
   it('keeps zero-filled hourly gaps and excludes unknown geography', () => {
     const data = makeData([
       { b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2)] },

@@ -167,7 +167,6 @@ export function deriveGeoMetricModel(
 ): GeoMetricModel {
   const bucketIndex = buildColumnIndex(data.bucket_cols);
   const countryPosition = requiredIndex(bucketIndex, 'c');
-  const continentPosition = requiredIndex(bucketIndex, 'cont');
   requiredIndex(bucketIndex, metric);
 
   const countryHourValues: number[] = [];
@@ -175,8 +174,10 @@ export function deriveGeoMetricModel(
     const byCountry = new Map<string, number>();
     for (const row of hour.b) {
       const country = stringAt(row, countryPosition);
-      const continent = stringAt(row, continentPosition);
-      if (!country || country.startsWith('?') || !isLocatedContinent(continent)) continue;
+      // A country can still be plotted when the GeoIP record omits its
+      // continent. Keep it in the globe's magnitude domain; the continent
+      // ribbon independently excludes unknown continent buckets.
+      if (!country || country.startsWith('?')) continue;
       byCountry.set(country, (byCountry.get(country) ?? 0) + metricValue(row, metric, bucketIndex));
     }
     countryHourValues.push(...byCountry.values());

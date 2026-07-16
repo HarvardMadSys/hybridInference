@@ -90,8 +90,22 @@ export function TrafficRibbon({
       ),
     }))
     .sort((a, b) => a.y - b.y);
-  for (let index = labels.length - 2; index >= 0; index -= 1) {
-    if (labels[index + 1].y - labels[index].y < 11) labels[index].y = labels[index + 1].y - 11;
+  const minimumLabelY = MARGIN.top + 6;
+  const maximumLabelY = HEIGHT - MARGIN.bottom - 2;
+  for (let index = 1; index < labels.length; index += 1) {
+    labels[index].y = Math.max(labels[index].y, labels[index - 1].y + 11);
+  }
+  if (labels.at(-1) && labels.at(-1)!.y > maximumLabelY) {
+    labels[labels.length - 1].y = maximumLabelY;
+    for (let index = labels.length - 2; index >= 0; index -= 1) {
+      labels[index].y = Math.min(labels[index].y, labels[index + 1].y - 11);
+    }
+  }
+  if (labels[0] && labels[0].y < minimumLabelY) {
+    labels[0].y = minimumLabelY;
+    for (let index = 1; index < labels.length; index += 1) {
+      labels[index].y = Math.max(labels[index].y, labels[index - 1].y + 11);
+    }
   }
 
   const handleChartClick = (event: MouseEvent<SVGSVGElement>) => {
