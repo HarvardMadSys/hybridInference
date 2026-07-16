@@ -26,6 +26,7 @@ unsupported in ``schema_version: 1``.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -119,7 +120,7 @@ def load_distribution_config(path: Path) -> DistributionConfig:
     """
     try:
         data = yaml.safe_load(path.read_text())
-    except (OSError, yaml.YAMLError) as exc:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         raise DistributionConfigError(f"cannot read distribution manifest {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise DistributionConfigError(f"distribution manifest {path} must be a YAML mapping")
@@ -128,11 +129,18 @@ def load_distribution_config(path: Path) -> DistributionConfig:
     except Exception as exc:
         raise DistributionConfigError(f"invalid distribution manifest {path}: {exc}") from exc
 
-    root = path.resolve().parent
-    resolved = {
-        kind: str((root / value).resolve()) if value and not Path(value).is_absolute() else value
-        for kind, value in config.paths.model_dump().items()
-    }
+    try:
+        root = path.resolve().parent
+        resolved = {
+            kind: str((root / value).resolve())
+            if value and not Path(value).is_absolute()
+            else value
+            for kind, value in config.paths.model_dump().items()
+        }
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DistributionConfigError(
+            f"cannot resolve paths in distribution manifest {path}: {exc}"
+        ) from exc
     return config.model_copy(update={"paths": DistributionPaths(**resolved)})
 
 
@@ -146,6 +154,11 @@ def get_distribution_config() -> DistributionConfig | None:
         config = load_distribution_config(Path(configured))
     except DistributionConfigError:
         logger.exception("Distribution manifest failed to load; using legacy config resolution")
+        return None
+    except Exception:
+        logger.exception(
+            "Unexpected error loading distribution manifest; using legacy config resolution"
+        )
         return None
     logger.info(
         f"Distribution manifest loaded: id={config.distribution.id!r} "
@@ -163,32 +176,83 @@ class ResolvedConfigPath:
     source: str  # "env" | "distribution" | "default"
 
 
+_VALID_MODES = {"active", "dark"}
+
+# Resolver decisions are logged once per unique situation, not per call: the
+# admin provider registry resolves the models path on every request.
+_logged_once: set[tuple[str, ...]] = set()
+
+
+def _log_once(key: tuple[str, ...], message: str) -> None:
+    if key in _logged_once:
+        return
+    _logged_once.add(key)
+    logger.info(message)
+
+
+def _effective_mode() -> str:
+    """Normalize the configured mode; unknown values degrade to ``dark``.
+
+    ``dark`` is the fail-safe direction: the manifest is loaded and compared
+    but never changes effective resolution, so a typo can only suppress a
+    planned activation — never activate one.
+    """
+    raw = get_settings().distribution_config_mode.strip().lower()
+    if raw in _VALID_MODES:
+        return raw
+    _log_once(
+        ("invalid-mode", raw),
+        f"Invalid DISTRIBUTION_CONFIG_MODE={raw!r} (expected 'active' or 'dark'); "
+        "treating as 'dark': manifest loads and is compared, legacy resolution "
+        "stays effective",
+    )
+    return "dark"
+
+
 def _env_override(kind: ConfigKind) -> str:
     settings = get_settings()
     value: str = getattr(settings, f"{kind}_config_path")
-    if kind == "alerts":
-        # alerts_config_path predates this module and defaults to the legacy
-        # path instead of "": only a non-default value counts as explicit.
-        return value if value != _LEGACY_DEFAULTS["alerts"] else ""
+    if kind == "alerts" and "ALERTS_CONFIG_PATH" not in os.environ:
+        # alerts_config_path predates this module and its Settings default is
+        # the legacy path instead of "". Explicitness therefore comes from the
+        # variable actually being present in the environment — an operator who
+        # sets ALERTS_CONFIG_PATH to the default value still wins over the
+        # manifest. (bootstrap's load_dotenv() puts .env values into
+        # os.environ, so file-configured deployments are covered.)
+        return ""
     return value
 
 
 def resolve_config_path(kind: ConfigKind) -> ResolvedConfigPath:
-    """Apply the env > distribution > legacy-default precedence for one file."""
+    """Apply the env > distribution > legacy-default precedence for one file.
+
+    The manifest, when configured, is always loaded and validated — even when
+    an env override wins — so dark mode compares against what is actually
+    effective and a broken manifest surfaces at startup rather than at
+    cutover.
+    """
     env_value = _env_override(kind)
     if env_value:
-        return ResolvedConfigPath(path=Path(env_value), source="env")
+        effective = ResolvedConfigPath(path=Path(env_value), source="env")
+    else:
+        effective = ResolvedConfigPath(path=Path(_LEGACY_DEFAULTS[kind]), source="default")
 
-    legacy = ResolvedConfigPath(path=Path(_LEGACY_DEFAULTS[kind]), source="default")
     dist = get_distribution_config()
     manifest_value: str = getattr(dist.paths, kind) if dist else ""
     if not manifest_value:
-        return legacy
+        return effective
 
     manifest = ResolvedConfigPath(path=Path(manifest_value), source="distribution")
-    if get_settings().distribution_config_mode == "dark":
-        _log_dark_comparison(kind, legacy=legacy, manifest=manifest)
-        return legacy
+    if _effective_mode() == "dark":
+        _log_dark_comparison(kind, effective=effective, manifest=manifest)
+        return effective
+    if env_value:
+        _log_once(
+            ("env-shadow", kind, env_value, manifest_value),
+            f"{kind} config: explicit env override {effective.path} wins over "
+            f"manifest value {manifest.path}",
+        )
+        return effective
     return manifest
 
 
@@ -200,13 +264,14 @@ def _file_digest(path: Path) -> str:
 
 
 def _log_dark_comparison(
-    kind: ConfigKind, *, legacy: ResolvedConfigPath, manifest: ResolvedConfigPath
+    kind: ConfigKind, *, effective: ResolvedConfigPath, manifest: ResolvedConfigPath
 ) -> None:
-    legacy_digest = _file_digest(legacy.path)
+    effective_digest = _file_digest(effective.path)
     manifest_digest = _file_digest(manifest.path)
-    verdict = "identical" if legacy_digest == manifest_digest != "missing" else "DIFFERENT"
-    logger.info(
-        f"[distribution dark mode] {kind} config stays {legacy.path} "
-        f"(sha256={legacy_digest}); manifest would use {manifest.path} "
-        f"(sha256={manifest_digest}) — {verdict}"
+    verdict = "identical" if effective_digest == manifest_digest != "missing" else "DIFFERENT"
+    _log_once(
+        ("dark", kind, str(effective.path), str(manifest.path), effective_digest, manifest_digest),
+        f"[distribution dark mode] {kind} config stays {effective.path} "
+        f"(source={effective.source}, sha256={effective_digest}); manifest would "
+        f"use {manifest.path} (sha256={manifest_digest}) — {verdict}",
     )
