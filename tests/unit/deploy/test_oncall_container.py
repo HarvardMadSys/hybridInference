@@ -81,6 +81,11 @@ def test_analysis_workflow_is_dispatch_triggered_and_least_privilege():
     assert codex_step["env"]["CODEX_API_KEY"] == "${{ secrets.CODEX_ONCALL_MODEL_API_KEY }}"
     assert "jq -c '.base_url'" in codex_step["run"]
     assert 'wire_api="responses"' in codex_step["run"]
+    # The gateway translates Responses to Chat Completions. Applying the final
+    # JSON schema to every turn prevents local models from emitting tool calls.
+    assert not any(
+        line.lstrip().startswith("--output-schema ") for line in codex_step["run"].splitlines()
+    )
     assert "CODEX_API_KEY" not in steps["Post analysis to Slack thread"].get("env", {})
 
 
