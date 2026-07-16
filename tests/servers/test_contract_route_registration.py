@@ -133,16 +133,29 @@ def test_production_models_yaml_registers_full_inventory(monkeypatch):
         monkeypatch.setenv(var, "http://contract-dummy.test")
 
     data = yaml.safe_load(raw)
-    expected = {m["id"] for m in data["models"]}
+    chat_expected: set[str] = set()
+    embedding_expected: set[str] = set()
     for model in data["models"]:
-        expected.update(model.get("aliases") or [])
+        target = embedding_expected if model.get("type") == "embedding" else chat_expected
+        target.add(model["id"])
+        target.update(model.get("aliases") or [])
 
+    # Invoke exactly like bootstrap does: embedding models bypass the
+    # RouteExecutor and land in embedding_adapters instead of chat routes.
     exe = RouteExecutor()
+    embedding_adapters: dict = {}
     count, infos = registry.register_from_models_yaml(
-        exe, PRODUCTION_MODELS_YAML, continue_on_missing_env=True
+        exe,
+        PRODUCTION_MODELS_YAML,
+        embedding_adapters=embedding_adapters,
+        continue_on_missing_env=True,
     )
-    assert set(exe.routes) == expected
-    assert count == len(expected)
+    assert set(exe.routes) == chat_expected
+    assert set(embedding_adapters) == embedding_expected
+    # The registration count covers chat routes and embedding entries alike.
+    assert count == len(chat_expected) + len(embedding_expected)
+    # Registration infos cover every canonical model, embeddings included
+    # (the /v1/models listing needs them even though they bypass the router).
     assert {info.model_id for info in infos} == {m["id"] for m in data["models"]}
     for name, route in exe.routes.items():
         assert route.adapters, f"route {name!r} registered without adapters"

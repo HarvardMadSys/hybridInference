@@ -115,7 +115,9 @@ async def test_streaming_sse_contract(contract_client: AsyncClient):
 
     # SSE events are separated by a blank line; each event of this stream is
     # exactly one single-line data frame. Splitting on "\n\n" (not "\n")
-    # freezes the event-boundary framing itself.
+    # freezes the event-boundary framing itself, and the response must end
+    # with a complete event terminator.
+    assert resp.text.endswith("\n\n")
     events = [event for event in resp.text.split("\n\n") if event.strip()]
     assert events, "stream produced no events"
     for event in events:
