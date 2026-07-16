@@ -17,7 +17,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys, provider_registry
-from serving.config.settings import get_settings
+from serving.config.distribution import resolve_config_path
 from serving.schemas_admin import (
     CreateProviderDefinitionRequest,
     DeleteProviderDefinitionResponse,
@@ -97,11 +97,11 @@ def _display_name(provider: str) -> str:
 
 
 def _models_config_path() -> Path:
-    configured = get_settings().models_config_path
-    if configured:
-        return Path(configured)
+    resolved = resolve_config_path("models")
+    if resolved.source != "default":
+        return resolved.path
 
-    cwd_path = Path("config/models.yaml")
+    cwd_path = resolved.path
     if cwd_path.exists():
         return cwd_path
 

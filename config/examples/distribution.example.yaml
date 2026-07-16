@@ -1,0 +1,41 @@
+# Example distribution manifest (serving/config/distribution.py).
+#
+# A distribution bundles site identity and config-file locations into one
+# versioned document. Activate it with:
+#
+#   DISTRIBUTION_CONFIG_PATH=/path/to/distribution.yaml
+#
+# Config-path precedence: explicit env vars (MODELS_CONFIG_PATH etc.) win
+# over `paths:` below, which wins over the legacy config/*.yaml defaults.
+# DISTRIBUTION_CONFIG_MODE=dark loads and validates this file and logs what
+# would change, while legacy resolution stays effective.
+#
+# Do not put secrets here — credentials stay in the environment. Relative
+# `paths:` entries resolve against this file's directory.
+
+schema_version: 1
+
+distribution:
+  id: example
+  display_name: Example Inference
+  release: 2026.07.1
+
+site:
+  public_base_url: https://inference.example.com
+  support_email: admin@inference.example.com
+  # terms_document: ./content/terms.md
+  # privacy_document: ./content/privacy.md
+  # branding: ./branding/site.yaml
+
+features:
+  routers: [fixed]
+  public_signup: true
+  rag: false
+
+paths:
+  models: ./models.yaml
+  routing: ./routing.yaml
+  # alerts: ./alerts.yaml
+
+deployment:
+  target: staging

@@ -149,6 +149,19 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Distribution manifest (serving.config.distribution). Empty path = pure
+    # legacy behavior. Mode "dark" loads/validates the manifest and logs what
+    # would change while legacy resolution stays effective; any value other
+    # than "dark" behaves as "active".
+    distribution_config_path: str = Field(
+        default="",
+        validation_alias=AliasChoices("DISTRIBUTION_CONFIG_PATH", "distribution_config_path"),
+    )
+    distribution_config_mode: str = Field(
+        default="active",
+        validation_alias=AliasChoices("DISTRIBUTION_CONFIG_MODE", "distribution_config_mode"),
+    )
+
     # Alerting framework
     alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")
     slack_alerts_webhook_url: str = Field(default="", alias="SLACK_ALERTS_WEBHOOK_URL")
