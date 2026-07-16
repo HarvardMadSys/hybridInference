@@ -27,32 +27,110 @@ def json_safe(value: Any) -> Any:
     return value
 
 
-def _is_genuine_user_turn(message: dict[str, Any]) -> bool:
-    """Return True when a user-role message carries real user input.
+# User-role messages that coding agents -- Claude Code especially -- inject
+# into the conversation but the human never typed. They arrive wrapped in one of
+# these XML-ish tags (harness context, reminders, environment dumps, slash
+# command / bash echoes). This is a deliberately conservative blocklist: an
+# unrecognized wrapper is *counted* (a harmless over-count) rather than risk
+# dropping a genuine turn, so ``num_user_turns`` only ever over-includes and
+# never hides real usage. Extend it as new injected wrappers surface in the logs.
+_INJECTED_USER_TAGS = frozenset(
+    {
+        "system-reminder",
+        "task-notification",
+        "system-notice",
+        "system-notification",
+        "system-injection",
+        "system-interrupt",
+        "environment_details",
+        "environment_context",
+        "recommended_plugins",
+        "turn_aborted",
+        "codex_internal_context",
+        "context_usage",
+        "rules_snapshot",
+        "behaviour_rules_reminder",
+        "command-name",
+        "command-message",
+        "command-args",
+        "command-contents",
+        "local-command-stdout",
+        "local-command-stderr",
+        "bash-input",
+        "bash-stdout",
+        "bash-stderr",
+    }
+)
+_INJECTED_TAG_ALTERNATION = "|".join(sorted(re.escape(t) for t in _INJECTED_USER_TAGS))
+# A well-formed injected block ``<tag ...>...</tag>`` (non-greedy, spans lines).
+_INJECTED_BLOCK_RE = re.compile(
+    rf"<(?P<tag>{_INJECTED_TAG_ALTERNATION})\b[^>]*>.*?</(?P=tag)>",
+    re.DOTALL | re.IGNORECASE,
+)
+# A leading injected open tag with no matching close (e.g. a truncated block):
+# treat the whole remainder as injected.
+_INJECTED_OPEN_LEAD_RE = re.compile(
+    rf"^\s*<(?:{_INJECTED_TAG_ALTERNATION})\b.*$",
+    re.DOTALL | re.IGNORECASE,
+)
+# Untagged harness messages: injected instructions/notices with no XML wrapper.
+_INJECTED_LEAD_RES = (
+    re.compile(r"^\s*\[System:", re.IGNORECASE),
+    re.compile(r"^\s*\[IMPORTANT:\s*The user has invoked", re.IGNORECASE),
+    re.compile(r"^\s*CRITICAL:\s*Respond with TEXT ONLY", re.IGNORECASE),
+)
+# Claude Code delivers a message the user queued mid-turn wrapped inside a
+# ``<system-reminder>`` carrying this exact marker. It is a genuine human turn,
+# so it counts despite the wrapper that would otherwise exclude it.
+_QUEUED_USER_MSG_MARKER = "The user sent the following message:"
 
-    Anthropic-shape tool results (Claude Code) arrive as user-role messages
-    whose ``content`` is a list of ``tool_result`` blocks. Those are the
-    conversation's tool responses, not turns the human typed, so they must not
-    inflate ``num_user_turns``. A user message counts as a genuine turn when its
-    content is a plain string (or otherwise non-list), or a block list that
-    contains at least one element that is not a ``tool_result`` block. A content
-    list made up solely of ``tool_result`` blocks is a tool response and does
-    not count.
+
+def _is_genuine_user_turn(message: dict[str, Any]) -> bool:
+    """Return True when a user-role message is a turn the human actually typed.
+
+    Coding agents -- Claude Code especially -- send many messages with
+    ``role: "user"`` that the human never typed: harness context and
+    instructions wrapped in tags such as ``<system-reminder>`` /
+    ``<task-notification>`` / ``<environment_details>`` (and ``[System: ...]`` or
+    text-only-response templates with no wrapper), plus Anthropic tool results
+    delivered as user-role messages whose content is entirely ``tool_result``
+    blocks. Counting those inflates ``num_user_turns`` far past the number of
+    turns the human took.
+
+    A message counts as a genuine turn when real human-authored text remains
+    after the injected spans (see :data:`_INJECTED_USER_TAGS`) are removed. A
+    message mixing typed text with an injected block still counts -- e.g. a
+    question with a ``<system-reminder>`` appended, or a ``<context_usage>``
+    preamble prefixed to the user's text. The one wrapped form that counts
+    despite living inside a ``<system-reminder>`` is a message the user queued
+    mid-turn, which Claude Code marks with ``"The user sent the following
+    message:"``. A message carrying a non-text attachment (image, audio, file,
+    ...) also counts, since the human sent it even when there is no text.
     """
     content = message.get("content")
-    if not isinstance(content, list):
-        # Plain string / None content: an ordinary user message.
+    if isinstance(content, list):
+        # A non-text, non-tool_result content block (image/audio/file/...) is
+        # something the human attached, so the message is a genuine turn even
+        # when it carries no text.
+        for block in content:
+            if isinstance(block, dict):
+                block_type = block.get("type")
+                if block_type and block_type not in ("text", "tool_result"):
+                    return True
+    text = _message_text(content)
+    if text is None:
+        # No usable text and no attachment: not a turn the human took (e.g. a
+        # pure Anthropic tool_result carrier, or an empty/content-less message).
+        return False
+    if _QUEUED_USER_MSG_MARKER in text:
         return True
-    has_tool_result = False
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "tool_result":
-            has_tool_result = True
-        else:
-            # Any non-tool_result element means the human contributed input.
-            return True
-    # All blocks (if any) were tool_result. An empty content list carried no
-    # tool result, so it is still a (degenerate) user turn.
-    return not has_tool_result
+    stripped = _INJECTED_BLOCK_RE.sub("", text)
+    lead = stripped.lstrip()
+    if any(pat.match(lead) for pat in _INJECTED_LEAD_RES):
+        return False
+    if _INJECTED_OPEN_LEAD_RE.match(lead):
+        return False
+    return bool(lead)
 
 
 def conversation_shape(
@@ -62,14 +140,17 @@ def conversation_shape(
 
     Computed once at log time so the admin list query can read three cheap
     integer columns instead of de-TOASTing the full request payload per row.
-    ``num_turns`` counts all messages, ``num_user_turns`` counts user-role
-    messages that carry real user input, and ``num_tool_calls`` sums tool calls
-    across messages. Anthropic-shape tool results (user-role messages whose
-    content is entirely ``tool_result`` blocks) are excluded from
-    ``num_user_turns`` because they are tool responses, not human turns. Both the
-    OpenAI shape (an assistant ``tool_calls`` array) and the Anthropic Messages
-    shape used by Claude Code (``tool_use`` content blocks) are counted, so the
-    column is accurate regardless of which API surface the request came in on.
+    ``num_turns`` counts all messages, ``num_user_turns`` counts only user-role
+    messages the human actually typed, and ``num_tool_calls`` sums tool calls
+    across messages. User-role messages that coding agents inject rather than the
+    human sending them -- harness reminders/context wrapped in tags like
+    ``<system-reminder>``, and Anthropic tool results carried as user-role
+    ``tool_result`` messages -- are excluded from ``num_user_turns`` (see
+    :func:`_is_genuine_user_turn`); otherwise a long Claude Code session's
+    resent history would report hundreds of "user turns". Both the OpenAI shape
+    (an assistant ``tool_calls`` array) and the Anthropic Messages shape used by
+    Claude Code (``tool_use`` content blocks) are counted for ``num_tool_calls``,
+    so it is accurate regardless of which API surface the request came in on.
 
     Returns ``(None, None, None)`` when ``prompt`` is not a chat-style messages
     list — e.g. a raw completion string, or an embedding input such as a list
