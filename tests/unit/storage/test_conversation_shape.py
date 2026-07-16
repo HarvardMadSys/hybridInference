@@ -49,7 +49,10 @@ def test_anthropic_tool_use_blocks_counted() -> None:
     ]
     num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
     assert num_turns == 3
-    assert num_user_turns == 2
+    # The final user-role message carries only a ``tool_result`` block: it is a
+    # tool response, not a turn the human typed, so it does not count toward
+    # ``num_user_turns``. Only the genuine "list files" user message does.
+    assert num_user_turns == 1
     assert num_tool_calls == 1
 
 
@@ -65,3 +68,52 @@ def test_mixed_shapes_counted_together() -> None:
         },
     ]
     assert conversation_shape(prompt) == (1, 0, 3)
+
+
+def test_anthropic_tool_result_user_messages_not_counted() -> None:
+    # A Claude Code agentic loop: one genuine user turn, several assistant
+    # tool_use turns, and several tool_result carrier messages that arrive with
+    # role="user". Only the genuine user message counts toward num_user_turns.
+    prompt = [
+        {"role": "user", "content": [{"type": "text", "text": "fix the bug"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_1", "name": "Read", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "..."}],
+        },
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_2", "name": "Edit", "input": {}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_2", "content": "ok"}],
+        },
+    ]
+    num_turns, num_user_turns, num_tool_calls = conversation_shape(prompt)
+    assert num_turns == 5
+    assert num_user_turns == 1
+    assert num_tool_calls == 2
+
+
+def test_user_message_mixing_text_and_tool_result_counts() -> None:
+    # A user message that carries a tool_result AND real text still counts: the
+    # human contributed input that turn.
+    prompt = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tu_1", "content": "done"},
+                {"type": "text", "text": "now also update the docs"},
+            ],
+        },
+    ]
+    assert conversation_shape(prompt) == (1, 1, 0)
+
+
+def test_string_content_user_message_counts() -> None:
+    # Plain-string user content (OpenAI shape) is always a genuine user turn.
+    assert conversation_shape([{"role": "user", "content": "hello"}]) == (1, 1, 0)

@@ -27,6 +27,34 @@ def json_safe(value: Any) -> Any:
     return value
 
 
+def _is_genuine_user_turn(message: dict[str, Any]) -> bool:
+    """Return True when a user-role message carries real user input.
+
+    Anthropic-shape tool results (Claude Code) arrive as user-role messages
+    whose ``content`` is a list of ``tool_result`` blocks. Those are the
+    conversation's tool responses, not turns the human typed, so they must not
+    inflate ``num_user_turns``. A user message counts as a genuine turn when its
+    content is a plain string (or otherwise non-list), or a block list that
+    contains at least one element that is not a ``tool_result`` block. A content
+    list made up solely of ``tool_result`` blocks is a tool response and does
+    not count.
+    """
+    content = message.get("content")
+    if not isinstance(content, list):
+        # Plain string / None content: an ordinary user message.
+        return True
+    has_tool_result = False
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool_result":
+            has_tool_result = True
+        else:
+            # Any non-tool_result element means the human contributed input.
+            return True
+    # All blocks (if any) were tool_result. An empty content list carried no
+    # tool result, so it is still a (degenerate) user turn.
+    return not has_tool_result
+
+
 def conversation_shape(
     prompt: list[dict[str, Any]] | str | None,
 ) -> tuple[int | None, int | None, int | None]:
@@ -35,7 +63,10 @@ def conversation_shape(
     Computed once at log time so the admin list query can read three cheap
     integer columns instead of de-TOASTing the full request payload per row.
     ``num_turns`` counts all messages, ``num_user_turns`` counts user-role
-    messages, and ``num_tool_calls`` sums tool calls across messages. Both the
+    messages that carry real user input, and ``num_tool_calls`` sums tool calls
+    across messages. Anthropic-shape tool results (user-role messages whose
+    content is entirely ``tool_result`` blocks) are excluded from
+    ``num_user_turns`` because they are tool responses, not human turns. Both the
     OpenAI shape (an assistant ``tool_calls`` array) and the Anthropic Messages
     shape used by Claude Code (``tool_use`` content blocks) are counted, so the
     column is accurate regardless of which API surface the request came in on.
@@ -55,7 +86,7 @@ def conversation_shape(
         if not isinstance(message, dict):
             continue
         num_turns += 1
-        if message.get("role") == "user":
+        if message.get("role") == "user" and _is_genuine_user_turn(message):
             num_user_turns += 1
         tool_calls = message.get("tool_calls")
         if isinstance(tool_calls, list):
