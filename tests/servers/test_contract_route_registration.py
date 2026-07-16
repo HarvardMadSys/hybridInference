@@ -92,22 +92,15 @@ def test_endpoint_ids_are_provider_host_port_scoped(registered):
             assert ":" in endpoint_id, f"unexpected endpoint_id format: {endpoint_id!r}"
 
 
-def test_production_models_yaml_schema_contract():
-    """The real catalog stays parseable, unambiguous, and loadable offline.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PRODUCTION_MODELS_YAML = REPO_ROOT / "config" / "models.yaml"
 
-    In a secretless environment every model's env-backed credentials are
-    absent, so ``continue_on_missing_env=True`` (the bootstrap behavior) may
-    legitimately register zero routes — the contract here is that the file
-    parses, ids/aliases stay collision-free, and registration never raises.
-    This is the regression net for the future overlay migration: the same
-    file loaded from a new location must satisfy the same invariants.
-    """
+
+def test_production_models_yaml_schema_contract():
+    """The real catalog stays parseable and unambiguous."""
     import yaml
 
-    models_path = Path("config/models.yaml")
-    assert models_path.exists(), "run from the repo root"
-
-    data = yaml.safe_load(models_path.read_text())
+    data = yaml.safe_load(PRODUCTION_MODELS_YAML.read_text())
     models = data["models"]
     assert models, "production catalog must declare at least one model"
 
@@ -120,15 +113,38 @@ def test_production_models_yaml_schema_contract():
         assert model.get("name"), f"model {model['id']!r} missing name"
         assert model.get("provider"), f"model {model['id']!r} missing provider"
 
-    # Registration must complete without raising and be deterministic,
-    # exactly as bootstrap invokes it.
-    first = RouteExecutor()
-    count_a, _ = registry.register_from_models_yaml(
-        first, models_path, continue_on_missing_env=True
+
+def test_production_models_yaml_registers_full_inventory(monkeypatch):
+    """With every env-backed credential present, the whole catalog registers.
+
+    Injects a dummy value for each ``${VAR}`` referenced by models.yaml so no
+    model is skipped for missing credentials, then asserts the registered
+    route set is exactly canonical ids plus aliases. This is the regression
+    net for the future overlay migration: the same file loaded from a new
+    location must produce this same inventory. (Counts are derived from the
+    file, so routine catalog edits do not churn this test.)
+    """
+    import re
+
+    import yaml
+
+    raw = PRODUCTION_MODELS_YAML.read_text()
+    for var in sorted(set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)", raw))):
+        monkeypatch.setenv(var, "http://contract-dummy.test")
+
+    data = yaml.safe_load(raw)
+    expected = {m["id"] for m in data["models"]}
+    for model in data["models"]:
+        expected.update(model.get("aliases") or [])
+
+    exe = RouteExecutor()
+    count, infos = registry.register_from_models_yaml(
+        exe, PRODUCTION_MODELS_YAML, continue_on_missing_env=True
     )
-    second = RouteExecutor()
-    count_b, _ = registry.register_from_models_yaml(
-        second, models_path, continue_on_missing_env=True
-    )
-    assert count_a == count_b
-    assert set(first.routes) == set(second.routes)
+    assert set(exe.routes) == expected
+    assert count == len(expected)
+    assert {info.model_id for info in infos} == {m["id"] for m in data["models"]}
+    for name, route in exe.routes.items():
+        assert route.adapters, f"route {name!r} registered without adapters"
+        for adapter, _weight in route.adapters:
+            assert adapter.config.endpoint_id

@@ -113,15 +113,20 @@ async def test_streaming_sse_contract(contract_client: AsyncClient):
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
 
-    lines = [line for line in resp.text.split("\n") if line.strip()]
-    assert lines, "stream produced no events"
-    assert all(line.startswith("data: ") for line in lines)
+    # SSE events are separated by a blank line; each event of this stream is
+    # exactly one single-line data frame. Splitting on "\n\n" (not "\n")
+    # freezes the event-boundary framing itself.
+    events = [event for event in resp.text.split("\n\n") if event.strip()]
+    assert events, "stream produced no events"
+    for event in events:
+        assert event.startswith("data: ")
+        assert "\n" not in event, f"multi-line event frame: {event!r}"
     # An upstream [DONE] frame passes through to the client verbatim.
-    assert lines[-1] == "data: [DONE]"
+    assert events[-1] == "data: [DONE]"
 
     import json
 
-    chunks = [json.loads(line[len("data: ") :]) for line in lines[:-1]]
+    chunks = [json.loads(event[len("data: ") :]) for event in events[:-1]]
     assert chunks, "no JSON chunks before [DONE]"
     for chunk in chunks:
         assert chunk["object"] == "chat.completion.chunk"
@@ -145,8 +150,9 @@ async def test_unknown_model_error_envelope(contract_client: AsyncClient):
     body = resp.json()
     assert set(body) == {"error"}
     error = body["error"]
-    assert error["message"]
-    assert "code" in error
+    assert error["code"] == 404
+    assert error["type"] == "unknown"
+    assert "no-such-model" in error["message"]
 
 
 @pytest.mark.asyncio
