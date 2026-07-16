@@ -10,17 +10,21 @@
 > epic serve as the file-level implementation checklist for Phase 1 of the
 > [neutral-upstream / distribution split design](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md);
 > P3–P4 block nothing there and are scheduled after its Phase 3, on demand.
-> Two prescriptions revised: (1) the "security-critical" section now follows the
-> main doc's "Publication & Visibility" policy — the account/database IDs in
-> `wrangler.toml` are identifiers, not credentials (no committed secret exists to
-> rotate); rotate `CLOUDFLARE_API_TOKEN` as cheap insurance and **do not rewrite
-> git history**; going public happens via a filtered export to a fresh repo.
-> Making Statcounter env-driven remains a hard pre-publication item. (2) The
-> "unlock the RouteWise dependency" item in P5 is a standalone decision: both
-> options amount to publishing RouteWise code, and today
-> `strategies/__init__.py` hard-imports it at startup while `routing/routewise/`
-> imports `routewise.core` in several modules, so the real effort is M/L — it has
-> been promoted to the main doc's Phase 3 entry gate.
+> Three prescriptions revised (the body below has been rewritten accordingly;
+> this note records the deltas): (1) security-critical section — the
+> account/database IDs in `wrangler.toml` are identifiers, not credentials (no
+> committed secret exists to rotate); rotate `CLOUDFLARE_API_TOKEN` as cheap
+> insurance and **do not rewrite git history**; the concrete publication
+> mechanism is tracked in the main doc's "Publication & Visibility" section and
+> its open decision 10. Making Statcounter env-driven remains a hard
+> pre-publication item. (2) P1 defaults — now three-step: legacy FreeInference
+> defaults stay, a neutral profile supplies generic values, and legacy defaults
+> are removed only after the overlay becomes production truth. (3) The "unlock
+> the RouteWise dependency" item in P5 is a standalone decision: both options
+> amount to publishing RouteWise code, and today `strategies/__init__.py`
+> hard-imports it at startup while `routing/routewise/` imports
+> `routewise.core` in several modules, so the real effort is M/L — it has been
+> promoted to the main doc's Phase 3 entry gate.
 
 ---
 
@@ -82,10 +86,14 @@ Related: #642 (decouple router from service).
 
 These leak real Harvard infrastructure and are the hard blockers:
 
-- [ ] **Cloudflare account + D1 database IDs are in git history** —
-  `services/status-monitor-worker/wrangler.toml:7,37,38`. Removing from HEAD is
-  insufficient: **rotate the Cloudflare credentials** and rewrite history
-  (`git filter-repo`) before publishing.
+- [ ] **Cloudflare account + D1 database IDs in `wrangler.toml`** —
+  `services/status-monitor-worker/wrangler.toml:7,37,38`. These are
+  identifiers, not credentials (the file itself documents `account_id` as
+  non-secret; the actual secret, `CLOUDFLARE_API_TOKEN`, was never committed).
+  Parameterize them out of HEAD and rotate `CLOUDFLARE_API_TOKEN` as cheap
+  insurance. **Do not rewrite git history**: this private repo's history never
+  ships (publication follows the main design doc's Publication & Visibility
+  policy), and a rewrite would invalidate every active worktree and open PR.
 - [ ] **Statcounter analytics block** — `apps/frontend/src/app/layout.tsx:27,31,57`
   (project `13224568`, security key `2d8ab84a`). Every deployer's traffic would
   flow into Harvard's analytics account. Gate behind
@@ -119,7 +127,7 @@ These leak real Harvard infrastructure and are the hard blockers:
 |---|---|---|
 | **(a) Reusable core** | routing engine, adapters, HTTP/SSE, storage abstraction, JWT/bcrypt, `runtime_settings` | Ship as-is (one fix: `adapters/openrouter.py:11-12`) |
 | **(b) Pluggable / optional** | API-key verify + quota (`servers/auth.py:88-299`), per-user concurrency (`concurrency.py:203-325`), model gating (`completions.py:495-552`, `model_access.py:25-30`), admin surface, email | Behind flags, default no-op/permissive |
-| **(c) Deployment config** | URLs, emails, CORS, DB name, role quota/concurrency defaults, `NEXT_PUBLIC_*`, `models.yaml` | env / config files with generic defaults |
+| **(c) Deployment config** | URLs, emails, CORS, DB name, role quota/concurrency defaults, `NEXT_PUBLIC_*`, `models.yaml` | env / config files; FreeInference defaults stay until the overlay is production truth (see P1) |
 | **(d) Harvard-only** | team page, sponsor logos, Harvard SEAS metadata, `@harvard.edu` copy, Statcounter, Cloudflare IDs, LICENSE copyright, RouteWise pin | delete or make config-driven |
 
 ---
@@ -129,13 +137,18 @@ These leak real Harvard infrastructure and are the hard blockers:
 ### P0 — Infra & secret extraction (effort: S) — **do first**
 - [ ] Parameterize `wrangler.toml` `account_id` / `database_id` /
       `database_name` / `GATEWAY_BASE_URL` (`:7,17,37,38`) via Wrangler env vars.
-- [ ] Rotate Cloudflare creds + scrub history (see security section).
+- [ ] Rotate `CLOUDFLARE_API_TOKEN` as insurance (see security section; no
+      history rewrite).
 - [ ] Make the status-monitor worker an **optional** add-on, not a prerequisite.
 
 ### P1 — Backend config-extraction sweep (effort: S/M)
 Replace every `freeinference.org` / `admin@freeinference.org` literal with
-env-backed `Settings` fields and **generic** defaults (`example.com`,
-`localhost`):
+env-backed `Settings` fields. Do **not** change the shipped defaults yet:
+legacy FreeInference defaults stay in place, a **neutral profile** supplies
+the generic values (`example.com`, `localhost`), and the legacy defaults are
+removed only after the distribution overlay has become production truth —
+this keeps the main design doc's "default FreeInference behavior unchanged"
+invariant:
 - [ ] `QUOTA_CONTACT_EMAIL` — 3 sites: `servers/auth.py:28`,
       `servers/routers/user_routes.py`, `schemas_auth.py` (QuotaInfo/QuotaExceeded).
 - [ ] `base_url` / `frontend_url` — `config/settings.py:82,85` (+ `.env.example`).
@@ -202,8 +215,9 @@ env-backed `Settings` fields and **generic** defaults (`example.com`,
 - **Streaming / middleware ordering (high):** P3 inserts auth/quota decisions
   before routing in the hot path; no-op enforcers must not buffer the SSE
   response. Test the no-auth streaming path explicitly.
-- **Secret leakage history (high):** see security section — rotate, don't just
-  delete from HEAD.
+- **Committed identifiers (low, revised):** see security section — rotate the
+  API token as insurance and parameterize HEAD; no history rewrite, since the
+  private repo's history never ships.
 - **License (low/med):** MIT is fine, but the copyright names Harvard SEAS;
   confirm RouteWise is itself redistributable or make it optional.
 - **D1 vs Postgres (med):** main stores are Postgres with a clean abstraction;
@@ -216,10 +230,13 @@ env-backed `Settings` fields and **generic** defaults (`example.com`,
 ---
 
 ## Acceptance criteria
-- [ ] A fresh clone runs end-to-end with **no `freeinference.org` / Harvard
-      string** anywhere in the running build or its default config.
+- [ ] A fresh clone runs end-to-end under the **neutral profile** with no
+      `freeinference.org` / Harvard string in that profile's build or config
+      (legacy FreeInference defaults may remain until the overlay is
+      production truth).
 - [ ] `USER_AUTH_ENABLED=false` serves chat completions (incl. streaming) with
       no DB-backed user state.
-- [ ] No live Harvard credentials/IDs in source or git history.
+- [ ] No live Harvard credentials in HEAD; committed identifiers are
+      parameterized, and publication never ships this repo's history.
 - [ ] A deployer can set their own brand, support email, and (optionally) bring
       their own SSO without editing source.

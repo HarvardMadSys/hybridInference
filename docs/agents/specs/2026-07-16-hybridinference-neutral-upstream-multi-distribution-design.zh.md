@@ -327,20 +327,20 @@ freeinference-infra-private/
 彻底，这个目录越集中了不适合公开的内容（真实模型目录、告警参数、机器脚本、RAG
 语料、备份位置）。因此 monorepo 在 overlay 存续期间保持 private。
 
-### 2. 上游公开采用过滤导出，不翻转本仓
+### 2. 已定的硬约束与待定的公开机制
 
-上游公开时**新建一个公共仓库并做过滤导出**（排除 `distributions/`、
-`ops/db/analysis` 及公开面审计标记的内容），当前仓库保留为 FreeInference 的
-私有工作仓：
+已定（硬约束）：**不重写本仓 git 历史**——大量活跃 worktree 与进行中分支会被
+全部作废，且历史中的运营细节（内部拓扑注释、真实配置演变）本就无需随上游公开；
+overlay 存续期间本仓保持 private。
 
-- 本仓有大量活跃 worktree 和进行中分支，`git filter-repo` 式历史重写会将其全部
-  作废，收益不成比例；
-- 历史中的运营细节（内部拓扑注释、真实配置演变）无需随上游公开；
-- 同步方向为"本仓 → 导出仓"，由脚本或 CI 完成，直至 Phase 4 决定长期形态。
+待定（见待决策 10）：具体公开机制。当前**推荐方向**是"新建公共仓库 + 过滤导出"
+（排除 `distributions/`、`ops/db/analysis` 及公开面审计标记的内容，同步方向为
+"本仓 → 导出仓"），但它引入第三套仓库状态与同步治理，在 overlay 验证稳定前
+不定稿；"翻转本仓为 public + 历史清理"的路线因违反上述硬约束被排除。
 
 ### 3. 公开前置清单
 
-上游导出仓公开前必须完成：
+上游以任何形式公开前必须完成：
 
 1. [2026-06-18-opensource-decoupling.zh.md](2026-06-18-opensource-decoupling.zh.md)
    的 P0–P2，其中安全项按修订版处方执行：Statcounter 改 `NEXT_PUBLIC_*` 环境变量
@@ -354,8 +354,8 @@ freeinference-infra-private/
 
 ### 4. 时点
 
-导出仓最早在 Phase 2 完成（上游目录已不含运营内容）后创建，Phase 3 的公共 CI 在
-导出仓上运行。具体时点与同步机制列入待决策。
+任何公开形态最早在 Phase 2 完成（上游目录已不含运营内容）后启动；公开机制、
+时点与同步治理统一列入待决策 10，在 overlay 验证稳定前不定稿。
 
 ## 当前目录迁移映射
 
@@ -373,7 +373,7 @@ freeinference-infra-private/
 | FreeInference RAG index | FreeInference 发行版 | 构建跟随发行版内容 |
 | `ops/local_deployment_proxy` | Mixed | 通用逻辑保留；具体主机配置移出 |
 | 特定主机/tunnel/systemd | FreeInference 发行版 | 集中到 distribution ops |
-| production/staging workflows | FreeInference 发行版 | workflow 文件留在 `.github/workflows/`（GitHub 硬约束）；逻辑下沉为 overlay 内脚本，workflow 退化为薄触发壳；Phase 4 拆仓时才随发行版迁移 |
+| production/staging workflows | FreeInference 发行版 | 当前保持原位、零改动（仅注释级归属标注）；下沉与迁移属未来 CI/CD 独立阶段与 Phase 4（见 CI/CD 演进路径） |
 | Dockerfile/Compose | Mixed | 通用镜像上游，站点 overlay 进发行版 |
 | status monitor | Mixed | 通用 worker 可留，站点配置移出 |
 | `ops/db/analysis` | FreeInference 受控环境 | 不进入通用发行物 |
@@ -564,27 +564,25 @@ percentage bucket
 
 当前 CD 的真实依赖不是"workflow 住在哪个仓库"，而是"部署单位是本仓源码 SHA"：
 deploy workflow ssh 到主机后 `git reset --hard` 并在主机上现场构建镜像，回滚也按
-旧 release tag 重新构建。演进分三步：
+旧 release tag 重新构建。演进分三个阶段，**其中只有第一条属于当前工作，且内容是
+"零改动"**：
 
-1. **归属整理（Phase 0–2）：** workflow 文件保持在 `.github/workflows/` 不动，只加
-   归属标注；`ops/deploy/*.sh` 随 overlay 建立移入
-   `distributions/freeinference/deploy/`，workflow 改一行路径；新增 Secret 一律进
-   GitHub Environment。CD 行为零变化。
-2. **部署单位换成 image digest（Phase 3 的关键步）：** `docker-build.yml` 从
-   `push: false` 改为推送 registry；deploy 脚本从"源码同步 + 现场构建"改为
+1. **当前阶段（Phase 0–2）：对现有 CI/CD 零改动。** workflow 文件与
+   `ops/deploy/*.sh` 全部保持原位；允许的动作仅限注释级归属标注，新增 Secret
+   一律进 GitHub Environment。overlay 的建立不搬部署脚本、不改 workflow 路径、
+   不改部署行为。
+2. **未来独立阶段（时点待定，单独立项）：部署单位换成 image digest。** 与
+   Phase 3 的中立 artifact 配套但独立启动，不并入当前重构：`docker-build.yml`
+   从 `push: false` 改为推送 registry；deploy 脚本从"源码同步 + 现场构建"改为
    `compose pull image@digest`；回滚从"按旧 tag 重建"变为切回上一个 known-good
-   digest。附带收益：`ROUTEWISE_GITHUB_TOKEN` 从生产主机退回 CI 构建环节。
-3. **拆仓后（Phase 4）：** CD workflow 迁入发行版仓库。上游发版后，发行版仓自动
-   收到 bump PR（更新 manifest 中的 version 与 digest；推荐拉模式——发行版侧定时
-   任务或 Renovate，不要求上游持有发行版仓写权限），合并即部署；回滚 = revert
-   bump PR，或部署发行版仓旧 commit（镜像与配置原子地一起回退）。注意
-   `workflow_run` 触发链不能跨仓库，bump PR 即其替代。
-
-Monorepo 期间的 digest 解析策略：**staging 部署"当前 commit 构建出的镜像"**，
-保持合并即上 staging 的节奏；**production 从改造完成起只读 manifest 中显式钉住的
-digest**，晋升生产 = 一个修改 manifest 的 PR。拆仓后最关键的机制（生产只认
-manifest digest）因此提前在真实生产上排练，Phase 4 的 delta 只剩 workflow 搬家、
-Environment secrets 重建、bump PR 跨仓化和 runner 重新注册四件事。
+   digest；`ROUTEWISE_GITHUB_TOKEN` 从生产主机退回 CI 构建环节。该阶段内的解析
+   策略：staging 部署"当前 commit 构建出的镜像"保持迭代节奏，production 只读
+   manifest 中显式钉住的 digest，晋升生产 = 一个修改 manifest 的 PR。
+3. **拆仓后目标态（Phase 4，保留为目标设计）：** CD workflow 迁入发行版仓库。
+   上游发版后，发行版仓自动收到 bump PR（更新 manifest 中的 version 与 digest；
+   推荐拉模式——发行版侧定时任务或 Renovate，不要求上游持有发行版仓写权限），
+   合并即部署；回滚 = revert bump PR，或部署发行版仓旧 commit（镜像与配置原子地
+   一起回退）。注意 `workflow_run` 触发链不能跨仓库，bump PR 即其替代。
 
 ## 分阶段迁移计划
 
@@ -626,7 +624,8 @@ Environment secrets 重建、bump PR 跨仓化和 runner 重新注册四件事�
 1. branding/content；
 2. docs 和 RAG；
 3. test targets；
-4. status/deploy config；
+4. status monitor 站点配置（GitHub workflow 与 `ops/deploy/*.sh` 除外——
+   它们保持原位，见 CI/CD 演进路径）；
 5. machine-specific ops；
 6. 真实 model/routing/alert config。
 
@@ -800,7 +799,8 @@ Phase 3 开工前完成；在此之前 Phase 3 其余条目可先以私有 artif
 7. 各模型/客户端 canary soak window 和 rollback RTO。
 8. 未来下游更适合 fork、独立发行版仓库还是纯 artifact consumer。
 9. 独立 `freeinference-deployment` 的公开范围与可选私有 infra 边界。
-10. 上游公开导出仓的创建时点与"本仓 → 导出仓"同步机制。
+10. 上游公开机制(推荐方向:过滤导出公共仓;硬约束:不重写本仓历史)、创建
+    时点与同步治理;在 overlay 验证稳定前不定稿。
 
 ## 最终决策摘要（Decision Summary）
 

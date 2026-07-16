@@ -9,10 +9,12 @@
 > **修订记录(2026-07-16,与主设计文档对齐):** 本 Epic 的 P0–P2 是
 > [中立上游与发行版拆分设计](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
 > Phase 1 的文件级实施清单;P3–P4 不阻塞该文任何 Phase,排在其 Phase 3 之后按需执行。
-> 两处处方修订:(1)「安全关键」章节按主文档「公开与可见性策略」执行——
+> 三处处方修订(正文均已按此改写,以下为变更说明):(1)「安全关键」章节——
 > `wrangler.toml` 中的 account/database ID 是标识符而非凭据(git 中无已提交凭据),
-> 轮换 `CLOUDFLARE_API_TOKEN` 作为廉价保险即可,**不做 git 历史重写**;仓库公开
-> 采用"过滤导出新仓"方式。Statcounter 环境变量化仍为公开硬前置。(2)P5 中
+> 轮换 `CLOUDFLARE_API_TOKEN` 作为廉价保险即可,**不做 git 历史重写**;具体公开
+> 机制见主文档「公开与可见性策略」及其待决策 10。Statcounter 环境变量化仍为公开
+> 硬前置。(2)P1 默认值——改为三步式:legacy FreeInference 默认值保留,neutral
+> profile 提供通用占位,overlay 成为生产真值后才删除 legacy 默认。(3)P5 中
 > 「解开 RouteWise 依赖」实为独立决策项:两种方案都意味着 RouteWise 代码公开,
 > 且现状下 `strategies/__init__.py` 启动硬 import、`routing/routewise/` 多处 import
 > `routewise.core`,实际工作量 M/L——已上移为主文档 Phase 3 的入口门槛。
@@ -67,9 +69,12 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 
 这些会泄露 Harvard 真实基础设施,是硬阻断项:
 
-- [ ] **Cloudflare 账号 + D1 database ID 在 git 历史里** ——
-  `services/status-monitor-worker/wrangler.toml:7,37,38`。仅从 HEAD 删掉不够:
-  **必须轮换 Cloudflare 凭据**,并用 `git filter-repo` 重写历史,然后才能公开。
+- [ ] **`wrangler.toml` 中的 Cloudflare 账号 + D1 database ID** ——
+  `services/status-monitor-worker/wrangler.toml:7,37,38`。它们是标识符而非凭据
+  (文件注释本身写明 `account_id` 非机密;真正的 secret `CLOUDFLARE_API_TOKEN`
+  从未提交)。从 HEAD 参数化移除,轮换 `CLOUDFLARE_API_TOKEN` 作为廉价保险;
+  **不做 git 历史重写**——本私有仓的历史永远不随公开发布(公开方式见主设计文档
+  「公开与可见性策略」),重写历史只会作废所有活跃 worktree 和进行中 PR。
 - [ ] **Statcounter 分析代码块** —— `apps/frontend/src/app/layout.tsx:27,31,57`
   (project `13224568`,security key `2d8ab84a`)。否则每个部署者的流量都会流进
   Harvard 的分析账号。改成由 `NEXT_PUBLIC_STATCOUNTER_PROJECT_ID` 控制、默认关闭。
@@ -99,7 +104,7 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 |---|---|---|
 | **(a) 可复用核心** | 路由引擎、adapter、HTTP/SSE、存储抽象、JWT/bcrypt、`runtime_settings` | 原样发布(只修一处:`adapters/openrouter.py:11-12`) |
 | **(b) 可插拔/可选** | API-key 校验 + 配额(`servers/auth.py:88-299`)、每用户并发(`concurrency.py:203-325`)、模型门禁(`completions.py:495-552`、`model_access.py:25-30`)、admin 面、email | 放到开关后面,默认 no-op/放行 |
-| **(c) 部署配置** | URL、邮箱、CORS、DB 名、角色配额/并发默认值、`NEXT_PUBLIC_*`、`models.yaml` | 移到 env / 配置文件,默认值改成通用占位 |
+| **(c) 部署配置** | URL、邮箱、CORS、DB 名、角色配额/并发默认值、`NEXT_PUBLIC_*`、`models.yaml` | 移到 env / 配置文件;FreeInference 默认值保留至 overlay 成为生产真值(见 P1) |
 | **(d) Harvard 专有** | 团队页、赞助 logo、Harvard SEAS 元数据、`@harvard.edu` 文案、Statcounter、Cloudflare ID、LICENSE 版权、RouteWise 锁定 | 删除或改成配置驱动 |
 
 ---
@@ -109,12 +114,15 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 ### P0 —— 基础设施 & 密钥抽取(工作量:S)—— **最先做**
 - [ ] 把 `wrangler.toml` 的 `account_id` / `database_id` / `database_name` /
       `GATEWAY_BASE_URL`(`:7,17,37,38`)参数化为 Wrangler env 变量。
-- [ ] 轮换 Cloudflare 凭据 + 清理历史(见安全章节)。
+- [ ] 轮换 `CLOUDFLARE_API_TOKEN` 作为保险(见安全章节;不做历史重写)。
 - [ ] 把 status-monitor worker 做成**可选** add-on,而非必需依赖。
 
 ### P1 —— 后端配置抽取扫荡(工作量:S/M)
 把每一处 `freeinference.org` / `admin@freeinference.org` 字面量换成 env 驱动的
-`Settings` 字段,默认值用**通用占位**(`example.com`、`localhost`):
+`Settings` 字段。**暂不改变随代码发布的默认值**:legacy FreeInference 默认值
+原样保留,**neutral profile** 提供通用占位(`example.com`、`localhost`),
+overlay 成为生产真值后才删除 legacy 默认——以维持主设计文档"默认 FreeInference
+行为不变"的不变量:
 - [ ] `QUOTA_CONTACT_EMAIL` —— 3 处:`servers/auth.py:28`、
       `servers/routers/user_routes.py`、`schemas_auth.py`(QuotaInfo/QuotaExceeded)。
 - [ ] `base_url` / `frontend_url` —— `config/settings.py:82,85`(及 `.env.example`)。
@@ -176,7 +184,8 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 ## 风险与坑
 - **流式 / 中间件顺序(高危):** P3 把 auth/quota 决策插在路由前的热路径;
   no-op enforcer 绝不能缓冲 SSE 响应。要专门测无 auth 的流式路径。
-- **密钥历史泄露(高危):** 见安全章节 —— 要轮换,不能只从 HEAD 删。
+- **已提交标识符(低危,已修订):** 见安全章节 —— 轮换 API token 作为保险并
+  从 HEAD 参数化;不做历史重写,私有仓历史永远不随公开发布。
 - **License(低/中):** MIT 没问题,但版权写的是 Harvard SEAS;确认 RouteWise
   本身可再分发,否则做成可选依赖。
 - **D1 vs Postgres(中):** 主存储是 Postgres + 干净抽象;status-monitor 的 D1
@@ -187,9 +196,11 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
 ---
 
 ## 验收标准
-- [ ] 全新 clone 能端到端跑通,且运行态构建及其默认配置中**不含任何
-      `freeinference.org` / Harvard 字符串**。
+- [ ] 全新 clone 在 **neutral profile** 下能端到端跑通,且该 profile 的构建与
+      配置中不含任何 `freeinference.org` / Harvard 字符串(legacy FreeInference
+      默认值可保留至 overlay 成为生产真值)。
 - [ ] `USER_AUTH_ENABLED=false` 时能提供 chat completions(含流式),
       且无需任何 DB 用户态。
-- [ ] 源码与 git 历史中不含任何 Harvard 真实凭据/ID。
+- [ ] HEAD 中不含任何 Harvard 真实凭据;已提交的标识符完成参数化,公开发布
+      永远不携带本仓历史。
 - [ ] 部署者无需改源码即可设置自己的品牌、支持邮箱,并(可选)接入自己的 SSO。
