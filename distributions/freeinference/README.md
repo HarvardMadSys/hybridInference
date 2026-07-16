@@ -3,16 +3,21 @@
 This directory is the future single home for everything that is specific to
 the freeinference.org deployment — the FreeInference *distribution* in the
 sense of the
-[neutral-upstream split design](../../docs/agents/specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md).
+[neutral-upstream split design](../../docs/agents/specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
+([#946](https://github.com/HarvardMadSys/hybridInference/pull/946)).
 What belongs here vs. upstream is ruled per directory by the
-[ownership classification](../../docs/agents/specs/2026-07-17-repo-ownership-classification.zh.md).
+[ownership classification](../../docs/agents/specs/2026-07-17-repo-ownership-classification.zh.md)
+([#953](https://github.com/HarvardMadSys/hybridInference/pull/953)).
+Both relative links resolve once those PRs merge; until then use the PR links.
 
 ## Current state
 
 Skeleton only. `distribution.yaml` is a real, loadable manifest, but its
 `paths:` deliberately point back at the legacy `config/*.yaml` locations —
-**the legacy paths remain production truth** (Phase 1). Try it on staging
-with:
+**the legacy paths remain production truth** (Phase 1). To try it on
+staging, add to the repo-root `.env` (Compose passes it via `env_file`; the
+backend service bind-mounts `distributions/` read-only, so the overlay is
+never baked into the neutral image):
 
 ```bash
 DISTRIBUTION_CONFIG_PATH=distributions/freeinference/distribution.yaml
@@ -20,7 +25,17 @@ DISTRIBUTION_CONFIG_MODE=dark   # loads + validates + logs; changes nothing
 ```
 
 Dark mode must log every path comparison as `identical` while this state
-holds.
+holds. Because the loader fails open (a missing mount starts the service
+without any comparison), **verify with the smoke script** instead of
+trusting a clean boot:
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml exec backend \
+    python distributions/freeinference/smoke_dark_load.py
+```
+
+It exits non-zero if the manifest is not visible from the container or any
+comparison is not `identical`.
 
 ## Target layout (grows in Phase 2, one category per PR)
 

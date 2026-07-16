@@ -56,7 +56,10 @@ include = [
 [tool.pytest.ini_options]
 pythonpath = ["apps/backend", "."]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+# "distributions" collects distribution-owned tests (e.g. the FreeInference
+# overlay manifest invariants) so they run in the default suite while living
+# with the overlay they validate.
+testpaths = ["tests", "distributions"]
 timeout = 300
 addopts = [
   "-ra",

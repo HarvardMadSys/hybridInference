@@ -40,6 +40,10 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ../../config:/app/config:ro
+      # Distribution overlay (read-only): mounted rather than baked into the
+      # image so the neutral image never carries distribution content. Inert
+      # unless DISTRIBUTION_CONFIG_PATH is set in .env.
+      - ../../distributions:/app/distributions:ro
       - ../../var/data:/app/var/data          # credentials and downloaded GeoIP data (read-write)
     ports:
       - "127.0.0.1:8080:8080"

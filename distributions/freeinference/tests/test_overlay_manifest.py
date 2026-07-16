@@ -9,8 +9,9 @@ from pathlib import Path
 
 from serving.config.distribution import load_distribution_config
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-MANIFEST = REPO_ROOT / "distributions" / "freeinference" / "distribution.yaml"
+OVERLAY_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = OVERLAY_ROOT.parents[1]
+MANIFEST = OVERLAY_ROOT / "distribution.yaml"
 
 
 def test_manifest_loads_and_identifies_freeinference():
