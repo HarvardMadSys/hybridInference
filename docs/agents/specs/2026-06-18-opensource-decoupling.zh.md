@@ -13,8 +13,8 @@
 > `wrangler.toml` 中的 account/database ID 是标识符而非凭据(git 中无已提交凭据),
 > 轮换 `CLOUDFLARE_API_TOKEN` 作为廉价保险即可,**不做 git 历史重写**;具体公开
 > 机制见主文档「公开与可见性策略」及其待决策 10。Statcounter 环境变量化仍为公开
-> 硬前置。(2)P1 默认值——改为三步式:legacy FreeInference 默认值保留,neutral
-> profile 提供通用占位,overlay 成为生产真值后才删除 legacy 默认。(3)P5 中
+> 硬前置。(2)P1/P2 默认值与品牌内容——改为三步式:legacy FreeInference 默认值与
+> 素材保留,neutral profile 提供占位或隐藏,overlay 成为生产真值后才删除 legacy。(3)P5 中
 > 「解开 RouteWise 依赖」实为独立决策项:两种方案都意味着 RouteWise 代码公开,
 > 且现状下 `strategies/__init__.py` 启动硬 import、`routing/routewise/` 多处 import
 > `routewise.core`,实际工作量 M/L——已上移为主文档 Phase 3 的入口门槛。
@@ -134,6 +134,8 @@ overlay 成为生产真值后才删除 legacy 默认——以维持主设计文�
       → `config/quotas.yaml` / env 覆盖。
 
 ### P2 —— 前端品牌配置化(工作量:M)
+与 P1 相同的三步式:FreeInference 内容作为编译期 legacy 默认保留,neutral
+profile 隐藏/省略它们,物理删除等 overlay 成为生产真值之后。
 - [ ] 新建 `apps/frontend/src/config/branding.ts`(或 `branding.json`):
       `{ appName, orgName, labUrl, docsUrl, statusUrl, githubRepo, supportEmail,
       sponsors[], teamMembers[], showTeamPage }`,全部可由 `NEXT_PUBLIC_*` 覆盖。
@@ -141,8 +143,10 @@ overlay 成为生产真值后才删除 legacy 默认——以维持主设计文�
       CodeExample、Features、`layout.tsx` 元数据、`config/env.ts` 的 apiBase。
 - [ ] 团队/赞助商区块在配置为空时隐藏。
 - [ ] Statcounter 由 `NEXT_PUBLIC_STATCOUNTER_PROJECT_ID` 控制(默认关)。
-- [ ] 删除 Harvard 素材(`public/team/murphy-tian.jpg`、
-      `public/sponsors/harvard-seas.svg`),并从 `next.config.js` 去掉 `junchengyang.com`。
+- [ ] 把 Harvard 素材(`public/team/murphy-tian.jpg`、
+      `public/sponsors/harvard-seas.svg`)和 `next.config.js` 中的
+      `junchengyang.com` 收进 branding 配置作为 FreeInference 默认值;
+      物理删除等 overlay 成为生产真值之后。
 - [ ] 把 `@harvard.edu` 快速通道文案(`signup/page.tsx:148-150,236`、
       `lib/schemas/auth.ts`)换成配置驱动(`NEXT_PUBLIC_FAST_TRACK_DOMAIN`、
       `NEXT_PUBLIC_SIGNUP_REQUIRES_REVIEW`);未设置时隐藏该提示。
@@ -173,8 +177,10 @@ overlay 成为生产真值后才删除 legacy 默认——以维持主设计文�
 ### P5 —— 文档、license、打包(工作量:S/M)
 - [ ] 重新品牌化 README / docs / AGENTS.md;参数化 GitHub org 引用。
 - [ ] 更新 LICENSE 版权行(`LICENSE:3`)。
-- [ ] 解开 RouteWise 依赖对 `HarvardMadSys` 的锁定(`pyproject.toml:31`)——
-      发到 PyPI 或做成 git-ignored 的可选 extra,让核心无需私有 repo 即可安装。
+- [ ] 按主文档 Phase 3 入口门槛处理 RouteWise 依赖(`pyproject.toml:31`):
+      发布 RouteWise(wheel 或公开仓库)或 vendor 进上游。**不提供**"可选
+      extra"选项——RouteWise 是上游一等算法,`strategies/__init__.py` 启动即
+      硬 import,核心必须随它一起发布。
 - [ ] 提供:带通用值的 `.env.example`、`config/models.example.yaml`
       (占位 endpoint、无真实别名)、以及 `examples/` 下带占位的 Docker
       Compose / systemd。

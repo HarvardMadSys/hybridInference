@@ -17,9 +17,10 @@
 > insurance and **do not rewrite git history**; the concrete publication
 > mechanism is tracked in the main doc's "Publication & Visibility" section and
 > its open decision 10. Making Statcounter env-driven remains a hard
-> pre-publication item. (2) P1 defaults — now three-step: legacy FreeInference
-> defaults stay, a neutral profile supplies generic values, and legacy defaults
-> are removed only after the overlay becomes production truth. (3) The "unlock
+> pre-publication item. (2) P1/P2 defaults and branding content — now three-step: legacy
+> FreeInference defaults/assets stay, a neutral profile supplies generic
+> values or hides them, and removal happens only after the overlay becomes
+> production truth. (3) The "unlock
 > the RouteWise dependency" item in P5 is a standalone decision: both options
 > amount to publishing RouteWise code, and today `strategies/__init__.py`
 > hard-imports it at startup while `routing/routewise/` imports
@@ -160,6 +161,9 @@ invariant:
       (`:83-106`) defaults → `config/quotas.yaml` / env overrides.
 
 ### P2 — Frontend branding config (effort: M)
+Same three-step rule as P1: FreeInference content stays as the compiled-in
+legacy default, the neutral profile omits/hides it, and deletion happens only
+after the distribution overlay is production truth.
 - [ ] Add `apps/frontend/src/config/branding.ts` (or `branding.json`):
       `{ appName, orgName, labUrl, docsUrl, statusUrl, githubRepo, supportEmail,
       sponsors[], teamMembers[], showTeamPage }`, all `NEXT_PUBLIC_*`-overridable.
@@ -167,9 +171,10 @@ invariant:
       CodeExample, Features, `layout.tsx` metadata, `config/env.ts` apiBase.
 - [ ] Hide team/sponsor sections when their config is empty.
 - [ ] Gate Statcounter on `NEXT_PUBLIC_STATCOUNTER_PROJECT_ID` (default-off).
-- [ ] Remove Harvard assets (`public/team/murphy-tian.jpg`,
-      `public/sponsors/harvard-seas.svg`) and `junchengyang.com` from
-      `next.config.js`.
+- [ ] Move Harvard assets (`public/team/murphy-tian.jpg`,
+      `public/sponsors/harvard-seas.svg`) and the `junchengyang.com` entry in
+      `next.config.js` behind the branding config as FreeInference defaults;
+      physical removal waits for the overlay-is-truth milestone.
 - [ ] Replace `@harvard.edu` fast-track copy (`signup/page.tsx:148-150,236`,
       `lib/schemas/auth.ts`) with config (`NEXT_PUBLIC_FAST_TRACK_DOMAIN`,
       `NEXT_PUBLIC_SIGNUP_REQUIRES_REVIEW`); hide hint when unset.
@@ -202,9 +207,12 @@ invariant:
 ### P5 — Docs, license, packaging (effort: S/M)
 - [ ] Rebrand README / docs / AGENTS.md; parameterize GitHub org references.
 - [ ] Update LICENSE copyright line (`LICENSE:3`).
-- [ ] Decouple RouteWise dep from `HarvardMadSys` (`pyproject.toml:31`) — PyPI
-      release or git-ignored optional extra so the core installs without a
-      private repo.
+- [ ] Resolve the RouteWise dependency (`pyproject.toml:31`) per the main
+      doc's Phase 3 entry gate: publish RouteWise (wheel or public repo) or
+      vendor it into the upstream. An install-optional extra is **not** an
+      option — RouteWise is a first-party upstream algorithm and
+      `strategies/__init__.py` hard-imports it at startup, so the core must
+      ship with it.
 - [ ] Ship `.env.example` with generic values, `config/models.example.yaml`
       (placeholder endpoints, no real aliases), and `examples/` Docker
       Compose / systemd with placeholders.

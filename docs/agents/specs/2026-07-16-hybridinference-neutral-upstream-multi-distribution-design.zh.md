@@ -347,8 +347,10 @@ overlay 存续期间本仓保持 private。
    且默认关闭；`wrangler.toml` 中的 account/database ID 属标识符而非凭据，轮换
    `CLOUDFLARE_API_TOKEN` 作为廉价保险即可，**不做 git 历史重写**。
 2. 全仓公开面审计：内部域名、主机拓扑注释、真实邮箱、未跟踪杂项文件。
-3. 公共 CI 全部使用 GitHub-hosted runner，或对 fork PR 强制审批——self-hosted
-   runner 暴露给公开仓库的 fork PR，等于允许任意人在自有服务器上执行代码。
+3. 公共 CI **必须**使用 GitHub-hosted runner（或一次性、隔离的 ephemeral
+   runner）——持久 self-hosted runner 暴露给公开仓库的 fork PR，等于允许任意人
+   在自有服务器上执行代码；对 fork PR 的人工审批只能作为额外防线，**不是**
+   runner 隔离的替代品（审批疲劳与恶意-但-看似无害的 PR 都能穿透它）。
 4. RouteWise 依赖方式已决定（见 Phase 3 入口门槛）——私有 git 依赖存在时无法构建
    可公开的 artifact。
 
@@ -685,22 +687,28 @@ Phase 3 开工前完成；在此之前 Phase 3 其余条目可先以私有 artif
 
 ## 第一批建议 PR
 
+当前批次（不触碰现有 CI/CD）：
+
 1. `docs: classify upstream and FreeInference-owned paths`
 2. `test: freeze production API/SSE/auth/quota/model/routing contracts`
 3. `feat(config): add DistributionConfig with legacy fallback`
 4. `feat(frontend): load runtime site config with neutral fallback`
 5. `refactor(site): move branding, terms, sponsors, and contact data behind config`
-6. `build: publish immutable neutral and FreeInference images`
-7. `refactor(config): support configurable model, routing, and alert paths`
-8. `deploy: create in-repo FreeInference distribution overlay`
-9. `deploy: stage and rollback by immutable artifact`
+6. `refactor(config): support configurable model, routing, and alert paths`
+7. `deploy: create in-repo FreeInference distribution overlay`
 
-这些 PR 不修改 RouteWise/Nimbus，不改变数据库真值，也不创建新生产仓库。
+这些 PR 不修改 RouteWise/Nimbus，不改变数据库真值，不创建新生产仓库，也不改动
+GitHub workflow 与部署脚本。交付顺序建议：2 → 1 → 6 → 3 → 7 → 4/5。
 
-补充说明：PR 6/9 中的 registry 权限、Environment secrets 与 runner 配置需要维护者
-手工操作，agent 只能改 workflow 文件本身；PR 6 的 neutral image 部分被 RouteWise
-依赖决定阻塞（见 Phase 3 入口门槛），在此之前先发布 FreeInference 私有镜像即可。
-交付顺序建议：2 → 1 → 7 → 3 → 8 → 4/5 → 6/9。
+以下两个 PR 属于「CI/CD 演进路径」中的**未来独立阶段**，时点待定，不在当前批次，
+仅预先登记：
+
+- `build: publish immutable neutral and FreeInference images`
+- `deploy: stage and rollback by immutable artifact`
+
+届时注意：registry 权限、Environment secrets 与 runner 配置需要维护者手工操作，
+agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定阻塞
+（见 Phase 3 入口门槛），在此之前只能发布 FreeInference 私有镜像。
 
 ## CI 与验收
 
