@@ -33,6 +33,14 @@ export interface DemandComplementarityResult {
   continents: number;
 }
 
+export interface GeoMetricModel {
+  metric: GeoMetric;
+  continentSeries: Map<string, number[]>;
+  demandComplementarity: DemandComplementarityResult;
+  countryHourP99: number;
+  continentHourP99: number;
+}
+
 export interface ContinentTotal {
   continent: string;
   value: number;
@@ -90,6 +98,20 @@ function metricValue(row: GeoBucketRow, metric: GeoMetric, bucketIndex: GeoColum
   return numberAt(row, requiredIndex(bucketIndex, metric));
 }
 
+/** Nearest-rank percentile over positive finite values only. */
+export function positiveNearestRankPercentile(
+  values: readonly number[],
+  percentile: number,
+): number {
+  const positive = values
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  if (positive.length === 0) return 0;
+  const boundedPercentile = Math.max(0, Math.min(1, percentile));
+  const rank = Math.max(1, Math.ceil(boundedPercentile * positive.length));
+  return positive[rank - 1];
+}
+
 /** Build gap-preserving per-continent series for one metric. */
 export function buildContinentSeries(
   data: GeoAnalyticsResponse,
@@ -112,17 +134,15 @@ export function buildContinentSeries(
   return series;
 }
 
-/** Range-wide demand complementarity: 1 - global peak / sum of continent peaks. */
-export function rangeDemandComplementarity(
-  data: GeoAnalyticsResponse,
-  metric: GeoMetric,
+function demandComplementarityFromSeries(
+  series: ReadonlyMap<string, readonly number[]>,
+  hourCount: number,
 ): DemandComplementarityResult {
-  const series = buildContinentSeries(data, metric);
-  if (series.size < 2 || data.hours_index.length === 0) {
+  if (series.size < 2 || hourCount === 0) {
     return { complementarity: 0, continents: series.size };
   }
 
-  const total = Array(data.hours_index.length).fill(0) as number[];
+  const total = Array(hourCount).fill(0) as number[];
   let sumPeaks = 0;
   for (const values of series.values()) {
     let peak = 0;
@@ -138,6 +158,51 @@ export function rangeDemandComplementarity(
     complementarity: sumPeaks > 0 ? clampFraction(1 - globalPeak / sumPeaks) : 0,
     continents: series.size,
   };
+}
+
+/** Derive stable range-wide series, complementarity, and separate p99 visual caps. */
+export function deriveGeoMetricModel(
+  data: GeoAnalyticsResponse,
+  metric: GeoMetric,
+): GeoMetricModel {
+  const bucketIndex = buildColumnIndex(data.bucket_cols);
+  const countryPosition = requiredIndex(bucketIndex, 'c');
+  const continentPosition = requiredIndex(bucketIndex, 'cont');
+  requiredIndex(bucketIndex, metric);
+
+  const countryHourValues: number[] = [];
+  for (const hour of data.hours) {
+    const byCountry = new Map<string, number>();
+    for (const row of hour.b) {
+      const country = stringAt(row, countryPosition);
+      const continent = stringAt(row, continentPosition);
+      if (!country || country.startsWith('?') || !isLocatedContinent(continent)) continue;
+      byCountry.set(country, (byCountry.get(country) ?? 0) + metricValue(row, metric, bucketIndex));
+    }
+    countryHourValues.push(...byCountry.values());
+  }
+
+  const continentSeries = buildContinentSeries(data, metric);
+  const continentHourValues = [...continentSeries.values()].flat();
+  return {
+    metric,
+    continentSeries,
+    demandComplementarity: demandComplementarityFromSeries(
+      continentSeries,
+      data.hours_index.length,
+    ),
+    countryHourP99: positiveNearestRankPercentile(countryHourValues, 0.99),
+    continentHourP99: positiveNearestRankPercentile(continentHourValues, 0.99),
+  };
+}
+
+/** Range-wide demand complementarity: 1 - global peak / sum of continent peaks. */
+export function rangeDemandComplementarity(
+  data: GeoAnalyticsResponse,
+  metric: GeoMetric,
+): DemandComplementarityResult {
+  const series = buildContinentSeries(data, metric);
+  return demandComplementarityFromSeries(series, data.hours_index.length);
 }
 
 /** Map each observed request-origin country to its continent. */
@@ -176,9 +241,9 @@ function emptyCurrentHourStats(complementarity: DemandComplementarityResult): Cu
 export function currentHourStats(
   data: GeoAnalyticsResponse,
   hourIndex: number,
-  metric: GeoMetric,
+  metricModel: GeoMetricModel,
 ): CurrentHourStats {
-  const complementarity = rangeDemandComplementarity(data, metric);
+  const complementarity = metricModel.demandComplementarity;
   const hour = data.hours[hourIndex];
   if (!hour || hourIndex < 0 || hourIndex >= data.hours_index.length) {
     return emptyCurrentHourStats(complementarity);
@@ -201,7 +266,7 @@ export function currentHourStats(
     totalRequests += requests;
     if (isLocatedContinent(continent)) {
       locatedRequests += requests;
-      const value = metricValue(row, metric, bucketIndex);
+      const value = metricValue(row, metricModel.metric, bucketIndex);
       if (value > 0) {
         valuesByContinent.set(continent, (valuesByContinent.get(continent) ?? 0) + value);
       }

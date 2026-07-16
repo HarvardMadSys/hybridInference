@@ -3,6 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
+import { deriveGeoMetricModel } from './geoMath';
 import { TrafficRibbon } from './TrafficRibbon';
 
 function response(hoursIndex: string[]): GeoAnalyticsResponse {
@@ -30,6 +31,32 @@ function response(hoursIndex: string[]): GeoAnalyticsResponse {
 
 afterEach(cleanup);
 
+function renderRibbon(data: GeoAnalyticsResponse, hourIndex: number, onHourChange = vi.fn()) {
+  const metricModel = deriveGeoMetricModel(data, 'n');
+  const view = render(
+    <TrafficRibbon
+      data={data}
+      hourIndex={hourIndex}
+      metricModel={metricModel}
+      onHourChange={onHourChange}
+    />,
+  );
+  return {
+    ...view,
+    metricModel,
+    rerenderAt(nextHourIndex: number) {
+      view.rerender(
+        <TrafficRibbon
+          data={data}
+          hourIndex={nextHourIndex}
+          metricModel={metricModel}
+          onHourChange={onHourChange}
+        />,
+      );
+    },
+  };
+}
+
 describe('TrafficRibbon', () => {
   it('leaves the rest of the fixed UTC day empty for a partial day', () => {
     const data = response(
@@ -38,9 +65,7 @@ describe('TrafficRibbon', () => {
         (_, hour) => `2026-07-15T${String(hour).padStart(2, '0')}:00:00+00:00`,
       ),
     );
-    const { container } = render(
-      <TrafficRibbon data={data} hourIndex={10} metric="n" onHourChange={vi.fn()} />,
-    );
+    const { container } = renderRibbon(data, 10);
     const dailyTimeline = screen.getByRole('slider', {
       name: 'Demand timeline for the selected UTC day',
     });
@@ -66,7 +91,7 @@ describe('TrafficRibbon', () => {
       '2026-07-15T11:00:00+00:00',
     ]);
     const onHourChange = vi.fn();
-    render(<TrafficRibbon data={data} hourIndex={3} metric="n" onHourChange={onHourChange} />);
+    renderRibbon(data, 3, onHourChange);
 
     const timeline = screen.getByRole('slider', {
       name: 'Demand timeline for the selected UTC day',
@@ -88,7 +113,7 @@ describe('TrafficRibbon', () => {
       '2026-07-15T11:00:00+00:00',
     ]);
     const onHourChange = vi.fn();
-    render(<TrafficRibbon data={data} hourIndex={2} metric="n" onHourChange={onHourChange} />);
+    renderRibbon(data, 2, onHourChange);
 
     const dailyTimeline = screen.getByRole('slider', {
       name: 'Demand timeline for the selected UTC day',
@@ -104,5 +129,28 @@ describe('TrafficRibbon', () => {
 
     expect(onHourChange).toHaveBeenNthCalledWith(1, 1);
     expect(onHourChange).toHaveBeenNthCalledWith(2, 0);
+  });
+
+  it('keeps the range-wide p99 scale stable across UTC days and clamps outliers', () => {
+    const data = response(
+      Array.from({ length: 101 }, (_, index) =>
+        new Date(Date.UTC(2026, 6, 1, index)).toISOString(),
+      ),
+    );
+    data.hours = Array.from({ length: 101 }, (_, index) => ({
+      b: [['USA', 'NA', index === 100 ? 10_000 : 10, 0]],
+    }));
+    const { metricModel, rerenderAt } = renderRibbon(data, 0);
+    const pathData = () => document.querySelector('path[data-continent="NA"]')?.getAttribute('d');
+
+    expect(metricModel.continentHourP99).toBe(10);
+    const firstDayPath = pathData();
+    rerenderAt(24);
+    expect(pathData()).toBe(firstDayPath);
+    rerenderAt(100);
+    expect(pathData()).toMatch(/,10(?:\D|$)/);
+    expect(screen.getByTestId('ribbon-scale-note')).toHaveTextContent(
+      'Absolute scale · capped at range p99: 10 requests/continent-hour',
+    );
   });
 });

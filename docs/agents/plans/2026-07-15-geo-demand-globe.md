@@ -223,8 +223,10 @@ viewer accepts either contract: product data naturally leaves provider/flow/diag
   Country Lite release without credentials, validate gzip/MMDB shape, then atomically install it
   under ignored `var/data/geoip/`. Deploys call it best-effort and keep the last good file on
   failure. Compose sets `GEOIP_COUNTRY_DB` and `GEOIP_COUNTRY_PROVIDER=dbip-lite`.
-- [ ] Hit `/admin/analytics/geo?days=7` on staging (test account `admin@admin.com`); confirm
-  latency of the cold scan and the cached hit; confirm `meta.geoip` flags true.
+- [x] Hit `/admin/analytics/geo` on staging (2026-07-16): `meta.geoip.country=true`,
+  `provider=dbip-lite`, and no degraded reasons. A fresh 30-day scan returned 52,280 rows in
+  2.13 s; the same cached payload returned in 1.05 s (`generated_at` identical). The 7-day payload
+  returned 8,568 rows over 168 hours.
 - [ ] Fetch the aggregate with an authenticated request (for example, `curl -H 'Authorization:
   Bearer ...' '<staging>/admin/analytics/geo?days=7' -o data.json`), then serve `data.json` beside
   `ops/db/analysis/geo_globe.html` locally. A localhost viewer cannot rely on staging cookies and
@@ -260,7 +262,7 @@ viewer accepts either contract: product data naturally leaves provider/flow/diag
   from `meta.source`. Do not port provider nodes, serving routes, external-API rail, serving split,
   endpoint detail, or the flow-animation control.
 - [x] Adapt: cards/typography/buttons to the app's design tokens; the globe stage may stay dark.
-- [ ] Use stable range-wide absolute p99 domains: positive country-hour values for globe dots and
+- [x] Use stable range-wide absolute p99 domains: positive country-hour values for globe dots and
   positive continent-hour values for ribbon lines. Visually cap larger outliers and disclose the
   p99 cap so playback never renormalizes away real changes in magnitude.
 - [x] Loading/error/staleness states (`meta.generated_at`), and an "unlocated %" stat — keep the
@@ -285,13 +287,16 @@ viewer accepts either contract: product data naturally leaves provider/flow/diag
 
 - [x] DB-IP Country Lite updater wired into prod + staging deploys, with ignored
   `var/data/geoip/dbip-country-lite.mmdb` mounted into the backend container.
-- [ ] Deploy the updated project environment containing the Task 1 `maxminddb` dependency.
+- [x] Deploy the updated staging environment containing the Task 1 `maxminddb` dependency
+  (`meta.geoip.country=true` verified 2026-07-16). Production deployment remains release-managed.
 - [ ] **Go/no-go before investing in PR B:** run the offline exporter (or the PR A endpoint) on
   prod for ≥14 days of history and check whether demand shows time-zone-separated peaks across
   continents. If the primary continent x time signal collapses, stop at PR A (the endpoint still
-  powers future geo analytics) and reassess.
+  powers future geo analytics) and reassess. The staging 7-day sample was 100% USA/NA and is not a
+  representative substitute for this production-demand gate.
 - [ ] On staging, play the complete 14-day range and confirm globe bubbles and continent ribbons
-  remain quantitatively comparable across hours rather than rescaling per frame.
+  remain quantitatively comparable across hours rather than rescaling per frame. Local browser QA
+  passed against a 14-day minimal-contract fixture; repeat after PR B is deployed to staging.
 
 ## Future phase — deferred: log-time geo enrichment (do NOT do now)
 

@@ -3,7 +3,7 @@
 import { curveMonotoneX, line, scaleLinear } from 'd3';
 import type { KeyboardEvent, MouseEvent } from 'react';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
-import { buildContinentSeries, CONTINENT_COLORS, CONTINENT_NAMES, type GeoMetric } from './geoMath';
+import { CONTINENT_COLORS, CONTINENT_NAMES, type GeoMetric, type GeoMetricModel } from './geoMath';
 
 const WIDTH = 1_000;
 const HEIGHT = 104;
@@ -19,6 +19,11 @@ function metricLabel(metric: GeoMetric): string {
   return 'requests';
 }
 
+function formatScaleCap(cap: number, metric: GeoMetric): string {
+  if (cap <= 0) return 'Absolute scale · no positive volume in range';
+  return `Absolute scale · capped at range p99: ${Math.round(cap).toLocaleString()} ${metricLabel(metric)}/continent-hour`;
+}
+
 function formatUtcValue(timestamp: string | undefined): string {
   const date = new Date(timestamp ?? '');
   if (Number.isNaN(date.getTime())) return 'Unknown UTC hour';
@@ -28,12 +33,12 @@ function formatUtcValue(timestamp: string | undefined): string {
 export function TrafficRibbon({
   data,
   hourIndex,
-  metric,
+  metricModel,
   onHourChange,
 }: {
   data: GeoAnalyticsResponse;
   hourIndex: number;
-  metric: GeoMetric;
+  metricModel: GeoMetricModel;
   onHourChange: (hourIndex: number) => void;
 }) {
   const selected = new Date(data.hours_index[hourIndex] ?? '');
@@ -52,26 +57,20 @@ export function TrafficRibbon({
     .sort((a, b) => a.utcHour - b.utcHour || a.index - b.index);
   const latestBucket = dayBuckets.at(-1);
   const selectedBucket = dayBuckets.find((bucket) => bucket.index === hourIndex);
-  const series = buildContinentSeries(data, metric);
+  const series = metricModel.continentSeries;
   const continents = [...series.keys()].sort((a, b) => {
     const aTotal = series.get(a)?.reduce((sum, value) => sum + value, 0) ?? 0;
     const bTotal = series.get(b)?.reduce((sum, value) => sum + value, 0) ?? 0;
     return bTotal - aTotal || a.localeCompare(b);
   });
 
-  let maximum = 1;
-  for (const values of series.values()) {
-    for (const bucket of dayBuckets) {
-      maximum = Math.max(maximum, values[bucket.index] ?? 0);
-    }
-  }
-
   const x = scaleLinear()
     .domain([0, 24])
     .range([MARGIN.left, WIDTH - MARGIN.right]);
   const y = scaleLinear()
-    .domain([0, maximum])
-    .range([HEIGHT - MARGIN.bottom, MARGIN.top]);
+    .domain([0, Math.max(1, metricModel.continentHourP99)])
+    .range([HEIGHT - MARGIN.bottom, MARGIN.top])
+    .clamp(true);
   const pathLine = line<[number, number | null]>()
     .defined(([, value]) => value !== null)
     .x(([utcHour]) => x(utcHour))
@@ -129,7 +128,7 @@ export function TrafficRibbon({
     <section className="rounded-xl border border-gray-200 bg-white p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs font-medium text-gray-700">
-          Demand by continent · {dayKey || 'unknown day'} UTC · {metricLabel(metric)}
+          Demand by continent · {dayKey || 'unknown day'} UTC · {metricLabel(metricModel.metric)}
         </p>
         <div className="flex flex-wrap gap-3 text-[11px] text-gray-500">
           {continents.map((continent) => (
@@ -144,6 +143,9 @@ export function TrafficRibbon({
           ))}
         </div>
       </div>
+      <p className="mt-1 text-[11px] text-gray-500" data-testid="ribbon-scale-note">
+        {formatScaleCap(metricModel.continentHourP99, metricModel.metric)}
+      </p>
       <svg
         aria-label="Demand timeline for the selected UTC day"
         aria-orientation="horizontal"

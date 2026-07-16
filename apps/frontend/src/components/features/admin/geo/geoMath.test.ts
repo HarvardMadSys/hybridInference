@@ -7,6 +7,8 @@ import {
   buildContinentSeries,
   buildCountryContinentMap,
   currentHourStats,
+  deriveGeoMetricModel,
+  positiveNearestRankPercentile,
   rangeDemandComplementarity,
 } from './geoMath';
 
@@ -53,6 +55,37 @@ describe('geo column contract', () => {
 });
 
 describe('continent series and demand complementarity', () => {
+  it('uses positive nearest-rank p99 values and keeps globe and ribbon caps separate', () => {
+    expect(positiveNearestRankPercentile([0, -1, Number.NaN, 1, 2, 100], 0.5)).toBe(2);
+
+    const data = makeData([
+      {
+        b: [bucket('CHN', 'AS', 5), bucket('SGP', 'AS', 5), bucket('?', '?', 50_000)],
+      },
+    ]);
+    const model = deriveGeoMetricModel(data, 'n');
+
+    expect(model.countryHourP99).toBe(5);
+    expect(model.continentHourP99).toBe(10);
+    expect(model.continentSeries.get('AS')).toEqual([10]);
+  });
+
+  it('caps a one-percent range outlier without treating zero volume as positive', () => {
+    const data = makeData(
+      Array.from({ length: 101 }, (_, index) => ({
+        b: [bucket('CHN', 'AS', index === 100 ? 10_000 : 10)],
+      })),
+    );
+    const model = deriveGeoMetricModel(data, 'n');
+
+    expect(model.countryHourP99).toBe(10);
+    expect(model.continentHourP99).toBe(10);
+    expect(deriveGeoMetricModel(makeData([{ b: [bucket('CHN', 'AS', 0)] }]), 'n')).toMatchObject({
+      countryHourP99: 0,
+      continentHourP99: 0,
+    });
+  });
+
   it('keeps zero-filled hourly gaps and excludes unknown geography', () => {
     const data = makeData([
       { b: [bucket('CHN', 'AS', 10), bucket('USA', 'NA', 2)] },
@@ -117,7 +150,7 @@ describe('currentHourStats', () => {
       { b: [bucket('CHN', 'AS', 2), bucket('USA', 'NA', 10)] },
     ]);
 
-    const stats = currentHourStats(data, 0, 'n');
+    const stats = currentHourStats(data, 0, deriveGeoMetricModel(data, 'n'));
     expect(stats.totalRequests).toBe(15);
     expect(stats.locatedRequests).toBe(12);
     expect(stats.locatedFraction).toBeCloseTo(0.8);
@@ -132,7 +165,8 @@ describe('currentHourStats', () => {
   it('returns finite zero fractions for an empty or out-of-range hour', () => {
     const data = makeData([{ b: [] }]);
 
-    expect(currentHourStats(data, 0, 'tout')).toMatchObject({
+    const model = deriveGeoMetricModel(data, 'tout');
+    expect(currentHourStats(data, 0, model)).toMatchObject({
       totalRequests: 0,
       locatedFraction: 0,
       unlocatedFraction: 0,
@@ -140,7 +174,7 @@ describe('currentHourStats', () => {
       activeContinents: 0,
       topContinent: null,
     });
-    expect(currentHourStats(data, 4, 'tout')).toMatchObject({
+    expect(currentHourStats(data, 4, model)).toMatchObject({
       totalRequests: 0,
       demandComplementarity: 0,
     });
@@ -153,7 +187,7 @@ describe('currentHourStats', () => {
       },
     ]);
 
-    expect(currentHourStats(data, 0, 'n')).toMatchObject({
+    expect(currentHourStats(data, 0, deriveGeoMetricModel(data, 'n'))).toMatchObject({
       activeCountries: 1,
       activeContinents: 1,
     });
@@ -166,7 +200,7 @@ describe('currentHourStats', () => {
       },
     ]);
 
-    expect(currentHourStats(data, 0, 'tout')).toMatchObject({
+    expect(currentHourStats(data, 0, deriveGeoMetricModel(data, 'tout'))).toMatchObject({
       totalRequests: 6,
       continentTotals: [],
       topContinent: null,

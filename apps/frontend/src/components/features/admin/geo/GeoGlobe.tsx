@@ -19,6 +19,7 @@ import {
   buildCountryContinentMap,
   CONTINENT_NAMES,
   currentHourStats,
+  deriveGeoMetricModel,
 } from './geoMath';
 
 const HOUR_MS = 3_600_000;
@@ -103,12 +104,14 @@ function SelectionPanel({
   hourIndex,
   selection,
   announce,
+  countryContinents,
 }: {
   data: GeoAnalyticsResponse;
   atlas: PreparedAtlas;
   hourIndex: number;
   selection: GlobeSelection | null;
   announce: boolean;
+  countryContinents: ReadonlyMap<string, string>;
 }) {
   if (!selection) {
     return (
@@ -130,7 +133,8 @@ function SelectionPanel({
   );
   const requests = rows.reduce((sum, row) => sum + Number(row[bucketIndex.n] ?? 0), 0);
   const outputTokens = rows.reduce((sum, row) => sum + Number(row[bucketIndex.tout] ?? 0), 0);
-  const continent = String(rows[0]?.[bucketIndex.cont] ?? '?');
+  const continent = countryContinents.get(selection.country) ?? '?';
+  const countryName = atlasCountryName(atlas, selection.country);
   const coordinate = atlas.coordinates.get(selection.country);
   const selectedTime = new Date(data.hours_index[hourIndex]);
   const localHour =
@@ -146,14 +150,20 @@ function SelectionPanel({
         Request origin (IP-based)
       </p>
       <h3 className="mt-1 text-sm font-semibold text-white">
-        {atlasCountryName(atlas, selection.country)} · {CONTINENT_NAMES[continent] ?? '?'}
+        {countryName} · {CONTINENT_NAMES[continent] ?? continent}
       </h3>
       <div className="mt-2 space-y-1 text-xs text-gray-300">
-        <p>
-          {formatCount(requests)} requests this hour
-          {localHour === null ? '' : ` · ~${String(localHour).padStart(2, '0')}:00 local`}
-        </p>
-        <p>{formatCount(outputTokens)} output tokens</p>
+        {requests === 0 ? (
+          <p>No requests from {countryName} in this hour</p>
+        ) : (
+          <>
+            <p>
+              {formatCount(requests)} requests this hour
+              {localHour === null ? '' : ` · ~${String(localHour).padStart(2, '0')}:00 local`}
+            </p>
+            <p>{formatCount(outputTokens)} output tokens</p>
+          </>
+        )}
       </div>
     </section>
   );
@@ -184,15 +194,22 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
     [data.hours_index.length],
   );
   const handleSelect = useCallback((next: GlobeSelection) => setSelection(next), []);
-  const stats = useMemo(() => currentHourStats(data, hourIndex, metric), [data, hourIndex, metric]);
+  const metricModel = useMemo(() => deriveGeoMetricModel(data, metric), [data, metric]);
+  const countryContinents = useMemo(() => buildCountryContinentMap(data), [data]);
+  const stats = useMemo(
+    () => currentHourStats(data, hourIndex, metricModel),
+    [data, hourIndex, metricModel],
+  );
+  const canStepBack24 = hourIndex >= 24;
+  const canStepForward24 = hourIndex + 24 < data.hours_index.length;
 
   const age = formatAge(data.meta.generated_at);
   const unplotted = useMemo(
     () =>
-      [...buildCountryContinentMap(data).keys()].filter(
+      [...countryContinents.keys()].filter(
         (country) => !country.startsWith('?') && !atlas.coordinates.has(country),
       ),
-    [atlas.coordinates, data],
+    [atlas.coordinates, countryContinents],
   );
   const showAttribution =
     data.meta.source !== 'synthetic-demo' &&
@@ -216,16 +233,16 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
           <button
             type="button"
             className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-600 disabled:opacity-40"
-            disabled={hourIndex === 0}
-            onClick={() => setBoundedHour(hourIndex - 24)}
+            disabled={!canStepBack24}
+            onClick={() => setHourIndex((current) => current - 24)}
           >
             −24h
           </button>
           <button
             type="button"
             className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-600 disabled:opacity-40"
-            disabled={hourIndex === data.hours_index.length - 1}
-            onClick={() => setBoundedHour(hourIndex + 24)}
+            disabled={!canStepForward24}
+            onClick={() => setHourIndex((current) => current + 24)}
           >
             +24h
           </button>
@@ -305,8 +322,9 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
           atlas={atlas}
           data={data}
           hourIndex={hourIndex}
-          metric={metric}
+          metricModel={metricModel}
           onSelect={handleSelect}
+          selectedCountry={selection?.country ?? null}
           viewRequest={viewRequest}
         />
         <aside className="grid content-start gap-3 sm:grid-cols-2 lg:grid-cols-1">
@@ -316,6 +334,7 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
             data={data}
             hourIndex={hourIndex}
             selection={selection}
+            countryContinents={countryContinents}
           />
         </aside>
       </div>
@@ -323,7 +342,7 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
       <TrafficRibbon
         data={data}
         hourIndex={hourIndex}
-        metric={metric}
+        metricModel={metricModel}
         onHourChange={setBoundedHour}
       />
 
@@ -340,7 +359,7 @@ function GeoDashboard({ data, atlas }: { data: GeoAnalyticsResponse; atlas: Prep
               {' · '}
               <a
                 className="underline decoration-gray-300 underline-offset-2 hover:text-gray-800"
-                href="https://db-ip.com"
+                href={data.meta.geoip.attribution?.url}
                 rel="noopener noreferrer"
                 target="_blank"
               >

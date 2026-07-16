@@ -44,7 +44,10 @@ function response(overrides: Partial<GeoAnalyticsResponse['meta']> = {}): GeoAna
       geoip: {
         country: true,
         provider: 'dbip-lite',
-        attribution: { label: 'IP Geolocation by DB-IP', url: 'https://db-ip.com' },
+        attribution: {
+          label: 'IP Geolocation by DB-IP',
+          url: 'https://db-ip.com/legal/attribution',
+        },
       },
       degraded: false,
       degraded_reasons: [],
@@ -128,7 +131,13 @@ describe('GeoGlobe', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'IP Geolocation by DB-IP' })).toHaveAttribute(
       'href',
-      'https://db-ip.com',
+      'https://db-ip.com/legal/attribution',
+    );
+    expect(screen.getByTestId('globe-scale-note')).toHaveTextContent(
+      'capped at range p99: 10 requests/country-hour',
+    );
+    expect(screen.getByTestId('ribbon-scale-note')).toHaveTextContent(
+      'capped at range p99: 10 requests/continent-hour',
     );
     expect(screen.getByText(/29% unlocated/)).toBeInTheDocument();
     expect(screen.getByText(/not capacity/i)).toBeInTheDocument();
@@ -138,8 +147,13 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
     render(<GeoGlobe />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'United States request origin' }));
+    const origin = await screen.findByRole('button', { name: 'United States request origin' });
+    fireEvent.click(origin);
 
+    expect(origin).toHaveAttribute('aria-pressed', 'true');
+    expect(origin.querySelector('circle[data-layer="selection-ring"]')).not.toHaveAttribute(
+      'display',
+    );
     expect(screen.getByText('United States · N. America')).toBeInTheDocument();
     expect(screen.getByText(/10 requests this hour/)).toBeInTheDocument();
     expect(screen.getByText('80 output tokens')).toBeInTheDocument();
@@ -147,6 +161,12 @@ describe('GeoGlobe', () => {
     expect(document.querySelector('.geo-demand-flow')).not.toBeInTheDocument();
     expect(screen.queryByText(/provider/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Serving split')).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('slider', { name: 'Selected hour across loaded range' }), {
+      target: { value: '0' },
+    });
+    expect(screen.getByText('United States · N. America')).toBeInTheDocument();
+    expect(screen.getByText('No requests from United States in this hour')).toBeInTheDocument();
   });
 
   it('changes the selected hour and metric and toggles playback', async () => {
@@ -156,7 +176,11 @@ describe('GeoGlobe', () => {
     expect(await screen.findByText('2026-07-15 01:00 UTC')).toBeInTheDocument();
     const staticCountryPath = document.querySelector('g[data-layer="countries"] path');
     expect(staticCountryPath).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '−24h' }));
+    expect(screen.getByRole('button', { name: '−24h' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '+24h' })).toBeDisabled();
+    fireEvent.change(screen.getByRole('slider', { name: 'Selected hour across loaded range' }), {
+      target: { value: '0' },
+    });
     expect(screen.getByText('2026-07-15 00:00 UTC')).toBeInTheDocument();
     expect(document.querySelector('g[data-layer="countries"] path')).toBe(staticCountryPath);
 
@@ -164,6 +188,12 @@ describe('GeoGlobe', () => {
       target: { value: 'tout' },
     });
     expect(screen.getByRole('combobox', { name: 'Metric' })).toHaveValue('tout');
+    expect(screen.getByTestId('globe-scale-note')).toHaveTextContent(
+      '80 output tokens/country-hour',
+    );
+    expect(screen.getByTestId('ribbon-scale-note')).toHaveTextContent(
+      '80 output tokens/continent-hour',
+    );
 
     fireEvent.click(screen.getByRole('button', { name: '▶ Play' }));
     expect(screen.getByRole('button', { name: '⏸ Pause' })).toHaveAttribute('aria-pressed', 'true');
@@ -176,6 +206,33 @@ describe('GeoGlobe', () => {
       'aria-live',
       'polite',
     );
+  });
+
+  it('enables 24-hour navigation only when exactly 24 indices are available', async () => {
+    const data = response();
+    data.hours_index = Array.from({ length: 49 }, (_, index) =>
+      new Date(Date.UTC(2026, 6, 13, index)).toISOString(),
+    );
+    data.hours = Array.from({ length: 49 }, () => ({ b: [['USA', 'NA', 1, 1]] }));
+    data.meta.hours = 49;
+    mockedGetGeoAnalytics.mockResolvedValue(data);
+    render(<GeoGlobe />);
+
+    expect(await screen.findByText('2026-07-15 00:00 UTC')).toBeInTheDocument();
+    const back = screen.getByRole('button', { name: '−24h' });
+    const forward = screen.getByRole('button', { name: '+24h' });
+    expect(back).toBeEnabled();
+    expect(forward).toBeDisabled();
+
+    fireEvent.click(back);
+    expect(screen.getByText('2026-07-14 00:00 UTC')).toBeInTheDocument();
+    expect(back).toBeEnabled();
+    expect(forward).toBeEnabled();
+
+    fireEvent.click(back);
+    expect(screen.getByText('2026-07-13 00:00 UTC')).toBeInTheDocument();
+    expect(back).toBeDisabled();
+    expect(forward).toBeEnabled();
   });
 
   it('maps timeline clicks through the plotted area instead of the SVG margins', async () => {

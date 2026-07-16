@@ -7,7 +7,6 @@ import {
   geoGraticule10,
   geoOrthographic,
   geoPath,
-  max,
   scaleSqrt,
   select,
 } from 'd3';
@@ -17,7 +16,7 @@ import { useEffect, useRef } from 'react';
 import { feature } from 'topojson-client';
 import type { GeometryCollection, Topology } from 'topojson-specification';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
-import { buildColumnIndex, CONTINENT_COLORS, type GeoMetric } from './geoMath';
+import { buildColumnIndex, CONTINENT_COLORS, type GeoMetric, type GeoMetricModel } from './geoMath';
 
 interface AtlasProperties {
   id?: string;
@@ -118,6 +117,11 @@ function metricLabel(metric: GeoMetric): string {
   return 'requests';
 }
 
+function formatScaleCap(cap: number, metric: GeoMetric): string {
+  if (cap <= 0) return 'absolute scale · no positive volume in range';
+  return `absolute scale · capped at range p99: ${Math.round(cap).toLocaleString()} ${metricLabel(metric)}/country-hour`;
+}
+
 function positiveNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
@@ -148,22 +152,25 @@ interface CountryDot {
   value: number;
   requests: number;
   coordinate: [number, number];
+  selectedOnly: boolean;
 }
 
 export function GlobeCanvas({
   data,
   atlas,
   hourIndex,
-  metric,
+  metricModel,
   viewRequest,
   onSelect,
+  selectedCountry,
 }: {
   data: GeoAnalyticsResponse;
   atlas: PreparedAtlas;
   hourIndex: number;
-  metric: GeoMetric;
+  metricModel: GeoMetricModel;
   viewRequest: GlobeViewRequest;
   onSelect: (selection: GlobeSelection) => void;
+  selectedCountry: string | null;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -345,8 +352,8 @@ export function GlobeCanvas({
     const countryPosition = bucketIndex.c;
     const continentPosition = bucketIndex.cont;
     const requestPosition = bucketIndex.n;
-    const metricPosition = bucketIndex[metric];
-    const countryValues = new Map<string, Omit<CountryDot, 'coordinate'>>();
+    const metricPosition = bucketIndex[metricModel.metric];
+    const countryValues = new Map<string, Omit<CountryDot, 'coordinate' | 'selectedOnly'>>();
     for (const row of data.hours[hourIndex]?.b ?? []) {
       const country = String(row[countryPosition] ?? '');
       const existing = countryValues.get(country) ?? {
@@ -362,14 +369,29 @@ export function GlobeCanvas({
     const dots: CountryDot[] = [...countryValues.values()]
       .map((dot) => {
         const coordinate = atlas.coordinates.get(dot.country);
-        return coordinate ? { ...dot, coordinate } : null;
+        return coordinate ? { ...dot, coordinate, selectedOnly: false } : null;
       })
       .filter(
         (dot): dot is CountryDot => dot !== null && !dot.country.startsWith('?') && dot.value > 0,
       );
+    if (selectedCountry && !dots.some((dot) => dot.country === selectedCountry)) {
+      const coordinate = atlas.coordinates.get(selectedCountry);
+      if (coordinate) {
+        const current = countryValues.get(selectedCountry);
+        dots.push({
+          country: selectedCountry,
+          continent: current?.continent ?? '?',
+          value: current?.value ?? 0,
+          requests: current?.requests ?? 0,
+          coordinate,
+          selectedOnly: true,
+        });
+      }
+    }
     const radius = scaleSqrt()
-      .domain([0, Math.max(1, max(dots, (dot) => dot.value) ?? 0)])
-      .range([2.5, 26]);
+      .domain([0, Math.max(1, metricModel.countryHourP99)])
+      .range([2.5, 26])
+      .clamp(true);
 
     const heat = heatLayer
       .selectAll<SVGGElement, CountryDot>('g')
@@ -378,10 +400,18 @@ export function GlobeCanvas({
         const group = enter.append('g').attr('role', 'button').attr('tabindex', 0);
         group.append('circle').attr('opacity', 0.16);
         group.append('circle').attr('stroke', 'rgba(11,14,20,0.9)').attr('stroke-width', 1);
+        group
+          .append('circle')
+          .attr('data-layer', 'selection-ring')
+          .attr('fill', 'none')
+          .attr('pointer-events', 'none')
+          .attr('stroke', 'rgba(255,255,255,0.95)')
+          .attr('stroke-width', 2.2);
         group.append('title');
         return group;
       })
       .attr('aria-label', (dot) => `${atlasCountryName(atlas, dot.country)} request origin`)
+      .attr('aria-pressed', (dot) => (dot.country === selectedCountry ? 'true' : 'false'))
       .on('click', (_, dot) => onSelect({ type: 'country', country: dot.country }))
       .on('keydown', (event, dot) =>
         keyboardSelect(event, () => onSelect({ type: 'country', country: dot.country })),
@@ -389,16 +419,23 @@ export function GlobeCanvas({
     heat
       .select('circle:first-of-type')
       .attr('fill', (dot) => CONTINENT_COLORS[dot.continent] ?? CONTINENT_COLORS['?'])
+      .attr('display', (dot) => (dot.selectedOnly ? 'none' : null))
       .attr('r', (dot) => radius(dot.value));
     heat
       .select('circle:nth-of-type(2)')
       .attr('fill', (dot) => CONTINENT_COLORS[dot.continent] ?? CONTINENT_COLORS['?'])
+      .attr('display', (dot) => (dot.selectedOnly ? 'none' : null))
       .attr('r', (dot) => Math.max(2, radius(dot.value) * 0.22));
     heat
+      .select('circle[data-layer="selection-ring"]')
+      .attr('display', (dot) => (dot.country === selectedCountry ? null : 'none'))
+      .attr('r', (dot) => (dot.selectedOnly ? 9 : radius(dot.value) + 4.5));
+    heat
       .select('title')
-      .text(
-        (dot) =>
-          `${atlasCountryName(atlas, dot.country)}: ${Math.round(dot.value).toLocaleString()} ${metricLabel(metric)} · ${dot.requests.toLocaleString()} requests`,
+      .text((dot) =>
+        dot.selectedOnly
+          ? `${atlasCountryName(atlas, dot.country)}: no positive ${metricLabel(metricModel.metric)} in this hour · ${dot.requests.toLocaleString()} requests`
+          : `${atlasCountryName(atlas, dot.country)}: ${Math.round(dot.value).toLocaleString()} ${metricLabel(metricModel.metric)} · ${dot.requests.toLocaleString()} requests`,
       );
 
     const selectedDate = new Date(data.hours_index[hourIndex]);
@@ -432,7 +469,7 @@ export function GlobeCanvas({
         dynamicRedrawRef.current = () => undefined;
       }
     };
-  }, [atlas, data, hourIndex, metric, onSelect]);
+  }, [atlas, data, hourIndex, metricModel, onSelect, selectedCountry]);
 
   useEffect(() => {
     projectionRef.current.rotate([viewRequest.rotation[0], viewRequest.rotation[1], 0]);
@@ -451,6 +488,12 @@ export function GlobeCanvas({
         className="block h-full w-full cursor-grab touch-none active:cursor-grabbing"
         role="group"
       />
+      <p
+        className="pointer-events-none absolute left-3 top-3 rounded bg-black/35 px-2 py-1 text-[11px] text-gray-300"
+        data-testid="globe-scale-note"
+      >
+        {formatScaleCap(metricModel.countryHourP99, metricModel.metric)}
+      </p>
       <div className="pointer-events-none absolute bottom-3 left-3 flex flex-wrap gap-3 text-[11px] text-gray-400">
         <span className="inline-flex items-center gap-1">
           <span className="h-2 w-2 rounded-full" style={{ background: CONTINENT_COLORS.AS }} />{' '}
