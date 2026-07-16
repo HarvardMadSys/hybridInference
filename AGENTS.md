@@ -22,8 +22,8 @@ apps/
   backend/
     serving/      # FastAPI gateway: HTTP, SSE, adapters, auth, storage, observability
     routing/      # Routing engine: strategies, routers, health, circuit breaker
-    benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
+benchmark/        # Benchmark scripts (local + provider comparisons)
 config/           # YAML config: models, routing, alerts
 services/         # status-monitor-worker, freeinference-harness
 tests/
@@ -36,7 +36,7 @@ ops/              # Operational tooling (deploy, setup, runtime, admin, perf, db
 deploy/           # Systemd units, Docker, observability manifests
 docs/
   developer/      # Developer guide (built into the internal doc site)
-  user/           # User-facing docs
+  free_inference/ # User-facing docs (FreeInference site)
   agents/         # Agent-facing artifacts: specs/ and plans/
   reviews/        # Code review records
 ```
