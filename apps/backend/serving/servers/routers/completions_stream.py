@@ -123,20 +123,24 @@ class ToolCallAccumulator:
             if idx not in self._calls:
                 self._calls[idx] = {
                     "index": idx,
-                    "id": tc_delta.get("id", ""),
-                    "type": tc_delta.get("type", "function"),
+                    "id": tc_delta.get("id") or "",
+                    "type": tc_delta.get("type") or "function",
                     "function": {"name": "", "arguments": ""},
                 }
-            if "id" in tc_delta:
-                self._calls[idx]["id"] = tc_delta["id"]
-            if "type" in tc_delta:
-                self._calls[idx]["type"] = tc_delta["type"]
-            if "function" in tc_delta:
-                fn_delta = tc_delta["function"]
-                if "name" in fn_delta:
-                    self._calls[idx]["function"]["name"] += fn_delta["name"]
-                if "arguments" in fn_delta:
-                    self._calls[idx]["function"]["arguments"] += fn_delta["arguments"]
+            id_delta = tc_delta.get("id")
+            if not self._calls[idx]["id"] and isinstance(id_delta, str) and id_delta:
+                self._calls[idx]["id"] = id_delta
+            type_delta = tc_delta.get("type")
+            if not self._calls[idx]["type"] and isinstance(type_delta, str) and type_delta:
+                self._calls[idx]["type"] = type_delta
+            fn_delta = tc_delta.get("function")
+            if isinstance(fn_delta, dict):
+                name_delta = fn_delta.get("name")
+                if isinstance(name_delta, str):
+                    self._calls[idx]["function"]["name"] += name_delta
+                arguments_delta = fn_delta.get("arguments")
+                if isinstance(arguments_delta, str):
+                    self._calls[idx]["function"]["arguments"] += arguments_delta
 
     def __bool__(self) -> bool:
         return bool(self._calls)

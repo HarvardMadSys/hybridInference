@@ -127,7 +127,8 @@ class ToolAdapter(BaseAdapter):
             'data: {"id":"t","object":"chat.completion.chunk","created":1,"model":"'
             + mid
             + '","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
-            '"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"}]}\n\n'
+            '"id":null,"type":null,"function":{"name":null,"arguments":"{}"}}]},'
+            '"finish_reason":"tool_calls"}]}\n\n'
         )
         yield make_final_usage_chunk(model=mid, messages=messages, total_content="")
         yield done_sentinel()
@@ -452,6 +453,15 @@ async def test_streaming_tool_call_events(responses_client):
     assert '"type": "function_call"' in text
     assert "event: response.function_call_arguments.done" in text
     assert "event: response.completed" in text
+    completed = next(
+        json.loads(line[len("data: ") :])
+        for line in text.splitlines()
+        if line.startswith("data: ") and '"response.completed"' in line
+    )
+    function_call = completed["response"]["output"][0]
+    assert function_call["call_id"] == "call_1"
+    assert function_call["name"] == "get_weather"
+    assert function_call["arguments"] == "{}"
 
 
 # --- statefulness ----------------------------------------------------------

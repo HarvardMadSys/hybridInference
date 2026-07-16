@@ -3,6 +3,8 @@
 import json
 from typing import ClassVar
 
+import pytest
+
 from serving.oncall import gha
 from serving.oncall.models import OnCallAnalysis
 
@@ -71,6 +73,25 @@ def test_parse_thread_id_ignores_non_json_lines():
     assert gha.parse_thread_id(output) == "thread-123"
 
 
+def test_validate_codex_log_requires_successful_command_and_completed_turn():
+    with pytest.raises(ValueError, match="successful command_execution"):
+        gha.validate_codex_log(
+            '{"type":"item.completed","item":{"type":"command_execution",'
+            '"exit_code":1}}\n{"type":"turn.completed"}\n'
+        )
+
+    with pytest.raises(ValueError, match="did not complete"):
+        gha.validate_codex_log(
+            '{"type":"item.completed","item":{"type":"command_execution","exit_code":0}}\n'
+        )
+
+    with pytest.raises(ValueError, match="turn failed"):
+        gha.validate_codex_log(
+            '{"type":"item.completed","item":{"type":"command_execution",'
+            '"exit_code":0}}\n{"type":"turn.failed"}\n'
+        )
+
+
 def test_post_delivers_formatted_analysis_in_thread(tmp_path, monkeypatch):
     FakeSlackClient.sent = []
     monkeypatch.setattr(gha, "SlackClient", FakeSlackClient)
@@ -89,7 +110,13 @@ def test_post_delivers_formatted_analysis_in_thread(tmp_path, monkeypatch):
     analysis_path = tmp_path / "analysis.json"
     analysis_path.write_text(analysis.model_dump_json(), encoding="utf-8")
     codex_log = tmp_path / "codex.jsonl"
-    codex_log.write_text('{"type":"thread.started","thread_id":"th-9"}\n', encoding="utf-8")
+    codex_log.write_text(
+        '{"type":"thread.started","thread_id":"th-9"}\n'
+        '{"type":"item.completed","item":{"type":"command_execution",'
+        '"exit_code":0}}\n'
+        '{"type":"turn.completed"}\n',
+        encoding="utf-8",
+    )
 
     rc = gha.main(
         [
@@ -109,6 +136,45 @@ def test_post_delivers_formatted_analysis_in_thread(tmp_path, monkeypatch):
     assert thread_ts == "171.1"
     assert text.startswith("*Codex on-call*")
     assert "th-9" in text
+
+
+def test_post_rejects_analysis_without_successful_command(tmp_path, monkeypatch):
+    FakeSlackClient.sent = []
+    monkeypatch.setattr(gha, "SlackClient", FakeSlackClient)
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    analysis = OnCallAnalysis(
+        summary="Guessed answer",
+        classification="unknown",
+        confidence=0.1,
+        impact="Unknown",
+        evidence=[],
+        likely_cause="Unknown",
+        recommended_actions=["Inspect the repository"],
+        issue_recommendation="none",
+        draft_pr_recommendation="none",
+    )
+    analysis_path = tmp_path / "analysis.json"
+    analysis_path.write_text(analysis.model_dump_json(), encoding="utf-8")
+    codex_log = tmp_path / "codex.jsonl"
+    codex_log.write_text(
+        '{"type":"item.completed","item":{"type":"agent_message"}}\n{"type":"turn.completed"}\n',
+        encoding="utf-8",
+    )
+
+    rc = gha.main(
+        [
+            "post",
+            "--payload",
+            str(_payload_file(tmp_path)),
+            "--analysis",
+            str(analysis_path),
+            "--codex-log",
+            str(codex_log),
+        ]
+    )
+
+    assert rc == 2
+    assert FakeSlackClient.sent == []
 
 
 def test_post_failure_notice_includes_run_url(tmp_path, monkeypatch):

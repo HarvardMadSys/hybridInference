@@ -157,6 +157,51 @@ def test_tool_call_accumulator_handles_multiple_indices():
     assert [tc["id"] for tc in out] == ["a", "b"]
 
 
+def test_tool_call_accumulator_keeps_first_nonempty_id_and_type():
+    acc = _ToolCallAccumulator()
+    acc.add([{"index": 0, "id": "call_1", "type": "function", "function": {}}])
+    acc.add([{"index": 0, "id": "call_repeated", "type": "other", "function": {}}])
+
+    tool_call = acc.to_list()[0]
+    assert tool_call["id"] == "call_1"
+    assert tool_call["type"] == "function"
+
+
+def test_tool_call_accumulator_ignores_null_continuation_fields():
+    acc = _ToolCallAccumulator()
+    acc.add(
+        [
+            {
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_command", "arguments": ""},
+            }
+        ]
+    )
+    # SGLang repeats these keys with null values on argument-only deltas.
+    acc.add(
+        [
+            {
+                "index": 0,
+                "id": None,
+                "type": None,
+                "function": {"name": None, "arguments": '{"cmd":'},
+            }
+        ]
+    )
+    acc.add([{"index": 0, "function": {"arguments": '"pwd"}'}}])
+
+    assert acc.to_list() == [
+        {
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "exec_command", "arguments": '{"cmd":"pwd"}'},
+        }
+    ]
+
+
 def test_tool_call_accumulator_bool_when_empty():
     assert not _ToolCallAccumulator()
     acc = _ToolCallAccumulator()

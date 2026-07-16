@@ -76,6 +76,39 @@ def parse_thread_id(json_lines: str) -> str | None:
     return None
 
 
+def validate_codex_log(json_lines: str) -> None:
+    """Reject analyses that were not grounded by a successful shell command."""
+    has_successful_command = False
+    has_completed_turn = False
+    for line in json_lines.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = event.get("type")
+        if event_type == "turn.failed":
+            raise ValueError("Codex turn failed")
+        if event_type == "turn.completed":
+            has_completed_turn = True
+            continue
+        if event_type != "item.completed":
+            continue
+        item = event.get("item")
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "command_execution"
+            and item.get("exit_code") == 0
+        ):
+            has_successful_command = True
+
+    if not has_successful_command:
+        raise ValueError("Codex log has no successful command_execution")
+    if not has_completed_turn:
+        raise ValueError("Codex turn did not complete")
+
+
 def _load_payload(path: str) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict) or "alert" not in data:
@@ -113,12 +146,19 @@ def _cmd_post(args: argparse.Namespace) -> int:
         if args.run_url:
             text += f"\nRun logs: {args.run_url}"
     else:
+        if not args.codex_log:
+            print("codex log is required before publishing an analysis", file=sys.stderr)
+            return 2
+        try:
+            codex_log = Path(args.codex_log).read_text(encoding="utf-8")
+            validate_codex_log(codex_log)
+        except (OSError, ValueError) as exc:
+            print(f"refusing to publish ungrounded Codex analysis: {exc}", file=sys.stderr)
+            return 2
         analysis = OnCallAnalysis.model_validate_json(
             Path(args.analysis).read_text(encoding="utf-8")
         )
-        thread_id = None
-        if args.codex_log:
-            thread_id = parse_thread_id(Path(args.codex_log).read_text(encoding="utf-8"))
+        thread_id = parse_thread_id(codex_log)
         text = format_analysis(analysis, thread_id)
 
     asyncio.run(SlackClient(token, channel).post(text, thread_ts=thread_ts))
