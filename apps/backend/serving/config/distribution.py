@@ -131,10 +131,11 @@ def load_distribution_config(path: Path) -> DistributionConfig:
 
     try:
         root = path.resolve().parent
+        # `root / value` keeps absolute values as-is and anchors relative ones
+        # at the manifest directory; resolving unconditionally validates both
+        # forms (e.g. embedded NUL bytes raise here instead of at use time).
         resolved = {
-            kind: str((root / value).resolve())
-            if value and not Path(value).is_absolute()
-            else value
+            kind: str((root / value).resolve()) if value else value
             for kind, value in config.paths.model_dump().items()
         }
     except (OSError, RuntimeError, ValueError) as exc:
@@ -183,11 +184,11 @@ _VALID_MODES = {"active", "dark"}
 _logged_once: set[tuple[str, ...]] = set()
 
 
-def _log_once(key: tuple[str, ...], message: str) -> None:
+def _log_once(key: tuple[str, ...], message: str, *, level: str = "info") -> None:
     if key in _logged_once:
         return
     _logged_once.add(key)
-    logger.info(message)
+    getattr(logger, level)(message)
 
 
 def _effective_mode() -> str:
@@ -205,6 +206,7 @@ def _effective_mode() -> str:
         f"Invalid DISTRIBUTION_CONFIG_MODE={raw!r} (expected 'active' or 'dark'); "
         "treating as 'dark': manifest loads and is compared, legacy resolution "
         "stays effective",
+        level="warning",
     )
     return "dark"
 
@@ -259,7 +261,7 @@ def resolve_config_path(kind: ConfigKind) -> ResolvedConfigPath:
 def _file_digest(path: Path) -> str:
     try:
         return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
-    except OSError:
+    except (OSError, ValueError):
         return "missing"
 
 

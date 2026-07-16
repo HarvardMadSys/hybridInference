@@ -150,9 +150,11 @@ class Settings(BaseSettings):
     )
 
     # Distribution manifest (serving.config.distribution). Empty path = pure
-    # legacy behavior. Mode "dark" loads/validates the manifest and logs what
-    # would change while legacy resolution stays effective; any value other
-    # than "dark" behaves as "active".
+    # legacy behavior. Mode "active" applies manifest paths; "dark" loads and
+    # validates the manifest and logs what would change while current
+    # resolution stays effective. Values are case-insensitive; anything else
+    # degrades to "dark" with a warning — a typo can never activate the
+    # manifest.
     distribution_config_path: str = Field(
         default="",
         validation_alias=AliasChoices("DISTRIBUTION_CONFIG_PATH", "distribution_config_path"),

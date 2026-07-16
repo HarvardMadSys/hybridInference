@@ -129,6 +129,21 @@ def test_nul_byte_path_fails_open_to_legacy(monkeypatch, tmp_path):
     assert resolve_config_path("models").source == "default"
 
 
+@pytest.mark.parametrize("mode", ["active", "dark"])
+def test_absolute_nul_byte_path_fails_open_in_both_modes(monkeypatch, tmp_path, mode):
+    """Absolute paths are validated at load time too, not only relative ones."""
+    manifest = _write_manifest(
+        tmp_path,
+        'schema_version: 1\ndistribution:\n  id: x\npaths:\n  models: "/a\\0b"\n',
+    )
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
+    assert get_distribution_config() is None
+    resolved = resolve_config_path("models")
+    assert resolved.source == "default"
+    assert resolved.path == Path("config/models.yaml")
+
+
 # --- Precedence ---
 
 
