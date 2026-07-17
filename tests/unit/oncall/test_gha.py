@@ -130,6 +130,24 @@ def test_parse_analysis_output_rejects_multiple_valid_objects():
         gha.parse_analysis_output(f"{encoded}\n{encoded}")
 
 
+def test_parse_analysis_output_rejects_nested_analysis_object():
+    analysis = OnCallAnalysis(
+        summary="Nested result",
+        classification="unknown",
+        confidence=0.1,
+        impact="Unknown",
+        evidence=[],
+        likely_cause="Unknown",
+        recommended_actions=["Inspect the repository"],
+        issue_recommendation="none",
+        draft_pr_recommendation="none",
+    )
+    wrapped = json.dumps({"analysis": analysis.model_dump(mode="json")})
+
+    with pytest.raises(ValueError, match="no valid JSON object"):
+        gha.parse_analysis_output(wrapped)
+
+
 def test_post_delivers_formatted_analysis_in_thread(tmp_path, monkeypatch):
     FakeSlackClient.sent = []
     monkeypatch.setattr(gha, "SlackClient", FakeSlackClient)

@@ -122,9 +122,13 @@ def parse_analysis_output(raw_output: str) -> OnCallAnalysis:
     while (start := raw_output.find("{", offset)) >= 0:
         offset = start + 1
         try:
-            value, _ = decoder.raw_decode(raw_output, start)
+            value, end = decoder.raw_decode(raw_output, start)
+        except json.JSONDecodeError:
+            continue
+        offset = end
+        try:
             candidates.append(OnCallAnalysis.model_validate(value))
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             continue
 
     if len(candidates) == 1:
