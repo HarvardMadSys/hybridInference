@@ -421,6 +421,25 @@ def _sanitize_for_openai_backend(body: dict[str, Any]) -> list[str]:
     return sorted(dropped)
 
 
+def _count_non_object_tool_inputs(body: dict[str, Any]) -> int:
+    """Count tool-use inputs that the OpenAI translator will normalize."""
+    count = 0
+    for msg in body.get("messages", []):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and not isinstance(block.get("input", {}), dict)
+            ):
+                count += 1
+    return count
+
+
 # --- DB logging (fire-and-forget) ------------------------------------------
 
 
@@ -942,6 +961,12 @@ async def anthropic_messages(
     messages_for_log = copy.deepcopy(body.get("messages"))
 
     if adapter.native_format == "openai":
+        normalized_tool_inputs = _count_non_object_tool_inputs(body)
+        if normalized_tool_inputs:
+            logger.warning(
+                f"[{request_id}] Normalizing {normalized_tool_inputs} non-object "
+                "Anthropic tool_use.input value(s) before OpenAI-backed dispatch"
+            )
         dropped = _sanitize_for_openai_backend(body)
         if dropped:
             logger.warning(
