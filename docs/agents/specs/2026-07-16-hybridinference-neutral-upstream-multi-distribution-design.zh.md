@@ -136,6 +136,39 @@ HybridInference upstream  ──must not import──> any distribution
 
 新路径必须证明与当前路径兼容；旧路径跨过完整观察窗口后才能通过独立变更删除。
 
+## 迁移总览（Before → After）
+
+同样的内容一件不少——变化的是**所有权边界**。颜色语义全文一致：青绿 = 中立上游，
+绯红 = FreeInference 发行版，琥珀虚线 = 未来发行版（未启动），灰 = 现状。
+
+~~~mermaid
+flowchart LR
+    R["<b>现状：单仓四类混装</b><br/>网关 · SSE ⊕ RouteWise / Nimbus<br/>⊕ 品牌 · Terms · 真实 models.yaml<br/>⊕ 机器脚本 · 部署 · 备份"]
+
+    subgraph AFTER["目标：同一仓库内三条泳道"]
+        UP["<b>HybridInference 上游</b><br/>网关 · 一等算法 · Adapters<br/>控制面 · DistributionConfig 扩展缝"]
+        FI["<b>distributions/freeinference</b><br/>品牌 · Terms · 真实配置 · 机器 ops"]
+        FU["<b>distributions/&lt;future&gt;</b><br/>腾讯公益等 · 从空骨架开始"]
+    end
+
+    R == "先集中 · 再验证 · 最后移动" ==> UP
+    R ==> FI
+    R -.-> FU
+    FI -- "depends on" --> UP
+    FU -. "depends on" .-> UP
+
+    classDef legacy fill:#EFEDE8,stroke:#7A756B,color:#3F3B33
+    classDef up fill:#E3F1EE,stroke:#0E6E63,color:#0A4F47
+    classDef fi fill:#F8E9EB,stroke:#A62639,color:#7E1D2C
+    classDef fu fill:#F6EEDC,stroke:#9A6B00,color:#6F4E02,stroke-dasharray:6 4
+    class R legacy
+    class UP up
+    class FI fi
+    class FU fu
+~~~
+
+依赖只有一个方向：发行版 depends on 上游；上游永不 import 任何发行版。
+
 ## 目标边界（Target Boundaries）
 
 ~~~mermaid
@@ -460,6 +493,27 @@ DISTRIBUTION_CONFIG_PATH
 5. staging 双读比较；
 6. production 未启用新 loader 时继续使用旧路径。
 
+~~~mermaid
+flowchart LR
+    ENV["① 显式环境变量<br/>MODELS_CONFIG_PATH / ROUTING_CONFIG_PATH / …<br/>（任意大小写 · .env · 构造器均计入）"]
+    MAN["② 发行版 manifest 的 paths:<br/>distribution.yaml（相对路径锚定 manifest 目录）"]
+    LEG["③ legacy 兜底<br/>config/*.yaml —— 现网真值"]
+
+    ENV -- "未显式设置" --> MAN
+    MAN -- "未声明该项 / 加载失败(fail-open)" --> LEG
+    MAN -. "mode=dark（默认）：只对比、不生效" .-> LEG
+
+    classDef p1 fill:#ECEFEE,stroke:#17211F,color:#17211F
+    classDef p2 fill:#F8E9EB,stroke:#A62639,color:#7E1D2C
+    classDef p3 fill:#EFEDE8,stroke:#7A756B,color:#3F3B33
+    class ENV p1
+    class MAN p2
+    class LEG p3
+~~~
+
+激活 manifest 路径必须显式 `DISTRIBUTION_CONFIG_MODE=active`；非法 / 缺失的 mode
+一律降级为 dark——任何失误只可能压住激活，永远不可能触发激活。
+
 ### Adapter、Router 与供应接入
 
 为了拆发行版，不要求先重写 RouteWise 或抽取新的执行框架。只建立以下纪律：
@@ -587,6 +641,30 @@ deploy workflow ssh 到主机后 `git reset --hard` 并在主机上现场构建�
    一起回退）。注意 `workflow_run` 触发链不能跨仓库，bump PR 即其替代。
 
 ## 分阶段迁移计划
+
+~~~mermaid
+flowchart LR
+    P0["<b>Phase 0</b><br/>归属基线 + 契约冻结"]
+    P1["<b>Phase 1</b><br/>配置与品牌中性化"]
+    P2["<b>Phase 2</b><br/>运营内容集中 overlay"]
+    P3["<b>Phase 3</b><br/>发布中立 Artifact"]
+    P4["<b>Phase 4</b><br/>物理拆仓（可选）"]
+
+    P0 --> P1 --> P2 --> P3 --> P4
+
+    classDef done fill:#E3F1EE,stroke:#0E6E63,color:#0A4F47
+    classDef next fill:#F8E9EB,stroke:#A62639,color:#7E1D2C
+    classDef gated fill:#F6EEDC,stroke:#9A6B00,color:#6F4E02
+    classDef opt fill:#F6EEDC,stroke:#9A6B00,color:#6F4E02,stroke-dasharray:6 4
+    class P0 done
+    class P1 done
+    class P2 next
+    class P3 gated
+    class P4 opt
+~~~
+
+状态（截至 2026-07-17）：Phase 0–1 代码全部落地（7 个 PR 待合并），Phase 2 为下一步；
+Phase 3 被 RouteWise 依赖发布方式的决策门控；Phase 4 非成功条件。
 
 ### Phase 0：建立归属清单与稳定基线
 
