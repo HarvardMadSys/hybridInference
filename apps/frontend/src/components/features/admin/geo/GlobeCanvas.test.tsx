@@ -230,9 +230,6 @@ describe('GlobeCanvas', () => {
 
     expect(screen.queryByRole('button', { name: 'China request origin' })).not.toBeInTheDocument();
     expect(document.querySelector('g[data-layer="heat"]')).toBeEmptyDOMElement();
-    expect(screen.getByTestId('globe-scale-note')).toHaveTextContent(
-      'absolute scale · no positive volume in range',
-    );
   });
 
   it('shows a selected ring and pressed state for the selected request origin', () => {
@@ -294,8 +291,6 @@ describe('GlobeCanvas', () => {
     expect(capRadius).toBe(26);
     rerenderAt(100);
     expect(radiusAt()).toBe(capRadius);
-    expect(screen.getByTestId('globe-scale-note')).toHaveTextContent(
-      'absolute scale · capped at range p99: 10 requests/country-hour',
-    );
+    expect(screen.queryByText(/p99/)).not.toBeInTheDocument();
   });
 });

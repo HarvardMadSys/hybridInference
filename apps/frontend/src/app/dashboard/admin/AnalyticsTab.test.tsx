@@ -24,7 +24,7 @@ vi.mock('@/lib/api/admin', () => ({
   getGeoAnalytics: vi.fn(),
 }));
 
-describe('AnalyticsTab geography entry', () => {
+describe('AnalyticsTab request-origins entry', () => {
   beforeEach(() => {
     vi.mocked(getAnalytics).mockImplementation(() => new Promise(() => undefined));
     vi.mocked(getGeoAnalytics).mockReset();
@@ -35,14 +35,18 @@ describe('AnalyticsTab geography entry', () => {
     vi.clearAllMocks();
   });
 
-  it('links to the geo-temporal globe without fetching its large payload', async () => {
+  it('links to Request origins without fetching its payload from the overview', async () => {
     render(<AnalyticsTab />);
 
-    expect(screen.getByRole('link', { name: /geo-temporal demand globe/i })).toHaveAttribute(
+    const section = screen.getByRole('group', { name: 'Analytics section' });
+    expect(section).toHaveTextContent('Overview');
+    expect(screen.getByRole('link', { name: 'Request origins' })).toHaveAttribute(
       'href',
       '/dashboard/admin/analytics/geo',
     );
-    expect(screen.getByText(/request origins \(IP-based\)/i)).toBeInTheDocument();
+    // The Hour/Day/Week/Month period control scopes the overview only; the
+    // Request origins page carries its own range control.
+    expect(screen.getByRole('button', { name: 'Day' })).toBeInTheDocument();
     await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith('day'));
     expect(getGeoAnalytics).not.toHaveBeenCalled();
   });
