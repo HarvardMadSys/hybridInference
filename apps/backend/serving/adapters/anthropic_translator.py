@@ -61,6 +61,26 @@ def _flatten_system(system: Any) -> str | None:
     return None
 
 
+def _normalize_tool_input(raw: Any) -> dict[str, Any]:
+    """Return an object suitable for OpenAI function-call arguments.
+
+    Anthropic requires ``tool_use.input`` to be an object, but clients can echo
+    a raw string after an upstream streaming parser emits malformed partial
+    JSON. Recover a JSON-encoded object when possible; otherwise use an empty
+    object so one poisoned historical tool call cannot wedge every later turn.
+    """
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
 def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
     """Translate a single Anthropic message.
 
@@ -102,7 +122,7 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
                     "type": "function",
                     "function": {
                         "name": block.get("name", ""),
-                        "arguments": json.dumps(block.get("input", {})),
+                        "arguments": json.dumps(_normalize_tool_input(block.get("input", {}))),
                     },
                 }
             )
