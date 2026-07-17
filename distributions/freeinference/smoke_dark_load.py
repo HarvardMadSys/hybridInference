@@ -1,14 +1,27 @@
 r"""Container smoke for the overlay dark-load path.
 
-Run inside the backend container (or from the repo root):
+Run inside the backend container:
 
-    docker compose -f deploy/docker/docker-compose.yml exec backend \\
+    docker compose -f deploy/docker/docker-compose.yml exec backend \
         python distributions/freeinference/smoke_dark_load.py
 
-Asserts what a silent fail-open would hide: the manifest is actually
-visible and valid from this filesystem, and every configured path compares
-byte-identical to the effective legacy path. Exits non-zero on any failure,
-so "deploy succeeded" can never be mistaken for "dark-load verified".
+(From a source checkout: PYTHONPATH=apps/backend python distributions/...)
+
+The script validates the *inherited* configuration and supplies nothing
+itself — a container that was never configured must FAIL, not pass on
+defaults the smoke quietly injected:
+
+1. DISTRIBUTION_CONFIG_PATH must be set and point at this overlay's
+   manifest;
+2. DISTRIBUTION_CONFIG_MODE must be explicitly ``dark`` (an ``active``
+   container would trivially compare the manifest against itself);
+3. the manifest must actually load from this filesystem (a missing bind
+   mount otherwise fails open and boots the service with no comparison);
+4. every configured path must compare byte-identical to the effective
+   legacy path.
+
+Exits non-zero on any failure, so "deploy succeeded" can never be mistaken
+for "dark-load verified".
 """
 
 from __future__ import annotations
@@ -18,7 +31,14 @@ import os
 import sys
 from pathlib import Path
 
-_DEFAULT_MANIFEST = Path(__file__).resolve().parent / "distribution.yaml"
+_EXPECTED_MANIFEST = Path(__file__).resolve().parent / "distribution.yaml"
+
+
+def _env(name: str) -> str:
+    for key, value in os.environ.items():
+        if key.upper() == name:
+            return value
+    return ""
 
 
 def _digest(path: Path) -> str:
@@ -26,9 +46,29 @@ def _digest(path: Path) -> str:
 
 
 def main() -> int:
-    """Load the manifest and verify all three dark comparisons are identical."""
-    os.environ.setdefault("DISTRIBUTION_CONFIG_PATH", str(_DEFAULT_MANIFEST))
-    os.environ.setdefault("DISTRIBUTION_CONFIG_MODE", "dark")
+    """Verify the inherited dark-load configuration end to end."""
+    configured = _env("DISTRIBUTION_CONFIG_PATH")
+    if not configured:
+        print(
+            "FAIL: DISTRIBUTION_CONFIG_PATH is not set in this environment — "
+            "the overlay is not configured at all (put it in the repo-root "
+            ".env; compose passes it via env_file)."
+        )
+        return 2
+    if Path(configured).resolve() != _EXPECTED_MANIFEST:
+        print(
+            f"FAIL: DISTRIBUTION_CONFIG_PATH={configured!r} does not point at "
+            f"this overlay's manifest ({_EXPECTED_MANIFEST})."
+        )
+        return 2
+    mode = _env("DISTRIBUTION_CONFIG_MODE").strip().lower()
+    if mode != "dark":
+        print(
+            f"FAIL: DISTRIBUTION_CONFIG_MODE={mode or '<unset>'!r} — this smoke "
+            "verifies the dark-load state and requires an explicit 'dark' "
+            "(in 'active' the manifest would trivially compare against itself)."
+        )
+        return 2
 
     from serving.config.distribution import (
         get_distribution_config,
@@ -39,12 +79,11 @@ def main() -> int:
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 
-    manifest_path = os.environ["DISTRIBUTION_CONFIG_PATH"]
     config = get_distribution_config()
     if config is None:
         print(
-            f"FAIL: manifest at {manifest_path!r} did not load — missing mount "
-            "or invalid file (loader fails open, so the service would still "
+            f"FAIL: manifest at {configured!r} did not load — missing mount or "
+            "invalid file (the loader fails open, so the service would still "
             "start WITHOUT any dark comparison)."
         )
         return 2

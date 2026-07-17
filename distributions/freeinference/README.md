@@ -34,8 +34,17 @@ docker compose -f deploy/docker/docker-compose.yml exec backend \
     python distributions/freeinference/smoke_dark_load.py
 ```
 
-It exits non-zero if the manifest is not visible from the container or any
-comparison is not `identical`.
+It validates only the *inherited* environment (it never supplies its own
+defaults) and exits non-zero if the overlay is unconfigured, the path points
+elsewhere, the mode is not explicitly `dark`, the manifest is not visible
+from the container, or any comparison is not `identical`.
+
+Note on CI: local `make test` collects `distributions/*/tests/` via pytest
+`testpaths`, but the PR CI sharder currently only walks `tests/` — the
+neutral manifest gate that runs in CI lives at
+`tests/unit/config/test_distribution_manifests_discovery.py`; the tests
+here are local/deploy verification until the future CI/CD stage wires the
+distribution suite in.
 
 ## Target layout (grows in Phase 2, one category per PR)
 
@@ -58,7 +67,8 @@ Two temporary states to be aware of:
   inside the overlay — the directory is the future visibility boundary and
   must not reach outside itself.
 - `site:` / `features:` in the manifest are declarations only for now:
-  exposed read-only via `GET /site-config`, wired to no runtime behavior.
+  a later PR in this stack exposes them read-only via `GET /site-config`;
+  they are wired to no runtime behavior.
 
 ## Rules
 
