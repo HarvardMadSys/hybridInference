@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 NATIVE_MODEL = "claude-opus-4.7"
@@ -360,6 +362,68 @@ async def test_cache_control_dropped_for_openai_backend(anthropic_test_client, m
     ]
     assert matches, (
         f"Expected warning mentioning cache_control + thinking; got: {[rec.getMessage() for rec in caplog.records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_backend_repairs_non_object_tool_input(
+    anthropic_test_client, monkeypatch, caplog
+):
+    captured = {}
+    openai_resp = {
+        "id": "x",
+        "object": "chat.completion",
+        "model": OPENAI_MODEL,
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        captured["payload"] = json
+        return openai_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "ChromeRelayReadDom",
+                        "input": '{}""',
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01",
+                        "content": "done",
+                    }
+                ],
+            },
+        ],
+    }
+    caplog.set_level("WARNING", logger="serving.servers.routers.anthropic_messages")
+    response = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+
+    assert response.status_code == 200
+    arguments = captured["payload"]["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(arguments) == {}
+    assert any(
+        "Normalizing 1 non-object Anthropic tool_use.input" in record.getMessage()
+        for record in caplog.records
     )
 
 
