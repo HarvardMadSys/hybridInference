@@ -168,7 +168,10 @@ class Settings(BaseSettings):
     # Alerting framework
     alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")
     slack_alerts_webhook_url: str = Field(default="", alias="SLACK_ALERTS_WEBHOOK_URL")
-    alerts_config_path: str = Field(default="config/alerts.yaml", alias="ALERTS_CONFIG_PATH")
+    alerts_config_path: str = Field(
+        default="config/alerts.yaml",
+        validation_alias=AliasChoices("ALERTS_CONFIG_PATH", "alerts_config_path"),
+    )
 
     @model_validator(mode="after")
     def _alerts_webhook_fallback(self) -> "Settings":

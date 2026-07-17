@@ -29,7 +29,6 @@ unsupported in ``schema_version: 1``.
 from __future__ import annotations
 
 import hashlib
-import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -169,7 +168,7 @@ def get_distribution_config() -> DistributionConfig | None:
         f"release={config.distribution.release!r} "
         f"mode={get_settings().distribution_config_mode!r}"
     )
-    if not _env_has("DISTRIBUTION_CONFIG_MODE"):
+    if not _explicitly_configured("distribution_config_mode"):
         _log_once(
             ("mode-defaulted",),
             "DISTRIBUTION_CONFIG_PATH is set but DISTRIBUTION_CONFIG_MODE is "
@@ -222,27 +221,25 @@ def _effective_mode() -> str:
     return "dark"
 
 
-def _env_has(name: str) -> bool:
-    """Case-insensitive os.environ presence check.
+def _explicitly_configured(field_name: str) -> bool:
+    """True when the operator supplied the field from ANY settings source.
 
-    Settings runs with ``case_sensitive=False``, so ``alerts_config_path=x``
-    in the environment reaches pydantic; an exact-case ``in os.environ`` test
-    would miss it and let the manifest shadow an explicit override.
+    ``model_fields_set`` covers process env (any case — Settings runs
+    ``case_sensitive=False``), pydantic's native ``.env`` loading, aliases,
+    and constructor input alike; an ``os.environ`` key check would miss
+    everything but exact-case process env.
     """
-    upper = name.upper()
-    return any(key.upper() == upper for key in os.environ)
+    return field_name in get_settings().model_fields_set
 
 
 def _env_override(kind: ConfigKind) -> str:
     settings = get_settings()
     value: str = getattr(settings, f"{kind}_config_path")
-    if kind == "alerts" and not _env_has("ALERTS_CONFIG_PATH"):
+    if kind == "alerts" and not _explicitly_configured("alerts_config_path"):
         # alerts_config_path predates this module and its Settings default is
-        # the legacy path instead of "". Explicitness therefore comes from the
-        # variable actually being present in the environment — an operator who
-        # sets ALERTS_CONFIG_PATH to the default value still wins over the
-        # manifest. (bootstrap's load_dotenv() puts .env values into
-        # os.environ, so file-configured deployments are covered.)
+        # the legacy path instead of "". Explicitness therefore means "the
+        # operator supplied the field" (env, .env, or constructor) — one who
+        # sets it to the default value still wins over the manifest.
         return ""
     return value
 

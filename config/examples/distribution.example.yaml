@@ -11,8 +11,9 @@
 # and divergence is logged, while current resolution stays effective.
 # Applying `paths:` requires an explicit DISTRIBUTION_CONFIG_MODE=active.
 #
-# `site:` and `features:` are declarations only for now — they are exposed
-# read-only via GET /site-config but wired to no runtime behavior yet.
+# `site:` and `features:` are declarations only for now — a later PR in this
+# stack exposes them read-only via GET /site-config; they are wired to no
+# runtime behavior yet.
 #
 # Do not put secrets here — credentials stay in the environment. Relative
 # `paths:` entries resolve against this file's directory.

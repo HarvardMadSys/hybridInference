@@ -8,6 +8,7 @@ legacy) without changing resolution; invalid modes degrade to dark, never to
 active.
 """
 
+import os
 from pathlib import Path
 
 import pytest
@@ -44,8 +45,13 @@ paths:
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for var in _ENV_VARS:
-        monkeypatch.delenv(var, raising=False)
+    # Case-insensitive purge: Settings matches env vars case-insensitively,
+    # so a stray lowercase `distribution_config_mode=active` in the runner
+    # environment would otherwise leak into these tests.
+    targets = {var.casefold() for var in _ENV_VARS}
+    for key in list(os.environ):
+        if key.casefold() in targets:
+            monkeypatch.delenv(key, raising=False)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
     distribution._logged_once.clear()
@@ -258,6 +264,25 @@ def test_alerts_lowercase_env_var_counts_as_explicit(monkeypatch, tmp_path):
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("alerts_config_path", "custom/alerts.yaml")
+    resolved = resolve_config_path("alerts")
+    assert resolved.source == "env"
+    assert resolved.path == Path("custom/alerts.yaml")
+
+
+def test_constructor_supplied_alerts_counts_as_explicit(monkeypatch, tmp_path):
+    """model_fields_set covers non-env sources (.env, constructor) too."""
+    from serving.config import distribution
+    from serving.config.settings import Settings
+
+    manifest = _write_manifest(tmp_path, MANIFEST + "  alerts: ./config/alerts-dist.yaml\n")
+    custom = Settings(
+        _env_file=None,
+        distribution_config_path=str(manifest),
+        distribution_config_mode="active",
+        alerts_config_path="custom/alerts.yaml",
+    )
+    monkeypatch.setattr(distribution, "get_settings", lambda: custom)
+    get_distribution_config.cache_clear()
     resolved = resolve_config_path("alerts")
     assert resolved.source == "env"
     assert resolved.path == Path("custom/alerts.yaml")
