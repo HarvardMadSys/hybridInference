@@ -47,12 +47,6 @@ jobs:
   backend-lint:
     name: Backend ${{ matrix.check.name }}
     runs-on: self-hosted
-    # Isolate uv's on-disk cache per job. Concurrent jobs on the same
-    # self-hosted runner otherwise share ~/.cache/uv; when a cache entry
-    # disappears mid-install (cleanup/restore/corruption), uv fails with
-    # ENOENT while hardlinking into the venv — before tests even start.
-    env:
-      UV_CACHE_DIR: ${{ runner.temp }}/uv-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +65,16 @@ jobs:
           # blob object"), which has been failing random jobs at checkout.
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
+
+      - name: Isolate uv cache dir
+        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
+        # runner context. Concurrent self-hosted jobs otherwise share
+        # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
+        # with ENOENT while hardlinking into the venv — before tests start.
+        env:
+          UV_CACHE_SUFFIX: ${{ strategy.job-index }}
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}-${UV_CACHE_SUFFIX}" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -96,14 +100,15 @@ jobs:
         run: |
           set -euo pipefail
           uv venv
-          # Bounded retry: cache ENOENT during install is intermittent on
-          # shared self-hosted runners; a fresh attempt usually succeeds.
+          # Bounded retry for residual install-time cache ENOENT.
           for attempt in 1 2 3; do
             if uv sync --group dev; then
               exit 0
             fi
-            echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
-            sleep $((attempt * 2))
+            if [ "${attempt}" -lt 3 ]; then
+              echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
+              sleep $((attempt * 2))
+            fi
           done
           echo "uv sync failed after 3 attempts" >&2
           exit 1
@@ -168,8 +173,6 @@ jobs:
     # generic pool that includes gpu1, which lacks that access.
     runs-on: [self-hosted, Linux]
     needs: pytest-shards
-    env:
-      UV_CACHE_DIR: ${{ runner.temp }}/uv-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
 
     strategy:
       fail-fast: false
@@ -200,6 +203,16 @@ jobs:
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
 
+      - name: Isolate uv cache dir
+        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
+        # runner context. Concurrent self-hosted jobs otherwise share
+        # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
+        # with ENOENT while hardlinking into the venv — before tests start.
+        env:
+          UV_CACHE_SUFFIX: ${{ strategy.job-index }}
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}-${UV_CACHE_SUFFIX}" >> "${GITHUB_ENV}"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
@@ -224,14 +237,15 @@ jobs:
         run: |
           set -euo pipefail
           uv venv
-          # Bounded retry: cache ENOENT during install is intermittent on
-          # shared self-hosted runners; a fresh attempt usually succeeds.
+          # Bounded retry for residual install-time cache ENOENT.
           for attempt in 1 2 3; do
             if uv sync --group dev; then
               exit 0
             fi
-            echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
-            sleep $((attempt * 2))
+            if [ "${attempt}" -lt 3 ]; then
+              echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
+              sleep $((attempt * 2))
+            fi
           done
           echo "uv sync failed after 3 attempts" >&2
           exit 1
@@ -332,8 +346,6 @@ jobs:
   security:
     name: Security Scan
     runs-on: self-hosted
-    env:
-      UV_CACHE_DIR: ${{ runner.temp }}/uv-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -363,6 +375,11 @@ jobs:
 
       - name: Run gitleaks
         run: gitleaks detect --source . --no-git --redact --verbose --no-banner
+
+      - name: Isolate uv cache dir
+        # Job-level env cannot use the runner context; set via GITHUB_ENV.
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
