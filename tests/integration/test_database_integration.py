@@ -149,8 +149,16 @@ async def test_user_turn_averages(db_logger: DatabaseLogger):
         )
 
     # user A: turns 3 (2 user) then 1 (1 user) -> avg_turns 2.0, avg_user_turns 1.5
-    await _log("a1", "u-A", [{"role": "user"}, {"role": "assistant"}, {"role": "user"}])
-    await _log("a2", "u-A", [{"role": "user"}])
+    await _log(
+        "a1",
+        "u-A",
+        [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+        ],
+    )
+    await _log("a2", "u-A", [{"role": "user", "content": "q3"}])
     # user B: a single non-chat (raw string) request -> NULL turn counts
     await _log("b1", "u-B", "raw completion prompt")
 
