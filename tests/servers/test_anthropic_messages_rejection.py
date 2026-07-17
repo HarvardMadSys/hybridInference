@@ -56,6 +56,7 @@ async def test_anthropic_unknown_model_logs_rejection(monkeypatch):
 
     app.state.services = type("S", (), {})()
     app.state.services.log_store = MagicMock()
+    app.state.services.operational_store = None
     app.state.services.runtime_settings = MagicMock()
 
     transport = ASGITransport(app=app, raise_app_exceptions=False)
