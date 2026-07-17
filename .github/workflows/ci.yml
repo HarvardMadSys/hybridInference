@@ -47,6 +47,12 @@ jobs:
   backend-lint:
     name: Backend ${{ matrix.check.name }}
     runs-on: self-hosted
+    # Isolate uv's on-disk cache per job. Concurrent jobs on the same
+    # self-hosted runner otherwise share ~/.cache/uv; when a cache entry
+    # disappears mid-install (cleanup/restore/corruption), uv fails with
+    # ENOENT while hardlinking into the venv — before tests even start.
+    env:
+      UV_CACHE_DIR: ${{ runner.temp }}/uv-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
     strategy:
       fail-fast: false
       matrix:
@@ -71,11 +77,8 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-          # Disable the post-job `uv cache prune --ci`. Multiple jobs run
-          # concurrently on the same self-hosted runner and share one
-          # UV_CACHE_DIR; one job's prune deletes the `.tmp*` extraction dirs
-          # another job's `uv sync` is mid-write into, causing intermittent
-          # "Failed to extract archive ... No such file or directory" failures.
+          # Still disable prune: even with per-job UV_CACHE_DIR, prune --ci
+          # is unnecessary on self-hosted and has raced with other installs.
           prune-cache: false
 
       - name: Set up Python
@@ -91,8 +94,19 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           uv venv
-          uv sync --group dev
+          # Bounded retry: cache ENOENT during install is intermittent on
+          # shared self-hosted runners; a fresh attempt usually succeeds.
+          for attempt in 1 2 3; do
+            if uv sync --group dev; then
+              exit 0
+            fi
+            echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
+            sleep $((attempt * 2))
+          done
+          echo "uv sync failed after 3 attempts" >&2
+          exit 1
 
       - name: Run ${{ matrix.check.name }}
         run: ${{ matrix.check.command }}
@@ -154,6 +168,8 @@ jobs:
     # generic pool that includes gpu1, which lacks that access.
     runs-on: [self-hosted, Linux]
     needs: pytest-shards
+    env:
+      UV_CACHE_DIR: ${{ runner.temp }}/uv-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index }}
 
     strategy:
       fail-fast: false
@@ -189,11 +205,8 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-          # Disable the post-job `uv cache prune --ci`. Multiple jobs run
-          # concurrently on the same self-hosted runner and share one
-          # UV_CACHE_DIR; one job's prune deletes the `.tmp*` extraction dirs
-          # another job's `uv sync` is mid-write into, causing intermittent
-          # "Failed to extract archive ... No such file or directory" failures.
+          # Still disable prune: even with per-job UV_CACHE_DIR, prune --ci
+          # is unnecessary on self-hosted and has raced with other installs.
           prune-cache: false
 
       - name: Set up Python
@@ -209,8 +222,19 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           uv venv
-          uv sync --group dev
+          # Bounded retry: cache ENOENT during install is intermittent on
+          # shared self-hosted runners; a fresh attempt usually succeeds.
+          for attempt in 1 2 3; do
+            if uv sync --group dev; then
+              exit 0
+            fi
+            echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
+            sleep $((attempt * 2))
+          done
+          echo "uv sync failed after 3 attempts" >&2
+          exit 1
 
       - name: Prepare pytest shard
         id: pytest-shard
@@ -308,6 +332,8 @@ jobs:
   security:
     name: Security Scan
     runs-on: self-hosted
+    env:
+      UV_CACHE_DIR: ${{ runner.temp }}/uv-${{ github.run_id }}-${{ github.job }}
     steps:
       - uses: actions/checkout@v6
         with:
