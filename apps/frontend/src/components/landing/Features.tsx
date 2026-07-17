@@ -1,3 +1,4 @@
+import { branding } from '@/config/branding';
 interface Feature {
   title: string;
   body: string;
@@ -73,7 +74,7 @@ export function Features(): JSX.Element {
       <div className="mx-auto max-w-3xl text-center">
         <p className="text-sm font-semibold uppercase tracking-wider text-crimson">Features</p>
         <h2 className="mt-2 font-serif text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-          Why <span className="text-crimson">freeinference.org</span>
+          Why <span className="text-crimson">{branding.siteHost}</span>
         </h2>
         <p className="mt-3 text-base text-gray-600">
           Everything you need to build and ship LLM-powered applications.

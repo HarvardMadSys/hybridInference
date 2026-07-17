@@ -11,6 +11,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
+import { branding } from '@/config/branding';
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '';
 const TURNSTILE_CALLBACK = '__signupTurnstileCallback';
@@ -144,11 +145,14 @@ export default function SignupPage() {
           <p className="mt-2 text-sm text-gray-600">
             Create an account to manage API keys and usage
           </p>
-          <div className="mt-4 rounded border border-blue-100 bg-blue-50 px-4 py-3 text-left text-sm text-blue-900">
-            Open to Harvard students — sign up with your{' '}
-            <span className="font-medium">@harvard.edu</span> email for instant access. Everyone
-            else: please describe your use case below — we review and approve manually.
-          </div>
+          {branding.fastTrackDomain && (
+            <div className="mt-4 rounded border border-blue-100 bg-blue-50 px-4 py-3 text-left text-sm text-blue-900">
+              Open to {branding.fastTrackOrg} students — sign up with your{' '}
+              <span className="font-medium">@{branding.fastTrackDomain}</span> email for instant
+              access. Everyone else: please describe your use case below — we review and approve
+              manually.
+            </div>
+          )}
         </div>
 
         <form onSubmit={handleSubmit(onSubmit)} className="mt-8 space-y-5">
@@ -233,7 +237,7 @@ export default function SignupPage() {
               <span className="mt-1.5 block text-xs text-red-600">{errors.useCase.message}</span>
             ) : (
               <span className="mt-1.5 block text-xs text-gray-500">
-                Helps admins review non-Harvard signups faster.
+                Helps admins review signups faster.
               </span>
             )}
           </label>

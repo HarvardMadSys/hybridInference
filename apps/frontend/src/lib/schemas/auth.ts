@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { branding } from '@/config/branding';
 
 export const emailSchema = z
   .string()
@@ -17,7 +18,7 @@ export function buildCombinedUseCase(useCase?: string, discoverySource?: string)
   const trimmedDiscovery = discoverySource?.trim();
   return [
     trimmedUseCase,
-    trimmedDiscovery ? `How did you find freeinference.org? ${trimmedDiscovery}` : undefined,
+    trimmedDiscovery ? `How did you find ${branding.siteHost}? ${trimmedDiscovery}` : undefined,
   ]
     .filter(Boolean)
     .join('\n\n');

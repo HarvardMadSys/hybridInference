@@ -1,25 +1,13 @@
 import Image from 'next/image';
 
-const sponsors = [
-  {
-    name: 'NVIDIA',
-    alt: 'NVIDIA logo',
-    src: '/sponsors/nvidia.svg',
-    className: 'h-10 sm:h-12',
-    width: 975,
-    height: 180,
-  },
-  {
-    name: 'Harvard SEAS',
-    alt: 'Harvard SEAS logo',
-    src: '/sponsors/harvard-seas.svg',
-    className: 'h-12 sm:h-14',
-    width: 307,
-    height: 86,
-  },
-];
+import { branding } from '@/config/branding';
 
-export function Sponsors(): JSX.Element {
+const sponsors = branding.sponsors;
+
+export function Sponsors(): JSX.Element | null {
+  if (sponsors.length === 0) {
+    return null;
+  }
   return (
     <section className="px-4 py-6 sm:px-6 lg:px-8" aria-label="sponsors">
       <div className="mx-auto w-full max-w-4xl rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">

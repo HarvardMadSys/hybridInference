@@ -1,11 +1,12 @@
 // Centralized HTTP client with auth handling and token refresh.
 
 import { APIError, httpStatusToErrorCode } from '@/lib/utils/errors';
+import { branding } from '@/config/branding';
 
 let accessToken: string | null = null;
 let refreshPromise: Promise<boolean> | null = null;
 
-export const AUTH_EXPIRED_EVENT = 'freeinference:auth-expired';
+export const AUTH_EXPIRED_EVENT = `${branding.storageKeyPrefix}:auth-expired`;
 
 // Wrap fetch so a genuine connectivity failure (DNS, offline, connection
 // refused/reset) — which rejects with a TypeError before any response exists —

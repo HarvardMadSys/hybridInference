@@ -2,11 +2,13 @@
 
 import { useState } from 'react';
 
-const CURL_EXAMPLE = `curl https://freeinference.org/v1/chat/completions \\
-  -H "Authorization: Bearer $FREEINFERENCE_API_KEY" \\
+import { branding } from '@/config/branding';
+
+const CURL_EXAMPLE = `curl ${branding.exampleApiBase}/v1/chat/completions \\
+  -H "Authorization: Bearer $${branding.exampleApiKeyEnvVar}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model": "glm-5.1",
+    "model": "${branding.exampleModel}",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'`;
 

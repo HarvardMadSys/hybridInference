@@ -7,6 +7,7 @@ import { UsageStats } from '@/components/features/dashboard/UsageStats';
 import { UpdatesBanner } from '@/components/ui/UpdatesBanner';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
+import { branding } from '@/config/branding';
 
 export function DashboardView() {
   const { state } = useAuth();
@@ -45,7 +46,7 @@ export function DashboardView() {
               Settings
             </a>
             <a
-              href="https://doc.freeinference.org/"
+              href={branding.docsUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center rounded-md bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm ring-1 ring-inset ring-gray-300 hover:bg-gray-50"

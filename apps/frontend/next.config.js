@@ -5,7 +5,14 @@ const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
   images: {
-    remotePatterns: [{ protocol: 'https', hostname: 'junchengyang.com' }],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        // Remote host for team-member photos (branding.team). CommonJS file:
+        // cannot import the TS branding module, so read the env var inline.
+        hostname: process.env.NEXT_PUBLIC_TEAM_IMAGE_HOST || 'junchengyang.com',
+      },
+    ],
   },
   async rewrites() {
     return [

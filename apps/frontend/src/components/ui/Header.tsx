@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { branding } from '@/config/branding';
 import { config } from '@/config/env';
 import { useAuth } from '@/components/providers';
 
@@ -20,18 +21,20 @@ export function Header() {
         <Link href="/" className="text-xl font-bold tracking-tight">
           {config.appName}
         </Link>
-        <a
-          href="https://madsys.seas.harvard.edu"
-          className="font-serif text-sm text-gray-500 hover:text-crimson"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Harvard SEAS
-        </a>
+        {branding.orgName && (
+          <a
+            href={branding.orgUrl}
+            className="font-serif text-sm text-gray-500 hover:text-crimson"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {branding.orgName}
+          </a>
+        )}
       </div>
       <div className="ml-auto flex flex-wrap items-center justify-end gap-1 sm:gap-2">
         <a
-          href="https://status.staging.freeinference.org/"
+          href={branding.statusUrl}
           className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
           target="_blank"
           rel="noopener noreferrer"

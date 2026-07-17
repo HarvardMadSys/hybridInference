@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Markdown } from '@/components/ui/Markdown';
 import { streamRagChat, type RagSource } from '@/lib/api/chat';
 import { APIError } from '@/lib/utils/errors';
+import { branding } from '@/config/branding';
 
 interface UiMessage {
   role: 'user' | 'assistant';
@@ -17,14 +18,14 @@ interface UiMessage {
 const EXAMPLE_QUESTIONS = [
   'How do I get an API key?',
   'Which models can I use for coding?',
-  'How do I set up Cursor with FreeInference?',
+  `How do I set up Cursor with ${branding.appName}?`,
   'What request headers does the API accept?',
 ];
 
 function docUrl(source: string): string {
   // The public docs are a Sphinx site; a page named `quickstart.md` builds to
   // `quickstart.html`. Best-effort deep link — falls back to a readable label.
-  return `https://doc.freeinference.org/${source.replace(/\.md$/, '.html')}`;
+  return `${branding.docsUrl}${source.replace(/\.md$/, '.html')}`;
 }
 
 function updateLast(messages: UiMessage[], patch: Partial<UiMessage>): UiMessage[] {
@@ -130,9 +131,9 @@ function ChatView() {
       <div className="mb-4">
         <h1 className="text-2xl font-bold tracking-tight">Docs Assistant</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Ask anything about FreeInference. Answers are grounded in the{' '}
+          Ask anything about {branding.appName}. Answers are grounded in the{' '}
           <a
-            href="https://doc.freeinference.org"
+            href={branding.docsUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-crimson hover:underline"
@@ -209,7 +210,7 @@ function ChatView() {
               send(input);
             }
           }}
-          placeholder="Ask a question about FreeInference…"
+          placeholder={`Ask a question about ${branding.appName}…`}
           rows={1}
           className="max-h-40 min-h-[2.75rem] flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-black focus:outline-none focus:ring-1 focus:ring-black"
         />

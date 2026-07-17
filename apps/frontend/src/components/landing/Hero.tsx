@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { branding } from '@/config/branding';
 
 const TRUST_POINTS = [
   'No credit card required',
@@ -21,17 +22,17 @@ export function Hero(): JSX.Element {
 
       <div className="animate-fade-in-up relative">
         <a
-          href="https://madsys.seas.harvard.edu"
+          href={branding.orgUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 rounded-full border border-crimson/20 bg-white/70 px-4 py-1.5 text-xs font-medium text-crimson shadow-subtle backdrop-blur transition-colors duration-200 hover:bg-white"
         >
           <span className="h-1.5 w-1.5 rounded-full bg-crimson" />
-          Built at Harvard SEAS · MadSys Lab
+          {branding.orgTagline}
         </a>
 
         <h1 className="mx-auto mt-6 max-w-3xl font-serif text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl md:text-6xl">
-          FreeInference{' '}
+          {branding.appName}{' '}
           <span className="bg-gradient-to-r from-crimson via-crimson-light to-crimson bg-clip-text text-transparent">
             for open-source, research and education
           </span>

@@ -1,7 +1,8 @@
 import React from 'react';
+import { branding } from '@/config/branding';
 import { config } from '@/config/env';
 
-const COMMIT_URL_BASE = 'https://github.com/HarvardMadSys/hybridInference/commit';
+const COMMIT_URL_BASE = branding.commitUrlBase;
 
 function formatTimestamp(iso: string): string {
   return `${new Date(iso).toISOString().slice(0, 16).replace('T', ' ')} UTC`;

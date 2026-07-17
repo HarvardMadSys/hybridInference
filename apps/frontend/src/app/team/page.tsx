@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import { branding } from '@/config/branding';
 import { config } from '@/config/env';
 
 export const metadata = {
@@ -14,28 +15,7 @@ interface TeamMember {
   website?: string;
 }
 
-const members: TeamMember[] = [
-  {
-    name: 'Juncheng Yang',
-    affiliations: ['Assistant Professor at Harvard University'],
-    badge: 'Lead',
-    image: 'https://junchengyang.com/img/me4.jpg',
-  },
-  {
-    name: 'Murphy Tian',
-    affiliations: [
-      'Research Intern at Harvard University',
-      'Undergraduate at University of Toronto',
-    ],
-    badge: 'Core developer',
-    image: '/team/murphy-tian.jpg',
-    website: 'https://realtmxi.github.io/',
-  },
-  {
-    name: 'Haoran Ni',
-    affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
-  },
-];
+const members: TeamMember[] = branding.team;
 
 function initials(name: string): string {
   return name
@@ -57,12 +37,12 @@ export default function TeamPage(): JSX.Element {
         <p className="mx-auto mt-5 max-w-xl text-base text-gray-600 sm:text-lg">
           A small research team building free, open LLM inference at{' '}
           <a
-            href="https://madsys.seas.harvard.edu"
+            href={branding.orgUrl}
             className="text-crimson hover:underline"
             target="_blank"
             rel="noopener noreferrer"
           >
-            Harvard SEAS
+            {branding.orgName}
           </a>
           .
         </p>

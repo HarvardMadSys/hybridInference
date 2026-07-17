@@ -1,3 +1,4 @@
+import { branding } from '@/config/branding';
 import { config } from '@/config/env';
 
 export const metadata = {
@@ -73,7 +74,7 @@ const sections = [
   {
     title: '10. Contact',
     body: [
-      `For questions about ${config.appName} or these terms, contact us at admin@freeinference.org.`,
+      `For questions about ${config.appName} or these terms, contact us at ${branding.contactEmail}.`,
     ],
   },
 ];
