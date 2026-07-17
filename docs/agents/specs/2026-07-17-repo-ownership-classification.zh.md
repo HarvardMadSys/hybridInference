@@ -36,9 +36,9 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 | `docs/` | mixed | developer 也是 mixed(见二级明细);free_inference 移 overlay | B |
 | `ops/` | 大部分 freeinference | 机器脚本/运维集中 overlay;deploy 脚本当前保持原位 | B |
 | `services/` | mixed | worker/testkit 机制留上游;站点配置、品牌与 targets 移 overlay | B |
-| `tests/` | mixed | 通用为主;站点 targets 与真实端点用例标记后移 overlay | B |
+| `tests/` | mixed | 机制通用;契约测试携带 FreeInference 值,站点 targets 与真实端点用例标记后移 overlay | B |
 | `.codex/`(skills) | internal | agent 技能,不随发行物;留原位 | — |
-| `.github/` | mixed | **当前零改动**;仅注释级归属标注(见主文档 CI/CD 演进路径);`CODEOWNERS` 属 freeinference 治理 | — |
+| `.github/` | mixed | **当前零改动**;仅注释级归属标注(见主文档 CI/CD 演进路径);`CODEOWNERS` 属 per-repository 治理——本仓与未来上游导出仓、deployment 仓各自维护自己的 CODEOWNERS,不随发行版内容迁移 | — |
 | `.kilo/` | internal | agent 技能,不随发行物;留原位 | — |
 | 根文件(17 项) | mixed | 见下节逐一裁定 | B |
 
@@ -55,7 +55,15 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
   - 邮件模板中的站点署名与链接;
   - `config/settings.py` 站点默认值、`adapters/openrouter.py:11-12` 归因
     header、`servers/auth.py` 配额联系邮箱(6-18 P1 清单,三步式,不改默认);
-  - schemas 中的站点示例值(`schemas_auth.py`、`schemas_admin.py`)。
+  - schemas 中的站点示例值(`schemas_auth.py`、`schemas_admin.py`);
+  - `observability/alerts.py` 的站点告警措辞与默认接收端;
+  - admin 的 provider 目录与 usage-insights 面(`servers/routers/admin/`
+    provider/usage-insights 相关模块内的站点 provider 清单与 freeinference.org
+    API 引用);
+  - `servers/routers/user_routes.py` 中的站点文案与联系邮箱;
+  - `rag/prebuilt/docs_index.json`(FreeInference 文档预构建索引,数据而非机制)。
+
+  以上为类别级清单;Phase 2 拆分时以逐文件 rg 复核为准,防漏拆。
 
 ### apps/frontend/(mixed)
 
@@ -124,7 +132,7 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 
 | 内容 | 归属 |
 |---|---|
-| `unit/`、`api/`、`servers/`、`observability/`、`utils/`、fixtures | upstream |
+| `unit/`、`api/`、`servers/`、`observability/`、`utils/`、fixtures | mixed:测试机制与绝大多数用例归 upstream;**契约冻结测试携带 FreeInference 值**(站点默认值、域名、联系邮箱、OpenRouter 归因等,#949 及后续默认值冻结),这些"值断言"在品牌 PR 中刻意更新,真值迁移后随发行版 targets 走 |
 | 根级测试(`test_error_scrubbing.py` 等) | upstream;其中 `test_spark_idle_proxy.py`、`test_local_deployment_proxy.py` 跟随被测 ops 内容的归属 |
 | `integration/`、`external/` 中指向真实 provider/站点的用例与配置 | freeinference targets |
 | `e2e/` | upstream 机制;站点参数 freeinference |
