@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useUsageStats } from '@/lib/hooks';
-import { branding } from '@/config/branding';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 function formatUsd(amount: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -26,6 +26,7 @@ function formatResetAt(value?: string | null): string {
 }
 
 export function UsageStats(): JSX.Element {
+  const branding = useBranding();
   const [period, setPeriod] = useState<'today' | 'month' | 'all'>('today');
   const { data: stats, isLoading, error } = useUsageStats(period);
   const quota = stats?.quota;

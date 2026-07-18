@@ -2,13 +2,13 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { branding } from '@/config/branding';
-import { config } from '@/config/env';
 import { useAuth } from '@/components/providers';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export function Header() {
   const router = useRouter();
   const { state, logout } = useAuth();
+  const { branding, features } = useSiteConfig();
 
   const handleLogout = async () => {
     await logout();
@@ -19,7 +19,7 @@ export function Header() {
     <header className="mx-auto flex w-full max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-6">
       <div className="flex min-w-0 items-baseline gap-2">
         <Link href="/" className="text-xl font-bold tracking-tight">
-          {config.appName}
+          {branding.appName}
         </Link>
         {branding.orgName && (
           <a
@@ -43,12 +43,14 @@ export function Header() {
         </a>
         {state.isAuthenticated && (
           <>
-            <Link
-              href="/chat"
-              className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
-            >
-              Docs Assistant
-            </Link>
+            {features.rag && (
+              <Link
+                href="/chat"
+                className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
+              >
+                Docs Assistant
+              </Link>
+            )}
             <Link
               href="/dashboard"
               className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"

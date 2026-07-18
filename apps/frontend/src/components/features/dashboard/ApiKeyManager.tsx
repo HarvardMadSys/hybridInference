@@ -5,7 +5,7 @@ import toast from 'react-hot-toast';
 import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
-import { branding } from '@/config/branding';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 function formatDate(value?: string | null): string {
   if (!value) return 'Never';
@@ -23,6 +23,7 @@ function statusClassName(status: string): string {
 }
 
 export function ApiKeyManager(): JSX.Element {
+  const branding = useBranding();
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [deletingKeyPrefix, setDeletingKeyPrefix] = useState<string | null>(null);

@@ -93,6 +93,29 @@ services:
         NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
         NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME-FreeInference}
+        NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION-Free LLM inference for research, built at Harvard SEAS.}
+        NEXT_PUBLIC_SITE_HOST: ${NEXT_PUBLIC_SITE_HOST-freeinference.org}
+        NEXT_PUBLIC_ORG_NAME: ${NEXT_PUBLIC_ORG_NAME-Harvard SEAS}
+        NEXT_PUBLIC_ORG_URL: ${NEXT_PUBLIC_ORG_URL-https://madsys.seas.harvard.edu}
+        NEXT_PUBLIC_ORG_TAGLINE: ${NEXT_PUBLIC_ORG_TAGLINE-Built at Harvard SEAS · MadSys Lab}
+        NEXT_PUBLIC_DOCS_URL: ${NEXT_PUBLIC_DOCS_URL-https://doc.freeinference.org/}
+        NEXT_PUBLIC_STATUS_URL: ${NEXT_PUBLIC_STATUS_URL-https://status.staging.freeinference.org/}
+        NEXT_PUBLIC_GITHUB_URL: ${NEXT_PUBLIC_GITHUB_URL-https://github.com/HarvardMadSys/hybridInference}
+        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL-admin@freeinference.org}
+        NEXT_PUBLIC_EXAMPLE_API_BASE: ${NEXT_PUBLIC_EXAMPLE_API_BASE-https://freeinference.org}
+        NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR: ${NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR-FREEINFERENCE_API_KEY}
+        NEXT_PUBLIC_EXAMPLE_MODEL: ${NEXT_PUBLIC_EXAMPLE_MODEL-glm-5.1}
+        # Use `${VAR-default}` (not `:-`) so an explicit empty value can
+        # disable analytics and the signup fast-track hint.
+        NEXT_PUBLIC_STATCOUNTER_PROJECT_ID: ${NEXT_PUBLIC_STATCOUNTER_PROJECT_ID-13224568}
+        NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY: ${NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY-2d8ab84a}
+        NEXT_PUBLIC_FAST_TRACK_DOMAIN: ${NEXT_PUBLIC_FAST_TRACK_DOMAIN-harvard.edu}
+        NEXT_PUBLIC_FAST_TRACK_ORG: ${NEXT_PUBLIC_FAST_TRACK_ORG-Harvard}
+        NEXT_PUBLIC_STORAGE_KEY_PREFIX: ${NEXT_PUBLIC_STORAGE_KEY_PREFIX-freeinference}
+        NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
+        NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
+        NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-junchengyang.com}
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:

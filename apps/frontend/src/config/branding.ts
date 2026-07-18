@@ -6,11 +6,11 @@
 // (arrays via *_JSON). Physical removal of the FreeInference defaults waits
 // for the overlay-is-truth milestone.
 //
-// Like env.ts, this is resolved at build time — the bundle is served
-// statically, so there is no runtime indirection here. The backend's
-// GET /site-config exposes the distribution manifest for runtime consumers;
-// wiring the two together is a follow-up once distribution content lands.
+// These values are the build-time fallback. SiteConfigProvider overlays the
+// safe identity and feature fields from GET /site-config at browser runtime,
+// so one frontend image can follow the active distribution manifest.
 
+import { z } from 'zod';
 import { config } from './env';
 
 export interface TeamMember {
@@ -30,12 +30,34 @@ export interface Sponsor {
   height: number;
 }
 
-function fromJsonEnv<T>(raw: string | undefined, fallback: T): T {
+const teamSchema: z.ZodType<TeamMember[]> = z.array(
+  z.object({
+    name: z.string().min(1),
+    affiliations: z.array(z.string().min(1)),
+    badge: z.string().min(1).optional(),
+    image: z.string().min(1).optional(),
+    website: z.string().min(1).optional(),
+  }),
+);
+
+const sponsorsSchema: z.ZodType<Sponsor[]> = z.array(
+  z.object({
+    name: z.string().min(1),
+    alt: z.string().min(1),
+    src: z.string().min(1),
+    className: z.string(),
+    width: z.number().positive(),
+    height: z.number().positive(),
+  }),
+);
+
+function fromJsonEnv<T>(raw: string | undefined, fallback: T, schema: z.ZodType<T>): T {
   if (!raw) return fallback;
   try {
-    return JSON.parse(raw) as T;
+    const parsed = schema.safeParse(JSON.parse(raw));
+    return parsed.success ? parsed.data : fallback;
   } catch {
-    // A malformed override must not take the site down; keep the default.
+    // A malformed or wrong-shaped override must not take the site down.
     return fallback;
   }
 }
@@ -86,44 +108,54 @@ export const branding = {
   storageKeyPrefix: process.env.NEXT_PUBLIC_STORAGE_KEY_PREFIX || 'freeinference',
 
   // People and sponsors (empty arrays hide the sections).
-  team: fromJsonEnv<TeamMember[]>(process.env.NEXT_PUBLIC_TEAM_JSON, [
-    {
-      name: 'Juncheng Yang',
-      affiliations: ['Assistant Professor at Harvard University'],
-      badge: 'Lead',
-      image: 'https://junchengyang.com/img/me4.jpg',
-    },
-    {
-      name: 'Murphy Tian',
-      affiliations: [
-        'Research Intern at Harvard University',
-        'Undergraduate at University of Toronto',
-      ],
-      badge: 'Core developer',
-      image: '/team/murphy-tian.jpg',
-      website: 'https://realtmxi.github.io/',
-    },
-    {
-      name: 'Haoran Ni',
-      affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
-    },
-  ]),
-  sponsors: fromJsonEnv<Sponsor[]>(process.env.NEXT_PUBLIC_SPONSORS_JSON, [
-    {
-      name: 'NVIDIA',
-      alt: 'NVIDIA logo',
-      src: '/sponsors/nvidia.svg',
-      className: 'h-10 sm:h-12',
-      width: 975,
-      height: 180,
-    },
-    {
-      name: 'Harvard SEAS',
-      alt: 'Harvard SEAS logo',
-      src: '/sponsors/harvard-seas.svg',
-      className: 'h-12 sm:h-14',
-      width: 307,
-      height: 86,
-    },
-  ]),
+  team: fromJsonEnv<TeamMember[]>(
+    process.env.NEXT_PUBLIC_TEAM_JSON,
+    [
+      {
+        name: 'Juncheng Yang',
+        affiliations: ['Assistant Professor at Harvard University'],
+        badge: 'Lead',
+        image: 'https://junchengyang.com/img/me4.jpg',
+      },
+      {
+        name: 'Murphy Tian',
+        affiliations: [
+          'Research Intern at Harvard University',
+          'Undergraduate at University of Toronto',
+        ],
+        badge: 'Core developer',
+        image: '/team/murphy-tian.jpg',
+        website: 'https://realtmxi.github.io/',
+      },
+      {
+        name: 'Haoran Ni',
+        affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
+      },
+    ],
+    teamSchema,
+  ),
+  sponsors: fromJsonEnv<Sponsor[]>(
+    process.env.NEXT_PUBLIC_SPONSORS_JSON,
+    [
+      {
+        name: 'NVIDIA',
+        alt: 'NVIDIA logo',
+        src: '/sponsors/nvidia.svg',
+        className: 'h-10 sm:h-12',
+        width: 975,
+        height: 180,
+      },
+      {
+        name: 'Harvard SEAS',
+        alt: 'Harvard SEAS logo',
+        src: '/sponsors/harvard-seas.svg',
+        className: 'h-12 sm:h-14',
+        width: 307,
+        height: 86,
+      },
+    ],
+    sponsorsSchema,
+  ),
 };
+
+export type Branding = typeof branding;

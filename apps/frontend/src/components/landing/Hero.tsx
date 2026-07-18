@@ -1,5 +1,7 @@
+'use client';
+
 import Link from 'next/link';
-import { branding } from '@/config/branding';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 const TRUST_POINTS = [
   'No credit card required',
@@ -8,6 +10,7 @@ const TRUST_POINTS = [
 ];
 
 export function Hero(): JSX.Element {
+  const { branding, features } = useSiteConfig();
   return (
     <section className="relative w-full overflow-hidden rounded-3xl border border-gray-100 bg-gradient-to-br from-white via-gray-50 to-red-50/40 px-6 py-24 text-center shadow-subtle">
       {/* Decorative background accents */}
@@ -44,24 +47,26 @@ export function Hero(): JSX.Element {
         </p>
 
         <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-          <Link
-            href="/signup"
-            className="group inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-crimson px-7 text-base font-medium text-white shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:bg-crimson-dark hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-crimson focus:ring-offset-2"
-          >
-            Sign up free
-            <svg
-              className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5"
-              viewBox="0 0 20 20"
-              fill="currentColor"
-              aria-hidden
+          {features.publicSignup && (
+            <Link
+              href="/signup"
+              className="group inline-flex h-12 items-center justify-center gap-2 rounded-xl bg-crimson px-7 text-base font-medium text-white shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:bg-crimson-dark hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-crimson focus:ring-offset-2"
             >
-              <path
-                fillRule="evenodd"
-                d="M3 10a.75.75 0 0 1 .75-.75h8.69L9.22 6.03a.75.75 0 1 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06l3.22-3.22H3.75A.75.75 0 0 1 3 10Z"
-                clipRule="evenodd"
-              />
-            </svg>
-          </Link>
+              Sign up free
+              <svg
+                className="h-4 w-4 transition-transform duration-200 group-hover:translate-x-0.5"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+                aria-hidden
+              >
+                <path
+                  fillRule="evenodd"
+                  d="M3 10a.75.75 0 0 1 .75-.75h8.69L9.22 6.03a.75.75 0 1 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 1 1-1.06-1.06l3.22-3.22H3.75A.75.75 0 0 1 3 10Z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </Link>
+          )}
           <Link
             href="/login"
             className="inline-flex h-12 items-center justify-center rounded-xl border border-gray-300 bg-white/80 px-7 text-base font-medium text-gray-900 shadow-subtle backdrop-blur transition-all duration-200 hover:-translate-y-0.5 hover:bg-white hover:shadow-card focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2"

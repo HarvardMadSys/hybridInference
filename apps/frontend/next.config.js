@@ -41,6 +41,8 @@ const nextConfig = {
       // so this rewrite forwards the request on to FastAPI (same pattern as
       // /health). Without it the static frontend would 404 the fetch in prod.
       { source: '/site-updates', destination: `${BACKEND_INTERNAL_URL}/site-updates` },
+      // Public distribution identity consumed by SiteConfigProvider.
+      { source: '/site-config', destination: `${BACKEND_INTERNAL_URL}/site-config` },
     ];
   },
 };

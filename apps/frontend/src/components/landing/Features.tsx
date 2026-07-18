@@ -1,4 +1,6 @@
-import { branding } from '@/config/branding';
+'use client';
+
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 interface Feature {
   title: string;
   body: string;
@@ -69,6 +71,7 @@ const FEATURES: Feature[] = [
 ];
 
 export function Features(): JSX.Element {
+  const branding = useBranding();
   return (
     <section className="w-full py-16">
       <div className="mx-auto max-w-3xl text-center">

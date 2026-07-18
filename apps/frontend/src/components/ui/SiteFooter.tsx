@@ -1,13 +1,15 @@
+'use client';
+
 import Link from 'next/link';
-import { branding } from '@/config/branding';
-import { config } from '@/config/env';
 import { BuildInfo } from '@/components/ui/BuildInfo';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 export function SiteFooter(): JSX.Element {
+  const branding = useBranding();
   return (
     <footer className="mx-auto w-full max-w-5xl px-6 py-6 text-center text-sm text-gray-400">
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-        <span>© {config.appName}</span>
+        <span>© {branding.appName}</span>
         <span aria-hidden="true">·</span>
         <a
           href={branding.orgUrl}
@@ -39,10 +41,14 @@ export function SiteFooter(): JSX.Element {
         <Link href="/terms" className="hover:text-crimson">
           Terms
         </Link>
-        <span aria-hidden="true">·</span>
-        <Link href="/team" className="hover:text-crimson">
-          Team
-        </Link>
+        {branding.team.length > 0 && (
+          <>
+            <span aria-hidden="true">·</span>
+            <Link href="/team" className="hover:text-crimson">
+              Team
+            </Link>
+          </>
+        )}
         <span aria-hidden="true">·</span>
         <a
           href={branding.githubUrl}

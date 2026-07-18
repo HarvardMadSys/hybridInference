@@ -20,8 +20,8 @@ design doc. Applying manifest paths requires an explicit
 ``DISTRIBUTION_CONFIG_MODE=active``, so setting only the path can never
 change behavior.
 
-``site:`` and ``features:`` are parsed and validated here but not yet
-consumed; the frontend site-config endpoint wires them up in a later PR.
+``site:`` and ``features:`` are parsed here and exposed as a safe public subset
+by ``GET /site-config``; the frontend overlays those values at browser runtime.
 Manifest values must not contain secrets; env interpolation is deliberately
 unsupported in ``schema_version: 1``.
 """

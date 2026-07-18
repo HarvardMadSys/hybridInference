@@ -2,9 +2,12 @@
 
 import { useState } from 'react';
 
-import { branding } from '@/config/branding';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
-const CURL_EXAMPLE = `curl ${branding.exampleApiBase}/v1/chat/completions \\
+export function CodeExample(): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const branding = useBranding();
+  const curlExample = `curl ${branding.exampleApiBase}/v1/chat/completions \\
   -H "Authorization: Bearer $${branding.exampleApiKeyEnvVar}" \\
   -H "Content-Type: application/json" \\
   -d '{
@@ -12,12 +15,9 @@ const CURL_EXAMPLE = `curl ${branding.exampleApiBase}/v1/chat/completions \\
     "messages": [{"role": "user", "content": "Hello!"}]
   }'`;
 
-export function CodeExample(): JSX.Element {
-  const [copied, setCopied] = useState(false);
-
   async function handleCopy() {
     try {
-      await navigator.clipboard.writeText(CURL_EXAMPLE);
+      await navigator.clipboard.writeText(curlExample);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -57,7 +57,7 @@ export function CodeExample(): JSX.Element {
           </button>
         </div>
         <pre className="overflow-x-auto px-4 py-4 text-sm leading-relaxed text-gray-100">
-          <code>{CURL_EXAMPLE}</code>
+          <code>{curlExample}</code>
         </pre>
       </div>
     </section>

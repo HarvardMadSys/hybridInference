@@ -11,7 +11,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
-import { branding } from '@/config/branding';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY || '';
 const TURNSTILE_CALLBACK = '__signupTurnstileCallback';
@@ -23,6 +23,7 @@ declare global {
 }
 
 export default function SignupPage() {
+  const { branding, features } = useSiteConfig();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);
@@ -57,7 +58,11 @@ export default function SignupPage() {
     }
 
     try {
-      const combinedUseCase = buildCombinedUseCase(data.useCase, data.discoverySource);
+      const combinedUseCase = buildCombinedUseCase(
+        data.useCase,
+        data.discoverySource,
+        branding.siteHost,
+      );
 
       const result = await signup({
         email: data.email,
@@ -74,6 +79,22 @@ export default function SignupPage() {
       setIsLoading(false);
     }
   };
+
+  if (!features.publicSignup) {
+    return (
+      <div className="mx-auto w-full max-w-md">
+        <Card>
+          <h1 className="text-xl font-semibold text-gray-900">Public signup is unavailable</h1>
+          <p className="mt-2 text-sm text-gray-600">
+            This distribution does not currently accept public registrations.
+          </p>
+          <Link href="/login" className="mt-4 inline-block text-sm text-crimson hover:underline">
+            Sign in
+          </Link>
+        </Card>
+      </div>
+    );
+  }
 
   if (signupResult) {
     const isPendingApproval = signupResult.requires_approval;
