@@ -42,9 +42,10 @@ from the container, or any comparison is not `identical`.
 Note on CI: local `make test` collects `distributions/*/tests/` via pytest
 `testpaths`, but the PR CI sharder currently only walks `tests/` — the
 neutral manifest gate that runs in CI lives at
-`tests/unit/config/test_distribution_manifests_discovery.py`; the tests
-here are local/deploy verification until the future CI/CD stage wires the
-distribution suite in.
+`tests/unit/config/test_distribution_manifests_discovery.py`; it also carries
+the temporary Phase 1 assertion that this overlay aliases the legacy truth.
+The tests here remain local/deploy verification until the future CI/CD stage
+wires the distribution suite in.
 
 ## Target layout (grows in Phase 2, one category per PR)
 
