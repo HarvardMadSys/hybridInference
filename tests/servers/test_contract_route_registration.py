@@ -83,13 +83,18 @@ def test_aliases_share_canonical_adapters(registered):
         assert [a for a, _ in alias_adapters] == [a for a, _ in canonical]
 
 
-def test_endpoint_ids_are_provider_host_port_scoped(registered):
+def test_endpoint_ids_preserve_exact_location_contract(registered):
     exe, _ = registered
-    for route in exe.routes.values():
-        for adapter, _weight in route.adapters:
-            endpoint_id = adapter.config.endpoint_id
-            assert endpoint_id, "every adapter must expose a non-empty endpoint_id"
-            assert ":" in endpoint_id, f"unexpected endpoint_id format: {endpoint_id!r}"
+    assert [
+        (adapter.config.base_url, adapter.config.endpoint_id)
+        for adapter, _weight in exe.routes["contract-hybrid"].adapters
+    ] == [
+        ("https://remote.example.test/v1", "contract-hybrid:remote-api"),
+        ("http://local.example.test:8000", "contract-hybrid:local-api"),
+    ]
+    assert exe.routes["contract-simple"].adapters[0][0].config.endpoint_id == (
+        "contract-simple:zai-api"
+    )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -42,6 +42,11 @@ class _StubAdapter(BaseAdapter):
         yield "data: [DONE]\n\n"
 
 
+class _FailingAdapter(_StubAdapter):
+    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+        raise RuntimeError("contract primary failed")
+
+
 @pytest.fixture
 async def contract_app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
@@ -155,6 +160,40 @@ async def test_unknown_model_error_envelope(contract_client: AsyncClient):
     assert error["code"] == 404
     assert error["type"] == "unknown"
     assert "no-such-model" in error["message"]
+
+
+@pytest.mark.asyncio
+async def test_completion_preserves_automatic_fallback_contract(
+    contract_app: FastAPI,
+    contract_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    router = contract_app.state.services.router
+    primary_cfg = ModelConfig(
+        id=MODEL_ID,
+        name=MODEL_ID,
+        provider="contract-primary",
+        base_url="http://primary.test",
+    )
+    backup_cfg = ModelConfig(
+        id=MODEL_ID,
+        name=MODEL_ID,
+        provider="contract-backup",
+        base_url="http://backup.test",
+    )
+    router.register_route(
+        MODEL_ID,
+        [(_FailingAdapter(primary_cfg), 0.9), (_StubAdapter(backup_cfg), 0.1)],
+    )
+    monkeypatch.setattr("routing.routers.random.random", lambda: 0.01)
+
+    resp = await contract_client.post(
+        "/v1/chat/completions",
+        json={"model": MODEL_ID, "messages": [{"role": "user", "content": "hi"}]},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "contract-ok"
 
 
 @pytest.mark.asyncio
