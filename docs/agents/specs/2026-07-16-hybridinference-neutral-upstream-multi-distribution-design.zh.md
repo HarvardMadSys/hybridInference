@@ -652,19 +652,20 @@ flowchart LR
 
     P0 --> P1 --> P2 --> P3 --> P4
 
-    classDef done fill:#E3F1EE,stroke:#0E6E63,color:#0A4F47
+    classDef active fill:#E3F1EE,stroke:#0E6E63,color:#0A4F47
     classDef next fill:#F8E9EB,stroke:#A62639,color:#7E1D2C
     classDef gated fill:#F6EEDC,stroke:#9A6B00,color:#6F4E02
     classDef opt fill:#F6EEDC,stroke:#9A6B00,color:#6F4E02,stroke-dasharray:6 4
-    class P0 done
-    class P1 done
+    class P0 active
+    class P1 active
     class P2 next
     class P3 gated
     class P4 opt
 ~~~
 
-状态（截至 2026-07-17）：Phase 0–1 代码全部落地（7 个 PR 待合并），Phase 2 为下一步；
-Phase 3 被 RouteWise 依赖发布方式的决策门控；Phase 4 非成功条件。
+状态（截至 2026-07-18）：Phase 0–1 的 7 个实现 PR 已打开，但仍待评审、合并与
+staging 验收，因此图中标为进行中而非完成；Phase 2 在上述验收后启动。Phase 3
+被 RouteWise 依赖发布方式的决策门控；Phase 4 非成功条件。
 
 ### Phase 0：建立归属清单与稳定基线
 
