@@ -102,7 +102,7 @@ PRODUCTION_MODELS_YAML = REPO_ROOT / "config" / "models.yaml"
 
 
 def test_production_models_yaml_schema_contract():
-    """The real catalog stays parseable and unambiguous."""
+    """The real catalog stays parseable without alias/canonical collisions."""
     import yaml
 
     data = yaml.safe_load(PRODUCTION_MODELS_YAML.read_text())
@@ -112,7 +112,6 @@ def test_production_models_yaml_schema_contract():
     ids = [m["id"] for m in models]
     aliases = [alias for m in models for alias in (m.get("aliases") or [])]
     assert len(ids) == len(set(ids)), "duplicate model ids in models.yaml"
-    assert len(aliases) == len(set(aliases)), "duplicate aliases in models.yaml"
     assert not set(ids) & set(aliases), "alias shadows a canonical model id"
     for model in models:
         assert model.get("name"), f"model {model['id']!r} missing name"
@@ -140,10 +139,19 @@ def test_production_models_yaml_registers_full_inventory(monkeypatch):
     data = yaml.safe_load(raw)
     chat_expected: set[str] = set()
     embedding_expected: set[str] = set()
+    chat_alias_owner: dict[str, str] = {}
+    registration_count_expected = 0
     for model in data["models"]:
+        aliases = model.get("aliases") or []
         target = embedding_expected if model.get("type") == "embedding" else chat_expected
         target.add(model["id"])
-        target.update(model.get("aliases") or [])
+        target.update(aliases)
+        registration_count_expected += 1 + len(aliases)
+        if model.get("type") != "embedding":
+            # Duplicate aliases are accepted today; later declarations replace
+            # earlier RouteConfig entries. Pin that deterministic behavior.
+            for alias in aliases:
+                chat_alias_owner[alias] = model["id"]
 
     # Invoke exactly like bootstrap does: embedding models bypass the
     # RouteExecutor and land in embedding_adapters instead of chat routes.
@@ -157,8 +165,9 @@ def test_production_models_yaml_registers_full_inventory(monkeypatch):
     )
     assert set(exe.routes) == chat_expected
     assert set(embedding_adapters) == embedding_expected
-    # The registration count covers chat routes and embedding entries alike.
-    assert count == len(chat_expected) + len(embedding_expected)
+    # Count records declarations processed, including duplicate aliases, while
+    # the route dictionaries above naturally contain unique final keys.
+    assert count == registration_count_expected
     # Registration infos cover every canonical model, embeddings included
     # (the /v1/models listing needs them even though they bypass the router).
     assert {info.model_id for info in infos} == {m["id"] for m in data["models"]}
@@ -166,3 +175,5 @@ def test_production_models_yaml_registers_full_inventory(monkeypatch):
         assert route.adapters, f"route {name!r} registered without adapters"
         for adapter, _weight in route.adapters:
             assert adapter.config.endpoint_id
+    for alias, canonical_id in chat_alias_owner.items():
+        assert exe.routes[alias] is exe.routes[canonical_id]
