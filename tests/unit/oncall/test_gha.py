@@ -60,6 +60,7 @@ def test_render_writes_prompt_embedding_schema_and_alert(tmp_path):
     prompt = prompt_out.read_text(encoding="utf-8")
     schema = json.loads(schema_out.read_text(encoding="utf-8"))
     assert "read-only incident oncall agent" in prompt
+    assert "at least one successful read-only inspection command" in prompt
     assert "<untrusted_alert_json>" in prompt
     assert '"api_key": "[REDACTED]"' in prompt
     assert "classification" in schema["properties"]
@@ -90,6 +91,61 @@ def test_validate_codex_log_requires_successful_command_and_completed_turn():
             '{"type":"item.completed","item":{"type":"command_execution",'
             '"exit_code":0}}\n{"type":"turn.failed"}\n'
         )
+
+
+def test_parse_analysis_output_accepts_commentary_and_markdown_fence():
+    analysis = OnCallAnalysis(
+        summary="Accumulator fails on a null tool name",
+        classification="code_bug",
+        confidence=0.9,
+        impact="Streaming tool calls fail",
+        evidence=["The continuation chunk contains a null name"],
+        likely_cause="The accumulator concatenates None to a string",
+        recommended_actions=["Guard nullable continuation fields"],
+        issue_recommendation="create",
+        draft_pr_recommendation="create",
+    )
+    raw_output = f"Inspection complete.\n```json\n{analysis.model_dump_json()}\n```"
+
+    parsed = gha.parse_analysis_output(raw_output)
+
+    assert parsed == analysis
+
+
+def test_parse_analysis_output_rejects_multiple_valid_objects():
+    analysis = OnCallAnalysis(
+        summary="Ambiguous result",
+        classification="unknown",
+        confidence=0.1,
+        impact="Unknown",
+        evidence=[],
+        likely_cause="Unknown",
+        recommended_actions=["Inspect the repository"],
+        issue_recommendation="none",
+        draft_pr_recommendation="none",
+    )
+    encoded = analysis.model_dump_json()
+
+    with pytest.raises(ValueError, match="multiple valid JSON objects"):
+        gha.parse_analysis_output(f"{encoded}\n{encoded}")
+
+
+def test_parse_analysis_output_rejects_nested_analysis_object():
+    analysis = OnCallAnalysis(
+        summary="Nested result",
+        classification="unknown",
+        confidence=0.1,
+        impact="Unknown",
+        evidence=[],
+        likely_cause="Unknown",
+        recommended_actions=["Inspect the repository"],
+        issue_recommendation="none",
+        draft_pr_recommendation="none",
+    )
+    wrapped = json.dumps({"analysis": analysis.model_dump(mode="json")})
+
+    with pytest.raises(ValueError, match="no valid JSON object"):
+        gha.parse_analysis_output(wrapped)
 
 
 def test_post_delivers_formatted_analysis_in_thread(tmp_path, monkeypatch):
