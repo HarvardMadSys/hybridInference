@@ -155,6 +155,59 @@ class TestBootstrapInitialization:
             assert "test-alias-1" in services.router.routes
 
     @pytest.mark.asyncio
+    async def test_initialize_aliases_share_routewise_router_instance(
+        self, mock_env, tmp_path, monkeypatch
+    ):
+        """Regression: an aliased request to a RouteWise model must resolve to
+        the SAME stateful router instance as its canonical id.
+
+        ``initialize`` has to pass ``alias_to_model`` into ``ModelRouterRegistry``.
+        Without it the registry cannot collapse the alias onto the canonical
+        model, so ``get_router(alias)`` builds a *separate*, un-bootstrapped
+        RouteWise router (split session/latency state, no donor overrides or log
+        warmup) instead of sharing the canonical one.
+        """
+        from routing.routewise.router import RouteWiseRouter
+
+        models_yaml = tmp_path / "rw_models.yaml"
+        models_yaml.write_text(
+            """
+models:
+  - id: rw-model
+    name: RW Model
+    provider: vllm
+    base_url: ${LOCAL_DEPLOYMENT_URL}
+    context_length: 8192
+    max_output_length: 4096
+    router: routewise
+    aliases: ["rw-alias"]
+    route:
+      - kind: vllm
+        weight: 1.0
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+"""
+        )
+        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
+        monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            # Avoid spawning RouteWise background tasks (sweep / quota refresh).
+            patch.object(RouteWiseRouter, "start", new=AsyncMock()),
+        ):
+            services = await bootstrap.initialize()
+
+        reg = services.model_router_registry
+        assert reg is not None
+        canonical = reg.get_router("rw-model")
+        alias = reg.get_router("rw-alias")
+        assert isinstance(canonical, RouteWiseRouter)
+        # The alias must not split off a second RouteWise instance.
+        assert alias is canonical
+        assert alias.concurrency_pools is canonical.concurrency_pools
+
+    @pytest.mark.asyncio
     async def test_initialize_constructs_user_concurrency_limiter(self, mock_env):
         """services.user_concurrency_limiter must be a UserConcurrencyLimiter
         with caps for free/pro/internal/admin."""
