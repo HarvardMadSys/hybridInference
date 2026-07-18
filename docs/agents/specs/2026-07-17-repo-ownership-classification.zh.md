@@ -95,7 +95,7 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 
 | 内容 | 归属 |
 |---|---|
-| `docker/`(Dockerfile、compose 结构) | upstream;compose 中站点 env/volume 归 freeinference |
+| `docker/`(Dockerfile、compose 结构) | mixed:镜像与 Compose 结构归 upstream;Dockerfile 的站点 `ARG` 默认值、Compose 中站点 env/volume 归 freeinference,改由发行版配置注入 |
 | `systemd/` | freeinference(具体主机单元) |
 
 ### docs/(mixed)
@@ -126,6 +126,8 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 |---|---|
 | `status-monitor-worker/src/` | mixed:探测/存储机制归 upstream;`alerts.ts`/`env.ts`/`dashboard.ts` 硬编码 dashboard 品牌、FreeInference 默认 URL 与环境识别,属站点内容 |
 | `status-monitor-worker/wrangler.toml` | freeinference(账号/DB 标识符、GATEWAY_BASE_URL) |
+| `status-monitor-worker/package.json`、`README.md` | mixed:worker 工程与命令机制归 upstream;`freeinference-monitor` 脚本名、package 描述、FreeInference/D1 部署说明归 freeinference,进入 upstream 前中立化 |
+| `status-monitor-worker/test/` | mixed:探测与渲染行为测试归 upstream;`staging.freeinference.org`、`FreeInference Model Status` 等站点 fixture/断言跟随 branding/targets 迁移 |
 | `freeinference-harness/` 通用 scenario、runner、reporting 与 tool validation | upstream testkit 机制;目录名、Python package/import 名、CLI 名以及 README/PLAN 的产品名与示例 URL 属 freeinference 默认值,进入 upstream 前必须中立化 |
 | harness 站点 targets(真实模型 ID/端点) | freeinference |
 | harness `configs/fixtures/` | mixed:`tools-trivial-1.yaml` 等合成通用 fixture 可归 upstream;由生产请求形状提取的 fixture 在完成来源记录、去标识化和 Secret/内部字段复核前归 internal,复核后才可作为 upstream testkit 数据 |
