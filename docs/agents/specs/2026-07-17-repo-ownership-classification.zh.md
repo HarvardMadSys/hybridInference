@@ -27,17 +27,17 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 | 路径 | 归属 | 迁移动作(近期) | Tier |
 |---|---|---|---|
 | `apps/backend/serving/` | mixed | 机制归 upstream;站点内容(RAG/on-call/邮件模板/默认值)见二级明细 | B |
-| `apps/backend/routing/` | upstream | 保持;RouteWise 私有依赖是 Phase 3 入口门槛 | — |
+| `apps/backend/routing/` | upstream | 保持;RouteWise 私有依赖是 Phase 3 入口门槛 | — (无迁移;Phase 3 门槛) |
 | `apps/frontend/` | mixed | 通用 Console 留上游;站点内容走 6-18 P2(三步式) | B |
 | `benchmark/` | mixed | 按"是否依赖生产数据"分流 upstream benchmark 与 paper | B |
 | `config/` | mixed | 真实 yaml 为 FreeInference 生产真值;拆 example 与 production | **A** |
 | `deploy/` | mixed | 通用镜像留上游;systemd 站点单元移 overlay | B |
-| `distributions/`(#954 引入) | freeinference | overlay 本体;上游禁 import,未来可见性边界 | — |
+| `distributions/`(stack 中的 #954 引入;本 PR 基线尚不存在) | freeinference | overlay 本体;上游禁 import,未来可见性边界 | — |
 | `docs/` | mixed | developer 也是 mixed(见二级明细);free_inference 移 overlay | B |
-| `ops/` | 大部分 freeinference | 机器脚本/运维集中 overlay;deploy 脚本当前保持原位 | B |
+| `ops/` | mixed | FreeInference 主导;机器脚本/运维集中 overlay,通用机制留 upstream;deploy 脚本当前保持原位 | B |
 | `services/` | mixed | worker/testkit 机制留上游;站点配置、品牌与 targets 移 overlay | B |
 | `tests/` | mixed | 机制通用;契约测试携带 FreeInference 值,站点 targets 与真实端点用例标记后移 overlay | B |
-| `.codex/`(skills) | internal | agent 技能,不随发行物;留原位 | — |
+| `.codex/` | internal | agent skills,不随发行物;留原位 | — |
 | `.github/` | mixed | **当前零改动**;仅注释级归属标注(见主文档 CI/CD 演进路径);`CODEOWNERS` 属 per-repository 治理——本仓与未来上游导出仓、deployment 仓各自维护自己的 CODEOWNERS,不随发行版内容迁移 | — |
 | `.kilo/` | internal | agent 技能,不随发行物;留原位 | — |
 | 根文件(17 项) | mixed | 见下节逐一裁定 | B |
@@ -69,8 +69,9 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 
 | 内容 | 归属 |
 |---|---|
-| Console:登录、Dashboard、API key、用量、模型、Playground、Admin | upstream |
+| Console:登录、Dashboard、API key、用量、模型、Chat/Playground、Admin | mixed:页面、交互与管理机制归 upstream;其中 FreeInference 产品文案、provider/模型示例、docs/status/support URL、联系邮箱与 `@harvard.edu` 策略归 freeinference,改为配置/overlay 数据 |
 | landing(Hero/Features/CodeExample)、Team、Sponsors、Terms、Privacy | freeinference |
+| 共享站点 chrome:`Header`、`SiteFooter`、`UpdatesBanner`、`BuildInfo` | mixed:组件与导航机制归 upstream;产品名、仓库/docs/status/support URL、更新文案与部署标识中的站点默认值归 freeinference,统一由 site/branding config 驱动 |
 | `layout.tsx` 元数据 + Statcounter 代码块 | freeinference(P2 配置化,默认关) |
 | `public/team/`、`public/sponsors/`、`next.config.js` 的 `junchengyang.com` | freeinference(收进 branding 配置作 legacy 默认) |
 | signup 页 `@harvard.edu` 快速通道文案、`lib/schemas/auth.ts` | freeinference(配置驱动) |
@@ -108,7 +109,7 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 | `openrouter.md` | upstream(通用 adapter 文档),应归入 `developer/` |
 | `Makefile`(内部文档站构建) | 机制 upstream;部署目标(internaldoc 域名)freeinference |
 
-### ops/(大部分 freeinference)
+### ops/(mixed,FreeInference 主导)
 
 | 内容 | 归属 |
 |---|---|
@@ -125,10 +126,11 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 |---|---|
 | `status-monitor-worker/src/` | mixed:探测/存储机制归 upstream;`alerts.ts`/`env.ts`/`dashboard.ts` 硬编码 dashboard 品牌、FreeInference 默认 URL 与环境识别,属站点内容 |
 | `status-monitor-worker/wrangler.toml` | freeinference(账号/DB 标识符、GATEWAY_BASE_URL) |
-| `freeinference-harness/` 通用 scenario 与 runner | upstream testkit(目录名本身待中立化) |
+| `freeinference-harness/` 通用 scenario、runner、reporting 与 tool validation | upstream testkit 机制;目录名、Python package/import 名、CLI 名以及 README/PLAN 的产品名与示例 URL 属 freeinference 默认值,进入 upstream 前必须中立化 |
 | harness 站点 targets(真实模型 ID/端点) | freeinference |
+| harness `configs/fixtures/` | mixed:`tools-trivial-1.yaml` 等合成通用 fixture 可归 upstream;由生产请求形状提取的 fixture 在完成来源记录、去标识化和 Secret/内部字段复核前归 internal,复核后才可作为 upstream testkit 数据 |
 
-### tests/(upstream 为主)
+### tests/(mixed)
 
 | 内容 | 归属 |
 |---|---|
@@ -144,7 +146,7 @@ Phase 0 的第 1 项(归属标记)与第 5 项(新增内容归属规则);当前�
 |---|---|
 | `ci.yml`、`docker-build.yml` | upstream CI(self-hosted runner 是 freeinference 基础设施——公开前置见主文档) |
 | `deploy.yml`、`deploy-staging.yml`、`deploy-rollback.yml`、`sync-main.yml` | freeinference CD |
-| `rag-index.yml`、`deploy-status-monitor.yml`、codex-oncall | freeinference |
+| `rag-index.yml`、`deploy-status-monitor.yml`、`codex-oncall` | freeinference |
 
 ### 根文件
 
@@ -186,7 +188,9 @@ self-hosted runner。
 ## 覆盖核对与统计
 
 覆盖基准 = `git ls-tree --name-only HEAD` 的 28 个顶层条目(11 目录 + 17
-根文件),外加 #954 引入的 `distributions/`,共 29 项,全部在上表或根文件
+根文件);为便于裁定,总表把 git 顶层的 `apps/` 展开为 backend serving、routing
+和 frontend 三行,并把 17 个根文件汇总为一行,因此表格行数不等于顶层条目数。
+外加 #954 引入的 `distributions/`,共 29 项,全部在上表或根文件
 表中出现。粗分:纯 upstream 1(routing)、internal 2(.kilo、.codex)、
 freeinference 主导 2(ops、distributions)、其余为 mixed 或按表逐项裁定的
 根文件。`unknown` 当前为 0——`benchmark/` 二级内容是最接近 unknown 的区域,
