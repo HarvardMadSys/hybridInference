@@ -701,6 +701,29 @@ class AnalyticsBreakdownEntry(BaseModel):
     fraction: float  # share of total requests in the period
 
 
+class AnalyticsModelUserEntry(BaseModel):
+    """One user's usage of a single model in the period."""
+
+    email: str
+    user_id: str
+    requests: int
+    tokens: int  # prompt + completion tokens attributed to this user + model
+
+
+class AnalyticsModelUsers(BaseModel):
+    """Top users for one model, with the model's period totals.
+
+    Totals and ranking cover signed-in-user requests only (``user_id`` is not
+    NULL), so they intentionally differ from the ``by_model`` donut, which
+    counts all requests including anonymous / system traffic.
+    """
+
+    model: str  # model_id
+    requests: int  # total user-attributed requests for this model
+    tokens: int  # total user-attributed tokens for this model
+    users: list[AnalyticsModelUserEntry]
+
+
 class AdminAnalyticsResponse(BaseModel):
     """Response for GET /admin/analytics."""
 
@@ -716,6 +739,7 @@ class AdminAnalyticsResponse(BaseModel):
     top_users: list[AnalyticsUserEntry]
     by_model: list[AnalyticsBreakdownEntry]
     by_provider: list[AnalyticsBreakdownEntry]
+    by_model_top_users: list[AnalyticsModelUsers]
     generated_at: datetime
 
 

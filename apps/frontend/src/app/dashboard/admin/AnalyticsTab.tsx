@@ -283,6 +283,82 @@ function TopUsersCard({ entries }: { entries: AdminAnalyticsResponse['top_users'
   );
 }
 
+function TopUsersByModelCard({
+  entries,
+}: {
+  entries: AdminAnalyticsResponse['by_model_top_users'];
+}) {
+  const models = entries ?? [];
+  const [selectedModel, setSelectedModel] = useState('');
+  // Fall back to the highest-volume model when the stored selection is absent
+  // from the current list (e.g. after switching period) so the select never dangles.
+  const active = models.find((m) => m.model === selectedModel) ?? models[0];
+
+  if (!active) {
+    return (
+      <div className="rounded-xl border border-gray-200 bg-white p-5 sm:col-span-2">
+        <CardTitle className="mb-4">Top Users by Model</CardTitle>
+        <p className="text-sm text-gray-400">No data</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-5 sm:col-span-2">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <CardTitle>Top Users by Model</CardTitle>
+        <select
+          aria-label="Select model"
+          value={active.model}
+          onChange={(e) => setSelectedModel(e.target.value)}
+          className="max-w-[220px] rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-medium text-gray-700 transition hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500/30"
+        >
+          {models.map((m) => (
+            <option key={m.model} value={m.model}>
+              {m.model}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="mb-3 text-[11px] text-gray-400">
+        {fmtCount(active.requests)} requests · {fmtCount(active.tokens)} tokens · signed-in users
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-gray-200 text-left text-[11px] uppercase tracking-wide text-gray-500">
+              <th className="py-2 pr-3 font-semibold">#</th>
+              <th className="py-2 pr-3 font-semibold">User</th>
+              <th className="py-2 pr-3 text-right font-semibold">Requests</th>
+              <th className="py-2 pr-3 text-right font-semibold">Share</th>
+              <th className="py-2 text-right font-semibold">Tokens</th>
+            </tr>
+          </thead>
+          <tbody>
+            {active.users.map((u, i) => (
+              <tr key={u.user_id} className="border-b border-gray-100 last:border-0">
+                <td className="py-2 pr-3 tabular-nums text-gray-400">{i + 1}</td>
+                <td className="py-2 pr-3 text-gray-700">
+                  <span className="block max-w-[280px] truncate" title={u.email}>
+                    {u.email}
+                  </span>
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums text-gray-900">
+                  {fmtCount(u.requests)}
+                </td>
+                <td className="py-2 pr-3 text-right tabular-nums text-gray-500">
+                  {active.requests > 0 ? pct(u.requests / active.requests) : '—'}
+                </td>
+                <td className="py-2 text-right tabular-nums text-gray-900">{fmtCount(u.tokens)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function SkeletonCard({ className = '' }: { className?: string }) {
   return (
     <div className={`rounded-xl border border-gray-100 bg-gray-50 p-5 ${className}`}>
@@ -369,6 +445,7 @@ export function AnalyticsTab() {
             <SkeletonCard />
             <SkeletonCard />
             <SkeletonCard className="sm:col-span-2" />
+            <SkeletonCard className="sm:col-span-2" />
           </>
         ) : (
           <>
@@ -377,6 +454,7 @@ export function AnalyticsTab() {
             <DonutCard title="Requests by Model" entries={data.by_model} />
             <DonutCard title="Requests by Provider" entries={data.by_provider} />
             <TopUsersCard entries={data.top_users} />
+            <TopUsersByModelCard entries={data.by_model_top_users} />
           </>
         )}
       </div>

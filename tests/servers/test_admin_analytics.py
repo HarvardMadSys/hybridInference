@@ -70,7 +70,71 @@ class TestAdminAnalyticsRoute:
         assert body["top_users"] == []
         assert body["by_model"] == []
         assert body["by_provider"] == []
+        assert body["by_model_top_users"] == []
         assert "generated_at" in body
+
+    @pytest.mark.asyncio
+    async def test_route_builds_by_model_top_users(self, admin_app, mock_db_logger):
+        """Flat per-(model, user) rows are grouped into models with nested users."""
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        by_model_top_users_rows = [
+            {
+                "model_id": "claude-sonnet-4-6",
+                "user_id": "u1",
+                "email": "alice@example.com",
+                "req_count": 120,
+                "token_count": 90000,
+                "model_req_count": 200,
+                "model_token_count": 150000,
+            },
+            {
+                "model_id": "claude-sonnet-4-6",
+                "user_id": "u2",
+                "email": "bob@example.com",
+                "req_count": 80,
+                "token_count": 60000,
+                "model_req_count": 200,
+                "model_token_count": 150000,
+            },
+            {
+                "model_id": "gpt-4o",
+                "user_id": "u1",
+                "email": "alice@example.com",
+                "req_count": 50,
+                "token_count": 30000,
+                "model_req_count": 50,
+                "model_token_count": 30000,
+            },
+        ]
+        # conn.fetch call order in the endpoint: top_users, by_model, by_provider,
+        # by_model_top_users, sparkline.
+        mock_conn.fetch = AsyncMock(side_effect=[[], [], [], by_model_top_users_rows, []])
+
+        async def _fake_admin() -> str:
+            return "admin@test"
+
+        admin_app.dependency_overrides[verify_admin_access] = _fake_admin
+
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/admin/analytics?period=day")
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        by_model_top_users = resp.json()["by_model_top_users"]
+        # Models preserve the DESC-by-request ranking from the query.
+        assert [m["model"] for m in by_model_top_users] == ["claude-sonnet-4-6", "gpt-4o"]
+
+        sonnet = by_model_top_users[0]
+        assert sonnet["requests"] == 200
+        assert sonnet["tokens"] == 150000
+        assert [u["email"] for u in sonnet["users"]] == ["alice@example.com", "bob@example.com"]
+        assert sonnet["users"][0]["requests"] == 120
+        assert sonnet["users"][0]["tokens"] == 90000
+
+        gpt = by_model_top_users[1]
+        assert gpt["model"] == "gpt-4o"
+        assert len(gpt["users"]) == 1
 
     @pytest.mark.asyncio
     async def test_route_handles_period_with_no_chat_requests(self, admin_app, mock_db_logger):
