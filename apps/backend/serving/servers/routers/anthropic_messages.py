@@ -35,13 +35,20 @@ from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
 from serving.model_access import is_model_disabled_for_user
 from serving.observability.rejection_log import log_rejection
+from serving.observability.tracked_tasks import tracked_task
 from serving.servers.auth import (
     _next_utc_midnight,
     verify_api_key,
     verify_api_key_for_balance,
 )
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_log_store, get_model_visibility_resolver, get_router
+from serving.servers.deps import (
+    get_log_store,
+    get_model_visibility_resolver,
+    get_operational_store,
+    get_router,
+)
+from serving.storage.utils import calculate_cost
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip_info
@@ -421,7 +428,75 @@ def _sanitize_for_openai_backend(body: dict[str, Any]) -> list[str]:
     return sorted(dropped)
 
 
+def _count_non_object_tool_inputs(body: dict[str, Any]) -> int:
+    """Count tool-use inputs that the OpenAI translator will normalize."""
+    count = 0
+    for msg in body.get("messages", []):
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "tool_use"
+                and not isinstance(block.get("input", {}), dict)
+            ):
+                count += 1
+    return count
+
+
 # --- DB logging (fire-and-forget) ------------------------------------------
+
+
+# Retains in-flight cost-increment tasks so the event loop's garbage collector
+# can't cancel a fire-and-forget increment before it commits.
+_cost_increment_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _schedule_messages_cost_increment(
+    op_store: Any,
+    user_id: str | None,
+    usage: dict[str, int],
+    pricing: dict[str, str] | None,
+) -> None:
+    """Fire-and-forget the daily quota cost increment for a billed request.
+
+    The ``/v1/messages`` surface logs ``api_logs.cost_usd`` but that column is
+    not what ``verify_api_key`` reads for quota enforcement -- the per-user
+    daily counter in ``user_daily_cost`` (bumped here via
+    ``increment_user_cost``) is. Without this, Anthropic-surface traffic
+    (e.g. Claude Code) bypasses the per-user daily cost cap entirely, the same
+    way the chat and embedding paths would if they omitted their own
+    increments (``CostTracker.schedule_increment`` /
+    ``embeddings._schedule_cost_increment``).
+
+    ``usage`` is the OpenAI-shaped dict already built for the log row, so the
+    increment reuses the exact same ``calculate_cost`` inputs and stays in
+    lockstep with the logged ``cost_usd``. No-ops for unauthenticated callers,
+    missing stores, or zero-cost (free) models.
+    """
+    if op_store is None or not user_id:
+        return
+    cost = calculate_cost(usage, pricing)
+    if not cost or cost <= 0:
+        return
+
+    async def _increment() -> None:
+        try:
+            await op_store.increment_user_cost(user_id, cost)
+        except Exception as exc:
+            logger.warning(f"Failed to increment messages cost counter for {user_id}: {exc}")
+            raise  # let tracked_task record the failure
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = tracked_task(_increment(), name="messages_cost_increment")
+    _cost_increment_tasks.add(task)
+    task.add_done_callback(_cost_increment_tasks.discard)
 
 
 def _schedule_log_store_task(
@@ -442,6 +517,8 @@ def _schedule_log_store_task(
     ttft_ms: int | None = None,
     error: str | None = None,
     operator_error: str | None = None,
+    op_store: Any = None,
+    user_id: str | None = None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget).
 
@@ -450,6 +527,10 @@ def _schedule_log_store_task(
     provider URLs already removed) and is stored in ``metadata.operator_error``
     -- a field no user-facing route returns -- so the real failure cause is
     diagnosable without exposing it to the user.
+
+    ``op_store`` / ``user_id``, when supplied, advance the per-user daily quota
+    counter for successful (status 200) requests via
+    :func:`_schedule_messages_cost_increment`; error rows are logged only.
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
@@ -473,6 +554,16 @@ def _schedule_log_store_task(
     total_tokens = prompt_tokens + output_tokens
     prompt_for_log: list[dict[str, Any]] | str = prompt if prompt is not None else []
 
+    # OpenAI-shaped usage, shared verbatim by the api_logs row and the quota
+    # counter increment below so the logged cost_usd and the billed amount agree.
+    usage_for_cost = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+    }
+
     async def _log() -> None:
         try:
             await log_store.log_request(
@@ -481,13 +572,7 @@ def _schedule_log_store_task(
                 provider=provider,
                 prompt=prompt_for_log,
                 response=response,
-                usage={
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                    "cache_read_tokens": cache_read,
-                    "cache_write_tokens": cache_write,
-                },
+                usage=usage_for_cost,
                 latency_ms=latency_ms,
                 status_code=status_code,
                 params=params,
@@ -501,6 +586,12 @@ def _schedule_log_store_task(
             logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
     asyncio.create_task(_log())  # noqa: RUF006
+
+    # Successful, billed requests must also advance the daily quota counter that
+    # verify_api_key enforces; error rows (status != 200) are logged but never
+    # billed, matching the chat/embedding paths.
+    if status_code == 200:
+        _schedule_messages_cost_increment(op_store, user_id, usage_for_cost, pricing)
 
 
 # --- Anthropic SSE accumulator ---------------------------------------------
@@ -860,6 +951,7 @@ async def anthropic_messages(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
+    op_store=Depends(get_operational_store),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
     _conc=Depends(enforce_user_concurrency),
 ):
@@ -942,6 +1034,12 @@ async def anthropic_messages(
     messages_for_log = copy.deepcopy(body.get("messages"))
 
     if adapter.native_format == "openai":
+        normalized_tool_inputs = _count_non_object_tool_inputs(body)
+        if normalized_tool_inputs:
+            logger.warning(
+                f"[{request_id}] Normalizing {normalized_tool_inputs} non-object "
+                "Anthropic tool_use.input value(s) before OpenAI-backed dispatch"
+            )
         dropped = _sanitize_for_openai_backend(body)
         if dropped:
             logger.warning(
@@ -1186,6 +1284,8 @@ async def anthropic_messages(
                         ttft_ms=ttft_ms,
                         error=stream_error_message if stream_failed else None,
                         operator_error=stream_error_operator if stream_failed else None,
+                        op_store=op_store,
+                        user_id=user_ctx.get("user_id"),
                     )
 
         return StreamingResponse(_gen(), media_type="text/event-stream", headers=sse_headers)
@@ -1322,6 +1422,8 @@ async def anthropic_messages(
             prompt=messages_for_log,
             response=resp if isinstance(resp, dict) else None,
             request_payload=request_payload_for_log,
+            op_store=op_store,
+            user_id=user_ctx.get("user_id"),
         )
     return JSONResponse(content=resp)
 

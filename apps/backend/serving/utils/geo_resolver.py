@@ -280,41 +280,6 @@ ALPHA2_TO_ALPHA3 = {
     "ZW": "ZWE",
 }
 
-# External providers intentionally have no coordinates: their serving locations
-# are not known. Only hand-maintained local sites may be drawn on the globe.
-PROVIDER_SITES: dict[str, dict[str, Any]] = {
-    "sglang": {
-        "kind": "local",
-        "label": "Local cluster (sglang)",
-        "region": "us-east",
-        "cont": "NA",
-        "coord": [-71.09, 42.36],
-    },
-    "vllm": {
-        "kind": "local",
-        "label": "Local cluster (vLLM)",
-        "region": "us-east",
-        "cont": "NA",
-        "coord": [-71.09, 42.36],
-    },
-    "ollama": {
-        "kind": "local",
-        "label": "Local cluster (Ollama)",
-        "region": "us-east",
-        "cont": "NA",
-        "coord": [-71.09, 42.36],
-    },
-    "deepseek": {"kind": "remote_api", "label": "DeepSeek API"},
-    "kimi": {"kind": "remote_api", "label": "Moonshot Kimi API"},
-    "minimax": {"kind": "remote_api", "label": "MiniMax API"},
-    "zai": {"kind": "remote_api", "label": "Zhipu (Z.ai) API"},
-    "chutes": {"kind": "remote_api", "label": "Chutes API"},
-    "openrouter": {"kind": "remote_api", "label": "OpenRouter API"},
-    "anthropic": {"kind": "remote_api", "label": "Anthropic API"},
-    "openai": {"kind": "remote_api", "label": "OpenAI API"},
-    "gemini": {"kind": "remote_api", "label": "Gemini API"},
-}
-
 
 class GeoResolver:
     """Resolve network-origin country and continent with bounded caching."""

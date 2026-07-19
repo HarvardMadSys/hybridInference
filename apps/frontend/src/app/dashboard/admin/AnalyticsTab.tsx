@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import {
   Bar,
@@ -321,6 +322,25 @@ export function AnalyticsTab() {
 
   return (
     <div className="mt-6">
+      <div
+        aria-label="Analytics section"
+        className="mb-4 inline-flex overflow-hidden rounded-lg border border-gray-200 bg-white"
+        role="group"
+      >
+        <span
+          aria-current="page"
+          className="bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white"
+        >
+          Overview
+        </span>
+        <Link
+          className="px-3.5 py-1.5 text-[13px] font-medium text-gray-600 transition hover:bg-gray-50"
+          href="/dashboard/admin/analytics/geo"
+        >
+          Request origins
+        </Link>
+      </div>
+
       <div className="mb-5 flex gap-2">
         {PERIODS.map(({ key, label }) => (
           <button

@@ -290,6 +290,46 @@ def test_request_tool_use_and_tool_result_round_trip():
     assert tool_msg["content"] == "72F sunny"
 
 
+def _translated_tool_arguments(tool_input):
+    body = {
+        "model": "glm-4.7",
+        "max_tokens": 100,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "read_dom",
+                        "input": tool_input,
+                    }
+                ],
+            }
+        ],
+    }
+    messages, _ = anthropic_request_to_openai(body)
+    return messages[0]["tool_calls"][0]["function"]["arguments"]
+
+
+def test_request_tool_use_json_object_string_recovered():
+    arguments = _translated_tool_arguments('{"tab_id": 7}')
+    assert _json.loads(arguments) == {"tab_id": 7}
+
+
+def test_request_tool_use_malformed_string_falls_back_to_empty_object():
+    # Regression: one DeepSeek-V4/SGLang stream emitted this exact malformed
+    # fragment, and Claude Code echoed it into every later request in the session.
+    arguments = _translated_tool_arguments('{}""')
+    assert _json.loads(arguments) == {}
+
+
+def test_request_tool_use_non_object_values_fall_back_to_empty_object():
+    for tool_input in ('["tab"]', '"tab"', "null", ["tab"], None):
+        arguments = _translated_tool_arguments(tool_input)
+        assert _json.loads(arguments) == {}
+
+
 # ---------------------------------------------------------------------------
 # Response translation: OpenAI -> Anthropic
 # ---------------------------------------------------------------------------

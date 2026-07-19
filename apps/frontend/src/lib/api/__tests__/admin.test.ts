@@ -6,6 +6,7 @@ import {
   createProviderRouteCandidate,
   deleteProviderRoute,
   deleteProviderRouteCandidate,
+  getGeoAnalytics,
   getRoutewiseDecisions,
   listProviderKeyProviders,
   listOpenRouterProviderOptions,
@@ -82,6 +83,87 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+});
+
+describe('geo analytics client', () => {
+  const validResponse = () => ({
+    meta: {
+      source: 'api_logs',
+      generated_at: '2026-07-16T00:00:00Z',
+      start: '2026-07-15T23:00:00Z',
+      hours: 1,
+      rows_total: 3,
+      rows_with_ip: 3,
+      geoip: { country: true, provider: 'dbip-lite', attribution: null },
+      degraded: false,
+      degraded_reasons: [],
+      unmapped_alpha2: [],
+      notes: [],
+    },
+    bucket_cols: ['c', 'cont', 'n', 'tout'],
+    hours_index: ['2026-07-15T23:00:00Z'],
+    hours: [{ b: [['USA', 'NA', 3, 120]] }],
+  });
+
+  it('requests an authenticated allowed window and forwards cancellation', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(validResponse()), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    const controller = new AbortController();
+
+    await getGeoAnalytics({
+      days: 30,
+      signal: controller.signal,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe('/admin/analytics/geo');
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({ days: '30' });
+    expect(init.signal).toBe(controller.signal);
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+  });
+
+  it('accepts only the exact compact demand bucket contract', async () => {
+    const response = validResponse();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(getGeoAnalytics()).resolves.toEqual(response);
+  });
+
+  it('rejects a legacy or reordered bucket contract', async () => {
+    const response = validResponse();
+    response.bucket_cols = ['c', 'n', 'cont', 'tout'];
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(getGeoAnalytics()).rejects.toThrow('invalid bucket column contract');
+  });
+
+  it('rejects malformed compact bucket rows at the API boundary', async () => {
+    const response = validResponse();
+    response.hours = [{ b: [['USA', 'NA', 3, 120, 4]] }];
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await expect(getGeoAnalytics()).rejects.toThrow('invalid structure');
   });
 });
 

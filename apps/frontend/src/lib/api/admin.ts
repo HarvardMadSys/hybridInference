@@ -641,6 +641,144 @@ export async function getAnalytics(period: AnalyticsPeriod): Promise<AdminAnalyt
   return jsonOrThrow<AdminAnalyticsResponse>(resp);
 }
 
+export type GeoBucketColumn = 'c' | 'cont' | 'n' | 'tout';
+
+export type GeoMetric = 'n' | 'tout';
+
+export type GeoBucketRow = [
+  countryAlpha3: string,
+  continent: string,
+  requests: number,
+  outputTokens: number,
+];
+
+export interface GeoIpAttribution {
+  label: string;
+  url: string;
+}
+
+export interface GeoAnalyticsMeta {
+  source: string;
+  generated_at: string;
+  start: string | null;
+  hours: number;
+  rows_total: number;
+  rows_with_ip: number;
+  geoip: {
+    country: boolean;
+    provider: string | null;
+    attribution: GeoIpAttribution | null;
+  };
+  degraded: boolean;
+  degraded_reasons: string[];
+  unmapped_alpha2: string[];
+  notes: string[];
+}
+
+export interface GeoHour {
+  b: GeoBucketRow[];
+}
+
+export interface GeoAnalyticsResponse {
+  meta: GeoAnalyticsMeta;
+  bucket_cols: ['c', 'cont', 'n', 'tout'];
+  hours_index: string[];
+  hours: GeoHour[];
+}
+
+export interface GetGeoAnalyticsOptions {
+  days?: 7 | 14 | 30 | 90;
+  signal?: AbortSignal;
+}
+
+const GEO_BUCKET_COLUMNS: GeoAnalyticsResponse['bucket_cols'] = ['c', 'cont', 'n', 'tout'];
+
+function isGeoRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isGeoStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isGeoBucketRow(value: unknown): value is GeoBucketRow {
+  return (
+    Array.isArray(value) &&
+    value.length === GEO_BUCKET_COLUMNS.length &&
+    typeof value[0] === 'string' &&
+    typeof value[1] === 'string' &&
+    typeof value[2] === 'number' &&
+    Number.isFinite(value[2]) &&
+    value[2] >= 0 &&
+    typeof value[3] === 'number' &&
+    Number.isFinite(value[3]) &&
+    value[3] >= 0
+  );
+}
+
+function validateGeoAnalyticsResponse(data: unknown): asserts data is GeoAnalyticsResponse {
+  if (
+    !isGeoRecord(data) ||
+    !isGeoRecord(data.meta) ||
+    !isGeoRecord(data.meta.geoip) ||
+    !isGeoStringArray(data.hours_index) ||
+    !Array.isArray(data.hours) ||
+    typeof data.meta.source !== 'string' ||
+    typeof data.meta.generated_at !== 'string' ||
+    !(data.meta.start === null || typeof data.meta.start === 'string') ||
+    typeof data.meta.hours !== 'number' ||
+    !Number.isFinite(data.meta.hours) ||
+    data.meta.hours < 0 ||
+    typeof data.meta.rows_total !== 'number' ||
+    !Number.isFinite(data.meta.rows_total) ||
+    data.meta.rows_total < 0 ||
+    typeof data.meta.rows_with_ip !== 'number' ||
+    !Number.isFinite(data.meta.rows_with_ip) ||
+    data.meta.rows_with_ip < 0 ||
+    typeof data.meta.degraded !== 'boolean' ||
+    !isGeoStringArray(data.meta.degraded_reasons) ||
+    !isGeoStringArray(data.meta.unmapped_alpha2) ||
+    !isGeoStringArray(data.meta.notes) ||
+    typeof data.meta.geoip.country !== 'boolean' ||
+    !(data.meta.geoip.provider === null || typeof data.meta.geoip.provider === 'string') ||
+    !(
+      data.meta.geoip.attribution === null ||
+      (isGeoRecord(data.meta.geoip.attribution) &&
+        typeof data.meta.geoip.attribution.label === 'string' &&
+        typeof data.meta.geoip.attribution.url === 'string')
+    ) ||
+    !data.hours.every(
+      (hour) =>
+        isGeoRecord(hour) && Array.isArray(hour.b) && hour.b.every((row) => isGeoBucketRow(row)),
+    )
+  ) {
+    throw new Error('The geographic demand response has an invalid structure');
+  }
+  const bucketColumns = data.bucket_cols;
+  if (
+    !Array.isArray(bucketColumns) ||
+    bucketColumns.length !== GEO_BUCKET_COLUMNS.length ||
+    !GEO_BUCKET_COLUMNS.every((column, index) => bucketColumns[index] === column)
+  ) {
+    throw new Error('The geographic demand response has an invalid bucket column contract');
+  }
+  if (data.hours_index.length !== data.hours.length || data.meta.hours !== data.hours.length) {
+    throw new Error('The geographic demand response has mismatched hourly data');
+  }
+}
+
+export async function getGeoAnalytics(
+  options: GetGeoAnalyticsOptions = {},
+): Promise<GeoAnalyticsResponse> {
+  const params = new URLSearchParams({ days: String(options.days ?? 14) });
+  const resp = await fetchWithAuth(API_BASE, `/admin/analytics/geo?${params.toString()}`, {
+    signal: options.signal,
+  });
+  const data = await jsonOrThrow<unknown>(resp);
+  validateGeoAnalyticsResponse(data);
+  return data;
+}
+
 // ========================================
 // Usage Insights (LLM-powered request analysis)
 // ========================================

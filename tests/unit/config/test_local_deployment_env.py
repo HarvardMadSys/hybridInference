@@ -39,8 +39,18 @@ def test_deepseek_v4_flash_has_optional_h200_sglang_route() -> None:
     """Local H200 idle proxy route must use H200_DEPLOYMENT_URL and be optional."""
     models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
 
-    ds = next((model for model in models["models"] if model["id"] == "deepseek-v4-flash"), None)
-    assert ds is not None, "Model 'deepseek-v4-flash' not found in config/models.yaml"
+    # The model id may be renamed (deepseek-v4-flash -> deepseek-v4-flash-highspeed)
+    # as long as the old name survives as an alias; resolve it the same way the
+    # gateway resolves an incoming request.
+    ds = next(
+        (
+            model
+            for model in models["models"]
+            if model["id"] == "deepseek-v4-flash" or "deepseek-v4-flash" in model.get("aliases", [])
+        ),
+        None,
+    )
+    assert ds is not None, "No model resolves 'deepseek-v4-flash' in config/models.yaml"
     sglang_route = next((route for route in ds["route"] if route["kind"] == "sglang"), None)
     assert sglang_route is not None, "sglang route not found for deepseek-v4-flash"
     assert sglang_route["base_url"] == "${H200_DEPLOYMENT_URL}"
