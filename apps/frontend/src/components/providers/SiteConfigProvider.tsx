@@ -1,7 +1,6 @@
 'use client';
 
 import { createContext, useContext, useEffect, useState } from 'react';
-import { usePathname } from 'next/navigation';
 import {
   buildTimeSiteConfig,
   resolveRuntimeSiteConfig,
@@ -13,7 +12,6 @@ const SiteConfigContext = createContext<RuntimeSiteConfig>(buildTimeSiteConfig);
 
 export function SiteConfigProvider({ children }: { children: React.ReactNode }) {
   const [siteConfig, setSiteConfig] = useState(buildTimeSiteConfig);
-  const pathname = usePathname();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -45,11 +43,9 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
     ) {
       document.title = document.title.replace(buildTimeBranding.appName, runtimeBranding.appName);
     }
-    if (pathname === '/') {
-      const description = document.querySelector<HTMLMetaElement>('meta[name="description"]');
-      if (description) description.content = runtimeBranding.appDescription;
-    }
-  }, [pathname, siteConfig.branding]);
+    const description = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+    if (description) description.content = runtimeBranding.appDescription;
+  }, [siteConfig.branding]);
 
   return <SiteConfigContext.Provider value={siteConfig}>{children}</SiteConfigContext.Provider>;
 }
