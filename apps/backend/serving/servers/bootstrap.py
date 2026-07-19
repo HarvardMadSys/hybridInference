@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import datetime as dt
 import os
-from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -23,6 +22,7 @@ from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.config.disabled_providers import DisabledProviderResolver
+from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.settings import get_settings
@@ -379,10 +379,12 @@ async def _init_router_and_models(
 
     # Load models from YAML configuration
     try:
-        models_env = get_settings().models_config_path
-        models_path = Path(models_env or "config/models.yaml")
-        if models_env and not models_path.exists():
-            logger.warning(f"Models config not found: {models_path}")
+        resolved_models = resolve_config_path("models")
+        models_path = resolved_models.path
+        if resolved_models.source != "default" and not models_path.exists():
+            logger.warning(
+                f"Models config not found: {models_path} (source={resolved_models.source})"
+            )
         elif models_path.exists():
             registered, model_infos = register_from_models_yaml(
                 router,
@@ -411,10 +413,12 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
         otherwise None.
     """
     try:
-        routing_env = get_settings().routing_config_path
-        routing_cfg_path = Path(routing_env or "config/routing.yaml")
-        if routing_env and not routing_cfg_path.exists():
-            logger.warning(f"Routing config not found: {routing_cfg_path}")
+        resolved_routing = resolve_config_path("routing")
+        routing_cfg_path = resolved_routing.path
+        if resolved_routing.source != "default" and not routing_cfg_path.exists():
+            logger.warning(
+                f"Routing config not found: {routing_cfg_path} (source={resolved_routing.source})"
+            )
         elif routing_cfg_path.exists():
             manager = RoutingManager(router, routing_cfg_path)
             manager.load()
@@ -571,8 +575,7 @@ async def initialize() -> AppServices:
     try:
         from routing.config import load_routing_config
 
-        routing_env = get_settings().routing_config_path
-        routing_cfg_path = Path(routing_env or "config/routing.yaml")
+        routing_cfg_path = resolve_config_path("routing").path
         if routing_cfg_path.exists():
             routing_cfg = load_routing_config(routing_cfg_path)
             default_router_name = routing_cfg.default_router
@@ -691,7 +694,7 @@ async def initialize() -> AppServices:
             _req_log.propagate = False
             _stdlogging.getLogger().addHandler(alert_handler)
 
-            alert_cfg = load_alert_config(settings.alerts_config_path)
+            alert_cfg = load_alert_config(str(resolve_config_path("alerts").path))
             alert_engine = AlertEngine(
                 handler=alert_handler,
                 config=alert_cfg,

@@ -23,11 +23,14 @@ def _reset_settings_cache():
     call to ``get_settings()`` (e.g. inside ``verify_admin_token`` or
     ``is_user_auth_enabled``) reflects the current process environment.
     """
+    from serving.config.distribution import get_distribution_config
     from serving.config.settings import get_settings
 
     get_settings.cache_clear()
+    get_distribution_config.cache_clear()
     yield
     get_settings.cache_clear()
+    get_distribution_config.cache_clear()
 
 
 @pytest.fixture(autouse=True)

@@ -149,10 +149,29 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Distribution manifest (serving.config.distribution). Empty path = pure
+    # legacy behavior. Mode "dark" (the default) loads and validates the
+    # manifest and logs what would change while current resolution stays
+    # effective; applying manifest paths requires an explicit
+    # DISTRIBUTION_CONFIG_MODE=active. Values are case-insensitive; anything
+    # else degrades to "dark" with a warning — neither a typo nor a missing
+    # mode can ever activate the manifest.
+    distribution_config_path: str = Field(
+        default="",
+        validation_alias=AliasChoices("DISTRIBUTION_CONFIG_PATH", "distribution_config_path"),
+    )
+    distribution_config_mode: str = Field(
+        default="dark",
+        validation_alias=AliasChoices("DISTRIBUTION_CONFIG_MODE", "distribution_config_mode"),
+    )
+
     # Alerting framework
     alerts_enabled: bool = Field(default=False, alias="ALERTS_ENABLED")
     slack_alerts_webhook_url: str = Field(default="", alias="SLACK_ALERTS_WEBHOOK_URL")
-    alerts_config_path: str = Field(default="config/alerts.yaml", alias="ALERTS_CONFIG_PATH")
+    alerts_config_path: str = Field(
+        default="config/alerts.yaml",
+        validation_alias=AliasChoices("ALERTS_CONFIG_PATH", "alerts_config_path"),
+    )
 
     @model_validator(mode="after")
     def _alerts_webhook_fallback(self) -> "Settings":
