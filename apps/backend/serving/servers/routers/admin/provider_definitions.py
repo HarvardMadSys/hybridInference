@@ -17,6 +17,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys, provider_registry
+from serving.config.settings import get_settings
 from serving.schemas_admin import (
     CreateProviderDefinitionRequest,
     DeleteProviderDefinitionResponse,
@@ -96,7 +97,7 @@ def _display_name(provider: str) -> str:
 
 
 def _models_config_path() -> Path:
-    configured = os.getenv("MODELS_CONFIG")
+    configured = get_settings().models_config_path
     if configured:
         return Path(configured)
 
