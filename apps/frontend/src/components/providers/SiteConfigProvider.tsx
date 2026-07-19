@@ -34,6 +34,19 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
     return () => controller.abort();
   }, []);
 
+  useEffect(() => {
+    const runtimeBranding = siteConfig.branding;
+    const buildTimeBranding = buildTimeSiteConfig.branding;
+    if (
+      runtimeBranding.appName !== buildTimeBranding.appName &&
+      document.title.includes(buildTimeBranding.appName)
+    ) {
+      document.title = document.title.replace(buildTimeBranding.appName, runtimeBranding.appName);
+    }
+    const description = document.querySelector<HTMLMetaElement>('meta[name="description"]');
+    if (description) description.content = runtimeBranding.appDescription;
+  }, [siteConfig.branding]);
+
   return <SiteConfigContext.Provider value={siteConfig}>{children}</SiteConfigContext.Provider>;
 }
 

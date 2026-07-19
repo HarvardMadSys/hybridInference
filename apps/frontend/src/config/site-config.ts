@@ -10,6 +10,7 @@ const siteConfigDocumentSchema = z.object({
   site: z.object({
     public_base_url: z.string(),
     support_email: z.string(),
+    description: z.string(),
   }),
   features: z.object({
     routers: z.array(z.string()),
@@ -54,6 +55,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   const siteHost = hostFromBaseUrl(publicBaseUrl);
   const displayName = document.distribution.display_name.trim();
   const supportEmail = document.site.support_email.trim();
+  const description = document.site.description.trim();
 
   return {
     branding: {
@@ -62,6 +64,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
       ...(publicBaseUrl ? { exampleApiBase: publicBaseUrl } : {}),
       ...(siteHost ? { siteHost } : {}),
       ...(supportEmail ? { contactEmail: supportEmail } : {}),
+      ...(description ? { appDescription: description } : {}),
     },
     distribution: {
       id: document.distribution.id,

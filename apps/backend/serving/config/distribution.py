@@ -70,6 +70,7 @@ class DistributionSite(_ManifestModel):
 
     public_base_url: str = ""
     support_email: str = ""
+    description: str = ""
     terms_document: str = ""
     privacy_document: str = ""
     branding: str = ""

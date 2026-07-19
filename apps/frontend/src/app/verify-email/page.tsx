@@ -9,11 +9,13 @@ import { getErrorMessage, APIError } from '@/lib/utils/errors';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
+import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export const dynamic = 'force-dynamic';
 
 function VerifyEmailContent(): JSX.Element {
   const searchParams = useSearchParams();
+  const { features } = useSiteConfig();
   const [status, setStatus] = useState<'loading' | 'success' | 'error' | 'already_verified'>(
     'loading',
   );
@@ -147,12 +149,14 @@ function VerifyEmailContent(): JSX.Element {
 
             {status === 'error' && (
               <div className="flex items-center gap-4">
-                <Link
-                  href="/signup"
-                  className="text-sm font-medium text-blue-600 hover:text-blue-700"
-                >
-                  Sign Up Again
-                </Link>
+                {features.publicSignup && (
+                  <Link
+                    href="/signup"
+                    className="text-sm font-medium text-blue-600 hover:text-blue-700"
+                  >
+                    Sign Up Again
+                  </Link>
+                )}
                 <Link
                   href="/login"
                   className="text-sm font-medium text-blue-600 hover:text-blue-700"

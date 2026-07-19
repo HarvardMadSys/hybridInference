@@ -28,6 +28,7 @@ distribution:
 site:
   public_base_url: https://inference.example.com
   support_email: admin@inference.example.com
+  description: OpenAI-compatible inference for Example Inference users.
   # terms_document: ./content/terms.md
   # privacy_document: ./content/privacy.md
   # branding: ./branding/site.yaml

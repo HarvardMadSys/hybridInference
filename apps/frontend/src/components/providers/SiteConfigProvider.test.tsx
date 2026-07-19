@@ -20,6 +20,8 @@ describe('SiteConfigProvider', () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    document.querySelector('meta[name="description"]')?.remove();
+    document.title = '';
   });
 
   it('loads and publishes the runtime document from the configured API base', async () => {
@@ -34,6 +36,7 @@ describe('SiteConfigProvider', () => {
         site: {
           public_base_url: 'https://runtime.example.test',
           support_email: 'runtime@example.test',
+          description: 'Runtime site description.',
         },
         features: {
           routers: ['fixed'],
@@ -43,6 +46,11 @@ describe('SiteConfigProvider', () => {
       }),
     });
     vi.stubGlobal('fetch', fetchMock);
+    document.title = 'FreeInference';
+    const description = document.createElement('meta');
+    description.name = 'description';
+    description.content = 'Build-time description.';
+    document.head.append(description);
 
     render(
       <SiteConfigProvider>
@@ -54,6 +62,8 @@ describe('SiteConfigProvider', () => {
     expect(screen.getByText('runtime@example.test')).toBeInTheDocument();
     expect(screen.getByText('signup-off')).toBeInTheDocument();
     expect(screen.getByText('rag-off')).toBeInTheDocument();
+    expect(document.title).toBe('Runtime Example');
+    expect(description.content).toBe('Runtime site description.');
     expect(fetchMock).toHaveBeenCalledWith(
       'https://freeinference.org/site-config',
       expect.objectContaining({ cache: 'no-store' }),
