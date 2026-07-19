@@ -551,8 +551,7 @@ models:
     aliases: ["freeinference-diffusiongemma"]
     input_modalities: ["text"]
     output_modalities: ["text"]
-    # Capped for DGX Spark unified memory (see ops/spark_idle_proxy/models.json).
-    context_length: 32768
+    context_length: 262144
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
