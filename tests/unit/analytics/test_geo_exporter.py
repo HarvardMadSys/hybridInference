@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from serving.analytics.geo_demand import BUCKET_COLS
+from ops.db.analysis.geo_hourly_export import BUCKET_COLS, ROWS_QUERY
 
 
 def test_exporter_demo_command(tmp_path) -> None:
@@ -37,9 +37,14 @@ def test_exporter_demo_command(tmp_path) -> None:
     assert payload["meta"]["hours"] == 24
     assert payload["bucket_cols"] == BUCKET_COLS
     assert payload["flow_cols"] == ["c", "p", "e", "n"]
+    assert payload["providers"]
     assert "classes" not in payload
     assert all(len(flow) == 4 for hour in payload["hours"] for flow in hour["f"])
     assert "wrote" in result.stdout
+
+
+def test_exporter_excludes_synthetic_probes() -> None:
+    assert "COALESCE(metadata->>'synthetic_probe', 'false') <> 'true'" in ROWS_QUERY
 
 
 def test_viewer_only_attributes_dbip_lite_data() -> None:
@@ -48,3 +53,17 @@ def test_viewer_only_attributes_dbip_lite_data() -> None:
     assert "data.meta.geoip?.provider === 'dbip-lite'" in viewer
     assert 'href="https://db-ip.com"' in viewer
     assert "IP Geolocation by DB-IP" in viewer
+
+
+def test_viewer_tolerates_minimal_product_contract() -> None:
+    viewer = (Path(__file__).resolve().parents[3] / "ops/db/analysis/geo_globe.html").read_text()
+
+    assert "(data.flow_cols || []).map" in viewer
+    assert "data.providers || []" in viewer
+    assert "data.hours[h]?.f || []" in viewer
+    assert "B[column] === undefined ? fallback" in viewer
+    assert "if (B[option.value] === undefined) option.remove()" in viewer
+    assert "d.coord && d.v > 0" in viewer
+    assert "contTotal > 0" in viewer
+    assert "Total latency (s)" in viewer
+    assert "compute-sec" not in viewer

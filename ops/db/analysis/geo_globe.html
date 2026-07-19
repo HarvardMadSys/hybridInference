@@ -156,7 +156,7 @@
         <select id="metric">
           <option value="n">Requests</option>
           <option value="tout">Output tokens</option>
-          <option value="gs">Compute seconds (est.)</option>
+          <option value="gs">Total latency (s)</option>
         </select>
       </label>
       <label class="ctl">View
@@ -268,8 +268,11 @@
   const HOURS = data.hours_index.map((s) => new Date(s));
   const H = HOURS.length;
   const B = Object.fromEntries(data.bucket_cols.map((c, i) => [c, i]));
-  const F = Object.fromEntries(data.flow_cols.map((c, i) => [c, i]));
-  const providers = data.providers;
+  const F = Object.fromEntries((data.flow_cols || []).map((c, i) => [c, i]));
+  for (const option of [...$('#metric').options]) {
+    if (B[option.value] === undefined) option.remove();
+  }
+  const providers = data.providers || [];
   const provById = new Map(providers.map((p) => [p.id, p]));
   const localProviders = providers.filter((p) => p.kind === 'local' && p.coord);
   const remoteProviders = providers.filter((p) => p.kind !== 'local' || !p.coord);
@@ -284,9 +287,10 @@
     SA: 'var(--cont-sa)', AF: 'var(--cont-af)', OC: 'var(--cont-oc)', AN: 'var(--cont-unknown)',
   };
 
-  const bucketsAt = (h) => data.hours[h].b;
-  const flowsAt = (h) => data.hours[h].f;
-  const mVal = (r, metric) => r[B[metric]] || 0;
+  const bucketsAt = (h) => data.hours[h]?.b || [];
+  const flowsAt = (h) => data.hours[h]?.f || [];
+  const bVal = (r, column, fallback = 0) => B[column] === undefined ? fallback : (r[B[column]] ?? fallback);
+  const mVal = (r, metric) => bVal(r, metric);
 
   // per-continent series, cached per metric
   const seriesCache = new Map();
@@ -422,11 +426,13 @@
       const a3 = r[B.c];
       const cur = byCountry.get(a3) || { a3, cont: r[B.cont], v: 0, n: 0, users: 0 };
       cur.v += mVal(r, state.metric);
-      cur.n += r[B.n];
-      cur.users += r[B.users];
+      cur.n += bVal(r, 'n');
+      cur.users += bVal(r, 'users');
       byCountry.set(a3, cur);
     }
-    const dots = [...byCountry.values()].map((d) => ({ ...d, coord: centroidOf(d.a3) })).filter((d) => d.coord);
+    const dots = [...byCountry.values()]
+      .map((d) => ({ ...d, coord: centroidOf(d.a3) }))
+      .filter((d) => d.coord && d.v > 0);
     const maxV = d3.max(dots, (d) => d.v) || 1;
     const rScale = d3.scaleSqrt().domain([0, maxV]).range([2.5, 26]);
 
@@ -490,7 +496,7 @@
   }
 
   function metricLabel() {
-    return state.metric === 'n' ? 'requests' : state.metric === 'tout' ? 'output tokens' : 'compute-sec';
+    return state.metric === 'n' ? 'requests' : state.metric === 'tout' ? 'output tokens' : 'total latency (s)';
   }
 
   function drawRail() {
@@ -512,8 +518,8 @@
 
   function drawStats(byCountry) {
     const buckets = bucketsAt(state.hour);
-    const totalReq = d3.sum(buckets, (r) => r[B.n]);
-    const located = d3.sum(buckets.filter((r) => r[B.cont] !== '?'), (r) => r[B.n]);
+    const totalReq = d3.sum(buckets, (r) => bVal(r, 'n'));
+    const located = d3.sum(buckets.filter((r) => r[B.cont] !== '?'), (r) => bVal(r, 'n'));
     const countriesActive = [...byCountry.keys()].filter((a3) => !a3.startsWith('?')).length;
     $('#k-req').textContent = fmt(totalReq);
     $('#k-req-sub').textContent = `${countriesActive} countries · ${totalReq ? pct(1 - located / totalReq) : '0%'} unlocated`;
@@ -522,8 +528,12 @@
     for (const r of buckets) if (r[B.cont] !== '?') byCont.set(r[B.cont], (byCont.get(r[B.cont]) || 0) + mVal(r, state.metric));
     const ranked = [...byCont.entries()].sort((a, b) => b[1] - a[1]);
     const contTotal = d3.sum(ranked, (e) => e[1]);
-    $('#k-mix').textContent = ranked.length ? `${CONT_NAMES[ranked[0][0]] || ranked[0][0]} ${pct(ranked[0][1] / contTotal)}` : '–';
-    $('#k-mix-sub').textContent = ranked.slice(1, 4).map(([c, v]) => `${c} ${pct(v / contTotal)}`).join(' · ') || 'single-continent hour';
+    $('#k-mix').textContent = contTotal > 0
+      ? `${CONT_NAMES[ranked[0][0]] || ranked[0][0]} ${pct(ranked[0][1] / contTotal)}`
+      : '–';
+    $('#k-mix-sub').textContent = contTotal > 0
+      ? ranked.slice(1, 4).map(([c, v]) => `${c} ${pct(v / contTotal)}`).join(' · ') || 'single-continent hour'
+      : 'no volume for selected metric';
 
     const flows = flowsAt(state.hour);
     let ext = 0, localSame = 0, localCross = 0;
@@ -624,8 +634,8 @@
     const h = state.hour;
     if (s.type === 'country') {
       const rows = bucketsAt(h).filter((r) => r[B.c] === s.a3);
-      const n = d3.sum(rows, (r) => r[B.n]);
-      const p90 = d3.max(rows, (r) => r[B.p90]);
+      const n = d3.sum(rows, (r) => bVal(r, 'n'));
+      const p90 = B.p90 === undefined ? null : d3.max(rows, (r) => r[B.p90]);
       const tops = flowsAt(h).filter((r) => r[F.c] === s.a3).sort((a, b) => b[F.n] - a[F.n]).slice(0, 3);
       const coord = centroidOf(s.a3);
       const localH = coord ? (HOURS[h].getUTCHours() + Math.round(coord[0] / 15) + 24) % 24 : null;
@@ -714,7 +724,7 @@
       (unplotted.size ? ` · not plotted (no centroid): ${[...unplotted].join(', ')}` : '') +
       (data.meta.unmapped_alpha2?.length ? ` · unmapped alpha-2: ${data.meta.unmapped_alpha2.join(', ')}` : ''),
     (data.meta.notes || []).join(' · '),
-    'origin = network origin (IP-based) · compute-sec = Σ server latency (estimate) · local times are approximate (longitude-based)',
+    'origin = network origin (IP-based) · total latency (s) = Σ server-side request latency · local times are approximate (longitude-based)',
   ].join('<br>');
 
   $('#loading').hidden = true;

@@ -66,16 +66,23 @@ jobs:
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
 
+      - name: Isolate uv cache dir
+        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
+        # runner context. Concurrent self-hosted jobs otherwise share
+        # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
+        # with ENOENT while hardlinking into the venv — before tests start.
+        env:
+          UV_CACHE_SUFFIX: ${{ strategy.job-index }}
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}-${UV_CACHE_SUFFIX}" >> "${GITHUB_ENV}"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-          # Disable the post-job `uv cache prune --ci`. Multiple jobs run
-          # concurrently on the same self-hosted runner and share one
-          # UV_CACHE_DIR; one job's prune deletes the `.tmp*` extraction dirs
-          # another job's `uv sync` is mid-write into, causing intermittent
-          # "Failed to extract archive ... No such file or directory" failures.
+          # Still disable prune: even with per-job UV_CACHE_DIR, prune --ci
+          # is unnecessary on self-hosted and has raced with other installs.
           prune-cache: false
 
       - name: Set up Python
@@ -91,8 +98,20 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           uv venv
-          uv sync --group dev
+          # Bounded retry for residual install-time cache ENOENT.
+          for attempt in 1 2 3; do
+            if uv sync --group dev; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
+              sleep $((attempt * 2))
+            fi
+          done
+          echo "uv sync failed after 3 attempts" >&2
+          exit 1
 
       - name: Run ${{ matrix.check.name }}
         run: ${{ matrix.check.command }}
@@ -184,16 +203,23 @@ jobs:
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
 
+      - name: Isolate uv cache dir
+        # Per-job UV_CACHE_DIR via GITHUB_ENV: job-level env cannot use the
+        # runner context. Concurrent self-hosted jobs otherwise share
+        # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
+        # with ENOENT while hardlinking into the venv — before tests start.
+        env:
+          UV_CACHE_SUFFIX: ${{ strategy.job-index }}
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}-${UV_CACHE_SUFFIX}" >> "${GITHUB_ENV}"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
-          # Disable the post-job `uv cache prune --ci`. Multiple jobs run
-          # concurrently on the same self-hosted runner and share one
-          # UV_CACHE_DIR; one job's prune deletes the `.tmp*` extraction dirs
-          # another job's `uv sync` is mid-write into, causing intermittent
-          # "Failed to extract archive ... No such file or directory" failures.
+          # Still disable prune: even with per-job UV_CACHE_DIR, prune --ci
+          # is unnecessary on self-hosted and has raced with other installs.
           prune-cache: false
 
       - name: Set up Python
@@ -209,8 +235,20 @@ jobs:
 
       - name: Install dependencies
         run: |
+          set -euo pipefail
           uv venv
-          uv sync --group dev
+          # Bounded retry for residual install-time cache ENOENT.
+          for attempt in 1 2 3; do
+            if uv sync --group dev; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 3 ]; then
+              echo "uv sync failed (attempt ${attempt}/3); retrying..." >&2
+              sleep $((attempt * 2))
+            fi
+          done
+          echo "uv sync failed after 3 attempts" >&2
+          exit 1
 
       - name: Prepare pytest shard
         id: pytest-shard
@@ -337,6 +375,11 @@ jobs:
 
       - name: Run gitleaks
         run: gitleaks detect --source . --no-git --redact --verbose --no-banner
+
+      - name: Isolate uv cache dir
+        # Job-level env cannot use the runner context; set via GITHUB_ENV.
+        run: |
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
