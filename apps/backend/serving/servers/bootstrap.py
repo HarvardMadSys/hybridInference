@@ -554,6 +554,14 @@ async def initialize() -> AppServices:
     # routing.yaml's `default_router`.
     settings = get_settings()
     models_config: dict[str, dict[str, Any]] = {}
+    # alias -> canonical model_id.  Without this, ModelRouterRegistry cannot
+    # collapse an aliased request onto the canonical model's router, so a
+    # request addressed by alias to a stateful router (RouteWise) would build a
+    # *separate*, un-bootstrapped router instance instead of sharing the
+    # canonical one (split session/latency state, no donor overrides or log
+    # warmup).  It also lets admin router-strategy overrides addressed by
+    # canonical id invalidate the alias's cached router.
+    alias_to_model: dict[str, str] = {}
     for info in model_infos:
         # Effective router: explicit `router:` wins; otherwise the legacy
         # `routing_strategy:` (one-release shim) maps onto `router`.
@@ -567,6 +575,7 @@ async def initialize() -> AppServices:
         models_config[info.model_id] = entry
         for alias in info.aliases:
             models_config[alias] = entry
+            alias_to_model[alias] = info.model_id
 
     # Load routing.yaml to read `default_router`.  RoutingManager loads the
     # same file internally for weight assignment but does not expose its
@@ -589,6 +598,7 @@ async def initialize() -> AppServices:
     model_router_registry: ModelRouterRegistry | None = ModelRouterRegistry(
         models_config=models_config,
         default_router_name=default_router_name,
+        alias_to_model=alias_to_model,
     )
     model_router_registry.bind_fixed_router(router)
 
