@@ -774,7 +774,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if backend.state == "ready" and backend._container_running():
                     self._send_plain_error(502, f"Backend error: {exc}")
                     return
-                if backend.mark_dead(reason):
+                if backend.mark_dead(f"{reason} (container={backend.container})"):
                     log.warning(
                         "[%s] Restarting backend after proxy failure: %s",
                         backend.model_name,
@@ -791,6 +791,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     return
                 # Always ensure_running so concurrent requests wait for the
                 # in-flight restart instead of immediately returning 502.
+                # ensure_running blocks until /v1/models is healthy.
                 try:
                     backend.ensure_running()
                 except Exception as start_exc:
@@ -800,9 +801,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self._forward_once(backend, body)
             except URLError as exc:
                 self._send_plain_error(502, f"Backend error: {exc}")
-            except Exception as exc:
-                self._send_plain_error(500, str(exc))
-        except Exception as exc:
+        except OSError as exc:
             self._send_plain_error(500, str(exc))
         finally:
             backend.end_request()
