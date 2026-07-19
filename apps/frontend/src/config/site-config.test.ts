@@ -10,7 +10,6 @@ const runtimeDocument = {
   site: {
     public_base_url: 'https://inference.example.test/',
     support_email: 'support@example.test',
-    description: 'Example runtime description.',
   },
   features: {
     routers: ['fixed'],
@@ -27,7 +26,6 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.branding.exampleApiBase).toBe('https://inference.example.test');
     expect(resolved.branding.siteHost).toBe('inference.example.test');
     expect(resolved.branding.contactEmail).toBe('support@example.test');
-    expect(resolved.branding.appDescription).toBe('Example runtime description.');
     expect(resolved.distribution).toEqual({ id: 'example', release: '2026.07' });
     expect(resolved.features).toEqual({ publicSignup: false, rag: false });
   });
@@ -35,7 +33,7 @@ describe('resolveRuntimeSiteConfig', () => {
   it('keeps build-time values for the neutral empty document', () => {
     const resolved = resolveRuntimeSiteConfig({
       distribution: { id: 'neutral', display_name: '', release: '' },
-      site: { public_base_url: '', support_email: '', description: '' },
+      site: { public_base_url: '', support_email: '' },
       features: { routers: [], public_signup: null, rag: null },
     });
 

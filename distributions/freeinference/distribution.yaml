@@ -19,7 +19,6 @@ distribution:
 site:
   public_base_url: https://freeinference.org
   support_email: admin@freeinference.org
-  description: Free LLM inference for research, built at Harvard SEAS.
 
 features:
   routers: [fixed, routewise]

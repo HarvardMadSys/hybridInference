@@ -20,7 +20,7 @@ router = APIRouter()
 
 _NEUTRAL: dict[str, Any] = {
     "distribution": {"id": "neutral", "display_name": "", "release": ""},
-    "site": {"public_base_url": "", "support_email": "", "description": ""},
+    "site": {"public_base_url": "", "support_email": ""},
     "features": {"routers": [], "public_signup": None, "rag": None},
 }
 
@@ -44,7 +44,6 @@ async def get_site_config() -> dict[str, Any]:
         "site": {
             "public_base_url": config.site.public_base_url,
             "support_email": config.site.support_email,
-            "description": config.site.description,
         },
         "features": config.features.model_dump(),
     }

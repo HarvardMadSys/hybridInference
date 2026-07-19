@@ -12,12 +12,10 @@ import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
-import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 export default function LoginPage() {
   const router = useRouter();
   const { login, state } = useAuth();
-  const { features } = useSiteConfig();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Email of an unverified account that just failed to log in. When set, we
@@ -150,14 +148,12 @@ export default function LoginPage() {
             Log In
           </Button>
 
-          {features.publicSignup && (
-            <div className="text-center text-sm text-gray-600">
-              Don&apos;t have an account?{' '}
-              <a className="font-medium text-blue-600 hover:text-blue-700" href="/signup">
-                Sign Up
-              </a>
-            </div>
-          )}
+          <div className="text-center text-sm text-gray-600">
+            Don&apos;t have an account?{' '}
+            <a className="font-medium text-blue-600 hover:text-blue-700" href="/signup">
+              Sign Up
+            </a>
+          </div>
         </form>
       </Card>
     </div>

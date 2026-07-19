@@ -1,7 +1,3 @@
-'use client';
-
-import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
-
 interface Step {
   number: string;
   title: string;
@@ -27,11 +23,6 @@ const STEPS: Step[] = [
 ];
 
 export function HowItWorks(): JSX.Element {
-  const { features } = useSiteConfig();
-  const steps = features.publicSignup
-    ? STEPS
-    : STEPS.slice(1).map((step, index) => ({ ...step, number: String(index + 1) }));
-
   return (
     <section className="w-full py-16">
       <div className="mx-auto max-w-3xl text-center">
@@ -39,7 +30,7 @@ export function HowItWorks(): JSX.Element {
           Getting started
         </p>
         <h2 className="mt-2 font-serif text-3xl font-bold tracking-tight text-gray-900 sm:text-4xl">
-          Get started in {steps.length} steps
+          Get started in three steps
         </h2>
       </div>
 
@@ -48,12 +39,8 @@ export function HowItWorks(): JSX.Element {
           aria-hidden
           className="absolute left-0 right-0 top-6 hidden h-px bg-gradient-to-r from-transparent via-crimson/30 to-transparent md:block"
         />
-        <ol
-          className={`relative grid gap-10 ${
-            steps.length === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2'
-          }`}
-        >
-          {steps.map((step) => (
+        <ol className="relative grid gap-10 md:grid-cols-3">
+          {STEPS.map((step) => (
             <li key={step.number} className="flex flex-col items-center text-center">
               <span className="flex h-12 w-12 items-center justify-center rounded-full bg-crimson font-serif text-xl font-bold text-white shadow-card ring-4 ring-white">
                 {step.number}

@@ -19,7 +19,6 @@ distribution:
 site:
   public_base_url: https://freeinference.org
   support_email: admin@freeinference.org
-  description: Free LLM inference for research.
   terms_document: ./content/terms.md
 features:
   routers: [fixed, routewise]
@@ -53,7 +52,7 @@ async def test_neutral_fallback_without_manifest(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["distribution"]["id"] == "neutral"
-    assert body["site"] == {"public_base_url": "", "support_email": "", "description": ""}
+    assert body["site"] == {"public_base_url": "", "support_email": ""}
     assert set(body) == {"distribution", "site", "features"}
 
 
@@ -75,7 +74,6 @@ async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
     }
     assert body["site"]["public_base_url"] == "https://freeinference.org"
     assert body["site"]["support_email"] == "admin@freeinference.org"
-    assert body["site"]["description"] == "Free LLM inference for research."
     assert body["features"]["routers"] == ["fixed", "routewise"]
 
 
@@ -90,7 +88,7 @@ async def test_dark_mode_does_not_publish_manifest_identity(client, monkeypatch,
 
     body = (await client.get("/site-config")).json()
     assert body["distribution"]["id"] == "neutral"
-    assert body["site"] == {"public_base_url": "", "support_email": "", "description": ""}
+    assert body["site"] == {"public_base_url": "", "support_email": ""}
 
 
 @pytest.mark.asyncio
@@ -106,4 +104,4 @@ async def test_never_leaks_server_paths(client, monkeypatch, tmp_path):
     text = str(body)
     assert "terms.md" not in text
     assert str(tmp_path) not in text
-    assert set(body["site"]) == {"public_base_url", "support_email", "description"}
+    assert set(body["site"]) == {"public_base_url", "support_email"}
