@@ -68,8 +68,10 @@ Two temporary states to be aware of:
   inside the overlay — the directory is the future visibility boundary and
   must not reach outside itself.
 - `site:` / `features:` are exposed read-only via `GET /site-config`; the
-  frontend consumes the safe identity fields and public signup/RAG flags at
-  runtime. Local content paths remain server-only and are not exposed.
+  frontend consumes the safe identity fields and public signup/RAG flags only
+  when `DISTRIBUTION_CONFIG_MODE=active`. Dark mode returns the neutral
+  fallback and does not alter the public UI. Local content paths remain
+  server-only and are not exposed.
 
 ## Rules
 

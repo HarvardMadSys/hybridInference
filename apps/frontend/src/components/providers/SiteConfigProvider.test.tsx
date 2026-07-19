@@ -22,7 +22,7 @@ describe('SiteConfigProvider', () => {
     vi.unstubAllGlobals();
   });
 
-  it('loads and publishes the same-origin runtime document', async () => {
+  it('loads and publishes the runtime document from the configured API base', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -55,7 +55,7 @@ describe('SiteConfigProvider', () => {
     expect(screen.getByText('signup-off')).toBeInTheDocument();
     expect(screen.getByText('rag-off')).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
-      '/site-config',
+      'https://freeinference.org/site-config',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });

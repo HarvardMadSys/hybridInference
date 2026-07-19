@@ -61,6 +61,7 @@ async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 
@@ -77,10 +78,25 @@ async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_dark_mode_does_not_publish_manifest_identity(client, monkeypatch, tmp_path):
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text(MANIFEST)
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "dark")
+    get_settings.cache_clear()
+    get_distribution_config.cache_clear()
+
+    body = (await client.get("/site-config")).json()
+    assert body["distribution"]["id"] == "neutral"
+    assert body["site"] == {"public_base_url": "", "support_email": ""}
+
+
+@pytest.mark.asyncio
 async def test_never_leaks_server_paths(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 

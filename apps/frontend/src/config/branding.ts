@@ -56,9 +56,10 @@ function fromJsonEnv<T>(raw: string | undefined, fallback: T, schema: z.ZodType<
   try {
     const parsed = schema.safeParse(JSON.parse(raw));
     return parsed.success ? parsed.data : fallback;
-  } catch {
+  } catch (error) {
     // A malformed or wrong-shaped override must not take the site down.
-    return fallback;
+    if (error instanceof SyntaxError) return fallback;
+    throw error;
   }
 }
 

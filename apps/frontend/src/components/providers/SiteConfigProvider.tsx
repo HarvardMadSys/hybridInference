@@ -6,6 +6,7 @@ import {
   resolveRuntimeSiteConfig,
   type RuntimeSiteConfig,
 } from '@/config/site-config';
+import { config } from '@/config/env';
 
 const SiteConfigContext = createContext<RuntimeSiteConfig>(buildTimeSiteConfig);
 
@@ -16,7 +17,8 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
     const controller = new AbortController();
     async function loadSiteConfig() {
       try {
-        const response = await fetch('/site-config', {
+        const apiBase = config.apiBase.replace(/\/+$/, '');
+        const response = await fetch(`${apiBase}/site-config`, {
           cache: 'no-store',
           signal: controller.signal,
         });

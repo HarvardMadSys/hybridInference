@@ -19,7 +19,9 @@ interface UiMessage {
 function docUrl(source: string): string {
   // The public docs are a Sphinx site; a page named `quickstart.md` builds to
   // `quickstart.html`. Best-effort deep link — falls back to a readable label.
-  return `${branding.docsUrl}${source.replace(/\.md$/, '.html')}`;
+  const docsBase = branding.docsUrl.replace(/\/+$/, '');
+  const docPath = source.replace(/^\/+/, '').replace(/\.md$/, '.html');
+  return `${docsBase}/${docPath}`;
 }
 
 function updateLast(messages: UiMessage[], patch: Partial<UiMessage>): UiMessage[] {
