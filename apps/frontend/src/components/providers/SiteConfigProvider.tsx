@@ -24,12 +24,7 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
           cache: 'no-store',
           signal: controller.signal,
         });
-        if (!response.ok) {
-          console.warn(
-            `Unable to load runtime site config (${response.status} ${response.statusText}); using build-time defaults.`,
-          );
-          return;
-        }
+        if (!response.ok) return;
         setSiteConfig(resolveRuntimeSiteConfig(await response.json()));
       } catch (error) {
         if (!controller.signal.aborted) {
@@ -48,10 +43,7 @@ export function SiteConfigProvider({ children }: { children: React.ReactNode }) 
       runtimeBranding.appName !== buildTimeBranding.appName &&
       document.title.includes(buildTimeBranding.appName)
     ) {
-      document.title = document.title.replaceAll(
-        buildTimeBranding.appName,
-        runtimeBranding.appName,
-      );
+      document.title = document.title.replace(buildTimeBranding.appName, runtimeBranding.appName);
     }
     if (pathname === '/') {
       const description = document.querySelector<HTMLMetaElement>('meta[name="description"]');

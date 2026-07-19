@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import Script from 'next/script';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { buildCombinedUseCase, createSignupSchema, SignupFormData } from '@/lib/schemas/auth';
+import { buildCombinedUseCase, signupSchema, SignupFormData } from '@/lib/schemas/auth';
 import { signup, SignupResponse } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
@@ -24,7 +24,6 @@ declare global {
 
 export default function SignupPage() {
   const { branding, features } = useSiteConfig();
-  const signupSchema = useMemo(() => createSignupSchema(branding.siteHost), [branding.siteHost]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signupResult, setSignupResult] = useState<SignupResponse | null>(null);

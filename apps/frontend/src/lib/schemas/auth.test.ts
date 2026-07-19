@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createSignupSchema, loginSchema, passwordSchema, signupSchema } from './auth';
+import { loginSchema, passwordSchema, signupSchema } from './auth';
 
 describe('auth schemas', () => {
   it('accepts a strong password', () => {
@@ -90,21 +90,6 @@ describe('auth schemas', () => {
     });
 
     expect(result.success).toBe(true);
-  });
-
-  it('validates combined use-case length with the runtime site host', () => {
-    const runtimeSchema = createSignupSchema(`${'x'.repeat(240)}.example`);
-    const result = runtimeSchema.safeParse({
-      email: 'user@example.org',
-      password: 'SecurePass123',
-      confirmPassword: 'SecurePass123',
-      userName: 'Example User',
-      useCase: 'a'.repeat(1500),
-      discoverySource: 'b'.repeat(400),
-      acceptTerms: true,
-    });
-
-    expect(result.success).toBe(false);
   });
 
   it('accepts valid login input', () => {
