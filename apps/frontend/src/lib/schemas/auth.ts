@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { branding } from '@/config/branding';
 
 export const emailSchema = z
   .string()
@@ -12,12 +13,16 @@ export const passwordSchema = z
   .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
   .regex(/[0-9]/, 'Password must contain at least one number');
 
-export function buildCombinedUseCase(useCase?: string, discoverySource?: string): string {
+export function buildCombinedUseCase(
+  useCase?: string,
+  discoverySource?: string,
+  siteHost = branding.siteHost,
+): string {
   const trimmedUseCase = useCase?.trim();
   const trimmedDiscovery = discoverySource?.trim();
   return [
     trimmedUseCase,
-    trimmedDiscovery ? `How did you find freeinference.org? ${trimmedDiscovery}` : undefined,
+    trimmedDiscovery ? `How did you find ${siteHost}? ${trimmedDiscovery}` : undefined,
   ]
     .filter(Boolean)
     .join('\n\n');

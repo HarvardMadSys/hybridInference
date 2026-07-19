@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useUsageStats } from '@/lib/hooks';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 function formatUsd(amount: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -25,10 +26,11 @@ function formatResetAt(value?: string | null): string {
 }
 
 export function UsageStats(): JSX.Element {
+  const branding = useBranding();
   const [period, setPeriod] = useState<'today' | 'month' | 'all'>('today');
   const { data: stats, isLoading, error } = useUsageStats(period);
   const quota = stats?.quota;
-  const contactEmail = quota?.contact_email ?? 'admin@freeinference.org';
+  const contactEmail = quota?.contact_email ?? branding.contactEmail;
 
   return (
     <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">

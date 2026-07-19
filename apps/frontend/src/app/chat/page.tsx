@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/Button';
 import { Markdown } from '@/components/ui/Markdown';
 import { streamRagChat, type RagSource } from '@/lib/api/chat';
 import { APIError } from '@/lib/utils/errors';
+import { branding } from '@/config/branding';
+import { useBranding, useSiteConfig } from '@/components/providers/SiteConfigProvider';
 
 interface UiMessage {
   role: 'user' | 'assistant';
@@ -14,17 +16,12 @@ interface UiMessage {
   streaming?: boolean;
 }
 
-const EXAMPLE_QUESTIONS = [
-  'How do I get an API key?',
-  'Which models can I use for coding?',
-  'How do I set up Cursor with FreeInference?',
-  'What request headers does the API accept?',
-];
-
 function docUrl(source: string): string {
   // The public docs are a Sphinx site; a page named `quickstart.md` builds to
   // `quickstart.html`. Best-effort deep link — falls back to a readable label.
-  return `https://doc.freeinference.org/${source.replace(/\.md$/, '.html')}`;
+  const docsBase = branding.docsUrl.replace(/\/+$/, '');
+  const docPath = source.replace(/^\/+/, '').replace(/\.md$/, '.html');
+  return `${docsBase}/${docPath}`;
 }
 
 function updateLast(messages: UiMessage[], patch: Partial<UiMessage>): UiMessage[] {
@@ -56,6 +53,13 @@ function SourceChips({ sources }: { sources: RagSource[] }) {
 }
 
 function ChatView() {
+  const runtimeBranding = useBranding();
+  const exampleQuestions = [
+    'How do I get an API key?',
+    'Which models can I use for coding?',
+    `How do I set up Cursor with ${runtimeBranding.appName}?`,
+    'What request headers does the API accept?',
+  ];
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -130,9 +134,9 @@ function ChatView() {
       <div className="mb-4">
         <h1 className="text-2xl font-bold tracking-tight">Docs Assistant</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Ask anything about FreeInference. Answers are grounded in the{' '}
+          Ask anything about {runtimeBranding.appName}. Answers are grounded in the{' '}
           <a
-            href="https://doc.freeinference.org"
+            href={branding.docsUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-crimson hover:underline"
@@ -151,7 +155,7 @@ function ChatView() {
           <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
             <p className="text-sm text-gray-500">Try one of these to get started:</p>
             <div className="flex max-w-md flex-wrap justify-center gap-2">
-              {EXAMPLE_QUESTIONS.map((q) => (
+              {exampleQuestions.map((q) => (
                 <button
                   key={q}
                   type="button"
@@ -209,7 +213,7 @@ function ChatView() {
               send(input);
             }
           }}
-          placeholder="Ask a question about FreeInference…"
+          placeholder={`Ask a question about ${runtimeBranding.appName}…`}
           rows={1}
           className="max-h-40 min-h-[2.75rem] flex-1 resize-none rounded-lg border border-gray-300 px-3 py-2.5 text-sm focus:border-black focus:outline-none focus:ring-1 focus:ring-black"
         />
@@ -228,9 +232,16 @@ function ChatView() {
 }
 
 export default function ChatPage() {
+  const { features } = useSiteConfig();
   return (
     <ProtectedRoute>
-      <ChatView />
+      {features.rag ? (
+        <ChatView />
+      ) : (
+        <div className="mx-auto w-full max-w-xl rounded-xl border border-gray-200 bg-white p-8 text-center text-gray-600 shadow-sm">
+          The documentation assistant is not enabled for this distribution.
+        </div>
+      )}
     </ProtectedRoute>
   );
 }

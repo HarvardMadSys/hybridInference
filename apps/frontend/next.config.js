@@ -5,7 +5,14 @@ const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
   images: {
-    remotePatterns: [{ protocol: 'https', hostname: 'junchengyang.com' }],
+    remotePatterns: [
+      {
+        protocol: 'https',
+        // Remote host for team-member photos (branding.team). CommonJS file:
+        // cannot import the TS branding module, so read the env var inline.
+        hostname: process.env.NEXT_PUBLIC_TEAM_IMAGE_HOST || 'junchengyang.com',
+      },
+    ],
   },
   async rewrites() {
     return [
@@ -34,6 +41,8 @@ const nextConfig = {
       // so this rewrite forwards the request on to FastAPI (same pattern as
       // /health). Without it the static frontend would 404 the fetch in prod.
       { source: '/site-updates', destination: `${BACKEND_INTERNAL_URL}/site-updates` },
+      // Public distribution identity consumed by SiteConfigProvider.
+      { source: '/site-config', destination: `${BACKEND_INTERNAL_URL}/site-config` },
     ];
   },
 };

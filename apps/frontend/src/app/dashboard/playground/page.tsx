@@ -13,6 +13,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
@@ -92,6 +93,7 @@ function copyToClipboard(text: string): void {
 
 export default function PlaygroundPage() {
   const { state } = useAuth();
+  const branding = useBranding();
   const [models, setModels] = useState<PlaygroundModel[]>([]);
   const [sessions, setSessions] = useState<PlaygroundSession[]>([createSession('s-1')]);
   const [activeSessionId, setActiveSessionId] = useState('s-1');
@@ -453,7 +455,7 @@ export default function PlaygroundPage() {
               href="/dashboard"
               className="text-sm font-semibold text-gray-400 transition hover:text-white"
             >
-              {config.appName}
+              {branding.appName}
             </Link>
             <span className="text-gray-700">/</span>
             <span className="text-sm font-medium text-white">Playground</span>

@@ -1,5 +1,8 @@
 import Image from 'next/image';
+import { notFound } from 'next/navigation';
+import { branding } from '@/config/branding';
 import { config } from '@/config/env';
+import { RuntimeAppName } from '@/components/ui/RuntimeAppName';
 
 export const metadata = {
   title: `Team | ${config.appName}`,
@@ -14,28 +17,7 @@ interface TeamMember {
   website?: string;
 }
 
-const members: TeamMember[] = [
-  {
-    name: 'Juncheng Yang',
-    affiliations: ['Assistant Professor at Harvard University'],
-    badge: 'Lead',
-    image: 'https://junchengyang.com/img/me4.jpg',
-  },
-  {
-    name: 'Murphy Tian',
-    affiliations: [
-      'Research Intern at Harvard University',
-      'Undergraduate at University of Toronto',
-    ],
-    badge: 'Core developer',
-    image: '/team/murphy-tian.jpg',
-    website: 'https://realtmxi.github.io/',
-  },
-  {
-    name: 'Haoran Ni',
-    affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
-  },
-];
+const members: TeamMember[] = branding.team;
 
 function initials(name: string): string {
   return name
@@ -47,22 +29,26 @@ function initials(name: string): string {
 }
 
 export default function TeamPage(): JSX.Element {
+  if (members.length === 0) notFound();
   return (
     <div className="flex w-full flex-col gap-10">
       <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-white via-gray-50 to-red-50/30 px-6 py-14 text-center shadow-subtle">
         <p className="text-sm font-semibold uppercase tracking-widest text-crimson">Our team</p>
         <h1 className="mx-auto mt-3 max-w-2xl font-serif text-4xl font-bold tracking-tight text-gray-900 sm:text-5xl">
-          The people behind <span className="text-crimson">{config.appName}</span>
+          The people behind{' '}
+          <span className="text-crimson">
+            <RuntimeAppName />
+          </span>
         </h1>
         <p className="mx-auto mt-5 max-w-xl text-base text-gray-600 sm:text-lg">
           A small research team building free, open LLM inference at{' '}
           <a
-            href="https://madsys.seas.harvard.edu"
+            href={branding.orgUrl}
             className="text-crimson hover:underline"
             target="_blank"
             rel="noopener noreferrer"
           >
-            Harvard SEAS
+            {branding.orgName}
           </a>
           .
         </p>

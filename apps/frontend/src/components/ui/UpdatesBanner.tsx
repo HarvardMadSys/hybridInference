@@ -4,8 +4,9 @@ import { useEffect, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { getPublicSiteUpdates, type PublicSiteUpdate } from '@/lib/api/updates';
+import { branding } from '@/config/branding';
 
-const DISMISS_KEY = 'freeinference:dismissed-banner';
+const DISMISS_KEY = `${branding.storageKeyPrefix}:dismissed-banner`;
 
 export function UpdatesBanner(): JSX.Element | null {
   const [banner, setBanner] = useState<PublicSiteUpdate | null>(null);

@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { useApiKeys, useCreateApiKey, useDeleteApiKey, useRegenerateApiKey } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 
 function formatDate(value?: string | null): string {
   if (!value) return 'Never';
@@ -22,6 +23,7 @@ function statusClassName(status: string): string {
 }
 
 export function ApiKeyManager(): JSX.Element {
+  const branding = useBranding();
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [deletingKeyPrefix, setDeletingKeyPrefix] = useState<string | null>(null);
@@ -92,7 +94,7 @@ export function ApiKeyManager(): JSX.Element {
             API Keys
           </h2>
           <p className="mt-1 text-sm text-gray-500">
-            Manage keys used to authenticate requests to the FreeInference API.
+            Manage keys used to authenticate requests to the {branding.appName} API.
           </p>
         </div>
         {!isLoadingKeys && !hasActiveKey && (

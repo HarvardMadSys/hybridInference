@@ -13,6 +13,7 @@ import { InputField } from '@/components/ui/InputField';
 import { Card } from '@/components/ui/Card';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
+import { branding } from '@/config/branding';
 
 const changePasswordSchema = z
   .object({
@@ -105,7 +106,7 @@ function SettingsContent() {
             ← Back
           </a>
           <a
-            href="https://doc.freeinference.org/"
+            href={branding.docsUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm font-medium text-gray-700 hover:text-gray-900"
