@@ -202,14 +202,11 @@ class BackendManager:
         while True:
             should_start = False
             wait_for_stop = False
-            check_liveness = False
             with self._lock:
                 if self._state == "ready":
-                    # Re-verify the container is still alive so a crash that
-                    # never went through the idle stop path cannot leave us
-                    # stuck returning 502 forever.
-                    check_liveness = True
-                elif self._state == "stopping":
+                    self._last_activity = time.monotonic()
+                    return
+                if self._state == "stopping":
                     wait_for_stop = True
                 elif self._state == "starting":
                     pass
@@ -218,18 +215,6 @@ class BackendManager:
                     self._ready_event.clear()
                     self._start_error = None
                     should_start = True
-
-            if check_liveness:
-                if self._container_running():
-                    with self._lock:
-                        if self._state == "ready":
-                            self._last_activity = time.monotonic()
-                            return
-                    continue
-                if self.mark_dead("container not running"):
-                    continue
-                # Another thread already flipped state; re-evaluate.
-                continue
 
             if should_start:
                 with self._lifecycle_lock:
@@ -680,8 +665,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
 
         try:
-            # Always ensure_running — even when state is ready — so a crashed
-            # container is detected via _container_running and restarted.
+            # Ensure the backend is running before forwarding the request.
+            # Crash recovery for a stuck "ready" state happens in
+            # _forward_with_body on URLError (mark_dead + restart + retry).
             backend.ensure_running()
         except Exception as exc:
             self._send_plain_error(502, str(exc))
@@ -781,14 +767,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self._forward_once(backend, body)
                 return
             except URLError as exc:
-                if not backend.mark_dead(str(exc.reason if getattr(exc, "reason", None) else exc)):
+                reason = str(exc.reason if getattr(exc, "reason", None) else exc)
+                # Only tear down when the container is actually gone. A
+                # transient connection refuse while the container is still
+                # healthy must not docker-rm in-flight work.
+                if backend.state == "ready" and backend._container_running():
                     self._send_plain_error(502, f"Backend error: {exc}")
                     return
-                log.warning(
-                    "[%s] Restarting backend after proxy failure: %s",
-                    backend.model_name,
-                    exc,
-                )
+                if backend.mark_dead(reason):
+                    log.warning(
+                        "[%s] Restarting backend after proxy failure: %s",
+                        backend.model_name,
+                        exc,
+                    )
+                # Streaming clients should not block for HEALTH_TIMEOUT; return
+                # the same warmup SSE used for cold starts while restart runs.
+                is_stream = False
+                if self.command == "POST" and self.path.startswith("/v1/chat/completions") and body:
+                    with contextlib.suppress(Exception):
+                        is_stream = bool(_json.loads(body).get("stream", False))
+                if is_stream:
+                    self._handle_warmup_stream(backend)
+                    return
+                # Always ensure_running so concurrent requests wait for the
+                # in-flight restart instead of immediately returning 502.
                 try:
                     backend.ensure_running()
                 except Exception as start_exc:
