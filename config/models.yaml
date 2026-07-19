@@ -498,7 +498,7 @@ models:
         api_keys:
           - ${STAGING_API_KEY}
         provider_model_id: "kimi-k3"
-        
+
   - id: qwen3.6-35b
     name: Qwen3.6 35B (high speed)
     provider: sglang
@@ -551,7 +551,8 @@ models:
     aliases: ["freeinference-diffusiongemma"]
     input_modalities: ["text"]
     output_modalities: ["text"]
-    context_length: 262144
+    # Capped for DGX Spark unified memory (see ops/spark_idle_proxy/models.json).
+    context_length: 32768
     max_output_length: 8192
     supports_tools: true
     supports_structured_output: true
