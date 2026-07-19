@@ -178,16 +178,38 @@ class BackendManager:
             self._active_requests = max(0, self._active_requests - 1)
             self._last_activity = time.monotonic()
 
+    def mark_dead(self, reason: str) -> bool:
+        """Reset a *ready* backend to *stopped* after an unexpected death.
+
+        Returns True if state was changed (caller should restart via
+        ``ensure_running``). No-op when the backend is already starting,
+        stopping, or stopped.
+        """
+        with self._lock:
+            if self._state != "ready":
+                return False
+            log.warning(
+                "[%s] Backend appears dead (%s); marking stopped for restart",
+                self.model_name,
+                reason,
+            )
+            self._state = "stopped"
+            self._current_gpu = None
+            return True
+
     def ensure_running(self) -> None:
         """Start the container if needed and block until it is healthy."""
         while True:
             should_start = False
             wait_for_stop = False
+            check_liveness = False
             with self._lock:
                 if self._state == "ready":
-                    self._last_activity = time.monotonic()
-                    return
-                if self._state == "stopping":
+                    # Re-verify the container is still alive so a crash that
+                    # never went through the idle stop path cannot leave us
+                    # stuck returning 502 forever.
+                    check_liveness = True
+                elif self._state == "stopping":
                     wait_for_stop = True
                 elif self._state == "starting":
                     pass
@@ -196,6 +218,18 @@ class BackendManager:
                     self._ready_event.clear()
                     self._start_error = None
                     should_start = True
+
+            if check_liveness:
+                if self._container_running():
+                    with self._lock:
+                        if self._state == "ready":
+                            self._last_activity = time.monotonic()
+                            return
+                    continue
+                if self.mark_dead("container not running"):
+                    continue
+                # Another thread already flipped state; re-evaluate.
+                continue
 
             if should_start:
                 with self._lifecycle_lock:
@@ -639,17 +673,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 with contextlib.suppress(Exception):
                     is_stream = _json.loads(body).get("stream", False)
 
+            # Streaming cold-start: return a warmup SSE immediately so the
+            # client isn't blocked for HEALTH_TIMEOUT while vLLM loads.
             if is_chat and is_stream:
                 self._handle_warmup_stream(backend)
                 return
-            try:
-                backend.ensure_running()
-            except Exception as exc:
-                self._send_plain_error(502, str(exc))
-                return
-            self._forward_with_body(backend, body)
-            return
 
+        try:
+            # Always ensure_running — even when state is ready — so a crashed
+            # container is detected via _container_running and restarted.
+            backend.ensure_running()
+        except Exception as exc:
+            self._send_plain_error(502, str(exc))
+            return
         self._forward_with_body(backend, body)
 
     def _handle_models_list(self) -> None:
@@ -711,11 +747,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if spawn_warmup:
             threading.Thread(target=_warm_up, daemon=True).start()
 
-    def _forward_with_body(self, backend: BackendManager, body: bytes) -> None:
+    def _forward_once(self, backend: BackendManager, body: bytes) -> None:
+        """Proxy a single request to the backend. Raises URLError on connect failure."""
         target = f"http://localhost:{backend.backend_port}{self.path}"
         headers = {k: v for k, v in self.headers.items() if k.lower() != "host"}
         req = Request(target, data=body if body else None, headers=headers, method=self.command)
-        backend.begin_request()
         try:
             with urlopen(req, timeout=300) as resp:
                 is_streaming = resp.headers.get("Content-type", "").startswith("text/event-stream")
@@ -737,8 +773,33 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.send_header(key, val)
             self.end_headers()
             self.wfile.write(exc.read())
-        except URLError as exc:
-            self._send_plain_error(502, f"Backend error: {exc}")
+
+    def _forward_with_body(self, backend: BackendManager, body: bytes) -> None:
+        backend.begin_request()
+        try:
+            try:
+                self._forward_once(backend, body)
+                return
+            except URLError as exc:
+                if not backend.mark_dead(str(exc.reason if getattr(exc, "reason", None) else exc)):
+                    self._send_plain_error(502, f"Backend error: {exc}")
+                    return
+                log.warning(
+                    "[%s] Restarting backend after proxy failure: %s",
+                    backend.model_name,
+                    exc,
+                )
+                try:
+                    backend.ensure_running()
+                except Exception as start_exc:
+                    self._send_plain_error(502, str(start_exc))
+                    return
+            try:
+                self._forward_once(backend, body)
+            except URLError as exc:
+                self._send_plain_error(502, f"Backend error: {exc}")
+            except Exception as exc:
+                self._send_plain_error(500, str(exc))
         except Exception as exc:
             self._send_plain_error(500, str(exc))
         finally:

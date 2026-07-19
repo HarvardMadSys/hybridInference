@@ -313,6 +313,7 @@ def test_ready_backend_request_is_proxied_to_matching_model(
         backend = proxy._backends[MODEL_NAME]
         with backend._lock:
             backend._state = "ready"
+        monkeypatch.setattr(backend, "_container_running", lambda: True)
 
         with _serve(proxy.ProxyHandler) as proxy_port:
             status, _, body = _request(
@@ -440,6 +441,7 @@ def test_upstream_http_error_is_forwarded(monkeypatch: Any, tmp_path: Path) -> N
         backend = proxy._backends[MODEL_NAME]
         with backend._lock:
             backend._state = "ready"
+        monkeypatch.setattr(backend, "_container_running", lambda: True)
 
         with _serve(proxy.ProxyHandler) as proxy_port:
             status, headers, body = _request(
@@ -455,6 +457,117 @@ def test_upstream_http_error_is_forwarded(monkeypatch: Any, tmp_path: Path) -> N
     assert status == 400
     assert headers["Content-Type"] == "application/json"
     assert json.loads(body) == {"error": "context too long"}
+
+
+def test_mark_dead_resets_ready_state(monkeypatch: Any, tmp_path: Path) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy._backends[MODEL_NAME]
+    with backend._lock:
+        backend._state = "ready"
+        backend._current_gpu = "0"
+
+    assert backend.mark_dead("connection refused") is True
+    assert backend.state == "stopped"
+    assert backend._current_gpu is None
+    # Second call is a no-op once already stopped.
+    assert backend.mark_dead("again") is False
+
+
+def test_ensure_running_restarts_when_ready_but_container_dead(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    model_dir = tmp_path / "installed-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"model_type": "gpt_oss"}')
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "manual-test-vllm",
+            "gpu_index": "0",
+            "backend_port": 18080,
+            "model_dir": str(model_dir),
+        },
+    )
+    with backend._lock:
+        backend._state = "ready"
+
+    running_checks = {"n": 0}
+    start_calls: list[str] = []
+
+    def fake_running() -> bool:
+        running_checks["n"] += 1
+        # First check (liveness while "ready") says dead; after restart, healthy.
+        return running_checks["n"] > 1
+
+    def fake_start() -> None:
+        start_calls.append("start")
+
+    def fake_wait() -> None:
+        return
+
+    monkeypatch.setattr(backend, "_container_running", fake_running)
+    monkeypatch.setattr(backend, "_start_container", fake_start)
+    monkeypatch.setattr(backend, "_wait_healthy", fake_wait)
+
+    backend.ensure_running()
+
+    assert start_calls == ["start"]
+    assert backend.state == "ready"
+
+
+def test_connection_refused_restarts_backend_and_retries(monkeypatch: Any, tmp_path: Path) -> None:
+    """Ready-but-dead backend: first proxy fails, restart, second attempt succeeds."""
+    RecordingBackendHandler.requests = []
+
+    with _serve(RecordingBackendHandler) as backend_port:
+        proxy = _load_proxy(monkeypatch, tmp_path, backend_port=backend_port)
+        backend = proxy._backends[MODEL_NAME]
+        with backend._lock:
+            backend._state = "ready"
+        # Liveness says alive so we reach the forward path; then the first
+        # urlopen fails as if the process just died.
+        monkeypatch.setattr(backend, "_container_running", lambda: True)
+
+        attempts = {"n": 0}
+        real_urlopen = proxy.urlopen
+
+        def flaky_urlopen(req: Any, timeout: float | None = None) -> Any:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                from urllib.error import URLError
+
+                raise URLError(ConnectionRefusedError("Connection refused"))
+            return real_urlopen(req, timeout=timeout)
+
+        ensure_calls = {"n": 0}
+
+        def counting_ensure() -> None:
+            ensure_calls["n"] += 1
+            # After mark_dead the state is stopped; pretend restart is instant.
+            with backend._lock:
+                backend._state = "ready"
+
+        monkeypatch.setattr(proxy, "urlopen", flaky_urlopen)
+        monkeypatch.setattr(backend, "ensure_running", counting_ensure)
+
+        with _serve(proxy.ProxyHandler) as proxy_port:
+            status, _, body = _request(
+                f"http://127.0.0.1:{proxy_port}/v1/chat/completions",
+                method="POST",
+                headers={"Authorization": "Bearer manual-secret"},
+                body={
+                    "model": MODEL_NAME,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+            )
+
+    assert status == 200
+    assert json.loads(body) == {"ok": True, "proxied_path": "/v1/chat/completions"}
+    # _proxy calls ensure_running once up front, then again after mark_dead.
+    assert ensure_calls["n"] >= 2
+    assert attempts["n"] == 2
+    assert len(RecordingBackendHandler.requests) == 1
 
 
 def test_streaming_chat_returns_warmup_sse_while_backend_starts(
