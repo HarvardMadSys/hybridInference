@@ -49,6 +49,38 @@ describe('jsonOrThrow', () => {
     });
     await expect(jsonOrThrow(resp)).rejects.toMatchObject({ code: 'TOKEN_EXPIRED' });
   });
+
+  it('maps a typed { error } 403 whose message names unverified email to EMAIL_NOT_VERIFIED', async () => {
+    const resp = new Response(
+      JSON.stringify({ error: { message: 'Email not verified. Please verify your email first.' } }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+    await expect(jsonOrThrow(resp)).rejects.toMatchObject({ code: 'EMAIL_NOT_VERIFIED' });
+  });
+
+  it('maps a typed { error } 403 whose message names a suspension to ACCOUNT_SUSPENDED', async () => {
+    const resp = new Response(
+      JSON.stringify({ error: { message: 'Your account has been suspended.' } }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+    await expect(jsonOrThrow(resp)).rejects.toMatchObject({ code: 'ACCOUNT_SUSPENDED' });
+  });
+
+  it('does NOT map an unrelated typed { error } 403 to EMAIL_NOT_VERIFIED, preserving its message', async () => {
+    // Regression: a non-verification typed 403 (e.g. insufficient permissions)
+    // must not be blanket-mapped to EMAIL_NOT_VERIFIED — the real message stays
+    // visible so the user isn't wrongly told to verify their email.
+    const message = 'You do not have permission to access this resource.';
+    const resp = new Response(JSON.stringify({ error: { message } }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await expect(jsonOrThrow(resp)).rejects.toMatchObject({
+      code: 'UNKNOWN_ERROR',
+      message,
+      statusCode: 403,
+    });
+  });
 });
 
 describe('safeFetch', () => {

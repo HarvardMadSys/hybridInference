@@ -191,8 +191,19 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'USER_ALREADY_EXISTS';
       } else if (resp.status === 401) {
         errorCode = 'INVALID_CREDENTIALS';
-      } else if (resp.status === 403) {
+      } else if (
+        resp.status === 403 &&
+        ((lowerMessage.includes('email') && lowerMessage.includes('not verified')) ||
+          lowerMessage.includes('verify your email'))
+      ) {
+        // Only a genuine unverified-email 403 should drive the login page's
+        // "resend verification" flow (mirrors the { detail } branch below).
+        // Other typed 403s — suspended account, insufficient permissions,
+        // plan/quota forbidden — must NOT be mislabeled as EMAIL_NOT_VERIFIED;
+        // they fall through so their real message is surfaced verbatim.
         errorCode = 'EMAIL_NOT_VERIFIED';
+      } else if (resp.status === 403 && lowerMessage.includes('suspend')) {
+        errorCode = 'ACCOUNT_SUSPENDED';
       }
     } else if (data.detail) {
       // FastAPI validation error format: { detail: "..." }
