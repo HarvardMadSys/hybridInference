@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BeforeValidator
 
-from serving.analytics.geo_demand import floor_hour, geo_demand_cache
+from serving.analytics.geo_demand import floor_hour, get_geo_demand
 from serving.schemas_admin import (
     AdminAnalyticsResponse,
     AnalyticsBreakdownEntry,
@@ -49,7 +49,7 @@ async def admin_get_geo_analytics(
     end = floor_hour(datetime.now(timezone.utc))
     start = end - timedelta(days=days)
 
-    return await geo_demand_cache.get(db_logger.pool, start, end)
+    return await get_geo_demand(db_logger.pool, start, end)
 
 
 @router.get("/analytics", response_model=AdminAnalyticsResponse)

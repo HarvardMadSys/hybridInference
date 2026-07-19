@@ -1,5 +1,6 @@
 'use client';
 
+import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { GeoAnalyticsResponse, GeoMetric } from '@/lib/api/admin';
 import { getGeoAnalytics } from '@/lib/api/admin';
@@ -24,6 +25,8 @@ import { WindowTimeline } from './WindowTimeline';
 
 const HOUR_MS = 3_600_000;
 const STALE_AFTER_MS = 2 * HOUR_MS;
+const GEO_QUERY_STALE_MS = 60_000;
+const GEO_QUERY_REFRESH_MS = 5 * 60_000;
 const DEFAULT_ROTATION: [number, number] = [-100, -28];
 
 export type GeoRangeDays = 7 | 14 | 30;
@@ -374,56 +377,47 @@ function GeoDashboard({
 }
 
 export function GeoGlobe() {
-  const [attempt, setAttempt] = useState(0);
   const [days, setDays] = useState<GeoRangeDays>(14);
-  const [data, setData] = useState<GeoAnalyticsResponse | null>(null);
-  const [atlas, setAtlas] = useState<PreparedAtlas | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const cacheRef = useRef(new Map<GeoRangeDays, GeoAnalyticsResponse>());
+  const geoQuery = useQuery({
+    queryKey: ['admin', 'analytics', 'geo', days],
+    queryFn: ({ signal }) => getGeoAnalytics({ days, signal }),
+    staleTime: GEO_QUERY_STALE_MS,
+    refetchInterval: GEO_QUERY_REFRESH_MS,
+    retry: false,
+  });
+  const atlasQuery = useQuery({
+    queryKey: ['atlas', 'countries-110m'],
+    queryFn: ({ signal }) => loadAtlas(signal),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+  });
+  const data = geoQuery.data ?? null;
+  const atlas = atlasQuery.data ?? null;
+  const error = geoQuery.error ?? atlasQuery.error;
 
-  useEffect(() => {
-    const cached = cacheRef.current.get(days);
-    if (cached && atlas) {
-      setData(cached);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      getGeoAnalytics({ days, signal: controller.signal }),
-      atlas ? Promise.resolve(atlas) : loadAtlas(controller.signal),
-    ])
-      .then(([nextData, nextAtlas]) => {
-        if (controller.signal.aborted) return;
-        cacheRef.current.set(days, nextData);
-        setData(nextData);
-        setAtlas(nextAtlas);
-        setLoading(false);
-      })
-      .catch((reason: unknown) => {
-        if (controller.signal.aborted) return;
-        setError(getErrorMessage(reason));
-        setLoading(false);
-      });
-    return () => controller.abort();
-    // `atlas` is intentionally read but not depended on: it never changes once loaded.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attempt, days]);
-
-  if (loading && !data) return <LoadingState />;
-  if (error) return <ErrorState error={error} onRetry={() => setAttempt((value) => value + 1)} />;
+  if ((!data || !atlas) && (geoQuery.isPending || atlasQuery.isPending)) return <LoadingState />;
+  if (error && (!data || !atlas)) {
+    return (
+      <ErrorState
+        error={getErrorMessage(error)}
+        onRetry={() => {
+          if (!data) void geoQuery.refetch();
+          if (!atlas) void atlasQuery.refetch();
+        }}
+      />
+    );
+  }
   if (!data || !atlas)
     return (
       <ErrorState
         error="No analytics response was returned."
-        onRetry={() => setAttempt((value) => value + 1)}
+        onRetry={() => {
+          void geoQuery.refetch();
+          void atlasQuery.refetch();
+        }}
       />
     );
-  if (loading) return <LoadingState />;
   if (!data.hours_index.length || !data.hours.length || data.meta.rows_total === 0) {
     return <EmptyState days={days} onDaysChange={setDays} />;
   }

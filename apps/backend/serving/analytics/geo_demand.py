@@ -10,21 +10,46 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.geo_resolver import GeoResolver
+from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 BUCKET_COLS = ["c", "cont", "n", "tout"]
 MAX_WINDOW = timedelta(days=90)
+logger = get_logger(__name__)
 
 ROWS_QUERY = """
 SELECT
   date_trunc('hour', timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour,
   metadata->>'ip'               AS ip,
-  completion_tokens
+  COUNT(*)::BIGINT              AS request_count,
+  COALESCE(SUM(completion_tokens), 0)::BIGINT AS completion_tokens
 FROM api_logs
 WHERE timestamp >= $1 AND timestamp < $2
   AND COALESCE(metadata->>'synthetic_probe', 'false') <> 'true'
+GROUP BY 1, 2
+"""
+
+ROLLUP_COVERAGE_QUERY = """
+SELECT
+  COUNT(*)::BIGINT AS complete_hours,
+  COALESCE(SUM(rows_total), 0)::BIGINT AS rows_total,
+  COALESCE(SUM(rows_with_ip), 0)::BIGINT AS rows_with_ip,
+  MAX(completed_at) AS completed_at
+FROM geo_hourly_coverage
+WHERE hour_bucket >= $1 AND hour_bucket < $2
+"""
+
+ROLLUP_ROWS_QUERY = """
+SELECT
+  hour_bucket AS hour,
+  country_code,
+  continent_code,
+  request_count,
+  completion_tokens
+FROM geo_hourly_demand
+WHERE hour_bucket >= $1 AND hour_bucket < $2
 """
 
 
@@ -36,6 +61,16 @@ class GeoBucket:
     def __init__(self) -> None:
         self.n = 0
         self.tout = 0
+
+
+class GeoCoverage:
+    """Mutable raw-row counts for one completed hour."""
+
+    __slots__ = ("rows_total", "rows_with_ip")
+
+    def __init__(self) -> None:
+        self.rows_total = 0
+        self.rows_with_ip = 0
 
 
 def floor_hour(value: datetime) -> datetime:
@@ -97,47 +132,18 @@ def finalize_geo_demand(
     }
 
 
-def add_geo_row(
-    row: Any,
-    resolver: GeoResolver,
-    buckets: dict[tuple[datetime, str, str], GeoBucket],
-) -> bool:
-    """Resolve and add one database row; return whether it carried an IP."""
-    ip = row["ip"]
-    alpha3, _, continent = resolver.resolve(ip)
-
-    bucket = buckets[(row["hour"], alpha3, continent)]
-    bucket.n += 1
-    bucket.tout += row["completion_tokens"] or 0
-    return bool(ip)
-
-
-async def aggregate_geo_demand(
-    connection: Any,
-    since: datetime,
-    until: datetime,
+def build_geo_meta(
+    hours_index: list[datetime],
     resolver: GeoResolver,
     *,
-    prefetch: int = 5_000,
+    rows_total: int,
+    rows_with_ip: int,
+    generated_at: datetime | None = None,
 ) -> dict[str, Any]:
-    """Stream one window from Postgres and return aggregate-only globe data."""
-    since, until = normalize_window(since, until)
-    buckets: dict[tuple[datetime, str, str], GeoBucket] = defaultdict(GeoBucket)
-    rows_total = 0
-    rows_with_ip = 0
-
-    async with connection.transaction():
-        cursor = connection.cursor(ROWS_QUERY, since, until, prefetch=prefetch)
-        async for row in cursor:
-            rows_total += 1
-            rows_with_ip += add_geo_row(row, resolver, buckets)
-            if rows_total % 10_000 == 0:
-                await asyncio.sleep(0)
-
-    hours_index = build_hours_index(since, until)
-    meta = {
+    """Build the stable metadata shared by raw and rollup-backed responses."""
+    return {
         "source": "api_logs",
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": (generated_at or datetime.now(timezone.utc)).isoformat(),
         "start": hours_index[0].isoformat() if hours_index else None,
         "hours": len(hours_index),
         "rows_total": rows_total,
@@ -152,6 +158,113 @@ async def aggregate_geo_demand(
         "unmapped_alpha2": sorted(resolver.unmapped_a2),
         "notes": ["origin = network origin (IP-based), not user residence"],
     }
+
+
+def add_geo_row(
+    row: Any,
+    resolver: GeoResolver,
+    buckets: dict[tuple[datetime, str, str], GeoBucket],
+) -> bool:
+    """Resolve and add one grouped database row; return whether it carried an IP."""
+    ip = row["ip"]
+    alpha3, _, continent = resolver.resolve(ip)
+    request_count = int(row["request_count"])
+
+    bucket = buckets[(row["hour"], alpha3, continent)]
+    bucket.n += request_count
+    bucket.tout += int(row["completion_tokens"] or 0)
+    return bool(ip)
+
+
+async def consume_geo_rows(
+    connection: Any,
+    since: datetime,
+    until: datetime,
+    resolver: GeoResolver,
+    *,
+    prefetch: int = 5_000,
+) -> tuple[
+    dict[tuple[datetime, str, str], GeoBucket],
+    dict[datetime, GeoCoverage],
+]:
+    """Consume SQL-preaggregated hour/IP rows inside an existing transaction."""
+    buckets: dict[tuple[datetime, str, str], GeoBucket] = defaultdict(GeoBucket)
+    coverage = {hour: GeoCoverage() for hour in build_hours_index(since, until)}
+    rows_consumed = 0
+
+    cursor = connection.cursor(ROWS_QUERY, since, until, prefetch=prefetch)
+    async for row in cursor:
+        request_count = int(row["request_count"])
+        rows_consumed += request_count
+        hour_coverage = coverage[row["hour"]]
+        hour_coverage.rows_total += request_count
+        if add_geo_row(row, resolver, buckets):
+            hour_coverage.rows_with_ip += request_count
+        if rows_consumed and rows_consumed % 10_000 < request_count:
+            await asyncio.sleep(0)
+
+    return buckets, coverage
+
+
+async def aggregate_geo_demand(
+    connection: Any,
+    since: datetime,
+    until: datetime,
+    resolver: GeoResolver,
+    *,
+    prefetch: int = 5_000,
+) -> dict[str, Any]:
+    """Stream one SQL-preaggregated window and return aggregate-only globe data."""
+    since, until = normalize_window(since, until)
+
+    async with connection.transaction():
+        buckets, coverage = await consume_geo_rows(
+            connection,
+            since,
+            until,
+            resolver,
+            prefetch=prefetch,
+        )
+
+    hours_index = build_hours_index(since, until)
+    rows_total = sum(item.rows_total for item in coverage.values())
+    rows_with_ip = sum(item.rows_with_ip for item in coverage.values())
+    meta = build_geo_meta(
+        hours_index,
+        resolver,
+        rows_total=rows_total,
+        rows_with_ip=rows_with_ip,
+    )
+    return finalize_geo_demand(hours_index, buckets, meta)
+
+
+async def aggregate_geo_demand_rollup(
+    connection: Any,
+    since: datetime,
+    until: datetime,
+    resolver: GeoResolver,
+) -> dict[str, Any] | None:
+    """Return the persistent rollup only when every requested hour is complete."""
+    since, until = normalize_window(since, until)
+    hours_index = build_hours_index(since, until)
+    async with connection.transaction(isolation="repeatable_read", readonly=True):
+        coverage = await connection.fetchrow(ROLLUP_COVERAGE_QUERY, since, until)
+        if coverage is None or int(coverage["complete_hours"] or 0) != len(hours_index):
+            return None
+
+        buckets: dict[tuple[datetime, str, str], GeoBucket] = defaultdict(GeoBucket)
+        for row in await connection.fetch(ROLLUP_ROWS_QUERY, since, until):
+            bucket = buckets[(row["hour"], row["country_code"], row["continent_code"])]
+            bucket.n += int(row["request_count"])
+            bucket.tout += int(row["completion_tokens"])
+
+    meta = build_geo_meta(
+        hours_index,
+        resolver,
+        rows_total=int(coverage["rows_total"] or 0),
+        rows_with_ip=int(coverage["rows_with_ip"] or 0),
+        generated_at=coverage["completed_at"],
+    )
     return finalize_geo_demand(hours_index, buckets, meta)
 
 
@@ -239,3 +352,43 @@ class GeoDemandCache:
 
 
 geo_demand_cache = GeoDemandCache()
+
+
+async def get_geo_demand(
+    pool: Any,
+    since: datetime,
+    until: datetime,
+    *,
+    resolver_factory: Callable[[], GeoResolver] = GeoResolver,
+) -> dict[str, Any]:
+    """Prefer complete persistent rollups and safely fall back to the raw cache."""
+    resolver = resolver_factory()
+    try:
+        async with pool.acquire() as connection:
+            payload = await aggregate_geo_demand_rollup(connection, since, until, resolver)
+            if payload is None:
+                stale_by = timedelta(hours=1)
+                payload = await aggregate_geo_demand_rollup(
+                    connection,
+                    since - stale_by,
+                    until - stale_by,
+                    resolver,
+                )
+                if payload is not None:
+                    payload["meta"]["notes"].append(
+                        "latest complete hour is pending; serving the previous complete window"
+                    )
+    except Exception as exc:
+        logger.warning("geo rollup read failed; falling back to api_logs: %s", exc)
+        payload = None
+    finally:
+        resolver.close()
+
+    if payload is not None:
+        return payload
+    return await geo_demand_cache.get(
+        pool,
+        since,
+        until,
+        resolver_factory=resolver_factory,
+    )

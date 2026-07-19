@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
@@ -25,6 +26,7 @@ vi.mock('topojson-client', () => ({
 }));
 
 const mockedGetGeoAnalytics = vi.mocked(getGeoAnalytics);
+let queryClient: QueryClient;
 
 const ATLAS = {
   type: 'Topology',
@@ -75,8 +77,21 @@ class ResizeObserverMock {
   unobserve() {}
 }
 
+function renderGeoGlobe() {
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <GeoGlobe />
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
   mockedGetGeoAnalytics.mockReset();
+  queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
   vi.stubGlobal('ResizeObserver', ResizeObserverMock);
   // Reduced motion keeps view-request rotations instant in tests.
   vi.stubGlobal(
@@ -100,13 +115,14 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  queryClient.clear();
   vi.unstubAllGlobals();
 });
 
 describe('GeoGlobe', () => {
   it('shows a loading state while the default 14-day request is pending', () => {
     mockedGetGeoAnalytics.mockReturnValue(new Promise(() => undefined));
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(screen.getByRole('status', { name: 'Loading request origins' })).toBeInTheDocument();
     expect(mockedGetGeoAnalytics).toHaveBeenCalledWith(
@@ -116,7 +132,7 @@ describe('GeoGlobe', () => {
 
   it('renders the hero, controls, and footer without internal identifiers', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(await screen.findByText('14 requests')).toBeInTheDocument();
     expect(screen.getByText('at 01:00 UTC · Jul 15')).toBeInTheDocument();
@@ -143,12 +159,31 @@ describe('GeoGlobe', () => {
     expect(screen.queryByText(/local$/)).not.toBeInTheDocument();
   });
 
+  it('keeps cached origins visible while a remount refreshes stale data', async () => {
+    mockedGetGeoAnalytics.mockResolvedValue(response());
+    const firstView = renderGeoGlobe();
+    expect(await screen.findByText('14 requests')).toBeInTheDocument();
+    firstView.unmount();
+
+    queryClient.setQueryData(['admin', 'analytics', 'geo', 14], response(), {
+      updatedAt: Date.now() - 2 * 60_000,
+    });
+    mockedGetGeoAnalytics.mockReturnValue(new Promise(() => undefined));
+    renderGeoGlobe();
+
+    expect(screen.getByText('14 requests')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('status', { name: 'Loading request origins' }),
+    ).not.toBeInTheDocument();
+    await waitFor(() => expect(mockedGetGeoAnalytics).toHaveBeenCalledTimes(2));
+  });
+
   it('pluralizes active countries and switches the hero with the metric', async () => {
     const data = response();
     data.hours[1].b.push(['CAN', 'NA', 3, 30]);
     data.meta.rows_total = 17;
     mockedGetGeoAnalytics.mockResolvedValue(data);
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(await screen.findByText('17 requests')).toBeInTheDocument();
     expect(screen.getByText('United States 59% · 2 active countries')).toBeInTheDocument();
@@ -160,7 +195,7 @@ describe('GeoGlobe', () => {
 
   it('drives selection through the top-origins rail with a globe ring', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     const rail = (await screen.findByText(/Top origins ·/)).closest('aside')!;
     const row = within(rail).getByRole('button', { name: /United States/ });
@@ -178,7 +213,7 @@ describe('GeoGlobe', () => {
 
   it('shows the empty-hour copy when scrubbed to an hour without requests', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     const timeline = await screen.findByRole('slider', {
       name: 'Demand timeline for the loaded window',
@@ -195,7 +230,7 @@ describe('GeoGlobe', () => {
 
   it('refetches when the range changes and remembers cached ranges', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
     await screen.findByText('14 requests');
 
     fireEvent.click(screen.getByRole('button', { name: '7d' }));
@@ -211,7 +246,7 @@ describe('GeoGlobe', () => {
 
   it('toggles playback and silences the rail announcements while playing', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     const play = await screen.findByRole('button', { name: '▶ Play' });
     fireEvent.click(play);
@@ -226,7 +261,7 @@ describe('GeoGlobe', () => {
 
   it('opens data details with totals, coverage, and DB-IP attribution', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Data details' }));
     const dialog = screen.getByRole('dialog', { name: 'Data details' });
@@ -253,7 +288,7 @@ describe('GeoGlobe', () => {
         degraded_reasons: ['country_database_missing'],
       }),
     );
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(await screen.findByText('SYNTHETIC DEMO')).toBeInTheDocument();
     expect(screen.getByText('STALE')).toBeInTheDocument();
@@ -265,7 +300,7 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics
       .mockRejectedValueOnce(new Error('scan unavailable'))
       .mockResolvedValueOnce(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(await screen.findByRole('alert')).toHaveTextContent('scan unavailable');
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
@@ -276,7 +311,7 @@ describe('GeoGlobe', () => {
 
   it('shows an empty state for a successful window with no requests', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response({ rows_total: 0 }));
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(await screen.findByText('No request origins yet')).toBeInTheDocument();
     expect(screen.getByText(/latest 14-day window/)).toBeInTheDocument();
@@ -287,7 +322,7 @@ describe('GeoGlobe', () => {
     data.hours[1].b = [['?', '?', 96, 10]];
     data.meta.rows_total = 96;
     mockedGetGeoAnalytics.mockResolvedValue(data);
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(await screen.findByText('96 requests')).toBeInTheDocument();
     expect(screen.getByText('Origins unknown for all requests this hour.')).toBeInTheDocument();
@@ -306,7 +341,7 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockImplementation((options) =>
       Promise.resolve(options?.days === 7 ? seven : fourteen),
     );
-    render(<GeoGlobe />);
+    renderGeoGlobe();
     expect(await screen.findByText('at 01:00 UTC · Jul 15')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '7d' }));
@@ -328,7 +363,7 @@ describe('GeoGlobe', () => {
     mockedGetGeoAnalytics.mockImplementation((options) =>
       Promise.resolve(options?.days === 30 ? thirty : empty),
     );
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     expect(await screen.findByText('No request origins yet')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '30d' }));
@@ -337,7 +372,7 @@ describe('GeoGlobe', () => {
 
   it('returns focus to the trigger when data details closes', async () => {
     mockedGetGeoAnalytics.mockResolvedValue(response());
-    render(<GeoGlobe />);
+    renderGeoGlobe();
 
     const trigger = await screen.findByRole('button', { name: 'Data details' });
     trigger.focus();

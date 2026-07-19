@@ -10,7 +10,6 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from serving.analytics.geo_demand import geo_demand_cache
 from serving.servers.deps import AppServices, get_db_logger, verify_admin_access
 from serving.servers.routers.admin import analytics as analytics_module
 from serving.servers.routers.admin.analytics import router
@@ -39,7 +38,7 @@ async def test_geo_endpoint_uses_supported_complete_hour_window(app, monkeypatch
     app.dependency_overrides[verify_admin_access] = lambda: "admin-id"
     app.dependency_overrides[get_db_logger] = lambda: SimpleNamespace(pool=pool)
     cached = AsyncMock(return_value={"meta": {"generated_at": "2026-07-15T00:00:00+00:00"}})
-    monkeypatch.setattr(geo_demand_cache, "get", cached)
+    monkeypatch.setattr(analytics_module, "get_geo_demand", cached)
 
     class FrozenDateTime(datetime):
         @classmethod
