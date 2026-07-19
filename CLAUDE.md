@@ -22,7 +22,6 @@ apps/
   backend/
     serving/      # FastAPI gateway: HTTP, SSE, adapters, auth, storage, observability
     routing/      # Routing engine: strategies, routers, health, circuit breaker
-    benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, alerts
 services/         # status-monitor-worker, freeinference-harness
@@ -36,8 +35,9 @@ ops/              # Operational tooling (deploy, setup, runtime, admin, perf, db
 deploy/           # Systemd units, Docker, observability manifests
 docs/
   developer/      # Developer guide (built into the internal doc site)
-  user/           # User-facing docs
   agents/         # Agent-facing artifacts: specs/ and plans/
+  superpowers/    # Additional design specs/ and plans/
+  free_inference/ # Public doc site source (Sphinx → doc.freeinference.org)
   reviews/        # Code review records
 ```
 
@@ -95,8 +95,11 @@ For the full diagram (network layer, observability, storage), see
 ### 6.2 Key abstractions
 
 - **Adapter** — provider-specific client. Lives in `apps/backend/serving/adapters/`.
-  Examples: `openai_compat`, `claude`, `gemini`, `openrouter`, `ollama`, `vllm`,
-  `sglang`.
+  Dedicated adapters: `openai_compat` (generic OpenAI-compatible APIs — also
+  serves local vLLM/SGLang/Ollama), `claude` (Claude via Google Vertex),
+  `anthropic` (direct api.anthropic.com), `gemini`, `openrouter`. Local
+  inference servers have no dedicated adapter — they route through
+  `openai_compat`.
 - **`provider` vs `endpoint_id`** — `provider` is a string label on `ModelConfig`
   identifying the API service (used in metrics labels, e.g. `"openai"`,
   `"anthropic"`). `endpoint_id` is the unique per-endpoint key
