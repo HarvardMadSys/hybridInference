@@ -12,6 +12,8 @@ from serving.analytics.geo_demand import floor_hour, geo_demand_cache
 from serving.schemas_admin import (
     AdminAnalyticsResponse,
     AnalyticsBreakdownEntry,
+    AnalyticsModelUserEntry,
+    AnalyticsModelUsers,
     AnalyticsUserEntry,
     SparklineBucket,
 )
@@ -32,6 +34,11 @@ _ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
     "week": (10080, 1440),
     "month": (43200, 1440),
 }
+
+# Bounds for the per-model top-users breakdown: at most this many models
+# (ranked by user-attributed request volume), each with its busiest users.
+_TOP_USERS_MODEL_LIMIT = 20
+_TOP_USERS_PER_MODEL = 10
 
 
 @router.get("/analytics/geo")
@@ -195,6 +202,73 @@ async def admin_get_analytics(
             lookback_minutes,
         )
 
+        # Per-model top users: for each of the busiest models, the users driving
+        # the most requests, with their request and token counts. Single scan of
+        # the window (per_user), then aggregated in SQL. Scoped to signed-in
+        # users (user_id IS NOT NULL), mirroring the top_users query above.
+        # Tokens = prompt + completion (total_tokens is only populated when the
+        # provider returns it, so SUM(total_tokens) would undercount).
+        by_model_top_users_rows = await conn.fetch(
+            """
+            WITH per_user AS (
+                SELECT
+                    l.model_id,
+                    l.user_id,
+                    COALESCE(u.email, l.user_id) AS email,
+                    COUNT(*) AS req_count,
+                    COALESCE(
+                        SUM(COALESCE(l.prompt_tokens, 0) + COALESCE(l.completion_tokens, 0)),
+                        0
+                    ) AS token_count
+                FROM api_logs l
+                LEFT JOIN users u ON u.id = l.user_id
+                WHERE l.timestamp >= NOW() - ($1 * interval '1 minute')
+                  AND l.user_id IS NOT NULL
+                GROUP BY l.model_id, l.user_id, u.email
+            ),
+            model_totals AS (
+                -- SUM(bigint) returns numeric (asyncpg Decimal); cast back to int.
+                SELECT
+                    model_id,
+                    SUM(req_count)::bigint AS model_req_count,
+                    SUM(token_count)::bigint AS model_token_count
+                FROM per_user
+                GROUP BY model_id
+            ),
+            top_models AS (
+                SELECT model_id
+                FROM model_totals
+                ORDER BY model_req_count DESC
+                LIMIT $2
+            ),
+            ranked AS (
+                SELECT
+                    p.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY p.model_id
+                        ORDER BY p.req_count DESC, p.token_count DESC
+                    ) AS rn
+                FROM per_user p
+                JOIN top_models tm ON tm.model_id = p.model_id
+            )
+            SELECT
+                r.model_id,
+                r.user_id,
+                r.email,
+                r.req_count,
+                r.token_count,
+                mt.model_req_count,
+                mt.model_token_count
+            FROM ranked r
+            JOIN model_totals mt ON mt.model_id = r.model_id
+            WHERE r.rn <= $3
+            ORDER BY mt.model_req_count DESC, r.model_id, r.req_count DESC
+            """,
+            lookback_minutes,
+            _TOP_USERS_MODEL_LIMIT,
+            _TOP_USERS_PER_MODEL,
+        )
+
         # Sparkline: align with the date_trunc + generate_series pattern used by
         # /admin/request-metrics so admin chart bucket boundaries are consistent.
         sparkline_rows = await conn.fetch(
@@ -248,6 +322,30 @@ async def admin_get_analytics(
             bucket_minutes,
         )
 
+    # Group the flat per-(model, user) rows into one entry per model. Rows arrive
+    # ordered by model_req_count DESC, so dict insertion order preserves the
+    # model ranking (model_id is TEXT NOT NULL, so no null-key fallback needed).
+    by_model_top_users_map: dict[str, AnalyticsModelUsers] = {}
+    for row in by_model_top_users_rows:
+        model = str(row["model_id"])
+        entry = by_model_top_users_map.get(model)
+        if entry is None:
+            entry = AnalyticsModelUsers(
+                model=model,
+                requests=int(row["model_req_count"]),
+                tokens=int(row["model_token_count"]),
+                users=[],
+            )
+            by_model_top_users_map[model] = entry
+        entry.users.append(
+            AnalyticsModelUserEntry(
+                email=str(row["email"]),
+                user_id=str(row["user_id"]),
+                requests=int(row["req_count"]),
+                tokens=int(row["token_count"]),
+            )
+        )
+
     return AdminAnalyticsResponse(
         period=period,
         active_users=active_users,
@@ -285,5 +383,6 @@ async def admin_get_analytics(
             )
             for row in by_provider_rows
         ],
+        by_model_top_users=list(by_model_top_users_map.values()),
         generated_at=datetime.now(timezone.utc),
     )

@@ -622,6 +622,20 @@ export interface AnalyticsBreakdownEntry {
   fraction: number;
 }
 
+export interface AnalyticsModelUserEntry {
+  email: string;
+  user_id: string;
+  requests: number;
+  tokens: number; // prompt + completion tokens for this user + model
+}
+
+export interface AnalyticsModelUsers {
+  model: string; // model_id
+  requests: number; // total signed-in-user requests for this model
+  tokens: number; // total signed-in-user tokens for this model
+  users: AnalyticsModelUserEntry[];
+}
+
 export interface AdminAnalyticsResponse {
   period: AnalyticsPeriod;
   active_users: number;
@@ -633,6 +647,7 @@ export interface AdminAnalyticsResponse {
   top_users: AnalyticsUserEntry[];
   by_model: AnalyticsBreakdownEntry[];
   by_provider: AnalyticsBreakdownEntry[];
+  by_model_top_users: AnalyticsModelUsers[];
   generated_at: string;
 }
 

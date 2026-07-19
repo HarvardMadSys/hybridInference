@@ -51,3 +51,53 @@ describe('AnalyticsTab request-origins entry', () => {
     expect(getGeoAnalytics).not.toHaveBeenCalled();
   });
 });
+
+describe('AnalyticsTab top users by model', () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it('renders the per-model top-users table with a model selector', async () => {
+    vi.mocked(getAnalytics).mockResolvedValue({
+      period: 'day',
+      active_users: 5,
+      avg_turns: 3,
+      avg_user_turns: 1.5,
+      sparkline: [],
+      top_users: [],
+      by_model: [],
+      by_provider: [],
+      by_model_top_users: [
+        {
+          model: 'claude-sonnet-4-6',
+          requests: 200,
+          tokens: 150000,
+          users: [
+            { email: 'alice@example.com', user_id: 'u1', requests: 120, tokens: 90000 },
+            { email: 'bob@example.com', user_id: 'u2', requests: 80, tokens: 60000 },
+          ],
+        },
+        {
+          model: 'gpt-4o',
+          requests: 50,
+          tokens: 30000,
+          users: [{ email: 'alice@example.com', user_id: 'u1', requests: 50, tokens: 30000 }],
+        },
+      ],
+      generated_at: '2026-01-01T00:00:00Z',
+    });
+
+    render(<AnalyticsTab />);
+
+    // Card renders the busiest model's top users by default.
+    expect(await screen.findByText('Top Users by Model')).toBeInTheDocument();
+    expect(await screen.findByText('alice@example.com')).toBeInTheDocument();
+    expect(screen.getByText('bob@example.com')).toBeInTheDocument();
+
+    // Selector lists every model and defaults to the highest-volume one.
+    const select = screen.getByRole('combobox', { name: 'Select model' });
+    expect(select).toHaveValue('claude-sonnet-4-6');
+    expect(screen.getByRole('option', { name: 'gpt-4o' })).toBeInTheDocument();
+  });
+});
