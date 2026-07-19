@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
 NATIVE_MODEL = "claude-opus-4.7"
@@ -360,6 +363,68 @@ async def test_cache_control_dropped_for_openai_backend(anthropic_test_client, m
     ]
     assert matches, (
         f"Expected warning mentioning cache_control + thinking; got: {[rec.getMessage() for rec in caplog.records]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_backend_repairs_non_object_tool_input(
+    anthropic_test_client, monkeypatch, caplog
+):
+    captured = {}
+    openai_resp = {
+        "id": "x",
+        "object": "chat.completion",
+        "model": OPENAI_MODEL,
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        captured["payload"] = json
+        return openai_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "ChromeRelayReadDom",
+                        "input": '{}""',
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01",
+                        "content": "done",
+                    }
+                ],
+            },
+        ],
+    }
+    caplog.set_level("WARNING", logger="serving.servers.routers.anthropic_messages")
+    response = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+
+    assert response.status_code == 200
+    arguments = captured["payload"]["messages"][0]["tool_calls"][0]["function"]["arguments"]
+    assert json.loads(arguments) == {}
+    assert any(
+        "Normalizing 1 non-object Anthropic tool_use.input" in record.getMessage()
+        for record in caplog.records
     )
 
 
@@ -1958,3 +2023,146 @@ async def test_unimplemented_v1_messages_path_returns_anthropic_shaped_404():
     body = r.json()
     assert body["type"] == "error"
     assert body["error"]["type"] == "not_found_error"
+
+
+# --- Daily quota counter increments ----------------------------------------
+#
+# Regression: the /v1/messages surface logged api_logs.cost_usd but never
+# incremented the per-user user_daily_cost counter that verify_api_key reads,
+# so Anthropic-surface traffic (e.g. Claude Code) bypassed the daily cost cap
+# entirely. Successful requests must now bump the counter; errors must not.
+
+
+@pytest.mark.asyncio
+async def test_successful_request_increments_quota_counter(
+    anthropic_test_client, mock_operational_store, monkeypatch
+):
+    """A billed non-streaming request advances the daily quota counter."""
+    openai_resp = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "model": OPENAI_MODEL,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 9, "completion_tokens": 3, "total_tokens": 12},
+    }
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        return openai_resp
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code == 200
+
+    # The increment is fire-and-forget; let the background task run.
+    await asyncio.sleep(0.05)
+
+    mock_operational_store.increment_user_cost.assert_awaited_once()
+    call = mock_operational_store.increment_user_cost.await_args
+    assert call.args[0] == "test-user"
+    # glm-4.7 pricing: (9 prompt * $0.6 + 3 completion * $2.2) / 1e6 = $1.2e-5.
+    assert call.args[1] == pytest.approx(1.2e-5)
+
+
+@pytest.mark.asyncio
+async def test_streaming_request_increments_quota_counter(
+    anthropic_test_client, mock_operational_store, monkeypatch
+):
+    """A billed streaming request advances the daily quota counter at stream end."""
+    openai_sse = (
+        b'data: {"id":"x","object":"chat.completion.chunk","model":"glm-4.7",'
+        b'"choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n'
+        b'data: {"id":"x","object":"chat.completion.chunk","model":"glm-4.7",'
+        b'"choices":[{"index":0,"delta":{"content":"Hi"}}]}\n\n'
+        b'data: {"id":"x","object":"chat.completion.chunk","model":"glm-4.7",'
+        b'"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
+        b'"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n\n'
+    )
+
+    class _FakeContent:
+        async def iter_any(self):
+            yield openai_sse
+
+        async def iter_chunked(self, n):
+            yield openai_sse
+
+    class _FakeResp:
+        status = 200
+        content = _FakeContent()
+        headers: dict = {"Content-Type": "text/event-stream"}  # noqa: RUF012
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class _FakeSession:
+        def post(self, url, json=None, headers=None, timeout=None):
+            return _FakeResp()
+
+    async def fake_ensure_session(self):
+        return _FakeSession()
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", fake_ensure_session)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=body, headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    await asyncio.sleep(0.05)
+
+    mock_operational_store.increment_user_cost.assert_awaited_once()
+    call = mock_operational_store.increment_user_cost.await_args
+    assert call.args[0] == "test-user"
+    # glm-4.7 pricing: (3 prompt * $0.6 + 1 completion * $2.2) / 1e6 = $4.0e-6.
+    assert call.args[1] == pytest.approx(4.0e-6)
+
+
+@pytest.mark.asyncio
+async def test_failed_request_does_not_increment_quota_counter(
+    anthropic_test_client, mock_operational_store, monkeypatch
+):
+    """A failed (non-200) request is logged but never billed against quota."""
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        raise RuntimeError("upstream boom")
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": OPENAI_MODEL,
+        "max_tokens": 50,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+    assert r.status_code != 200
+
+    await asyncio.sleep(0.05)
+    mock_operational_store.increment_user_cost.assert_not_awaited()

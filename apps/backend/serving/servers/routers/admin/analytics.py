@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BeforeValidator
 
-from serving.analytics.geo_demand import geo_demand_cache, normalize_window
+from serving.analytics.geo_demand import floor_hour, geo_demand_cache
 from serving.schemas_admin import (
     AdminAnalyticsResponse,
     AnalyticsBreakdownEntry,
@@ -21,6 +22,8 @@ from serving.servers.deps import (
 
 router = APIRouter(prefix="/admin")
 
+GeoDays = Annotated[Literal[7, 14, 30, 90], BeforeValidator(int)]
+
 
 # Period → (lookback_minutes, bucket_minutes)
 _ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
@@ -33,9 +36,7 @@ _ANALYTICS_PERIODS: dict[str, tuple[int, int]] = {
 
 @router.get("/analytics/geo")
 async def admin_get_geo_analytics(
-    days: int = Query(14, ge=1, le=90),
-    since: datetime | None = None,
-    until: datetime | None = None,
+    days: GeoDays = 14,
     _admin_id: str = Depends(verify_admin_access),
     db_logger=Depends(get_db_logger),
 ) -> dict:
@@ -43,12 +44,10 @@ async def admin_get_geo_analytics(
     if not db_logger or not db_logger.pool:
         raise HTTPException(500, "Database not configured")
 
-    end = until or datetime.now(timezone.utc)
-    start = since if since is not None else end - timedelta(days=days)
-    try:
-        start, end = normalize_window(start, end)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Cache only complete hours; including the partial current hour would freeze
+    # an early snapshot until the one-hour cache entry expires.
+    end = floor_hour(datetime.now(timezone.utc))
+    start = end - timedelta(days=days)
 
     return await geo_demand_cache.get(db_logger.pool, start, end)
 

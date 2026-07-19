@@ -25,17 +25,252 @@ import random
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import asyncpg
 import dotenv
 
-from serving.analytics.geo_demand import (
-    BUCKET_COLS,
-    GeoBucket,
-    aggregate_geo_demand,
-    finalize_geo_demand,
-)
 from serving.utils.geo_resolver import ALPHA2_TO_ALPHA3, GeoResolver
+
+BUCKET_COLS = ["c", "cc", "cont", "n", "err", "users", "tin", "tout", "gs", "p50", "p90"]
+FLOW_COLS = ["c", "p", "e", "n"]
+
+ROWS_QUERY = """
+SELECT
+  date_trunc('hour', timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS hour,
+  metadata->>'ip'               AS ip,
+  provider,
+  served_endpoint_id,
+  prompt_tokens,
+  completion_tokens,
+  latency_ms,
+  ttft_ms,
+  (error IS NOT NULL OR COALESCE(status_code, 200) >= 400) AS is_err,
+  user_id
+FROM api_logs
+WHERE timestamp >= $1 AND timestamp < $2
+  AND COALESCE(metadata->>'synthetic_probe', 'false') <> 'true'
+ORDER BY timestamp
+"""
+
+# Research-only serving metadata. External providers deliberately have no
+# coordinates because their serving locations are not known.
+PROVIDER_SITES: dict[str, dict[str, Any]] = {
+    "sglang": {
+        "kind": "local",
+        "label": "Local cluster (sglang)",
+        "region": "us-east",
+        "cont": "NA",
+        "coord": [-71.09, 42.36],
+    },
+    "vllm": {
+        "kind": "local",
+        "label": "Local cluster (vLLM)",
+        "region": "us-east",
+        "cont": "NA",
+        "coord": [-71.09, 42.36],
+    },
+    "ollama": {
+        "kind": "local",
+        "label": "Local cluster (Ollama)",
+        "region": "us-east",
+        "cont": "NA",
+        "coord": [-71.09, 42.36],
+    },
+    "deepseek": {"kind": "remote_api", "label": "DeepSeek API"},
+    "kimi": {"kind": "remote_api", "label": "Moonshot Kimi API"},
+    "minimax": {"kind": "remote_api", "label": "MiniMax API"},
+    "zai": {"kind": "remote_api", "label": "Zhipu (Z.ai) API"},
+    "chutes": {"kind": "remote_api", "label": "Chutes API"},
+    "openrouter": {"kind": "remote_api", "label": "OpenRouter API"},
+    "anthropic": {"kind": "remote_api", "label": "Anthropic API"},
+    "openai": {"kind": "remote_api", "label": "OpenAI API"},
+    "gemini": {"kind": "remote_api", "label": "Gemini API"},
+}
+
+
+class GeoBucket:
+    """Mutable research accumulator for one hour and country bucket."""
+
+    __slots__ = ("err", "gs", "n", "tin", "tout", "ttfts", "users")
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.err = 0
+        self.users: set[Any] = set()
+        self.tin = 0
+        self.tout = 0
+        self.gs = 0.0
+        self.ttfts: list[int] = []
+
+
+def _percentile(sorted_values: list[int], q: float) -> int | None:
+    if not sorted_values:
+        return None
+    index = max(0, math.ceil(q * len(sorted_values)) - 1)
+    return sorted_values[index]
+
+
+def _floor_hour(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must include a timezone")
+    return value.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+
+def _normalize_window(since: datetime, until: datetime) -> tuple[datetime, datetime]:
+    start = _floor_hour(since)
+    end = _floor_hour(until)
+    if start >= end:
+        raise ValueError("since must be before until after hourly alignment")
+    return start, end
+
+
+def _build_hours_index(since: datetime, until: datetime) -> list[datetime]:
+    hours: list[datetime] = []
+    current = since
+    while current < until:
+        hours.append(current)
+        current += timedelta(hours=1)
+    return hours
+
+
+def _finalize_geo_demand(
+    hours_index: list[datetime],
+    buckets: dict[tuple[datetime, str, str, str], GeoBucket],
+    flows: dict[tuple[datetime, str, str, str], int],
+    providers_seen: set[str],
+    meta: dict[str, Any],
+) -> dict[str, Any]:
+    """Assemble the rich research payload consumed by ``geo_globe.html``."""
+    hour_positions = {hour: index for index, hour in enumerate(hours_index)}
+    hours_out: list[dict[str, list[list[Any]]]] = [{"b": [], "f": []} for _ in hours_index]
+
+    for (hour, alpha3, alpha2, continent), bucket in sorted(
+        buckets.items(), key=lambda item: (item[0][0], -item[1].n)
+    ):
+        if hour not in hour_positions:
+            continue
+        bucket.ttfts.sort()
+        hours_out[hour_positions[hour]]["b"].append(
+            [
+                alpha3,
+                alpha2,
+                continent,
+                bucket.n,
+                bucket.err,
+                len(bucket.users),
+                bucket.tin,
+                bucket.tout,
+                round(bucket.gs, 1),
+                _percentile(bucket.ttfts, 0.5),
+                _percentile(bucket.ttfts, 0.9),
+            ]
+        )
+
+    for (hour, alpha3, provider, endpoint_id), count in sorted(
+        flows.items(), key=lambda item: (item[0][0], -item[1])
+    ):
+        if hour in hour_positions:
+            hours_out[hour_positions[hour]]["f"].append([alpha3, provider, endpoint_id, count])
+
+    providers_out = []
+    for provider in sorted(providers_seen):
+        site = PROVIDER_SITES.get(provider, {"kind": "remote_api", "label": f"{provider} API"})
+        providers_out.append(
+            {
+                "id": provider,
+                "label": site.get("label", provider),
+                "kind": site.get("kind", "remote_api"),
+                "region": site.get("region"),
+                "cont": site.get("cont"),
+                "coord": site.get("coord"),
+            }
+        )
+
+    return {
+        "meta": meta,
+        "bucket_cols": BUCKET_COLS,
+        "flow_cols": FLOW_COLS,
+        "providers": providers_out,
+        "hours_index": [hour.isoformat() for hour in hours_index],
+        "hours": hours_out,
+    }
+
+
+def _add_geo_row(
+    row: Any,
+    resolver: GeoResolver,
+    buckets: dict[tuple[datetime, str, str, str], GeoBucket],
+    flows: dict[tuple[datetime, str, str, str], int],
+    providers_seen: set[str],
+) -> bool:
+    ip = row["ip"]
+    alpha3, alpha2, continent = resolver.resolve(ip)
+    provider = row["provider"] or "unknown"
+    endpoint_id = row["served_endpoint_id"] or provider
+    providers_seen.add(provider)
+
+    bucket = buckets[(row["hour"], alpha3, alpha2, continent)]
+    bucket.n += 1
+    if row["is_err"]:
+        bucket.err += 1
+    if row["user_id"] is not None:
+        bucket.users.add(row["user_id"])
+    bucket.tin += row["prompt_tokens"] or 0
+    bucket.tout += row["completion_tokens"] or 0
+    bucket.gs += (row["latency_ms"] or 0) / 1000.0
+    if row["ttft_ms"] is not None:
+        bucket.ttfts.append(int(row["ttft_ms"]))
+
+    flows[(row["hour"], alpha3, provider, endpoint_id)] += 1
+    return bool(ip)
+
+
+async def _aggregate_geo_demand(
+    connection: Any,
+    since: datetime,
+    until: datetime,
+    resolver: GeoResolver,
+    *,
+    prefetch: int = 5_000,
+) -> dict[str, Any]:
+    since, until = _normalize_window(since, until)
+    buckets: dict[tuple[datetime, str, str, str], GeoBucket] = defaultdict(GeoBucket)
+    flows: dict[tuple[datetime, str, str, str], int] = defaultdict(int)
+    providers_seen: set[str] = set()
+    rows_total = 0
+    rows_with_ip = 0
+
+    async with connection.transaction():
+        cursor = connection.cursor(ROWS_QUERY, since, until, prefetch=prefetch)
+        async for row in cursor:
+            rows_total += 1
+            rows_with_ip += _add_geo_row(row, resolver, buckets, flows, providers_seen)
+            if rows_total % 10_000 == 0:
+                await asyncio.sleep(0)
+
+    hours_index = _build_hours_index(since, until)
+    meta = {
+        "source": "api_logs",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "start": hours_index[0].isoformat() if hours_index else None,
+        "hours": len(hours_index),
+        "rows_total": rows_total,
+        "rows_with_ip": rows_with_ip,
+        "geoip": {
+            "country": resolver.country_enabled,
+            "provider": resolver.country_provider,
+            "attribution": resolver.country_attribution,
+        },
+        "degraded": resolver.degraded,
+        "degraded_reasons": list(resolver.degraded_reasons),
+        "unmapped_alpha2": sorted(resolver.unmapped_a2),
+        "notes": [
+            "origin = network origin (IP-based), not user residence",
+            "gs = sum of total request latency seconds",
+        ],
+    }
+    return _finalize_geo_demand(hours_index, buckets, flows, providers_seen, meta)
 
 
 def _load_env(env_path: str | None = None) -> None:
@@ -69,11 +304,11 @@ def _dsn() -> str:
 
 
 async def export_real(since: datetime, until: datetime, resolver: GeoResolver) -> dict:
-    """Stream live rows through the shared serving aggregation implementation."""
+    """Stream live rows through the research export aggregation."""
     pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=2)
     try:
         async with pool.acquire() as connection:
-            payload = await aggregate_geo_demand(connection, since, until, resolver)
+            payload = await _aggregate_geo_demand(connection, since, until, resolver)
     finally:
         await pool.close()
     meta = payload["meta"]
@@ -182,7 +417,7 @@ def generate_demo(days: int) -> dict:
         "unmapped_alpha2": [],
         "notes": ["SYNTHETIC DEMO DATA - diurnal patterns are hard-coded, not observed"],
     }
-    return finalize_geo_demand(hours_index, buckets, flows, providers_seen, meta)
+    return _finalize_geo_demand(hours_index, buckets, flows, providers_seen, meta)
 
 
 def write_outputs(payload: dict, out_path: str, csv_path: str | None) -> None:

@@ -13,11 +13,9 @@ import pytest
 from serving.analytics import geo_demand
 from serving.analytics.geo_demand import (
     BUCKET_COLS,
-    FLOW_COLS,
     GeoDemandCache,
     aggregate_geo_demand,
     normalize_window,
-    percentile,
 )
 from serving.utils.geo_resolver import GeoResolver
 
@@ -88,14 +86,7 @@ def row(hour: int, **overrides: Any) -> dict[str, Any]:
     value = {
         "hour": utc(hour),
         "ip": "8.8.8.8",
-        "provider": "vllm",
-        "served_endpoint_id": "vllm:default:8000",
-        "prompt_tokens": 10,
         "completion_tokens": 4,
-        "latency_ms": 1500,
-        "ttft_ms": 20,
-        "is_err": False,
-        "user_id": "secret-user-id",
     }
     value.update(overrides)
     return value
@@ -107,12 +98,6 @@ def resolver() -> GeoResolver:
             {"8.8.8.8": {"country": {"iso_code": "US"}, "continent": {"code": "NA"}}}
         )
     )
-
-
-def test_nearest_rank_percentile() -> None:
-    assert percentile([], 0.5) is None
-    assert percentile([10, 20, 30], 0.5) == 20
-    assert percentile([10, 20, 30], 0.9) == 30
 
 
 def test_window_alignment_and_validation() -> None:
@@ -129,18 +114,12 @@ def test_window_alignment_and_validation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_aggregation_contract_percentiles_and_no_raw_identifiers() -> None:
+async def test_aggregation_contract_is_demand_only_and_has_no_raw_identifiers() -> None:
     connection = FakeConnection(
         [
-            row(0, ttft_ms=10),
-            row(0, ttft_ms=20, is_err=True, status_code=500),
-            row(
-                0,
-                ttft_ms=30,
-                provider="openrouter",
-                served_endpoint_id=None,
-                user_id="another-secret",
-            ),
+            row(0, user_id="secret-user-id"),
+            row(0, completion_tokens=None),
+            row(0, completion_tokens=8, user_id="another-secret"),
         ]
     )
 
@@ -148,46 +127,32 @@ async def test_aggregation_contract_percentiles_and_no_raw_identifiers() -> None
 
     assert connection.transaction_entered is True
     assert connection.cursor_kwargs == {"prefetch": 5000}
-    assert "served_endpoint_id" in connection.cursor_args[0]
+    query = connection.cursor_args[0]
+    assert "completion_tokens" in query
+    assert "metadata->>'ip'" in query
+    assert "metadata->>'synthetic_probe'" in query
+    assert "provider" not in query
+    assert "served_endpoint_id" not in query
+    assert "prompt_tokens" not in query
+    assert "latency_ms" not in query
+    assert "ttft_ms" not in query
+    assert "user_id" not in query
+    assert "ORDER BY" not in query
     assert payload["bucket_cols"] == BUCKET_COLS
-    assert payload["flow_cols"] == FLOW_COLS
-    assert BUCKET_COLS == [
-        "c",
-        "cc",
-        "cont",
-        "n",
-        "err",
-        "users",
-        "tin",
-        "tout",
-        "gs",
-        "p50",
-        "p90",
-    ]
-    assert FLOW_COLS == ["c", "p", "e", "n"]
+    assert BUCKET_COLS == ["c", "cont", "n", "tout"]
+    assert "flow_cols" not in payload
+    assert "providers" not in payload
     assert "classes" not in payload
     assert payload["hours_index"] == [utc(0).isoformat(), utc(1).isoformat()]
-    assert payload["hours"][1] == {"b": [], "f": []}
+    assert payload["hours"][1] == {"b": []}
 
     bucket = dict(zip(BUCKET_COLS, payload["hours"][0]["b"][0], strict=True))
     assert bucket == {
         "c": "USA",
-        "cc": "US",
         "cont": "NA",
         "n": 3,
-        "err": 1,
-        "users": 2,
-        "tin": 30,
         "tout": 12,
-        "gs": 4.5,
-        "p50": 20,
-        "p90": 30,
     }
-    providers = {provider["id"]: provider for provider in payload["providers"]}
-    assert providers["vllm"]["kind"] == "local"
-    assert providers["vllm"]["coord"] is not None
-    assert providers["openrouter"]["kind"] == "remote_api"
-    assert providers["openrouter"]["coord"] is None
 
     serialized = json.dumps(payload)
     assert "8.8.8.8" not in serialized
@@ -199,6 +164,8 @@ async def test_aggregation_contract_percentiles_and_no_raw_identifiers() -> None
         "attribution": None,
     }
     assert payload["meta"]["degraded"] is False
+    assert payload["meta"]["rows_total"] == 3
+    assert payload["meta"]["rows_with_ip"] == 3
 
 
 @pytest.mark.asyncio
@@ -224,25 +191,19 @@ async def test_aggregation_identifies_dbip_lite_and_required_attribution() -> No
 
 
 @pytest.mark.asyncio
-async def test_flows_keep_endpoints_separate_within_one_provider() -> None:
-    connection = FakeConnection(
-        [
-            row(0, served_endpoint_id="vllm:us-east:8000"),
-            row(0, served_endpoint_id="vllm:eu-west:8000"),
-            row(0, served_endpoint_id=None),
-        ]
-    )
+async def test_aggregation_retains_unknown_origin_bucket() -> None:
+    connection = FakeConnection([row(0, ip=None)])
 
     payload = await aggregate_geo_demand(connection, utc(0), utc(1), resolver())
 
-    flows = [dict(zip(FLOW_COLS, values, strict=True)) for values in payload["hours"][0]["f"]]
-    assert {flow["e"] for flow in flows} == {
-        "vllm:us-east:8000",
-        "vllm:eu-west:8000",
-        "vllm",
-    }
-    assert all(flow["p"] == "vllm" for flow in flows)
-    assert all(flow["n"] == 1 for flow in flows)
+    bucket = dict(zip(BUCKET_COLS, payload["hours"][0]["b"][0], strict=True))
+    assert bucket == {"c": "?", "cont": "?", "n": 1, "tout": 4}
+    assert payload["meta"]["rows_total"] == 1
+    assert payload["meta"]["rows_with_ip"] == 0
+
+
+def test_cache_defaults_to_four_entries() -> None:
+    assert GeoDemandCache().max_entries == 4
 
 
 @pytest.mark.asyncio
