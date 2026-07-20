@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
 
 from routing.endpoint_health import EndpointHealthRegistry
@@ -31,6 +32,7 @@ from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+_LEGACY_ROUTING_OPTION_UNSET = object()
 
 # ============================================================================
 # Exceptions
@@ -156,6 +158,26 @@ class FixedRouter:
         # weight 0 so the existing ``weight > 0`` gates in selection and every
         # fallback loop skip them without any per-call-site change.
         self.disabled_provider_resolver = disabled_provider_resolver
+
+    @staticmethod
+    def _resolve_pin_provider(
+        routing_options: RoutingRequestOptions | None,
+        params: dict[str, Any],
+    ) -> str | None:
+        """Resolve the explicit pin without forwarding router controls upstream."""
+        option_pin = routing_options.pin_provider if routing_options is not None else None
+        legacy_pin = params.pop("pin_provider", _LEGACY_ROUTING_OPTION_UNSET)
+        if legacy_pin is _LEGACY_ROUTING_OPTION_UNSET:
+            return option_pin
+        if legacy_pin is None:
+            return option_pin
+        # One-release compatibility for direct FixedRouter callers. The public
+        # serving path uses RoutingRequestOptions and never enters this branch.
+        if option_pin is not None:
+            raise TypeError("pin_provider was supplied both directly and in routing_options")
+        if not isinstance(legacy_pin, str):
+            raise TypeError("pin_provider must be a string or None")
+        return legacy_pin
 
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
@@ -420,7 +442,7 @@ class FixedRouter:
         model_id: str,
         messages: list[dict[str, Any]],
         *,
-        pin_provider: str | None = None,
+        routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> dict[str, Any]:
         """Execute chat completion with automatic fallback.
@@ -428,7 +450,7 @@ class FixedRouter:
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
-            pin_provider: Optional provider name to force routing to.
+            routing_options: Router-owned controls such as an explicit provider pin.
             **params: Additional parameters for the adapter.
 
         Returns:
@@ -437,6 +459,7 @@ class FixedRouter:
         Raises:
             ValueError: If no route configured for model.
         """
+        pin_provider = self._resolve_pin_provider(routing_options, params)
         primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
             if pin_provider:
@@ -529,7 +552,7 @@ class FixedRouter:
         model_id: str,
         messages: list[dict[str, Any]],
         *,
-        pin_provider: str | None = None,
+        routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> AsyncIterator[Any]:
         """Stream chat completion with automatic fallback.
@@ -537,7 +560,7 @@ class FixedRouter:
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
-            pin_provider: Optional provider name to force routing to.
+            routing_options: Router-owned controls such as an explicit provider pin.
             **params: Additional parameters for the adapter.
 
         Yields:
@@ -546,6 +569,7 @@ class FixedRouter:
         Raises:
             ValueError: If no route configured for model.
         """
+        pin_provider = self._resolve_pin_provider(routing_options, params)
         primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
             if pin_provider:

@@ -1751,13 +1751,75 @@ async def test_streaming_upstream_error_body_logged_to_db(monkeypatch, mock_log_
 # ===========================================================================
 
 
+class _ProviderEchoAdapter(DummyAdapter):
+    """Expose the selected provider in response content for pin assertions."""
+
+    async def chat_completion(
+        self, messages: list[dict[str, Any]], **params: Any
+    ) -> dict[str, Any]:
+        return self.format_response(content=self.config.provider, model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params: Any
+    ) -> AsyncGenerator[str, None]:
+        provider = self.config.provider
+        yield self.format_stream_chunk(model=self.config.id, content=provider)
+        yield make_final_usage_chunk(
+            model=self.config.id,
+            messages=messages,
+            total_content=provider,
+        )
+        yield done_sentinel()
+
+
+class _LegacyCustomRouter:
+    """One-release custom strategy shape that accepts only arbitrary params."""
+
+    def __init__(self) -> None:
+        self.adapter = _ProviderEchoAdapter(
+            ModelConfig(
+                id="test-model",
+                name="test-model",
+                provider="custom",
+                base_url="http://custom",
+            )
+        )
+        self.chat_params: list[dict[str, Any]] = []
+        self.stream_params: list[dict[str, Any]] = []
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        self.chat_params.append(dict(params))
+        return await self.adapter.chat_completion(messages, **params)
+
+    async def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncGenerator[str, None]:
+        self.stream_params.append(dict(params))
+        async for chunk in self.adapter.stream_chat_completion(messages, **params):
+            yield chunk
+
+    def record_observation(self, _observation: Any) -> None:
+        return None
+
+    def get_provider_status(self) -> dict[str, dict[str, Any]]:
+        return {}
+
+
 @pytest.fixture
 async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
     """App with multi-provider routes for pin testing."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
 
     router = RouteExecutor()
-    zai = DummyAdapter(_mk_cfg("test-model"))
+    zai = _ProviderEchoAdapter(_mk_cfg("test-model"))
     zai.config = ModelConfig(
         id="test-model",
         name="test-model",
@@ -1766,7 +1828,7 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
         context_length=8192,
         max_output_length=4096,
     )
-    ollama = DummyAdapter(_mk_cfg("test-model"))
+    ollama = _ProviderEchoAdapter(_mk_cfg("test-model"))
     ollama.config = ModelConfig(
         id="test-model",
         name="test-model",
@@ -1775,7 +1837,7 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
         context_length=8192,
         max_output_length=4096,
     )
-    disabled = DummyAdapter(_mk_cfg("test-model"))
+    disabled = _ProviderEchoAdapter(_mk_cfg("test-model"))
     disabled.config = ModelConfig(
         id="test-model",
         name="test-model",
@@ -1817,7 +1879,85 @@ async def test_pin_nonstream_success(pin_client: AsyncClient):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["choices"][0]["message"]["content"]
+    assert body["choices"][0]["message"]["content"] == "ollama"
+
+
+@pytest.mark.asyncio
+async def test_pin_stream_success(pin_client: AsyncClient):
+    """Streaming request uses the unified router options call path."""
+    async with pin_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json=_chat_body(stream=True),
+        headers={"X-Route-Pin": "ollama"},
+    ) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines()]
+
+    assert "data: [DONE]" in lines
+    assert not any('"error"' in line for line in lines)
+    assert _content_from_sse_lines(lines) == "ollama"
+
+
+@pytest.mark.asyncio
+async def test_pin_bypasses_model_router_registry(
+    pin_client: AsyncClient,
+    pin_app: FastAPI,
+):
+    """A provider pin must never dispatch through the per-model strategy."""
+    routewise_router = MagicMock(name="routewise_router")
+    registry = MagicMock()
+    registry.get_router.return_value = routewise_router
+    pin_app.state.services.model_router_registry = registry
+
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "ollama"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "ollama"
+    registry.get_router.assert_not_called()
+    routewise_router.chat_completion.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_unpinned_custom_strategy_does_not_receive_routing_options(
+    pin_client: AsyncClient,
+    pin_app: FastAPI,
+    stream: bool,
+):
+    """Legacy custom strategies keep receiving only upstream request params."""
+    custom_router = _LegacyCustomRouter()
+    registry = MagicMock()
+    registry.get_router.return_value = custom_router
+    pin_app.state.services.model_router_registry = registry
+
+    if stream:
+        async with pin_client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=_chat_body(stream=True),
+        ) as resp:
+            assert resp.status_code == 200
+            lines = [line async for line in resp.aiter_lines()]
+        assert "data: [DONE]" in lines
+        assert _content_from_sse_lines(lines) == "custom"
+        observed_params = custom_router.stream_params
+    else:
+        resp = await pin_client.post(
+            "/v1/chat/completions",
+            json=_chat_body(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "custom"
+        observed_params = custom_router.chat_params
+
+    registry.get_router.assert_called_once_with("test-model")
+    assert observed_params
+    assert all("routing_options" not in params for params in observed_params)
 
 
 @pytest.mark.asyncio

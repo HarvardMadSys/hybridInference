@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.protocols import RouterProtocol
+from routing.protocols import RouterProtocol, RoutingRequestOptions
 from routing.route_table import RouteTableView
 from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
@@ -37,6 +37,8 @@ class _ContractAdapter(BaseAdapter):
         self.stream_error = stream_error
         self.chat_calls = 0
         self.stream_calls = 0
+        self.chat_params: list[dict[str, Any]] = []
+        self.stream_params: list[dict[str, Any]] = []
 
     async def chat_completion(
         self,
@@ -44,6 +46,7 @@ class _ContractAdapter(BaseAdapter):
         **params: Any,
     ) -> dict[str, Any]:
         self.chat_calls += 1
+        self.chat_params.append(dict(params))
         if self.chat_error is not None:
             raise self.chat_error
         return self.format_response(content="ok", model=self.config.id)
@@ -54,6 +57,7 @@ class _ContractAdapter(BaseAdapter):
         **params: Any,
     ) -> AsyncGenerator[str, None]:
         self.stream_calls += 1
+        self.stream_params.append(dict(params))
         for chunk in self.stream_chunks:
             yield chunk
         if self.stream_error is not None:
@@ -131,6 +135,37 @@ def test_serving_routers_satisfy_structural_protocol(router_factory: _RouterFact
     router = router_factory.build([_adapter("primary")])
 
     assert isinstance(router, RouterProtocol)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_routing_options_are_consumed_before_adapter_dispatch(
+    router_factory: _RouterFactory,
+) -> None:
+    primary = _adapter(
+        "primary",
+        stream_chunks=(
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+            "data: [DONE]\n\n",
+        ),
+    )
+    router = router_factory.build([primary])
+    options = RoutingRequestOptions()
+
+    await router.chat_completion(
+        _MODEL_ID,
+        _MESSAGES,
+        routing_options=options,
+    )
+    async for _ in router.stream_chat_completion(
+        _MODEL_ID,
+        _MESSAGES,
+        routing_options=options,
+    ):
+        pass
+
+    assert all("routing_options" not in params for params in primary.chat_params)
+    assert all("routing_options" not in params for params in primary.stream_params)
 
 
 @pytest.mark.unit

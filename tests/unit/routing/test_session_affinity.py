@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from routing.endpoints import endpoint_id_for_adapter
+from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AFFINITY_SWEEP_THRESHOLD,
     AFFINITY_TTL_SECONDS,
@@ -386,7 +387,13 @@ def test_pin_provider_failure_preserves_affinity_chat():
     )
 
     with pytest.raises(RuntimeError):
-        asyncio.run(r.chat_completion("m", [], pin_provider="BAD"))
+        asyncio.run(
+            r.chat_completion(
+                "m",
+                [],
+                routing_options=RoutingRequestOptions(pin_provider="BAD"),
+            )
+        )
 
     assert ("u1", "m") in r._affinity
     assert r._affinity[("u1", "m")].endpoint_id == endpoint_id_for_adapter(good)
@@ -409,7 +416,11 @@ def test_pin_provider_failure_preserves_affinity_stream():
     )
 
     async def _consume():
-        async for _ in r.stream_chat_completion("m", [], pin_provider="BAD"):
+        async for _ in r.stream_chat_completion(
+            "m",
+            [],
+            routing_options=RoutingRequestOptions(pin_provider="BAD"),
+        ):
             pass
 
     with pytest.raises(RuntimeError):

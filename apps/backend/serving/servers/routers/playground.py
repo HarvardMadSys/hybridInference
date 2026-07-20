@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from routing.endpoints import endpoint_id_for_adapter
+from routing.protocols import RoutingRequestOptions
 from serving.servers.deps import get_router, require_role
 from serving.stream import make_role_chunk
 
@@ -176,7 +177,7 @@ async def playground_chat(
         async for chunk in router_exec.stream_chat_completion(
             body.model,
             effective_messages,
-            pin_provider=body.provider,
+            routing_options=RoutingRequestOptions(pin_provider=body.provider),
             **kwargs,
         ):
             with suppress(Exception):

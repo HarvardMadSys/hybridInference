@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
+from routing.protocols import RoutingRequestOptions
 from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
@@ -135,7 +136,7 @@ async def test_fixed_pinned_failure_excludes_endpoint_from_routewise() -> None:
             await fixed.chat_completion(
                 _MODEL_ID,
                 _MESSAGES,
-                pin_provider=_PRIMARY_ENDPOINT,
+                routing_options=RoutingRequestOptions(pin_provider=_PRIMARY_ENDPOINT),
             )
         await asyncio.sleep(0)
 
@@ -265,7 +266,7 @@ async def test_fixed_pin_bypasses_open_circuit_and_updates_shared_health() -> No
         response = await fixed.chat_completion(
             _MODEL_ID,
             _MESSAGES,
-            pin_provider=_PRIMARY_ENDPOINT,
+            routing_options=RoutingRequestOptions(pin_provider=_PRIMARY_ENDPOINT),
         )
 
         status_after_success = routewise.get_provider_status()[_PRIMARY_ENDPOINT]
@@ -286,7 +287,7 @@ async def test_fixed_pin_bypasses_open_circuit_and_updates_shared_health() -> No
             await fixed.chat_completion(
                 _MODEL_ID,
                 _MESSAGES,
-                pin_provider=_PRIMARY_ENDPOINT,
+                routing_options=RoutingRequestOptions(pin_provider=_PRIMARY_ENDPOINT),
             )
         await asyncio.sleep(0)
 

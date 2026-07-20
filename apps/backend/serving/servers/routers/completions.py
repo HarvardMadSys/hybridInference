@@ -15,6 +15,7 @@ from fastapi.responses import StreamingResponse
 
 from routing.endpoints import endpoint_id_for_adapter
 from routing.executor import ProviderPinError
+from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
 from serving.config.settings import has_role
@@ -794,25 +795,33 @@ async def chat_completions(
                 detail=f"Pinned provider '{pin_provider}' not found for model {model}",
             )
 
-    # Per-model routing strategy via ModelRouterRegistry.
-    # pin_provider always bypasses RouteWise → goes direct to FixedRouter.
+    # Per-model routing strategy via ModelRouterRegistry. Pinned requests still
+    # bypass RouteWise, but both selected routers now share one execution call
+    # contract below.
+    routing_options = RoutingRequestOptions(pin_provider=pin_provider) if pin_provider else None
     active_router = router_exec
-    if model_router_registry is not None and not pin_provider:
+    if model_router_registry is not None and routing_options is None:
         active_router = model_router_registry.get_router(model)
 
     # Thread the external request id into params so the router correlates its
     # routing metadata, prefix-cache stash, and observation under one id instead
     # of generating a divergent internal id.
     params["request_id"] = request_id
+    router_params = dict(params)
+    if routing_options is not None:
+        # Only pinned requests need the new keyword today, and the registry has
+        # already routed those to FixedRouter. This keeps one-release custom
+        # strategies that accept only **params from forwarding an empty options
+        # object to their provider adapter.
+        router_params["routing_options"] = routing_options
 
     # Streaming path
     if effective_stream:
-        if active_router is router_exec:
-            adapter_chunks = router_exec.stream_chat_completion(
-                model, messages, pin_provider=pin_provider, **params
-            )
-        else:
-            adapter_chunks = active_router.stream_chat_completion(model, messages, **params)
+        adapter_chunks = active_router.stream_chat_completion(
+            model,
+            messages,
+            **router_params,
+        )
 
         session = StreamSession(
             routing=routing,
@@ -894,12 +903,11 @@ async def chat_completions(
 
     # Non-streaming path
     try:
-        if active_router is router_exec:
-            response = await router_exec.chat_completion(
-                model, messages, pin_provider=pin_provider, **params
-            )
-        else:
-            response = await active_router.chat_completion(model, messages, **params)
+        response = await active_router.chat_completion(
+            model,
+            messages,
+            **router_params,
+        )
         serializer_mode = resolve_mode(request.headers)
 
         # Apply serializer: strip _routing metadata and enforce reasoning_content

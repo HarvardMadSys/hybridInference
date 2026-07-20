@@ -43,6 +43,7 @@ from routewise.core import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
 
+    from routing.protocols import RoutingRequestOptions
     from routing.route_table import RouteTableView
     from routing.routers import RoutingObservation
     from serving.adapters.base import BaseAdapter
@@ -2432,9 +2433,15 @@ class RouteWiseRouter:
         )
 
     async def chat_completion(
-        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
     ) -> dict[str, Any]:
         """Run a non-streaming RouteWise chat completion."""
+        self._validate_routing_options(routing_options, params)
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
@@ -2526,9 +2533,15 @@ class RouteWiseRouter:
                 decision.release()
 
     async def stream_chat_completion(
-        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
     ) -> AsyncIterator[Any]:
         """Run a streaming RouteWise chat completion."""
+        self._validate_routing_options(routing_options, params)
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
@@ -2651,3 +2664,14 @@ class RouteWiseRouter:
         finally:
             if decision is not None:
                 decision.release()
+
+    @staticmethod
+    def _validate_routing_options(
+        routing_options: RoutingRequestOptions | None,
+        params: dict[str, Any],
+    ) -> None:
+        """Consume router controls locally and fail fast on invalid dispatch."""
+        if "pin_provider" in params:
+            raise TypeError("pin_provider moved to routing_options=RoutingRequestOptions(...)")
+        if routing_options is not None and routing_options.pin_provider is not None:
+            raise ValueError("pinned requests must be dispatched through the shared FixedRouter")

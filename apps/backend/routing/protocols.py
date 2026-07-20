@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -9,7 +10,14 @@ if TYPE_CHECKING:
 
     from routing.routers import RoutingObservation
 
-__all__ = ["RouterProtocol"]
+__all__ = ["RouterProtocol", "RoutingRequestOptions"]
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingRequestOptions:
+    """Router-owned request controls that must not reach provider adapters."""
+
+    pin_provider: str | None = None
 
 
 @runtime_checkable
@@ -20,6 +28,8 @@ class RouterProtocol(Protocol):
         self,
         model_id: str,
         messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> dict[str, Any]:
         """Route a non-streaming chat completion request."""
@@ -29,6 +39,8 @@ class RouterProtocol(Protocol):
         self,
         model_id: str,
         messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> AsyncIterator[Any]:
         """Route a streaming chat completion request."""

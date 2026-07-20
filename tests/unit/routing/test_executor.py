@@ -15,6 +15,7 @@ from routing.executor import (
     RouteConfig,
     RouteExecutor,
 )
+from routing.protocols import RoutingRequestOptions
 from routing.streaming import has_non_empty_content
 from serving.adapters.base import BaseAdapter, ModelConfig
 
@@ -215,7 +216,7 @@ async def test_pin_failure_attaches_routing_provider_to_exception():
         await exe.chat_completion(
             "m",
             messages=[{"role": "user", "content": "hi"}],
-            pin_provider="kimi_coding",
+            routing_options=RoutingRequestOptions(pin_provider="kimi_coding"),
         )
 
     routing = getattr(exc_info.value, "_routing", None)
@@ -548,7 +549,9 @@ async def test_pin_miss_raises_provider_pin_error():
 
     with pytest.raises(ProviderPinError, match="nonexistent"):
         await exe.chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="nonexistent"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="nonexistent"),
         )
 
 
@@ -563,7 +566,9 @@ async def test_pin_no_fallback_on_failure():
 
     with pytest.raises(RuntimeError, match="fail"):
         await exe.chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zai"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="zai"),
         )
 
 
@@ -577,8 +582,28 @@ async def test_pin_success():
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
 
     resp = await exe.chat_completion(
-        "m", messages=[{"role": "user", "content": "hi"}], pin_provider="ollama"
+        "m",
+        messages=[{"role": "user", "content": "hi"}],
+        routing_options=RoutingRequestOptions(pin_provider="ollama"),
     )
+    assert resp["_routing"]["provider"] == "ollama"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_legacy_pin_keyword_is_consumed_by_fixed_router():
+    """The one-release shim must pin locally instead of forwarding upstream."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zai"))
+    b = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+
+    resp = await exe.chat_completion(
+        "m",
+        messages=[{"role": "user", "content": "hi"}],
+        pin_provider="ollama",
+    )
+
     assert resp["_routing"]["provider"] == "ollama"
 
 
@@ -616,7 +641,9 @@ async def test_stream_pin_success():
 
     chunks = []
     async for chunk in exe.stream_chat_completion(
-        "m", messages=[{"role": "user", "content": "hi"}], pin_provider="ollama"
+        "m",
+        messages=[{"role": "user", "content": "hi"}],
+        routing_options=RoutingRequestOptions(pin_provider="ollama"),
     ):
         chunks.append(chunk)
     assert len(chunks) > 0
@@ -632,7 +659,9 @@ async def test_stream_pin_miss_raises():
 
     with pytest.raises(ProviderPinError, match="nonexistent"):
         async for _ in exe.stream_chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="nonexistent"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="nonexistent"),
         ):
             pass
 
@@ -648,7 +677,9 @@ async def test_stream_pin_no_fallback():
 
     with pytest.raises(RuntimeError, match="fail"):
         async for _ in exe.stream_chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zai"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="zai"),
         ):
             pass
 

@@ -277,6 +277,7 @@ class TestPlaygroundAccess:
             json={
                 "model": "playground-model",
                 "messages": [{"role": "user", "content": "hi"}],
+                "provider": "test",
             },
         ) as response:
             assert response.status_code == 200
