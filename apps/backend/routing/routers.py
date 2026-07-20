@@ -74,17 +74,15 @@ class RouteConfig:
     required_role: str = "free"
 
 
-_OBSERVATION_LEGACY_UNSET = object()
-
-
-@dataclass(init=False)
+@dataclass(kw_only=True)
 class RoutingObservation:
     """Observation from a completed request, for online learning routers.
 
     RouteWiseRouter overrides record_observation() to update its cost model;
-    FixedRouter ignores observations (no-op). ``request_id`` and ``terminal``
-    are keyword-only so explicit correlation and failed-attempt disposition do
-    not shift the legacy positional tail retained for older integrations.
+    FixedRouter ignores observations (no-op). All fields are keyword-only so
+    request correlation, terminal disposition, and strategy-owned metadata stay
+    explicit at construction sites. Supplied ``strategy_metadata`` is borrowed
+    from its caller; observations and router consumers treat it as read-only.
     """
 
     model_id: str
@@ -98,101 +96,6 @@ class RoutingObservation:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __init__(
-        self,
-        model_id: str,
-        endpoint_id: str,
-        ttft_ms: float | None,
-        total_latency_ms: float,
-        token_count: int,
-        success: bool,
-        *legacy_tail: Any,
-        request_id: str | None = None,
-        terminal: bool = True,
-        prompt_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
-        completion_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
-        strategy_metadata: dict[str, Any] | None = None,
-        quota_committed: float | object = _OBSERVATION_LEGACY_UNSET,
-        selected_provider_type: str | None | object = _OBSERVATION_LEGACY_UNSET,
-        sc_committed: bool | object = _OBSERVATION_LEGACY_UNSET,
-        hedged: bool | object = _OBSERVATION_LEGACY_UNSET,
-        backup_won: bool | object = _OBSERVATION_LEGACY_UNSET,
-        lp_status: str | None | object = _OBSERVATION_LEGACY_UNSET,
-    ) -> None:
-        if len(legacy_tail) > 8:
-            raise TypeError(
-                f"RoutingObservation.__init__() takes at most 14 positional arguments "
-                f"but {6 + len(legacy_tail)} were given"
-            )
-
-        values: dict[str, Any] = {
-            "quota_committed": quota_committed,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "selected_provider_type": selected_provider_type,
-            "sc_committed": sc_committed,
-            "hedged": hedged,
-            "backup_won": backup_won,
-            "lp_status": lp_status,
-        }
-        legacy_names = [
-            "quota_committed",
-            "prompt_tokens",
-            "completion_tokens",
-            "selected_provider_type",
-            "sc_committed",
-            "hedged",
-            "backup_won",
-            "lp_status",
-        ]
-        for name, value in zip(legacy_names, legacy_tail, strict=False):
-            if values[name] is not _OBSERVATION_LEGACY_UNSET:
-                raise TypeError(
-                    f"RoutingObservation.__init__() got multiple values for argument '{name}'"
-                )
-            values[name] = value
-
-        metadata = dict(strategy_metadata or {})
-        legacy_routewise: dict[str, Any] = {}
-        for name in (
-            "quota_committed",
-            "selected_provider_type",
-            "sc_committed",
-            "hedged",
-            "backup_won",
-            "lp_status",
-        ):
-            if values[name] is not _OBSERVATION_LEGACY_UNSET:
-                legacy_routewise[name] = values[name]
-        if legacy_routewise:
-            existing_routewise = metadata.get("routewise")
-            merged_routewise = (
-                dict(existing_routewise) if isinstance(existing_routewise, dict) else {}
-            )
-            merged_routewise.update(legacy_routewise)
-            metadata["routewise"] = merged_routewise
-
-        resolved_prompt_tokens = (
-            0 if values["prompt_tokens"] is _OBSERVATION_LEGACY_UNSET else values["prompt_tokens"]
-        )
-        resolved_completion_tokens = (
-            0
-            if values["completion_tokens"] is _OBSERVATION_LEGACY_UNSET
-            else values["completion_tokens"]
-        )
-
-        self.model_id = model_id
-        self.endpoint_id = endpoint_id
-        self.ttft_ms = ttft_ms
-        self.total_latency_ms = total_latency_ms
-        self.token_count = token_count
-        self.success = success
-        self.request_id = request_id
-        self.terminal = terminal
-        self.prompt_tokens = resolved_prompt_tokens
-        self.completion_tokens = resolved_completion_tokens
-        self.strategy_metadata = metadata
 
 
 @dataclass

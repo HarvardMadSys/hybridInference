@@ -315,7 +315,7 @@ def _obs(
         success=success,
         request_id=request_id,
         terminal=terminal,
-        quota_committed=0.0,
+        strategy_metadata={"routewise": {"quota_committed": 0.0}},
     )
 
 

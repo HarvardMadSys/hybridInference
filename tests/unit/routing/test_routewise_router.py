@@ -330,7 +330,7 @@ class TestRouteWiseRouterScaffold:
                 prompt_tokens=100,
                 completion_tokens=500,
                 success=True,
-                quota_committed=0.0,
+                strategy_metadata={"routewise": {"quota_committed": 0.0}},
             )
         )
 
@@ -964,7 +964,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -994,7 +994,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1016,7 +1016,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1035,7 +1035,7 @@ class TestRouteWiseObservation:
             prompt_tokens=0,
             completion_tokens=0,
             success=False,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)  # Should not raise.
 
@@ -1130,7 +1130,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1153,7 +1153,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1201,7 +1201,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=0,
             success=False,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 

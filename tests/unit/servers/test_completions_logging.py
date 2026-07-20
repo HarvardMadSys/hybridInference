@@ -381,9 +381,19 @@ def test_record_routing_observation_accepts_typed_strategy_metadata(cl_logger):
     assert obs.token_count == 7
 
 
-def test_routing_observation_accepts_legacy_routewise_kwargs():
+def test_routing_observation_accepts_explicit_strategy_metadata():
     from routing.routers import RoutingObservation
 
+    strategy_metadata = {
+        "routewise": {
+            "selected_provider_type": "on_demand",
+            "quota_committed": 1.5,
+            "sc_committed": True,
+            "hedged": True,
+            "backup_won": False,
+            "lp_status": "optimal",
+        }
+    }
     obs = RoutingObservation(
         model_id="gpt-4",
         endpoint_id="openai-prod",
@@ -393,70 +403,16 @@ def test_routing_observation_accepts_legacy_routewise_kwargs():
         success=True,
         prompt_tokens=1,
         completion_tokens=2,
-        selected_provider_type="on_demand",
-        quota_committed=1.5,
-        sc_committed=True,
-        hedged=True,
-        backup_won=False,
-        lp_status="optimal",
+        strategy_metadata=strategy_metadata,
     )
 
-    assert obs.strategy_metadata == {
-        "routewise": {
-            "selected_provider_type": "on_demand",
-            "quota_committed": 1.5,
-            "sc_committed": True,
-            "hedged": True,
-            "backup_won": False,
-            "lp_status": "optimal",
-        }
-    }
+    assert obs.strategy_metadata is strategy_metadata
 
 
-def test_routing_observation_accepts_legacy_positional_quota_committed():
+def test_routing_observation_is_keyword_only():
     from routing.routers import RoutingObservation
 
-    obs = RoutingObservation(
-        "gpt-4",
-        "openai-prod",
-        None,
-        1.0,
-        3,
-        True,
-        1.5,
-        prompt_tokens=1,
-        completion_tokens=2,
-    )
-
-    assert obs.prompt_tokens == 1
-    assert obs.completion_tokens == 2
-    assert obs.strategy_metadata == {"routewise": {"quota_committed": 1.5}}
-
-
-def test_routing_observation_accepts_keyword_only_request_id_with_legacy_tail():
-    from routing.routers import RoutingObservation
-
-    obs = RoutingObservation(
-        "gpt-4",
-        "openai-prod",
-        None,
-        1.0,
-        3,
-        True,
-        1.5,
-        request_id="rid-1",
-        prompt_tokens=1,
-        completion_tokens=2,
-    )
-
-    assert obs.request_id == "rid-1"
-    assert obs.strategy_metadata == {"routewise": {"quota_committed": 1.5}}
-
-
-def test_routing_observation_rejects_positional_request_id_after_legacy_tail():
-    from routing.routers import RoutingObservation
-
-    with pytest.raises(TypeError, match="at most 14 positional arguments"):
+    with pytest.raises(TypeError, match="positional"):
         RoutingObservation(
             "gpt-4",
             "openai-prod",
@@ -464,67 +420,46 @@ def test_routing_observation_rejects_positional_request_id_after_legacy_tail():
             1.0,
             3,
             True,
-            1.5,
-            1,
-            2,
-            "on_demand",
-            True,
-            True,
-            False,
-            "optimal",
-            "rid-1",
         )
 
 
-def test_routing_observation_accepts_full_legacy_positional_tail():
+def test_routing_observation_rejects_routewise_specific_kwargs():
     from routing.routers import RoutingObservation
 
-    obs = RoutingObservation(
-        "gpt-4",
-        "openai-prod",
-        None,
-        1.0,
-        3,
-        True,
-        1.5,
-        1,
-        2,
-        "on_demand",
-        True,
-        True,
-        False,
-        "optimal",
-    )
-
-    assert obs.prompt_tokens == 1
-    assert obs.completion_tokens == 2
-    assert obs.strategy_metadata == {
-        "routewise": {
-            "quota_committed": 1.5,
-            "selected_provider_type": "on_demand",
-            "sc_committed": True,
-            "hedged": True,
-            "backup_won": False,
-            "lp_status": "optimal",
-        }
-    }
-
-
-def test_routing_observation_rejects_duplicate_legacy_positional_and_keyword():
-    from routing.routers import RoutingObservation
-
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="unexpected keyword argument 'quota_committed'"):
         RoutingObservation(
-            "gpt-4",
-            "openai-prod",
-            None,
-            1.0,
-            3,
-            True,
-            1.5,
-            1,
-            prompt_tokens=1,
+            model_id="gpt-4",
+            endpoint_id="openai-prod",
+            ttft_ms=None,
+            total_latency_ms=1.0,
+            token_count=3,
+            success=True,
+            quota_committed=0.0,
         )
+
+
+def test_routing_observation_metadata_defaults_are_independent():
+    from routing.routers import RoutingObservation
+
+    first = RoutingObservation(
+        model_id="gpt-4",
+        endpoint_id="openai-prod",
+        ttft_ms=None,
+        total_latency_ms=1.0,
+        token_count=3,
+        success=True,
+    )
+    second = RoutingObservation(
+        model_id="gpt-4",
+        endpoint_id="openai-prod",
+        ttft_ms=None,
+        total_latency_ms=1.0,
+        token_count=3,
+        success=True,
+    )
+    first.strategy_metadata["routewise"] = {"quota_committed": 1.5}
+
+    assert second.strategy_metadata == {}
 
 
 # -- build_db_params -------------------------------------------------------

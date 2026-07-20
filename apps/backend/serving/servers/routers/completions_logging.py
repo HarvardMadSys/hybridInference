@@ -141,7 +141,7 @@ class CompletionsLogger:
                     success=False,
                     request_id=request_id,
                     terminal=False,
-                    quota_committed=0.0,
+                    strategy_metadata={"routewise": {"quota_committed": 0.0}},
                 )
             )
 
