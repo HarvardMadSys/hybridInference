@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from routing.routers import _get_endpoint_id
+from routing.endpoints import endpoint_id_for_adapter
 from serving.schemas_admin import (
     ListAllRouteWeightsResponse,
     ListRouteWeightsResponse,
@@ -33,7 +33,8 @@ def _raw_route_entries(route) -> list[tuple[object, float, str]]:
     if raw_adapters:
         return raw_adapters
     return [
-        (adapter, float(weight), _get_endpoint_id(adapter)) for adapter, weight in route.adapters
+        (adapter, float(weight), endpoint_id_for_adapter(adapter))
+        for adapter, weight in route.adapters
     ]
 
 
@@ -53,7 +54,7 @@ def _route_row(
     yaml_weight: float,
     override_weight: float | None,
 ) -> RouteWeightItem:
-    endpoint_id = _get_endpoint_id(adapter)
+    endpoint_id = endpoint_id_for_adapter(adapter)
     return RouteWeightItem(
         model_id=model_id,
         strategy=strategy,

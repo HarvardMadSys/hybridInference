@@ -7,6 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from routing.endpoints import endpoint_id_for_adapter
 from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
     AdminProviderQuotasResponse,
@@ -109,7 +110,7 @@ def _enumerate_routable_providers(
                 continue
             models, endpoints = by_provider.setdefault(provider, (set(), set()))
             models.add(canonical)
-            endpoints.add(getattr(adapter.config, "endpoint_id", None) or provider)
+            endpoints.add(endpoint_id_for_adapter(adapter))
     return by_provider
 
 

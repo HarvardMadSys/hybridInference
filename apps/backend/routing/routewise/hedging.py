@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
+from routing.endpoints import endpoint_id_for_adapter
 from routing.routers import _has_non_empty_content, _routing_chunk
 from serving.adapters.base import BaseAdapter
 from serving.utils import context as req_ctx
@@ -720,8 +721,7 @@ def _provider_name_from_adapter(adapter: BaseAdapter | None) -> str:
 def _endpoint_id_from_adapter(adapter: BaseAdapter | None) -> str:
     if adapter is None:
         return "unknown-backup"
-    endpoint_id = getattr(adapter.config, "endpoint_id", None)
-    return str(endpoint_id or adapter.config.provider)
+    return str(endpoint_id_for_adapter(adapter))
 
 
 def _failed_attempt(adapter: BaseAdapter | None, exc: BaseException) -> dict[str, str]:

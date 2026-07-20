@@ -18,7 +18,8 @@ from urllib.parse import quote, urlparse
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from routing.routers import ManagedRouter, _get_endpoint_id
+from routing.endpoints import endpoint_id_for_adapter
+from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.config.settings import VALID_ROLES
@@ -440,7 +441,8 @@ def _raw_route_entries(route) -> list[tuple[object, float, str]]:
     if raw_adapters:
         return list(raw_adapters)
     return [
-        (adapter, float(weight), _get_endpoint_id(adapter)) for adapter, weight in route.adapters
+        (adapter, float(weight), endpoint_id_for_adapter(adapter))
+        for adapter, weight in route.adapters
     ]
 
 
@@ -1599,7 +1601,7 @@ async def _prepare_route_candidate(
         route=route,
         route_id=candidate_route_id,
         adapter=adapter,
-        endpoint_id=_get_endpoint_id(adapter),
+        endpoint_id=endpoint_id_for_adapter(adapter),
         upstream_provider=upstream_provider,
         openrouter_sort=openrouter_sort,
         key_provider=target.key_provider,
@@ -1725,7 +1727,7 @@ async def _prepare_model_route_candidate(
         route=None,
         route_id=candidate_route_id,
         adapter=adapter,
-        endpoint_id=_get_endpoint_id(adapter),
+        endpoint_id=endpoint_id_for_adapter(adapter),
         upstream_provider=upstream_provider,
         openrouter_sort=openrouter_sort,
         key_provider=target.key_provider,
@@ -1837,7 +1839,7 @@ async def _prepare_route_update(
         route_id=route_id,
         route_index=index,
         adapter=adapter,
-        endpoint_id=_get_endpoint_id(adapter),
+        endpoint_id=endpoint_id_for_adapter(adapter),
         upstream_provider=upstream_provider,
         openrouter_sort=openrouter_sort,
         key_provider=target.key_provider,

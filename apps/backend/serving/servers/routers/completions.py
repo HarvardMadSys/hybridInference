@@ -13,6 +13,7 @@ import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from routing.endpoints import endpoint_id_for_adapter
 from routing.executor import ProviderPinError
 from routing.routers import AllCircuitsOpenError
 from serving.config.runtime_settings import RuntimeSettings, get_runtime_settings
@@ -782,8 +783,7 @@ async def chat_completions(
         if not route or not any(
             (
                 adapter.config.provider == pin_provider
-                or (getattr(adapter.config, "endpoint_id", None) or adapter.config.provider)
-                == pin_provider
+                or endpoint_id_for_adapter(adapter) == pin_provider
             )
             and weight > 0
             for adapter, weight in route.adapters

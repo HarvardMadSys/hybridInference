@@ -48,11 +48,11 @@ if TYPE_CHECKING:
 
     from .config import RouteWiseConfig
 
+from routing.endpoints import endpoint_id_for_adapter
 from routing.routers import (
     BaseRouter,
     RoutingObservation,
     _failed_attempt,
-    _get_endpoint_id,
     _has_non_empty_content,
     _routing_chunk,
 )
@@ -69,7 +69,7 @@ from .candidates import (
     QuotaPolicy,
     QuotaSource,
     build_provider_candidates,
-    endpoint_id_for_adapter,
+    endpoint_id_for_adapter as routewise_endpoint_id_for_adapter,
 )
 from .concurrency import ConcurrencyManager
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
@@ -943,7 +943,7 @@ class RouteWiseRouter(BaseRouter):
 
     @staticmethod
     def _endpoint_id(adapter: BaseAdapter) -> str:
-        return endpoint_id_for_adapter(adapter)
+        return routewise_endpoint_id_for_adapter(adapter)
 
     def _candidate_endpoint_id(self, adapter: BaseAdapter) -> str:
         return self._adapter_endpoint_ids.get(id(adapter), self._endpoint_id(adapter))
@@ -2026,7 +2026,7 @@ class RouteWiseRouter(BaseRouter):
         ttfts = getattr(adapter, "leg_first_content_ttft_ms", None)
         if not isinstance(ttfts, dict) or not ttfts:
             return
-        winner_endpoint = str(_get_endpoint_id(adapter))
+        winner_endpoint = str(endpoint_id_for_adapter(adapter))
         now = time.time()
         for endpoint_id, ttft_ms in ttfts.items():
             if endpoint_id == winner_endpoint:
@@ -2601,7 +2601,7 @@ class RouteWiseRouter(BaseRouter):
                     return resp
                 except Exception as exc:
                     last_error = exc
-                    endpoint_id = _get_endpoint_id(primary)
+                    endpoint_id = endpoint_id_for_adapter(primary)
                     # A HedgedAdapter already recorded each failed leg in its
                     # registry under the leg's endpoint_id; recording the
                     # composite failure here as well would give the primary
@@ -2731,7 +2731,7 @@ class RouteWiseRouter(BaseRouter):
                     return
                 except Exception as exc:
                     last_error = exc
-                    endpoint_id = _get_endpoint_id(primary)
+                    endpoint_id = endpoint_id_for_adapter(primary)
                     # A HedgedAdapter records race-time leg failures in its
                     # registry under the leg's endpoint_id; recording those
                     # here as well would double-count them. But hedge outcome

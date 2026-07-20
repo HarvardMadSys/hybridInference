@@ -47,6 +47,15 @@ class _FakeEventSink:
         self.failure_excs.append(exc)
 
 
+@pytest.mark.unit
+def test_optional_endpoint_wrapper_preserves_backup_sentinel_and_provider_fallback():
+    adapter = _make_fake_adapter(provider="provider-a")
+    adapter.config.endpoint_id = None
+
+    assert hedging_module._endpoint_id_from_adapter(None) == "unknown-backup"
+    assert hedging_module._endpoint_id_from_adapter(adapter) == "provider-a"
+
+
 class _StatusError(Exception):
     def __init__(self, status: int) -> None:
         self.status = status

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from routing.endpoints import endpoint_id_for_adapter
 from serving.servers.deps import get_router, require_role
 from serving.stream import make_role_chunk
 
@@ -33,10 +34,6 @@ class PlaygroundModelItem(BaseModel):
     name: str
     provider: str
     providers: list[PlaygroundProviderItem] = []
-
-
-def _get_endpoint_id(adapter: Any) -> str:
-    return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
 
 
 # Human-friendly display names for provider kinds.
@@ -101,7 +98,7 @@ async def list_models(
         for adapter, weight in route.adapters:
             if weight <= 0:
                 continue
-            eid = _get_endpoint_id(adapter)
+            eid = endpoint_id_for_adapter(adapter)
             if eid in seen:
                 continue
             seen.add(eid)

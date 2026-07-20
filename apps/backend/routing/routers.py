@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from routing.endpoint_health import EndpointHealthRegistry
+from routing.endpoints import endpoint_id_for_adapter
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -203,19 +204,11 @@ AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
 
-def _get_endpoint_id(adapter: BaseAdapter) -> str:
-    """Get the unique endpoint identifier for health tracking.
-
-    Uses endpoint_id if set, otherwise falls back to provider.
-    """
-    return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
-
-
 def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
     """Return fallback-attempt telemetry."""
     return {
         "provider": adapter.config.provider,
-        "endpoint_id": _get_endpoint_id(adapter),
+        "endpoint_id": endpoint_id_for_adapter(adapter),
         "error_type": exc.__class__.__name__,
         "error": str(exc),
     }
@@ -383,7 +376,7 @@ class BaseRouter:
         and latency tracking. Subclasses (e.g. RouteWiseRouter) can override
         to add slot lifecycle management.
         """
-        endpoint_id = _get_endpoint_id(adapter)
+        endpoint_id = endpoint_id_for_adapter(adapter)
         with req_ctx.push(model=model_id, provider=adapter.config.provider):
             self._ensure_health(endpoint_id)
             resp = await adapter.chat_completion(messages, **params)
@@ -393,7 +386,7 @@ class BaseRouter:
             # Recompute the endpoint after the call for everything else — an
             # adapter may swap its config to the leg that actually served.
             if not getattr(adapter, "reports_leg_outcomes", False):
-                self._on_success(_get_endpoint_id(adapter))
+                self._on_success(endpoint_id_for_adapter(adapter))
         return resp
 
     async def _execute_stream_adapter(
@@ -408,7 +401,7 @@ class BaseRouter:
         Parallel to ``_execute_adapter`` for streaming. Subclasses can
         override for per-adapter instrumentation (e.g. S_C slot cleanup).
         """
-        endpoint_id = _get_endpoint_id(adapter)
+        endpoint_id = endpoint_id_for_adapter(adapter)
         with req_ctx.push(model=model_id, provider=adapter.config.provider):
             self._ensure_health(endpoint_id)
             first = True
@@ -421,7 +414,7 @@ class BaseRouter:
                     # Recompute the endpoint for everything else — an adapter
                     # may swap its config to the leg that actually served.
                     if not getattr(adapter, "reports_leg_outcomes", False):
-                        self._on_success(_get_endpoint_id(adapter))
+                        self._on_success(endpoint_id_for_adapter(adapter))
                 yield chunk
 
 
@@ -541,7 +534,7 @@ class FixedRouter(BaseRouter):
         if total_weight <= 0:
             return
         raw_adapters = [
-            (adapter, float(weight), _get_endpoint_id(adapter))
+            (adapter, float(weight), endpoint_id_for_adapter(adapter))
             for adapter, weight in adapters_with_weights
         ]
         normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
@@ -580,7 +573,7 @@ class FixedRouter(BaseRouter):
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if weight <= 0:
                     continue
-                eid = _get_endpoint_id(adapter)
+                eid = endpoint_id_for_adapter(adapter)
                 if adapter.config.provider == pin_provider or eid == pin_provider:
                     return adapter
             return None
@@ -591,11 +584,11 @@ class FixedRouter(BaseRouter):
         allowed: list[tuple[BaseAdapter, float]] = [
             (adapter, weight)
             for adapter, weight in snapshot
-            if weight > 0 and self._health_registry.allow_request(_get_endpoint_id(adapter))
+            if weight > 0 and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
         ]
 
         if not allowed:
-            provider_names = [_get_endpoint_id(adapter) for adapter, _weight in snapshot]
+            provider_names = [endpoint_id_for_adapter(adapter) for adapter, _weight in snapshot]
             raise AllCircuitsOpenError(
                 f"All provider circuits are open for model {model_id}: {provider_names}"
             )
@@ -610,7 +603,7 @@ class FixedRouter(BaseRouter):
                 entry = self._affinity.get((affinity_key, model_id))
                 if entry is not None and entry.expires_at > now:
                     for adapter, _w in allowed:
-                        if _get_endpoint_id(adapter) == entry.endpoint_id:
+                        if endpoint_id_for_adapter(adapter) == entry.endpoint_id:
                             entry.expires_at = now + AFFINITY_TTL_SECONDS
                             return adapter
                     del self._affinity[(affinity_key, model_id)]
@@ -639,7 +632,7 @@ class FixedRouter(BaseRouter):
             now = time.monotonic()
             with self._lock:
                 self._affinity[(affinity_key, model_id)] = _Affinity(
-                    endpoint_id=_get_endpoint_id(chosen),
+                    endpoint_id=endpoint_id_for_adapter(chosen),
                     expires_at=now + AFFINITY_TTL_SECONDS,
                 )
                 self._maybe_sweep_affinity_locked(now)
@@ -677,7 +670,7 @@ class FixedRouter(BaseRouter):
             raise ValueError(f"No route configured for model {model_id}")
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
-                endpoint_id = _get_endpoint_id(primary)
+                endpoint_id = endpoint_id_for_adapter(primary)
                 self._ensure_health(endpoint_id)
                 resp = await primary.chat_completion(messages, **params)
                 self._on_success(endpoint_id)
@@ -689,12 +682,12 @@ class FixedRouter(BaseRouter):
                     "base_url": primary.config.base_url,
                 }
             # Always inject endpoint_id so observation keys match latency profiles.
-            resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(primary))
+            resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(primary))
             return resp
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
             self._on_failure(
-                _get_endpoint_id(primary),
+                endpoint_id_for_adapter(primary),
                 reason="chat_exception",
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
@@ -711,7 +704,7 @@ class FixedRouter(BaseRouter):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
                     "base_url": primary.config.base_url,
-                    "endpoint_id": _get_endpoint_id(primary),
+                    "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
             # Pin mode: never fallback — the caller explicitly requested this
@@ -725,7 +718,7 @@ class FixedRouter(BaseRouter):
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        endpoint_id = _get_endpoint_id(adapter)
+                        endpoint_id = endpoint_id_for_adapter(adapter)
                         self._ensure_health(endpoint_id)
                         resp = await adapter.chat_completion(messages, **params)
                         self._on_success(endpoint_id)
@@ -735,12 +728,12 @@ class FixedRouter(BaseRouter):
                             "base_url": adapter.config.base_url,
                             "fallback": True,
                         }
-                    resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
+                    resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(adapter))
                     resp["_routing"].setdefault("failed_attempts", failed_attempts)
                     return resp
                 except Exception as fallback_error:
                     self._on_failure(
-                        _get_endpoint_id(adapter),
+                        endpoint_id_for_adapter(adapter),
                         reason="chat_exception",
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
@@ -789,7 +782,7 @@ class FixedRouter(BaseRouter):
                 # provider="router" and cost_usd=NULL.
                 yield _routing_chunk(primary)
                 first = True
-                primary_endpoint_id = _get_endpoint_id(primary)
+                primary_endpoint_id = endpoint_id_for_adapter(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
                     if first and _has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.
@@ -801,7 +794,7 @@ class FixedRouter(BaseRouter):
             return
         except Exception as primary_error:
             self._on_failure(
-                _get_endpoint_id(primary),
+                endpoint_id_for_adapter(primary),
                 reason="stream_exception",
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
@@ -828,7 +821,7 @@ class FixedRouter(BaseRouter):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
                     "base_url": primary.config.base_url,
-                    "endpoint_id": _get_endpoint_id(primary),
+                    "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
             # Pin mode: never fallback — re-raise immediately.
@@ -855,7 +848,7 @@ class FixedRouter(BaseRouter):
                             failed_attempts=failed_attempts,
                         )
                         first = True
-                        adapter_endpoint_id = _get_endpoint_id(adapter)
+                        adapter_endpoint_id = endpoint_id_for_adapter(adapter)
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and _has_non_empty_content(chunk):
                                 first = False
