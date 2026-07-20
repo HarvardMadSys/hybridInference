@@ -125,9 +125,9 @@ def test_v2_analysis_workflow_is_job_only_read_only_and_relay_callback_only():
     assert "SLACK" not in source
     assert "danger-full-access" not in source
     assert "--sandbox read-only" in steps["Run read-only Codex analysis"]["run"]
-    assert "timeout --signal=TERM --kill-after=30s 10m" in steps[
-        "Run read-only Codex analysis"
-    ]["run"]
+    assert (
+        "timeout --signal=TERM --kill-after=30s 10m" in steps["Run read-only Codex analysis"]["run"]
+    )
     assert "serving.oncall.gha callback" in steps["Return validated analysis to relay"]["run"]
     assert "/complete" in steps["Return workflow failure to relay"]["run"]
     assert "--retry 3 --retry-all-errors" in steps["Return workflow failure to relay"]["run"]

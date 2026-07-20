@@ -326,8 +326,7 @@ def _compact_json(value: JsonValue, string_limit: int, collection_limit: int) ->
         return value[:string_limit]
     if isinstance(value, list):
         return [
-            _compact_json(item, string_limit, collection_limit)
-            for item in value[:collection_limit]
+            _compact_json(item, string_limit, collection_limit) for item in value[:collection_limit]
         ]
     if isinstance(value, dict):
         return {
