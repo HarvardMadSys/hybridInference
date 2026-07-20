@@ -2268,19 +2268,6 @@ class RouteWiseRouter(BaseRouter):
         relevant = {key: params[key] for key in keys if params.get(key) is not None}
         return json.dumps(relevant, sort_keys=True, default=str)
 
-    def _get_fallback_adapters(
-        self,
-        model_id: str,
-        failed_adapter: BaseAdapter,
-    ) -> list[BaseAdapter]:
-        # RouteWise does not use the BaseRouter fallback-list hook: it overrides
-        # chat_completion/stream_chat_completion and performs policy-aware
-        # re-solve fallback inline (re-running the LP over the remaining
-        # candidates), gated by ``config.fallback_mode``. This stub keeps the
-        # BaseRouter contract satisfied without introducing a second path.
-        del model_id, failed_adapter
-        return []
-
     def record_observation(self, obs: RoutingObservation) -> None:
         """Update output predictor, latency profile, and L/U envelope."""
         if self.prefix_cache.enabled:

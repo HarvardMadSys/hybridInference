@@ -485,24 +485,6 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_adapter("test-model", {"prompt_tokens": 10000})
         assert selected is provider_a
 
-    def test_generic_fallback_disabled(self):
-        """RouteWise owns fallback via policy re-solve, not BaseRouter fallback lists."""
-        a1 = _make_adapter(provider="provider_a")
-        a2 = _make_adapter(provider="provider_b")
-
-        fr = _FakeFixedRouter()
-        fr.add("test-model", [(a1, 0.5), (a2, 0.5)])
-
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        fallbacks = router._get_fallback_adapters("test-model", a1)
-        assert fallbacks == []
-
-    def test_fallback_empty_for_unknown_model(self):
-        """Fallback returns empty list for an unregistered model."""
-        fr = _FakeFixedRouter()
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        assert router._get_fallback_adapters("nonexistent", MagicMock()) == []
-
     def test_unknown_provider_type_raises(self):
         """Unknown provider_type values are rejected."""
         adapter = _make_adapter(provider_type="unknown_tier")
@@ -775,45 +757,6 @@ class TestRouteWiseRouterScaffold:
         router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is conc
-
-    def test_generic_fallback_does_not_expose_concurrency(self):
-        """BaseRouter fallback is disabled; RouteWise re-solve accounts for S_C slots."""
-        api = _make_adapter(provider_type="on_demand")
-        conc = _make_adapter(provider_type="concurrency")
-
-        fr = _FakeFixedRouter()
-        fr.add("test-model", [(api, 0.5), (conc, 0.5)])
-
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        assert router._get_fallback_adapters("test-model", api) == []
-
-    def test_generic_fallback_returns_empty_for_all_route_types(self):
-        """No generic fallback adapters are exposed for RouteWise routes."""
-        quota = _make_adapter(provider_type="quota")
-        conc = _make_adapter(provider_type="concurrency")
-        api_a = _make_adapter(provider_type="on_demand", provider="provider_a")
-        api_b = _make_adapter(provider_type="on_demand", provider="provider_b")
-
-        fr = _FakeFixedRouter()
-        fr.add(
-            "test-model",
-            [
-                (quota, 0.2),
-                (conc, 0.2),
-                (api_a, 0.3),
-                (api_b, 0.3),
-            ],
-        )
-
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-
-        # S_A failed -> only other S_A in fallback.
-        fallbacks = router._get_fallback_adapters("test-model", api_a)
-        assert fallbacks == []
-
-        # S_Q failed -> only S_A adapters in fallback.
-        fallbacks = router._get_fallback_adapters("test-model", quota)
-        assert fallbacks == []
 
 
 # ---------------------------------------------------------------------------

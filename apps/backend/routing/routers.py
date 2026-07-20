@@ -790,190 +790,6 @@ class BaseRouter:
                         self._on_success(_get_endpoint_id(adapter))
                 yield chunk
 
-    # ------------------------------------------------------------------
-    # Chat completion with fallback (used by RouteWiseRouter via super())
-    # ------------------------------------------------------------------
-
-    async def chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> dict[str, Any]:
-        """Execute chat completion with automatic fallback.
-
-        Subclass-agnostic orchestration: calls ``_select_adapter`` (subclass)
-        then ``_execute_adapter`` (overridable) with fallback logic.
-        """
-        context = {
-            "messages": messages,
-            "params": params,
-            "request_id": params.get("request_id"),
-        }
-        primary = self._select_adapter(model_id, context)
-        if not primary:
-            raise ValueError(f"No route configured for model {model_id}")
-
-        last_attempted = primary
-        failed_attempts: list[dict[str, str]] = []
-        try:
-            try:
-                resp = await self._execute_adapter(primary, model_id, messages, **params)
-                if "_routing" not in resp:
-                    resp["_routing"] = {
-                        "provider": primary.config.provider,
-                        "base_url": primary.config.base_url,
-                    }
-                # Always inject endpoint_id so observation keys match latency profiles.
-                resp["_routing"].setdefault(
-                    "endpoint_id", getattr(primary.config, "endpoint_id", None)
-                )
-                return resp
-            except Exception as primary_error:
-                self._on_failure(
-                    _get_endpoint_id(primary),
-                    reason=primary_error.__class__.__name__,
-                    detail=operator_safe_error(primary_error),
-                    exc=primary_error,
-                )
-                failed_attempts.append(_failed_attempt(primary, primary_error))
-                fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                for adapter in fallback_adapters:
-                    last_attempted = adapter
-                    try:
-                        resp = await self._execute_adapter(adapter, model_id, messages, **params)
-                        if "_routing" not in resp:
-                            resp["_routing"] = {
-                                "provider": adapter.config.provider,
-                                "base_url": adapter.config.base_url,
-                                "fallback": True,
-                            }
-                        resp["_routing"].setdefault(
-                            "endpoint_id",
-                            getattr(adapter.config, "endpoint_id", None),
-                        )
-                        resp["_routing"].setdefault("failed_attempts", failed_attempts)
-                        return resp
-                    except Exception as fallback_error:
-                        self._on_failure(
-                            _get_endpoint_id(adapter),
-                            reason="chat_exception",
-                            detail=operator_safe_error(fallback_error),
-                            exc=fallback_error,
-                        )
-                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
-                        continue
-                raise primary_error
-        except BaseException as e:
-            if not hasattr(e, "_routing"):
-                e._routing = {  # type: ignore[attr-defined]
-                    "provider": last_attempted.config.provider,
-                    "base_url": last_attempted.config.base_url,
-                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
-                }
-            if failed_attempts:
-                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
-            raise
-
-    async def stream_chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> AsyncIterator[Any]:
-        """Stream chat completion with automatic fallback.
-
-        Subclass-agnostic orchestration: calls ``_select_adapter`` (subclass)
-        then ``_execute_stream_adapter`` (overridable) with fallback logic.
-        """
-        context = {
-            "messages": messages,
-            "params": params,
-            "request_id": params.get("request_id"),
-        }
-        primary = self._select_adapter(model_id, context)
-        if not primary:
-            raise ValueError(f"No route configured for model {model_id}")
-
-        last_attempted = primary
-        failed_attempts: list[dict[str, str]] = []
-        chunks_yielded = False
-        try:
-            try:
-                yield _routing_chunk(primary)
-                async for chunk in self._execute_stream_adapter(
-                    primary, model_id, messages, **params
-                ):
-                    yield chunk
-                    chunks_yielded = True
-                return
-            except Exception as primary_error:
-                self._on_failure(
-                    _get_endpoint_id(primary),
-                    reason="stream_exception",
-                    detail=operator_safe_error(primary_error),
-                    exc=primary_error,
-                )
-                failed_attempts.append(_failed_attempt(primary, primary_error))
-                # Once provider bytes have reached the client, the SSE response
-                # is committed to that upstream. Falling back would splice a
-                # second provider into the same stream.
-                if chunks_yielded:
-                    raise
-                fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                for adapter in fallback_adapters:
-                    last_attempted = adapter
-                    try:
-                        yield _routing_chunk(
-                            adapter,
-                            fallback=True,
-                            failed_attempts=failed_attempts,
-                        )
-                        async for chunk in self._execute_stream_adapter(
-                            adapter, model_id, messages, **params
-                        ):
-                            yield chunk
-                            chunks_yielded = True
-                        return
-                    except Exception as fallback_error:
-                        self._on_failure(
-                            _get_endpoint_id(adapter),
-                            reason="stream_exception",
-                            detail=operator_safe_error(fallback_error),
-                            exc=fallback_error,
-                        )
-                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
-                        # Same commit invariant as the primary path: once this
-                        # fallback provider's bytes reached the client, the SSE
-                        # stream is committed to it. Re-raise instead of splicing
-                        # a further provider into the same response.
-                        if chunks_yielded:
-                            raise
-                        continue
-                raise
-        except BaseException as e:
-            if not hasattr(e, "_routing"):
-                e._routing = {  # type: ignore[attr-defined]
-                    "provider": last_attempted.config.provider,
-                    "base_url": last_attempted.config.base_url,
-                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
-                }
-            if failed_attempts:
-                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
-            raise
-
-    def _select_adapter(
-        self, model_id: str, context: dict[str, Any] | None = None, **kwargs: Any
-    ) -> BaseAdapter | None:
-        """Select an adapter for the given model. Override in subclasses."""
-        return None
-
-    def _get_fallback_adapters(
-        self, model_id: str, failed_adapter: BaseAdapter
-    ) -> list[BaseAdapter]:
-        """Return fallback adapters after primary failure. Override in subclasses."""
-        return []
-
 
 # ============================================================================
 # FixedRouter
@@ -1109,7 +925,7 @@ class FixedRouter(BaseRouter):
         for alias in aliases or []:
             self.routes[alias] = route_cfg  # shared reference, not a copy
 
-    def _select_adapter(  # type: ignore[override]
+    def _select_adapter(
         self, model_id: str, *, pin_provider: str | None = None
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
@@ -1257,8 +1073,8 @@ class FixedRouter(BaseRouter):
             failed_attempts = [_failed_attempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
-            # sentinel — mirrors the success-path resp["_routing"] injection and
-            # BaseRouter's fallback handler. Covers both re-raise points below
+            # sentinel — mirrors the success-path resp["_routing"] injection.
+            # The outer error handler covers both re-raise points below
             # (pin mode and all-providers-failed); ``failed_attempts`` is stored
             # by reference so it reflects any fallback attempts appended before
             # ``primary_error`` is finally re-raised.
