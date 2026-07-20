@@ -2731,7 +2731,7 @@ class TestRouteWiseDecisionMetadata:
             primary=primary_adapter,
             backup=backup_adapter,
             hedge_threshold_sec=0.0,
-            event_sink=router,
+            event_sink=router._health_registry,
         )
 
         # Pre-populate _pending_decisions as if _select_adapter ran

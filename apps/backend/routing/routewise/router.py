@@ -2037,24 +2037,6 @@ class RouteWiseRouter(BaseRouter):
                 continue
             self._record_latency_success(str(endpoint_id), now, ttft)
 
-    # ------------------------------------------------------------------
-    # BaseRouter integration
-    # ------------------------------------------------------------------
-
-    def on_provider_success(self, endpoint_id: str) -> None:
-        """Record a hedge-leg success emitted by HedgedAdapter (endpoint_id-keyed)."""
-        self._on_success(endpoint_id)
-
-    def on_provider_failure(
-        self, endpoint_id: str, reason: str, exc: BaseException | None = None
-    ) -> None:
-        """Record a hedge-leg failure emitted by HedgedAdapter (endpoint_id-keyed).
-
-        Passing ``exc`` through preserves the client-error (4xx) breaker
-        exemption for hedge legs, matching the non-hedged path.
-        """
-        self._on_failure(endpoint_id, reason=reason, exc=exc)
-
     @staticmethod
     def _ensure_response_routing(
         response: dict[str, Any],
@@ -2170,7 +2152,7 @@ class RouteWiseRouter(BaseRouter):
 
                     adapter = HedgedAdapter(
                         primary=selected.adapter,
-                        event_sink=self,
+                        event_sink=self._health_registry,
                         hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
                         checkpoint_backup_selector=_select_checkpoint_backup_for_request,
                     )
@@ -2620,8 +2602,8 @@ class RouteWiseRouter(BaseRouter):
                 except Exception as exc:
                     last_error = exc
                     endpoint_id = _get_endpoint_id(primary)
-                    # A HedgedAdapter already recorded each failed leg through
-                    # its event sink under the leg's endpoint_id; recording the
+                    # A HedgedAdapter already recorded each failed leg in its
+                    # registry under the leg's endpoint_id; recording the
                     # composite failure here as well would give the primary
                     # endpoint two failure samples for one request.
                     if not getattr(primary, "reports_leg_outcomes", False):
@@ -2750,12 +2732,12 @@ class RouteWiseRouter(BaseRouter):
                 except Exception as exc:
                     last_error = exc
                     endpoint_id = _get_endpoint_id(primary)
-                    # A HedgedAdapter records race-time leg failures through
-                    # its event sink under the leg's endpoint_id; recording
-                    # those here as well would double-count them. But the sink
-                    # stops at the race: a failure AFTER the winner started
-                    # streaming (chunks_yielded) is not sink-recorded, and by
-                    # then the hedged adapter's config points at the winner, so
+                    # A HedgedAdapter records race-time leg failures in its
+                    # registry under the leg's endpoint_id; recording those
+                    # here as well would double-count them. But hedge outcome
+                    # recording stops at the race: a failure AFTER the winner
+                    # started streaming (chunks_yielded) is not recorded there.
+                    # By then the hedged adapter's config points at the winner, so
                     # endpoint_id attributes it correctly.
                     if chunks_yielded or not getattr(primary, "reports_leg_outcomes", False):
                         self._on_failure(

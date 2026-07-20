@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from routing.endpoint_health import EndpointHealthRegistry
 from routing.routewise import hedging as hedging_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
@@ -24,21 +25,32 @@ if TYPE_CHECKING:
 
 
 class _FakeEventSink:
-    """Test double for ProviderEventSink (outcomes are endpoint_id-keyed)."""
+    """Recording double for EndpointHealthRegistry's canonical outcome API."""
 
     def __init__(self) -> None:
         self.successes: list[str] = []
         self.failures: list[tuple[str, str]] = []
         self.failure_excs: list[BaseException | None] = []
 
-    def on_provider_success(self, endpoint_id: str) -> None:
+    def record_success(self, endpoint_id: str) -> None:
         self.successes.append(endpoint_id)
 
-    def on_provider_failure(
-        self, endpoint_id: str, reason: str, exc: BaseException | None = None
+    def record_failure(
+        self,
+        endpoint_id: str,
+        *,
+        reason: str = "error",
+        detail: str | None = None,
+        exc: BaseException | None = None,
     ) -> None:
         self.failures.append((endpoint_id, reason))
         self.failure_excs.append(exc)
+
+
+class _StatusError(Exception):
+    def __init__(self, status: int) -> None:
+        self.status = status
+        super().__init__(f"HTTP {status}")
 
 
 def _quota_pool(router):
@@ -521,6 +533,7 @@ class TestHedgedAdapterStreaming:
 
 def _make_router_with_two_api(
     config: RouteWiseConfig | None = None,
+    health_registry: EndpointHealthRegistry | None = None,
 ) -> tuple[Any, MagicMock, MagicMock]:
     """Build a RouteWiseRouter with two S_A adapters (no S_Q)."""
     from routing.routewise.router import RouteWiseRouter
@@ -551,7 +564,11 @@ def _make_router_with_two_api(
 
     fr = _FakeFixedRouter()
     fr.add("test-model", [(api_a, 0.5), (api_b, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(
+        fixed_router=fr,
+        config=config,
+        health_registry=health_registry,
+    )
     return router, api_a, api_b
 
 
@@ -700,7 +717,11 @@ class TestRouterHedgeMode:
             latency_slo_sec=3.0,
             latency_hedge_mode="probability_target",
         )
-        router, api_a, _api_b = _make_router_with_two_api(config)
+        health_registry = EndpointHealthRegistry()
+        router, api_a, _api_b = _make_router_with_two_api(
+            config,
+            health_registry=health_registry,
+        )
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
@@ -718,6 +739,7 @@ class TestRouterHedgeMode:
         assert selected.backup is None
         assert selected.hedge_checkpoints_sec
         assert selected.hedge_threshold_sec > 0.0
+        assert selected.event_sink is health_registry
 
     @pytest.mark.asyncio
     async def test_probability_target_mode_dispatches_backup_and_updates_metadata(self):
@@ -767,7 +789,7 @@ class TestRouterHedgeMode:
         )
 
     @pytest.mark.asyncio
-    async def test_probability_target_primary_failure_surfaces_failed_attempt(self):
+    async def test_probability_target_primary_failure_surfaces_failed_attempt(self, monkeypatch):
         """A hidden hedged primary failure must feed the normal observation path."""
         config = RouteWiseConfig(
             budget_alpha=0.0,
@@ -775,7 +797,15 @@ class TestRouterHedgeMode:
             latency_slo_sec=0.04,
             latency_hedge_mode="probability_target",
         )
-        router, api_a, api_b = _make_router_with_two_api(config)
+        health_registry = EndpointHealthRegistry()
+        router, api_a, api_b = _make_router_with_two_api(
+            config,
+            health_registry=health_registry,
+        )
+        record_success = MagicMock(wraps=health_registry.record_success)
+        record_failure = MagicMock(wraps=health_registry.record_failure)
+        monkeypatch.setattr(health_registry, "record_success", record_success)
+        monkeypatch.setattr(health_registry, "record_failure", record_failure)
 
         now = time.time()
         router._latency_profiles["test-model:api-a"].record(now, 100.0)
@@ -807,6 +837,11 @@ class TestRouterHedgeMode:
         assert (
             resp["_routing"]["routewise"]["failed_attempts"] == resp["_routing"]["failed_attempts"]
         )
+        assert record_success.call_count == 1
+        assert record_success.call_args.args == ("test-model:api-b",)
+        assert record_failure.call_count == 1
+        assert record_failure.call_args.args == ("test-model:api-a",)
+        assert record_failure.call_args.kwargs["reason"] == "RuntimeError"
 
     @pytest.mark.asyncio
     async def test_probability_target_primary_wins_before_dispatch(self):
@@ -895,6 +930,67 @@ class TestRouterHedgeMode:
         assert routewise["hedge_winner"] == "backup"
 
     @pytest.mark.asyncio
+    async def test_streaming_primary_400_is_recorded_once_without_health_penalty(
+        self,
+        monkeypatch,
+    ):
+        """A hedged primary 400 reaches the registry unchanged and stays exempt."""
+        config = RouteWiseConfig(
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=0.04,
+            latency_hedge_mode="probability_target",
+        )
+        health_registry = EndpointHealthRegistry()
+        router, api_a, api_b = _make_router_with_two_api(
+            config,
+            health_registry=health_registry,
+        )
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 1.0)
+
+        primary_endpoint = "test-model:api-a"
+        health_registry.ensure(primary_endpoint)
+        baseline_availability = health_registry.snapshot()[primary_endpoint]["availability"]
+        record_success = MagicMock(wraps=health_registry.record_success)
+        record_failure = MagicMock(wraps=health_registry.record_failure)
+        monkeypatch.setattr(health_registry, "record_success", record_success)
+        monkeypatch.setattr(health_registry, "record_failure", record_failure)
+
+        primary_error = _StatusError(400)
+
+        async def _failed_primary_stream(messages, **params):
+            raise primary_error
+            yield "data: [DONE]\n\n"
+
+        async def _successful_backup_stream(messages, **params):
+            yield 'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n'
+            yield "data: [DONE]\n\n"
+
+        api_a.stream_chat_completion = _failed_primary_stream
+        api_b.stream_chat_completion = _successful_backup_stream
+
+        chunks = [
+            chunk
+            async for chunk in router.stream_chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-stream-primary-400",
+            )
+        ]
+
+        assert "backup" in "".join(chunks)
+        assert record_success.call_count == 1
+        assert record_success.call_args.args == ("test-model:api-b",)
+        assert record_failure.call_count == 1
+        assert record_failure.call_args.args == (primary_endpoint,)
+        assert record_failure.call_args.kwargs["reason"] == "_StatusError"
+        assert record_failure.call_args.kwargs["exc"] is primary_error
+        assert health_registry.snapshot()[primary_endpoint]["availability"] == baseline_availability
+
+    @pytest.mark.asyncio
     async def test_hedge_loser_first_token_warms_backup_profile(self):
         """A dispatched backup that loses after first token feeds the profile."""
         router, api_a, api_b = _make_router_with_two_api(
@@ -911,7 +1007,7 @@ class TestRouterHedgeMode:
             primary=api_a,
             backup=api_b,
             hedge_threshold_sec=0.0,
-            event_sink=router,
+            event_sink=router._health_registry,
         )
         hedged.hedge_triggered = True
         hedged.leg_first_content_ttft_ms = {
@@ -1117,22 +1213,25 @@ class TestRouterHedgeMode:
 
 
 # ===========================================================================
-# TestProviderEventSinkProtocol
+# TestProviderEventSinkCompatibility
 # ===========================================================================
 
 
 @pytest.mark.unit
-class TestProviderEventSinkProtocol:
-    def test_fake_event_sink_satisfies_protocol(self):
-        """_FakeEventSink satisfies ProviderEventSink protocol."""
-        sink = _FakeEventSink()
-        assert isinstance(sink, ProviderEventSink)
+class TestProviderEventSinkCompatibility:
+    def test_canonical_fake_and_registry_satisfy_compatibility_protocol(self):
+        """Canonical outcome recorders satisfy the deprecated protocol."""
+        assert isinstance(_FakeEventSink(), ProviderEventSink)
+        assert isinstance(EndpointHealthRegistry(), ProviderEventSink)
 
-    def test_router_satisfies_protocol(self):
-        """RouteWiseRouter satisfies ProviderEventSink protocol."""
+    def test_router_does_not_satisfy_compatibility_protocol(self):
+        """The router no longer acts as a hedge outcome forwarding sink."""
         config = RouteWiseConfig()
         router, _, _ = _make_router_with_two_api(config)
-        assert isinstance(router, ProviderEventSink)
+        assert isinstance(router._health_registry, EndpointHealthRegistry)
+        assert not isinstance(router, ProviderEventSink)
+        assert not hasattr(router, "on_provider_success")
+        assert not hasattr(router, "on_provider_failure")
 
 
 # ===========================================================================

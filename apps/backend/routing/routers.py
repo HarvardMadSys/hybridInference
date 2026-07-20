@@ -387,8 +387,8 @@ class BaseRouter:
         with req_ctx.push(model=model_id, provider=adapter.config.provider):
             self._ensure_health(endpoint_id)
             resp = await adapter.chat_completion(messages, **params)
-            # A HedgedAdapter reports each leg's outcome (winner success
-            # included) through its event sink under the leg's endpoint_id;
+            # A HedgedAdapter records each leg's outcome (winner success
+            # included) in its registry under the leg's endpoint_id;
             # recording here as well would double-count the winning endpoint.
             # Recompute the endpoint after the call for everything else — an
             # adapter may swap its config to the leg that actually served.
@@ -415,8 +415,8 @@ class BaseRouter:
             async for chunk in adapter.stream_chat_completion(messages, **params):
                 if first and _has_non_empty_content(chunk):
                     first = False
-                    # A HedgedAdapter reports each leg's outcome through its
-                    # event sink under the leg's endpoint_id; recording here
+                    # A HedgedAdapter records each leg's outcome in its
+                    # registry under the leg's endpoint_id; recording here
                     # as well would double-count the winning endpoint.
                     # Recompute the endpoint for everything else — an adapter
                     # may swap its config to the leg that actually served.

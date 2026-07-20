@@ -12,7 +12,7 @@ Exports:
     HedgedAdapter      -- Composite adapter that races primary vs backup.
     CheckpointBackupDispatch -- Shared checkpoint backup dispatch dataclass.
     CheckpointBackupSelector -- Protocol for checkpoint-time backup selection.
-    ProviderEventSink  -- Protocol for per-provider outcome reporting.
+    ProviderEventSink  -- Deprecated compatibility protocol for outcome recorders.
 """
 
 from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
