@@ -159,6 +159,11 @@ class FixedRouter:
         # fallback loop skip them without any per-call-site change.
         self.disabled_provider_resolver = disabled_provider_resolver
 
+    @property
+    def endpoint_health_registry(self) -> EndpointHealthRegistry:
+        """Return the process-scoped endpoint-health collaborator."""
+        return self._health_registry
+
     @staticmethod
     def _resolve_pin_provider(
         routing_options: RoutingRequestOptions | None,

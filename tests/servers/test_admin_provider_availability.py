@@ -62,9 +62,9 @@ async def admin_client(monkeypatch):
         models_config={
             "model-a": {"router": "routewise"},
             "model-b": {"router": "routewise"},
-        }
+        },
+        shared_fixed_router=router,
     )
-    model_router_registry.bind_fixed_router(router)
     model_router_registry.get_router("model-a")
     model_router_registry.get_router("model-b")
 

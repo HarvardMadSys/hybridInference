@@ -660,8 +660,8 @@ async def initialize() -> AppServices:
         default_router_name=default_router_name,
         alias_to_model=alias_to_model,
         dependencies=router_dependencies,
+        shared_fixed_router=router,
     )
-    model_router_registry.bind_fixed_router(router)
 
     # Eagerly construct routers for every known model so config errors
     # (bad strategy name, bad router_params) surface at boot, not on the

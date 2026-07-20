@@ -77,6 +77,8 @@ class TestBootstrapInitialization:
     @pytest.mark.asyncio
     async def test_initialize_returns_app_services(self, mock_env):
         """Test that initialize returns properly typed AppServices."""
+        from routing.model_router_registry import ModelRouterRegistry
+
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch(
@@ -84,6 +86,15 @@ class TestBootstrapInitialization:
                 new=AsyncMock(return_value=({}, [])),
             ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch(
+                "serving.servers.bootstrap.ModelRouterRegistry",
+                wraps=ModelRouterRegistry,
+            ) as registry_factory,
+            patch.object(
+                ModelRouterRegistry,
+                "bind_fixed_router",
+                side_effect=AssertionError("bootstrap must inject shared FixedRouter"),
+            ),
         ):
             services = await bootstrap.initialize()
 
@@ -97,6 +108,8 @@ class TestBootstrapInitialization:
                 services.model_router_registry._dependencies.health_registry
                 is services.router._health_registry
             )
+            assert registry_factory.call_args.kwargs["shared_fixed_router"] is services.router
+            assert services.model_router_registry._shared_fixed is services.router
 
     @pytest.mark.asyncio
     async def test_initialize_with_database(self, mock_env, monkeypatch):
@@ -330,7 +343,6 @@ models:
         # Make the registry hand out our mock RouteWiseRouter so we can assert
         # on its lifecycle.
         registry_instance = MagicMock()
-        registry_instance.bind_fixed_router = MagicMock()
         registry_instance.get_router = MagicMock(return_value=mock_routewise)
         # type(...).__name__ == "RouteWiseRouter" check in bootstrap relies on
         # the class name; using a real subclass keeps that branch honest.
@@ -370,7 +382,6 @@ models:
         runtime_routewise.start = AsyncMock(side_effect=lambda: events.append("start"))
 
         registry_instance = MagicMock()
-        registry_instance.bind_fixed_router = MagicMock()
         registry_instance.get_router = MagicMock(return_value=runtime_routewise)
         registry_instance.managed_routers.return_value = []
 
@@ -609,7 +620,6 @@ models:
         info.router_params = None
 
         registry_instance = MagicMock()
-        registry_instance.bind_fixed_router = MagicMock()
         registry_instance.get_router = MagicMock(return_value=mock_routewise)
         from routing.routewise.router import RouteWiseRouter as _RWR
 

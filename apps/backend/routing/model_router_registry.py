@@ -1,10 +1,11 @@
 """Per-model router registry with YAML-config-driven dispatch.
 
 Reads each model's ``router`` and ``router_params`` from the parsed
-``models.yaml`` config and constructs the corresponding strategy via
-``routing.strategies.build_router``.  Routers are cached per model_id, so
-the first ``get_router(model_id)`` call pays the construction cost and
-subsequent calls return the same instance.
+``models.yaml`` config. Fixed routing reuses the process-scoped router passed
+at construction; other strategies are constructed through
+``routing.strategies.build_router``. Routers are cached per model_id, so the
+first ``get_router(model_id)`` call pays the construction cost and subsequent
+calls return the same instance.
 
 When a model omits ``router:``, ``default_router_name`` (typically read
 from ``routing.yaml``'s ``default_router`` field) is used.
@@ -15,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from routing.routers import ManagedRouter
-from routing.strategies import build_router
+from routing.strategies import build_router, validate_router_config
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -40,6 +41,8 @@ class ModelRouterRegistry:
             collapse stateful routers onto one cached instance.
         dependencies: Optional process-scoped collaborators propagated to
             every router built by this registry.
+        shared_fixed_router: Process-scoped FixedRouter populated with the
+            live route table. Required before the first router lookup.
     """
 
     def __init__(
@@ -48,6 +51,8 @@ class ModelRouterRegistry:
         default_router_name: str = "fixed",
         alias_to_model: dict[str, str] | None = None,
         dependencies: RouterBuildDependencies | None = None,
+        *,
+        shared_fixed_router: FixedRouter | None = None,
     ) -> None:
         self._configs = models_config
         self._default = default_router_name
@@ -55,39 +60,32 @@ class ModelRouterRegistry:
         self._alias_to_model = dict(alias_to_model or {})
         self._router_overrides: dict[str, str] = {}
         self._dependencies = dependencies
-        # The shared FixedRouter is bound after construction (see
-        # bind_fixed_router); RouteWise uses its read-only route-table view, and
-        # the "fixed" strategy returns this exact instance so models with
-        # ``router: fixed`` dispatch through the populated routes dict
-        # rather than a fresh empty FixedRouter.
         self._shared_fixed: FixedRouter | None = None
+        if shared_fixed_router is not None:
+            self._register_shared_fixed_router(shared_fixed_router)
+
+    def _register_shared_fixed_router(self, fixed_router: FixedRouter) -> None:
+        """Register the process-scoped FixedRouter at the composition boundary."""
+        if self._shared_fixed is fixed_router:
+            return
+        if self._shared_fixed is not None:
+            raise ValueError("a different shared FixedRouter is already registered")
+        if self._cache:
+            raise RuntimeError("shared FixedRouter must be registered before router lookup")
+        if (
+            self._dependencies is not None
+            and fixed_router.endpoint_health_registry is not self._dependencies.health_registry
+        ):
+            raise ValueError("shared FixedRouter must use RouterBuildDependencies.health_registry")
+        self._shared_fixed = fixed_router
 
     def bind_fixed_router(self, fixed_router: FixedRouter) -> None:
-        """Provide the shared ``FixedRouter`` for late-bound strategies.
+        """Compatibility shim for registering the shared ``FixedRouter``.
 
-        Strategies like RouteWise need a read-only view of the live route
-        table. The registry constructs the strategy first, then calls
-        ``attach_route_table(self._shared_fixed)`` on it if available.
-
-        For the ``fixed`` strategy itself, ``get_router`` returns this exact
-        bound instance instead of constructing a fresh empty FixedRouter,
-        so that models routed via "fixed" hit the routes registered on the
-        shared instance (e.g. by ``register_from_models_yaml``).
-
-        Must be called before the first ``get_router(...)`` call for any
-        model that resolves to the "fixed" strategy or whose strategy
-        late-binds to the FixedRouter.
+        New composition roots should pass ``shared_fixed_router=`` to the
+        constructor. This method remains for one release for external callers.
         """
-        if self._dependencies is not None:
-            # FixedRouter does not expose its registry publicly yet. Keep this
-            # compatibility check at the composition boundary so a mismatched
-            # FixedRouter cannot silently split circuit/health state.
-            fixed_health_registry = getattr(fixed_router, "_health_registry", None)
-            if fixed_health_registry is not self._dependencies.health_registry:
-                raise ValueError(
-                    "bound FixedRouter must use RouterBuildDependencies.health_registry"
-                )
-        self._shared_fixed = fixed_router
+        self._register_shared_fixed_router(fixed_router)
 
     def get_router(self, model_id: str) -> RouterProtocol:
         """Return (constructing on first call) the router for ``model_id``."""
@@ -98,34 +96,44 @@ class ModelRouterRegistry:
             return cached
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         name, params = self._router_spec(canonical_model_id, cfg)
-        logger.info(
-            "router_initialized",
-            extra={
-                "event": "router_initialized",
-                "model": canonical_model_id,
-                "requested_model": model_id,
-                "strategy": name,
-                "param_keys": sorted(params.keys()),
-            },
+        router = self._build_router_for_spec(
+            canonical_model_id=canonical_model_id,
+            requested_model_id=model_id,
+            name=name,
+            params=params,
         )
-        # For the "fixed" strategy, return the bound shared FixedRouter
-        # instance — it is the one populated with per-model routes via
-        # register_from_models_yaml.  Constructing a fresh FixedRouter via
-        # build_router would give us an empty routes dict and every
-        # request would fail with "No route configured for model".
-        # router_params on per-model "fixed" entries are accepted for
-        # forward compatibility (e.g. local_fraction) but do not split off
-        # a separate router instance today; the shared FixedRouter ignores
-        # them.  Still run build_router("fixed", params) for validation
-        # side effects so a bad router_params block surfaces at boot, then
-        # discard the throwaway router.
-        if name == "fixed" and self._shared_fixed is not None:
-            build_router(
+        self._cache[canonical_model_id] = router
+        self._cache[model_id] = router
+        return router
+
+    def _build_router_for_spec(
+        self,
+        *,
+        canonical_model_id: str,
+        requested_model_id: str,
+        name: str,
+        params: dict[str, Any],
+    ) -> RouterProtocol:
+        """Build one validated router without mutating registry state."""
+        shared_fixed = self._shared_fixed
+        if shared_fixed is None:
+            # Preserve config fail-fast ordering without constructing and
+            # caching an empty FixedRouter or an unattached RouteWise router.
+            validate_router_config(name, params, dependencies=self._dependencies)
+            raise RuntimeError(
+                "shared FixedRouter is not registered; pass "
+                "shared_fixed_router=... when constructing ModelRouterRegistry"
+            )
+        # Fixed entries share the populated process router. Per-model params
+        # (currently only informational local_fraction) are still validated,
+        # but cannot mutate a shared instance without last-write-wins behavior.
+        if name == "fixed":
+            validate_router_config(
                 name,
                 params,
                 dependencies=self._dependencies,
-            )  # validate params; result discarded
-            router: RouterProtocol = self._shared_fixed
+            )
+            router: RouterProtocol = shared_fixed
         else:
             router = build_router(name, params, dependencies=self._dependencies)
             # Late-bind the read-only route-table port for RouteWise (and any
@@ -135,10 +143,18 @@ class ModelRouterRegistry:
                 # One-release compatibility for external strategies that still
                 # expose the former binding hook.
                 attach = getattr(router, "attach_fixed_router", None)
-            if attach is not None and self._shared_fixed is not None:
-                attach(self._shared_fixed)
-        self._cache[canonical_model_id] = router
-        self._cache[model_id] = router
+            if attach is not None:
+                attach(shared_fixed)
+        logger.info(
+            "router_initialized",
+            extra={
+                "event": "router_initialized",
+                "model": canonical_model_id,
+                "requested_model": requested_model_id,
+                "strategy": name,
+                "param_keys": sorted(params.keys()),
+            },
+        )
         return router
 
     def get_router_name(self, model_id: str) -> str:
@@ -167,23 +183,36 @@ class ModelRouterRegistry:
         return str(name), dict(params)
 
     def validate_router_strategy(self, model_id: str, strategy: str) -> None:
-        """Validate that ``strategy`` can be constructed for ``model_id``."""
+        """Validate ``strategy`` for ``model_id`` without constructing it."""
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         configured_name = str(cfg.get("router") or self._default)
         params = (cfg.get("router_params") or {}) if strategy == configured_name else {}
-        build_router(strategy, params, dependencies=self._dependencies)
+        validate_router_config(strategy, params, dependencies=self._dependencies)
 
     def set_router_override(self, model_id: str, strategy: str) -> None:
-        """Override a model's router strategy at runtime and clear cached routers."""
+        """Install a runtime override only after its router builds successfully."""
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
-        self.validate_router_strategy(canonical_model_id, strategy)
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
+        configured_name = str(cfg.get("router") or self._default)
+        params = (cfg.get("router_params") or {}) if strategy == configured_name else {}
+        # Construct and attach the candidate before changing override/cache
+        # state. A constructor failure leaves the currently serving router
+        # fully intact and the successful candidate is cached exactly once.
+        router = self._build_router_for_spec(
+            canonical_model_id=canonical_model_id,
+            requested_model_id=model_id,
+            name=strategy,
+            params=dict(params),
+        )
         self._router_overrides[canonical_model_id] = strategy
         self._cache.pop(canonical_model_id, None)
         self._cache.pop(model_id, None)
         for alias, target in self._alias_to_model.items():
             if target == canonical_model_id:
                 self._cache.pop(alias, None)
+        self._cache[canonical_model_id] = router
+        self._cache[model_id] = router
 
     def clear_router_override(self, model_id: str) -> None:
         """Remove a runtime router strategy override and clear cached routers."""

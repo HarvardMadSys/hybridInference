@@ -31,6 +31,7 @@ __all__ = [
     "FixedRatioStrategy",
     "build_router",
     "register_strategy",
+    "validate_router_config",
 ]
 
 
@@ -83,6 +84,46 @@ def _accepts_health_registry(router_cls: type) -> bool:
     return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
 
 
+def _validated_strategy(
+    name: str,
+    params: dict[str, Any] | None,
+    *,
+    dependencies: RouterBuildDependencies | None = None,
+) -> tuple[type, Any]:
+    """Resolve and validate a strategy without constructing its router."""
+    if name not in _STRATEGIES:
+        raise ValueError(f"unknown router strategy {name!r}; known: {sorted(_STRATEGIES)}")
+    router_cls, params_cls = _STRATEGIES[name]
+    validated = params_cls.model_validate(params or {})
+    if dependencies is not None and not _accepts_health_registry(router_cls):
+        raise TypeError(
+            f"router strategy {name!r} must accept health_registry= when "
+            "RouterBuildDependencies are supplied"
+        )
+    return router_cls, validated
+
+
+def validate_router_config(
+    name: str,
+    params: dict[str, Any] | None,
+    *,
+    dependencies: RouterBuildDependencies | None = None,
+) -> Any:
+    """Validate strategy configuration without constructing a router.
+
+    The same name, Pydantic schema, and dependency-injection checks used by
+    :func:`build_router` run here, but the registered router constructor is
+    never called. This keeps boot and admin validation free of router lifecycle
+    side effects.
+    """
+    _router_cls, validated = _validated_strategy(
+        name,
+        params,
+        dependencies=dependencies,
+    )
+    return validated
+
+
 def build_router(
     name: str,
     params: dict[str, Any] | None,
@@ -110,16 +151,12 @@ def build_router(
         pydantic.ValidationError: If ``params`` fails the strategy's Pydantic
             schema (``extra="forbid"`` on every Params model).
     """
-    if name not in _STRATEGIES:
-        raise ValueError(f"unknown router strategy {name!r}; known: {sorted(_STRATEGIES)}")
-    router_cls, params_cls = _STRATEGIES[name]
-    validated = params_cls.model_validate(params or {})
+    router_cls, validated = _validated_strategy(
+        name,
+        params,
+        dependencies=dependencies,
+    )
     if dependencies is not None:
-        if not _accepts_health_registry(router_cls):
-            raise TypeError(
-                f"router strategy {name!r} must accept health_registry= when "
-                "RouterBuildDependencies are supplied"
-            )
         return router_cls(
             params=validated,
             health_registry=dependencies.health_registry,

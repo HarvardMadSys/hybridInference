@@ -242,8 +242,10 @@ def test_model_router_registry_prefers_route_table_hook_with_legacy_fallback(
         lambda _name, _params, *, dependencies=None: strategy,
     )
     shared_fixed = FixedRouter()
-    registry = ModelRouterRegistry(models_config={"model": {"router": "routewise"}})
-    registry.bind_fixed_router(shared_fixed)
+    registry = ModelRouterRegistry(
+        models_config={"model": {"router": "routewise"}},
+        shared_fixed_router=shared_fixed,
+    )
 
     assert registry.get_router("model") is strategy
     assert calls == [("new" if new_hook else "legacy", shared_fixed)]

@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.model_router_registry import ModelRouterRegistry
+from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseProbeResult, RouteWiseRouter
 from serving.config.runtime_settings import RuntimeSettings
@@ -177,7 +178,8 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
                 "router": "routewise",
                 "router_params": {"budget_alpha": 0.5},
             }
-        }
+        },
+        shared_fixed_router=FixedRouter(),
     )
     client._transport.app.state.services.model_router_registry = registry
 

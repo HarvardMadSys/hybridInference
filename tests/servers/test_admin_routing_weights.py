@@ -75,8 +75,8 @@ async def admin_client(monkeypatch):
             "zero-model": {"router": "fixed"},
         },
         default_router_name="fixed",
+        shared_fixed_router=router,
     )
-    model_router_registry.bind_fixed_router(router)
 
     app = FastAPI()
     resolver = WeightOverrideResolver(op_store)

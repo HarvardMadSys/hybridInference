@@ -29,6 +29,45 @@ def test_register_strategy_adds_entry():
 
 
 @pytest.mark.unit
+def test_validate_router_config_does_not_construct_router():
+    from pydantic import BaseModel
+
+    from routing.dependencies import RouterBuildDependencies
+    from routing.endpoint_health import EndpointHealthRegistry
+    from routing.strategies import _STRATEGIES, register_strategy, validate_router_config
+
+    class _Params(BaseModel):
+        model_config = {"extra": "forbid"}
+
+        value: int = 1
+
+    class _Router:
+        constructor_calls = 0
+
+        def __init__(self, params=None, *, health_registry=None):
+            type(self).constructor_calls += 1
+            self.params = params
+            self.health_registry = health_registry
+
+    name = "__test_pure_validation__"
+    register_strategy(name)((_Router, _Params))
+    dependencies = RouterBuildDependencies(
+        health_registry=EndpointHealthRegistry(),
+    )
+    try:
+        validated = validate_router_config(
+            name,
+            {"value": 7},
+            dependencies=dependencies,
+        )
+
+        assert validated.value == 7
+        assert _Router.constructor_calls == 0
+    finally:
+        _STRATEGIES.pop(name, None)
+
+
+@pytest.mark.unit
 def test_dependency_aware_factory_rejects_params_only_strategy_clearly():
     from pydantic import BaseModel
 
@@ -56,6 +95,37 @@ def test_dependency_aware_factory_rejects_params_only_strategy_clearly():
 
 
 @pytest.mark.unit
+def test_dependency_aware_validation_rejects_params_only_strategy_without_constructing():
+    from pydantic import BaseModel
+
+    from routing.dependencies import RouterBuildDependencies
+    from routing.endpoint_health import EndpointHealthRegistry
+    from routing.strategies import _STRATEGIES, register_strategy, validate_router_config
+
+    class _Params(BaseModel):
+        model_config = {"extra": "forbid"}
+
+    class _ParamsOnlyRouter:
+        constructor_calls = 0
+
+        def __init__(self, params=None):
+            type(self).constructor_calls += 1
+            self.params = params
+
+    name = "__test_validate_params_only_with_dependencies__"
+    register_strategy(name)((_ParamsOnlyRouter, _Params))
+    dependencies = RouterBuildDependencies(
+        health_registry=EndpointHealthRegistry(),
+    )
+    try:
+        with pytest.raises(TypeError, match=r"must accept health_registry="):
+            validate_router_config(name, {}, dependencies=dependencies)
+        assert _ParamsOnlyRouter.constructor_calls == 0
+    finally:
+        _STRATEGIES.pop(name, None)
+
+
+@pytest.mark.unit
 def test_build_router_unknown_raises_with_known_list():
     from routing.strategies import build_router
 
@@ -74,6 +144,23 @@ def test_build_router_validates_params_strict():
 
     with pytest.raises(ValidationError):
         build_router("fixed", {"unknown_key": 1})
+
+
+@pytest.mark.unit
+def test_validate_router_config_validates_params_strict_without_constructing(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from pydantic import ValidationError
+
+    from routing.routers import FixedRouter
+    from routing.strategies import validate_router_config
+
+    constructor = MagicMock(side_effect=AssertionError("router must not be constructed"))
+    monkeypatch.setattr(FixedRouter, "__init__", constructor)
+
+    with pytest.raises(ValidationError):
+        validate_router_config("fixed", {"unknown_key": 1})
+    constructor.assert_not_called()
 
 
 @pytest.mark.unit
