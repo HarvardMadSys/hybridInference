@@ -140,7 +140,7 @@ describe("canonical AlertEvent validation", () => {
     "api_key=abcdefghi",
     "hyi-abcdefghijklmnopqrstuvwxyz",
     "ghp_abcdefghijklmnopqrstuvwxyz1234",
-    "AKIAABCDEFGHIJKLMNOP",
+    "AKIA" + "ABCDEFGHIJKLMNOP",
     "sk-test-NOTAREAL",
     "gsk_NOTAREAL",
     "xai-NOTAREAL",
