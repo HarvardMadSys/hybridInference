@@ -27,6 +27,7 @@ from .candidates import (
 )
 from .concurrency import ConcurrencyManager
 from .config import RouteWiseConfig
+from .decisions import ProviderReservation, RoutingDecision, RoutingTrace
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from .envelope import CostEnvelopeEstimator, CostEnvelopeSnapshot
 from .hedging import HedgedAdapter, ProviderEventSink
@@ -36,6 +37,7 @@ from .predictor import (
     BucketMeanOutputPredictor,
     BucketMeanPrediction,
 )
+from .prefix_cache_pending import PendingPrefixCacheStore
 from .quota import ProviderQuotaSnapshot, ProviderQuotaSnapshotStore, QuotaPool
 from .router import RouteWiseRouter
 
@@ -52,17 +54,21 @@ __all__ = [
     "HedgedAdapter",
     "LPCandidate",
     "LPSolution",
+    "PendingPrefixCacheStore",
     "ProviderCandidate",
     "ProviderEventSink",
     "ProviderProfile",
     "ProviderQuotaSnapshot",
     "ProviderQuotaSnapshotStore",
+    "ProviderReservation",
     "ProviderType",
     "QuotaPolicy",
     "QuotaPool",
     "QuotaSource",
     "RouteWiseConfig",
     "RouteWiseRouter",
+    "RoutingDecision",
+    "RoutingTrace",
     "api_request_cost_usd",
     "quota_shadow_price_usd",
     "solve_cost_budgeted_mean_ttft",

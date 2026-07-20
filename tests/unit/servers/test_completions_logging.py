@@ -110,6 +110,7 @@ def test_record_routing_observation_with_routing_info(cl_logger, routing_info):
         active_router,
         "gpt-4",
         routing_info,
+        request_id="rid-1",
         ttft_ms=42.0,
         total_latency_ms=120.0,
         prompt_tokens=10,
@@ -126,6 +127,8 @@ def test_record_routing_observation_with_routing_info(cl_logger, routing_info):
     assert obs.completion_tokens == 5
     assert obs.token_count == 15
     assert obs.success is True
+    assert obs.request_id == "rid-1"
+    assert obs.terminal is True
 
 
 def test_record_routing_observation_records_failed_attempts_before_final_success(
@@ -153,6 +156,7 @@ def test_record_routing_observation_records_failed_attempts_before_final_success
         active_router,
         "gpt-4",
         routing,
+        request_id="rid",
         ttft_ms=42.0,
         total_latency_ms=120.0,
         prompt_tokens=10,
@@ -167,8 +171,12 @@ def test_record_routing_observation_records_failed_attempts_before_final_success
     assert failed_obs.success is False
     assert failed_obs.prompt_tokens == 10
     assert failed_obs.completion_tokens == 0
+    assert failed_obs.request_id == "rid"
+    assert failed_obs.terminal is False
     assert final_obs.endpoint_id == "openai-prod"
     assert final_obs.success is True
+    assert final_obs.request_id == "rid"
+    assert final_obs.terminal is True
 
 
 def test_record_routing_observation_falls_back_to_base_url(cl_logger):
@@ -185,6 +193,7 @@ def test_record_routing_observation_falls_back_to_base_url(cl_logger):
         active_router,
         "gpt-4",
         routing,
+        request_id="rid",
         ttft_ms=None,
         total_latency_ms=10.0,
         prompt_tokens=0,
@@ -207,6 +216,7 @@ def test_record_routing_observation_falls_back_to_provider(cl_logger):
         active_router,
         "gpt-4",
         routing,
+        request_id="rid",
         ttft_ms=None,
         total_latency_ms=0.0,
         prompt_tokens=0,
@@ -223,6 +233,7 @@ def test_record_routing_observation_unknown_when_routing_none(cl_logger):
         active_router,
         "gpt-4",
         None,
+        request_id="rid",
         ttft_ms=None,
         total_latency_ms=0.0,
         prompt_tokens=0,
@@ -253,6 +264,7 @@ def test_record_routing_observation_accepts_legacy_dict(cl_logger):
         active_router,
         "claude-sonnet",
         legacy,
+        request_id="rid",
         ttft_ms=200.0,
         total_latency_ms=500.0,
         prompt_tokens=20,
@@ -298,6 +310,7 @@ def test_record_routing_observation_records_legacy_failed_attempts(cl_logger):
         active_router,
         "gpt-4",
         legacy,
+        request_id="rid",
         ttft_ms=None,
         total_latency_ms=200.0,
         prompt_tokens=20,
@@ -329,6 +342,7 @@ def test_record_routing_observation_no_strategy_metadata(cl_logger):
         active_router,
         "gpt-4",
         routing,
+        request_id="rid",
         ttft_ms=None,
         total_latency_ms=0.0,
         prompt_tokens=0,
@@ -352,6 +366,7 @@ def test_record_routing_observation_accepts_typed_strategy_metadata(cl_logger):
         active_router,
         "gpt-4",
         routing,
+        request_id="rid",
         ttft_ms=10.0,
         total_latency_ms=20.0,
         prompt_tokens=3,
@@ -416,6 +431,49 @@ def test_routing_observation_accepts_legacy_positional_quota_committed():
     assert obs.prompt_tokens == 1
     assert obs.completion_tokens == 2
     assert obs.strategy_metadata == {"routewise": {"quota_committed": 1.5}}
+
+
+def test_routing_observation_accepts_keyword_only_request_id_with_legacy_tail():
+    from routing.routers import RoutingObservation
+
+    obs = RoutingObservation(
+        "gpt-4",
+        "openai-prod",
+        None,
+        1.0,
+        3,
+        True,
+        1.5,
+        request_id="rid-1",
+        prompt_tokens=1,
+        completion_tokens=2,
+    )
+
+    assert obs.request_id == "rid-1"
+    assert obs.strategy_metadata == {"routewise": {"quota_committed": 1.5}}
+
+
+def test_routing_observation_rejects_positional_request_id_after_legacy_tail():
+    from routing.routers import RoutingObservation
+
+    with pytest.raises(TypeError, match="at most 14 positional arguments"):
+        RoutingObservation(
+            "gpt-4",
+            "openai-prod",
+            None,
+            1.0,
+            3,
+            True,
+            1.5,
+            1,
+            2,
+            "on_demand",
+            True,
+            True,
+            False,
+            "optimal",
+            "rid-1",
+        )
 
 
 def test_routing_observation_accepts_full_legacy_positional_tail():

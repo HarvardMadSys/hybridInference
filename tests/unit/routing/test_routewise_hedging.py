@@ -720,8 +720,10 @@ class TestRouterHedgeMode:
             router._latency_profiles["test-model:api-a"].record(now, 3500.0)
             router._latency_profiles["test-model:api-b"].record(now, 200.0)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
 
+        assert decision is not None
+        selected = decision.adapter
         assert isinstance(selected, HedgedAdapter)
         assert selected.primary is api_a
         assert selected.backup is None

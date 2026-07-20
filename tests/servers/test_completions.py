@@ -279,7 +279,13 @@ async def completions_client(completions_app: FastAPI) -> AsyncGenerator[AsyncCl
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_basic(completions_client: AsyncClient):
+async def test_non_streaming_basic(
+    completions_client: AsyncClient,
+    completions_app: FastAPI,
+):
+    active_router = completions_app.state.services.router
+    active_router.record_observation = MagicMock()
+
     resp = await completions_client.post(
         "/v1/chat/completions",
         json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
@@ -288,6 +294,8 @@ async def test_non_streaming_basic(completions_client: AsyncClient):
     body = resp.json()
     assert body["model"] == "gpt-4"
     assert body["choices"][0]["message"]["content"] == "Test response"
+    observation = active_router.record_observation.call_args.args[0]
+    assert observation.request_id.startswith("req_")
 
 
 @pytest.mark.asyncio

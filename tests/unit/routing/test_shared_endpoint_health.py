@@ -144,7 +144,9 @@ async def test_fixed_pinned_failure_excludes_endpoint_from_routewise() -> None:
     assert routewise.get_provider_status()[_PRIMARY_ENDPOINT]["circuit_state"] == (
         _CircuitState.OPEN
     )
-    assert routewise._select_adapter(_MODEL_ID, {}) is backup
+    decision = routewise._select_decision(_MODEL_ID, {})
+    assert decision is not None
+    assert decision.adapter is backup
 
 
 @pytest.mark.asyncio

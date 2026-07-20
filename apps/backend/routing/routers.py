@@ -82,7 +82,9 @@ class RoutingObservation:
     """Observation from a completed request, for online learning routers.
 
     RouteWiseRouter overrides record_observation() to update its cost model;
-    FixedRouter ignores observations (no-op).
+    FixedRouter ignores observations (no-op). ``request_id`` and ``terminal``
+    are keyword-only so explicit correlation and failed-attempt disposition do
+    not shift the legacy positional tail retained for older integrations.
     """
 
     model_id: str
@@ -91,6 +93,8 @@ class RoutingObservation:
     total_latency_ms: float
     token_count: int
     success: bool
+    request_id: str | None = None
+    terminal: bool = True
     prompt_tokens: int = 0
     completion_tokens: int = 0
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
@@ -104,6 +108,8 @@ class RoutingObservation:
         token_count: int,
         success: bool,
         *legacy_tail: Any,
+        request_id: str | None = None,
+        terminal: bool = True,
         prompt_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
         completion_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
         strategy_metadata: dict[str, Any] | None = None,
@@ -182,6 +188,8 @@ class RoutingObservation:
         self.total_latency_ms = total_latency_ms
         self.token_count = token_count
         self.success = success
+        self.request_id = request_id
+        self.terminal = terminal
         self.prompt_tokens = resolved_prompt_tokens
         self.completion_tokens = resolved_completion_tokens
         self.strategy_metadata = metadata

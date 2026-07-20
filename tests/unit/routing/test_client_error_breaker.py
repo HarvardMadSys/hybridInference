@@ -9,7 +9,6 @@ overload-signalling 408/429) must still count.
 """
 
 import asyncio
-import threading
 import types
 from unittest.mock import AsyncMock, patch
 
@@ -21,6 +20,8 @@ from routing.endpoint_health import (
     _http_status_of,
     _is_client_error,
 )
+from routing.routewise.decisions import ProviderReservation, RoutingDecision, RoutingTrace
+from routing.routewise.prefix_cache_pending import PendingPrefixCacheStore
 from routing.routewise.router import RouteWiseRouter
 
 
@@ -163,29 +164,29 @@ class _CaptureRouteWise(RouteWiseRouter):
 
     def __init__(self) -> None:
         self.captured: list[dict] = []
-        self._pending_decisions: dict = {}
-        # Terminal-failure cleanup reclaims the prefix stash on the except path.
-        self._route_commit_lock = threading.RLock()
-        self._prefix_cache_pending: dict = {}
+        self.pending_prefix_cache = PendingPrefixCacheStore()
         # fallback_mode != "policy" so both paths re-raise right after recording.
         self.config = types.SimpleNamespace(fallback_mode="off")
         self._fake = _FakeAdapter()
 
-    def _select_adapter(self, model_id, context=None, **kwargs):  # type: ignore[override]
-        return self._fake
+    def _select_decision(self, model_id, context=None, trace=None, **kwargs):  # type: ignore[override]
+        trace = trace or RoutingTrace()
+        return RoutingDecision(
+            adapter=self._fake,
+            reservation=ProviderReservation(),
+            metadata={},
+            trace=trace,
+        )
 
-    async def _execute_adapter(self, adapter, model_id, messages, **params):  # type: ignore[override]
+    async def _execute_adapter(self, decision, model_id, messages, **params):  # type: ignore[override]
         raise _StatusError(400)
 
-    async def _execute_stream_adapter(self, adapter, model_id, messages, **params):  # type: ignore[override]
+    async def _execute_stream_adapter(self, decision, model_id, messages, **params):  # type: ignore[override]
         raise _StatusError(400)
         yield  # unreachable; marks this coroutine as an async generator
 
     def _on_failure(self, endpoint_id, *, reason="error", detail=None, exc=None):  # type: ignore[override]
         self.captured.append({"endpoint_id": endpoint_id, "reason": reason, "exc": exc})
-
-    def _release_pending_primary_reservation(self, request_id):
-        pass
 
 
 def test_routewise_chat_forwards_exc_to_on_failure():

@@ -698,6 +698,7 @@ async def chat_completions(
             "request_id": request_id,
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
+            "synthetic_probe": is_synthetic_probe,
             # User identity for failure attribution — the routing layer reads
             # these to name the offending users in circuit-breaker alerts.
             "user_id": user_id,
@@ -1025,6 +1026,7 @@ async def chat_completions(
                 active_router,
                 model,
                 routing if isinstance(response, dict) else None,
+                request_id=request_id,
                 ttft_ms=None,
                 total_latency_ms=(time.time() - start_time) * 1000,
                 prompt_tokens=int(ns_usage.get("prompt_tokens", 0) or 0),
@@ -1070,6 +1072,7 @@ async def chat_completions(
                     active_router,
                     model,
                     exc_routing,
+                    request_id=request_id,
                     ttft_ms=None,
                     total_latency_ms=(time.time() - start_time) * 1000,
                     prompt_tokens=0,
