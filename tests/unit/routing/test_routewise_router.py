@@ -8,12 +8,12 @@ import itertools
 import json
 import logging
 import time
-from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from routing.route_table import EffectiveRoute
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
@@ -122,33 +122,34 @@ def _make_adapter(
     return adapter
 
 
-@dataclass
-class _FakeRouteConfig:
-    adapters: list[tuple[Any, float]]
-
-
-class _FakeFixedRouter:
-    """Minimal stand-in for FixedRouter with a `routes` dict."""
+class _FakeRouteTable:
+    """Minimal RouteTableView double with mutable effective-weight fixtures."""
 
     def __init__(self) -> None:
-        self.routes: dict[str, _FakeRouteConfig] = {}
+        self._routes: dict[str, tuple[tuple[Any, float], ...]] = {}
         self.weight_overrides: dict[str, float] = {}
 
     def add(self, model_id: str, adapters_with_weights: list[tuple[Any, float]]) -> None:
-        self.routes[model_id] = _FakeRouteConfig(adapters=adapters_with_weights)
+        self._routes[model_id] = tuple(adapters_with_weights)
 
-    def _get_effective_adapters(
-        self,
-        _model_id: str,
-        route: _FakeRouteConfig,
-    ) -> list[tuple[Any, float]]:
-        return [
-            (
-                adapter,
-                float(self.weight_overrides.get(adapter.config.endpoint_id, weight)),
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        return tuple(
+            EffectiveRoute(
+                route_key=model_id,
+                canonical_model_id=model_id,
+                adapters=tuple(
+                    (
+                        adapter,
+                        float(self.weight_overrides.get(adapter.config.endpoint_id, weight)),
+                    )
+                    for adapter, weight in adapters
+                ),
             )
-            for adapter, weight in route.adapters
-        ]
+            for model_id, adapters in self._routes.items()
+        )
+
+    def canonical_id(self, model_id: str) -> str:
+        return model_id
 
 
 def _quota_pool(router: RouteWiseRouter):
@@ -211,9 +212,9 @@ def _make_router_with_quota_and_api(
         completion_price=completion_price,
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     _seed_quota_snapshots(router)
     return router, quota_adapter, api_adapter
 
@@ -256,10 +257,10 @@ class TestRouteWiseRouterScaffold:
     def test_scaffold_selects_adapter(self):
         """Router returns an adapter for a registered model."""
         adapter = _make_adapter()
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is adapter
 
@@ -268,9 +269,9 @@ class TestRouteWiseRouterScaffold:
         monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
         blocked = _make_adapter(endpoint_id="test-model:blocked", prompt_price="0.001")
         active = _make_adapter(endpoint_id="test-model:active", prompt_price="0.002")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(blocked, 0.5), (active, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
             router._health_registry.record_failure(
@@ -293,7 +294,7 @@ class TestRouteWiseRouterScaffold:
         )
         fr = FixedRouter()
         fr.register_route("minimax-m2.5", [(adapter, 1.0)], aliases=["MiniMax-M2.5"])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert sorted(router.classified) == ["minimax-m2.5"]
         assert "MiniMax-M2.5" not in router.route_candidates
@@ -325,8 +326,8 @@ class TestRouteWiseRouterScaffold:
 
     def test_unregistered_model_raises(self):
         """Requesting an unknown model raises ValueError."""
-        fr = _FakeFixedRouter()
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        fr = _FakeRouteTable()
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         with pytest.raises(ValueError, match="no route"):
             router._select_adapter("nonexistent", {})
 
@@ -335,16 +336,16 @@ class TestRouteWiseRouterScaffold:
         quota_adapter = _make_adapter(provider_type="quota")
         api_adapter = _make_adapter(provider_type="on_demand")
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         entries = router.classified["test-model"]
         types = {s for _, _, s in entries}
         assert ProviderType.QUOTA in types
         assert ProviderType.ON_DEMAND in types
 
-    def test_rebuild_honors_fixed_router_weight_overrides(self):
+    def test_rebuild_honors_route_table_effective_weights(self):
         """Weight overrides should remove disabled endpoints from RouteWise candidates."""
         disabled_adapter = _make_adapter(
             provider_type="on_demand",
@@ -358,11 +359,11 @@ class TestRouteWiseRouterScaffold:
             prompt_price="0.002",
             completion_price="0.020",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(disabled_adapter, 1.0), (active_adapter, 1.0)])
         fr.weight_overrides["test-model:disabled-provider"] = 0.0
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert [c.endpoint_id for c in router.route_candidates["test-model"]] == [
             "test-model:active-provider"
@@ -387,11 +388,11 @@ class TestRouteWiseRouterScaffold:
             provider_type="on_demand",
             endpoint_id="model-b:api",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("model-a", [(disabled_adapter, 1.0), (active_adapter, 1.0)])
         fr.add("model-b", [(other_model_adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         now = time.time()
         router._latency_profiles["model-a:disabled"].record(now, 200.0)
         router._latency_profiles["model-a:active"].record(now, 300.0)
@@ -407,7 +408,7 @@ class TestRouteWiseRouterScaffold:
         other_model_profile = router._latency_profiles["model-b:api"]
 
         fr.weight_overrides["model-a:disabled"] = 0.0
-        router._rebuild_from_fixed_router()
+        router._rebuild_from_route_table()
 
         assert "model-a:disabled" not in router._latency_profiles
         assert "model-a:disabled" not in router._latency_history_priors_ms
@@ -439,10 +440,10 @@ class TestRouteWiseRouterScaffold:
             endpoint_id="test-model:api-provider",
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_adapter, 0.5), (quota_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
         selected = router._select_adapter("test-model", {})
@@ -464,10 +465,10 @@ class TestRouteWiseRouterScaffold:
             provider_type="on_demand", prompt_price="0.003", completion_price="0.003"
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(provider_a, 0.5), (provider_b, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is provider_b
 
@@ -491,10 +492,10 @@ class TestRouteWiseRouterScaffold:
             completion_price="5.0",
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(provider_a, 0.5), (provider_b, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         # Warm predictor so predicted output is ~100 (small output).
         for _ in range(25):
@@ -510,20 +511,20 @@ class TestRouteWiseRouterScaffold:
     def test_unknown_provider_type_raises(self):
         """Unknown provider_type values are rejected."""
         adapter = _make_adapter(provider_type="unknown_tier")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(adapter, 1.0)])
 
         with pytest.raises(ValueError, match="provider_type must be one of"):
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_subscription_only_route_uses_reference_api_price_for_value(self):
         """Routes without S_A can still price requests with reference_api_price."""
         quota_adapter = _make_adapter(provider_type="quota")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 1.0)])
 
         router = RouteWiseRouter(
-            fixed_router=fr,
+            route_table=fr,
             config=RouteWiseConfig(reference_api_price={"prompt": "2.0", "completion": "4.0"}),
         )
 
@@ -545,10 +546,10 @@ class TestRouteWiseRouterScaffold:
             provider_type="on_demand",
             endpoint_id="test-model:api-provider",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
 
@@ -581,10 +582,10 @@ class TestRouteWiseRouterScaffold:
             completion_price="15.0",
             endpoint_id="test-model:api-provider",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _warm_envelope(router, lower=0.0000001, upper=0.001)
 
         selected = router._select_adapter(
@@ -637,11 +638,11 @@ class TestRouteWiseRouterScaffold:
             quota_pool="normal-pool",
             endpoint_id="other-model:normal-quota",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(override_adapter, 1.0)])
         fr.add("other-model", [(normal_adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
 
         assert router.quota_pools["override-pool"].source == QuotaSource(
@@ -671,7 +672,7 @@ class TestRouteWiseRouterScaffold:
             completion_price="15.0",
             endpoint_id="test-model:api-provider",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
         async def fake_fetch_chutes() -> list[ProviderQuotaResult]:
@@ -697,7 +698,7 @@ class TestRouteWiseRouterScaffold:
             ]
 
         config = RouteWiseConfig()
-        router = RouteWiseRouter(fixed_router=fr, config=config)
+        router = RouteWiseRouter(route_table=fr, config=config)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
         router.quota_snapshots = ProviderQuotaSnapshotStore(fetchers={"chutes": fake_fetch_chutes})
         # Snapshot pools hold a store reference; rebuild after swapping it.
@@ -725,47 +726,90 @@ class TestRouteWiseRouterScaffold:
 
         quota_adapter = _make_adapter(provider_type="quota")
         api_adapter = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
         with pytest.raises(RuntimeError, match="process-local"):
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_multi_worker_guard_does_not_block_api_only_routes(self, monkeypatch):
         """API-only RouteWise routes remain safe with multiple workers."""
         monkeypatch.setenv("WEB_CONCURRENCY", "2")
 
         api_adapter = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         assert router._select_adapter("test-model", {}) is api_adapter
 
-    def test_attach_fixed_router_clears_derived_state_on_rebind(self):
+    def test_attach_route_table_clears_derived_state_on_rebind(self):
         """Rebinding resets all derived state that depends on prior routing activity."""
         adapter = _make_adapter()
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         router._pending_decisions["req-1"] = {"decision": "quota"}
 
-        replacement = _FakeFixedRouter()
+        replacement = _FakeRouteTable()
         replacement.add("test-model", [(adapter, 1.0)])
 
-        router.attach_fixed_router(replacement)
+        router.attach_route_table(replacement)
 
-        assert router.fixed_router is replacement
+        assert router.route_table is replacement
         assert router._pending_decisions == {}
+
+    def test_legacy_fixed_router_keyword_delegates_to_route_table(self):
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(_make_adapter(), 1.0)])
+
+        router = RouteWiseRouter(fixed_router=route_table, config=RouteWiseConfig())
+
+        assert router.route_table is route_table
+        assert router.fixed_router is route_table
+
+    def test_legacy_fixed_router_attribute_assignment_updates_route_table(self):
+        router = RouteWiseRouter(config=RouteWiseConfig())
+        route_table = _FakeRouteTable()
+
+        router.fixed_router = route_table
+
+        assert router.route_table is route_table
+
+    def test_legacy_attach_and_rebuild_shims_delegate_to_route_table(self, monkeypatch):
+        first = _FakeRouteTable()
+        first.add("test-model", [(_make_adapter(), 1.0)])
+        replacement = _FakeRouteTable()
+        replacement.add("test-model", [(_make_adapter(), 1.0)])
+        router = RouteWiseRouter(route_table=first, config=RouteWiseConfig())
+
+        router.attach_fixed_router(replacement)
+        rebuild = MagicMock(wraps=router._rebuild_from_route_table)
+        monkeypatch.setattr(router, "_rebuild_from_route_table", rebuild)
+
+        router._rebuild_from_fixed_router()
+
+        assert router.route_table is replacement
+        rebuild.assert_called_once_with()
+
+    def test_route_table_and_legacy_fixed_router_are_mutually_exclusive(self):
+        route_table = _FakeRouteTable()
+
+        with pytest.raises(TypeError, match="cannot both be provided"):
+            RouteWiseRouter(
+                route_table=route_table,
+                fixed_router=route_table,
+                config=RouteWiseConfig(),
+            )
 
     def test_concurrency_adapter_skipped_when_pool_exhausted(self):
         """S_C adapter is not selected when its pool has no free slots."""
         conc = _make_adapter(provider_type="concurrency", concurrency={"limit": 1})
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         assert _conc_pool(router).try_acquire() is True
         selected = router._select_adapter("test-model", {})
         assert selected is None
@@ -773,10 +817,10 @@ class TestRouteWiseRouterScaffold:
     def test_concurrency_adapter_selected_with_route_policy(self):
         """S_C adapter is returned when its route declares a concurrency block."""
         conc = _make_adapter(provider_type="concurrency")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         selected = router._select_adapter("test-model", {})
         assert selected is conc
 
@@ -823,10 +867,10 @@ class TestRouteWiseQuotaDecision:
     def test_no_quota_adapter_always_selects_api(self):
         """Models with only S_A adapters never route to S_Q."""
         api_only = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_only, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
         assert selected is api_only
@@ -968,8 +1012,8 @@ class TestRouteWiseObservation:
 
     def test_record_observation_does_not_raise(self):
         """record_observation never raises, even with edge-case data."""
-        fr = _FakeFixedRouter()
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        fr = _FakeRouteTable()
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         obs = RoutingObservation(
             model_id="unknown-model",
             endpoint_id="unknown:provider",
@@ -1011,9 +1055,9 @@ def _make_router_with_two_api(
         completion_price="20.0",
         endpoint_id="test-model:api-b",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add("test-model", [(api_a, 0.5), (api_b, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     return router, api_a, api_b
 
 
@@ -1117,11 +1161,11 @@ class TestRouteWiseLayer2:
             completion_price="15.0",
             endpoint_id="test-model:api-only",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_only, 1.0)])
 
         config = RouteWiseConfig(latency_min_samples=1)
-        router = RouteWiseRouter(fixed_router=fr, config=config)
+        router = RouteWiseRouter(route_table=fr, config=config)
 
         # Warm predictor.
         for _ in range(25):
@@ -1462,11 +1506,11 @@ class TestRouteWiseLayer2:
             endpoint_id="model-b:ep2",
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("model-a", [(a1, 0.5), (a2, 0.5)])
         fr.add("model-b", [(b1, 0.5), (b2, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=config)
+        router = RouteWiseRouter(route_table=fr, config=config)
 
         # Warm predictors for both models.
         for _ in range(25):
@@ -1525,10 +1569,10 @@ class TestEnvelopeDonorBootstrap:
             endpoint_id="donor-model:api",
             model_id="donor-model",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("target-model", [(target_api, 1.0)])
         fr.add("donor-model", [(donor_api, 1.0)])
-        return RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        return RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_donor_rows_priced_with_target_routes_into_target_pool(self):
         router = self._router_with_donor_sibling()
@@ -1651,9 +1695,9 @@ def _make_router_with_conc_and_api(
         completion_price=completion_price,
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add("test-model", [(conc_adapter, 0.5), (api_adapter, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     return router, conc_adapter, api_adapter
 
 
@@ -1689,7 +1733,7 @@ def _make_router_three_tier(
         completion_price="15.0",
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add(
         "test-model",
         [
@@ -1698,7 +1742,7 @@ def _make_router_three_tier(
             (api_adapter, 0.4),
         ],
     )
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     _seed_quota_snapshots(router)
     return router, conc_adapter, quota_adapter, api_adapter
 
@@ -1757,7 +1801,7 @@ class TestRouteWiseSCDecision:
         assert pool.try_acquire() is True
 
         conc_adapter.config.concurrency = {"limit": 3}
-        router._rebuild_from_fixed_router()
+        router._rebuild_from_route_table()
 
         updated_pool = _conc_pool(router)
         assert updated_pool is pool
@@ -1767,7 +1811,7 @@ class TestRouteWiseSCDecision:
         assert updated_pool.try_acquire() is True
 
         conc_adapter.config.concurrency = {"limit": 2}
-        router._rebuild_from_fixed_router()
+        router._rebuild_from_route_table()
 
         assert _conc_pool(router) is pool
         assert pool.limit == 2
@@ -1787,9 +1831,9 @@ class TestRouteWiseSCDecision:
             endpoint_id="test-model:conc-b",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc_a, 0.5), (conc_b, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert len(router.concurrency_pools) == 2
         pool_a = router.concurrency_pools["test-model:test-model:conc-a"]
@@ -1817,10 +1861,10 @@ class TestRouteWiseSCDecision:
             concurrency={"limit": 2},
             concurrency_pool="shared-subscription",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc_a, 0.5), (conc_b, 0.5)])
         with pytest.raises(ValueError, match="conflicting limits"):
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_shared_pool_routes_share_slots(self):
         """Routes declaring the same pool id draw from one slot budget."""
@@ -1836,9 +1880,9 @@ class TestRouteWiseSCDecision:
             concurrency={"limit": 1},
             concurrency_pool="shared-subscription",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc_a, 0.5), (conc_b, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert len(router.concurrency_pools) == 1
         assert router.concurrency_pools["shared-subscription"].try_acquire() is True
@@ -2153,10 +2197,10 @@ class TestRouteWiseNoApiBaseline:
             endpoint_id="test-model:conc",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         # Fill the single slot externally.
         _conc_pool(router).try_acquire()
@@ -2174,10 +2218,10 @@ class TestRouteWiseNoApiBaseline:
             endpoint_id="test-model:quota",
             quota={"limit": 5},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
 
         # Exhaust quota.
@@ -2202,10 +2246,10 @@ class TestRouteWiseNoApiBaseline:
             endpoint_id="test-model:quota",
             quota={"limit": 3},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 0.5), (quota, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
 
         # Fill S_C.
@@ -2225,10 +2269,10 @@ class TestRouteWiseNoApiBaseline:
             provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         selected = router._select_adapter("test-model", {"prompt_tokens": 100})
         assert selected is conc
@@ -2241,7 +2285,7 @@ class TestRouteWiseNoApiBaseline:
             provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
         stream_entered = False
@@ -2253,7 +2297,7 @@ class TestRouteWiseNoApiBaseline:
 
         conc.stream_chat_completion = _stream
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         stream = router.stream_chat_completion(
             "test-model",
@@ -2277,11 +2321,11 @@ class TestRouteWiseNoApiBaseline:
             provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
         with patch("routing.routewise.router.logger") as mock_logger:
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
             mock_logger.warning.assert_called()
             warning_msg = mock_logger.warning.call_args[0][0]
             assert "no P_O" in warning_msg
@@ -2320,12 +2364,12 @@ def _make_router_with_all_tiers(
         completion_price="15.0",
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add(
         "test-model",
         [(conc_adapter, 0.3), (quota_adapter, 0.3), (api_adapter, 0.4)],
     )
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     return router, conc_adapter, quota_adapter, api_adapter
 
 
@@ -2475,9 +2519,9 @@ class TestRouteWiseDecisionMetadata:
             endpoint_id="test-model:conc-provider",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
 
@@ -2526,9 +2570,9 @@ class TestRouteWiseDecisionMetadata:
             endpoint_id="test-model:conc-provider",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
 
@@ -2572,10 +2616,10 @@ class TestRouteWiseDecisionMetadata:
             endpoint_id="test-model:conc-provider",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
         router = RouteWiseRouter(
-            fixed_router=fr,
+            route_table=fr,
             config=RouteWiseConfig(fallback_mode="strict"),
         )
         _seed_quota_snapshots(router)
@@ -2671,9 +2715,9 @@ class TestRouteWiseDecisionMetadata:
             provider_type="on_demand",
             endpoint_id="test-model:backup",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         async def _primary_stream(*args, **kwargs):
             yield 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
@@ -2712,9 +2756,9 @@ class TestRouteWiseDecisionMetadata:
             provider_type="on_demand",
             endpoint_id="test-model:backup",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         async def _primary_stream(*args, **kwargs):
             raise _StatusError(400, "bad stream request")
@@ -2940,9 +2984,9 @@ class TestRouteWiseEnvelopeCalibration:
             endpoint_id="quota-only:quota-provider",
             quota={"limit": 5000},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 1.0)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         with pytest.raises(EnvelopeNotCalibratedError, match="quota-only"):
             await router.start()
@@ -2960,9 +3004,9 @@ class TestRouteWiseEnvelopeCalibration:
     async def test_start_passes_for_api_only_models(self):
         """Models without any quota provider don't need a calibrated envelope."""
         api_only = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_only, 1.0)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         try:
             await router.start()
         finally:

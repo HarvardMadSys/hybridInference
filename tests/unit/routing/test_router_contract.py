@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from routing.protocols import RouterProtocol
+from routing.route_table import RouteTableView
 from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
@@ -112,7 +113,7 @@ def router_factory(request: pytest.FixtureRequest) -> _RouterFactory:
             [(adapter, 1.0) for adapter in adapters],
         )
         return RouteWiseRouter(
-            fixed_router=route_table,
+            route_table=route_table,
             config=RouteWiseConfig(
                 budget_alpha=0.0,
                 fallback_mode="policy",
@@ -130,6 +131,22 @@ def test_serving_routers_satisfy_structural_protocol(router_factory: _RouterFact
     router = router_factory.build([_adapter("primary")])
 
     assert isinstance(router, RouterProtocol)
+
+
+@pytest.mark.unit
+def test_fixed_router_satisfies_route_table_view_and_returns_canonical_snapshot() -> None:
+    primary = _adapter("primary")
+    route_table = FixedRouter()
+    route_table.register_route(_MODEL_ID, [(primary, 1.0)], aliases=["contract-alias"])
+
+    snapshot = route_table.iter_effective_routes()
+
+    assert isinstance(route_table, RouteTableView)
+    assert len(snapshot) == 1
+    assert snapshot[0].route_key == _MODEL_ID
+    assert snapshot[0].canonical_model_id == _MODEL_ID
+    assert snapshot[0].adapters == ((primary, 1.0),)
+    assert route_table.canonical_id("contract-alias") == _MODEL_ID
 
 
 @pytest.mark.unit

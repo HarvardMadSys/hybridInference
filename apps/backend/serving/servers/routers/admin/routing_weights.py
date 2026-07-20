@@ -13,6 +13,9 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, get_services, verify_admin_access
+from serving.servers.routewise_rebuild import (
+    rebuild_routewise_routers as _rebuild_routewise_routers,
+)
 
 router = APIRouter(prefix="/admin")
 
@@ -118,26 +121,6 @@ def _clear_weight_override_snapshot(services, model_id: str, endpoint_id: str) -
     resolver = getattr(services, "weight_override_resolver", None)
     if resolver is not None and hasattr(resolver, "clear_override"):
         resolver.clear_override(model_id, endpoint_id)
-
-
-def _rebuild_routewise_routers(services) -> None:
-    registry = getattr(services, "model_router_registry", None)
-    if registry is None:
-        return
-    seen: set[int] = set()
-    for router_obj in registry.cached_routers():
-        if id(router_obj) in seen:
-            continue
-        seen.add(id(router_obj))
-        rebuild = getattr(router_obj, "_rebuild_from_fixed_router", None)
-        if not callable(rebuild):
-            continue
-        commit_lock = getattr(router_obj, "_route_commit_lock", None)
-        if commit_lock is not None:
-            with commit_lock:
-                rebuild()
-        else:
-            rebuild()
 
 
 @router.get("/routing/weights/{model_id:path}", response_model=ListRouteWeightsResponse)

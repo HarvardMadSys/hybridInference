@@ -88,7 +88,7 @@ def _shared_router_pair(
     fixed = FixedRouter(health_registry=registry)
     fixed.register_route(_MODEL_ID, [(primary, 0.5), (backup, 0.5)])
     routewise = RouteWiseRouter(
-        fixed_router=fixed,
+        route_table=fixed,
         config=RouteWiseConfig(
             budget_alpha=0.0,
             random_seed=0,

@@ -198,10 +198,10 @@ def test_build_routewise_returns_routewise_router():
     from routing.routewise.router import RouteWiseRouter
     from routing.strategies import build_router
 
-    # Without a fixed_router, RouteWiseRouter defers post-init classification.
+    # Without a route table, RouteWiseRouter defers post-init classification.
     router = build_router("routewise", {"latency_min_samples": 100})
     assert isinstance(router, RouteWiseRouter)
     assert isinstance(router, RouterProtocol)
     assert router.config.latency_min_samples == 100
-    # fixed_router is None until attach_fixed_router is called.
-    assert router.fixed_router is None
+    # route_table is None until attach_route_table is called.
+    assert router.route_table is None

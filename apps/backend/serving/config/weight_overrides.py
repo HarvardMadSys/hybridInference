@@ -25,7 +25,10 @@ class WeightOverrideResolver:
             cached = self._cache.get(model_id)
             if cached is not None and (now - cached[0]) < self._ttl:
                 return dict(cached[1])
-            version = self._versions.get(model_id, 0)
+            # Register the in-flight model so a concurrent full refresh bumps
+            # its generation even when the authoritative snapshot has no row
+            # for this model.
+            version = self._versions.setdefault(model_id, 0)
 
         rows = await self._store.list_weight_overrides_for_model(model_id)
         overrides = {str(row["endpoint_id"]): float(row["weight"]) for row in rows}
@@ -36,8 +39,8 @@ class WeightOverrideResolver:
                 self._snapshots[model_id] = dict(overrides)
         return dict(overrides)
 
-    async def load_all(self) -> None:
-        """Warm the sync snapshot from all persisted override rows."""
+    async def load_all(self) -> bool:
+        """Warm the sync snapshot and return whether its contents changed."""
         rows = await self._store.list_all_weight_overrides()
         snapshots: dict[str, dict[str, float]] = {}
         for row in rows:
@@ -45,10 +48,15 @@ class WeightOverrideResolver:
             endpoint_id = str(row["endpoint_id"])
             snapshots.setdefault(model_id, {})[endpoint_id] = float(row["weight"])
         with self._lock:
+            changed = snapshots != self._snapshots
             self._snapshots = snapshots
+            # Preserve the generation fence even when the authoritative data
+            # is unchanged: an older in-flight per-model fetch must not write
+            # through after this full refresh completes.
             self._cache.clear()
             for model_id in set(self._versions) | set(snapshots):
                 self._versions[model_id] = self._versions.get(model_id, 0) + 1
+            return changed
 
     def get_snapshot_for_model(self, model_id: str) -> dict[str, float]:
         """Return the current non-blocking snapshot for routing selection."""

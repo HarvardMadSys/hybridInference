@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
+from routing.route_table import EffectiveRoute
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
@@ -293,6 +294,31 @@ class FixedRouter:
         """Ignore observations because fixed routing has no online-learning state."""
         return None
 
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        """Return a stable effective-route snapshot built under the route lock."""
+        with self._lock:
+            snapshot: list[EffectiveRoute] = []
+            seen_canonical_ids: set[str] = set()
+            for route_key, route in self.routes.items():
+                canonical_model_id = route.canonical_model_id or route_key
+                if canonical_model_id in seen_canonical_ids:
+                    continue
+                seen_canonical_ids.add(canonical_model_id)
+                snapshot.append(
+                    EffectiveRoute(
+                        route_key=route_key,
+                        canonical_model_id=canonical_model_id,
+                        adapters=tuple(self._get_effective_adapters(route_key, route)),
+                    )
+                )
+            return tuple(snapshot)
+
+    def canonical_id(self, model_id: str) -> str:
+        """Resolve aliases through the route table without exposing mutable routes."""
+        with self._lock:
+            route = self.routes.get(model_id)
+            return route.canonical_model_id if route and route.canonical_model_id else model_id
+
     def _apply_disabled_providers(
         self, adapters: list[tuple[BaseAdapter, float]]
     ) -> list[tuple[BaseAdapter, float]]:
@@ -387,9 +413,10 @@ class FixedRouter:
             admin_only=admin_only,
             required_role=effective_role,
         )
-        self.routes[model_id] = route_cfg
-        for alias in aliases or []:
-            self.routes[alias] = route_cfg  # shared reference, not a copy
+        with self._lock:
+            self.routes[model_id] = route_cfg
+            for alias in aliases or []:
+                self.routes[alias] = route_cfg  # shared reference, not a copy
 
     def _select_adapter(
         self, model_id: str, *, pin_provider: str | None = None

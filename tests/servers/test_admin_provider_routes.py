@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
@@ -118,6 +119,20 @@ class _ManagedTestRouter:
 
     async def stop(self) -> None:
         self.stopped += 1
+
+
+def test_routewise_rebuild_falls_back_to_legacy_hook() -> None:
+    legacy_rebuild = MagicMock()
+    legacy_router = SimpleNamespace(
+        _rebuild_from_fixed_router=legacy_rebuild,
+        _route_commit_lock=None,
+    )
+    registry = SimpleNamespace(cached_routers=lambda: [legacy_router])
+    services = SimpleNamespace(model_router_registry=registry)
+
+    provider_routes._rebuild_routewise_routers(services)
+
+    legacy_rebuild.assert_called_once_with()
 
 
 class _FailingManagedTestRouter(_ManagedTestRouter):
@@ -255,7 +270,7 @@ async def admin_client(monkeypatch):
         dynamic_keys.register_adapter_for_provider(provider, adapter)
 
     fake_routewise = MagicMock()
-    fake_routewise._rebuild_from_fixed_router = MagicMock()
+    fake_routewise._rebuild_from_route_table = MagicMock()
     fake_routewise.start = AsyncMock()
     fake_routewise.stop = AsyncMock()
     registry = MagicMock()
@@ -777,7 +792,7 @@ async def test_put_provider_route_updates_upstream_and_preserves_route_semantics
     assert updated_adapter._key_pool.snapshot_keys() == ["openrouter-db-key-1234567890"]
     assert dynamic_keys.remove_key_from_provider("openrouter", "openrouter-db-key-1234567890") == 1
     assert updated_adapter._key_pool.snapshot_keys() == []
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -819,11 +834,11 @@ async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget
     assert openrouter_adapter.config.route_metadata["pricing_source"] == "openrouter_endpoint"
     assert openrouter_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
     verify_mock.assert_awaited_once()
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
     op_store.upsert_provider_route_config.reset_mock()
     verify_mock.reset_mock()
-    fake_routewise._rebuild_from_fixed_router.reset_mock()
+    fake_routewise._rebuild_from_route_table.reset_mock()
     op_store.list_provider_route_configs_for_model.return_value = [
         {
             "model_id": "minimax-fast",
@@ -875,7 +890,7 @@ async def test_put_provider_route_clears_openrouter_endpoint_pricing_on_retarget
     assert "pricing_source" not in retargeted_adapter.config.route_metadata
     assert "pricing_provider" not in retargeted_adapter.config.route_metadata
     verify_mock.assert_awaited_once()
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -929,7 +944,7 @@ async def test_put_provider_route_persists_effective_quota_when_payload_omits_li
     updated_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert updated_adapter.config.quota == {"limit": 5000}
     verify_mock.assert_awaited_once()
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1006,7 +1021,7 @@ async def test_put_provider_route_updates_concurrency_limit_for_concurrency_over
     assert updated_adapter.config.concurrency_pool == "featherless-minimax-fast"
     assert updated_adapter.config.concurrency == {"limit": 3}
     verify_mock.assert_awaited_once()
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1069,7 +1084,7 @@ async def test_put_provider_route_allows_openrouter_pin_matching_route_provider(
     assert updated_adapter.config.route_metadata["upstream_provider"] == "openrouter[chutes]"
     assert updated_adapter.config.quota == {"limit": 5000}
     verify_mock.assert_awaited_once()
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1097,7 +1112,7 @@ async def test_verify_provider_route_update_does_not_apply(admin_client):
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert current_adapter.config.provider == "chutes"
     assert current_adapter.config.quota == {"limit": 5000}
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1122,7 +1137,7 @@ async def test_put_provider_route_verify_failure_does_not_apply(admin_client):
     op_store.upsert_provider_route_config.assert_not_awaited()
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
     assert current_adapter.config.provider == "featherless"
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1147,7 +1162,7 @@ async def test_put_provider_route_rejects_unsafe_base_url(admin_client):
     op_store.upsert_provider_route_config.assert_not_awaited()
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
     assert current_adapter.config.provider == "featherless"
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1185,7 +1200,7 @@ async def test_put_provider_route_rejects_private_dns_base_url(admin_client, mon
     op_store.upsert_provider_route_config.assert_not_awaited()
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[1][0]
     assert current_adapter.config.provider == "featherless"
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1224,7 +1239,7 @@ async def test_put_provider_route_rejects_duplicate_route_id(admin_client):
     assert "duplicate provider route id" in response.json()["detail"]
     verify_mock.assert_not_awaited()
     op_store.upsert_provider_route_config.assert_not_awaited()
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1277,7 +1292,7 @@ async def test_delete_provider_route_restores_yaml_baseline(admin_client):
         "minimax-fast:featherless-api",
     )
     verify_mock.assert_awaited_once()
-    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+    assert fake_routewise._rebuild_from_route_table.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -1342,7 +1357,7 @@ async def test_post_provider_route_candidate_adds_runtime_route(admin_client):
     assert runtime_adapter.config.route_metadata["pricing_provider"] == "parasail/fp8"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1395,7 +1410,7 @@ async def test_post_provider_route_candidate_adds_direct_minimax_route(admin_cli
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "minimax"
     assert runtime_adapter.config.route_metadata["upstream_provider"] == "minimax"
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1464,7 +1479,7 @@ async def test_post_provider_route_candidate_adds_openrouter_concurrency_route(a
     assert runtime_adapter.config.concurrency == {"limit": 2}
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     assert runtime_adapter.config.route_metadata["route_provider"] == "openrouter[parasail]"
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1517,7 +1532,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
     )
     assert create_response.status_code == 200, create_response.text
     op_store.upsert_provider_route_candidate.reset_mock()
-    fake_routewise._rebuild_from_fixed_router.reset_mock()
+    fake_routewise._rebuild_from_route_table.reset_mock()
     verify_mock.reset_mock()
 
     response = await client.patch(
@@ -1550,7 +1565,7 @@ async def test_patch_provider_route_candidate_updates_openrouter_concurrency_lim
     verify_mock.assert_not_awaited()
     runtime_adapter = route_executor.routes["minimax-fast"].raw_adapters[-1][0]
     assert runtime_adapter.config.concurrency == {"limit": 4}
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1652,7 +1667,7 @@ async def test_provider_route_candidate_accepts_numbered_env_key(admin_client, m
     assert runtime_adapter.config.api_keys == [numbered_key]
     op_store.upsert_provider_route_candidate.assert_awaited_once()
     verify_mock.assert_awaited_once()
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1753,7 +1768,7 @@ async def test_post_provider_route_model_creates_runtime_model(admin_client):
     route = list_response.json()["routes"][0]
     assert route["api_key_id"] == "db-openrouter"
     assert route["api_key"]["source"] == "db"
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1826,7 +1841,7 @@ async def test_post_provider_route_model_creates_openrouter_concurrency_model(ad
     )
     assert runtime_adapter.config.concurrency == {"limit": 2}
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -1956,7 +1971,7 @@ async def test_post_provider_route_candidate_persists_pricing_for_runtime_model(
     )
     runtime_adapter = route_executor.routes["deepseek-v4-flash"].raw_adapters[-1][0]
     assert runtime_adapter.config.pricing == RUNTIME_PRICING
-    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+    assert fake_routewise._rebuild_from_route_table.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -2108,7 +2123,7 @@ async def test_post_provider_route_model_rollback_pops_route_under_router_lock(a
 async def test_post_provider_route_model_rolls_back_when_install_rebuild_fails(admin_client):
     client, op_store, route_executor, fake_routewise, _verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")
-    fake_routewise._rebuild_from_fixed_router.side_effect = RuntimeError("rebuild failed")
+    fake_routewise._rebuild_from_route_table.side_effect = RuntimeError("rebuild failed")
 
     with pytest.raises(RuntimeError, match="rebuild failed"):
         await client.post(
@@ -2132,7 +2147,7 @@ async def test_post_provider_route_model_rolls_back_when_install_rebuild_fails(a
     assert len(dynamic_keys.get_pools_for_provider("openrouter")) == 1
     op_store.upsert_provider_route_candidate.assert_not_awaited()
     op_store.delete_provider_route_candidate.assert_not_awaited()
-    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+    assert fake_routewise._rebuild_from_route_table.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -2166,7 +2181,7 @@ async def test_post_provider_route_model_rolls_back_when_setting_fails(admin_cli
         "deepseek-v4-flash:openrouter[parasail]-api",
     )
     assert len(dynamic_keys.get_pools_for_provider("openrouter")) == 1
-    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+    assert fake_routewise._rebuild_from_route_table.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -2221,7 +2236,7 @@ async def test_verify_provider_route_model_does_not_create_model(admin_client):
     verify_mock.assert_awaited_once()
     op_store.upsert_provider_route_candidate.assert_not_awaited()
     assert "deepseek-v4-flash" not in route_executor.routes
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2412,7 +2427,7 @@ async def test_custom_provider_route_update_uses_definition_chat_path(admin_clie
 
         current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
         assert current_adapter.config.provider == "chutes"
-        fake_routewise._rebuild_from_fixed_router.assert_not_called()
+        fake_routewise._rebuild_from_route_table.assert_not_called()
     finally:
         provider_registry.unregister_provider_definition("tencent_token_plan")
 
@@ -2441,7 +2456,7 @@ async def test_verify_provider_route_candidate_does_not_add_runtime_route(admin_
     verify_mock.assert_awaited_once()
     op_store.upsert_provider_route_candidate.assert_not_awaited()
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2494,7 +2509,7 @@ async def test_runtime_provider_route_candidate_cannot_be_overridden(admin_clien
     )
     op_store.upsert_provider_route_config.assert_not_awaited()
     op_store.delete_provider_route_config.assert_not_awaited()
-    assert fake_routewise._rebuild_from_fixed_router.call_count == 1
+    assert fake_routewise._rebuild_from_route_table.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -2554,7 +2569,7 @@ async def test_post_provider_route_candidate_adds_openrouter_sort_policy(admin_c
     assert runtime_adapter.config.openrouter_sort == "throughput"
     assert runtime_adapter.config.openrouter_pinned_provider is None
     assert runtime_adapter.config.route_metadata["openrouter_sort"] == "throughput"
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -2638,7 +2653,7 @@ async def test_post_provider_route_candidate_rejects_route_type_provider_mismatc
     assert response.json()["detail"] == "chutes can only be added as quota"
     verify_mock.assert_not_awaited()
     op_store.upsert_provider_route_candidate.assert_not_awaited()
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2664,7 +2679,7 @@ async def test_post_provider_route_candidate_rejects_provider_base_url_mismatch(
     )
     verify_mock.assert_not_awaited()
     op_store.upsert_provider_route_candidate.assert_not_awaited()
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2712,7 +2727,7 @@ async def test_delete_provider_route_candidate_removes_runtime_route(admin_clien
         "minimax-fast:openrouter[parasail]-api",
     )
     assert len(route_executor.routes["minimax-fast"].raw_adapters) == 3
-    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+    assert fake_routewise._rebuild_from_route_table.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -2797,7 +2812,7 @@ async def test_delete_provider_route_candidate_rejects_config_route(admin_client
     assert response.json()["detail"] == "Only runtime-added provider routes can be deleted"
     op_store.delete_provider_route_candidate.assert_not_awaited()
     op_store.delete_provider_route_candidate_with_config.assert_not_awaited()
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2839,7 +2854,7 @@ async def test_apply_persisted_provider_route_candidates(admin_client):
     assert raw_weight == 1.5
     assert runtime_adapter.config.openrouter_pinned_provider == "parasail"
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -2883,7 +2898,7 @@ async def test_apply_persisted_provider_route_candidates_skips_mismatched_route_
     assert "minimax-fast:minimax-api" not in route_ids
     assert len(route_ids) == 3
     op_store.list_provider_keys_full.assert_not_awaited()
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2955,7 +2970,7 @@ async def test_apply_persisted_provider_route_candidates_restores_runtime_model(
     assert runtime_adapter.config.pricing == RUNTIME_PRICING
     assert runtime_adapter.config.route_metadata["runtime_candidate"] is True
     registry.set_router_override.assert_called_once_with("deepseek-v4-flash", "fixed")
-    fake_routewise._rebuild_from_fixed_router.assert_called_once_with()
+    fake_routewise._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -3027,7 +3042,7 @@ async def test_apply_persisted_provider_route_candidates_prefers_priced_runtime_
     )
     assert route_executor.routes["deepseek-v4-flash"].required_role == "internal"
     assert restored_routewise == set()
-    assert fake_routewise._rebuild_from_fixed_router.call_count == 2
+    assert fake_routewise._rebuild_from_route_table.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -3103,5 +3118,5 @@ async def test_apply_persisted_provider_route_config_skips_stale_positional_rout
 
     current_adapter = route_executor.routes["minimax-fast"].raw_adapters[0][0]
     assert current_adapter.config.provider == "chutes"
-    fake_routewise._rebuild_from_fixed_router.assert_not_called()
+    fake_routewise._rebuild_from_route_table.assert_not_called()
     op_store.delete_provider_route_config.assert_awaited_once_with("minimax-fast", "route-0")

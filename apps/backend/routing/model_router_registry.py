@@ -56,7 +56,7 @@ class ModelRouterRegistry:
         self._router_overrides: dict[str, str] = {}
         self._dependencies = dependencies
         # The shared FixedRouter is bound after construction (see
-        # bind_fixed_router); RouteWise needs it for classification, and
+        # bind_fixed_router); RouteWise uses its read-only route-table view, and
         # the "fixed" strategy returns this exact instance so models with
         # ``router: fixed`` dispatch through the populated routes dict
         # rather than a fresh empty FixedRouter.
@@ -65,10 +65,9 @@ class ModelRouterRegistry:
     def bind_fixed_router(self, fixed_router: FixedRouter) -> None:
         """Provide the shared ``FixedRouter`` for late-bound strategies.
 
-        Strategies like RouteWise need a handle on the live ``FixedRouter``
-        (whose ``routes`` dict provides the per-model adapter lists).  The
-        registry constructs the strategy first, then calls
-        ``attach_fixed_router(self._shared_fixed)`` on it if available.
+        Strategies like RouteWise need a read-only view of the live route
+        table. The registry constructs the strategy first, then calls
+        ``attach_route_table(self._shared_fixed)`` on it if available.
 
         For the ``fixed`` strategy itself, ``get_router`` returns this exact
         bound instance instead of constructing a fresh empty FixedRouter,
@@ -129,9 +128,13 @@ class ModelRouterRegistry:
             router: RouterProtocol = self._shared_fixed
         else:
             router = build_router(name, params, dependencies=self._dependencies)
-            # Late-bind FixedRouter for RouteWise (and any future late-bound
-            # strategy that exposes attach_fixed_router).
-            attach = getattr(router, "attach_fixed_router", None)
+            # Late-bind the read-only route-table port for RouteWise (and any
+            # future late-bound strategy that exposes attach_route_table).
+            attach = getattr(router, "attach_route_table", None)
+            if attach is None:
+                # One-release compatibility for external strategies that still
+                # expose the former binding hook.
+                attach = getattr(router, "attach_fixed_router", None)
             if attach is not None and self._shared_fixed is not None:
                 attach(self._shared_fixed)
         self._cache[canonical_model_id] = router

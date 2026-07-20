@@ -22,6 +22,59 @@ class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("changed", [False, True])
+    async def test_reload_effective_route_state_rebuilds_only_on_change(
+        self,
+        monkeypatch,
+        changed,
+    ):
+        resolver = SimpleNamespace(load_all=AsyncMock(return_value=changed))
+        registry = MagicMock()
+        rebuild = MagicMock()
+        refresh_state = bootstrap._EffectiveRouteRefreshState()
+        monkeypatch.setattr(bootstrap, "rebuild_cached_routewise_routers", rebuild)
+
+        result = await bootstrap._reload_effective_route_state(
+            resolver,
+            registry,
+            refresh_state,
+        )
+
+        assert result is changed
+        resolver.load_all.assert_awaited_once_with()
+        if changed:
+            rebuild.assert_called_once_with(registry)
+        else:
+            rebuild.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reload_effective_route_state_retries_failed_rebuild(self, monkeypatch):
+        resolver = SimpleNamespace(load_all=AsyncMock(side_effect=[True, False]))
+        registry = MagicMock()
+        rebuild = MagicMock(side_effect=[RuntimeError("rebuild failed"), None])
+        refresh_state = bootstrap._EffectiveRouteRefreshState()
+        monkeypatch.setattr(bootstrap, "rebuild_cached_routewise_routers", rebuild)
+
+        with pytest.raises(RuntimeError, match="rebuild failed"):
+            await bootstrap._reload_effective_route_state(
+                resolver,
+                registry,
+                refresh_state,
+            )
+
+        assert refresh_state.rebuild_pending is True
+        assert (
+            await bootstrap._reload_effective_route_state(
+                resolver,
+                registry,
+                refresh_state,
+            )
+            is True
+        )
+        assert refresh_state.rebuild_pending is False
+        assert rebuild.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_initialize_returns_app_services(self, mock_env):
         """Test that initialize returns properly typed AppServices."""
         with (

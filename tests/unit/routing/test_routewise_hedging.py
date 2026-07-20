@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from routing.endpoint_health import EndpointHealthRegistry
+from routing.route_table import EffectiveRoute
 from routing.routewise import hedging as hedging_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
@@ -22,6 +22,29 @@ from routing.routewise.hedging import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+
+class _StaticRouteTable:
+    """Small RouteTableView double for RouteWise hedge fixtures."""
+
+    def __init__(self) -> None:
+        self._routes: dict[str, tuple[tuple[Any, float], ...]] = {}
+
+    def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
+        self._routes[model_id] = tuple(adapters)
+
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        return tuple(
+            EffectiveRoute(
+                route_key=model_id,
+                canonical_model_id=model_id,
+                adapters=adapters,
+            )
+            for model_id, adapters in self._routes.items()
+        )
+
+    def canonical_id(self, model_id: str) -> str:
+        return model_id
 
 
 class _FakeEventSink:
@@ -560,21 +583,10 @@ def _make_router_with_two_api(
     api_b.config.pricing = {"prompt": "4.0", "completion": "20.0"}
     api_b.config.provider_type = "on_demand"
 
-    @dataclass
-    class _FakeRouteConfig:
-        adapters: list[tuple[Any, float]]
-
-    class _FakeFixedRouter:
-        def __init__(self) -> None:
-            self.routes: dict[str, _FakeRouteConfig] = {}
-
-        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
-            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
-
-    fr = _FakeFixedRouter()
-    fr.add("test-model", [(api_a, 0.5), (api_b, 0.5)])
+    route_table = _StaticRouteTable()
+    route_table.add("test-model", [(api_a, 0.5), (api_b, 0.5)])
     router = RouteWiseRouter(
-        fixed_router=fr,
+        route_table=route_table,
         config=config,
         health_registry=health_registry,
     )
@@ -601,20 +613,9 @@ def _make_router_with_api_and_concurrency(
     concurrency.config.provider_type = "concurrency"
     concurrency.config.concurrency = {"limit": 1}
 
-    @dataclass
-    class _FakeRouteConfig:
-        adapters: list[tuple[Any, float]]
-
-    class _FakeFixedRouter:
-        def __init__(self) -> None:
-            self.routes: dict[str, _FakeRouteConfig] = {}
-
-        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
-            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
-
-    fr = _FakeFixedRouter()
-    fr.add("test-model", [(api, 0.5), (concurrency, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    route_table = _StaticRouteTable()
+    route_table.add("test-model", [(api, 0.5), (concurrency, 0.5)])
+    router = RouteWiseRouter(route_table=route_table, config=config)
     return router, api, concurrency
 
 
@@ -643,20 +644,9 @@ def _make_router_with_api_and_quota(
         "unit": "requests",
     }
 
-    @dataclass
-    class _FakeRouteConfig:
-        adapters: list[tuple[Any, float]]
-
-    class _FakeFixedRouter:
-        def __init__(self) -> None:
-            self.routes: dict[str, _FakeRouteConfig] = {}
-
-        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
-            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
-
-    fr = _FakeFixedRouter()
-    fr.add("test-model", [(api, 0.5), (quota, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    route_table = _StaticRouteTable()
+    route_table.add("test-model", [(api, 0.5), (quota, 0.5)])
+    router = RouteWiseRouter(route_table=route_table, config=config)
     _seed_quota_snapshots(router)
     return router, api, quota
 
@@ -698,20 +688,9 @@ def _make_router_with_api_quota_and_api(
     api_backup.config.pricing = {"prompt": "4.0", "completion": "20.0"}
     api_backup.config.provider_type = "on_demand"
 
-    @dataclass
-    class _FakeRouteConfig:
-        adapters: list[tuple[Any, float]]
-
-    class _FakeFixedRouter:
-        def __init__(self) -> None:
-            self.routes: dict[str, _FakeRouteConfig] = {}
-
-        def add(self, model_id: str, adapters: list[tuple[Any, float]]) -> None:
-            self.routes[model_id] = _FakeRouteConfig(adapters=adapters)
-
-    fr = _FakeFixedRouter()
-    fr.add("test-model", [(api_primary, 0.4), (quota, 0.3), (api_backup, 0.3)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    route_table = _StaticRouteTable()
+    route_table.add("test-model", [(api_primary, 0.4), (quota, 0.3), (api_backup, 0.3)])
+    router = RouteWiseRouter(route_table=route_table, config=config)
     _seed_quota_snapshots(router)
     return router, api_primary, quota, api_backup
 

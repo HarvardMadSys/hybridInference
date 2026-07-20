@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from routing.route_table import EffectiveRoute
 from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.prefix_cache import (
@@ -339,10 +340,25 @@ def _api_adapter(
     )
 
 
-def _fixed_router(*adapters: SimpleNamespace) -> SimpleNamespace:
-    return SimpleNamespace(
-        routes={"m1": SimpleNamespace(adapters=[(adapter, 1.0) for adapter in adapters])}
-    )
+class _StaticRouteTable:
+    def __init__(self, adapters: tuple[SimpleNamespace, ...]) -> None:
+        self._adapters = tuple((adapter, 1.0) for adapter in adapters)
+
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        return (
+            EffectiveRoute(
+                route_key="m1",
+                canonical_model_id="m1",
+                adapters=self._adapters,
+            ),
+        )
+
+    def canonical_id(self, model_id: str) -> str:
+        return model_id
+
+
+def _route_table(*adapters: SimpleNamespace) -> _StaticRouteTable:
+    return _StaticRouteTable(adapters)
 
 
 @pytest.mark.unit
@@ -497,7 +513,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             api_keys=warm_api_keys,
         )
         router = RouteWiseRouter(
-            fixed_router=_fixed_router(cold_cheaper, warm_slightly_pricier),
+            route_table=_route_table(cold_cheaper, warm_slightly_pricier),
             config=RouteWiseConfig(
                 budget_alpha=0.0,
                 prefix_cache_cost_adjustment_enabled=cost_adjustment,

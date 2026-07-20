@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import datetime as dt
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from dotenv import load_dotenv
@@ -41,6 +42,7 @@ from serving.utils.logging import get_logger, setup_logging
 from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices
 from .registry import ModelRegistrationInfo, register_from_models_yaml
+from .routewise_rebuild import rebuild_cached_routewise_routers
 
 logger = get_logger(__name__)
 MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
@@ -49,6 +51,27 @@ MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 # asyncio holds only weak refs to running tasks, so without this set the
 # garbage collector can cancel mid-flight tasks.
 _BACKGROUND_TASKS: set = set()
+
+
+@dataclass(slots=True)
+class _EffectiveRouteRefreshState:
+    """Remember a failed rebuild so a later unchanged reload retries it."""
+
+    rebuild_pending: bool = False
+
+
+async def _reload_effective_route_state(
+    resolver: Any,
+    model_router_registry: ModelRouterRegistry | None,
+    refresh_state: _EffectiveRouteRefreshState,
+) -> bool:
+    """Reload one resolver snapshot and apply any pending RouteWise rebuild."""
+    refresh_state.rebuild_pending = bool(await resolver.load_all()) or refresh_state.rebuild_pending
+    if refresh_state.rebuild_pending:
+        rebuild_cached_routewise_routers(model_router_registry)
+        refresh_state.rebuild_pending = False
+        return True
+    return False
 
 
 def _collect_routewise_routers(
@@ -115,28 +138,42 @@ def _collect_routewise_runtime_routers(
 
 async def _refresh_weight_override_snapshots(
     resolver: WeightOverrideResolver,
+    model_router_registry: ModelRouterRegistry | None = None,
     *,
     interval_seconds: float = 10.0,
+    rebuild_pending: bool = False,
 ) -> None:
     """Periodically reload route weight overrides so workers converge after admin edits."""
+    refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await resolver.load_all()
+            await _reload_effective_route_state(
+                resolver,
+                model_router_registry,
+                refresh_state,
+            )
         except Exception:
             logger.warning("Route weight override snapshot refresh failed", exc_info=True)
 
 
 async def _refresh_disabled_provider_snapshots(
     resolver: DisabledProviderResolver,
+    model_router_registry: ModelRouterRegistry | None = None,
     *,
     interval_seconds: float = 10.0,
+    rebuild_pending: bool = False,
 ) -> None:
     """Periodically reload the disabled-provider set so workers converge after admin edits."""
+    refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await resolver.load_all()
+            await _reload_effective_route_state(
+                resolver,
+                model_router_registry,
+                refresh_state,
+            )
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
 
@@ -918,8 +955,24 @@ async def initialize() -> AppServices:
             weight_override_resolver = WeightOverrideResolver(operational_store)
             await weight_override_resolver.load_all()
             router.weight_override_resolver = weight_override_resolver
+            # RouteWise routers were constructed before the operational store
+            # and must ingest persisted effective weights once the resolver is
+            # attached to the shared FixedRouter.
+            weight_rebuild_pending = False
+            try:
+                rebuild_cached_routewise_routers(model_router_registry)
+            except Exception:
+                weight_rebuild_pending = True
+                logger.warning(
+                    "Initial RouteWise weight snapshot rebuild failed; will retry",
+                    exc_info=True,
+                )
             weight_override_refresh_task = asyncio.create_task(
-                _refresh_weight_override_snapshots(weight_override_resolver)
+                _refresh_weight_override_snapshots(
+                    weight_override_resolver,
+                    model_router_registry,
+                    rebuild_pending=weight_rebuild_pending,
+                )
             )
             _BACKGROUND_TASKS.add(weight_override_refresh_task)
             weight_override_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
@@ -930,8 +983,21 @@ async def initialize() -> AppServices:
             disabled_provider_resolver = DisabledProviderResolver(operational_store)
             await disabled_provider_resolver.load_all()
             router.disabled_provider_resolver = disabled_provider_resolver
+            disabled_rebuild_pending = False
+            try:
+                rebuild_cached_routewise_routers(model_router_registry)
+            except Exception:
+                disabled_rebuild_pending = True
+                logger.warning(
+                    "Initial RouteWise disabled-provider rebuild failed; will retry",
+                    exc_info=True,
+                )
             disabled_provider_refresh_task = asyncio.create_task(
-                _refresh_disabled_provider_snapshots(disabled_provider_resolver)
+                _refresh_disabled_provider_snapshots(
+                    disabled_provider_resolver,
+                    model_router_registry,
+                    rebuild_pending=disabled_rebuild_pending,
+                )
             )
             _BACKGROUND_TASKS.add(disabled_provider_refresh_task)
             disabled_provider_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)

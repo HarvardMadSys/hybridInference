@@ -41,6 +41,9 @@ from serving.schemas_admin import (
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_operational_store, get_services, verify_admin_access
 from serving.servers.registry import _make_adapter, _make_provider_id, parse_openrouter_kind
+from serving.servers.routewise_rebuild import (
+    rebuild_routewise_routers as _rebuild_routewise_routers,
+)
 from serving.utils.logging import get_logger
 
 router = APIRouter(prefix="/admin")
@@ -2235,25 +2238,6 @@ async def _prepare_update_context_from_payload(
         route_provider=route_provider,
         update=update,
     )
-
-
-def _rebuild_routewise_routers(services) -> None:
-    registry = getattr(services, "model_router_registry", None)
-    if registry is None:
-        return
-    seen: set[int] = set()
-    for router_obj in registry.cached_routers():
-        if id(router_obj) in seen:
-            continue
-        seen.add(id(router_obj))
-        rebuild = getattr(router_obj, "_rebuild_from_fixed_router", None)
-        if rebuild is not None:
-            commit_lock = getattr(router_obj, "_route_commit_lock", None)
-            if commit_lock is not None:
-                with commit_lock:
-                    rebuild()
-            else:
-                rebuild()
 
 
 def _discard_provider_route_model_install(services, candidate: PreparedRouteCandidate) -> None:

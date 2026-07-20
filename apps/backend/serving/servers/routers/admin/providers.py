@@ -36,6 +36,7 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _require_aware_utc, _truncate_hour
+from serving.servers.routewise_rebuild import rebuild_routewise_routers
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
@@ -203,6 +204,8 @@ async def admin_set_provider_disabled(
         await op_store.clear_provider_disabled(provider)
         if resolver is not None:
             resolver.clear_disabled(provider)
+
+    rebuild_routewise_routers(services)
 
     await log_admin_action(
         op_store,

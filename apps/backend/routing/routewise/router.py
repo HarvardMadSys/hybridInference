@@ -43,6 +43,7 @@ from routewise.core import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
 
+    from routing.route_table import RouteTableView
     from routing.routers import RoutingObservation
     from serving.adapters.base import BaseAdapter
 
@@ -262,18 +263,26 @@ def _configured_worker_count() -> int | None:
 class RouteWiseRouter:
     """RouteWise router.
 
-    ``fixed_router.routes`` remains the source of model -> adapter mappings;
-    this router only changes the selection policy for models configured with
+    A read-only ``RouteTableView`` supplies model-to-adapter mappings; this
+    router only changes the selection policy for models configured with
     ``router: routewise``.
     """
 
     def __init__(
         self,
-        fixed_router: Any = None,
+        route_table: RouteTableView | None = None,
         config: RouteWiseConfig | None = None,
         params: Any = None,
         health_registry: EndpointHealthRegistry | None = None,
+        *,
+        fixed_router: RouteTableView | None = None,
     ) -> None:
+        if route_table is not None and fixed_router is not None:
+            raise TypeError("route_table and deprecated fixed_router cannot both be provided")
+        if route_table is None:
+            # One-release compatibility for callers using the former keyword.
+            route_table = fixed_router
+
         self._health_registry = (
             health_registry if health_registry is not None else EndpointHealthRegistry()
         )
@@ -287,7 +296,7 @@ class RouteWiseRouter:
 
             config = _RWC()
 
-        self.fixed_router = fixed_router
+        self.route_table = route_table
         self.config = config
         self._rng = random.Random(self.config.random_seed)
         self.reference_api_price = self._parse_reference_api_price(config.reference_api_price)
@@ -339,8 +348,8 @@ class RouteWiseRouter:
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
 
-        if self.fixed_router is not None:
-            self._rebuild_from_fixed_router()
+        if self.route_table is not None:
+            self._rebuild_from_route_table()
 
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
@@ -371,14 +380,28 @@ class RouteWiseRouter:
     # Lifecycle / registry binding
     # ------------------------------------------------------------------
 
-    def attach_fixed_router(self, fixed_router: Any) -> None:
-        """Bind the shared ``FixedRouter`` after strategy construction."""
-        self.fixed_router = fixed_router
+    def attach_route_table(self, route_table: RouteTableView) -> None:
+        """Bind the shared read-only route table after strategy construction."""
+        self.route_table = route_table
         self._pending_decisions = {}
         self._primary_reservations = {}
         self._last_lp_statuses = {}
         self._last_lp_weights = {}
-        self._rebuild_from_fixed_router()
+        self._rebuild_from_route_table()
+
+    def attach_fixed_router(self, route_table: RouteTableView) -> None:
+        """Compatibility alias for :meth:`attach_route_table` for one release."""
+        self.attach_route_table(route_table)
+
+    @property
+    def fixed_router(self) -> RouteTableView | None:
+        """Return the route table under its former attribute name for one release."""
+        return self.route_table
+
+    @fixed_router.setter
+    def fixed_router(self, route_table: RouteTableView | None) -> None:
+        """Preserve direct assignment to the former attribute for one release."""
+        self.route_table = route_table
 
     def attach_operational_store(self, operational_store: Any | None) -> None:
         """Bind the operational store used for persisted probe samples."""
@@ -409,7 +432,7 @@ class RouteWiseRouter:
         if routewise_probe_interval_sec is not None:
             self.config.routewise_probe_interval_sec = routewise_probe_interval_sec
 
-    def _rebuild_from_fixed_router(self) -> None:
+    def _rebuild_from_route_table(self) -> None:
         existing_latency_profiles = self._latency_profiles
         existing_latency_history_priors_ms = self._latency_history_priors_ms
         self.classified = {}
@@ -444,6 +467,10 @@ class RouteWiseRouter:
                             existing_latency_history_priors_ms[endpoint_id]
                         )
         self._validate_routes()
+
+    def _rebuild_from_fixed_router(self) -> None:
+        """Compatibility alias for the former private rebuild hook."""
+        self._rebuild_from_route_table()
 
     async def start(self) -> None:
         """Start periodic maintenance tasks.
@@ -977,17 +1004,14 @@ class RouteWiseRouter:
         return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
 
     def _classify_all(self) -> None:
-        for route_key, route_cfg in self.fixed_router.routes.items():
-            model_id = getattr(route_cfg, "canonical_model_id", None) or route_key
+        route_table = self.route_table
+        if route_table is None:
+            return
+        for effective_route in route_table.iter_effective_routes():
+            model_id = effective_route.canonical_model_id
             if model_id in self.route_candidates:
                 continue
-            get_effective_adapters = getattr(self.fixed_router, "_get_effective_adapters", None)
-            adapters_with_weights = (
-                get_effective_adapters(route_key, route_cfg)
-                if callable(get_effective_adapters)
-                else route_cfg.adapters
-            )
-            candidates = build_provider_candidates(model_id, adapters_with_weights)
+            candidates = build_provider_candidates(model_id, effective_route.adapters)
             self.route_candidates[model_id] = candidates
             self.classified[model_id] = [
                 (candidate.adapter, candidate.weight, candidate.provider_type)
@@ -1118,8 +1142,8 @@ class RouteWiseRouter:
         )
 
     def _canonical_model_id(self, model_id: str) -> str:
-        route_cfg = getattr(self.fixed_router, "routes", {}).get(model_id)
-        return getattr(route_cfg, "canonical_model_id", None) or model_id
+        route_table = self.route_table
+        return route_table.canonical_id(model_id) if route_table is not None else model_id
 
     def _validate_routes(self) -> None:
         has_stateful_provider = False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +14,7 @@ from routing.model_router_registry import ModelRouterRegistry
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin import routing_weights
 
 
 def _adapter(model_id: str, provider: str, endpoint_id: str):
@@ -27,6 +29,20 @@ def _adapter(model_id: str, provider: str, endpoint_id: str):
 
 def _row_by_endpoint(rows: list[dict], endpoint_id: str) -> dict:
     return next(row for row in rows if row["endpoint_id"] == endpoint_id)
+
+
+def test_routewise_rebuild_falls_back_to_legacy_hook() -> None:
+    legacy_rebuild = MagicMock()
+    legacy_router = SimpleNamespace(
+        _rebuild_from_fixed_router=legacy_rebuild,
+        _route_commit_lock=None,
+    )
+    registry = SimpleNamespace(cached_routers=lambda: [legacy_router])
+    services = SimpleNamespace(model_router_registry=registry)
+
+    routing_weights._rebuild_routewise_routers(services)
+
+    legacy_rebuild.assert_called_once_with()
 
 
 @pytest.fixture
@@ -176,7 +192,7 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.5}
     ]
     assert await resolver.get_for_model("public-model") == {"public-model:remote": 4.5}
-    routewise_router._rebuild_from_fixed_router.assert_called_once_with()
+    routewise_router._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -254,7 +270,7 @@ async def test_delete_route_weight_clears_override(admin_client):
     assert row["strategy"] == "routewise"
     assert row["override_weight"] is None
     assert row["effective_weight"] == 2.0
-    routewise_router._rebuild_from_fixed_router.assert_called_once_with()
+    routewise_router._rebuild_from_route_table.assert_called_once_with()
 
 
 @pytest.mark.asyncio

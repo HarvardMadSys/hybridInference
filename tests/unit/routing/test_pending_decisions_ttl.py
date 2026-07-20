@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from routing.route_table import EffectiveRoute
 from routing.routewise import router as router_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import (
@@ -24,17 +25,25 @@ from routing.routewise.router import (
 from serving.utils.logging import JsonFormatter
 
 
-class _FakeRouteConfig:
-    def __init__(self, adapters: list) -> None:
-        self.adapters = adapters
-
-
-class _FakeFixedRouter:
+class _FakeRouteTable:
     def __init__(self) -> None:
-        self.routes: dict[str, _FakeRouteConfig] = {}
+        self._routes: dict[str, tuple[tuple[object, float], ...]] = {}
 
-    def add(self, model_id: str, adapters_with_weights: list) -> None:
-        self.routes[model_id] = _FakeRouteConfig(adapters=adapters_with_weights)
+    def add(self, model_id: str, adapters_with_weights: list[tuple[object, float]]) -> None:
+        self._routes[model_id] = tuple(adapters_with_weights)
+
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        return tuple(
+            EffectiveRoute(
+                route_key=model_id,
+                canonical_model_id=model_id,
+                adapters=adapters,
+            )
+            for model_id, adapters in self._routes.items()
+        )
+
+    def canonical_id(self, model_id: str) -> str:
+        return model_id
 
 
 def _make_adapter(
@@ -55,9 +64,9 @@ def _make_adapter(
 
 def _make_router() -> RouteWiseRouter:
     """Build a minimal RouteWiseRouter with one S_A adapter."""
-    fr = _FakeFixedRouter()
-    fr.add("m", [(_make_adapter(), 1.0)])
-    return RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+    route_table = _FakeRouteTable()
+    route_table.add("m", [(_make_adapter(), 1.0)])
+    return RouteWiseRouter(route_table=route_table, config=RouteWiseConfig())
 
 
 @pytest.mark.unit

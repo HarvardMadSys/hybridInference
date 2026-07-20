@@ -112,8 +112,8 @@ class TestModelRouterRegistry:
             models_config=models_config,
             default_router_name="fixed",
         )
-        # Bind a FixedRouter so RouteWise classification (via
-        # attach_fixed_router) finds an empty routes dict and succeeds.
+        # Bind a FixedRouter so RouteWise classification (via the read-only
+        # route-table port) finds an empty snapshot and succeeds.
         reg.bind_fixed_router(FixedRouter())
         router = reg.get_router("glm-4.7")
         assert isinstance(router, RouteWiseRouter)
