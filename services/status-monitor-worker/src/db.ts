@@ -96,11 +96,12 @@ export async function modelsFailingStreak(
 const ALERT_STATE_KEY = "alert_state";
 
 /**
- * Reads the per-model down-alert state: a map of model id → incident fingerprint.
+ * Reads the per-model down-alert state: a map of model id → route/fingerprint.
  * A model's presence means an alert has already fired for its current outage, so
- * the next cron doesn't re-page. Legacy ISO timestamp values remain readable and
- * are normalized by the caller. Returns `{}` when unset or corrupt (a corrupt
- * value simply re-arms alerting rather than wedging it).
+ * the next cron doesn't re-page. New values are prefixed with `v2|` or `legacy|`
+ * so recovery follows the route that accepted firing. Existing unprefixed
+ * fingerprints and ISO timestamps remain readable as legacy-owned state and are
+ * normalized by the caller. Returns `{}` when unset or corrupt.
  */
 export async function readAlertState(db: D1Database): Promise<Record<string, string>> {
   const row = await db
@@ -138,10 +139,9 @@ export async function writeAlertState(db: D1Database, state: Record<string, stri
 const CYCLE_ALERT_KEY = "cycle_alert";
 
 /**
- * Reads the cycle-level (gateway-down) alert marker: the ISO time we last paged
- * that the whole probe cycle is failing, or `null` if no such alert is open. Its
- * presence is what makes the cycle alert edge-triggered — paged once on the
- * transition to unhealthy, not every failing cron.
+ * Reads the cycle-level (gateway-down) alert marker. New values prefix the
+ * firing timestamp with `v2|` or `legacy|`; existing unprefixed timestamps are
+ * legacy-owned. Presence makes the alert edge-triggered.
  */
 export async function readCycleAlertState(db: D1Database): Promise<string | null> {
   const row = await db

@@ -28,6 +28,13 @@ repeat is never sent to V1 or the direct webhook, so it cannot create Slack
 repeat noise. The URL must be credential-free HTTPS; an unsafe URL is treated
 as unconfigured and leaves V1/webhook behavior unchanged.
 
+The D1 alert marker records which route accepted the firing transition.
+V2-owned incidents repeat and recover only through V2; legacy-owned incidents
+recover only through V1/webhook. A failed recovery keeps its marker and retries
+on the next cycle. Existing unprefixed markers are treated as legacy-owned.
+Keep V2 credentials in place until active V2-owned markers have recovered;
+removing them mid-incident would prevent the original V2 parent from closing.
+
 When `CODEX_ONCALL_RELAY_URL` and `CODEX_ONCALL_RELAY_TOKEN` are set, each alert
 uses the legacy V1 on-call relay. The relay posts the original Slack message,
 runs a read-only Codex investigation asynchronously, and replies in the same

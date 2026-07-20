@@ -295,6 +295,126 @@ describe("runAlerts", () => {
     expect(requests[0].body).not.toHaveProperty("slack_text");
   });
 
+  it("keeps V2 ownership when recovery fails and retries V2 only", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      "https://hook.test/x",
+      "https://relay-v1.test",
+      "v1-token",
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const requests: Array<{ url: string; status: string }> = [];
+    const v2Statuses = [202, 503, 202];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        const payload = JSON.parse(String(init.body)) as { status: string };
+        requests.push({ url, status: payload.status });
+        if (url.includes("relay-v2.test")) {
+          return new Response(null, { status: v2Statuses.shift() ?? 500 });
+        }
+        return new Response("ok", { status: 200 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+    expect(JSON.parse(db.meta.get("alert_state")!).a).toBe(
+      "v2|status-monitor:model:a",
+    );
+
+    await cycle(db, env, { a: true }, cfg(1));
+    expect(JSON.parse(db.meta.get("alert_state")!).a).toBe(
+      "v2|status-monitor:model:a",
+    );
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v2.test/v2/alerts",
+    ]);
+
+    await cycle(db, env, { a: true }, cfg(1));
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v2.test/v2/alerts",
+    ]);
+    expect(requests.map((request) => request.status)).toEqual([
+      "firing",
+      "resolved",
+      "resolved",
+    ]);
+  });
+
+  it("keeps legacy ownership after V2 fallback and never sends V2 repeat/recovery", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      undefined,
+      "https://relay-v1.test",
+      "v1-token",
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const requests: Array<{ url: string; status: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        const payload = JSON.parse(String(init.body)) as { status: string };
+        requests.push({ url, status: payload.status });
+        return url.includes("relay-v2.test")
+          ? new Response(null, { status: 503 })
+          : new Response(null, { status: 202 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+    expect(JSON.parse(db.meta.get("alert_state")!).a).toBe(
+      "legacy|status-monitor:model:a",
+    );
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v1.test/v1/alerts",
+    ]);
+
+    requests.length = 0;
+    await cycle(db, env, { a: false }, cfg(1));
+    expect(requests).toEqual([]);
+
+    await cycle(db, env, { a: true }, cfg(1));
+    expect(requests).toEqual([
+      { url: "https://relay-v1.test/v1/alerts", status: "resolved" },
+    ]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+  });
+
+  it("treats existing unprefixed incident state as legacy-owned", async () => {
+    const db = new FakeD1();
+    db.meta.set("alert_state", JSON.stringify({ a: "status-monitor:model:a" }));
+    const env = envWith(
+      db,
+      undefined,
+      "https://relay-v1.test",
+      "v1-token",
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const requests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        requests.push(url);
+        return new Response(null, { status: 202 });
+      }),
+    );
+
+    await cycle(db, env, { a: true }, cfg(1));
+
+    expect(requests).toEqual(["https://relay-v1.test/v1/alerts"]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+  });
+
   it("does not create direct Slack repeat noise when V2 repeat delivery fails", async () => {
     const db = new FakeD1();
     const env = envWith(
@@ -721,9 +841,9 @@ describe("runAlerts", () => {
     expect(events).toHaveLength(1);
     expect(firingFingerprint).toMatch(/^status-monitor:storm:/);
     expect(Object.values(JSON.parse(db.meta.get("alert_state")!))).toEqual([
-      firingFingerprint,
-      firingFingerprint,
-      firingFingerprint,
+      `legacy|${firingFingerprint}`,
+      `legacy|${firingFingerprint}`,
+      `legacy|${firingFingerprint}`,
     ]);
 
     await cycle(db, env, { a: true, b: false, c: false }, conf);
@@ -821,6 +941,117 @@ describe("runCycleAlert", () => {
       "https://relay-v2.test/v2/alerts",
       "https://relay-v2.test/v2/alerts",
     ]);
+  });
+
+  it("keeps V2-owned cycle recovery on V2 until it succeeds", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      "https://hook.test/x",
+      "https://relay-v1.test",
+      "v1-token",
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const requests: Array<{ url: string; status: string }> = [];
+    const v2Statuses = [202, 503, 202];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        const payload = JSON.parse(String(init.body)) as { status: string };
+        requests.push({ url, status: payload.status });
+        if (url.includes("relay-v2.test")) {
+          return new Response(null, { status: v2Statuses.shift() ?? 500 });
+        }
+        return new Response("ok", { status: 200 });
+      }),
+    );
+
+    await runCycleAlert(env, config, failing);
+    expect(db.meta.get("cycle_alert")).toBe(
+      "v2|2026-06-25T00:00:00Z",
+    );
+
+    await runCycleAlert(env, config, healthy);
+    expect(db.meta.get("cycle_alert")).toBe(
+      "v2|2026-06-25T00:00:00Z",
+    );
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v2.test/v2/alerts",
+    ]);
+
+    await runCycleAlert(env, config, healthy);
+    expect(db.meta.has("cycle_alert")).toBe(false);
+    expect(requests.map((request) => request.status)).toEqual([
+      "firing",
+      "resolved",
+      "resolved",
+    ]);
+  });
+
+  it("keeps legacy-owned cycle repeats/recovery off V2", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      undefined,
+      "https://relay-v1.test",
+      "v1-token",
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const requests: Array<{ url: string; status: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        const payload = JSON.parse(String(init.body)) as { status: string };
+        requests.push({ url, status: payload.status });
+        return url.includes("relay-v2.test")
+          ? new Response(null, { status: 503 })
+          : new Response(null, { status: 202 });
+      }),
+    );
+
+    await runCycleAlert(env, config, failing);
+    expect(db.meta.get("cycle_alert")).toBe(
+      "legacy|2026-06-25T00:00:00Z",
+    );
+
+    requests.length = 0;
+    await runCycleAlert(env, config, failing);
+    expect(requests).toEqual([]);
+
+    await runCycleAlert(env, config, healthy);
+    expect(requests).toEqual([
+      { url: "https://relay-v1.test/v1/alerts", status: "resolved" },
+    ]);
+    expect(db.meta.has("cycle_alert")).toBe(false);
+  });
+
+  it("treats an existing unprefixed cycle marker as legacy-owned", async () => {
+    const db = new FakeD1();
+    db.meta.set("cycle_alert", "2026-06-25T00:00:00Z");
+    const env = envWith(
+      db,
+      undefined,
+      "https://relay-v1.test",
+      "v1-token",
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const urls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        return new Response(null, { status: 202 });
+      }),
+    );
+
+    await runCycleAlert(env, config, healthy);
+
+    expect(urls).toEqual(["https://relay-v1.test/v1/alerts"]);
+    expect(db.meta.has("cycle_alert")).toBe(false);
   });
 
   it("pages once when the cycle starts failing and not again while it stays down", async () => {

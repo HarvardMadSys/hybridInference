@@ -19,6 +19,7 @@ import socket
 import threading
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -35,7 +36,15 @@ log = logging.getLogger(__name__)
 _HOST = socket.gethostname()
 _DEDUPE_LOCK = asyncio.Lock()
 _LAST_FIRED: dict[tuple[str, str], float] = defaultdict(float)
-_IN_FLIGHT: set[str] = set()
+
+
+@dataclass(frozen=True)
+class _InFlightDelivery:
+    status: Literal["firing", "resolved"]
+    done: asyncio.Future[bool]
+
+
+_IN_FLIGHT: dict[str, _InFlightDelivery] = {}
 
 # Hostnames that always indicate a non-deployed (local/dev) gateway.
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"))
@@ -168,9 +177,13 @@ def _monotonic() -> float:
 
 
 def reset_dedupe_state() -> None:
-    """Test helper — clears in-memory dedupe table."""
+    """Clear dedupe state and wake ordered waiters without re-arming them."""
     _LAST_FIRED.clear()
+    deliveries = list(_IN_FLIGHT.values())
     _IN_FLIGHT.clear()
+    for delivery in deliveries:
+        if not delivery.done.done():
+            delivery.done.set_result(False)
 
 
 class AlertSeverity(str, enum.Enum):
@@ -445,12 +458,28 @@ async def alert_slack(
 
     key = dedupe_key or f"{severity.value}:{title}"
     status_key = (key, status)
-    now = _monotonic()
-    async with _DEDUPE_LOCK:
-        last = _LAST_FIRED.get(status_key, 0.0)
-        if key in _IN_FLIGHT or (last > 0.0 and now - last < cooldown_sec):
+    delivery: _InFlightDelivery
+    while True:
+        wait_for: asyncio.Future[bool] | None = None
+        async with _DEDUPE_LOCK:
+            active = _IN_FLIGHT.get(key)
+            if active is not None:
+                if active.status == status:
+                    return False
+                wait_for = active.done
+            else:
+                last = _LAST_FIRED.get(status_key, 0.0)
+                if last > 0.0 and _monotonic() - last < cooldown_sec:
+                    return False
+                delivery = _InFlightDelivery(
+                    status=status,
+                    done=asyncio.get_running_loop().create_future(),
+                )
+                _IN_FLIGHT[key] = delivery
+                break
+        assert wait_for is not None
+        if not await wait_for:
             return False
-        _IN_FLIGHT.add(key)
 
     sent = False
     try:
@@ -495,8 +524,11 @@ async def alert_slack(
         return False
     finally:
         async with _DEDUPE_LOCK:
-            _IN_FLIGHT.discard(key)
-            if sent:
-                _LAST_FIRED[status_key] = _monotonic()
-                opposite = "resolved" if status == "firing" else "firing"
-                _LAST_FIRED.pop((key, opposite), None)
+            if _IN_FLIGHT.get(key) is delivery:
+                _IN_FLIGHT.pop(key, None)
+                if sent:
+                    _LAST_FIRED[status_key] = _monotonic()
+                    opposite = "resolved" if status == "firing" else "firing"
+                    _LAST_FIRED.pop((key, opposite), None)
+                if not delivery.done.done():
+                    delivery.done.set_result(sent)

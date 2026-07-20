@@ -59,7 +59,9 @@ the legacy message begins with `[Relay fallback]`.
 The status monitor has the same opt-in pair. Its initial and resolved
 transitions can use existing fallbacks, while sustained firing updates are sent
 only to V2. A failed sustained update therefore cannot produce direct Slack
-repeat noise.
+repeat noise. D1 records whether V2 or a legacy path accepted firing; repeats
+and recovery stay on that owner, and failed recovery retains state for the next
+cycle. Existing unprefixed markers are legacy-owned.
 
 ## Analysis dispatch and callback
 
@@ -125,4 +127,8 @@ Validate:
 5. a new parent after re-firing,
 6. an explicit run-URL reply for a forced workflow failure.
 
-Unset either producer variable to return immediately to V1-default behavior.
+Before rollback, let active V2 incidents resolve (or resolve them operationally)
+while the V2 credential is still present. Removing the credential mid-incident
+prevents the producer from closing the existing V2 Slack parent. Once no V2
+incident is firing, unset either producer variable to return new alerts to the
+V1-default path.

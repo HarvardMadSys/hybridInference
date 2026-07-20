@@ -291,37 +291,76 @@ function cycleEvent(config: Config, status: CycleStatus): CodexAlertEvent {
   });
 }
 
-async function deliverAlert(env: Env, event: CodexAlertEvent): Promise<boolean> {
+type AlertRoute = "v2" | "legacy";
+
+const ROUTE_SEPARATOR = "|";
+
+function encodeOwnedValue(route: AlertRoute, value: string): string {
+  return `${route}${ROUTE_SEPARATOR}${value}`;
+}
+
+function decodeOwnedValue(value: string): { route: AlertRoute; value: string } {
+  if (value.startsWith(`v2${ROUTE_SEPARATOR}`)) {
+    return { route: "v2", value: value.slice(3) };
+  }
+  if (value.startsWith(`legacy${ROUTE_SEPARATOR}`)) {
+    return { route: "legacy", value: value.slice(7) };
+  }
+  return { route: "legacy", value };
+}
+
+async function deliverLegacy(
+  env: Env,
+  event: CodexAlertEvent,
+  relayFallback: boolean,
+): Promise<boolean> {
+  const legacyEvent = relayFallback
+    ? { ...event, slack_text: `[Relay fallback]\n${event.slack_text}` }
+    : event;
+  const relay = codexRelayConfig(env);
+  if (relay && (await postCodexAlert(relay, legacyEvent))) return true;
+
+  const webhookUrl = env.SLACK_WEBHOOK_URL?.trim();
+  return webhookUrl ? postSlack(webhookUrl, legacyEvent.slack_text) : false;
+}
+
+async function deliverInitialAlert(
+  env: Env,
+  event: CodexAlertEvent,
+): Promise<AlertRoute | null> {
   const relayV2 = alertRelayV2Config(env);
   if (
     relayV2 &&
     (await postAlertEventV2(relayV2, createAlertEventV2(event, env.DEPLOYMENT_SHA)))
   ) {
-    return true;
+    return "v2";
   }
-
-  const fallbackEvent = relayV2
-    ? { ...event, slack_text: `[Relay fallback]\n${event.slack_text}` }
-    : event;
-  const relay = codexRelayConfig(env);
-  if (relay && (await postCodexAlert(relay, fallbackEvent))) return true;
-
-  const webhookUrl = env.SLACK_WEBHOOK_URL?.trim();
-  return webhookUrl ? postSlack(webhookUrl, fallbackEvent.slack_text) : false;
+  return (await deliverLegacy(env, event, relayV2 != null)) ? "legacy" : null;
 }
 
 /** Repeat updates are V2-only: a relay outage must never create direct Slack noise. */
-async function deliverV2Repeat(env: Env, event: CodexAlertEvent): Promise<boolean> {
+async function deliverV2Owned(env: Env, event: CodexAlertEvent): Promise<boolean> {
   const relay = alertRelayV2Config(env);
   return relay
     ? postAlertEventV2(relay, createAlertEventV2(event, env.DEPLOYMENT_SHA))
     : false;
 }
 
-function incidentFingerprint(modelId: string, stateValue: string): string {
+function legacyIncidentFingerprint(modelId: string, stateValue: string): string {
   return stateValue.startsWith("status-monitor:")
     ? stateValue
     : modelAlertFingerprint(modelId);
+}
+
+function incidentOwnership(
+  modelId: string,
+  stateValue: string,
+): { route: AlertRoute; fingerprint: string } {
+  const owned = decodeOwnedValue(stateValue);
+  return {
+    route: owned.route,
+    fingerprint: legacyIncidentFingerprint(modelId, owned.value),
+  };
 }
 
 function sustainedFiringEvents(
@@ -334,7 +373,9 @@ function sustainedFiringEvents(
   const grouped = new Map<string, ProbeResult[]>();
   for (const result of results) {
     if (!failing.has(result.modelId) || !Object.hasOwn(baseState, result.modelId)) continue;
-    const fingerprint = incidentFingerprint(result.modelId, baseState[result.modelId]);
+    const owned = incidentOwnership(result.modelId, baseState[result.modelId]);
+    if (owned.route !== "v2") continue;
+    const fingerprint = owned.fingerprint;
     const members = grouped.get(fingerprint) ?? [];
     members.push(result);
     grouped.set(fingerprint, members);
@@ -366,9 +407,10 @@ export interface AlertDecision {
  * Edge-triggered alert decision.
  *
  * `failing` holds the models whose most recent `threshold` probes were all
- * failures. `prevState` maps a model to the incident fingerprint used when it
- * was alerted as down; its presence means we've already paged for the current
- * outage. Legacy timestamp values are treated as individual model incidents.
+ * failures. `prevState` maps a model to route ownership plus the incident
+ * fingerprint used when it was alerted as down; its presence means we've
+ * already paged for the current outage. Unprefixed fingerprints and legacy
+ * timestamp values are treated as legacy-owned incidents.
  * A model is paged *down* only on the transition into the failing set (so a
  * sustained outage pages once, not every 20-minute cron), and *recovered* only
  * when a probe succeeds after a down alert.
@@ -438,8 +480,11 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   // POST retries next cycle instead of dropping the alert.
   if (down.length > storm) {
     const event = modelsDownEvent(config, down, threshold);
-    if (await deliverAlert(env, event)) {
-      for (const r of down) nextState[r.modelId] = event.fingerprint;
+    const route = await deliverInitialAlert(env, event);
+    if (route) {
+      for (const r of down) {
+        nextState[r.modelId] = encodeOwnedValue(route, event.fingerprint);
+      }
     }
   } else {
     const sent = await Promise.all(
@@ -448,11 +493,15 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
         return {
           modelId: r.modelId,
           fingerprint: event.fingerprint,
-          ok: await deliverAlert(env, event),
+          route: await deliverInitialAlert(env, event),
         };
       }),
     );
-    for (const r of sent) if (r.ok) nextState[r.modelId] = r.fingerprint;
+    for (const r of sent) {
+      if (r.route) {
+        nextState[r.modelId] = encodeOwnedValue(r.route, r.fingerprint);
+      }
+    }
   }
 
   // V1 and direct-webhook alerting remain edge-triggered. When V2 is enabled,
@@ -461,30 +510,34 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   if (alertRelayV2Config(env)) {
     await Promise.all(
       sustainedFiringEvents(config, results, failing, baseState, threshold).map((event) =>
-        deliverV2Repeat(env, event),
+        deliverV2Owned(env, event),
       ),
     );
   }
 
   const activeModelsByFingerprint = new Map<string, string[]>();
   for (const [modelId, stateValue] of Object.entries(baseState)) {
-    const fingerprint = incidentFingerprint(modelId, stateValue);
-    const activeModels = activeModelsByFingerprint.get(fingerprint) ?? [];
+    const owned = incidentOwnership(modelId, stateValue);
+    const ownershipKey = encodeOwnedValue(owned.route, owned.fingerprint);
+    const activeModels = activeModelsByFingerprint.get(ownershipKey) ?? [];
     activeModels.push(modelId);
-    activeModelsByFingerprint.set(fingerprint, activeModels);
+    activeModelsByFingerprint.set(ownershipKey, activeModels);
   }
 
   const recoveredByFingerprint = new Map<string, ProbeResult[]>();
   for (const result of recovered) {
-    const fingerprint = incidentFingerprint(result.modelId, baseState[result.modelId]);
-    const grouped = recoveredByFingerprint.get(fingerprint) ?? [];
+    const owned = incidentOwnership(result.modelId, baseState[result.modelId]);
+    const ownershipKey = encodeOwnedValue(owned.route, owned.fingerprint);
+    const grouped = recoveredByFingerprint.get(ownershipKey) ?? [];
     grouped.push(result);
-    recoveredByFingerprint.set(fingerprint, grouped);
+    recoveredByFingerprint.set(ownershipKey, grouped);
   }
 
   const resolvedModelIds = await Promise.all(
-    [...recoveredByFingerprint.entries()].map(async ([fingerprint, grouped]) => {
-      const activeModelIds = activeModelsByFingerprint.get(fingerprint) ?? [];
+    [...recoveredByFingerprint.entries()].map(async ([ownershipKey, grouped]) => {
+      const owned = decodeOwnedValue(ownershipKey);
+      const fingerprint = owned.value;
+      const activeModelIds = activeModelsByFingerprint.get(ownershipKey) ?? [];
       const stormIncident = fingerprint.startsWith("status-monitor:storm:");
       if (stormIncident && grouped.length !== activeModelIds.length) {
         return [];
@@ -492,7 +545,11 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
       const event = stormIncident
         ? modelsRecoveredEvent(config, grouped, fingerprint)
         : modelRecoveredEvent(config, grouped[0], fingerprint);
-      return (await deliverAlert(env, event)) ? activeModelIds : [];
+      const delivered =
+        owned.route === "v2"
+          ? await deliverV2Owned(env, event)
+          : await deliverLegacy(env, event, false);
+      return delivered ? activeModelIds : [];
     }),
   );
   for (const modelIds of resolvedModelIds) {
@@ -518,16 +575,28 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
 export async function runCycleAlert(env: Env, config: Config, status: CycleStatus): Promise<void> {
   if (!hasAlertDestination(env)) return;
 
-  const alerted = (await readCycleAlertState(env.DB)) != null;
+  const stateValue = await readCycleAlertState(env.DB);
+  const ownership = stateValue ? decodeOwnedValue(stateValue) : null;
   if (!status.ok) {
-    if (!alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
-      await writeCycleAlertState(env.DB, status.checkedAt || "alerted");
-    } else if (alerted && alertRelayV2Config(env)) {
+    if (!ownership) {
+      const route = await deliverInitialAlert(env, cycleEvent(config, status));
+      if (route) {
+        await writeCycleAlertState(
+          env.DB,
+          encodeOwnedValue(route, status.checkedAt || "alerted"),
+        );
+      }
+    } else if (ownership.route === "v2") {
       // V2 owns repeat coalescing. Never fall back this sustained update to a
       // webhook or V1 relay, because that would re-page Slack.
-      await deliverV2Repeat(env, cycleEvent(config, status));
+      await deliverV2Owned(env, cycleEvent(config, status));
     }
-  } else if (alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
-    await writeCycleAlertState(env.DB, null);
+  } else if (ownership) {
+    const event = cycleEvent(config, status);
+    const delivered =
+      ownership.route === "v2"
+        ? await deliverV2Owned(env, event)
+        : await deliverLegacy(env, event, false);
+    if (delivered) await writeCycleAlertState(env.DB, null);
   }
 }

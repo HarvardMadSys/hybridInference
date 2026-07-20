@@ -1,5 +1,6 @@
 """Tests for serving.observability.alerts.alert_slack."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -342,6 +343,141 @@ async def test_status_transitions_bypass_cooldown_and_rearm(monkeypatch):
         )
 
     assert mock_post.await_count == 3
+
+
+async def test_opposite_status_waits_for_inflight_delivery(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+    firing_started = asyncio.Event()
+    release_firing = asyncio.Event()
+    calls = []
+
+    async def post(_url, message):
+        status = "resolved" if "recovered" in message else "firing"
+        calls.append(status)
+        if status == "firing":
+            firing_started.set()
+            await release_firing.wait()
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=post):
+        firing = asyncio.create_task(
+            alert_slack(
+                AlertSeverity.ERROR,
+                "Provider failed",
+                {},
+                dedupe_key="K",
+                cooldown_sec=300,
+                status="firing",
+            )
+        )
+        await firing_started.wait()
+
+        assert not await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider failed duplicate",
+            {},
+            dedupe_key="K",
+            cooldown_sec=300,
+            status="firing",
+        )
+        resolved = asyncio.create_task(
+            alert_slack(
+                AlertSeverity.INFO,
+                "Provider recovered",
+                {},
+                dedupe_key="K",
+                cooldown_sec=300,
+                status="resolved",
+            )
+        )
+        await asyncio.sleep(0)
+        assert calls == ["firing"]
+
+        release_firing.set()
+        assert await firing
+        assert await resolved
+
+    assert calls == ["firing", "resolved"]
+
+
+async def test_waiting_resolution_stops_when_firing_delivery_failed(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+    firing_started = asyncio.Event()
+    release_firing = asyncio.Event()
+    calls = []
+
+    async def post(_url, _message):
+        calls.append("firing")
+        firing_started.set()
+        await release_firing.wait()
+        return False
+
+    with patch("serving.observability.alerts._post_to_slack", new=post):
+        firing = asyncio.create_task(
+            alert_slack(
+                AlertSeverity.ERROR,
+                "Provider failed",
+                {},
+                dedupe_key="K",
+                status="firing",
+            )
+        )
+        await firing_started.wait()
+        resolved = asyncio.create_task(
+            alert_slack(
+                AlertSeverity.INFO,
+                "Provider recovered",
+                {},
+                dedupe_key="K",
+                status="resolved",
+            )
+        )
+        await asyncio.sleep(0)
+        release_firing.set()
+
+        assert not await firing
+        assert not await resolved
+
+    assert calls == ["firing"]
+
+
+async def test_reset_dedupe_state_wakes_ordered_waiters(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+    firing_started = asyncio.Event()
+    release_firing = asyncio.Event()
+
+    async def post(_url, message):
+        if "failed" in message:
+            firing_started.set()
+            await release_firing.wait()
+        return True
+
+    with patch("serving.observability.alerts._post_to_slack", new=post):
+        firing = asyncio.create_task(
+            alert_slack(
+                AlertSeverity.ERROR,
+                "Provider failed",
+                {},
+                dedupe_key="K",
+                status="firing",
+            )
+        )
+        await firing_started.wait()
+        resolved = asyncio.create_task(
+            alert_slack(
+                AlertSeverity.INFO,
+                "Provider recovered",
+                {},
+                dedupe_key="K",
+                status="resolved",
+            )
+        )
+        await asyncio.sleep(0)
+
+        reset_dedupe_state()
+        assert not await resolved
+        release_firing.set()
+        assert await firing
 
 
 async def test_alert_slack_fires_again_after_cooldown(monkeypatch):

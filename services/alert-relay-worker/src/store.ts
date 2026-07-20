@@ -402,27 +402,31 @@ export class D1RelayStore implements RelayStore {
     attempt: number,
     now: string,
   ): Promise<boolean> {
-    const claimed = await this.db
-      .prepare(
-        `UPDATE alert_jobs
-         SET status = 'dispatching', analysis_ref = ?, attempts = ?, last_error = NULL,
-             updated_at = ?
-         WHERE id = ?
-           AND (status = 'queued' OR (status = 'dispatching' AND attempts < ?))`,
-      )
-      .bind(analysisRef, attempt, now, jobId, attempt)
-      .run();
-    if (changes(claimed) !== 1) return false;
-    await this.db
-      .prepare(
-        `UPDATE alert_incidents
-         SET analysis_ref = ?, parent_dirty = 1, parent_version = parent_version + 1,
-             updated_at = ?
-         WHERE id = (SELECT incident_id FROM alert_jobs WHERE id = ?)`,
-      )
-      .bind(analysisRef, now, jobId)
-      .run();
-    return true;
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE alert_jobs
+           SET status = 'dispatching', analysis_ref = ?, attempts = ?, last_error = NULL,
+               updated_at = ?
+           WHERE id = ?
+             AND (status = 'queued' OR (status = 'dispatching' AND attempts < ?))`,
+        )
+        .bind(analysisRef, attempt, now, jobId, attempt),
+      this.db
+        .prepare(
+          `UPDATE alert_incidents
+           SET analysis_ref = ?, parent_dirty = 1, parent_version = parent_version + 1,
+               updated_at = ?
+           WHERE changes() = 1
+             AND id = (
+               SELECT incident_id FROM alert_jobs
+               WHERE id = ? AND status = 'dispatching'
+                 AND analysis_ref = ? AND attempts = ?
+             )`,
+        )
+        .bind(analysisRef, now, jobId, analysisRef, attempt),
+    ]);
+    return changes(results[0]) === 1;
   }
 
   async markDispatched(jobId: string, now: string): Promise<void> {
