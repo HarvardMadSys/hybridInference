@@ -7,8 +7,10 @@ import pytest
 from serving.observability.alerts import (
     AlertSeverity,
     _base_url,
+    _build_alert_v2_event,
     _detect_environment,
     _format_message,
+    _post_to_alert_relay_v2,
     alert_slack,
     reset_dedupe_state,
     server_info,
@@ -19,6 +21,8 @@ from serving.observability.alerts import (
 def reset_state(monkeypatch):
     monkeypatch.delenv("CODEX_ONCALL_RELAY_URL", raising=False)
     monkeypatch.delenv("CODEX_ONCALL_RELAY_TOKEN", raising=False)
+    monkeypatch.delenv("ALERT_RELAY_V2_URL", raising=False)
+    monkeypatch.delenv("ALERT_RELAY_V2_TOKEN", raising=False)
     reset_dedupe_state()
     yield
     reset_dedupe_state()
@@ -111,6 +115,168 @@ async def test_alert_slack_can_deliver_through_relay_without_webhook(monkeypatch
     mock_oncall.assert_awaited_once()
 
 
+async def test_alert_slack_prefers_v2_without_environment_or_slack_text(monkeypatch):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", "https://relay-v2.internal/")
+    monkeypatch.setenv("ALERT_RELAY_V2_TOKEN", "v2-secret")
+    monkeypatch.setenv("CODEX_ONCALL_RELAY_URL", "https://oncall.internal")
+    monkeypatch.setenv("CODEX_ONCALL_RELAY_TOKEN", "v1-secret")
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
+    monkeypatch.setenv("DEPLOYMENT_SHA", "a" * 40)
+    with (
+        patch(
+            "serving.observability.alerts._post_to_alert_relay_v2",
+            new=AsyncMock(return_value=True),
+        ) as mock_v2,
+        patch("serving.observability.alerts._post_to_oncall", new=AsyncMock()) as mock_v1,
+        patch("serving.observability.alerts._post_to_slack", new=AsyncMock()) as mock_slack,
+    ):
+        sent = await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider failed",
+            {"provider": "openai", "api_key": "must-not-leak"},
+            dedupe_key="provider:openai",
+        )
+
+    assert sent is True
+    mock_v1.assert_not_called()
+    mock_slack.assert_not_called()
+    relay_url, token, event = mock_v2.call_args.args
+    assert relay_url == "https://relay-v2.internal/"
+    assert token == "v2-secret"
+    payload = event.model_dump(mode="json")
+    assert payload["version"] == "2"
+    assert payload["deployment_sha"] == "a" * 40
+    assert payload["context"]["api_key"] == "[REDACTED]"
+    assert "environment" not in payload
+    assert "slack_text" not in payload
+
+
+async def test_v2_serialization_omits_null_deployment_sha(monkeypatch):
+    monkeypatch.delenv("DEPLOYMENT_SHA", raising=False)
+    monkeypatch.delenv("GIT_COMMIT", raising=False)
+    monkeypatch.delenv("COMMIT_SHA", raising=False)
+    posted = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, **kwargs):
+            posted.append(kwargs["json"])
+            return type("Response", (), {"status_code": 202})()
+
+    event = _build_alert_v2_event(
+        AlertSeverity.ERROR,
+        "Provider failed",
+        {},
+        "provider:openai",
+        "firing",
+    )
+    with patch("serving.observability.alerts.httpx.AsyncClient", return_value=FakeClient()):
+        assert await _post_to_alert_relay_v2(
+            "https://relay-v2.internal",
+            "v2-secret",
+            event,
+        )
+
+    assert event.deployment_sha is None
+    assert "deployment_sha" not in posted[0]
+
+
+def test_v2_context_is_redacted_and_compacted_to_relay_limit():
+    event = _build_alert_v2_event(
+        AlertSeverity.ERROR,
+        "Provider failed",
+        {
+            "user_id": "01ABC",
+            "values": [f"Bearer abcdefghijklmnop {'x' * 4_000}" for _ in range(60)],
+        },
+        "provider:openai",
+        "firing",
+    )
+
+    encoded = event.model_dump_json(exclude_none=True).encode()
+    assert len(encoded) < 32_000
+    assert event.context["user_id"] == "[REDACTED]"
+    values = event.context["values"]
+    assert isinstance(values, list)
+    assert len(values) <= 50
+    assert "Bearer [REDACTED]" in values[0]
+
+
+@pytest.mark.parametrize(
+    "unsafe_url",
+    [
+        "http://relay-v2.internal",
+        "https://user:pass@relay-v2.internal",
+        "https://relay-v2.internal?route=other",
+    ],
+)
+async def test_unsafe_v2_url_is_unconfigured_and_preserves_v1(monkeypatch, unsafe_url):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", unsafe_url)
+    monkeypatch.setenv("ALERT_RELAY_V2_TOKEN", "v2-secret")
+    monkeypatch.setenv("CODEX_ONCALL_RELAY_URL", "https://oncall.internal")
+    monkeypatch.setenv("CODEX_ONCALL_RELAY_TOKEN", "v1-secret")
+    with (
+        patch(
+            "serving.observability.alerts._post_to_alert_relay_v2",
+            new=AsyncMock(),
+        ) as mock_v2,
+        patch(
+            "serving.observability.alerts._post_to_oncall",
+            new=AsyncMock(return_value=True),
+        ) as mock_v1,
+    ):
+        assert await alert_slack(AlertSeverity.ERROR, "Provider failed", {})
+
+    mock_v2.assert_not_called()
+    assert not mock_v1.call_args.args[2].slack_text.startswith("[Relay fallback]")
+
+
+async def test_v2_failure_visibly_prefixes_legacy_relay_fallback(monkeypatch):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", "https://relay-v2.internal")
+    monkeypatch.setenv("ALERT_RELAY_V2_TOKEN", "v2-secret")
+    monkeypatch.setenv("CODEX_ONCALL_RELAY_URL", "https://oncall.internal")
+    monkeypatch.setenv("CODEX_ONCALL_RELAY_TOKEN", "v1-secret")
+    with (
+        patch(
+            "serving.observability.alerts._post_to_alert_relay_v2",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "serving.observability.alerts._post_to_oncall",
+            new=AsyncMock(return_value=True),
+        ) as mock_v1,
+    ):
+        sent = await alert_slack(AlertSeverity.ERROR, "Provider failed", {})
+
+    assert sent is True
+    assert mock_v1.call_args.args[2].slack_text.startswith("[Relay fallback]\n")
+
+
+async def test_v2_failure_visibly_prefixes_direct_slack_fallback(monkeypatch):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", "https://relay-v2.internal")
+    monkeypatch.setenv("ALERT_RELAY_V2_TOKEN", "v2-secret")
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
+    with (
+        patch(
+            "serving.observability.alerts._post_to_alert_relay_v2",
+            new=AsyncMock(return_value=False),
+        ),
+        patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_slack,
+    ):
+        sent = await alert_slack(AlertSeverity.ERROR, "Provider failed", {})
+
+    assert sent is True
+    assert mock_slack.call_args.args[1].startswith("[Relay fallback]\n")
+
+
 async def test_failed_delivery_does_not_consume_cooldown(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/fallback")
     with patch(
@@ -134,6 +300,48 @@ async def test_alert_slack_dedupes_within_cooldown(monkeypatch):
         await alert_slack(AlertSeverity.WARN, "t", {}, dedupe_key="K", cooldown_sec=60)
         await alert_slack(AlertSeverity.WARN, "t", {}, dedupe_key="K", cooldown_sec=60)
     assert mock_post.await_count == 1
+
+
+async def test_status_transitions_bypass_cooldown_and_rearm(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+    with patch(
+        "serving.observability.alerts._post_to_slack",
+        new=AsyncMock(return_value=True),
+    ) as mock_post:
+        assert await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider failed",
+            {},
+            dedupe_key="K",
+            cooldown_sec=300,
+            status="firing",
+        )
+        assert await alert_slack(
+            AlertSeverity.INFO,
+            "Provider recovered",
+            {},
+            dedupe_key="K",
+            cooldown_sec=300,
+            status="resolved",
+        )
+        assert not await alert_slack(
+            AlertSeverity.INFO,
+            "Provider recovered",
+            {},
+            dedupe_key="K",
+            cooldown_sec=300,
+            status="resolved",
+        )
+        assert await alert_slack(
+            AlertSeverity.ERROR,
+            "Provider failed",
+            {},
+            dedupe_key="K",
+            cooldown_sec=300,
+            status="firing",
+        )
+
+    assert mock_post.await_count == 3
 
 
 async def test_alert_slack_fires_again_after_cooldown(monkeypatch):

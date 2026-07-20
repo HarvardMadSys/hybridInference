@@ -20,13 +20,25 @@ _SECRET_KEY_PARTS = (
     "secret",
     "token",
 )
+_SENSITIVE_CONTEXT_KEYS = frozenset(
+    (
+        "email",
+        "key_prefix",
+        "offending_users",
+        "remote_ip",
+        "top_ips",
+        "top_key_prefixes",
+        "user_id",
+        "user_name",
+    )
+)
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
 _KEY_VALUE_RE = re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\s*[:=]\s*[^\s,;]+")
 _HYBRID_API_KEY_RE = re.compile(r"\bhyi-[A-Za-z0-9_-]{20,}\b")
 
 
 class AlertEvent(BaseModel):
-    """Structured alert accepted from a trusted producer."""
+    """V1 structured alert accepted by the legacy on-call relay."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -50,6 +62,44 @@ class AlertEvent(BaseModel):
     @classmethod
     def strip_required_text(cls, value: str) -> str:
         """Reject whitespace-only identifiers and labels."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+
+class AlertEventV2(BaseModel):
+    """Producer-neutral event for the opt-in Unified Alert Control Plane V2.
+
+    Environment identity and Slack rendering are intentionally absent: the V2
+    relay derives environment from the producer credential and owns all Slack
+    text and blocks.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["2"] = "2"
+    alert_id: str = Field(min_length=1, max_length=128)
+    fingerprint: str = Field(min_length=1, max_length=512)
+    source: str = Field(min_length=1, max_length=128)
+    status: AlertStatus
+    severity: AlertSeverity
+    title: str = Field(min_length=1, max_length=500)
+    occurred_at: dt.datetime
+    summary: str = Field(min_length=1, max_length=4_000)
+    context: dict[str, JsonValue] = Field(default_factory=dict)
+    deployment_sha: str | None = Field(
+        default=None,
+        min_length=40,
+        max_length=40,
+        pattern=r"^[A-Fa-f0-9]{40}$",
+    )
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("alert_id", "fingerprint", "source", "title", "summary")
+    @classmethod
+    def strip_v2_required_text(cls, value: str) -> str:
+        """Reject whitespace-only V2 identifiers and labels."""
         stripped = value.strip()
         if not stripped:
             raise ValueError("must not be blank")
@@ -91,7 +141,9 @@ class SubmitAlertResponse(BaseModel):
 def sanitize_for_agent(value: JsonValue, *, key: str = "", depth: int = 0) -> JsonValue:
     """Redact secrets and bound untrusted context before it reaches Codex."""
     normalized_key = key.lower().replace("-", "_")
-    if any(part in normalized_key for part in _SECRET_KEY_PARTS):
+    if normalized_key in _SENSITIVE_CONTEXT_KEYS or any(
+        part in normalized_key for part in _SECRET_KEY_PARTS
+    ):
         return "[REDACTED]"
     if depth >= 5:
         return "[TRUNCATED]"

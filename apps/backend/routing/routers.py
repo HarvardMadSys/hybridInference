@@ -17,7 +17,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from inspect import isawaitable
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -43,6 +43,34 @@ _ALERT_TASKS: set[asyncio.Task[bool]] = set()
 _MAX_TRACKED_OFFENDERS = 50
 # How many of the top offenders to name explicitly in the circuit-open alert.
 _OFFENDERS_IN_ALERT = 10
+
+
+def _schedule_circuit_alert(
+    severity: AlertSeverity,
+    title: str,
+    context: dict[str, Any],
+    *,
+    dedupe_key: str,
+    status: Literal["firing", "resolved"] = "firing",
+) -> None:
+    """Schedule a circuit alert only when called from a running event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(
+        alert_slack(
+            severity,
+            title,
+            context,
+            dedupe_key=dedupe_key,
+            cooldown_sec=300,
+            status=status,
+        )
+    )
+    _ALERT_TASKS.add(task)
+    task.add_done_callback(_ALERT_TASKS.discard)
+
 
 # ============================================================================
 # Exceptions
@@ -500,6 +528,7 @@ class _CircuitBreaker:
 
     def on_success(self) -> None:
         with self._lock:
+            final_failure_count = self.consecutive_failures
             self.consecutive_failures = 0
             # The failure streak is broken — drop the offenders accumulated for
             # it so a later trip only names users behind the new streak.
@@ -521,6 +550,17 @@ class _CircuitBreaker:
                         "provider": self.provider,
                         "duration_ms": duration_ms,
                     },
+                )
+                _schedule_circuit_alert(
+                    AlertSeverity.INFO,
+                    "Provider circuit recovered",
+                    {
+                        "provider": self.provider,
+                        "outage_duration_ms": duration_ms,
+                        "final_failure_count": final_failure_count,
+                    },
+                    dedupe_key=f"circuit_open:{self.provider}",
+                    status="resolved",
                 )
 
     def on_failure(
@@ -566,6 +606,7 @@ class _CircuitBreaker:
                     # Name the users whose requests drove this failure streak so
                     # operators can see who is affected (and who may be abusing
                     # a provider, as with coding-only upstream restrictions).
+                    context["affected_users"] = len(self._offenders)
                     offenders = self._format_offenders()
                     if offenders:
                         context["offending_users"] = offenders
@@ -588,25 +629,12 @@ class _CircuitBreaker:
                             "offending_users": dict(self._offenders) or None,
                         },
                     )
-                    try:
-                        task = asyncio.ensure_future(
-                            alert_slack(
-                                AlertSeverity.ERROR,
-                                "Provider circuit opened",
-                                context,
-                                dedupe_key=f"circuit_open:{self.provider}",
-                                cooldown_sec=300,
-                            )
-                        )
-                    except RuntimeError:
-                        # No running event loop (e.g., unit test outside
-                        # pytest-asyncio). Best-effort alert; skip silently.
-                        pass
-                    else:
-                        # Keep a strong reference until the task finishes so
-                        # the GC cannot cancel it mid-flight.
-                        _ALERT_TASKS.add(task)
-                        task.add_done_callback(_ALERT_TASKS.discard)
+                    _schedule_circuit_alert(
+                        AlertSeverity.ERROR,
+                        "Provider circuit opened",
+                        context,
+                        dedupe_key=f"circuit_open:{self.provider}",
+                    )
 
     def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
         """Render the failure-streak offenders for an alert, busiest first.

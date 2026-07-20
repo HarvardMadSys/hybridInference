@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import re
 import socket
 import threading
 import time
@@ -24,7 +25,7 @@ from uuid import uuid4
 
 import httpx
 
-from serving.oncall.models import AlertEvent, sanitize_for_agent
+from serving.oncall.models import AlertEvent, AlertEventV2, sanitize_for_agent
 
 if TYPE_CHECKING:
     from pydantic import JsonValue
@@ -33,7 +34,7 @@ log = logging.getLogger(__name__)
 
 _HOST = socket.gethostname()
 _DEDUPE_LOCK = asyncio.Lock()
-_LAST_FIRED: dict[str, float] = defaultdict(float)
+_LAST_FIRED: dict[tuple[str, str], float] = defaultdict(float)
 _IN_FLIGHT: set[str] = set()
 
 # Hostnames that always indicate a non-deployed (local/dev) gateway.
@@ -255,6 +256,30 @@ async def _post_to_oncall(relay_url: str, token: str, event: AlertEvent) -> bool
     return False
 
 
+async def _post_to_alert_relay_v2(
+    relay_url: str,
+    token: str,
+    event: AlertEventV2,
+) -> bool:
+    """Post a producer-neutral alert to the opt-in V2 relay."""
+    if not _credential_free_https_url(relay_url):
+        return False
+    endpoint = f"{relay_url.rstrip('/')}/v2/alerts"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {token}"},
+                json=event.model_dump(mode="json", exclude_none=True),
+            )
+        if 200 <= response.status_code < 300:
+            return True
+        log.error("V2 alert relay returned HTTP %s", response.status_code)
+    except Exception:
+        log.exception("V2 alert relay post failed")
+    return False
+
+
 def _oncall_fingerprint(environment: str, dedupe_key: str) -> str:
     """Build a readable bounded fingerprint for relay-level incident dedupe."""
     value = f"gateway:{environment}:{dedupe_key}"
@@ -264,11 +289,62 @@ def _oncall_fingerprint(environment: str, dedupe_key: str) -> str:
     return f"gateway:{environment}:sha256:{digest}"
 
 
+def _alert_v2_fingerprint(dedupe_key: str) -> str:
+    """Build a bounded fingerprint without producer-claimed environment identity."""
+    value = f"gateway:{dedupe_key}"
+    if len(value) <= 512:
+        return value
+    digest = hashlib.sha256(value.encode()).hexdigest()
+    return f"gateway:sha256:{digest}"
+
+
+def _credential_free_https_url(value: str) -> bool:
+    """Return whether a credential-bearing request can safely use this URL."""
+    try:
+        parsed = urlparse(value)
+        return bool(
+            parsed.scheme == "https"
+            and parsed.hostname
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+        )
+    except ValueError:
+        return False
+
+
 def _oncall_context(context: dict[str, Any]) -> dict[str, JsonValue]:
     """Convert arbitrary alert values to bounded, redacted JSON."""
     serializable = json.loads(json.dumps(context, default=str))
     sanitized = sanitize_for_agent(cast("JsonValue", serializable))
     return cast("dict[str, JsonValue]", sanitized)
+
+
+def _compact_json(value: JsonValue, string_limit: int, collection_limit: int) -> JsonValue:
+    if isinstance(value, str):
+        return value[:string_limit]
+    if isinstance(value, list):
+        return [
+            _compact_json(item, string_limit, collection_limit)
+            for item in value[:collection_limit]
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _compact_json(child, string_limit, collection_limit)
+            for key, child in list(value.items())[:collection_limit]
+        }
+    return value
+
+
+def _alert_v2_context(context: dict[str, Any]) -> dict[str, JsonValue]:
+    """Fit sanitized context within the relay's strict total-size contract."""
+    sanitized = cast("JsonValue", _oncall_context(context))
+    for string_limit, collection_limit in ((2_000, 50), (512, 25), (256, 15), (128, 10)):
+        compacted = _compact_json(sanitized, string_limit, collection_limit)
+        if len(json.dumps(compacted, separators=(",", ":")).encode()) <= 24_000:
+            return cast("dict[str, JsonValue]", compacted)
+    return {"_truncated": True}
 
 
 def _deployment_sha() -> str | None:
@@ -307,6 +383,33 @@ def _build_oncall_event(
     )
 
 
+def _build_alert_v2_event(
+    severity: AlertSeverity,
+    title: str,
+    context: dict[str, Any],
+    key: str,
+    status: Literal["firing", "resolved"],
+) -> AlertEventV2:
+    """Create a bounded V2 event with no Slack text or environment field."""
+    deployment_sha = _deployment_sha()
+    return AlertEventV2(
+        alert_id=str(uuid4()),
+        fingerprint=_alert_v2_fingerprint(key),
+        source="hybrid-inference-gateway",
+        status=status,
+        severity=severity.value,
+        title=title[:500],
+        occurred_at=dt.datetime.now(dt.timezone.utc),
+        summary=title[:4_000],
+        context=_alert_v2_context(context),
+        deployment_sha=(
+            deployment_sha
+            if deployment_sha and re.fullmatch(r"[0-9a-fA-F]{40}", deployment_sha)
+            else None
+        ),
+    )
+
+
 async def alert_slack(
     severity: AlertSeverity,
     title: str,
@@ -326,7 +429,10 @@ async def alert_slack(
     relay_url = os.environ.get("CODEX_ONCALL_RELAY_URL", "").strip()
     relay_token = os.environ.get("CODEX_ONCALL_RELAY_TOKEN", "").strip()
     relay_configured = bool(relay_url and relay_token)
-    if not webhook_url and not relay_configured:
+    relay_v2_url = os.environ.get("ALERT_RELAY_V2_URL", "").strip()
+    relay_v2_token = os.environ.get("ALERT_RELAY_V2_TOKEN", "").strip()
+    relay_v2_configured = bool(relay_v2_token and _credential_free_https_url(relay_v2_url))
+    if not webhook_url and not relay_configured and not relay_v2_configured:
         return False
 
     # Admin-controlled global snooze: pause all alerts until a deadline.
@@ -339,9 +445,10 @@ async def alert_slack(
         log.debug("alert snooze check failed; sending alert", exc_info=True)
 
     key = dedupe_key or f"{severity.value}:{title}"
+    status_key = (key, status)
     now = _monotonic()
     async with _DEDUPE_LOCK:
-        last = _LAST_FIRED.get(key, 0.0)
+        last = _LAST_FIRED.get(status_key, 0.0)
         if key in _IN_FLIGHT or (last > 0.0 and now - last < cooldown_sec):
             return False
         _IN_FLIGHT.add(key)
@@ -349,13 +456,29 @@ async def alert_slack(
     sent = False
     try:
         message = _format_message(severity, title, context)
-        if relay_configured:
+        if relay_v2_configured:
+            try:
+                event_v2 = _build_alert_v2_event(
+                    severity,
+                    title,
+                    context,
+                    key,
+                    status,
+                )
+            except Exception:
+                log.exception("V2 alert event construction failed")
+            else:
+                if await _post_to_alert_relay_v2(relay_v2_url, relay_v2_token, event_v2):
+                    sent = True
+
+        fallback_message = f"[Relay fallback]\n{message}" if relay_v2_configured else message
+        if not sent and relay_configured:
             try:
                 event = _build_oncall_event(
                     severity,
                     title,
                     context,
-                    message,
+                    fallback_message,
                     key,
                     status,
                     cooldown_sec,
@@ -366,7 +489,7 @@ async def alert_slack(
                 if await _post_to_oncall(relay_url, relay_token, event):
                     sent = True
         if not sent and webhook_url:
-            sent = await _post_to_slack(webhook_url, message)
+            sent = await _post_to_slack(webhook_url, fallback_message)
         return sent
     except Exception:
         log.exception("alert_slack post raised; suppressing")
@@ -375,4 +498,6 @@ async def alert_slack(
         async with _DEDUPE_LOCK:
             _IN_FLIGHT.discard(key)
             if sent:
-                _LAST_FIRED[key] = _monotonic()
+                _LAST_FIRED[status_key] = _monotonic()
+                opposite = "resolved" if status == "firing" else "firing"
+                _LAST_FIRED.pop((key, opposite), None)

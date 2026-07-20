@@ -1,0 +1,38 @@
+name = "freeinference-alert-relay"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+
+# This file is a template only. Copy it to an ignored wrangler.toml after
+# provisioning the resources described in README.md.
+[vars]
+GITHUB_REPOSITORY = "owner/repository"
+GITHUB_API_BASE_URL = "https://api.github.com"
+GITHUB_WORKFLOW_FILE = "codex-oncall-v2.yml"
+CODEX_MODEL = "replace-with-read-only-analysis-model"
+MODEL_BASE_URL = "https://example.invalid/v1"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "freeinference-alert-relay"
+database_id = "replace-with-d1-database-id"
+migrations_dir = "migrations"
+
+[[queues.producers]]
+binding = "ALERT_JOBS"
+queue = "freeinference-alert-jobs"
+
+[[queues.consumers]]
+queue = "freeinference-alert-jobs"
+max_batch_size = 1
+max_batch_timeout = 1
+# The Worker constant is three total attempts: initial delivery + these two retries.
+max_retries = 2
+
+# Set all credentials with `wrangler secret put`, never in this file:
+#   SLACK_BOT_TOKEN
+#   SLACK_CHANNEL_ID
+#   ALERT_RELAY_V2_STAGING_TOKEN
+#   ALERT_RELAY_V2_PRODUCTION_TOKEN
+#   ALERT_RELAY_V2_LOCAL_TOKEN
+#   ALERT_RELAY_V2_WORKFLOW_TOKEN
+#   GITHUB_TOKEN

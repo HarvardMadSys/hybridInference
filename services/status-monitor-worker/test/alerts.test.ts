@@ -245,14 +245,145 @@ describe("runAlerts", () => {
     webhook: string | undefined,
     relayUrl?: string,
     relayToken?: string,
+    relayV2Url?: string,
+    relayV2Token?: string,
   ): Env {
     return {
       SLACK_WEBHOOK_URL: webhook,
       CODEX_ONCALL_RELAY_URL: relayUrl,
       CODEX_ONCALL_RELAY_TOKEN: relayToken,
+      ALERT_RELAY_V2_URL: relayV2Url,
+      ALERT_RELAY_V2_TOKEN: relayV2Token,
+      DEPLOYMENT_SHA: "a".repeat(40),
       DB: db as unknown as D1Database,
     } as unknown as Env;
   }
+
+  it("sends initial and sustained firing events through V2 without producer Slack identity", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      "https://hook.test/x",
+      undefined,
+      undefined,
+      "https://relay-v2.test/",
+      "v2-token",
+    );
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        requests.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(null, { status: 202 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v2.test/v2/alerts",
+    ]);
+    expect(requests.map((request) => request.body.status)).toEqual(["firing", "firing"]);
+    expect(requests[0].body).toMatchObject({
+      version: "2",
+      fingerprint: "status-monitor:model:a",
+      deployment_sha: "a".repeat(40),
+    });
+    expect(requests[0].body).not.toHaveProperty("environment");
+    expect(requests[0].body).not.toHaveProperty("slack_text");
+  });
+
+  it("does not create direct Slack repeat noise when V2 repeat delivery fails", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      "https://hook.test/x",
+      undefined,
+      undefined,
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const urls: string[] = [];
+    let first = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        if (url.includes("relay-v2.test")) {
+          const status = first ? 202 : 503;
+          first = false;
+          return new Response(null, { status });
+        }
+        return new Response("ok", { status: 200 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(urls).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v2.test/v2/alerts",
+    ]);
+  });
+
+  it("prefixes direct fallback when the initial V2 transition cannot be delivered", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      "https://hook.test/x",
+      undefined,
+      undefined,
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        requests.push({ url, body: JSON.parse(String(init.body)) });
+        return url.includes("relay-v2.test")
+          ? new Response(null, { status: 503 })
+          : new Response("ok", { status: 200 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://hook.test/x",
+    ]);
+    expect(requests[1].body.text).toMatch(/^\[Relay fallback\]/);
+  });
+
+  it("treats an unsafe V2 URL as unset and preserves unprefixed V1 delivery", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      undefined,
+      "https://relay-v1.test",
+      "v1-token",
+      "http://relay-v2.test",
+      "v2-token",
+    );
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: RequestInit) => {
+        requests.push({ url, body: JSON.parse(String(init.body)) });
+        return new Response(null, { status: 202 });
+      }),
+    );
+
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("https://relay-v1.test/v1/alerts");
+    expect(requests[0].body.slack_text).not.toMatch(/^\[Relay fallback\]/);
+  });
 
   it("sends an authenticated oncall event and skips Slack when the relay succeeds", async () => {
     const db = new FakeD1();
@@ -643,16 +774,54 @@ describe("runCycleAlert", () => {
     webhook: string | undefined,
     relayUrl?: string,
     relayToken?: string,
+    relayV2Url?: string,
+    relayV2Token?: string,
   ): Env {
     return {
       SLACK_WEBHOOK_URL: webhook,
       CODEX_ONCALL_RELAY_URL: relayUrl,
       CODEX_ONCALL_RELAY_TOKEN: relayToken,
+      ALERT_RELAY_V2_URL: relayV2Url,
+      ALERT_RELAY_V2_TOKEN: relayV2Token,
       DB: db as unknown as D1Database,
     } as unknown as Env;
   }
   const failing = { ok: false, checkedAt: "2026-06-25T00:00:00Z", error: "gateway down" };
   const healthy = { ok: true, checkedAt: "2026-06-25T00:20:00Z", error: null };
+
+  it("sends sustained cycle failures only to V2 and never to direct Slack fallback", async () => {
+    const db = new FakeD1();
+    const env = envWith(
+      db,
+      "https://hook.test/x",
+      undefined,
+      undefined,
+      "https://relay-v2.test",
+      "v2-token",
+    );
+    const urls: string[] = [];
+    let first = true;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        urls.push(url);
+        if (url.includes("relay-v2.test")) {
+          const status = first ? 202 : 503;
+          first = false;
+          return new Response(null, { status });
+        }
+        return new Response("ok", { status: 200 });
+      }),
+    );
+
+    await runCycleAlert(env, config, failing);
+    await runCycleAlert(env, config, failing);
+
+    expect(urls).toEqual([
+      "https://relay-v2.test/v2/alerts",
+      "https://relay-v2.test/v2/alerts",
+    ]);
+  });
 
   it("pages once when the cycle starts failing and not again while it stays down", async () => {
     const db = new FakeD1();

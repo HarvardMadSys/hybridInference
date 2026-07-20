@@ -1,0 +1,150 @@
+# Opt-in Unified Alert Control Plane V2 analysis. The Cloudflare relay is the
+# only Slack writer; this workflow receives only a generated job ID, performs a
+# read-only investigation, and returns a validated result to the relay.
+name: Codex On-Call V2
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Relay-generated analysis job ID
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-oncall-v2-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+env:
+  CODEX_CLI_VERSION: "0.144.4"
+
+jobs:
+  oncall:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch relay-authenticated job
+        id: job
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          ALERT_RELAY_V2_URL: ${{ secrets.ALERT_RELAY_V2_URL }}
+          ALERT_RELAY_V2_WORKFLOW_TOKEN: ${{ secrets.ALERT_RELAY_V2_WORKFLOW_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$JOB_ID" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'; then
+            echo "::error::Invalid relay job ID"
+            exit 1
+          fi
+          RELAY_BASE="${ALERT_RELAY_V2_URL%/}"
+          curl --fail --silent --show-error --proto '=https' \
+            --connect-timeout 10 --max-time 30 \
+            --retry 3 --retry-all-errors --retry-delay 2 \
+            --header "Authorization: Bearer $ALERT_RELAY_V2_WORKFLOW_TOKEN" \
+            --output "$RUNNER_TEMP/oncall-job.json" \
+            "$RELAY_BASE/v2/jobs/$JOB_ID"
+          ANALYSIS_REF="$(jq -er '.analysis_ref | strings | select(test("^(dev|main|[0-9a-f]{40})$"))' "$RUNNER_TEMP/oncall-job.json")"
+          printf 'analysis_ref=%s\n' "$ANALYSIS_REF" >> "$GITHUB_OUTPUT"
+
+      - name: Check out trusted analysis ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.job.outputs.analysis_ref }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Codex CLI and workflow dependencies
+        run: |
+          timeout 3m npm install --global --no-audit --no-fund "@openai/codex@${CODEX_CLI_VERSION}"
+          timeout 3m python -m pip install --quiet "pydantic>=2" "httpx>=0.27"
+
+      - name: Render prompt and output schema
+        run: |
+          PYTHONPATH=apps/backend python -m serving.oncall.gha render \
+            --payload "$RUNNER_TEMP/oncall-job.json" \
+            --prompt-out "$RUNNER_TEMP/prompt.txt" \
+            --schema-out "$RUNNER_TEMP/schema.json"
+
+      - name: Require read-only Codex sandbox
+        run: |
+          set -euo pipefail
+          if timeout 30s codex sandbox -- echo ok >/dev/null 2>&1 \
+             || timeout 30s codex sandbox echo ok >/dev/null 2>&1; then
+            echo "Codex read-only sandbox self-check passed"
+          else
+            echo "::error::Codex read-only sandbox is unavailable"
+            exit 1
+          fi
+
+      - name: Run read-only Codex analysis
+        env:
+          CODEX_API_KEY: ${{ secrets.CODEX_ONCALL_MODEL_API_KEY }}
+        run: |
+          set -euo pipefail
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          MODEL="$(jq -er '.model | strings | select(length > 0)' "$RUNNER_TEMP/oncall-job.json")"
+          BASE_URL_JSON="$(jq -cer '.base_url | strings | select(length > 0)' "$RUNNER_TEMP/oncall-job.json")"
+          timeout --signal=TERM --kill-after=30s 10m \
+            codex exec --json --sandbox read-only \
+            --ignore-user-config --ignore-rules \
+            --disable hooks --disable apps --disable multi_agent \
+            -c 'web_search="disabled"' \
+            -c 'shell_environment_policy.include_only=["PATH","HOME","LANG","LC_ALL"]' \
+            -c 'model_provider="oncall_model"' \
+            -c 'model_providers.oncall_model.name="On-Call Model"' \
+            -c "model_providers.oncall_model.base_url=${BASE_URL_JSON}" \
+            -c 'model_providers.oncall_model.env_key="CODEX_API_KEY"' \
+            -c 'model_providers.oncall_model.wire_api="responses"' \
+            -C "$GITHUB_WORKSPACE" \
+            --model "$MODEL" \
+            --output-last-message "$RUNNER_TEMP/analysis.json" \
+            - < "$RUNNER_TEMP/prompt.txt" > "$RUNNER_TEMP/codex-stdout.jsonl"
+
+      - name: Return validated analysis to relay
+        env:
+          ALERT_RELAY_V2_URL: ${{ secrets.ALERT_RELAY_V2_URL }}
+          ALERT_RELAY_V2_WORKFLOW_TOKEN: ${{ secrets.ALERT_RELAY_V2_WORKFLOW_TOKEN }}
+        run: |
+          PYTHONPATH=apps/backend python -m serving.oncall.gha callback \
+            --payload "$RUNNER_TEMP/oncall-job.json" \
+            --analysis "$RUNNER_TEMP/analysis.json" \
+            --codex-log "$RUNNER_TEMP/codex-stdout.jsonl"
+
+      - name: Return workflow failure to relay
+        if: failure()
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          ALERT_RELAY_V2_URL: ${{ secrets.ALERT_RELAY_V2_URL }}
+          ALERT_RELAY_V2_WORKFLOW_TOKEN: ${{ secrets.ALERT_RELAY_V2_WORKFLOW_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$JOB_ID" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$'; then
+            exit 1
+          fi
+          RELAY_BASE="${ALERT_RELAY_V2_URL%/}"
+          jq -n \
+            --arg error "GitHub Actions analysis workflow failed" \
+            --arg run_url "$RUN_URL" \
+            '{status:"failure", error:$error, run_url:$run_url}' \
+            > "$RUNNER_TEMP/oncall-failure.json"
+          curl --fail --silent --show-error --proto '=https' \
+            --connect-timeout 10 --max-time 30 \
+            --retry 3 --retry-all-errors --retry-delay 2 \
+            --request POST \
+            --header "Authorization: Bearer $ALERT_RELAY_V2_WORKFLOW_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data-binary "@$RUNNER_TEMP/oncall-failure.json" \
+            "$RELAY_BASE/v2/jobs/$JOB_ID/complete"

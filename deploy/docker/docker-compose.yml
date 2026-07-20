@@ -36,6 +36,7 @@ services:
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-1}
       GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
       GEOIP_COUNTRY_PROVIDER: dbip-lite
+      DEPLOYMENT_SHA: ${BUILD_SHA:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

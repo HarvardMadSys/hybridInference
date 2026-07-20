@@ -19,10 +19,21 @@ what the prober key can actually call.
 
 ## Slack alerts and Codex on-call analysis
 
+Unified Alert Control Plane V2 is opt-in when both `ALERT_RELAY_V2_URL` and
+`ALERT_RELAY_V2_TOKEN` are set. Its payload contains no producer environment or
+Slack text. The V2 relay derives environment from the credential and owns Slack
+rendering. While an incident stays down, each cycle sends a V2 repeat so the
+relay can update the existing parent's count and last-seen time. A failed
+repeat is never sent to V1 or the direct webhook, so it cannot create Slack
+repeat noise. The URL must be credential-free HTTPS; an unsafe URL is treated
+as unconfigured and leaves V1/webhook behavior unchanged.
+
 When `CODEX_ONCALL_RELAY_URL` and `CODEX_ONCALL_RELAY_TOKEN` are set, each alert
-is sent to the on-call relay first. The relay posts the original Slack message,
+uses the legacy V1 on-call relay. The relay posts the original Slack message,
 runs a read-only Codex investigation asynchronously, and replies in the same
 thread. If relay delivery fails, the Worker falls back to `SLACK_WEBHOOK_URL`.
+When V2 is configured it is attempted before these legacy paths; a transition
+that falls back is visibly prefixed `[Relay fallback]`.
 
 With only the optional `SLACK_WEBHOOK_URL` secret set, each cron cycle pages the
 Slack incoming webhook directly for any model that has failed `ALERT_FAILURE_THRESHOLD`
@@ -83,10 +94,12 @@ working without JavaScript).
 `ALERT_STORM_THRESHOLD` (models changing state in one cycle before pages collapse
 into a summary).
 
-`PROBER_API_KEY` is a **secret**, not a var. `CODEX_ONCALL_RELAY_URL`,
+`PROBER_API_KEY` is a **secret**, not a var. `ALERT_RELAY_V2_URL`,
+`ALERT_RELAY_V2_TOKEN`, `CODEX_ONCALL_RELAY_URL`,
 `CODEX_ONCALL_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both
-relay values are required to enable on-call analysis; retain the Slack webhook as its
-delivery fallback.
+values in either relay pair are required. `DEPLOYMENT_SHA` is optional immutable
+build metadata included only in V2 events. No V2 value is present in the live
+`wrangler.toml`; this PR therefore leaves deployed behavior unchanged.
 
 ## Deploy
 
@@ -121,6 +134,10 @@ npx wrangler secret put SLACK_WEBHOOK_URL
 # 3b. (Optional) Send alerts through Codex on-call before the Slack fallback.
 npx wrangler secret put CODEX_ONCALL_RELAY_URL
 npx wrangler secret put CODEX_ONCALL_RELAY_TOKEN
+
+# 3c. (Future opt-in) Enable V2 only after its Worker/resources are approved.
+npx wrangler secret put ALERT_RELAY_V2_URL
+npx wrangler secret put ALERT_RELAY_V2_TOKEN
 
 # 4. Deploy (registers the Worker and its 20-minute cron trigger).
 npx wrangler deploy

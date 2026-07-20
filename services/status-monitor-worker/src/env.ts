@@ -15,6 +15,11 @@ export interface Env {
   // Optional Codex oncall relay. Both values are required to enable relay delivery.
   CODEX_ONCALL_RELAY_URL?: string;
   CODEX_ONCALL_RELAY_TOKEN?: string;
+  // Opt-in Unified Alert Control Plane V2. Both bindings are required.
+  ALERT_RELAY_V2_URL?: string;
+  ALERT_RELAY_V2_TOKEN?: string;
+  // Immutable deployment revision included in V2 events when available.
+  DEPLOYMENT_SHA?: string;
   // Consecutive failed probes before a model pages Slack. Defaults to 2.
   ALERT_FAILURE_THRESHOLD?: string;
   // More than this many models changing state in one cycle collapses into a

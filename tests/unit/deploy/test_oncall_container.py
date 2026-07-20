@@ -13,6 +13,10 @@ def _workflow() -> dict:
     return yaml.safe_load((ROOT / ".github/workflows/codex-oncall.yml").read_text())
 
 
+def _workflow_v2() -> dict:
+    return yaml.safe_load((ROOT / ".github/workflows/codex-oncall-v2.yml").read_text())
+
+
 def test_oncall_service_is_an_opt_in_hardened_container():
     service = _compose()["services"]["codex-oncall"]
 
@@ -35,6 +39,12 @@ def test_oncall_service_uses_internal_fixed_runtime_paths():
         "CODEX_ONCALL_STATE_DIR": "/var/lib/codex-oncall",
         "HOME": "/var/lib/codex-oncall",
     }
+
+
+def test_backend_receives_immutable_deployment_sha_from_build_metadata():
+    environment = _compose()["services"]["backend"]["environment"]
+
+    assert environment["DEPLOYMENT_SHA"] == "${BUILD_SHA:-}"
 
 
 def test_oncall_image_is_a_slim_relay_without_codex():
@@ -87,6 +97,49 @@ def test_analysis_workflow_is_dispatch_triggered_and_least_privilege():
         line.lstrip().startswith("--output-schema ") for line in codex_step["run"].splitlines()
     )
     assert "CODEX_API_KEY" not in steps["Post analysis to Slack thread"].get("env", {})
+
+
+def test_v2_analysis_workflow_is_job_only_read_only_and_relay_callback_only():
+    workflow = _workflow_v2()
+    trigger = workflow.get("on") or workflow.get(True)
+
+    assert list(trigger["workflow_dispatch"]["inputs"]) == ["job_id"]
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"] == {
+        "group": "codex-oncall-v2-${{ inputs.job_id }}",
+        "cancel-in-progress": False,
+    }
+    job = workflow["jobs"]["oncall"]
+    assert job["timeout-minutes"] <= 20
+    steps = {step.get("name", ""): step for step in job["steps"]}
+    step_names = list(steps)
+    assert step_names.index("Fetch relay-authenticated job") < step_names.index(
+        "Check out trusted analysis ref"
+    )
+
+    checkout = steps["Check out trusted analysis ref"]
+    assert checkout["with"]["persist-credentials"] is False
+    assert checkout["with"]["ref"] == "${{ steps.job.outputs.analysis_ref }}"
+
+    source = (ROOT / ".github/workflows/codex-oncall-v2.yml").read_text()
+    assert "SLACK" not in source
+    assert "danger-full-access" not in source
+    assert "--sandbox read-only" in steps["Run read-only Codex analysis"]["run"]
+    assert "timeout --signal=TERM --kill-after=30s 10m" in steps[
+        "Run read-only Codex analysis"
+    ]["run"]
+    assert "serving.oncall.gha callback" in steps["Return validated analysis to relay"]["run"]
+    assert "/complete" in steps["Return workflow failure to relay"]["run"]
+    assert "--retry 3 --retry-all-errors" in steps["Return workflow failure to relay"]["run"]
+    assert "RUN_URL" in steps["Return workflow failure to relay"]["env"]
+    assert steps["Return workflow failure to relay"]["if"] == "failure()"
+
+    # Untrusted workflow input reaches shell only through a quoted environment
+    # variable and is UUID-validated before it is used in a URL.
+    for step in job["steps"]:
+        assert "inputs.job_id" not in step.get("run", "")
+    assert "grep -Eq" in steps["Fetch relay-authenticated job"]["run"]
+    assert "grep -Eq" in steps["Return workflow failure to relay"]["run"]
 
 
 def test_systemd_deployment_was_removed():

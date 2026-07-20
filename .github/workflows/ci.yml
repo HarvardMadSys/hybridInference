@@ -167,6 +167,41 @@ jobs:
       - name: Run ${{ matrix.check.name }}
         run: ${{ matrix.check.command }}
 
+  worker-check:
+    name: Worker ${{ matrix.name }}
+    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Status Monitor
+            path: services/status-monitor-worker
+          - name: Alert Relay
+            path: services/alert-relay-worker
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: ${{ matrix.path }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.path }}
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ${{ matrix.path }}
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: ${{ matrix.path }}
+        run: npm test
+
   test:
     name: Test (shard ${{ matrix.shard }}/${{ needs.pytest-shards.outputs.count }})
     # Service containers need Docker socket access; keep these jobs off the

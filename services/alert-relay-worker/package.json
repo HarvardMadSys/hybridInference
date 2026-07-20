@@ -1,0 +1,19 @@
+{
+  "name": "alert-relay-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker for the opt-in Unified Alert Control Plane V2.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.toml",
+    "migrate:local": "wrangler d1 migrations apply freeinference-alert-relay --local --config wrangler.toml",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "wrangler": "^3.80.0"
+  }
+}

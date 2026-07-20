@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from routing.routers import (
     _MAX_TRACKED_OFFENDERS,
+    AlertSeverity,
     BaseRouter,
     _CircuitBreaker,
     _CircuitState,
@@ -49,6 +50,35 @@ async def test_circuit_open_fires_alert(monkeypatch):
         # alert_slack is fired via asyncio.ensure_future — let pending tasks run
         await asyncio.sleep(0)
         mock_alert.assert_awaited_once()
+
+
+async def test_circuit_recovery_resolves_the_open_incident(monkeypatch):
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.7")
+
+    cb = _CircuitBreaker(provider="openai")
+
+    with patch("routing.routers.alert_slack", new=AsyncMock()) as mock_alert:
+        cb.on_failure(reason="upstream_500")
+        cb.on_failure(reason="upstream_500")
+        cb.on_success()
+        await asyncio.sleep(0)
+
+    assert mock_alert.await_count == 2
+    recovery = mock_alert.await_args_list[1]
+    assert recovery.args[:2] == (
+        AlertSeverity.INFO,
+        "Provider circuit recovered",
+    )
+    assert recovery.args[2]["provider"] == "openai"
+    assert recovery.args[2]["final_failure_count"] == 2
+    assert recovery.kwargs == {
+        "dedupe_key": "circuit_open:openai",
+        "cooldown_sec": 300,
+        "status": "resolved",
+    }
 
 
 async def test_circuit_open_alert_includes_upstream_error(monkeypatch):

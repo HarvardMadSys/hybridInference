@@ -13,6 +13,7 @@ see the `FreeInference docs <https://doc.freeinference.org/>`_.
    installation
    deployment
    codex-oncall
+   unified-alert-control-plane-v2
    architecture
    routing
    add-local-model

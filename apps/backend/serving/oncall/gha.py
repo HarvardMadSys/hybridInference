@@ -22,9 +22,14 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+import httpx
 
 from serving.oncall.models import OnCallAnalysis
 from serving.oncall.service import format_analysis
@@ -193,6 +198,99 @@ def _cmd_post(args: argparse.Namespace) -> int:
     return 0
 
 
+_JOB_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _cmd_callback(args: argparse.Namespace) -> int:
+    """Validate a V2 result and return it to the relay without Slack credentials."""
+    payload = _load_payload(args.payload)
+    relay_url = os.environ.get("ALERT_RELAY_V2_URL", "").strip().rstrip("/")
+    token = os.environ.get("ALERT_RELAY_V2_WORKFLOW_TOKEN", "").strip()
+    if not relay_url or not token:
+        print(
+            "ALERT_RELAY_V2_URL / ALERT_RELAY_V2_WORKFLOW_TOKEN are not set",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        parsed_relay_url = urlsplit(relay_url)
+        valid_relay_url = bool(
+            parsed_relay_url.scheme == "https"
+            and parsed_relay_url.hostname
+            and not parsed_relay_url.username
+            and not parsed_relay_url.password
+            and not parsed_relay_url.query
+            and not parsed_relay_url.fragment
+        )
+    except ValueError:
+        valid_relay_url = False
+    if not valid_relay_url:
+        print("ALERT_RELAY_V2_URL must be a credential-free HTTPS URL", file=sys.stderr)
+        return 2
+    job_id = str(payload.get("job_id", "")).strip()
+    if not _JOB_ID_RE.fullmatch(job_id):
+        print("payload is missing a valid job_id", file=sys.stderr)
+        return 2
+
+    if args.failed:
+        if not args.run_url:
+            print("failure callback requires --run-url", file=sys.stderr)
+            return 2
+        callback_body: dict[str, Any] = {
+            "status": "failure",
+            "error": (args.error or "analysis workflow failed")[:2_000],
+            "run_url": args.run_url,
+        }
+    else:
+        if not args.analysis or not args.codex_log:
+            print("success callback requires --analysis and --codex-log", file=sys.stderr)
+            return 2
+        try:
+            codex_log = Path(args.codex_log).read_text(encoding="utf-8")
+            validate_codex_log(codex_log)
+            analysis = parse_analysis_output(Path(args.analysis).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"refusing to callback ungrounded Codex analysis: {exc}", file=sys.stderr)
+            return 2
+        callback_body = {
+            "status": "success",
+            "analysis": analysis.model_dump(mode="json"),
+        }
+        if thread_id := parse_thread_id(codex_log):
+            callback_body["codex_thread_id"] = thread_id
+
+    endpoint = f"{relay_url}/v2/jobs/{job_id}/complete"
+    for attempt in range(3):
+        try:
+            response = httpx.post(
+                endpoint,
+                headers={"Authorization": f"Bearer {token}"},
+                json=callback_body,
+                timeout=15.0,
+                follow_redirects=False,
+            )
+        except httpx.HTTPError:
+            retryable = True
+            status_code = None
+        else:
+            if 200 <= response.status_code < 300:
+                print("V2 relay callback accepted")
+                return 0
+            status_code = response.status_code
+            retryable = response.status_code == 429 or response.status_code >= 500
+        if not retryable or attempt == 2:
+            if status_code is None:
+                print("V2 relay callback request failed", file=sys.stderr)
+            else:
+                print(f"V2 relay callback returned HTTP {status_code}", file=sys.stderr)
+            return 1
+        time.sleep(2**attempt)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse arguments and run the requested workflow step."""
     parser = argparse.ArgumentParser(prog="serving.oncall.gha")
@@ -212,9 +310,20 @@ def main(argv: list[str] | None = None) -> int:
     post.add_argument("--run-url", help="Actions run URL to include in the failure notice")
     post.set_defaults(func=_cmd_post)
 
+    callback = sub.add_parser("callback", help="return a V2 analysis result to the relay")
+    callback.add_argument("--payload", required=True)
+    callback.add_argument("--analysis", help="path to the structured analysis JSON")
+    callback.add_argument("--codex-log", help="codex --json stdout, for grounding/thread id")
+    callback.add_argument("--failed", action="store_true", help="send a workflow failure")
+    callback.add_argument("--run-url", help="Actions run URL for a failure callback")
+    callback.add_argument("--error", help="bounded failure summary")
+    callback.set_defaults(func=_cmd_callback)
+
     args = parser.parse_args(argv)
     if args.command == "post" and not args.failed and not args.analysis:
         parser.error("post requires --analysis unless --failed is given")
+    if args.command == "callback" and not args.failed and not args.analysis:
+        parser.error("callback requires --analysis unless --failed is given")
     return int(args.func(args))
 
 

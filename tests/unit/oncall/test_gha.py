@@ -2,6 +2,7 @@
 
 import json
 from typing import ClassVar
+from unittest.mock import Mock
 
 import pytest
 
@@ -11,6 +12,7 @@ from serving.oncall.models import OnCallAnalysis
 
 def _payload_file(tmp_path):
     payload = {
+        "job_id": "11111111-1111-4111-8111-111111111111",
         "alert": {
             "alert_id": "alert-1",
             "title": "Provider failed",
@@ -255,3 +257,153 @@ def test_post_failure_notice_includes_run_url(tmp_path, monkeypatch):
     assert thread_ts == "171.1"
     assert "Codex on-call unavailable" in text
     assert "https://github.com/org/repo/actions/runs/1" in text
+
+
+class _CallbackResponse:
+    status_code = 202
+
+
+def test_v2_callback_validates_grounding_and_posts_without_slack(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", "https://relay-v2.internal/")
+    monkeypatch.setenv("ALERT_RELAY_V2_WORKFLOW_TOKEN", "workflow-secret")
+    analysis = OnCallAnalysis(
+        summary="Upstream 429s",
+        classification="upstream_provider",
+        confidence=0.7,
+        impact="Some requests fail",
+        evidence=["provider returned 429"],
+        likely_cause="Provider rate limits",
+        recommended_actions=["Wait for provider recovery"],
+        issue_recommendation="none",
+        draft_pr_recommendation="none",
+    )
+    analysis_path = tmp_path / "analysis.json"
+    analysis_path.write_text(analysis.model_dump_json(), encoding="utf-8")
+    codex_log = tmp_path / "codex.jsonl"
+    codex_log.write_text(
+        '{"type":"thread.started","thread_id":"th-v2"}\n'
+        '{"type":"item.completed","item":{"type":"command_execution","exit_code":0}}\n'
+        '{"type":"turn.completed"}\n',
+        encoding="utf-8",
+    )
+    post = Mock(return_value=_CallbackResponse())
+    monkeypatch.setattr(gha.httpx, "post", post)
+
+    rc = gha.main(
+        [
+            "callback",
+            "--payload",
+            str(_payload_file(tmp_path)),
+            "--analysis",
+            str(analysis_path),
+            "--codex-log",
+            str(codex_log),
+        ]
+    )
+
+    assert rc == 0
+    assert post.call_args.args[0] == (
+        "https://relay-v2.internal/v2/jobs/11111111-1111-4111-8111-111111111111/complete"
+    )
+    kwargs = post.call_args.kwargs
+    assert kwargs["headers"] == {"Authorization": "Bearer workflow-secret"}
+    assert kwargs["json"]["status"] == "success"
+    assert kwargs["json"]["codex_thread_id"] == "th-v2"
+    assert "SLACK_BOT_TOKEN" not in kwargs["headers"]
+
+
+def test_v2_callback_retries_transient_relay_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", "https://relay-v2.internal")
+    monkeypatch.setenv("ALERT_RELAY_V2_WORKFLOW_TOKEN", "workflow-secret")
+    post = Mock(
+        side_effect=[
+            type("Response", (), {"status_code": 503})(),
+            _CallbackResponse(),
+        ]
+    )
+    sleep = Mock()
+    monkeypatch.setattr(gha.httpx, "post", post)
+    monkeypatch.setattr(gha.time, "sleep", sleep)
+
+    rc = gha.main(
+        [
+            "callback",
+            "--payload",
+            str(_payload_file(tmp_path)),
+            "--failed",
+            "--run-url",
+            "https://github.com/org/repo/actions/runs/9",
+        ]
+    )
+
+    assert rc == 0
+    assert post.call_count == 2
+    sleep.assert_called_once_with(1)
+
+
+def test_v2_callback_rejects_ungrounded_analysis_before_http(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", "https://relay-v2.internal")
+    monkeypatch.setenv("ALERT_RELAY_V2_WORKFLOW_TOKEN", "workflow-secret")
+    analysis_path = tmp_path / "analysis.json"
+    analysis_path.write_text(
+        json.dumps(
+            {
+                "summary": "Guess",
+                "classification": "unknown",
+                "confidence": 0.1,
+                "impact": "Unknown",
+                "evidence": [],
+                "likely_cause": "Unknown",
+                "recommended_actions": ["Inspect"],
+                "issue_recommendation": "none",
+                "draft_pr_recommendation": "none",
+            }
+        ),
+        encoding="utf-8",
+    )
+    codex_log = tmp_path / "codex.jsonl"
+    codex_log.write_text('{"type":"turn.completed"}\n', encoding="utf-8")
+    post = Mock()
+    monkeypatch.setattr(gha.httpx, "post", post)
+
+    rc = gha.main(
+        [
+            "callback",
+            "--payload",
+            str(_payload_file(tmp_path)),
+            "--analysis",
+            str(analysis_path),
+            "--codex-log",
+            str(codex_log),
+        ]
+    )
+
+    assert rc == 2
+    post.assert_not_called()
+
+
+def test_v2_failure_callback_includes_run_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("ALERT_RELAY_V2_URL", "https://relay-v2.internal")
+    monkeypatch.setenv("ALERT_RELAY_V2_WORKFLOW_TOKEN", "workflow-secret")
+    post = Mock(return_value=_CallbackResponse())
+    monkeypatch.setattr(gha.httpx, "post", post)
+
+    rc = gha.main(
+        [
+            "callback",
+            "--payload",
+            str(_payload_file(tmp_path)),
+            "--failed",
+            "--error",
+            "checkout failed",
+            "--run-url",
+            "https://github.com/org/repo/actions/runs/9",
+        ]
+    )
+
+    assert rc == 0
+    assert post.call_args.kwargs["json"] == {
+        "status": "failure",
+        "error": "checkout failed",
+        "run_url": "https://github.com/org/repo/actions/runs/9",
+    }

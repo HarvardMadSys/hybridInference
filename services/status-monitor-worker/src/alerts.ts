@@ -9,12 +9,15 @@ import {
 import type { Config, Env } from "./env";
 import type { ProbeResult } from "./probe";
 import {
+  alertRelayV2Config,
   codexRelayConfig,
   type CodexAlertEvent,
+  createAlertEventV2,
   createCodexAlertEvent,
   hasAlertDestination,
   modelAlertFingerprint,
   type NewCodexAlertEvent,
+  postAlertEventV2,
   postCodexAlert,
   stormAlertFingerprint,
 } from "./oncall";
@@ -289,17 +292,60 @@ function cycleEvent(config: Config, status: CycleStatus): CodexAlertEvent {
 }
 
 async function deliverAlert(env: Env, event: CodexAlertEvent): Promise<boolean> {
+  const relayV2 = alertRelayV2Config(env);
+  if (
+    relayV2 &&
+    (await postAlertEventV2(relayV2, createAlertEventV2(event, env.DEPLOYMENT_SHA)))
+  ) {
+    return true;
+  }
+
+  const fallbackEvent = relayV2
+    ? { ...event, slack_text: `[Relay fallback]\n${event.slack_text}` }
+    : event;
   const relay = codexRelayConfig(env);
-  if (relay && (await postCodexAlert(relay, event))) return true;
+  if (relay && (await postCodexAlert(relay, fallbackEvent))) return true;
 
   const webhookUrl = env.SLACK_WEBHOOK_URL?.trim();
-  return webhookUrl ? postSlack(webhookUrl, event.slack_text) : false;
+  return webhookUrl ? postSlack(webhookUrl, fallbackEvent.slack_text) : false;
+}
+
+/** Repeat updates are V2-only: a relay outage must never create direct Slack noise. */
+async function deliverV2Repeat(env: Env, event: CodexAlertEvent): Promise<boolean> {
+  const relay = alertRelayV2Config(env);
+  return relay
+    ? postAlertEventV2(relay, createAlertEventV2(event, env.DEPLOYMENT_SHA))
+    : false;
 }
 
 function incidentFingerprint(modelId: string, stateValue: string): string {
   return stateValue.startsWith("status-monitor:")
     ? stateValue
     : modelAlertFingerprint(modelId);
+}
+
+function sustainedFiringEvents(
+  config: Config,
+  results: ProbeResult[],
+  failing: Set<string>,
+  baseState: Record<string, string>,
+  threshold: number,
+): CodexAlertEvent[] {
+  const grouped = new Map<string, ProbeResult[]>();
+  for (const result of results) {
+    if (!failing.has(result.modelId) || !Object.hasOwn(baseState, result.modelId)) continue;
+    const fingerprint = incidentFingerprint(result.modelId, baseState[result.modelId]);
+    const members = grouped.get(fingerprint) ?? [];
+    members.push(result);
+    grouped.set(fingerprint, members);
+  }
+  return [...grouped.entries()].map(([fingerprint, members]) => {
+    const repeat = fingerprint.startsWith("status-monitor:storm:")
+      ? modelsDownEvent(config, members, threshold)
+      : modelDownEvent(config, members[0], threshold);
+    repeat.fingerprint = fingerprint;
+    return repeat;
+  });
 }
 
 /** Which models to page this cycle, plus the carried-over alert state. */
@@ -409,6 +455,17 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
     for (const r of sent) if (r.ok) nextState[r.modelId] = r.fingerprint;
   }
 
+  // V1 and direct-webhook alerting remain edge-triggered. When V2 is enabled,
+  // send one producer-neutral firing event for each already-active incident so
+  // the relay can update its parent count/last-seen without a thread reply.
+  if (alertRelayV2Config(env)) {
+    await Promise.all(
+      sustainedFiringEvents(config, results, failing, baseState, threshold).map((event) =>
+        deliverV2Repeat(env, event),
+      ),
+    );
+  }
+
   const activeModelsByFingerprint = new Map<string, string[]>();
   for (const [modelId, stateValue] of Object.entries(baseState)) {
     const fingerprint = incidentFingerprint(modelId, stateValue);
@@ -465,6 +522,10 @@ export async function runCycleAlert(env: Env, config: Config, status: CycleStatu
   if (!status.ok) {
     if (!alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
       await writeCycleAlertState(env.DB, status.checkedAt || "alerted");
+    } else if (alerted && alertRelayV2Config(env)) {
+      // V2 owns repeat coalescing. Never fall back this sustained update to a
+      // webhook or V1 relay, because that would re-page Slack.
+      await deliverV2Repeat(env, cycleEvent(config, status));
     }
   } else if (alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
     await writeCycleAlertState(env.DB, null);
