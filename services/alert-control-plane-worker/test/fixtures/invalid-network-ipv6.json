@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "event_id": "018f-provider-open-ipv6",
+  "alert_type": "provider_circuit_open",
+  "fingerprint": "provider-circuit:diffusiongemma:local-8002",
+  "status": "firing",
+  "severity": "error",
+  "title": "Provider circuit opened",
+  "occurred_at": "2026-07-19T06:00:00Z",
+  "summary": "Connection to 2001:db8::1 failed",
+  "context": {
+    "provider": "diffusiongemma:local-8002",
+    "reason": "connection_refused"
+  },
+  "evidence_refs": [
+    "config/models.yaml"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "event_id": "018f-provider-resolved-0001",
+  "alert_type": "provider_circuit_open",
+  "fingerprint": "provider-circuit:diffusiongemma:local-8002",
+  "status": "resolved",
+  "severity": "info",
+  "title": "Provider circuit recovered",
+  "occurred_at": "2026-07-19T06:04:12Z",
+  "summary": "The provider accepted a successful probe",
+  "context": {
+    "provider": "diffusiongemma:local-8002",
+    "availability": 1,
+    "final_failure_count": 8,
+    "outage_duration_ms": 252000
+  },
+  "evidence_refs": [
+    "config/models.yaml"
+  ]
+}

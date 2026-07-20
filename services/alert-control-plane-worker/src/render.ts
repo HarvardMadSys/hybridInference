@@ -1,0 +1,224 @@
+import type {
+  CanonicalAlertEnvelope,
+  ProviderCircuitContext,
+  SlackBlock,
+  SlackMessage,
+  SlackTextObject,
+} from "./types";
+
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/gu;
+
+export interface IncidentRenderState {
+  readonly action_id: string;
+  readonly incident_id: string;
+  readonly generation: number;
+  readonly occurrence_count: number;
+  readonly first_seen: string;
+  readonly last_seen: string;
+}
+
+function truncate(value: string, limit: number): string {
+  const characters = [...value];
+  if (characters.length <= limit) return value;
+  return `${characters.slice(0, Math.max(0, limit - 1)).join("")}…`;
+}
+
+function plain(value: string, limit = 150): string {
+  return truncate(value.replace(CONTROL_RE, " ").trim(), limit);
+}
+
+/** Escape all Slack mrkdwn entities, including encoded user/channel mentions. */
+export function escapeSlackMrkdwn(value: string, limit = 3_000): string {
+  const escaped = value
+    .replace(CONTROL_RE, " ")
+    .trim()
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+  return truncate(escaped, limit);
+}
+
+function mrkdwn(text: string): SlackTextObject {
+  return { type: "mrkdwn", text: truncate(text, 3_000) };
+}
+
+function field(label: string, value: string): SlackTextObject {
+  return mrkdwn(`*${label}*\n${truncate(value, 1_900)}`);
+}
+
+function environmentLabel(envelope: CanonicalAlertEnvelope): string {
+  return envelope.trusted.environment.toUpperCase();
+}
+
+function severityIcon(severity: CanonicalAlertEnvelope["event"]["severity"]): string {
+  if (severity === "critical") return "🚨";
+  if (severity === "error") return "❌";
+  if (severity === "warn") return "⚠️";
+  return "ℹ️";
+}
+
+function deploymentLabel(envelope: CanonicalAlertEnvelope): string {
+  return `${envelope.trusted.deployment_id}@${envelope.trusted.deployment_sha.slice(0, 12)}`;
+}
+
+function optionalField(
+  fields: SlackTextObject[],
+  label: string,
+  value: string | number | undefined,
+): void {
+  if (value === undefined) return;
+  fields.push(field(label, escapeSlackMrkdwn(String(value), 1_500)));
+}
+
+function providerContextFields(context: ProviderCircuitContext): readonly SlackTextObject[] {
+  const fields: SlackTextObject[] = [
+    field("Provider", escapeSlackMrkdwn(context.provider, 500)),
+  ];
+  if (context.availability !== undefined) {
+    optionalField(fields, "Availability", `${(context.availability * 100).toFixed(1)}%`);
+  }
+  optionalField(fields, "Reason", context.reason);
+  optionalField(fields, "Consecutive failures", context.consecutive_failures);
+  optionalField(fields, "Final failure count", context.final_failure_count);
+  optionalField(fields, "Affected users", context.affected_users);
+  if (context.outage_duration_ms !== undefined) {
+    optionalField(fields, "Outage duration", formatDuration(context.outage_duration_ms));
+  }
+  optionalField(fields, "Error", context.error);
+  return fields.slice(0, 10);
+}
+
+function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObject[] {
+  switch (envelope.event.alert_type) {
+    case "provider_circuit_open":
+      return providerContextFields(envelope.event.context);
+  }
+}
+
+function formatDuration(milliseconds: number): string {
+  let seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const days = Math.floor(seconds / 86_400);
+  seconds %= 86_400;
+  const hours = Math.floor(seconds / 3_600);
+  seconds %= 3_600;
+  const minutes = Math.floor(seconds / 60);
+  seconds %= 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function metadata(state: IncidentRenderState): SlackMessage["metadata"] {
+  return {
+    event_type: "alert_control_plane_action",
+    event_payload: {
+      action_id: state.action_id,
+      incident_id: state.incident_id,
+      generation: state.generation,
+    },
+  };
+}
+
+/** Render the single parent message from a validated internal envelope. */
+export function renderParent(
+  envelope: CanonicalAlertEnvelope,
+  state: IncidentRenderState,
+): SlackMessage {
+  const resolved = envelope.event.status === "resolved";
+  const lifecycle = resolved ? "Resolved" : "Firing";
+  const environment = environmentLabel(envelope);
+  const context = contextFields(envelope);
+  const blocks: SlackBlock[] = [
+    {
+      type: "header",
+      text: {
+        type: "plain_text",
+        text: plain(
+          `${resolved ? "✅" : severityIcon(envelope.event.severity)} ${environment} · ${lifecycle}`,
+        ),
+        emoji: true,
+      },
+    },
+    {
+      type: "section",
+      text: mrkdwn(
+        `*${escapeSlackMrkdwn(envelope.event.title, 500)}*\n${escapeSlackMrkdwn(envelope.event.summary)}`,
+      ),
+    },
+    {
+      type: "section",
+      fields: [
+        field("Environment", environment),
+        field("Severity", envelope.event.severity.toUpperCase()),
+        field("Incident", escapeSlackMrkdwn(state.incident_id, 128)),
+        field("Generation", String(state.generation)),
+        field("Deployment", escapeSlackMrkdwn(deploymentLabel(envelope), 300)),
+        field("First seen", escapeSlackMrkdwn(state.first_seen, 64)),
+        field("Last seen", escapeSlackMrkdwn(state.last_seen, 64)),
+        field("Occurrences", String(state.occurrence_count)),
+      ],
+    },
+    ...(context.length > 0 ? [{ type: "section" as const, fields: context }] : []),
+    {
+      type: "context",
+      elements: [
+        mrkdwn(
+          `Source: ${escapeSlackMrkdwn(envelope.trusted.source, 64)} · ` +
+            `Fingerprint: ${escapeSlackMrkdwn(envelope.event.fingerprint, 512)}`,
+        ),
+      ],
+    },
+  ];
+  return {
+    text: truncate(
+      `[${environment}] ${lifecycle.toUpperCase()} · ` +
+        `${escapeSlackMrkdwn(envelope.event.title, 300)} · Incident ${escapeSlackMrkdwn(state.incident_id, 128)}`,
+      4_000,
+    ),
+    blocks,
+    metadata: metadata(state),
+  };
+}
+
+/** Render the ordered recovery reply; callers must only use a resolved envelope. */
+export function renderRecoveryReply(
+  envelope: CanonicalAlertEnvelope,
+  state: IncidentRenderState,
+): SlackMessage {
+  if (envelope.event.status !== "resolved") {
+    throw new Error("recovery replies require a resolved event");
+  }
+  const environment = environmentLabel(envelope);
+  const context = envelope.event.context;
+  const recoveryFields: SlackTextObject[] = [
+    field("Incident", escapeSlackMrkdwn(state.incident_id, 128)),
+    field("Generation", String(state.generation)),
+    field("Resolved", escapeSlackMrkdwn(state.last_seen, 64)),
+  ];
+  optionalField(recoveryFields, "Final failure count", context.final_failure_count);
+  if (context.outage_duration_ms !== undefined) {
+    optionalField(recoveryFields, "Outage duration", formatDuration(context.outage_duration_ms));
+  }
+  return {
+    text: truncate(
+      `[${environment}] RESOLVED · ${escapeSlackMrkdwn(envelope.event.title, 300)} · ` +
+        `Incident ${escapeSlackMrkdwn(state.incident_id, 128)}`,
+      4_000,
+    ),
+    blocks: [
+      {
+        type: "header",
+        text: { type: "plain_text", text: "✅ Recovery confirmed", emoji: true },
+      },
+      {
+        type: "section",
+        text: mrkdwn(
+          `*${escapeSlackMrkdwn(envelope.event.title, 500)}*\n${escapeSlackMrkdwn(envelope.event.summary)}`,
+        ),
+      },
+      { type: "section", fields: recoveryFields },
+    ],
+    metadata: metadata(state),
+  };
+}
