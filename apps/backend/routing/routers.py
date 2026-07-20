@@ -1,7 +1,7 @@
 """Routing strategies for request distribution.
 
 Provides:
-- BaseRouter: Abstract base with shared infrastructure (circuit breaker, EWMA health)
+- BaseRouter: Compatibility facade over composed endpoint health and execution helpers
 - FixedRouter: Weighted random routing with automatic fallback
 - RouteConfig, RoutingObservation, ProviderPinError
 """
@@ -14,7 +14,6 @@ import os
 import random
 import threading
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -24,25 +23,12 @@ if TYPE_CHECKING:
 
     from serving.adapters.base import BaseAdapter
 
+from routing.endpoint_health import EndpointHealthRegistry
 from serving.exceptions import operator_safe_error
-from serving.observability.alerts import AlertSeverity, alert_slack, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-# Strong references to fire-and-forget Slack alert tasks. asyncio holds only
-# weak refs to scheduled tasks, so without this set the GC may cancel an alert
-# mid-flight (e.g. when the breaker that scheduled it is dropped). Tasks
-# remove themselves via add_done_callback once they finish.
-_ALERT_TASKS: set[asyncio.Task[bool]] = set()
-
-# Bound on the number of distinct users tracked per circuit breaker for a
-# single failure streak. Caps memory when a long outage spans many callers;
-# users already being tracked keep accumulating their failure counts.
-_MAX_TRACKED_OFFENDERS = 50
-# How many of the top offenders to name explicitly in the circuit-open alert.
-_OFFENDERS_IN_ALERT = 10
 
 # ============================================================================
 # Exceptions
@@ -309,332 +295,15 @@ def _has_non_empty_content(chunk: Any) -> bool:
         return True
 
 
-def _reason_str(s: str) -> str:
-    return s if s and len(s) < 64 else "error"
-
-
-def _http_status_of(exc: BaseException) -> int | None:
-    """Best-effort extract of an upstream HTTP status code from an exception.
-
-    Adapters surface upstream HTTP errors as exceptions that carry the status on
-    one of a few attributes depending on the client library (aiohttp's
-    ``ClientResponseError`` uses ``.status``; others use ``.status_code`` or
-    ``.code``). Duck-type rather than importing the HTTP client into the routing
-    layer. Returns ``None`` when no status is present (e.g. a timeout or
-    connection error, which is a genuine upstream fault).
-    """
-    for attr in ("status", "status_code", "code"):
-        val = getattr(exc, attr, None)
-        if isinstance(val, int) and 100 <= val <= 599:
-            return val
-    # httpx / requests carry the status on a nested response object.
-    response = getattr(exc, "response", None)
-    if response is not None:
-        for attr in ("status_code", "status"):
-            val = getattr(response, attr, None)
-            if isinstance(val, int) and 100 <= val <= 599:
-                return val
-    return None
-
-
-def _is_client_error(exc: BaseException) -> bool:
-    """Return True if ``exc`` is an upstream client error that must NOT trip the breaker.
-
-    A client (4xx) error means the upstream is healthy and correctly rejected a
-    bad request (e.g. vLLM's 400 "max context length exceeded"). Counting it as
-    an upstream fault lets one user's bad request open the circuit for everyone.
-    A 5xx / timeout / connection error is a genuine fault and returns False.
-    """
-    status = _http_status_of(exc)
-    if status is None or not (400 <= status < 500):
-        # No status, or a 5xx — a genuine upstream fault. Count it.
-        return False
-    # 408 (Request Timeout) and 429 (Too Many Requests) are 4xx but signal the
-    # upstream is slow/overloaded, not that the request was malformed. Let those
-    # trip the breaker so it sheds load. Every other 4xx (400 bad request, 401/403
-    # auth, 404, 413 payload too large, 422) is a per-request/config error: the
-    # upstream is healthy and correctly rejected it, so spare the breaker.
-    return status not in (408, 429)
-
-
-def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
-    """Normalize an upstream error message for inclusion in alerts.
-
-    Collapses whitespace and truncates to keep Slack messages readable.
-    Returns ``None`` for empty/blank input.
-    """
-    if not s:
-        return None
-    # Bound the input before splitting/joining so a massive upstream body
-    # (e.g. an HTML 502 page) can't cause large allocations / CPU spikes.
-    if len(s) > limit * 2:
-        s = s[: limit * 2]
-    cleaned = " ".join(s.split())
-    if not cleaned:
-        return None
-    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
-
-
-def _offender_str() -> str | None:
-    """Identify the user behind the current request for failure attribution.
-
-    Reads the request-scoped context populated by the completions handler.
-    Prefers a human-readable ``user_name`` when present but always pins the
-    stable ``user_id`` so operators can act on the alert. Returns ``None`` when
-    no identity is available (e.g. health probes or background tasks running
-    outside a request).
-
-    The (caller-controlled) display name has its whitespace collapsed so a
-    name containing newlines can't forge extra lines in an alert; Slack control
-    characters are escaped later, at format time.
-    """
-    ctx = req_ctx.get()
-    user_id = ctx.get("user_id")
-    raw_name = ctx.get("user_name")
-    user_name = " ".join(str(raw_name).split()) if raw_name else None
-    if user_id and user_name:
-        return f"{user_name} ({user_id})"
-    if user_id:
-        return str(user_id)
-    if user_name:
-        return user_name
-    return None
-
-
-# ============================================================================
-# Health Tracking
-# ============================================================================
-
-
-class _ProviderHealth:
-    """Track provider availability via exponentially weighted counters."""
-
-    def __init__(self, provider: str, alpha: float | None = None) -> None:
-        self.provider = provider
-        env_alpha = os.getenv("ROUTER_HEALTH_EWMA_ALPHA")
-        self.alpha = (
-            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.1)
-        )
-        self.ewma_success = 1.0
-        self.ewma_total = 1.0
-        self._lock = threading.Lock()
-
-    def record(self, success: bool) -> None:
-        inc_s = 1.0 if success else 0.0
-        with self._lock:
-            self.ewma_success = (1 - self.alpha) * self.ewma_success + self.alpha * inc_s
-            self.ewma_total = (1 - self.alpha) * self.ewma_total + self.alpha * 1.0
-
-    @property
-    def availability(self) -> float:
-        if self.ewma_total <= 0:
-            return 1.0
-        return max(0.0, min(1.0, self.ewma_success / self.ewma_total))
-
-
-class _CircuitState:
-    CLOSED = "closed"
-    OPEN = "open"
-    HALF_OPEN = "half_open"
-
-
-class _CircuitBreaker:
-    """Simple circuit breaker per provider.
-
-    - Open when consecutive failures exceed threshold or availability too low.
-    - Remain open for a cooldown, then transition to HALF_OPEN to allow a trial.
-    - On trial success, close; on failure, reopen and reset cooldown.
-    """
-
-    def __init__(
-        self,
-        provider: str,
-        *,
-        failure_threshold: int | None = None,
-        cooldown_seconds: float | None = None,
-        min_availability: float | None = None,
-    ) -> None:
-        self.provider = provider
-        self.state = _CircuitState.CLOSED
-        # Read configuration from environment with sensible defaults.
-        self.failure_threshold = int(
-            os.getenv(
-                "CIRCUIT_FAILURE_THRESHOLD",
-                str(failure_threshold if failure_threshold is not None else 3),
-            )
-        )
-        self.cooldown_seconds = float(
-            os.getenv(
-                "CIRCUIT_COOLDOWN_SECONDS",
-                str(cooldown_seconds if cooldown_seconds is not None else 30.0),
-            )
-        )
-        self.min_availability = float(
-            os.getenv(
-                "CIRCUIT_MIN_AVAILABILITY",
-                str(min_availability if min_availability is not None else 0.7),
-            )
-        )
-        self.consecutive_failures = 0
-        self.last_opened: float | None = None
-        # Users whose requests contributed to the current failure streak,
-        # keyed by identity with a per-user failure count. Cleared whenever the
-        # streak resets on success so it always reflects the live outage.
-        self._offenders: Counter[str] = Counter()
-        self._lock = threading.Lock()
-
-    def allow_request(self) -> bool:
-        with self._lock:
-            if self.state == _CircuitState.CLOSED:
-                return True
-            if self.state == _CircuitState.OPEN:
-                if self.last_opened is None:
-                    return False
-                if (time.perf_counter() - self.last_opened) >= self.cooldown_seconds:
-                    # Move to half-open for a trial request.
-                    self.state = _CircuitState.HALF_OPEN
-                    return True
-                return False
-            # HALF_OPEN allows a single trial at a time; conservative approach: allow.
-            return True
-
-    def on_success(self) -> None:
-        with self._lock:
-            self.consecutive_failures = 0
-            # The failure streak is broken — drop the offenders accumulated for
-            # it so a later trip only names users behind the new streak.
-            self._offenders.clear()
-            if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
-                # Capture how long the circuit stayed open before clearing the
-                # timestamp, so the recovery log carries the outage duration.
-                duration_ms = (
-                    (time.perf_counter() - self.last_opened) * 1000.0
-                    if self.last_opened is not None
-                    else None
-                )
-                self.state = _CircuitState.CLOSED
-                self.last_opened = None
-                logger.info(
-                    "circuit_closed",
-                    extra={
-                        "event": "circuit_closed",
-                        "provider": self.provider,
-                        "duration_ms": duration_ms,
-                    },
-                )
-
-    def on_failure(
-        self,
-        *,
-        availability: float | None = None,
-        reason: str = "error",
-        detail: str | None = None,
-        offender: str | None = None,
-    ) -> None:
-        with self._lock:
-            self.consecutive_failures += 1
-            # Attribute the failure to its user. Already-tracked offenders keep
-            # accumulating; only the number of *distinct* users is capped so a
-            # long, broad outage can't grow this counter without limit.
-            if offender and (
-                offender in self._offenders or len(self._offenders) < _MAX_TRACKED_OFFENDERS
-            ):
-                self._offenders[offender] += 1
-            trip = False
-            if self.consecutive_failures >= self.failure_threshold:
-                trip = True
-            if availability is not None and availability < self.min_availability:
-                trip = True
-            if trip:
-                prev_state = self.state
-                self.state = _CircuitState.OPEN
-                self.last_opened = time.perf_counter()
-                # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
-                if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
-                    context: dict[str, Any] = {
-                        "provider": self.provider,
-                        "consecutive_failures": self.consecutive_failures,
-                        "availability": (
-                            f"{availability:.2f}" if availability is not None else "n/a"
-                        ),
-                        "reason": reason or "unknown",
-                    }
-                    # Surface the actual upstream error text when available so
-                    # the alert is actionable without grepping logs.
-                    if detail:
-                        context["upstream_error"] = detail
-                    # Name the users whose requests drove this failure streak so
-                    # operators can see who is affected (and who may be abusing
-                    # a provider, as with coding-only upstream restrictions).
-                    offenders = self._format_offenders()
-                    if offenders:
-                        context["offending_users"] = offenders
-                    # Emit a structured log record for the circuit-open
-                    # transition. The Slack alert is fire-and-forget and writes
-                    # no log line, so without this the event is invisible in the
-                    # application logs.
-                    logger.warning(
-                        "circuit_open",
-                        extra={
-                            "event": "circuit_open",
-                            "provider": self.provider,
-                            "consecutive_failures": self.consecutive_failures,
-                            "availability": availability,
-                            "reason": reason or "unknown",
-                            "upstream_error": detail,
-                            # Log the raw {user: failure_count} mapping rather
-                            # than the pre-formatted alert string so log
-                            # aggregators can filter/aggregate by user.
-                            "offending_users": dict(self._offenders) or None,
-                        },
-                    )
-                    try:
-                        task = asyncio.ensure_future(
-                            alert_slack(
-                                AlertSeverity.ERROR,
-                                "Provider circuit opened",
-                                context,
-                                dedupe_key=f"circuit_open:{self.provider}",
-                                cooldown_sec=300,
-                            )
-                        )
-                    except RuntimeError:
-                        # No running event loop (e.g., unit test outside
-                        # pytest-asyncio). Best-effort alert; skip silently.
-                        pass
-                    else:
-                        # Keep a strong reference until the task finishes so
-                        # the GC cannot cancel it mid-flight.
-                        _ALERT_TASKS.add(task)
-                        task.add_done_callback(_ALERT_TASKS.discard)
-
-    def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
-        """Render the failure-streak offenders for an alert, busiest first.
-
-        Caller must hold ``self._lock``. Returns ``None`` when no offenders were
-        attributed (e.g. failures raised outside any request context). User
-        identities are Slack-escaped here because they may include a
-        caller-controlled display name.
-        """
-        if not self._offenders:
-            return None
-        named = self._offenders.most_common(top)
-        parts = [f"{escape_slack_text(user)} x{count}" for user, count in named]
-        remaining = len(self._offenders) - len(named)
-        if remaining > 0:
-            parts.append(f"+{remaining} more")
-        return ", ".join(parts)
-
-
 # ============================================================================
 # BaseRouter
 # ============================================================================
 
 
 class BaseRouter:
-    """Abstract base router with circuit breaker, health tracking, and metrics.
+    """Compatibility facade over endpoint health and adapter execution helpers.
 
-    Provides shared infrastructure for all routing strategies:
+    Delegates health state to a router-owned ``EndpointHealthRegistry``:
     - Circuit breaker protection per provider/endpoint
     - EWMA health tracking
     - Provider availability metrics
@@ -643,24 +312,18 @@ class BaseRouter:
     using the shared infrastructure methods.
     """
 
-    def __init__(self) -> None:
-        self._health: dict[str, _ProviderHealth] = {}
-        self._circuits: dict[str, _CircuitBreaker] = {}
+    def __init__(self, health_registry: EndpointHealthRegistry | None = None) -> None:
+        self._health_registry = (
+            health_registry if health_registry is not None else EndpointHealthRegistry()
+        )
         self._lock = threading.RLock()
         self._affinity: dict[tuple[str, str], _Affinity] = {}
 
     def _ensure_health(self, endpoint_id: str) -> None:
-        with self._lock:
-            if endpoint_id not in self._health:
-                self._health[endpoint_id] = _ProviderHealth(endpoint_id)
-            if endpoint_id not in self._circuits:
-                self._circuits[endpoint_id] = _CircuitBreaker(endpoint_id)
+        self._health_registry.ensure(endpoint_id)
 
     def _on_success(self, endpoint_id: str) -> None:
-        with self._lock:
-            self._ensure_health(endpoint_id)
-            self._health[endpoint_id].record(True)
-            self._circuits[endpoint_id].on_success()
+        self._health_registry.record_success(endpoint_id)
 
     def _on_failure(
         self,
@@ -670,31 +333,12 @@ class BaseRouter:
         detail: str | None = None,
         exc: BaseException | None = None,
     ) -> None:
-        if exc is not None and _is_client_error(exc):
-            # Upstream returned a client (4xx) error: it is healthy and correctly
-            # rejected a bad request. Do not penalize availability or trip the
-            # circuit breaker — otherwise one user's bad request opens the
-            # circuit for every user of this model.
-            logger.info(
-                "client_error_skip_breaker",
-                extra={
-                    "event": "client_error_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "status": _http_status_of(exc),
-                    "detail": _detail_str(detail),
-                },
-            )
-            return
-        with self._lock:
-            self._ensure_health(endpoint_id)
-            self._health[endpoint_id].record(False)
-            avail = self._health[endpoint_id].availability
-            self._circuits[endpoint_id].on_failure(
-                availability=avail,
-                reason=_reason_str(reason),
-                detail=_detail_str(detail),
-                offender=_offender_str(),
-            )
+        self._health_registry.record_failure(
+            endpoint_id,
+            reason=reason,
+            detail=detail,
+            exc=exc,
+        )
 
     def _drop_affinity(self, model_id: str) -> None:
         """Drop affinity entry for the current request's affinity_key + model.
@@ -717,17 +361,7 @@ class BaseRouter:
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of provider availability and circuit state."""
-        out: dict[str, dict[str, Any]] = {}
-        with self._lock:
-            for provider, h in self._health.items():
-                state = (
-                    self._circuits.get(provider).state if provider in self._circuits else "closed"
-                )
-                out[provider] = {
-                    "availability": h.availability,
-                    "circuit_state": state,
-                }
-        return out
+        return self._health_registry.snapshot()
 
     def record_observation(self, obs: RoutingObservation) -> None:
         """Record a routing observation. No-op by default; override in online learning routers."""
@@ -814,8 +448,9 @@ class FixedRouter(BaseRouter):
         params: Any = None,
         weight_override_resolver: Any | None = None,
         disabled_provider_resolver: Any | None = None,
+        health_registry: EndpointHealthRegistry | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(health_registry=health_registry)
         self.routes: dict[str, RouteConfig] = {}
         # Keep the validated params accessible for future use (e.g. honoring
         # local_fraction in adapter selection).  Today FixedRouter ignores it
@@ -951,22 +586,16 @@ class FixedRouter(BaseRouter):
             return None
 
         with self._lock:
-            snapshot: list[tuple[BaseAdapter, float, _CircuitBreaker]] = []
-            for adapter, weight in self._get_effective_adapters(model_id, route):
-                endpoint_id = _get_endpoint_id(adapter)
-                cb = self._circuits.get(endpoint_id)
-                if not cb:
-                    cb = self._circuits[endpoint_id] = _CircuitBreaker(endpoint_id)
-                snapshot.append((adapter, weight, cb))
+            snapshot = list(self._get_effective_adapters(model_id, route))
 
         allowed: list[tuple[BaseAdapter, float]] = [
             (adapter, weight)
-            for (adapter, weight, cb) in snapshot
-            if weight > 0 and cb.allow_request()
+            for adapter, weight in snapshot
+            if weight > 0 and self._health_registry.allow_request(_get_endpoint_id(adapter))
         ]
 
         if not allowed:
-            provider_names = [_get_endpoint_id(a) for a, _w, _cb in snapshot]
+            provider_names = [_get_endpoint_id(adapter) for adapter, _weight in snapshot]
             raise AllCircuitsOpenError(
                 f"All provider circuits are open for model {model_id}: {provider_names}"
             )

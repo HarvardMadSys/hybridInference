@@ -263,6 +263,28 @@ class TestRouteWiseRouterScaffold:
         selected = router._select_adapter("test-model", {})
         assert selected is adapter
 
+    async def test_open_circuit_candidate_is_excluded(self, monkeypatch):
+        monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "1")
+        monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+        blocked = _make_adapter(endpoint_id="test-model:blocked", prompt_price="0.001")
+        active = _make_adapter(endpoint_id="test-model:active", prompt_price="0.002")
+        fr = _FakeFixedRouter()
+        fr.add("test-model", [(blocked, 0.5), (active, 0.5)])
+        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+
+        with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+            router._health_registry.record_failure(
+                "test-model:blocked",
+                reason="upstream_502",
+                exc=_StatusError(502, "bad gateway"),
+            )
+            await asyncio.sleep(0)
+
+        selected = router._select_adapter("test-model", {})
+
+        assert selected is active
+        assert router.get_provider_status()["test-model:blocked"]["circuit_state"] == "open"
+
     def test_alias_routes_use_canonical_routewise_state(self):
         """Alias requests must share RouteWise per-model state with canonical requests."""
         adapter = _make_adapter(

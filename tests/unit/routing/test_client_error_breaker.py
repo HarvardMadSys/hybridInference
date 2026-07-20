@@ -11,11 +11,12 @@ overload-signalling 408/429) must still count.
 import asyncio
 import threading
 import types
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from routing.routers import (
-    BaseRouter,
+from routing.endpoint_health import (
+    EndpointHealthRegistry,
     _CircuitState,
     _http_status_of,
     _is_client_error,
@@ -50,16 +51,50 @@ def test_http_status_of_reads_common_attributes():
     assert _http_status_of(TimeoutError()) is None
 
 
-def test_client_errors_are_breaker_exempt():
+def test_client_errors_are_breaker_exempt(monkeypatch):
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
     # Request/config errors: healthy upstream rejecting a bad request.
     for code in (400, 401, 403, 404, 413, 422):
         assert _is_client_error(_StatusError(code)) is True, code
+        registry = EndpointHealthRegistry()
+        endpoint_id = f"client-error-{code}"
+        registry.record_success(endpoint_id)
+        baseline = registry.snapshot()[endpoint_id]["availability"]
+
+        registry.record_failure(
+            endpoint_id,
+            reason="stream_exception",
+            exc=_StatusError(code),
+        )
+
+        status = registry.snapshot()[endpoint_id]
+        assert status["circuit_state"] == _CircuitState.CLOSED, code
+        assert status["availability"] == baseline, code
 
 
-def test_overload_and_server_errors_still_count():
+def test_overload_and_server_errors_still_count(monkeypatch):
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "999")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+
     # 408/429 signal overload; 5xx is a fault; no status is a connection/timeout fault.
     for code in (408, 429, 500, 502, 503):
         assert _is_client_error(_StatusError(code)) is False, code
+        registry = EndpointHealthRegistry()
+        endpoint_id = f"upstream-error-{code}"
+        registry.record_success(endpoint_id)
+        baseline = registry.snapshot()[endpoint_id]["availability"]
+
+        registry.record_failure(
+            endpoint_id,
+            reason="stream_exception",
+            exc=_StatusError(code),
+        )
+
+        status = registry.snapshot()[endpoint_id]
+        assert status["circuit_state"] == _CircuitState.CLOSED, code
+        assert status["availability"] < baseline, code
     assert _is_client_error(Exception("connection refused")) is False
     assert _is_client_error(TimeoutError()) is False
 
@@ -67,40 +102,42 @@ def test_overload_and_server_errors_still_count():
 def test_repeated_4xx_never_opens_circuit(monkeypatch):
     monkeypatch.delenv("CIRCUIT_FAILURE_THRESHOLD", raising=False)
     monkeypatch.delenv("CIRCUIT_MIN_AVAILABILITY", raising=False)
-    router = BaseRouter()
+    registry = EndpointHealthRegistry()
     endpoint_id = "qwen3.6-35b:local-8001"
 
     # Register the endpoint with a healthy baseline so we can prove the 4xx
     # failures leave its state (and availability) untouched, rather than the
     # endpoint simply never appearing.
-    router._on_success(endpoint_id)
-    baseline = router.get_provider_status()[endpoint_id]["availability"]
+    registry.record_success(endpoint_id)
+    baseline = registry.snapshot()[endpoint_id]["availability"]
 
     # Far more 400s than the failure threshold — the breaker must stay closed
     # and availability must not drop.
     for _ in range(10):
-        router._on_failure(endpoint_id, reason="stream_exception", exc=_StatusError(400))
+        registry.record_failure(endpoint_id, reason="stream_exception", exc=_StatusError(400))
 
-    status = router.get_provider_status()[endpoint_id]
+    status = registry.snapshot()[endpoint_id]
     assert status["circuit_state"] == _CircuitState.CLOSED
     assert status["availability"] == baseline
 
 
-def test_5xx_still_opens_circuit(monkeypatch):
+async def test_5xx_still_opens_circuit(monkeypatch):
     monkeypatch.delenv("CIRCUIT_FAILURE_THRESHOLD", raising=False)
     monkeypatch.delenv("CIRCUIT_MIN_AVAILABILITY", raising=False)
-    router = BaseRouter()
+    registry = EndpointHealthRegistry()
     endpoint_id = "qwen3.6-35b:local-8001"
 
-    for _ in range(5):
-        router._on_failure(endpoint_id, reason="stream_exception", exc=_StatusError(502))
+    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+        for _ in range(5):
+            registry.record_failure(endpoint_id, reason="stream_exception", exc=_StatusError(502))
+        await asyncio.sleep(0)
 
-    assert router.get_provider_status()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
 
 
 # ---------------------------------------------------------------------------
-# RouteWiseRouter must forward the caught exception to _on_failure so the base
-# router's client-error guard actually sees it. This is the RouteWise sibling of
+# RouteWiseRouter must forward the caught exception to _on_failure so the
+# registry's client-error guard actually sees it. This is the RouteWise sibling of
 # the FixedRouter fix from #813: both chat_completion and stream_chat_completion
 # used to call _on_failure without exc=, so a 4xx was misclassified as a fault.
 # ---------------------------------------------------------------------------

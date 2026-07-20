@@ -273,7 +273,7 @@ async def test_no_route_configured_raises():
 
 
 @pytest.mark.unit
-def test_all_circuits_open_raises_all_circuits_open_error():
+def test_all_circuits_open_raises_all_circuits_open_error(monkeypatch):
     """Regression: when every circuit breaker is open, _select_adapter raises
     AllCircuitsOpenError so the API layer can return 503 Service Unavailable
     rather than a generic 500."""
@@ -282,14 +282,7 @@ def test_all_circuits_open_raises_all_circuits_open_error():
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.5), (b, 0.5)])
 
-    # Force every circuit breaker for this route into the OPEN state so that
-    # ``allow_request()`` returns False for all candidates, leaving ``allowed``
-    # empty inside ``_select_adapter``.
-    # Trigger circuit population by calling _select_adapter once successfully.
-    assert exe._select_adapter("m") is not None  # type: ignore[attr-defined]
-    for cb in exe._circuits.values():  # type: ignore[attr-defined]
-        cb.state = "open"
-        cb.last_opened = float("inf")  # never cool down within this test
+    monkeypatch.setattr(exe._health_registry, "allow_request", lambda _endpoint_id: False)
 
     with pytest.raises(AllCircuitsOpenError):
         exe._select_adapter("m")  # type: ignore[attr-defined]

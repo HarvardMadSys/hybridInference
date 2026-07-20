@@ -43,6 +43,7 @@ from routewise.core import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
 
+    from routing.endpoint_health import EndpointHealthRegistry
     from serving.adapters.base import BaseAdapter
 
     from .config import RouteWiseConfig
@@ -275,8 +276,9 @@ class RouteWiseRouter(BaseRouter):
         fixed_router: Any = None,
         config: RouteWiseConfig | None = None,
         params: Any = None,
+        health_registry: EndpointHealthRegistry | None = None,
     ) -> None:
-        super().__init__()
+        super().__init__(health_registry=health_registry)
 
         if config is None and params is not None:
             from .config import RouteWiseConfig as _RWC
@@ -1368,9 +1370,8 @@ class RouteWiseRouter(BaseRouter):
         for route_candidate in entries:
             adapter = route_candidate.adapter
             endpoint_id = route_candidate.endpoint_id
-            self._ensure_health(endpoint_id)
-            circuit = self._circuits[endpoint_id]
-            if not circuit.allow_request():
+            self._health_registry.ensure(endpoint_id)
+            if not self._health_registry.allow_request(endpoint_id):
                 continue
 
             request_cost = self._api_cost_for_pricing(

@@ -543,8 +543,7 @@ async def test_runtime_forced_buffered_stream_preserves_all_circuits_open_503(
     router = RouteExecutor()
     adapter = DummyAdapter(_mk_cfg("circuit-open-model"))
     router.register_route("circuit-open-model", [(adapter, 1.0)])
-    router._circuits[adapter.config.provider] = MagicMock()
-    router._circuits[adapter.config.provider].allow_request.return_value = False
+    monkeypatch.setattr(router._health_registry, "allow_request", lambda _endpoint_id: False)
 
     app = FastAPI(title="Forced Buffered Circuit Open App")
     app.state.services = AppServices(
