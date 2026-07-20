@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 from routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
 from routing.endpoints import endpoint_id_for_adapter
-from routing.routers import _has_non_empty_content, _routing_chunk
+from routing.streaming import has_non_empty_content
+from routing.telemetry import failed_attempt, routing_chunk
 from serving.adapters.base import BaseAdapter
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -262,7 +263,7 @@ class HedgedAdapter(BaseAdapter):
                                 reason=exc.__class__.__name__,
                                 exc=exc,
                             )
-                            self.failed_attempts.append(_failed_attempt(self.primary, exc))
+                            self.failed_attempts.append(failed_attempt(self.primary, exc))
                             primary_error = exc
                             # Primary failed.  If the backup is still in its
                             # initial sleep(h*), cancel it and re-launch without
@@ -282,7 +283,7 @@ class HedgedAdapter(BaseAdapter):
                                     reason=exc.__class__.__name__,
                                     exc=exc,
                                 )
-                                self.failed_attempts.append(_failed_attempt(self.backup, exc))
+                                self.failed_attempts.append(failed_attempt(self.backup, exc))
                     else:
                         # Winner found -- cancel the loser.
                         winner_result = task.result()
@@ -365,7 +366,7 @@ class HedgedAdapter(BaseAdapter):
                 }
             )
             if self.backup_won:
-                yield _routing_chunk(self)
+                yield routing_chunk(self)
 
             # Phase 2: yield buffered chunks from winner.
             for chunk in winner_buffer:
@@ -510,7 +511,7 @@ class HedgedAdapter(BaseAdapter):
                     try:
                         chunk = primary_next_task.result()
                         primary_buffer.append(chunk)
-                        primary_content = _has_non_empty_content(chunk)
+                        primary_content = has_non_empty_content(chunk)
                         if primary_content:
                             _record_first_content_ttft(self.primary, schedule_start)
                         primary_buffer_bytes += _chunk_buffer_size(chunk)
@@ -529,7 +530,7 @@ class HedgedAdapter(BaseAdapter):
                         self.event_sink.record_failure(
                             primary_endpoint, reason=e.__class__.__name__, exc=e
                         )
-                        self.failed_attempts.append(_failed_attempt(self.primary, e))
+                        self.failed_attempts.append(failed_attempt(self.primary, e))
                         # Start backup immediately if not already running.
                         if not backup_started:
                             if hedge_timer_task is not None:
@@ -548,7 +549,7 @@ class HedgedAdapter(BaseAdapter):
                     try:
                         chunk = backup_next_task.result()
                         backup_buffer.append(chunk)
-                        backup_content = _has_non_empty_content(chunk)
+                        backup_content = has_non_empty_content(chunk)
                         if backup_content:
                             _record_first_content_ttft(self.backup, backup_start)
                         backup_buffer_bytes += _chunk_buffer_size(chunk)
@@ -565,7 +566,7 @@ class HedgedAdapter(BaseAdapter):
                             self.event_sink.record_failure(
                                 endpoint, reason=e.__class__.__name__, exc=e
                             )
-                            self.failed_attempts.append(_failed_attempt(self.backup, e))
+                            self.failed_attempts.append(failed_attempt(self.backup, e))
                         backup_next_task = None
 
                 # Decide winner.
@@ -616,13 +617,13 @@ class HedgedAdapter(BaseAdapter):
                         self.event_sink.record_failure(
                             primary_endpoint, reason=exc.__class__.__name__, exc=exc
                         )
-                        self.failed_attempts.append(_failed_attempt(self.primary, exc))
+                        self.failed_attempts.append(failed_attempt(self.primary, exc))
                     if backup_started and backup_next_task is not None:
                         endpoint = backup_endpoint or _endpoint_id_from_adapter(self.backup)
                         self.event_sink.record_failure(
                             endpoint, reason=exc.__class__.__name__, exc=exc
                         )
-                        self.failed_attempts.append(_failed_attempt(self.backup, exc))
+                        self.failed_attempts.append(failed_attempt(self.backup, exc))
                     raise exc
 
                 # No content yet; continue pulling from active streams.
@@ -712,22 +713,7 @@ def _first_checkpoint(checkpoints: Sequence[float]) -> float:
     return normalized[0] if normalized else 0.0
 
 
-def _provider_name_from_adapter(adapter: BaseAdapter | None) -> str:
-    if adapter is None:
-        return "unknown-backup"
-    return str(adapter.config.provider)
-
-
 def _endpoint_id_from_adapter(adapter: BaseAdapter | None) -> str:
     if adapter is None:
         return "unknown-backup"
     return str(endpoint_id_for_adapter(adapter))
-
-
-def _failed_attempt(adapter: BaseAdapter | None, exc: BaseException) -> dict[str, str]:
-    return {
-        "provider": _provider_name_from_adapter(adapter),
-        "endpoint_id": _endpoint_id_from_adapter(adapter),
-        "error_type": exc.__class__.__name__,
-        "error": str(exc),
-    }

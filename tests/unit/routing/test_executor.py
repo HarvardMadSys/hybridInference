@@ -8,17 +8,22 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+import routing.executor as executor_module
 from routing.executor import (
     AllCircuitsOpenError,
     ProviderPinError,
     RouteConfig,
     RouteExecutor,
-    _has_non_empty_content,
 )
+from routing.streaming import has_non_empty_content
 from serving.adapters.base import BaseAdapter, ModelConfig
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+
+def test_legacy_content_helper_alias_points_to_public_helper():
+    assert executor_module._has_non_empty_content is has_non_empty_content
 
 
 def _cfg(mid: str, provider: str = "p") -> ModelConfig:
@@ -372,7 +377,7 @@ def test_route_selection_performance():
 
 
 # ---------------------------------------------------------------------------
-# _has_non_empty_content tests
+# has_non_empty_content tests
 # ---------------------------------------------------------------------------
 
 
@@ -381,11 +386,11 @@ class TestHasNonEmptyContent:
 
     def test_text_content(self):
         chunk = 'data: {"choices": [{"delta": {"content": "hello"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_empty_content(self):
         chunk = 'data: {"choices": [{"delta": {"content": ""}}]}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
     def test_tool_calls_delta(self):
         """tool_calls in delta should be treated as content (blocks stream fallback)."""
@@ -393,37 +398,37 @@ class TestHasNonEmptyContent:
             'data: {"choices": [{"delta": {"tool_calls": '
             '[{"index": 0, "function": {"arguments": "{\\"x\\": 1}"}}]}}]}\n\n'
         )
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_reasoning_content_delta(self):
         """reasoning_content should be treated as output for streaming TTFT/race gates."""
         chunk = 'data: {"choices": [{"delta": {"reasoning_content": "thinking"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_reasoning_delta(self):
         """Some providers use delta.reasoning instead of delta.reasoning_content."""
         chunk = 'data: {"choices": [{"delta": {"reasoning": "thinking"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_thinking_delta(self):
         """The real-eval transport also treats delta.thinking as output."""
         chunk = 'data: {"choices": [{"delta": {"thinking": "thinking"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_empty_tool_calls(self):
         chunk = 'data: {"choices": [{"delta": {"tool_calls": []}}]}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
     def test_done_sentinel(self):
-        assert _has_non_empty_content("data: [DONE]\n\n") is False
+        assert has_non_empty_content("data: [DONE]\n\n") is False
 
     def test_no_choices(self):
         chunk = 'data: {"choices": []}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
     def test_null_delta(self):
         chunk = 'data: {"choices": [{"delta": {}}]}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
 
 # ---------------------------------------------------------------------------

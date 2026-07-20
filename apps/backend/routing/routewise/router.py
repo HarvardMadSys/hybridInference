@@ -49,13 +49,9 @@ if TYPE_CHECKING:
     from .config import RouteWiseConfig
 
 from routing.endpoints import endpoint_id_for_adapter
-from routing.routers import (
-    BaseRouter,
-    RoutingObservation,
-    _failed_attempt,
-    _has_non_empty_content,
-    _routing_chunk,
-)
+from routing.routers import BaseRouter, RoutingObservation
+from routing.streaming import has_non_empty_content
+from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -864,7 +860,7 @@ class RouteWiseRouter(BaseRouter):
         )
         try:
             async for chunk in stream:
-                if _has_non_empty_content(chunk):
+                if has_non_empty_content(chunk):
                     return (time.perf_counter() - start) * 1000.0
         finally:
             aclose = getattr(stream, "aclose", None)
@@ -2617,7 +2613,7 @@ class RouteWiseRouter(BaseRouter):
                             # user.
                             exc=exc,
                         )
-                    attempt = _failed_attempt(primary, exc)
+                    attempt = failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
                         exc
@@ -2690,7 +2686,7 @@ class RouteWiseRouter(BaseRouter):
 
                 last_attempted = primary
                 try:
-                    yield _routing_chunk(
+                    yield routing_chunk(
                         primary,
                         fallback=bool(failed_attempts),
                         failed_attempts=failed_attempts,
@@ -2720,11 +2716,11 @@ class RouteWiseRouter(BaseRouter):
                             routing["fallback_policy"] = "routewise_resolve"
                             routing["failed_attempts"] = failed_attempts
                         self._attach_decision_info(routing, decision_info)
-                        routing_chunk = {
+                        decision_routing_chunk = {
                             "choices": [],
                             "_routing": routing,
                         }
-                        yield f"data: {json.dumps(routing_chunk)}\n\n"
+                        yield f"data: {json.dumps(decision_routing_chunk)}\n\n"
 
                     if done_chunk:
                         yield done_chunk
@@ -2750,7 +2746,7 @@ class RouteWiseRouter(BaseRouter):
                             # user.
                             exc=exc,
                         )
-                    attempt = _failed_attempt(primary, exc)
+                    attempt = failed_attempt(primary, exc)
                     failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
                     if (
                         chunks_yielded

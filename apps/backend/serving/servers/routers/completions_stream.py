@@ -95,9 +95,9 @@ def _is_empty_completion(response_for_db: dict[str, Any]) -> bool:
     Some upstreams occasionally return a well-formed 200 stream that ends
     with an empty message and finish_reason "stop" -- no exception, but
     nothing for the user either (seen on zai, minimax, and local sglang
-    routes). Mirrors ``_has_non_empty_content``'s definition of "started
-    output" (content, reasoning, or tool_calls) so a stream that never
-    trips that check is also flagged here.
+    routes). Mirrors ``has_non_empty_content``'s definition of "started output"
+    (content, reasoning, or tool_calls) so a stream that never trips that check
+    is also flagged here.
     """
     message = (response_for_db.get("choices") or [{}])[0].get("message") or {}
     return not (

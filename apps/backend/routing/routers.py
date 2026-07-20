@@ -9,7 +9,6 @@ Provides:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import random
 import threading
@@ -25,6 +24,8 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
+from routing.streaming import has_non_empty_content
+from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -204,90 +205,6 @@ AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
 
-def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
-    """Return fallback-attempt telemetry."""
-    return {
-        "provider": adapter.config.provider,
-        "endpoint_id": endpoint_id_for_adapter(adapter),
-        "error_type": exc.__class__.__name__,
-        "error": str(exc),
-    }
-
-
-def _routing_chunk(
-    adapter: BaseAdapter,
-    *,
-    fallback: bool = False,
-    failed_attempts: list[dict[str, str]] | None = None,
-) -> str:
-    """Build a synthetic SSE chunk carrying ``_routing`` metadata for streaming.
-
-    Mirrors the ``resp["_routing"]`` injection used by ``chat_completion`` so
-    the ``completions`` router can recover the actual upstream provider,
-    base_url, and endpoint_id during streaming. Without this, the request
-    context's ``provider`` (set inside ``_execute_stream_adapter``) is
-    invisible to the parent coroutine when the adapter stream is consumed
-    via an ``asyncio.create_task`` reader, and api_logs end up with
-    ``provider="router"`` and ``cost_usd=NULL``.
-
-    The chunk is emitted before any adapter chunks so the completions router
-    sees routing info on the very first iteration. ``sanitize_chunk`` pops
-    ``_routing`` before forwarding to the client, so users never see this
-    field on the wire.
-    """
-    routing: dict[str, Any] = {
-        "provider": adapter.config.provider,
-        "base_url": adapter.config.base_url,
-        "endpoint_id": getattr(adapter.config, "endpoint_id", None),
-    }
-    if fallback:
-        routing["fallback"] = True
-    if failed_attempts:
-        routing["failed_attempts"] = failed_attempts
-    return f"data: {json.dumps({'choices': [], '_routing': routing})}\n\n"
-
-
-def _has_non_empty_content(chunk: Any) -> bool:
-    r"""Return True if the SSE ``chunk`` carries a non-empty delta.
-
-    The streaming protocol emits lines like ``"data: {json}\n\n"`` and a
-    terminal ``"data: [DONE]\n\n"``. We consider a chunk as having started
-    output when delta.content, delta.reasoning_content, delta.reasoning, or
-    delta.thinking is a non-empty string **or** delta.tool_calls is a non-empty
-    list.
-    """
-    try:
-        if not isinstance(chunk, str | bytes):
-            return True  # Unknown type; assume it carries content
-        s = chunk.decode() if isinstance(chunk, bytes) else chunk
-        if "[DONE]" in s:
-            return False
-        prefix = "data: "
-        if not s.startswith(prefix):
-            return True  # Non-standard; assume content
-        import json as _json
-
-        payload = s[len(prefix) :].strip()
-        obj = _json.loads(payload)
-        choices = obj.get("choices") or []
-        if not choices:
-            return False
-        delta = choices[0].get("delta") or {}
-        content = delta.get("content")
-        if isinstance(content, str) and len(content) > 0:
-            return True
-        reasoning = (
-            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
-        )
-        if isinstance(reasoning, str) and len(reasoning) > 0:
-            return True
-        tool_calls = delta.get("tool_calls")
-        return isinstance(tool_calls, list) and len(tool_calls) > 0
-    except Exception:
-        # Be conservative and treat as content to avoid missing TTFT altogether
-        return True
-
-
 # ============================================================================
 # BaseRouter
 # ============================================================================
@@ -406,7 +323,7 @@ class BaseRouter:
             self._ensure_health(endpoint_id)
             first = True
             async for chunk in adapter.stream_chat_completion(messages, **params):
-                if first and _has_non_empty_content(chunk):
+                if first and has_non_empty_content(chunk):
                     first = False
                     # A HedgedAdapter records each leg's outcome in its
                     # registry under the leg's endpoint_id; recording here
@@ -692,7 +609,7 @@ class FixedRouter(BaseRouter):
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [_failed_attempt(primary, primary_error)]
+            failed_attempts = [failed_attempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
@@ -738,7 +655,7 @@ class FixedRouter(BaseRouter):
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
                     )
-                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
+                    failed_attempts.append(failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error
 
@@ -780,11 +697,11 @@ class FixedRouter(BaseRouter):
                 # to the parent coroutine when the stream is consumed via an
                 # asyncio.create_task reader, and api_logs ends up with
                 # provider="router" and cost_usd=NULL.
-                yield _routing_chunk(primary)
+                yield routing_chunk(primary)
                 first = True
                 primary_endpoint_id = endpoint_id_for_adapter(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
-                    if first and _has_non_empty_content(chunk):
+                    if first and has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
                         # Consider first non-empty token as a success signal for availability.
@@ -799,12 +716,12 @@ class FixedRouter(BaseRouter):
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [_failed_attempt(primary, primary_error)]
+            failed_attempts = [failed_attempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
             # set resp["_routing"] on success, so the consumer instead tracks
-            # provider via in-band _routing_chunk SSE events -- but those are
+            # provider via in-band routing_chunk SSE events -- but those are
             # emitted before each fallback attempt even starts (so req_ctx is
             # visible across the asyncio.create_task reader boundary), and
             # the consumer keeps overwriting its provider with the latest one
@@ -842,7 +759,7 @@ class FixedRouter(BaseRouter):
                     continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        yield _routing_chunk(
+                        yield routing_chunk(
                             adapter,
                             fallback=True,
                             failed_attempts=failed_attempts,
@@ -850,7 +767,7 @@ class FixedRouter(BaseRouter):
                         first = True
                         adapter_endpoint_id = endpoint_id_for_adapter(adapter)
                         async for chunk in adapter.stream_chat_completion(messages, **params):
-                            if first and _has_non_empty_content(chunk):
+                            if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
                             yield chunk
@@ -863,7 +780,7 @@ class FixedRouter(BaseRouter):
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
                     )
-                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
+                    failed_attempts.append(failed_attempt(adapter, fallback_error))
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet
