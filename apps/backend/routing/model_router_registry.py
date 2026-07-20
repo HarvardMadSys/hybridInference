@@ -19,6 +19,7 @@ from routing.strategies import build_router
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from routing.dependencies import RouterBuildDependencies
     from routing.routers import BaseRouter
 
 logger = get_logger(__name__)
@@ -34,6 +35,10 @@ class ModelRouterRegistry:
             to ``default_router_name`` with empty params.
         default_router_name: Strategy name used when a model omits
             ``router``.  Must be a registered strategy (e.g. ``"fixed"``).
+        alias_to_model: Optional alias-to-canonical-model mapping used to
+            collapse stateful routers onto one cached instance.
+        dependencies: Optional process-scoped collaborators propagated to
+            every router built by this registry.
     """
 
     def __init__(
@@ -41,12 +46,14 @@ class ModelRouterRegistry:
         models_config: dict[str, dict[str, Any]],
         default_router_name: str = "fixed",
         alias_to_model: dict[str, str] | None = None,
+        dependencies: RouterBuildDependencies | None = None,
     ) -> None:
         self._configs = models_config
         self._default = default_router_name
         self._cache: dict[str, BaseRouter] = {}
         self._alias_to_model = dict(alias_to_model or {})
         self._router_overrides: dict[str, str] = {}
+        self._dependencies = dependencies
         # The shared FixedRouter is bound after construction (see
         # bind_fixed_router); RouteWise needs it for classification, and
         # the "fixed" strategy returns this exact instance so models with
@@ -71,6 +78,15 @@ class ModelRouterRegistry:
         model that resolves to the "fixed" strategy or whose strategy
         late-binds to the FixedRouter.
         """
+        if self._dependencies is not None:
+            # BaseRouter does not expose its registry publicly yet.  Keep this
+            # compatibility check at the composition boundary so a mismatched
+            # FixedRouter cannot silently split circuit/health state.
+            fixed_health_registry = getattr(fixed_router, "_health_registry", None)
+            if fixed_health_registry is not self._dependencies.health_registry:
+                raise ValueError(
+                    "bound FixedRouter must use RouterBuildDependencies.health_registry"
+                )
         self._shared_fixed = fixed_router
 
     def get_router(self, model_id: str) -> BaseRouter:
@@ -104,10 +120,14 @@ class ModelRouterRegistry:
         # side effects so a bad router_params block surfaces at boot, then
         # discard the throwaway router.
         if name == "fixed" and self._shared_fixed is not None:
-            build_router(name, params)  # validate params; result discarded
+            build_router(
+                name,
+                params,
+                dependencies=self._dependencies,
+            )  # validate params; result discarded
             router: BaseRouter = self._shared_fixed
         else:
-            router = build_router(name, params)
+            router = build_router(name, params, dependencies=self._dependencies)
             # Late-bind FixedRouter for RouteWise (and any future late-bound
             # strategy that exposes attach_fixed_router).
             attach = getattr(router, "attach_fixed_router", None)
@@ -148,7 +168,7 @@ class ModelRouterRegistry:
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         configured_name = str(cfg.get("router") or self._default)
         params = (cfg.get("router_params") or {}) if strategy == configured_name else {}
-        build_router(strategy, params)
+        build_router(strategy, params, dependencies=self._dependencies)
 
     def set_router_override(self, model_id: str, strategy: str) -> None:
         """Override a model's router strategy at runtime and clear cached routers."""

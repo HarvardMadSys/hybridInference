@@ -9,6 +9,79 @@ import pytest
 
 @pytest.mark.unit
 class TestModelRouterRegistry:
+    def test_propagates_dependencies_and_rejects_mismatched_fixed_router(self):
+        from routing.dependencies import RouterBuildDependencies
+        from routing.endpoint_health import EndpointHealthRegistry
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+
+        health_registry = EndpointHealthRegistry()
+        dependencies = RouterBuildDependencies(health_registry=health_registry)
+        shared_fixed = FixedRouter(health_registry=health_registry)
+        reg = ModelRouterRegistry(
+            models_config={"rw": {"router": "routewise"}},
+            dependencies=dependencies,
+        )
+
+        with pytest.raises(ValueError, match="must use RouterBuildDependencies"):
+            reg.bind_fixed_router(FixedRouter())
+
+        reg.bind_fixed_router(shared_fixed)
+        routewise = reg.get_router("rw")
+
+        assert routewise._health_registry is health_registry
+        assert routewise._health_registry is shared_fixed._health_registry
+
+    def test_validate_router_strategy_propagates_dependencies(self, monkeypatch):
+        import routing.model_router_registry as registry_module
+        from routing.dependencies import RouterBuildDependencies
+        from routing.endpoint_health import EndpointHealthRegistry
+        from routing.model_router_registry import ModelRouterRegistry
+
+        dependencies = RouterBuildDependencies(
+            health_registry=EndpointHealthRegistry(),
+        )
+        received_dependencies = []
+
+        def _build_router(name, params, *, dependencies=None):
+            received_dependencies.append(dependencies)
+            return object()
+
+        monkeypatch.setattr(registry_module, "build_router", _build_router)
+        reg = ModelRouterRegistry(models_config={"model": {}}, dependencies=dependencies)
+
+        reg.validate_router_strategy("model", "fixed")
+
+        assert received_dependencies == [dependencies]
+
+    def test_runtime_rebuilt_routewise_router_keeps_shared_health_state(self):
+        from routing.dependencies import RouterBuildDependencies
+        from routing.endpoint_health import EndpointHealthRegistry
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+
+        health_registry = EndpointHealthRegistry()
+        dependencies = RouterBuildDependencies(health_registry=health_registry)
+        fixed = FixedRouter(health_registry=health_registry)
+        reg = ModelRouterRegistry(
+            models_config={"model": {"router": "routewise"}},
+            dependencies=dependencies,
+        )
+        reg.bind_fixed_router(fixed)
+
+        first_routewise = reg.get_router("model")
+        health_registry.record_success("shared:endpoint")
+
+        reg.set_router_override("model", "fixed")
+        assert reg.get_router("model") is fixed
+
+        reg.set_router_override("model", "routewise")
+        rebuilt_routewise = reg.get_router("model")
+
+        assert rebuilt_routewise is not first_routewise
+        assert rebuilt_routewise._health_registry is health_registry
+        assert "shared:endpoint" in rebuilt_routewise.get_provider_status()
+
     def test_get_router_returns_fixed_for_unspecified_model(self):
         """Model without 'router:' falls back to default_router_name and
         returns the bound shared FixedRouter instance (not a fresh one)."""

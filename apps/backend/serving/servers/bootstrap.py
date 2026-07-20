@@ -16,6 +16,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from routing.dependencies import RouterBuildDependencies
+from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
@@ -457,7 +459,11 @@ async def initialize() -> AppServices:
             "the flag was removed; fallback routing is now always on."
         )
 
-    router = RouteExecutor()
+    endpoint_health_registry = EndpointHealthRegistry()
+    router_dependencies = RouterBuildDependencies(
+        health_registry=endpoint_health_registry,
+    )
+    router = RouteExecutor(health_registry=endpoint_health_registry)
 
     settings = get_settings()
     db_logger = _init_db_logger()
@@ -616,6 +622,7 @@ async def initialize() -> AppServices:
         models_config=models_config,
         default_router_name=default_router_name,
         alias_to_model=alias_to_model,
+        dependencies=router_dependencies,
     )
     model_router_registry.bind_fixed_router(router)
 

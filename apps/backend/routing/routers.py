@@ -633,9 +633,15 @@ class FixedRouter(BaseRouter):
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
+                endpoint_id = endpoint_id_for_adapter(adapter)
+                # Fallback is still automatic routing, so it must honor the
+                # same shared circuit eligibility as the initial selection.
+                # Explicit pinning returned above and remains the sole circuit
+                # override.
+                if not self._health_registry.allow_request(endpoint_id):
+                    continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        endpoint_id = endpoint_id_for_adapter(adapter)
                         self._ensure_health(endpoint_id)
                         resp = await adapter.chat_completion(messages, **params)
                         self._on_success(endpoint_id)
@@ -650,7 +656,7 @@ class FixedRouter(BaseRouter):
                     return resp
                 except Exception as fallback_error:
                     self._on_failure(
-                        endpoint_id_for_adapter(adapter),
+                        endpoint_id,
                         reason="chat_exception",
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
@@ -757,6 +763,12 @@ class FixedRouter(BaseRouter):
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
+                adapter_endpoint_id = endpoint_id_for_adapter(adapter)
+                # Synthetic routing chunks are emitted only after circuit
+                # admission so an open automatic fallback is never exposed as
+                # an attempted upstream. Explicit pinning returned above.
+                if not self._health_registry.allow_request(adapter_endpoint_id):
+                    continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
                         yield routing_chunk(
@@ -765,7 +777,6 @@ class FixedRouter(BaseRouter):
                             failed_attempts=failed_attempts,
                         )
                         first = True
-                        adapter_endpoint_id = endpoint_id_for_adapter(adapter)
                         async for chunk in adapter.stream_chat_completion(messages, **params):
                             if first and has_non_empty_content(chunk):
                                 first = False

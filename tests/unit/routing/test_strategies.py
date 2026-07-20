@@ -29,6 +29,33 @@ def test_register_strategy_adds_entry():
 
 
 @pytest.mark.unit
+def test_dependency_aware_factory_rejects_params_only_strategy_clearly():
+    from pydantic import BaseModel
+
+    from routing.dependencies import RouterBuildDependencies
+    from routing.endpoint_health import EndpointHealthRegistry
+    from routing.strategies import _STRATEGIES, build_router, register_strategy
+
+    class _Params(BaseModel):
+        model_config = {"extra": "forbid"}
+
+    class _ParamsOnlyRouter:
+        def __init__(self, params=None):
+            self.params = params
+
+    name = "__test_params_only_with_dependencies__"
+    register_strategy(name)((_ParamsOnlyRouter, _Params))
+    dependencies = RouterBuildDependencies(
+        health_registry=EndpointHealthRegistry(),
+    )
+    try:
+        with pytest.raises(TypeError, match=r"must accept health_registry="):
+            build_router(name, {}, dependencies=dependencies)
+    finally:
+        _STRATEGIES.pop(name, None)
+
+
+@pytest.mark.unit
 def test_build_router_unknown_raises_with_known_list():
     from routing.strategies import build_router
 
@@ -74,6 +101,22 @@ def test_build_fixed_returns_fixed_router():
 
     router = build_router("fixed", {"local_fraction": 0.7})
     assert isinstance(router, FixedRouter)
+
+
+@pytest.mark.unit
+def test_build_router_injects_explicit_shared_dependencies():
+    from routing.dependencies import RouterBuildDependencies
+    from routing.endpoint_health import EndpointHealthRegistry
+    from routing.strategies import build_router
+
+    health_registry = EndpointHealthRegistry()
+    dependencies = RouterBuildDependencies(health_registry=health_registry)
+
+    fixed = build_router("fixed", {}, dependencies=dependencies)
+    routewise = build_router("routewise", {}, dependencies=dependencies)
+
+    assert fixed._health_registry is health_registry
+    assert routewise._health_registry is health_registry
 
 
 @pytest.mark.unit

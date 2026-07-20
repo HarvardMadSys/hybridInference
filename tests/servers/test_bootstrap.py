@@ -39,6 +39,11 @@ class TestBootstrapInitialization:
             assert services.db_logger is None  # Disabled in mock_env
             assert services.routing_manager is None
             assert services.model_visibility_resolver is None
+            assert services.model_router_registry is not None
+            assert (
+                services.model_router_registry._dependencies.health_registry
+                is services.router._health_registry
+            )
 
     @pytest.mark.asyncio
     async def test_initialize_with_database(self, mock_env, monkeypatch):
@@ -206,6 +211,9 @@ models:
         # The alias must not split off a second RouteWise instance.
         assert alias is canonical
         assert alias.concurrency_pools is canonical.concurrency_pools
+        # Startup composes Fixed and RouteWise around one process-scoped
+        # registry so circuit/availability state cannot split by strategy.
+        assert canonical._health_registry is services.router._health_registry
 
     @pytest.mark.asyncio
     async def test_initialize_constructs_user_concurrency_limiter(self, mock_env):
