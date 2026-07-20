@@ -68,7 +68,7 @@ class ProviderEventSink(Protocol):
 class HedgedAdapter(BaseAdapter):
     """Composite adapter that races a primary against a delayed backup.
 
-    BaseRouter sees HedgedAdapter as a single opaque BaseAdapter.  Internally
+    RouteWiseRouter sees HedgedAdapter as a single opaque BaseAdapter. Internally
     it launches the primary immediately and evaluates checkpoint backup
     selectors until one returns a concrete backup dispatch. The first provider
     to produce a result wins; the loser is cancelled.
@@ -86,7 +86,7 @@ class HedgedAdapter(BaseAdapter):
     """
 
     # The registry receives every leg's outcome (including the winner's
-    # success) under its endpoint_id. BaseRouter checks this marker to skip its
+    # success) under its endpoint_id. RouteWiseRouter checks this marker to skip its
     # own post-execution success recording, which would otherwise double-count
     # the winning endpoint (inflated EWMA, double breaker reset).
     reports_leg_outcomes = True
@@ -116,7 +116,7 @@ class HedgedAdapter(BaseAdapter):
                     "is not provided"
                 )
 
-        super().__init__(primary.config)  # BaseRouter reads primary's config
+        super().__init__(primary.config)  # RouteWise execution reads this config.
         self.primary = primary
         self.backup = backup
         self.hedge_threshold_sec = (
@@ -197,7 +197,7 @@ class HedgedAdapter(BaseAdapter):
         """Race primary against delayed backup for non-streaming completion.
 
         When backup wins, ``self.config`` is swapped to the backup adapter's
-        config so that BaseRouter reads the real winner's provider/endpoint_id
+        config so that RouteWise execution reads the real winner's provider/endpoint_id
         for ``_routing`` metadata and ``req_ctx``.
         """
         primary_endpoint = _endpoint_id_from_adapter(self.primary)
@@ -294,7 +294,7 @@ class HedgedAdapter(BaseAdapter):
                             await _safe_await_task(backup_task)
                         else:
                             self.event_sink.record_success(_endpoint_id_from_adapter(self.backup))
-                            # Swap config so BaseRouter attributes to real winner.
+                            # Swap config so RouteWise attributes to the real winner.
                             assert self.backup is not None
                             self.config = self.backup.config
                             self.backup_won = True
@@ -587,7 +587,7 @@ class HedgedAdapter(BaseAdapter):
                 elif backup_has_content:
                     endpoint = backup_endpoint or _endpoint_id_from_adapter(self.backup)
                     self.event_sink.record_success(endpoint)
-                    # Swap config so BaseRouter attributes to real winner.
+                    # Swap config so RouteWise attributes to the real winner.
                     assert self.backup is not None
                     self.config = self.backup.config
                     self.backup_won = True

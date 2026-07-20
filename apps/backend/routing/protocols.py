@@ -1,0 +1,43 @@
+"""Structural interfaces implemented by serving routers."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from routing.routers import RoutingObservation
+
+__all__ = ["RouterProtocol"]
+
+
+@runtime_checkable
+class RouterProtocol(Protocol):
+    """Common request and observation interface for serving routers."""
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Route a non-streaming chat completion request."""
+        ...
+
+    def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncIterator[Any]:
+        """Route a streaming chat completion request."""
+        ...
+
+    def record_observation(self, obs: RoutingObservation) -> None:
+        """Record a completed request for routers with online state."""
+        ...
+
+    def get_provider_status(self) -> dict[str, dict[str, Any]]:
+        """Return endpoint health and circuit state."""
+        ...

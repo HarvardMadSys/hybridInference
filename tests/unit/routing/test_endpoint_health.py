@@ -4,7 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
-from routing.routers import FixedRouter
+from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 
@@ -80,6 +80,27 @@ def test_router_registry_defaults_are_isolated_and_explicit_injection_is_honored
         RouteWiseRouter(config=RouteWiseConfig(), health_registry=injected)._health_registry
         is injected
     )
+
+
+def test_fixed_router_record_observation_is_an_explicit_noop():
+    endpoint_id = "openai:api.example.com:443"
+    fixed = FixedRouter()
+    fixed._on_success(endpoint_id)
+    baseline = fixed.get_provider_status()
+
+    result = fixed.record_observation(
+        RoutingObservation(
+            model_id="model",
+            endpoint_id=endpoint_id,
+            ttft_ms=1.0,
+            total_latency_ms=2.0,
+            token_count=3,
+            success=False,
+        )
+    )
+
+    assert result is None
+    assert fixed.get_provider_status() == baseline
 
 
 async def test_registry_instances_are_isolated(monkeypatch):

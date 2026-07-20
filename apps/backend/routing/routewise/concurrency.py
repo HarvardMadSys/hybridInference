@@ -14,7 +14,7 @@ Congestion pricing follows the binary model:
 
 Thread safety: all reads and writes of mutable state (``_limit``, ``_active``,
 and the observability counters) are protected by a ``threading.Lock``.  Critical
-sections are short (no awaits held), matching the ``BaseRouter._lock``
+sections are short (no awaits held), matching the router-owned lock
 pattern used elsewhere in the codebase.
 """
 

@@ -1578,6 +1578,53 @@ class TestEnvelopeDonorBootstrap:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("chat", "stream"))
+async def test_routewise_owned_execution_sets_context_and_ensures_before_error(operation):
+    from serving.utils import context as req_ctx
+
+    endpoint_id = f"test-model:context-{operation}"
+    adapter = _make_adapter(
+        provider="context-provider",
+        endpoint_id=endpoint_id,
+    )
+    adapter.reports_leg_outcomes = False
+    router = RouteWiseRouter(config=RouteWiseConfig(db_bootstrap_enabled=False))
+    seen_contexts: list[dict[str, Any]] = []
+    error = _StatusError(400, "bad request")
+
+    async def _failed_chat(messages, **params):
+        seen_contexts.append(dict(req_ctx.get()))
+        raise error
+
+    async def _failed_stream(messages, **params):
+        seen_contexts.append(dict(req_ctx.get()))
+        raise error
+        yield  # pragma: no cover - marks this as an async generator
+
+    adapter.chat_completion = _failed_chat
+    adapter.stream_chat_completion = _failed_stream
+
+    with req_ctx.push(user_id="context-test-user"):
+        outer_context = dict(req_ctx.get())
+        with pytest.raises(_StatusError, match="bad request"):
+            if operation == "chat":
+                await router._execute_adapter(adapter, "test-model", [])
+            else:
+                async for _ in router._execute_stream_adapter(adapter, "test-model", []):
+                    pass
+        assert req_ctx.get() == outer_context
+
+    assert seen_contexts[-1]["model"] == "test-model"
+    assert seen_contexts[-1]["provider"] == "context-provider"
+    assert seen_contexts[-1]["user_id"] == "context-test-user"
+    assert router.get_provider_status()[endpoint_id] == {
+        "availability": 1.0,
+        "circuit_state": "closed",
+    }
+
+
 def _make_router_with_conc_and_api(
     config: RouteWiseConfig | None = None,
     prompt_price: str = "3.0",
@@ -1922,18 +1969,15 @@ class TestRouteWiseSCLifecycle:
         assert selected is conc_adapter
         assert _conc_pool(router).active == 1
 
-        # Mock super()._execute_adapter.
-        with patch.object(
-            type(router).__mro__[1],  # BaseRouter
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            return_value={"choices": [{"message": {"content": "ok"}}]},
-        ):
-            await router._execute_adapter(
-                conc_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            )
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}}]}
+        )
+        await router._execute_adapter(
+            conc_adapter,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
@@ -1948,20 +1992,42 @@ class TestRouteWiseSCLifecycle:
         assert selected is conc_adapter
         assert _conc_pool(router).active == 1
 
-        with (
-            patch.object(
-                type(router).__mro__[1],
-                "_execute_adapter",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("provider error"),
-            ),
-            pytest.raises(RuntimeError, match="provider error"),
-        ):
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.chat_completion = AsyncMock(side_effect=RuntimeError("provider error"))
+        with pytest.raises(RuntimeError, match="provider error"):
             await router._execute_adapter(
                 conc_adapter,
                 "test-model",
                 [{"role": "user", "content": "hi"}],
             )
+        assert _conc_pool(router).active == 0
+
+    @pytest.mark.parametrize("operation", ("chat", "stream"))
+    @pytest.mark.asyncio
+    async def test_slot_released_when_endpoint_resolution_raises(self, operation):
+        """Capacity release still runs when endpoint metadata is malformed."""
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
+
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        assert selected is conc_adapter
+        assert _conc_pool(router).active == 1
+
+        with (
+            patch(
+                "routing.routewise.router.endpoint_id_for_adapter",
+                side_effect=RuntimeError("invalid endpoint metadata"),
+            ),
+            pytest.raises(RuntimeError, match="invalid endpoint metadata"),
+        ):
+            if operation == "chat":
+                await router._execute_adapter(conc_adapter, "test-model", [])
+            else:
+                async for _ in router._execute_stream_adapter(conc_adapter, "test-model", []):
+                    pass
+
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
@@ -1976,15 +2042,9 @@ class TestRouteWiseSCLifecycle:
         assert selected is conc_adapter
         assert _conc_pool(router).active == 1
 
-        with (
-            patch.object(
-                type(router).__mro__[1],
-                "_execute_adapter",
-                new_callable=AsyncMock,
-                side_effect=asyncio.CancelledError(),
-            ),
-            pytest.raises(asyncio.CancelledError),
-        ):
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.chat_completion = AsyncMock(side_effect=asyncio.CancelledError())
+        with pytest.raises(asyncio.CancelledError):
             await router._execute_adapter(
                 conc_adapter,
                 "test-model",
@@ -2008,19 +2068,16 @@ class TestRouteWiseSCLifecycle:
             yield {"choices": [{"delta": {"content": "hello"}}]}
             yield {"choices": [{"delta": {"content": " world"}}]}
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_stream_adapter",
-            side_effect=_fake_stream,
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.stream_chat_completion = _fake_stream
+        chunks = []
+        async for chunk in router._execute_stream_adapter(
+            conc_adapter,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
         ):
-            chunks = []
-            async for chunk in router._execute_stream_adapter(
-                conc_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            ):
-                chunks.append(chunk)
-            assert len(chunks) == 2
+            chunks.append(chunk)
+        assert len(chunks) == 2
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
@@ -2037,17 +2094,15 @@ class TestRouteWiseSCLifecycle:
         assert selected is api_adapter
         assert _conc_pool(router).active == 1  # From manual acquire.
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            return_value={"choices": [{"message": {"content": "ok"}}]},
-        ):
-            await router._execute_adapter(
-                api_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            )
+        api_adapter.reports_leg_outcomes = False
+        api_adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}}]}
+        )
+        await router._execute_adapter(
+            api_adapter,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
         # conc_mgr unchanged -- S_A doesn't release.
         assert _conc_pool(router).active == 1
 
@@ -2069,17 +2124,15 @@ class TestRouteWiseSCLifecycle:
         selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
         assert selected is quota_adapter
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            return_value={"choices": [{"message": {"content": "ok"}}]},
-        ):
-            await router._execute_adapter(
-                quota_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            )
+        quota_adapter.reports_leg_outcomes = False
+        quota_adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}}]}
+        )
+        await router._execute_adapter(
+            quota_adapter,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
         # conc_mgr unchanged -- S_Q doesn't release.
         assert _conc_pool(router).active == 4
 

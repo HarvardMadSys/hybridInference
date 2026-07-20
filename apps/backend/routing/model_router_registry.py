@@ -20,13 +20,14 @@ from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from routing.dependencies import RouterBuildDependencies
-    from routing.routers import BaseRouter
+    from routing.protocols import RouterProtocol
+    from routing.routers import FixedRouter
 
 logger = get_logger(__name__)
 
 
 class ModelRouterRegistry:
-    """Maps ``model_id -> BaseRouter`` via per-model YAML configuration.
+    """Maps ``model_id -> RouterProtocol`` via per-model YAML configuration.
 
     Args:
         models_config: Mapping ``{model_id: per_model_dict}``.  Each
@@ -50,7 +51,7 @@ class ModelRouterRegistry:
     ) -> None:
         self._configs = models_config
         self._default = default_router_name
-        self._cache: dict[str, BaseRouter] = {}
+        self._cache: dict[str, RouterProtocol] = {}
         self._alias_to_model = dict(alias_to_model or {})
         self._router_overrides: dict[str, str] = {}
         self._dependencies = dependencies
@@ -59,9 +60,9 @@ class ModelRouterRegistry:
         # the "fixed" strategy returns this exact instance so models with
         # ``router: fixed`` dispatch through the populated routes dict
         # rather than a fresh empty FixedRouter.
-        self._shared_fixed: BaseRouter | None = None
+        self._shared_fixed: FixedRouter | None = None
 
-    def bind_fixed_router(self, fixed_router: BaseRouter) -> None:
+    def bind_fixed_router(self, fixed_router: FixedRouter) -> None:
         """Provide the shared ``FixedRouter`` for late-bound strategies.
 
         Strategies like RouteWise need a handle on the live ``FixedRouter``
@@ -79,7 +80,7 @@ class ModelRouterRegistry:
         late-binds to the FixedRouter.
         """
         if self._dependencies is not None:
-            # BaseRouter does not expose its registry publicly yet.  Keep this
+            # FixedRouter does not expose its registry publicly yet. Keep this
             # compatibility check at the composition boundary so a mismatched
             # FixedRouter cannot silently split circuit/health state.
             fixed_health_registry = getattr(fixed_router, "_health_registry", None)
@@ -89,7 +90,7 @@ class ModelRouterRegistry:
                 )
         self._shared_fixed = fixed_router
 
-    def get_router(self, model_id: str) -> BaseRouter:
+    def get_router(self, model_id: str) -> RouterProtocol:
         """Return (constructing on first call) the router for ``model_id``."""
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
         cached = self._cache.get(canonical_model_id)
@@ -125,7 +126,7 @@ class ModelRouterRegistry:
                 params,
                 dependencies=self._dependencies,
             )  # validate params; result discarded
-            router: BaseRouter = self._shared_fixed
+            router: RouterProtocol = self._shared_fixed
         else:
             router = build_router(name, params, dependencies=self._dependencies)
             # Late-bind FixedRouter for RouteWise (and any future late-bound
@@ -200,7 +201,7 @@ class ModelRouterRegistry:
         """Return ``{model_id: router_class_name}`` for every cached entry."""
         return {mid: type(r).__name__ for mid, r in self._cache.items()}
 
-    def cached_routers(self) -> list[BaseRouter]:
+    def cached_routers(self) -> list[RouterProtocol]:
         """Return cached router instances."""
         return list(self._cache.values())
 

@@ -43,13 +43,13 @@ from routewise.core import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
 
-    from routing.endpoint_health import EndpointHealthRegistry
+    from routing.routers import RoutingObservation
     from serving.adapters.base import BaseAdapter
 
     from .config import RouteWiseConfig
 
+from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
-from routing.routers import BaseRouter, RoutingObservation
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
@@ -259,7 +259,7 @@ def _configured_worker_count() -> int | None:
     return None
 
 
-class RouteWiseRouter(BaseRouter):
+class RouteWiseRouter:
     """RouteWise router.
 
     ``fixed_router.routes`` remains the source of model -> adapter mappings;
@@ -274,7 +274,9 @@ class RouteWiseRouter(BaseRouter):
         params: Any = None,
         health_registry: EndpointHealthRegistry | None = None,
     ) -> None:
-        super().__init__(health_registry=health_registry)
+        self._health_registry = (
+            health_registry if health_registry is not None else EndpointHealthRegistry()
+        )
 
         if config is None and params is not None:
             from .config import RouteWiseConfig as _RWC
@@ -339,6 +341,31 @@ class RouteWiseRouter(BaseRouter):
 
         if self.fixed_router is not None:
             self._rebuild_from_fixed_router()
+
+    def _ensure_health(self, endpoint_id: str) -> None:
+        self._health_registry.ensure(endpoint_id)
+
+    def _on_success(self, endpoint_id: str) -> None:
+        self._health_registry.record_success(endpoint_id)
+
+    def _on_failure(
+        self,
+        endpoint_id: str,
+        *,
+        reason: str = "error",
+        detail: str | None = None,
+        exc: BaseException | None = None,
+    ) -> None:
+        self._health_registry.record_failure(
+            endpoint_id,
+            reason=reason,
+            detail=detail,
+            exc=exc,
+        )
+
+    def get_provider_status(self) -> dict[str, dict[str, Any]]:
+        """Return a snapshot of provider availability and circuit state."""
+        return self._health_registry.snapshot()
 
     # ------------------------------------------------------------------
     # Lifecycle / registry binding
@@ -2491,7 +2518,17 @@ class RouteWiseRouter(BaseRouter):
         request_id = params.get("request_id")
         original_config = getattr(adapter, "config", None)
         try:
-            result = await super()._execute_adapter(adapter, model_id, messages, **params)
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                self._ensure_health(endpoint_id)
+                result = await adapter.chat_completion(messages, **params)
+                # HedgedAdapter reports every leg outcome, including the winner,
+                # directly to the shared registry. Counting the composite here
+                # would inflate availability and reset the breaker twice.
+                if not getattr(adapter, "reports_leg_outcomes", False):
+                    # A composite adapter may replace its config with the leg
+                    # that actually served, so resolve the endpoint after the call.
+                    self._on_success(endpoint_id_for_adapter(adapter))
             if (
                 getattr(adapter, "config", None) is not original_config
                 and request_id
@@ -2517,10 +2554,19 @@ class RouteWiseRouter(BaseRouter):
         request_id = params.get("request_id")
         original_config = getattr(adapter, "config", None)
         try:
-            async for chunk in super()._execute_stream_adapter(
-                adapter, model_id, messages, **params
-            ):
-                yield chunk
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                self._ensure_health(endpoint_id)
+                first = True
+                async for chunk in adapter.stream_chat_completion(messages, **params):
+                    if first and has_non_empty_content(chunk):
+                        first = False
+                        # HedgedAdapter already records the winning leg. For
+                        # other adapters, resolve the endpoint after first output
+                        # in case the adapter swapped its serving config.
+                        if not getattr(adapter, "reports_leg_outcomes", False):
+                            self._on_success(endpoint_id_for_adapter(adapter))
+                    yield chunk
         finally:
             if (
                 getattr(adapter, "config", None) is not original_config
@@ -2607,7 +2653,7 @@ class RouteWiseRouter(BaseRouter):
                             endpoint_id,
                             reason=exc.__class__.__name__,
                             detail=operator_safe_error(exc),
-                            # Pass the exception so the base router can skip the
+                            # Pass the exception so the registry can skip the
                             # breaker on a client (4xx) error — otherwise one
                             # user's bad request opens the circuit for every
                             # user.
@@ -2740,7 +2786,7 @@ class RouteWiseRouter(BaseRouter):
                             endpoint_id,
                             reason="stream_exception",
                             detail=operator_safe_error(exc),
-                            # Pass the exception so the base router can skip the
+                            # Pass the exception so the registry can skip the
                             # breaker on a client (4xx) error — otherwise one
                             # user's bad request opens the circuit for every
                             # user.

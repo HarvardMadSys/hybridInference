@@ -6,7 +6,7 @@ Each routing strategy lives in a sibling module (``fixed.py``, ``routewise.py``,
 
 ``build_router(name, params_dict)`` is the single dispatch point used by
 ``ModelRouterRegistry`` to translate a YAML ``router: <name>`` declaration
-into a concrete ``BaseRouter`` instance.
+into a concrete ``RouterProtocol`` implementation.
 
 Import-order contract:
     Strategy submodules import from ``routing.routers`` /
@@ -24,7 +24,7 @@ from routing.strategies.weight import FixedRatioStrategy
 
 if TYPE_CHECKING:
     from routing.dependencies import RouterBuildDependencies
-    from routing.routers import BaseRouter
+    from routing.protocols import RouterProtocol
 
 
 __all__ = [
@@ -88,7 +88,7 @@ def build_router(
     params: dict[str, Any] | None,
     *,
     dependencies: RouterBuildDependencies | None = None,
-) -> BaseRouter:
+) -> RouterProtocol:
     """Construct a router by strategy name + raw params dict from YAML.
 
     Args:
@@ -100,7 +100,7 @@ def build_router(
             router owns its default collaborators.
 
     Returns:
-        A configured ``BaseRouter`` instance.
+        A configured ``RouterProtocol`` implementation.
 
     Raises:
         ValueError: If ``name`` is not registered.  Error message lists all

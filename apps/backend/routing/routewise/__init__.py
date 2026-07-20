@@ -1,7 +1,7 @@
 """RouteWise cost-aware routing package.
 
 Exports:
-    RouteWiseRouter  -- BaseRouter subclass with cost-budgeted provider selection.
+    RouteWiseRouter  -- Cost-budgeted provider-selection router.
     RouteWiseConfig  -- Dataclass holding per-model policy parameters, populated
                         from each model's ``router_params`` in ``config/models.yaml``.
     ProviderType -- Enum for on-demand / quota / concurrency provider categories.

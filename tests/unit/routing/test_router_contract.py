@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from routing.protocols import RouterProtocol
 from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
@@ -91,7 +92,7 @@ def _adapter(
 @dataclass(frozen=True)
 class _RouterFactory:
     name: str
-    build: Callable[[list[_ContractAdapter]], Any]
+    build: Callable[[list[_ContractAdapter]], RouterProtocol]
 
 
 @pytest.fixture(params=("fixed", "routewise"))
@@ -122,6 +123,24 @@ def router_factory(request: pytest.FixtureRequest) -> _RouterFactory:
     if request.param == "fixed":
         return _RouterFactory(name="fixed", build=build_fixed)
     return _RouterFactory(name="routewise", build=build_routewise)
+
+
+@pytest.mark.unit
+def test_serving_routers_satisfy_structural_protocol(router_factory: _RouterFactory) -> None:
+    router = router_factory.build([_adapter("primary")])
+
+    assert isinstance(router, RouterProtocol)
+
+
+@pytest.mark.unit
+def test_base_router_is_not_public_or_in_serving_router_mro() -> None:
+    import routing
+
+    assert "BaseRouter" not in routing.__all__
+    assert not hasattr(routing, "BaseRouter")
+    assert routing.RouterProtocol is RouterProtocol
+    assert all(base.__name__ != "BaseRouter" for base in FixedRouter.__mro__[1:])
+    assert all(base.__name__ != "BaseRouter" for base in RouteWiseRouter.__mro__[1:])
 
 
 def _routing_payloads(chunks: list[str]) -> list[dict[str, Any]]:

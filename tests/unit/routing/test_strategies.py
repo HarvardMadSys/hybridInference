@@ -96,17 +96,20 @@ def test_fixed_params_local_fraction_range():
 
 @pytest.mark.unit
 def test_build_fixed_returns_fixed_router():
+    from routing.protocols import RouterProtocol
     from routing.routers import FixedRouter
     from routing.strategies import build_router
 
     router = build_router("fixed", {"local_fraction": 0.7})
     assert isinstance(router, FixedRouter)
+    assert isinstance(router, RouterProtocol)
 
 
 @pytest.mark.unit
 def test_build_router_injects_explicit_shared_dependencies():
     from routing.dependencies import RouterBuildDependencies
     from routing.endpoint_health import EndpointHealthRegistry
+    from routing.protocols import RouterProtocol
     from routing.strategies import build_router
 
     health_registry = EndpointHealthRegistry()
@@ -117,6 +120,8 @@ def test_build_router_injects_explicit_shared_dependencies():
 
     assert fixed._health_registry is health_registry
     assert routewise._health_registry is health_registry
+    assert isinstance(fixed, RouterProtocol)
+    assert isinstance(routewise, RouterProtocol)
 
 
 @pytest.mark.unit
@@ -189,12 +194,14 @@ def test_routewise_params_defaults_match_routewise_config():
 @pytest.mark.unit
 def test_build_routewise_returns_routewise_router():
     """build_router('routewise', {...}) returns a RouteWiseRouter instance."""
+    from routing.protocols import RouterProtocol
     from routing.routewise.router import RouteWiseRouter
     from routing.strategies import build_router
 
     # Without a fixed_router, RouteWiseRouter defers post-init classification.
     router = build_router("routewise", {"latency_min_samples": 100})
     assert isinstance(router, RouteWiseRouter)
+    assert isinstance(router, RouterProtocol)
     assert router.config.latency_min_samples == 100
     # fixed_router is None until attach_fixed_router is called.
     assert router.fixed_router is None

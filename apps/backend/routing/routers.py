@@ -1,7 +1,6 @@
 """Routing strategies for request distribution.
 
 Provides:
-- BaseRouter: Compatibility facade over composed endpoint health and execution helpers
 - FixedRouter: Weighted random routing with automatic fallback
 - RouteConfig, RoutingObservation, ProviderPinError
 """
@@ -206,28 +205,45 @@ AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
 
 # ============================================================================
-# BaseRouter
+# FixedRouter
 # ============================================================================
 
 
-class BaseRouter:
-    """Compatibility facade over endpoint health and adapter execution helpers.
+class FixedRouter:
+    """Weighted random routing with automatic fallback.
 
-    Delegates health state to a router-owned ``EndpointHealthRegistry``:
-    - Circuit breaker protection per provider/endpoint
-    - EWMA health tracking
-    - Provider availability metrics
+    Drop-in replacement for RouteExecutor. Selects adapters via weighted
+    random selection and tries remaining adapters on failure.
 
-    Subclasses implement their own chat_completion / stream_chat_completion
-    using the shared infrastructure methods.
+    Args:
+        params: Optional Pydantic ``FixedParams`` (passed by the strategy
+            registry).  ``None`` keeps existing call-site behavior.
+            ``params.local_fraction`` is currently informational; the existing
+            weighted-random selection over ``routes`` is unchanged.
     """
 
-    def __init__(self, health_registry: EndpointHealthRegistry | None = None) -> None:
+    def __init__(
+        self,
+        params: Any = None,
+        weight_override_resolver: Any | None = None,
+        disabled_provider_resolver: Any | None = None,
+        health_registry: EndpointHealthRegistry | None = None,
+    ) -> None:
         self._health_registry = (
             health_registry if health_registry is not None else EndpointHealthRegistry()
         )
         self._lock = threading.RLock()
         self._affinity: dict[tuple[str, str], _Affinity] = {}
+        self.routes: dict[str, RouteConfig] = {}
+        # Keep the validated params accessible for future use (e.g. honoring
+        # local_fraction in adapter selection).  Today FixedRouter ignores it
+        # because per-route weights already encode local-vs-remote balance.
+        self.params = params
+        self.weight_override_resolver = weight_override_resolver
+        # Admin kill switch: adapters whose provider is disabled are forced to
+        # weight 0 so the existing ``weight > 0`` gates in selection and every
+        # fallback loop skip them without any per-call-site change.
+        self.disabled_provider_resolver = disabled_provider_resolver
 
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
@@ -274,103 +290,8 @@ class BaseRouter:
         return self._health_registry.snapshot()
 
     def record_observation(self, obs: RoutingObservation) -> None:
-        """Record a routing observation. No-op by default; override in online learning routers."""
-
-    # ------------------------------------------------------------------
-    # Adapter execution helpers (overridable by subclasses)
-    # ------------------------------------------------------------------
-
-    async def _execute_adapter(
-        self,
-        adapter: BaseAdapter,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> dict[str, Any]:
-        """Execute a request through an adapter with monitoring.
-
-        Provides a single-adapter execution path with context, health checks,
-        and latency tracking. Subclasses (e.g. RouteWiseRouter) can override
-        to add slot lifecycle management.
-        """
-        endpoint_id = endpoint_id_for_adapter(adapter)
-        with req_ctx.push(model=model_id, provider=adapter.config.provider):
-            self._ensure_health(endpoint_id)
-            resp = await adapter.chat_completion(messages, **params)
-            # A HedgedAdapter records each leg's outcome (winner success
-            # included) in its registry under the leg's endpoint_id;
-            # recording here as well would double-count the winning endpoint.
-            # Recompute the endpoint after the call for everything else — an
-            # adapter may swap its config to the leg that actually served.
-            if not getattr(adapter, "reports_leg_outcomes", False):
-                self._on_success(endpoint_id_for_adapter(adapter))
-        return resp
-
-    async def _execute_stream_adapter(
-        self,
-        adapter: BaseAdapter,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> AsyncIterator[Any]:
-        """Execute a streaming request through an adapter with monitoring.
-
-        Parallel to ``_execute_adapter`` for streaming. Subclasses can
-        override for per-adapter instrumentation (e.g. S_C slot cleanup).
-        """
-        endpoint_id = endpoint_id_for_adapter(adapter)
-        with req_ctx.push(model=model_id, provider=adapter.config.provider):
-            self._ensure_health(endpoint_id)
-            first = True
-            async for chunk in adapter.stream_chat_completion(messages, **params):
-                if first and has_non_empty_content(chunk):
-                    first = False
-                    # A HedgedAdapter records each leg's outcome in its
-                    # registry under the leg's endpoint_id; recording here
-                    # as well would double-count the winning endpoint.
-                    # Recompute the endpoint for everything else — an adapter
-                    # may swap its config to the leg that actually served.
-                    if not getattr(adapter, "reports_leg_outcomes", False):
-                        self._on_success(endpoint_id_for_adapter(adapter))
-                yield chunk
-
-
-# ============================================================================
-# FixedRouter
-# ============================================================================
-
-
-class FixedRouter(BaseRouter):
-    """Weighted random routing with automatic fallback.
-
-    Drop-in replacement for RouteExecutor. Selects adapters via weighted
-    random selection and tries remaining adapters on failure.
-
-    Args:
-        params: Optional Pydantic ``FixedParams`` (passed by the strategy
-            registry).  ``None`` keeps existing call-site behavior.
-            ``params.local_fraction`` is currently informational; the existing
-            weighted-random selection over ``routes`` is unchanged.
-    """
-
-    def __init__(
-        self,
-        params: Any = None,
-        weight_override_resolver: Any | None = None,
-        disabled_provider_resolver: Any | None = None,
-        health_registry: EndpointHealthRegistry | None = None,
-    ) -> None:
-        super().__init__(health_registry=health_registry)
-        self.routes: dict[str, RouteConfig] = {}
-        # Keep the validated params accessible for future use (e.g. honoring
-        # local_fraction in adapter selection).  Today FixedRouter ignores it
-        # because per-route weights already encode local-vs-remote balance.
-        self.params = params
-        self.weight_override_resolver = weight_override_resolver
-        # Admin kill switch: adapters whose provider is disabled are forced to
-        # weight 0 so the existing ``weight > 0`` gates in selection and every
-        # fallback loop skip them without any per-call-site change.
-        self.disabled_provider_resolver = disabled_provider_resolver
+        """Ignore observations because fixed routing has no online-learning state."""
+        return None
 
     def _apply_disabled_providers(
         self, adapters: list[tuple[BaseAdapter, float]]
