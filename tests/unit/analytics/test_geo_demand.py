@@ -6,7 +6,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -15,6 +15,8 @@ from serving.analytics.geo_demand import (
     BUCKET_COLS,
     GeoDemandCache,
     aggregate_geo_demand,
+    aggregate_geo_demand_rollup,
+    get_geo_demand,
     normalize_window,
 )
 from serving.utils.geo_resolver import GeoResolver
@@ -86,6 +88,7 @@ def row(hour: int, **overrides: Any) -> dict[str, Any]:
     value = {
         "hour": utc(hour),
         "ip": "8.8.8.8",
+        "request_count": 1,
         "completion_tokens": 4,
     }
     value.update(overrides)
@@ -138,6 +141,7 @@ async def test_aggregation_contract_is_demand_only_and_has_no_raw_identifiers() 
     assert "ttft_ms" not in query
     assert "user_id" not in query
     assert "ORDER BY" not in query
+    assert "GROUP BY 1, 2" in query
     assert payload["bucket_cols"] == BUCKET_COLS
     assert BUCKET_COLS == ["c", "cont", "n", "tout"]
     assert "flow_cols" not in payload
@@ -202,6 +206,69 @@ async def test_aggregation_retains_unknown_origin_bucket() -> None:
     assert payload["meta"]["rows_with_ip"] == 0
 
 
+@pytest.mark.asyncio
+async def test_grouped_raw_rows_preserve_request_and_ip_count_semantics() -> None:
+    connection = FakeConnection(
+        [
+            row(0, request_count=7, completion_tokens=21),
+            row(0, ip=None, request_count=3, completion_tokens=5),
+        ]
+    )
+
+    payload = await aggregate_geo_demand(connection, utc(0), utc(1), resolver())
+
+    assert payload["meta"]["rows_total"] == 10
+    assert payload["meta"]["rows_with_ip"] == 7
+    buckets = {
+        item[0]: dict(zip(BUCKET_COLS, item, strict=True)) for item in payload["hours"][0]["b"]
+    }
+    assert buckets["USA"] == {"c": "USA", "cont": "NA", "n": 7, "tout": 21}
+    assert buckets["?"] == {"c": "?", "cont": "?", "n": 3, "tout": 5}
+
+
+@pytest.mark.asyncio
+async def test_rollup_requires_gap_free_coverage_and_preserves_contract() -> None:
+    connection = MagicMock()
+    connection.transaction.return_value = AsyncContext()
+    connection.fetchrow = AsyncMock(
+        return_value={
+            "complete_hours": 2,
+            "rows_total": 12,
+            "rows_with_ip": 9,
+            "completed_at": utc(2),
+        }
+    )
+    connection.fetch = AsyncMock(
+        return_value=[
+            {
+                "hour": utc(0),
+                "country_code": "USA",
+                "continent_code": "NA",
+                "request_count": 9,
+                "completion_tokens": 40,
+            }
+        ]
+    )
+
+    payload = await aggregate_geo_demand_rollup(connection, utc(0), utc(2), resolver())
+
+    assert payload is not None
+    assert payload["bucket_cols"] == BUCKET_COLS
+    assert payload["hours_index"] == [utc(0).isoformat(), utc(1).isoformat()]
+    assert payload["hours"][1] == {"b": []}
+    assert payload["meta"]["rows_total"] == 12
+    assert payload["meta"]["rows_with_ip"] == 9
+    assert payload["meta"]["generated_at"] == utc(2).isoformat()
+
+    connection.fetchrow.return_value = {
+        "complete_hours": 1,
+        "rows_total": 10,
+        "rows_with_ip": 8,
+    }
+    assert await aggregate_geo_demand_rollup(connection, utc(0), utc(2), resolver()) is None
+    assert connection.fetch.await_count == 1
+
+
 def test_cache_defaults_to_four_entries() -> None:
     assert GeoDemandCache().max_entries == 4
 
@@ -261,3 +328,108 @@ async def test_cache_clears_failed_inflight_scan_and_allows_retry(monkeypatch) -
     result = await cache.get(Pool(), utc(0), utc(1))
     assert result == {"meta": {"generated_at": "retry"}}
     assert aggregate.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rollup_error", [False, True])
+async def test_geo_service_falls_back_to_raw_cache(monkeypatch, rollup_error) -> None:
+    connection = MagicMock()
+    if rollup_error:
+        connection.fetchrow = AsyncMock(side_effect=RuntimeError("rollup unavailable"))
+    else:
+        connection.fetchrow = AsyncMock(
+            return_value={"complete_hours": 0, "rows_total": 0, "rows_with_ip": 0}
+        )
+
+    class Pool:
+        def acquire(self):
+            return AsyncContext(connection)
+
+    cached = AsyncMock(return_value={"meta": {"source": "api_logs"}})
+    monkeypatch.setattr(geo_demand.geo_demand_cache, "get", cached)
+
+    payload = await get_geo_demand(Pool(), utc(0), utc(1), resolver_factory=resolver)
+
+    assert payload == {"meta": {"source": "api_logs"}}
+    cached.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_geo_service_prefers_complete_rollup(monkeypatch) -> None:
+    connection = MagicMock()
+    connection.transaction.return_value = AsyncContext()
+    connection.fetchrow = AsyncMock(
+        return_value={
+            "complete_hours": 1,
+            "rows_total": 5,
+            "rows_with_ip": 5,
+            "completed_at": utc(1),
+        }
+    )
+    connection.fetch = AsyncMock(
+        return_value=[
+            {
+                "hour": utc(0),
+                "country_code": "USA",
+                "continent_code": "NA",
+                "request_count": 5,
+                "completion_tokens": 15,
+            }
+        ]
+    )
+
+    class Pool:
+        def acquire(self):
+            return AsyncContext(connection)
+
+    cached = AsyncMock()
+    monkeypatch.setattr(geo_demand.geo_demand_cache, "get", cached)
+
+    payload = await get_geo_demand(Pool(), utc(0), utc(1), resolver_factory=resolver)
+
+    assert payload["hours"][0]["b"] == [["USA", "NA", 5, 15]]
+    cached.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_geo_service_serves_previous_complete_rollup_while_latest_hour_is_pending(
+    monkeypatch,
+) -> None:
+    connection = MagicMock()
+    connection.transaction.return_value = AsyncContext()
+    connection.fetchrow = AsyncMock(
+        side_effect=[
+            {"complete_hours": 0, "rows_total": 0, "rows_with_ip": 0},
+            {
+                "complete_hours": 1,
+                "rows_total": 5,
+                "rows_with_ip": 5,
+                "completed_at": utc(0),
+            },
+        ]
+    )
+    connection.fetch = AsyncMock(
+        return_value=[
+            {
+                "hour": utc(0) - timedelta(hours=1),
+                "country_code": "USA",
+                "continent_code": "NA",
+                "request_count": 5,
+                "completion_tokens": 15,
+            }
+        ]
+    )
+
+    class Pool:
+        def acquire(self):
+            return AsyncContext(connection)
+
+    cached = AsyncMock()
+    monkeypatch.setattr(geo_demand.geo_demand_cache, "get", cached)
+
+    payload = await get_geo_demand(Pool(), utc(0), utc(1), resolver_factory=resolver)
+
+    assert payload["hours_index"] == [(utc(0) - timedelta(hours=1)).isoformat()]
+    assert payload["hours"][0]["b"] == [["USA", "NA", 5, 15]]
+    assert "previous complete window" in payload["meta"]["notes"][-1]
+    cached.assert_not_awaited()

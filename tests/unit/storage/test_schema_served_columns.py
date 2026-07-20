@@ -135,6 +135,25 @@ async def test_database_logger_adds_served_columns_before_index():
 
 
 @pytest.mark.asyncio
+async def test_database_logger_creates_geo_rollup_and_coverage_tables():
+    """Bootstrap creates only coarse geo aggregates plus explicit coverage."""
+    pool, statements = _capturing_pool()
+    db = DatabaseLogger({"dsn": "postgres://ignored"})
+    db.pool = pool
+
+    await db._create_tables()
+
+    geo_statements = [statement for statement in statements if "geo_hourly_" in statement]
+    assert any("geo_hourly_coverage" in statement for statement in geo_statements)
+    assert any("geo_hourly_demand" in statement for statement in geo_statements)
+    joined = "\n".join(geo_statements)
+    assert "country_code" in joined
+    assert "rows_with_ip" in joined
+    assert "metadata" not in joined
+    assert "user_id" not in joined
+
+
+@pytest.mark.asyncio
 async def test_postgres_log_store_initialize_orders_served_index_after_column():
     """``PostgresLogStore.initialize`` must not index a not-yet-added column."""
     pool, statements = _capturing_pool()

@@ -475,6 +475,10 @@ async def initialize() -> AppServices:
                         email_scheduler.start_scheduler(db_logger.pool)
                         await email_scheduler.rehydrate_scheduled_broadcasts()
                         # Provider-stats hourly rollup
+                        from serving.admin.geo_demand_rollup import (
+                            backfill_missing as backfill_geo_demand,
+                            register_rollup_job as register_geo_rollup_job,
+                        )
                         from serving.admin.provider_stats_rollup import (
                             backfill_if_empty,
                             backfill_token_columns,
@@ -484,6 +488,7 @@ async def initialize() -> AppServices:
                         sched = email_scheduler.get_scheduler()
                         if sched is not None:
                             register_rollup_job(sched, db_logger.pool)
+                            register_geo_rollup_job(sched, db_logger.pool)
 
                             # Failed-request Slack alerter (no-op if
                             # SLACK_WEBHOOK_URL is unset).
@@ -517,6 +522,18 @@ async def initialize() -> AppServices:
                             _bf_task = asyncio.create_task(_run_backfill())
                             _BACKGROUND_TASKS.add(_bf_task)
                             _bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+                        # Geo coverage is new and must backfill independently of
+                        # the existing provider-rollup bootstrap branch.
+                        async def _run_geo_backfill(pool=db_logger.pool):
+                            try:
+                                await backfill_geo_demand(pool, days=90)
+                            except Exception as bf_exc:
+                                logger.warning(f"geo-demand backfill failed (non-fatal): {bf_exc}")
+
+                        _geo_bf_task = asyncio.create_task(_run_geo_backfill())
+                        _BACKGROUND_TASKS.add(_geo_bf_task)
+                        _geo_bf_task.add_done_callback(_BACKGROUND_TASKS.discard)
                     except Exception as sched_exc:
                         logger.error(f"Email scheduler startup failed: {sched_exc}")
                         try:

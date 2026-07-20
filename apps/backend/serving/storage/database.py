@@ -698,6 +698,12 @@ class DatabaseLogger:
                 ADD COLUMN IF NOT EXISTS total_cost_usd DECIMAL(14, 8)
             """)
 
+            # Privacy-safe country/hour aggregates and their explicit
+            # completed-hour coverage markers for the admin geo dashboard.
+            from serving.admin.geo_demand_rollup import ensure_geo_rollup_schema
+
+            await ensure_geo_rollup_schema(conn)
+
     async def log_request(
         self,
         request_id: str,
