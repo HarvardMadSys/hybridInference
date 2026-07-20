@@ -211,6 +211,8 @@ export default {
     const relay = service(env);
     for (const message of batch.messages) {
       try {
+        // Cloudflare's runtime Message.attempts is 1-based; use the delivery
+        // attempt rather than a potentially stale D1 value for retry backoff.
         const action = await relay.processQueueJob(message.body.job_id, message.attempts);
         if (action === "retry") {
           message.retry({ delaySeconds: Math.min(300, 2 ** Math.min(message.attempts, 8)) });
