@@ -210,8 +210,8 @@ describe('RoutewiseSettingsPanel probe table', () => {
       resolveModelARun = resolve;
     });
     const modelBEndpoint = 'model-b:provider-api';
-    vi.mocked(listRoutewiseProbeSamples).mockImplementation(({ modelId }) => {
-      if (modelId === 'model-a') return modelAList;
+    vi.mocked(listRoutewiseProbeSamples).mockImplementation((options) => {
+      if (options?.modelId === 'model-a') return modelAList;
       return Promise.resolve({
         samples: [
           sample({
@@ -375,13 +375,9 @@ describe('RoutewiseSettingsPanel model settings', () => {
     await waitFor(() => expect(updateRoutewiseSetting).toHaveBeenCalled());
 
     view.rerender(<RoutewiseSettingsPanel modelId="model-b" />);
-    await waitFor(() =>
-      expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.8),
-    );
+    await waitFor(() => expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.8));
     view.rerender(<RoutewiseSettingsPanel modelId="model-a" />);
-    await waitFor(() =>
-      expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.7),
-    );
+    await waitFor(() => expect(screen.getByLabelText('Cost budget alpha value')).toHaveValue(0.7));
 
     resolveOldMutation(
       setting({

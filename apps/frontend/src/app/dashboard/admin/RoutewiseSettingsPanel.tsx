@@ -256,26 +256,17 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
         sinceSeconds: 86_400,
         limit: 100,
       });
-      if (
-        probeRequestId.current !== requestId ||
-        modelIdentity.current.epoch !== requestedEpoch
-      ) {
+      if (probeRequestId.current !== requestId || modelIdentity.current.epoch !== requestedEpoch) {
         return;
       }
       setProbeSamples(loaded.samples);
     } catch (e) {
-      if (
-        probeRequestId.current !== requestId ||
-        modelIdentity.current.epoch !== requestedEpoch
-      ) {
+      if (probeRequestId.current !== requestId || modelIdentity.current.epoch !== requestedEpoch) {
         return;
       }
       setProbeError(getErrorMessage(e));
     } finally {
-      if (
-        probeRequestId.current === requestId &&
-        modelIdentity.current.epoch === requestedEpoch
-      ) {
+      if (probeRequestId.current === requestId && modelIdentity.current.epoch === requestedEpoch) {
         setProbeLoading(false);
       }
     }
@@ -409,9 +400,7 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
     const requestedEpoch = modelIdentity.current.epoch;
     const runRequestId = ++probeRunRequestId.current;
     const requestedEndpointId =
-      probeSelection.current.modelId === requestedModelId
-        ? probeSelection.current.endpointId
-        : '';
+      probeSelection.current.modelId === requestedModelId ? probeSelection.current.endpointId : '';
     setProbeRunning(true);
     setProbeBanner(null);
     try {
