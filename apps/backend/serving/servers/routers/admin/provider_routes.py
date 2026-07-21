@@ -25,6 +25,10 @@ from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
+from serving.config.routewise_model_settings import (
+    apply_routewise_settings_to_router,
+    model_routewise_setting_keys,
+)
 from serving.config.settings import VALID_ROLES
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
@@ -461,6 +465,15 @@ async def _apply_model_router_strategy_locked(
 
     if isinstance(candidate, RouteWiseRouter):
         candidate.attach_operational_store(services.operational_store)
+        settings_resolver = services.routewise_settings_resolver
+        if settings_resolver is not None:
+            await apply_routewise_settings_to_router(
+                settings_resolver,
+                registry,
+                canonical_model_id,
+                candidate,
+                refresh_probe_task=False,
+            )
 
     if candidate_needs_tracking and start_managed and not candidate_start_deferred:
         try:
@@ -2593,6 +2606,7 @@ async def _teardown_runtime_model_locked(
         for setting_key in (
             _model_required_role_setting_key(model_id),
             _model_strategy_setting_key(model_id),
+            *model_routewise_setting_keys(model_id),
         ):
             try:
                 await op_store.delete_setting(setting_key)
@@ -2649,6 +2663,11 @@ async def _teardown_runtime_model_locked(
     clear_model = getattr(weight_resolver, "clear_model", None)
     if callable(clear_model):
         clear_model(model_id)
+
+    routewise_settings_resolver = getattr(services, "routewise_settings_resolver", None)
+    clear_routewise_settings = getattr(routewise_settings_resolver, "clear_model", None)
+    if callable(clear_routewise_settings):
+        clear_routewise_settings(model_id)
 
     return adapter, float(raw_weight), endpoint_id
 
@@ -3152,8 +3171,12 @@ async def create_provider_route_model(
             persisted_candidates = await op_store.list_provider_route_candidates_for_model(model_id)
             persisted_configs = await op_store.list_provider_route_configs_for_model(model_id)
             persisted_settings = [
-                await op_store.get_setting(_model_required_role_setting_key(model_id)),
-                await op_store.get_setting(_model_strategy_setting_key(model_id)),
+                await op_store.get_setting(setting_key)
+                for setting_key in (
+                    _model_required_role_setting_key(model_id),
+                    _model_strategy_setting_key(model_id),
+                    *model_routewise_setting_keys(model_id),
+                )
             ]
             if persisted_candidates or persisted_configs or any(persisted_settings):
                 raise HTTPException(
@@ -3780,6 +3803,7 @@ async def delete_provider_route_candidate(
                             (
                                 _model_required_role_setting_key(model_id),
                                 _model_strategy_setting_key(model_id),
+                                *model_routewise_setting_keys(model_id),
                             ),
                         )
                     except BaseException:
@@ -3992,6 +4016,7 @@ async def apply_persisted_provider_route_candidates(services, op_store) -> set[s
                         (
                             _model_required_role_setting_key(model_id),
                             _model_strategy_setting_key(model_id),
+                            *model_routewise_setting_keys(model_id),
                         ),
                     )
                     continue

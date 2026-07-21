@@ -1488,18 +1488,22 @@ export interface ListRouteWeightsResponse {
 }
 
 export type RoutewiseSettingValue = string | number | boolean | null;
+export type RoutewiseSettingSource = 'runtime_override' | 'model_config' | 'global_default';
 
 export interface RoutewiseSettingItem {
   key: string;
   value: RoutewiseSettingValue;
   value_type: string;
   default_value: RoutewiseSettingValue;
+  source: RoutewiseSettingSource;
+  overridden: boolean;
   description: string;
   min?: number | null;
   max?: number | null;
 }
 
 export interface ListRoutewiseSettingsResponse {
+  model_id: string;
   settings: RoutewiseSettingItem[];
 }
 
@@ -1576,23 +1580,44 @@ export async function clearRouteWeight(modelId: string, endpointId: string): Pro
   return jsonOrThrow<RouteWeight>(resp);
 }
 
-export async function listRoutewiseSettings(): Promise<ListRoutewiseSettingsResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/routewise/settings');
+export async function listRoutewiseSettings(
+  modelId: string,
+): Promise<ListRoutewiseSettingsResponse> {
+  const params = new URLSearchParams({ model_id: modelId });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routewise/model-settings?${params.toString()}`,
+  );
   return jsonOrThrow<ListRoutewiseSettingsResponse>(resp);
 }
 
 export async function updateRoutewiseSetting(
+  modelId: string,
   key: string,
   value: RoutewiseSettingValue,
 ): Promise<RoutewiseSettingItem> {
+  const params = new URLSearchParams({ model_id: modelId });
   const resp = await fetchWithAuth(
     API_BASE,
-    `/admin/routewise/settings/${encodeURIComponent(key)}`,
+    `/admin/routewise/model-settings/${encodeURIComponent(key)}?${params.toString()}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ value }),
     },
+  );
+  return jsonOrThrow<RoutewiseSettingItem>(resp);
+}
+
+export async function resetRoutewiseSetting(
+  modelId: string,
+  key: string,
+): Promise<RoutewiseSettingItem> {
+  const params = new URLSearchParams({ model_id: modelId });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/routewise/model-settings/${encodeURIComponent(key)}?${params.toString()}`,
+    { method: 'DELETE' },
   );
   return jsonOrThrow<RoutewiseSettingItem>(resp);
 }

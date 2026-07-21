@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
+    from serving.config.routewise_model_settings import RouteWiseSettingsResolver
     from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -59,6 +60,7 @@ class AppServices:
     model_visibility_resolver: ModelVisibilityResolver | None = None
     model_concurrency_resolver: ModelConcurrencyResolver | None = None
     weight_override_resolver: WeightOverrideResolver | None = None
+    routewise_settings_resolver: RouteWiseSettingsResolver | None = None
     disabled_provider_resolver: DisabledProviderResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
@@ -68,6 +70,7 @@ class AppServices:
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
     weight_override_refresh_task: Any | None = None
+    routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
 
 

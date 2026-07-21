@@ -120,7 +120,7 @@ class ModelRouterRegistry:
 
     def get_router(self, model_id: str) -> RouterProtocol:
         """Return (constructing on first call) the router for ``model_id``."""
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        canonical_model_id = self.canonical_model_id(model_id)
         cached = self._cache.get(canonical_model_id)
         if cached is not None:
             self._cache[model_id] = cached
@@ -190,14 +190,14 @@ class ModelRouterRegistry:
 
     def get_router_name(self, model_id: str) -> str:
         """Return the active strategy name for ``model_id``."""
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        canonical_model_id = self.canonical_model_id(model_id)
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         name, _params = self._router_spec(canonical_model_id, cfg)
         return name
 
     def get_configured_router_name(self, model_id: str) -> str:
         """Return the YAML/default strategy name, ignoring runtime overrides."""
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        canonical_model_id = self.canonical_model_id(model_id)
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         return str(cfg.get("router") or self._default)
 
@@ -215,7 +215,7 @@ class ModelRouterRegistry:
 
     def validate_router_strategy(self, model_id: str, strategy: str) -> None:
         """Validate ``strategy`` for ``model_id`` without constructing it."""
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        canonical_model_id = self.canonical_model_id(model_id)
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         configured_name = str(cfg.get("router") or self._default)
         params = (cfg.get("router_params") or {}) if strategy == configured_name else {}
@@ -234,7 +234,7 @@ class ModelRouterRegistry:
         route that no longer exists. Live transitions back to configuration should
         use ``prepare_router_strategy_change(model_id, None)`` and commit it.
         """
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        canonical_model_id = self.canonical_model_id(model_id)
         self._router_overrides.pop(canonical_model_id, None)
         self._invalidate_router_cache(canonical_model_id)
         self._bump_router_revision(canonical_model_id)
@@ -250,7 +250,7 @@ class ModelRouterRegistry:
         The returned frozen token can be committed only while the canonical
         model's override revision and previous override still match.
         """
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        canonical_model_id = self.canonical_model_id(model_id)
         cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
         configured_strategy = str(cfg.get("router") or self._default)
         target_override = None if strategy is None or strategy == configured_strategy else strategy
@@ -350,8 +350,57 @@ class ModelRouterRegistry:
 
     def get_router_override(self, model_id: str) -> str | None:
         """Return the runtime router override, if present."""
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        canonical_model_id = self.canonical_model_id(model_id)
         return self._router_overrides.get(canonical_model_id)
+
+    def canonical_model_id(self, model_id: str) -> str:
+        """Return the canonical id used for router and setting ownership."""
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        shared_fixed = self._shared_fixed
+        if shared_fixed is not None:
+            canonical_model_id = shared_fixed.canonical_id(canonical_model_id)
+        return canonical_model_id
+
+    def has_model(self, model_id: str) -> bool:
+        """Return whether ``model_id`` is known without constructing a router."""
+        canonical_model_id = self.canonical_model_id(model_id)
+        if canonical_model_id in self._configs:
+            return True
+        if canonical_model_id in self._router_overrides:
+            return True
+        shared_fixed = self._shared_fixed
+        if shared_fixed is None:
+            return False
+        # Include a staged-but-unpublished runtime model while its strategy
+        # transition is being prepared. A cache entry is deliberately not
+        # existence evidence: get_router() remains backward-compatible and can
+        # construct a fallback router for an arbitrary id.
+        route_snapshot = shared_fixed.snapshot_for_transition(canonical_model_id)
+        return any(
+            route.canonical_model_id == canonical_model_id
+            for route in route_snapshot.iter_effective_routes()
+        )
+
+    def get_configured_routewise_params(self, model_id: str) -> dict[str, Any]:
+        """Return canonical YAML RouteWise params without building a router."""
+        canonical_model_id = self.canonical_model_id(model_id)
+        if not self.has_model(canonical_model_id):
+            raise KeyError(f"unknown model: {model_id}")
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
+        configured_strategy = str(cfg.get("router") or self._default)
+        if configured_strategy != "routewise":
+            return {}
+        validated = validate_router_config(
+            "routewise",
+            dict(cfg.get("router_params") or {}),
+            dependencies=self._dependencies,
+        )
+        return dict(validated.model_dump(exclude_unset=True))
+
+    def get_cached_router(self, model_id: str) -> RouterProtocol | None:
+        """Return a live cached router without constructing a missing instance."""
+        canonical_model_id = self.canonical_model_id(model_id)
+        return self._cache.get(canonical_model_id)
 
     def registered_models(self) -> dict[str, str]:
         """Return ``{model_id: router_class_name}`` for every cached entry."""

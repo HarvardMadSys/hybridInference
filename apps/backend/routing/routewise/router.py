@@ -27,7 +27,7 @@ import random
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
@@ -118,6 +118,26 @@ _WORKER_COUNT_ENV_KEYS = (
 )
 
 
+async def _await_cancelled_child(task: asyncio.Task[Any]) -> None:
+    """Await a cancelled child without swallowing cancellation of this task."""
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+    except Exception:
+        pass
+    # Some maintenance loops intentionally turn their own CancelledError into
+    # a normal return.  If cancellation originated from this caller while it
+    # was awaiting that loop, asyncio then resumes us normally but leaves the
+    # caller's cancellation count set; propagate it before creating any
+    # replacement task.
+    current = asyncio.current_task()
+    if current is not None and current.cancelling():
+        raise asyncio.CancelledError
+
+
 @dataclass(frozen=True)
 class FeasibleProviderCandidate:
     """Internal feasible-provider representation used by the provider-mixer LP."""
@@ -145,6 +165,7 @@ class HedgePlan:
     """In-flight checkpoint hedge schedule for one primary dispatch."""
 
     checkpoints_sec: tuple[float, ...]
+    latency_slo_sec: float
 
 
 @dataclass(frozen=True)
@@ -296,6 +317,10 @@ class RouteWiseRouter:
         self._prefix_cache_sweep_task: asyncio.Task[None] | None = None
         self._quota_refresh_task: asyncio.Task[None] | None = None
         self._probe_task: asyncio.Task[None] | None = None
+        self._probe_task_config: tuple[bool, float] | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._probe_task_reconcile_lock = asyncio.Lock()
+        self._lifecycle_started = False
         self._operational_store: Any | None = None
         self._last_probe_results: list[RouteWiseProbeResult] = []
         self._probe_holder_id = f"{os.getpid()}:{uuid.uuid4().hex}"
@@ -382,16 +407,33 @@ class RouteWiseRouter:
         Only algorithm knobs are runtime-overridable; resource limits are
         route-level configuration (``quota:`` / ``concurrency:`` blocks).
         """
-        if budget_alpha is not None:
-            self.config.budget_alpha = budget_alpha
-        if latency_slo_sec is not None:
-            self.config.latency_slo_sec = latency_slo_sec
-        if latency_min_samples is not None:
-            self.config.latency_min_samples = latency_min_samples
-        if routewise_probe_enabled is not None:
-            self.config.routewise_probe_enabled = routewise_probe_enabled
-        if routewise_probe_interval_sec is not None:
-            self.config.routewise_probe_interval_sec = routewise_probe_interval_sec
+        with self._route_commit_lock:
+            current = self.config
+            # Publish one new immutable-by-convention snapshot while decision
+            # construction holds the same lock, so one decision cannot mix
+            # fields from two settings generations.
+            self.config = replace(
+                current,
+                budget_alpha=(current.budget_alpha if budget_alpha is None else budget_alpha),
+                latency_slo_sec=(
+                    current.latency_slo_sec if latency_slo_sec is None else latency_slo_sec
+                ),
+                latency_min_samples=(
+                    current.latency_min_samples
+                    if latency_min_samples is None
+                    else latency_min_samples
+                ),
+                routewise_probe_enabled=(
+                    current.routewise_probe_enabled
+                    if routewise_probe_enabled is None
+                    else routewise_probe_enabled
+                ),
+                routewise_probe_interval_sec=(
+                    current.routewise_probe_interval_sec
+                    if routewise_probe_interval_sec is None
+                    else routewise_probe_interval_sec
+                ),
+            )
 
     def _rebuild_from_route_table(self) -> None:
         existing_latency_profiles = self._latency_profiles
@@ -449,64 +491,82 @@ class RouteWiseRouter:
         bootstrap path propagates so deployment fails fast instead of leaving a
         model unroutable. See :meth:`_validate_envelope_calibration`.
         """
-        self._validate_envelope_calibration()
-        if self.prefix_cache.enabled and (
-            self._prefix_cache_sweep_task is None or self._prefix_cache_sweep_task.done()
-        ):
-            self._prefix_cache_sweep_task = asyncio.create_task(
-                self._sweep_pending_prefix_cache_loop(),
-                name="RouteWiseRouter.sweep_pending_prefix_cache",
-            )
-        if self._quota_sources() and (
-            self._quota_refresh_task is None or self._quota_refresh_task.done()
-        ):
-            self._quota_refresh_task = asyncio.create_task(
-                self._refresh_quota_snapshots_loop(),
-                name="RouteWiseRouter.refresh_quota_snapshots",
-            )
-        if self.config.routewise_probe_enabled and (
-            self._probe_task is None or self._probe_task.done()
-        ):
-            self._probe_task = asyncio.create_task(
-                self._routewise_probe_loop(),
-                name="RouteWiseRouter.active_probe",
-            )
+        async with self._lifecycle_lock:
+            self._validate_envelope_calibration()
+            self._lifecycle_started = True
+            if self.prefix_cache.enabled and (
+                self._prefix_cache_sweep_task is None or self._prefix_cache_sweep_task.done()
+            ):
+                self._prefix_cache_sweep_task = asyncio.create_task(
+                    self._sweep_pending_prefix_cache_loop(),
+                    name="RouteWiseRouter.sweep_pending_prefix_cache",
+                )
+            if self._quota_sources() and (
+                self._quota_refresh_task is None or self._quota_refresh_task.done()
+            ):
+                self._quota_refresh_task = asyncio.create_task(
+                    self._refresh_quota_snapshots_loop(),
+                    name="RouteWiseRouter.refresh_quota_snapshots",
+                )
+            await self.refresh_probe_task()
 
     async def refresh_probe_task(self) -> None:
-        """Start or stop the active probe loop after runtime setting changes."""
-        if self.config.routewise_probe_enabled:
-            if self._probe_task is None or self._probe_task.done():
+        """Immediately reconcile the active probe loop with its config snapshot."""
+        async with self._probe_task_reconcile_lock:
+            config = self.config
+            desired = (
+                bool(config.routewise_probe_enabled),
+                float(config.routewise_probe_interval_sec),
+            )
+            task = self._probe_task
+            if (
+                desired[0]
+                and task is not None
+                and not task.done()
+                and self._probe_task_config == desired
+            ):
+                return
+            self._probe_task = None
+            self._probe_task_config = None
+            if task is not None:
+                task.cancel()
+                await _await_cancelled_child(task)
+            if desired[0] and self._lifecycle_started:
                 self._probe_task = asyncio.create_task(
                     self._routewise_probe_loop(),
                     name="RouteWiseRouter.active_probe",
                 )
-            return
-        task = self._probe_task
-        self._probe_task = None
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+                self._probe_task_config = desired
 
     async def stop(self) -> None:
         """Stop periodic maintenance tasks."""
-        tasks = [
-            task
-            for task in (
-                self._prefix_cache_sweep_task,
-                self._quota_refresh_task,
-                self._probe_task,
-            )
-            if task is not None
-        ]
-        self._prefix_cache_sweep_task = None
-        self._quota_refresh_task = None
-        self._probe_task = None
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        async with self._lifecycle_lock:
+            # Mark retirement before awaiting any task cleanup. A concurrent
+            # settings refresh can then stop a probe but cannot replace it, and
+            # a concurrent start waits until every old maintenance task is gone.
+            self._lifecycle_started = False
+            background_tasks = [
+                task
+                for task in (
+                    self._prefix_cache_sweep_task,
+                    self._quota_refresh_task,
+                )
+                if task is not None
+            ]
+            self._prefix_cache_sweep_task = None
+            self._quota_refresh_task = None
+            for task in background_tasks:
+                task.cancel()
+            for task in background_tasks:
+                await _await_cancelled_child(task)
+
+            async with self._probe_task_reconcile_lock:
+                probe_task = self._probe_task
+                self._probe_task = None
+                self._probe_task_config = None
+                if probe_task is not None:
+                    probe_task.cancel()
+                    await _await_cancelled_child(probe_task)
 
     async def _sweep_pending_prefix_cache_loop(self) -> None:
         try:
@@ -1676,11 +1736,19 @@ class RouteWiseRouter:
         now: float,
     ) -> HedgePlan | None:
         """Return the checkpoint schedule for probability-target hedging."""
-        if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
+        config = self.config
+        if config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
             return None
 
-        checkpoints = hedge_checkpoints_for_slo(self.config.latency_slo_sec * 1000.0)
-        return HedgePlan(checkpoints_sec=checkpoints) if checkpoints else None
+        checkpoints = hedge_checkpoints_for_slo(config.latency_slo_sec * 1000.0)
+        return (
+            HedgePlan(
+                checkpoints_sec=checkpoints,
+                latency_slo_sec=config.latency_slo_sec,
+            )
+            if checkpoints
+            else None
+        )
 
     def _select_checkpoint_backup(
         self,
@@ -1693,6 +1761,7 @@ class RouteWiseRouter:
         envelope: CostEnvelopeSnapshot | None,
         selected: FeasibleProviderCandidate,
         checkpoints_sec: tuple[float, ...],
+        latency_slo_sec: float,
         elapsed_sec: float,
         checkpoint_ts: float,
     ) -> CheckpointBackupDispatch | None:
@@ -1707,6 +1776,7 @@ class RouteWiseRouter:
                 envelope=envelope,
                 selected=selected,
                 checkpoints_sec=checkpoints_sec,
+                latency_slo_sec=latency_slo_sec,
                 elapsed_sec=elapsed_sec,
                 checkpoint_ts=checkpoint_ts,
             )
@@ -1722,6 +1792,7 @@ class RouteWiseRouter:
         envelope: CostEnvelopeSnapshot | None,
         selected: FeasibleProviderCandidate,
         checkpoints_sec: tuple[float, ...],
+        latency_slo_sec: float,
         elapsed_sec: float,
         checkpoint_ts: float,
     ) -> CheckpointBackupDispatch | None:
@@ -1748,6 +1819,7 @@ class RouteWiseRouter:
             selected=selected,
             now=checkpoint_ts,
             elapsed_sec=elapsed_sec,
+            latency_slo_sec=latency_slo_sec,
         )
         if current is None:
             return None
@@ -1767,6 +1839,7 @@ class RouteWiseRouter:
                     selected=selected,
                     now=checkpoint_ts,
                     elapsed_sec=future_elapsed,
+                    latency_slo_sec=latency_slo_sec,
                 )
                 if future is not None:
                     return None
@@ -1797,6 +1870,7 @@ class RouteWiseRouter:
         selected: FeasibleProviderCandidate,
         now: float,
         elapsed_sec: float,
+        latency_slo_sec: float,
     ) -> BackupCandidate[FeasibleProviderCandidate] | None:
         backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
         for candidate in candidates:
@@ -1812,7 +1886,7 @@ class RouteWiseRouter:
                     now,
                 ),
                 elapsed_ms=elapsed_sec * 1000.0,
-                slo_ms=self.config.latency_slo_sec * 1000.0,
+                slo_ms=latency_slo_sec * 1000.0,
                 dispatch_overhead_ms=0.0,
             )
             backup_candidates.append(
@@ -2022,6 +2096,7 @@ class RouteWiseRouter:
                             decision: RoutingDecision = decision,
                             selected: FeasibleProviderCandidate = selected,
                             checkpoints_sec: tuple[float, ...] = hedge_plan.checkpoints_sec,
+                            latency_slo_sec: float = hedge_plan.latency_slo_sec,
                         ) -> CheckpointBackupDispatch | None:
                             return self._select_checkpoint_backup(
                                 model_id=model_id,
@@ -2032,6 +2107,7 @@ class RouteWiseRouter:
                                 envelope=envelope,
                                 selected=selected,
                                 checkpoints_sec=checkpoints_sec,
+                                latency_slo_sec=latency_slo_sec,
                                 elapsed_sec=elapsed_sec,
                                 checkpoint_ts=checkpoint_ts,
                             )

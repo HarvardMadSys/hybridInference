@@ -32,6 +32,41 @@ class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
 
     @pytest.mark.asyncio
+    async def test_routewise_settings_apply_continues_after_one_router_fails(
+        self,
+        monkeypatch,
+    ):
+        resolver = MagicMock()
+        registry = MagicMock()
+        registry.configured_model_ids.return_value = ["model-a", "model-b"]
+        registry.registered_models.return_value = {}
+        registry.canonical_model_id.side_effect = lambda model_id: model_id
+        routers = {
+            "model-a": RouteWiseRouter(),
+            "model-b": RouteWiseRouter(),
+        }
+        registry.get_cached_router.side_effect = routers.get
+        apply_settings = AsyncMock(side_effect=[RuntimeError("model-a apply failed"), None])
+        monkeypatch.setattr(
+            bootstrap,
+            "apply_routewise_settings_to_router",
+            apply_settings,
+        )
+
+        with pytest.raises(RuntimeError, match="model-a apply failed"):
+            await bootstrap._apply_cached_routewise_model_settings(
+                resolver,
+                registry,
+                {},
+                refresh_probe_task=True,
+            )
+
+        assert [call.args[2] for call in apply_settings.await_args_list] == [
+            "model-a",
+            "model-b",
+        ]
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("changed", [False, True])
     async def test_reload_effective_route_state_rebuilds_only_on_change(
         self,
@@ -437,13 +472,24 @@ models:
         registry_instance = MagicMock()
         registry_instance.get_router = MagicMock(return_value=runtime_routewise)
         registry_instance.managed_routers.return_value = []
+        registry_instance.configured_model_ids.return_value = []
+        registry_instance.registered_models.return_value = {"runtime-m": "RouteWiseRouter"}
+        registry_instance.canonical_model_id.side_effect = lambda model_id: model_id
+        registry_instance.has_model.return_value = True
+        registry_instance.get_configured_routewise_params.return_value = {}
+        registry_instance.get_cached_router.return_value = runtime_routewise
 
         mock_db_logger = AsyncMock()
         mock_db_logger.pool = object()
         pg_store = AsyncMock()
         cached_store = MagicMock()
+        cached_store.list_settings = AsyncMock(return_value=[])
+        cached_store.get_setting = AsyncMock(return_value=None)
         cached_store.list_routewise_probe_samples = AsyncMock(return_value=[])
         log_store = MagicMock()
+        runtime_routewise.apply_runtime_overrides.side_effect = lambda **_kwargs: events.append(
+            "settings"
+        )
 
         async def record_routewise_bootstrap(
             _log_store, routewise_routers, model_ids_by_router, *_
@@ -502,7 +548,7 @@ models:
             services = await bootstrap.initialize()
 
         assert services.managed_routers == [runtime_routewise]
-        assert events == ["configs", "bootstrap:runtime-m", "start"]
+        assert events == ["configs", "bootstrap:runtime-m", "settings", "start"]
         assert bootstrap_logs.await_count == 1
         runtime_call = bootstrap_logs.await_args_list[0]
         assert runtime_call.args[0] is log_store

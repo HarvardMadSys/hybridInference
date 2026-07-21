@@ -9,6 +9,32 @@ import pytest
 
 @pytest.mark.unit
 class TestModelRouterRegistry:
+    def test_public_model_metadata_accessors_do_not_construct_unknown_router(self):
+        from routing.model_router_registry import ModelRouterRegistry
+        from routing.routers import FixedRouter
+
+        fixed = FixedRouter()
+        reg = ModelRouterRegistry(
+            models_config={
+                "model": {
+                    "router": "routewise",
+                    "router_params": {"budget_alpha": 0.4},
+                }
+            },
+            alias_to_model={"alias": "model"},
+            shared_fixed_router=fixed,
+        )
+
+        assert reg.canonical_model_id("alias") == "model"
+        assert reg.has_model("alias") is True
+        assert reg.has_model("unknown") is False
+        assert reg.get_configured_routewise_params("alias") == {"budget_alpha": 0.4}
+        assert reg.get_cached_router("model") is None
+        assert reg.registered_models() == {}
+
+        reg.get_router("unknown")
+        assert reg.has_model("unknown") is False
+
     def test_propagates_dependencies_and_rejects_mismatched_fixed_router(self):
         from routing.dependencies import RouterBuildDependencies
         from routing.endpoint_health import EndpointHealthRegistry

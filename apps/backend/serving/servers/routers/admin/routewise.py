@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from routing.routewise.router import RouteWiseRouter
+from serving.config.routewise_model_settings import (
+    ROUTEWISE_SETTING_KEYS,
+    ResolvedRouteWiseSetting,
+    RouteWiseSettingsResolver,
+    apply_routewise_settings_to_router,
+    model_routewise_setting_key,
+)
 from serving.config.runtime_settings import (
     RUNTIME_SETTINGS_REGISTRY,
     RuntimeSettings,
     get_runtime_settings,
 )
 from serving.schemas_admin import (
+    ListRoutewiseModelSettingsResponse,
     ListRoutewiseProbeSamplesResponse,
     ListRoutewiseSettingsResponse,
     RoutewiseDecisionBucket,
@@ -34,19 +43,16 @@ from serving.servers.deps import (
     get_db_logger,
     get_operational_store,
     get_services,
+    model_router_transition_lock,
     verify_admin_access,
 )
+from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin/routewise")
+logger = get_logger(__name__)
 
-ROUTEWISE_KEYS = (
-    "routewise_budget_alpha",
-    "routewise_latency_slo_sec",
-    "routewise_latency_min_samples",
-    "routewise_probe_enabled",
-    "routewise_probe_interval_sec",
-)
+ROUTEWISE_KEYS = ROUTEWISE_SETTING_KEYS
 
 # Maps each decisions range to its (lookback window, time-bucket) size in seconds.
 DECISIONS_RANGE_SECONDS: dict[str, tuple[int, int]] = {
@@ -96,6 +102,106 @@ def _serialize_existing_value(raw: str | None, expected_type: str) -> Any:
     return raw
 
 
+def _routewise_setting_entry(key: str) -> dict[str, Any]:
+    if key not in ROUTEWISE_KEYS:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    entry = RUNTIME_SETTINGS_REGISTRY.get(key)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    return entry
+
+
+def _validate_routewise_setting_value(key: str, value: Any) -> dict[str, Any]:
+    entry = _routewise_setting_entry(key)
+    expected_type = entry["type"]
+    if expected_type == "bool" and not isinstance(value, bool):
+        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a boolean value")
+    if expected_type == "int" and (not isinstance(value, int) or isinstance(value, bool)):
+        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects an integer value")
+    if expected_type == "float" and (
+        not isinstance(value, (int, float)) or isinstance(value, bool)
+    ):
+        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a numeric value")
+    if expected_type == "str" and not isinstance(value, str):
+        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a string value")
+
+    if expected_type == "float":
+        try:
+            is_finite = math.isfinite(float(value))
+        except (OverflowError, TypeError, ValueError):
+            is_finite = False
+        if not is_finite:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Setting '{key}' expects a finite numeric value",
+            )
+
+    if expected_type in ("int", "float"):
+        lo = entry.get("min")
+        hi = entry.get("max")
+        if lo is not None and value < lo:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Setting '{key}' value {value} is below min ({lo})",
+            )
+        if hi is not None and value > hi:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Setting '{key}' value {value} is above max ({hi})",
+            )
+    return entry
+
+
+async def _log_admin_action_best_effort(*args: Any, **kwargs: Any) -> None:
+    """Keep a committed setting successful when its audit sink is unavailable."""
+    try:
+        await log_admin_action(*args, **kwargs)
+    except Exception:
+        logger.exception("Failed to write RouteWise settings audit log")
+
+
+async def _routewise_settings_resolver(
+    services: AppServices,
+    op_store: Any,
+    rt: RuntimeSettings,
+) -> RouteWiseSettingsResolver:
+    registry = services.model_router_registry
+    if registry is None:
+        raise HTTPException(status_code=503, detail="Model router registry not initialized")
+
+    resolver = services.routewise_settings_resolver
+    if resolver is None:
+        resolver = RouteWiseSettingsResolver(op_store, rt, registry)
+        await resolver.load_all()
+        services.routewise_settings_resolver = resolver
+    return resolver
+
+
+def _canonical_model_id_or_404(
+    resolver: RouteWiseSettingsResolver,
+    model_id: str,
+) -> str:
+    try:
+        return resolver.canonical_model_id(model_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+
+
+def _resolved_setting_item(resolved: ResolvedRouteWiseSetting) -> RoutewiseSettingItem:
+    entry = RUNTIME_SETTINGS_REGISTRY[resolved.key]
+    return RoutewiseSettingItem(
+        key=resolved.key,
+        value=resolved.value,
+        value_type=entry["type"],
+        default_value=resolved.fallback_value,
+        source=resolved.source,
+        overridden=resolved.source == "runtime_override",
+        description=entry["description"],
+        min=entry.get("min"),
+        max=entry.get("max"),
+    )
+
+
 def _routewise_routers(
     services: AppServices,
     model_id: str | None,
@@ -137,29 +243,33 @@ def _routewise_routers(
 async def _refresh_live_routewise_routers(
     services: AppServices,
     rt: RuntimeSettings,
+    op_store: Any,
 ) -> None:
-    """Refresh cached RouteWise router instances from current runtime settings."""
-    if services.model_router_registry is None:
+    """Re-resolve every live model without overriding scoped or YAML values."""
+    registry = services.model_router_registry
+    if registry is None:
         return
+    resolver = await _routewise_settings_resolver(services, op_store, rt)
+    await resolver.load_all()
 
-    for key in ROUTEWISE_KEYS:
-        rt.invalidate_key(key)
-
-    budget_alpha = await rt.get_float("routewise_budget_alpha")
-    latency_slo_sec = await rt.get_float("routewise_latency_slo_sec")
-    latency_min_samples = await rt.get_int("routewise_latency_min_samples")
-    routewise_probe_enabled = await rt.get_bool("routewise_probe_enabled")
-    routewise_probe_interval_sec = await rt.get_float("routewise_probe_interval_sec")
-
-    for routewise_router in _routewise_routers(services, None):
-        routewise_router.apply_runtime_overrides(
-            budget_alpha=budget_alpha,
-            latency_slo_sec=latency_slo_sec,
-            latency_min_samples=latency_min_samples,
-            routewise_probe_enabled=routewise_probe_enabled,
-            routewise_probe_interval_sec=routewise_probe_interval_sec,
-        )
-        await routewise_router.refresh_probe_task()
+    model_ids = [*registry.configured_model_ids(), *registry.registered_models()]
+    seen: set[str] = set()
+    for model_id in model_ids:
+        canonical_model_id = registry.canonical_model_id(model_id)
+        if canonical_model_id in seen:
+            continue
+        seen.add(canonical_model_id)
+        async with model_router_transition_lock(services, canonical_model_id):
+            router_obj = registry.get_cached_router(canonical_model_id)
+            if not isinstance(router_obj, RouteWiseRouter):
+                continue
+            await apply_routewise_settings_to_router(
+                resolver,
+                registry,
+                canonical_model_id,
+                router_obj,
+                refresh_probe_task=True,
+            )
 
 
 @router.get("/settings", response_model=ListRoutewiseSettingsResponse)
@@ -205,39 +315,9 @@ async def update_routewise_setting_endpoint(
         raise HTTPException(500, "Database not configured")
     rt = _require_runtime_settings(rt)
 
-    if key not in ROUTEWISE_KEYS:
-        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
-
-    entry = RUNTIME_SETTINGS_REGISTRY.get(key)
-    if entry is None:
-        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
-
-    expected_type = entry["type"]
     value = payload.value
-    if expected_type == "bool" and not isinstance(value, bool):
-        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a boolean value")
-    if expected_type == "int" and (not isinstance(value, int) or isinstance(value, bool)):
-        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects an integer value")
-    if expected_type == "float" and (
-        not isinstance(value, (int, float)) or isinstance(value, bool)
-    ):
-        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a numeric value")
-    if expected_type == "str" and not isinstance(value, str):
-        raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a string value")
-
-    if expected_type in ("int", "float"):
-        lo = entry.get("min")
-        hi = entry.get("max")
-        if lo is not None and value < lo:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Setting '{key}' value {value} is below min ({lo})",
-            )
-        if hi is not None and value > hi:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Setting '{key}' value {value} is above max ({hi})",
-            )
+    entry = _validate_routewise_setting_value(key, value)
+    expected_type = entry["type"]
 
     old_row = await op_store.get_setting(key)
     if old_row is not None:
@@ -248,10 +328,20 @@ async def update_routewise_setting_endpoint(
         old_value = getattr(get_settings(), key, entry["default"])
 
     await op_store.set_setting(key, str(value), expected_type, admin_id)
-    await _refresh_live_routewise_routers(services, rt)
+    try:
+        await _refresh_live_routewise_routers(services, rt, op_store)
+    except Exception:
+        # The database is authoritative for this compatibility default. The
+        # background reconciler retries every worker, so a transient live apply
+        # failure must not report the committed write as rejected.
+        logger.exception(
+            "Failed to immediately apply legacy global RouteWise setting key=%s; "
+            "background reconciliation will retry",
+            key,
+        )
 
     ip = get_client_ip(request)
-    await log_admin_action(
+    await _log_admin_action_best_effort(
         op_store,
         ip,
         "routewise_settings.update",
@@ -268,6 +358,174 @@ async def update_routewise_setting_endpoint(
         min=entry.get("min"),
         max=entry.get("max"),
     )
+
+
+@router.get(
+    "/model-settings",
+    response_model=ListRoutewiseModelSettingsResponse,
+)
+async def list_model_routewise_settings_endpoint(
+    model_id: str,
+    _admin_id: str = Depends(verify_admin_access),
+    services: AppServices = Depends(get_services),
+    op_store=Depends(get_operational_store),
+    rt: RuntimeSettings | None = Depends(get_runtime_settings),
+) -> ListRoutewiseModelSettingsResponse:
+    """List effective RouteWise settings for one known canonical model."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    rt = _require_runtime_settings(rt)
+    resolver = await _routewise_settings_resolver(services, op_store, rt)
+    canonical_model_id = _canonical_model_id_or_404(resolver, model_id)
+    async with model_router_transition_lock(services, canonical_model_id):
+        canonical_model_id = _canonical_model_id_or_404(resolver, model_id)
+        resolved = await resolver.resolve_model(canonical_model_id)
+    return ListRoutewiseModelSettingsResponse(
+        model_id=canonical_model_id,
+        settings=[_resolved_setting_item(resolved[key]) for key in ROUTEWISE_KEYS],
+    )
+
+
+@router.patch(
+    "/model-settings/{key}",
+    response_model=RoutewiseSettingItem,
+)
+async def update_model_routewise_setting_endpoint(
+    request: Request,
+    key: str,
+    payload: UpdateSettingRequest,
+    model_id: str,
+    admin_id: str = Depends(verify_admin_access),
+    services: AppServices = Depends(get_services),
+    op_store=Depends(get_operational_store),
+    rt: RuntimeSettings | None = Depends(get_runtime_settings),
+) -> RoutewiseSettingItem:
+    """Set a persisted RouteWise override owned by one canonical model."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    rt = _require_runtime_settings(rt)
+    value = payload.value
+    entry = _validate_routewise_setting_value(key, value)
+    resolver = await _routewise_settings_resolver(services, op_store, rt)
+    registry = services.model_router_registry
+    if registry is None:  # guarded by _routewise_settings_resolver
+        raise HTTPException(status_code=503, detail="Model router registry not initialized")
+    canonical_model_id = _canonical_model_id_or_404(resolver, model_id)
+
+    async with model_router_transition_lock(services, canonical_model_id):
+        # A runtime model can disappear while this request waits for the same
+        # transition lock behind final-route deletion.
+        canonical_model_id = _canonical_model_id_or_404(resolver, model_id)
+        previous = await resolver.get_resolved(canonical_model_id, key)
+        setting_key = model_routewise_setting_key(key, canonical_model_id)
+        await op_store.set_setting(
+            setting_key,
+            str(value),
+            entry["type"],
+            admin_id,
+        )
+        resolver.set_override(canonical_model_id, key, value)
+        resolved = await resolver.get_resolved(canonical_model_id, key)
+        router_obj = registry.get_cached_router(canonical_model_id)
+        if isinstance(router_obj, RouteWiseRouter):
+            try:
+                await apply_routewise_settings_to_router(
+                    resolver,
+                    registry,
+                    canonical_model_id,
+                    router_obj,
+                    refresh_probe_task=True,
+                )
+            except Exception:
+                # The persisted value is authoritative. Rolling it back here
+                # would race a newer write made by another worker and could
+                # overwrite that worker's value. The reconciler retries this
+                # router from the durable snapshot.
+                logger.exception(
+                    "Failed to immediately apply RouteWise model setting "
+                    "model=%s key=%s; background reconciliation will retry",
+                    canonical_model_id,
+                    key,
+                )
+
+    await _log_admin_action_best_effort(
+        op_store,
+        get_client_ip(request),
+        "routewise_model_settings.update",
+        canonical_model_id,
+        {
+            "key": key,
+            "old_value": previous.value,
+            "new_value": resolved.value,
+            "source": resolved.source,
+        },
+    )
+    return _resolved_setting_item(resolved)
+
+
+@router.delete(
+    "/model-settings/{key}",
+    response_model=RoutewiseSettingItem,
+)
+async def reset_model_routewise_setting_endpoint(
+    request: Request,
+    key: str,
+    model_id: str,
+    admin_id: str = Depends(verify_admin_access),
+    services: AppServices = Depends(get_services),
+    op_store=Depends(get_operational_store),
+    rt: RuntimeSettings | None = Depends(get_runtime_settings),
+) -> RoutewiseSettingItem:
+    """Idempotently remove a model override and return its inherited value."""
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    rt = _require_runtime_settings(rt)
+    _routewise_setting_entry(key)
+    resolver = await _routewise_settings_resolver(services, op_store, rt)
+    registry = services.model_router_registry
+    if registry is None:  # guarded by _routewise_settings_resolver
+        raise HTTPException(status_code=503, detail="Model router registry not initialized")
+    canonical_model_id = _canonical_model_id_or_404(resolver, model_id)
+
+    async with model_router_transition_lock(services, canonical_model_id):
+        canonical_model_id = _canonical_model_id_or_404(resolver, model_id)
+        previous = await resolver.get_resolved(canonical_model_id, key)
+        setting_key = model_routewise_setting_key(key, canonical_model_id)
+        await op_store.delete_setting(setting_key)
+        resolver.clear_override(canonical_model_id, key)
+        resolved = await resolver.get_resolved(canonical_model_id, key)
+        router_obj = registry.get_cached_router(canonical_model_id)
+        if isinstance(router_obj, RouteWiseRouter):
+            try:
+                await apply_routewise_settings_to_router(
+                    resolver,
+                    registry,
+                    canonical_model_id,
+                    router_obj,
+                    refresh_probe_task=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to immediately apply RouteWise model setting reset "
+                    "model=%s key=%s; background reconciliation will retry",
+                    canonical_model_id,
+                    key,
+                )
+
+    await _log_admin_action_best_effort(
+        op_store,
+        get_client_ip(request),
+        "routewise_model_settings.reset",
+        canonical_model_id,
+        {
+            "key": key,
+            "old_value": previous.value,
+            "new_value": resolved.value,
+            "source": resolved.source,
+            "admin_id": admin_id,
+        },
+    )
+    return _resolved_setting_item(resolved)
 
 
 @router.get("/probes", response_model=ListRoutewiseProbeSamplesResponse)

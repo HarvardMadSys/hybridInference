@@ -1,12 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 
 import type { RoutewiseProbeSampleItem, RoutewiseSettingItem } from '@/lib/api/admin';
 import {
   listRoutewiseProbeSamples,
   listRoutewiseSettings,
+  resetRoutewiseSetting,
   runRoutewiseProbe,
   updateRoutewiseSetting,
 } from '@/lib/api/admin';
@@ -19,6 +20,12 @@ const SETTING_LABELS: Record<string, string> = {
   routewise_latency_min_samples: 'Legacy sample threshold',
   routewise_probe_enabled: 'Background probes',
   routewise_probe_interval_sec: 'Probe interval (sec)',
+};
+
+const SETTING_SOURCE_LABELS: Record<RoutewiseSettingItem['source'], string> = {
+  runtime_override: 'Override',
+  model_config: 'models.yaml',
+  global_default: 'Global default',
 };
 
 type ProbeEndpointOption = {
@@ -124,6 +131,12 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
     kind: 'success' | 'error';
     text: string;
   } | null>(null);
+  const settingsRequestId = useRef(0);
+  const probeRequestId = useRef(0);
+  const probeRunRequestId = useRef(0);
+  const mutationRequestIds = useRef<Record<string, number>>({});
+  const modelIdentity = useRef({ modelId, epoch: 0 });
+  const probeSelection = useRef({ modelId, endpointId: '' });
 
   const probeEndpointOptions = useMemo(
     () => endpoints.filter((endpoint) => endpoint.endpointId),
@@ -173,40 +186,118 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
   }, [probeSamples, liveEndpointIds]);
 
   const loadSettings = useCallback(async () => {
+    const requestId = ++settingsRequestId.current;
+    const requestedModelId = modelId;
+    const requestedEpoch = modelIdentity.current.epoch;
+    if (!requestedModelId) {
+      setSettings([]);
+      setDrafts({});
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     setLoading(true);
     setError(null);
+    setSettings([]);
+    setDrafts({});
+    setSavingKey(null);
     try {
-      const loaded = await listRoutewiseSettings().then((resp) => resp.settings);
+      const loaded = await listRoutewiseSettings(requestedModelId).then((resp) => resp.settings);
+      if (
+        settingsRequestId.current !== requestId ||
+        modelIdentity.current.epoch !== requestedEpoch
+      ) {
+        return;
+      }
       setSettings(loaded);
       setDrafts(Object.fromEntries(loaded.map((setting) => [setting.key, settingDraft(setting)])));
     } catch (e) {
+      if (
+        settingsRequestId.current !== requestId ||
+        modelIdentity.current.epoch !== requestedEpoch
+      ) {
+        return;
+      }
       setError(getErrorMessage(e));
     } finally {
-      setLoading(false);
+      if (
+        settingsRequestId.current === requestId &&
+        modelIdentity.current.epoch === requestedEpoch
+      ) {
+        setLoading(false);
+      }
     }
-  }, []);
+  }, [modelId]);
 
   const loadProbeSamples = useCallback(async () => {
-    if (!modelId) {
+    const requestId = ++probeRequestId.current;
+    const requestedModelId = modelId;
+    const requestedEpoch = modelIdentity.current.epoch;
+    if (!requestedModelId) {
       setProbeSamples([]);
+      setProbeLoading(false);
+      setProbeError(null);
       return;
     }
+    const currentProbeSelection = probeSelection.current;
+    const requestedEndpointId =
+      currentProbeSelection.modelId === requestedModelId
+        ? currentProbeSelection.endpointId === probeEndpointId
+          ? probeEndpointId
+          : currentProbeSelection.endpointId
+        : '';
     setProbeLoading(true);
     setProbeError(null);
     try {
       const loaded = await listRoutewiseProbeSamples({
-        modelId,
-        endpointId: probeEndpointId || undefined,
+        modelId: requestedModelId,
+        endpointId: requestedEndpointId || undefined,
         sinceSeconds: 86_400,
         limit: 100,
       });
+      if (
+        probeRequestId.current !== requestId ||
+        modelIdentity.current.epoch !== requestedEpoch
+      ) {
+        return;
+      }
       setProbeSamples(loaded.samples);
     } catch (e) {
+      if (
+        probeRequestId.current !== requestId ||
+        modelIdentity.current.epoch !== requestedEpoch
+      ) {
+        return;
+      }
       setProbeError(getErrorMessage(e));
     } finally {
-      setProbeLoading(false);
+      if (
+        probeRequestId.current === requestId &&
+        modelIdentity.current.epoch === requestedEpoch
+      ) {
+        setProbeLoading(false);
+      }
     }
   }, [modelId, probeEndpointId]);
+
+  useEffect(() => {
+    if (modelIdentity.current.modelId !== modelId) {
+      modelIdentity.current = {
+        modelId,
+        epoch: modelIdentity.current.epoch + 1,
+      };
+    }
+    probeSelection.current = { modelId, endpointId: '' };
+    probeRequestId.current += 1;
+    probeRunRequestId.current += 1;
+    setProbeEndpointId('');
+    setProbeSamples([]);
+    setProbeLoading(false);
+    setProbeRunning(false);
+    setProbeError(null);
+    setProbeBanner(null);
+  }, [modelId]);
 
   useEffect(() => {
     void loadSettings();
@@ -218,6 +309,11 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
 
   const handleSaveSetting = useCallback(
     async (setting: RoutewiseSettingItem) => {
+      if (!modelId) return;
+      const requestedModelId = modelId;
+      const requestedEpoch = modelIdentity.current.epoch;
+      const mutationId = (mutationRequestIds.current[setting.key] ?? 0) + 1;
+      mutationRequestIds.current[setting.key] = mutationId;
       const draft = drafts[setting.key] ?? '';
       let value: string | number | boolean = draft;
 
@@ -238,29 +334,98 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
 
       setSavingKey(setting.key);
       try {
-        const updated = await updateRoutewiseSetting(setting.key, value);
+        const updated = await updateRoutewiseSetting(requestedModelId, setting.key, value);
+        if (
+          modelIdentity.current.epoch !== requestedEpoch ||
+          mutationRequestIds.current[setting.key] !== mutationId
+        ) {
+          return;
+        }
         setSettings((prev) => prev.map((item) => (item.key === updated.key ? updated : item)));
         setDrafts((prev) => ({ ...prev, [updated.key]: settingDraft(updated) }));
         toast.success(`Updated ${displayKey(updated)}.`);
       } catch (e) {
+        if (
+          modelIdentity.current.epoch !== requestedEpoch ||
+          mutationRequestIds.current[setting.key] !== mutationId
+        ) {
+          return;
+        }
         toast.error(`Failed to update ${displayKey(setting)}: ${getErrorMessage(e)}`);
       } finally {
-        setSavingKey(null);
+        if (
+          modelIdentity.current.epoch === requestedEpoch &&
+          mutationRequestIds.current[setting.key] === mutationId
+        ) {
+          setSavingKey(null);
+        }
       }
     },
-    [drafts],
+    [drafts, modelId],
+  );
+
+  const handleResetSetting = useCallback(
+    async (setting: RoutewiseSettingItem) => {
+      if (!modelId) return;
+      const requestedModelId = modelId;
+      const requestedEpoch = modelIdentity.current.epoch;
+      const mutationId = (mutationRequestIds.current[setting.key] ?? 0) + 1;
+      mutationRequestIds.current[setting.key] = mutationId;
+      setSavingKey(setting.key);
+      try {
+        const updated = await resetRoutewiseSetting(requestedModelId, setting.key);
+        if (
+          modelIdentity.current.epoch !== requestedEpoch ||
+          mutationRequestIds.current[setting.key] !== mutationId
+        ) {
+          return;
+        }
+        setSettings((prev) => prev.map((item) => (item.key === updated.key ? updated : item)));
+        setDrafts((prev) => ({ ...prev, [updated.key]: settingDraft(updated) }));
+        toast.success(`Reset ${displayKey(updated)} to its inherited value.`);
+      } catch (e) {
+        if (
+          modelIdentity.current.epoch !== requestedEpoch ||
+          mutationRequestIds.current[setting.key] !== mutationId
+        ) {
+          return;
+        }
+        toast.error(`Failed to reset ${displayKey(setting)}: ${getErrorMessage(e)}`);
+      } finally {
+        if (
+          modelIdentity.current.epoch === requestedEpoch &&
+          mutationRequestIds.current[setting.key] === mutationId
+        ) {
+          setSavingKey(null);
+        }
+      }
+    },
+    [modelId],
   );
 
   const handleRunProbe = useCallback(async () => {
     if (!modelId) return;
+    const requestedModelId = modelId;
+    const requestedEpoch = modelIdentity.current.epoch;
+    const runRequestId = ++probeRunRequestId.current;
+    const requestedEndpointId =
+      probeSelection.current.modelId === requestedModelId
+        ? probeSelection.current.endpointId
+        : '';
     setProbeRunning(true);
     setProbeBanner(null);
     try {
       const response = await runRoutewiseProbe({
-        model_id: modelId,
-        endpoint_id: probeEndpointId || null,
+        model_id: requestedModelId,
+        endpoint_id: requestedEndpointId || null,
         idle_only: false,
       });
+      if (
+        probeRunRequestId.current !== runRequestId ||
+        modelIdentity.current.epoch !== requestedEpoch
+      ) {
+        return;
+      }
       const failed = response.results.filter((result) => !result.ok);
       if (failed.length === 0) {
         const count = response.results.length;
@@ -278,13 +443,24 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
       }
       await loadProbeSamples();
     } catch (e) {
+      if (
+        probeRunRequestId.current !== runRequestId ||
+        modelIdentity.current.epoch !== requestedEpoch
+      ) {
+        return;
+      }
       const message = getErrorMessage(e);
       setProbeBanner({ kind: 'error', text: message });
       toast.error(`Probe failed: ${message}`);
     } finally {
-      setProbeRunning(false);
+      if (
+        probeRunRequestId.current === runRequestId &&
+        modelIdentity.current.epoch === requestedEpoch
+      ) {
+        setProbeRunning(false);
+      }
     }
-  }, [loadProbeSamples, modelId, probeEndpointId]);
+  }, [loadProbeSamples, modelId]);
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4">
@@ -337,6 +513,9 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
                   <p className="mt-0.5 text-[11px] leading-5 text-gray-500">
                     {setting.description}
                   </p>
+                  <p className="mt-1 text-[11px] font-medium text-gray-500">
+                    Source: {SETTING_SOURCE_LABELS[setting.source]}
+                  </p>
                   {!validated.ok && draft !== '' && (
                     <p className="mt-0.5 text-[11px] text-red-600" role="alert">
                       {validated.error}
@@ -387,6 +566,19 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
                   >
                     Save
                   </button>
+                  {setting.overridden && (
+                    <button
+                      type="button"
+                      aria-label={`Reset ${displayKey(setting)}`}
+                      disabled={isSaving}
+                      onClick={() => {
+                        void handleResetSetting(setting);
+                      }}
+                      className="rounded-md border border-gray-200 px-3 py-1 text-[12px] font-medium text-gray-700 disabled:opacity-40"
+                    >
+                      Reset
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -413,7 +605,11 @@ export function RoutewiseSettingsPanel({ modelId, endpoints = [] }: RoutewiseSet
               <select
                 id="routewise-probe-endpoint"
                 value={probeEndpointId}
-                onChange={(event) => setProbeEndpointId(event.target.value)}
+                onChange={(event) => {
+                  const endpointId = event.target.value;
+                  probeSelection.current = { modelId, endpointId };
+                  setProbeEndpointId(endpointId);
+                }}
                 className="h-10 w-full min-w-0 rounded-lg border border-gray-200 bg-white px-3 text-[13px] text-gray-800 sm:w-[420px]"
               >
                 <option value="">All endpoints</option>

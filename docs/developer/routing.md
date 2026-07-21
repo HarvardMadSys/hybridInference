@@ -105,6 +105,45 @@ with no history fails fast by design. The reference block in
 completeness-tested against the `RouteWiseConfig` dataclass. Design specs
 live under `docs/agents/specs/`.
 
+#### Runtime RouteWise settings
+
+RouteWise tuning is model-scoped. The admin UI and model-settings API resolve
+aliases to the canonical model id, so an alias and its canonical model always
+read and update the same router settings. Changing one model does not change
+another model's RouteWise algorithm.
+
+The effective value for each runtime-adjustable setting is selected in this
+order:
+
+1. A persisted override for the canonical model.
+2. That model's `router_params:` value in `config/models.yaml`.
+3. The legacy global runtime setting, retained as a compatibility default.
+4. The built-in `RouteWiseConfig` default.
+
+The API/UI source label `Global default` intentionally covers the last two
+levels: when no global row exists, the legacy runtime registry supplies the
+same value as `RouteWiseConfig`.
+
+The model-settings endpoints accept the model id as a query parameter because
+model ids may contain `/`:
+
+```text
+GET    /admin/routewise/model-settings?model_id=<model-id>
+PATCH  /admin/routewise/model-settings/{key}?model_id=<model-id>
+DELETE /admin/routewise/model-settings/{key}?model_id=<model-id>
+```
+
+`DELETE` removes only the model override and immediately restores the inherited
+YAML, legacy-global, or built-in value. The older
+`/admin/routewise/settings` endpoints remain available, but now update only
+the fallback used by models that have neither a model override nor a YAML
+value.
+
+Model overrides are restored before routers start, applied to newly created
+RouteWise routers during strategy transitions, and periodically refreshed in
+each worker. A runtime-created model's overrides are removed when its final
+route is deleted. Router decision state itself remains process-local.
+
 ### Health Monitoring
 
 Health checks are optional and can be enabled by setting `health_check > 0` in the configuration. The system performs simple GET requests to `/health` endpoints and adjusts weights accordingly.

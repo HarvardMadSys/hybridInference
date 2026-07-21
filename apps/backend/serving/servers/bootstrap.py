@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import datetime as dt
 import os
+import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +29,10 @@ from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
+from serving.config.routewise_model_settings import (
+    RouteWiseSettingsResolver,
+    apply_routewise_settings_to_router,
+)
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
@@ -186,6 +191,79 @@ async def _refresh_disabled_provider_snapshots(
             )
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
+
+
+async def _apply_cached_routewise_model_settings(
+    resolver: RouteWiseSettingsResolver,
+    registry: ModelRouterRegistry,
+    transition_locks: dict[str, asyncio.Lock],
+    *,
+    refresh_probe_task: bool,
+) -> None:
+    """Apply effective settings to each cached canonical RouteWise router."""
+    seen_models: set[str] = set()
+    first_error: Exception | None = None
+    model_ids = [*registry.configured_model_ids(), *registry.registered_models()]
+    for model_id in model_ids:
+        canonical_model_id = registry.canonical_model_id(model_id)
+        if canonical_model_id in seen_models:
+            continue
+        seen_models.add(canonical_model_id)
+        try:
+            async with transition_locks.setdefault(canonical_model_id, asyncio.Lock()):
+                router_obj = registry.get_cached_router(canonical_model_id)
+                if not isinstance(router_obj, RouteWiseRouter):
+                    continue
+                await apply_routewise_settings_to_router(
+                    resolver,
+                    registry,
+                    canonical_model_id,
+                    router_obj,
+                    refresh_probe_task=refresh_probe_task,
+                )
+        except Exception as exc:
+            # One unhealthy router must not prevent other models from
+            # converging. Re-raise after the batch so callers still know the
+            # refresh was incomplete and the polling loop retries it.
+            if first_error is None:
+                first_error = exc
+            logger.warning(
+                "Failed to apply per-model RouteWise settings model=%s",
+                canonical_model_id,
+                exc_info=True,
+            )
+    if first_error is not None:
+        raise first_error
+
+
+async def _refresh_routewise_model_settings(
+    resolver: RouteWiseSettingsResolver,
+    registry: ModelRouterRegistry,
+    transition_locks: dict[str, asyncio.Lock],
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Poll scoped settings so all workers converge after one admin write."""
+    # Workers typically boot together. Stagger the first read so they do not
+    # all scan site_settings in the same instant; later reads retain the fixed
+    # upper-bound convergence interval.
+    poll_interval = max(0.1, float(interval_seconds))
+    await asyncio.sleep(random.uniform(0.0, poll_interval))
+    while True:
+        try:
+            await resolver.load_all()
+            # Re-apply even when the DB snapshot is unchanged. This is cheap
+            # for unchanged routers and retries a prior transient live-apply
+            # failure that happened after the resolver had accepted a snapshot.
+            await _apply_cached_routewise_model_settings(
+                resolver,
+                registry,
+                transition_locks,
+                refresh_probe_task=True,
+            )
+        except Exception:
+            logger.warning("Per-model RouteWise settings refresh failed", exc_info=True)
+        await asyncio.sleep(poll_interval)
 
 
 async def _bootstrap_routewise_from_logs(
@@ -616,6 +694,7 @@ async def initialize() -> AppServices:
         dependencies=router_dependencies,
         shared_fixed_router=router,
     )
+    model_router_transition_locks: dict[str, asyncio.Lock] = {}
 
     # Eagerly construct routers for every known model so config errors
     # (bad strategy name, bad router_params) surface at boot, not on the
@@ -756,6 +835,7 @@ async def initialize() -> AppServices:
                 operational_store=operational_store,
                 model_router_registry=model_router_registry,
                 managed_routers=managed_routers,
+                model_router_transition_locks=model_router_transition_locks,
             )
             await apply_persisted_model_router_strategy_overrides(
                 provider_route_services,
@@ -853,11 +933,29 @@ async def initialize() -> AppServices:
 
     model_visibility_resolver = None
     model_concurrency_resolver = None
+    routewise_settings_resolver = None
+    routewise_settings_refresh_task = None
     weight_override_resolver = None
     weight_override_refresh_task = None
     disabled_provider_resolver = None
     disabled_provider_refresh_task = None
     if operational_store is not None:
+        try:
+            routewise_settings_resolver = RouteWiseSettingsResolver(
+                operational_store,
+                runtime_settings,
+                model_router_registry,
+            )
+            await routewise_settings_resolver.load_all()
+            await _apply_cached_routewise_model_settings(
+                routewise_settings_resolver,
+                model_router_registry,
+                model_router_transition_locks,
+                refresh_probe_task=False,
+            )
+            logger.info("Per-model RouteWise settings resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Per-model RouteWise settings initialization failed: {exc}")
         try:
             model_visibility_resolver = ModelVisibilityResolver(operational_store)
             logger.info("Model visibility resolver initialized")
@@ -1004,6 +1102,17 @@ async def initialize() -> AppServices:
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Managed router start() failed: {exc}")
 
+    if routewise_settings_resolver is not None:
+        routewise_settings_refresh_task = asyncio.create_task(
+            _refresh_routewise_model_settings(
+                routewise_settings_resolver,
+                model_router_registry,
+                model_router_transition_locks,
+            )
+        )
+        _BACKGROUND_TASKS.add(routewise_settings_refresh_task)
+        routewise_settings_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
     return AppServices(
         router=router,
         embedding_adapters=embedding_adapters or None,
@@ -1013,8 +1122,10 @@ async def initialize() -> AppServices:
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
         managed_routers=managed_routers,
+        model_router_transition_locks=model_router_transition_locks,
         model_visibility_resolver=model_visibility_resolver,
         model_concurrency_resolver=model_concurrency_resolver,
+        routewise_settings_resolver=routewise_settings_resolver,
         weight_override_resolver=weight_override_resolver,
         disabled_provider_resolver=disabled_provider_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
@@ -1024,6 +1135,7 @@ async def initialize() -> AppServices:
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
         responses_store=responses_store,
+        routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
     )
@@ -1035,6 +1147,11 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    if services.routewise_settings_refresh_task is not None:
+        services.routewise_settings_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.routewise_settings_refresh_task
+
     # Alert engine — stop drain task and remove scheduled jobs first so they
     # don't fire while we're tearing down stores below.
     if services.alert_engine is not None:

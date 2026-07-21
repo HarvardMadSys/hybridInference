@@ -12,7 +12,7 @@ import pytest
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.route_table import EffectiveRoute
-from routing.routewise import hedging as hedging_module
+from routing.routewise import hedging as hedging_module, router as router_module
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.hedging import (
     HedgedAdapter,
@@ -730,6 +730,41 @@ class TestRouterHedgeMode:
         assert selected.hedge_checkpoints_sec
         assert selected.hedge_threshold_sec > 0.0
         assert selected.event_sink is health_registry
+
+    def test_probability_target_request_keeps_decision_time_slo(self, monkeypatch):
+        """An in-flight hedge must not mix a new runtime SLO into its old schedule."""
+        config = RouteWiseConfig(
+            budget_alpha=0.0,
+            latency_min_samples=1,
+            latency_slo_sec=3.0,
+            latency_hedge_mode="probability_target",
+        )
+        router, _api_a, _api_b = _make_router_with_two_api(config)
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 3500.0)
+        router._latency_profiles["test-model:api-b"].record(now, 200.0)
+
+        seen_slo_ms: list[float] = []
+        original = router_module.combined_success_probability
+
+        def _record_slo(*args, slo_ms, **kwargs):
+            seen_slo_ms.append(slo_ms)
+            return original(*args, slo_ms=slo_ms, **kwargs)
+
+        monkeypatch.setattr(router_module, "combined_success_probability", _record_slo)
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision is not None
+        assert isinstance(decision.adapter, HedgedAdapter)
+
+        try:
+            router.apply_runtime_overrides(latency_slo_sec=6.0)
+            decision.adapter._start_backup_at(decision.adapter.hedge_checkpoints_sec[0])
+        finally:
+            decision.release()
+
+        assert seen_slo_ms
+        assert set(seen_slo_ms) == {3000.0}
 
     @pytest.mark.asyncio
     async def test_probability_target_mode_dispatches_backup_and_updates_metadata(self):
