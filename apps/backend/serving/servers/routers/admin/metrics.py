@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -58,6 +60,27 @@ _TOKEN_HISTOGRAM_EDGES: tuple[float, ...] = (0, 32, 128, 512, 2048, 8192, 32768,
 _LATENCY_HISTOGRAM_EDGES: tuple[float, ...] = (0, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 _THROUGHPUT_HISTOGRAM_EDGES: tuple[float, ...] = (0, 5, 10, 25, 50, 100, 250, 500, 1000)
 
+# The dashboard can mount this section multiple times in a short period (for
+# example while switching admin tabs).  Exact percentiles over a month's log
+# history are deliberately expensive, and the underlying data does not need
+# sub-second freshness.  Keep one short, per-process result cache and
+# coalesce concurrent misses so a tab switch cannot multiply that work.
+_PERFORMANCE_METRICS_CACHE_TTL_SECONDS = 30.0
+_PERFORMANCE_METRICS_CACHE: tuple[float, int, AdminPerformanceMetricsResponse] | None = None
+_PERFORMANCE_METRICS_LOCK: asyncio.Lock | None = None
+_PERFORMANCE_METRICS_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def _performance_metrics_lock() -> asyncio.Lock:
+    """Return a lock bound to the active event loop for metric-cache misses."""
+    global _PERFORMANCE_METRICS_LOCK, _PERFORMANCE_METRICS_LOCK_LOOP
+
+    loop = asyncio.get_running_loop()
+    if _PERFORMANCE_METRICS_LOCK is None or _PERFORMANCE_METRICS_LOCK_LOOP is not loop:
+        _PERFORMANCE_METRICS_LOCK = asyncio.Lock()
+        _PERFORMANCE_METRICS_LOCK_LOOP = loop
+    return _PERFORMANCE_METRICS_LOCK
+
 
 def _distribution_from_row(
     row: Any,
@@ -66,15 +89,17 @@ def _distribution_from_row(
     bucket_counts: dict[int, int],
 ) -> AdminMetricDistribution:
     """Build a distribution from a stats row + histogram counts dict."""
+    percentiles = row[f"{prefix}_percentiles"] or ()
+    p50, p90, p95, p99 = (*percentiles, None, None, None, None)[:4]
     return AdminMetricDistribution(
         count=int(row[f"{prefix}_count"] or 0),
         mean=_round_or_none(row[f"{prefix}_mean"]),
         min=_round_or_none(row[f"{prefix}_min"]),
         max=_round_or_none(row[f"{prefix}_max"]),
-        p50=_round_or_none(row[f"{prefix}_p50"]),
-        p90=_round_or_none(row[f"{prefix}_p90"]),
-        p95=_round_or_none(row[f"{prefix}_p95"]),
-        p99=_round_or_none(row[f"{prefix}_p99"]),
+        p50=_round_or_none(p50),
+        p90=_round_or_none(p90),
+        p95=_round_or_none(p95),
+        p99=_round_or_none(p99),
         histogram=_build_histogram(edges, bucket_counts),
     )
 
@@ -283,11 +308,7 @@ async def admin_get_request_metrics(
     )
 
 
-@router.get("/performance-metrics", response_model=AdminPerformanceMetricsResponse)
-async def admin_get_performance_metrics(
-    _admin_id: str = Depends(verify_admin_access),
-    db_logger=Depends(get_db_logger),
-) -> AdminPerformanceMetricsResponse:
+async def _load_performance_metrics(db_logger) -> AdminPerformanceMetricsResponse:
     """Return prompt/response length and latency distributions per lookback window.
 
     For each window, computes percentiles (p50/p90/p95/p99), mean/min/max, count,
@@ -329,26 +350,10 @@ async def admin_get_performance_metrics(
                     MAX(prompt_tokens) FILTER (
                         WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
                     ) AS pt_max,
-                    percentile_cont(0.5) WITHIN GROUP (
-                        ORDER BY prompt_tokens
-                    ) FILTER (
-                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
-                    ) AS pt_p50,
-                    percentile_cont(0.9) WITHIN GROUP (
-                        ORDER BY prompt_tokens
-                    ) FILTER (
-                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
-                    ) AS pt_p90,
-                    percentile_cont(0.95) WITHIN GROUP (
-                        ORDER BY prompt_tokens
-                    ) FILTER (
-                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
-                    ) AS pt_p95,
-                    percentile_cont(0.99) WITHIN GROUP (
-                        ORDER BY prompt_tokens
-                    ) FILTER (
-                        WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0
-                    ) AS pt_p99,
+                    percentile_cont(ARRAY[0.5, 0.9, 0.95, 0.99]::float8[])
+                        WITHIN GROUP (ORDER BY prompt_tokens)
+                        FILTER (WHERE prompt_tokens IS NOT NULL AND prompt_tokens > 0)
+                        AS pt_percentiles,
 
                     COUNT(*) FILTER (
                         WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
@@ -362,52 +367,26 @@ async def admin_get_performance_metrics(
                     MAX(completion_tokens) FILTER (
                         WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
                     ) AS ct_max,
-                    percentile_cont(0.5) WITHIN GROUP (
-                        ORDER BY completion_tokens
-                    ) FILTER (
-                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
-                    ) AS ct_p50,
-                    percentile_cont(0.9) WITHIN GROUP (
-                        ORDER BY completion_tokens
-                    ) FILTER (
-                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
-                    ) AS ct_p90,
-                    percentile_cont(0.95) WITHIN GROUP (
-                        ORDER BY completion_tokens
-                    ) FILTER (
-                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
-                    ) AS ct_p95,
-                    percentile_cont(0.99) WITHIN GROUP (
-                        ORDER BY completion_tokens
-                    ) FILTER (
-                        WHERE completion_tokens IS NOT NULL AND completion_tokens > 0
-                    ) AS ct_p99,
+                    percentile_cont(ARRAY[0.5, 0.9, 0.95, 0.99]::float8[])
+                        WITHIN GROUP (ORDER BY completion_tokens)
+                        FILTER (WHERE completion_tokens IS NOT NULL AND completion_tokens > 0)
+                        AS ct_percentiles,
 
                     COUNT(*) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_count,
                     AVG(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_mean,
                     MIN(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_min,
                     MAX(ttft_ms) FILTER (WHERE ttft_ms IS NOT NULL) AS tt_max,
-                    percentile_cont(0.5) WITHIN GROUP (ORDER BY ttft_ms)
-                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p50,
-                    percentile_cont(0.9) WITHIN GROUP (ORDER BY ttft_ms)
-                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p90,
-                    percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms)
-                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p95,
-                    percentile_cont(0.99) WITHIN GROUP (ORDER BY ttft_ms)
-                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_p99,
+                    percentile_cont(ARRAY[0.5, 0.9, 0.95, 0.99]::float8[])
+                        WITHIN GROUP (ORDER BY ttft_ms)
+                        FILTER (WHERE ttft_ms IS NOT NULL) AS tt_percentiles,
 
                     COUNT(*) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_count,
                     AVG(throughput_tps) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_mean,
                     MIN(throughput_tps) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_min,
                     MAX(throughput_tps) FILTER (WHERE throughput_tps IS NOT NULL) AS tp_max,
-                    percentile_cont(0.5) WITHIN GROUP (ORDER BY throughput_tps)
-                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p50,
-                    percentile_cont(0.9) WITHIN GROUP (ORDER BY throughput_tps)
-                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p90,
-                    percentile_cont(0.95) WITHIN GROUP (ORDER BY throughput_tps)
-                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p95,
-                    percentile_cont(0.99) WITHIN GROUP (ORDER BY throughput_tps)
-                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_p99
+                    percentile_cont(ARRAY[0.5, 0.9, 0.95, 0.99]::float8[])
+                        WITHIN GROUP (ORDER BY throughput_tps)
+                        FILTER (WHERE throughput_tps IS NOT NULL) AS tp_percentiles
                 FROM derived
                 """,
                 window_minutes,
@@ -493,6 +472,55 @@ async def admin_get_performance_metrics(
         generated_at=datetime.now(timezone.utc),
         windows=windows,
     )
+
+
+async def _get_cached_performance_metrics(
+    db_logger,
+    *,
+    refresh: bool = False,
+) -> AdminPerformanceMetricsResponse:
+    """Load performance metrics, reusing a short-lived result when possible."""
+    global _PERFORMANCE_METRICS_CACHE
+
+    pool_id = id(db_logger.pool)
+    now = time.monotonic()
+    cached = _PERFORMANCE_METRICS_CACHE
+    if (
+        not refresh
+        and cached is not None
+        and cached[1] == pool_id
+        and now - cached[0] < _PERFORMANCE_METRICS_CACHE_TTL_SECONDS
+    ):
+        return cached[2]
+
+    # Serialize cache misses. The inner check means simultaneous dashboard
+    # mounts all reuse the one query instead of each executing eight scans.
+    async with _performance_metrics_lock():
+        now = time.monotonic()
+        cached = _PERFORMANCE_METRICS_CACHE
+        if (
+            not refresh
+            and cached is not None
+            and cached[1] == pool_id
+            and now - cached[0] < _PERFORMANCE_METRICS_CACHE_TTL_SECONDS
+        ):
+            return cached[2]
+
+        metrics = await _load_performance_metrics(db_logger)
+        _PERFORMANCE_METRICS_CACHE = (time.monotonic(), pool_id, metrics)
+        return metrics
+
+
+@router.get("/performance-metrics", response_model=AdminPerformanceMetricsResponse)
+async def admin_get_performance_metrics(
+    refresh: bool = False,
+    _admin_id: str = Depends(verify_admin_access),
+    db_logger=Depends(get_db_logger),
+) -> AdminPerformanceMetricsResponse:
+    """Return cached performance distributions; ``refresh`` bypasses the cache."""
+    if not db_logger or not db_logger.pool:
+        raise HTTPException(500, "Database not configured")
+    return await _get_cached_performance_metrics(db_logger, refresh=refresh)
 
 
 @router.get("/ttft-scatter", response_model=AdminTtftScatterResponse)
