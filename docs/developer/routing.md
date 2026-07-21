@@ -144,6 +144,21 @@ RouteWise routers during strategy transitions, and periodically refreshed in
 each worker. A runtime-created model's overrides are removed when its final
 route is deleted. Router decision state itself remains process-local.
 
+##### Worker model and scaling
+
+Current production and staging RouteWise deployments run one Uvicorn worker.
+Router decisions, circuit and health state, quota/concurrency reservations,
+and per-model transition locks are process-local. Periodically polling
+persisted settings makes workers eventually converge on values, but does not
+serialize concurrent admin route or strategy mutations.
+
+Do not enable multiple backend workers or replicas for RouteWise until shared
+state and distributed fencing plus transactional control-plane writes exist.
+The quota/concurrency single-worker guard is best-effort; it is not a
+replacement for this deployment constraint. On-demand-only RouteWise models
+can technically run with multiple workers, but each worker still has
+independent health, learning, and affinity state.
+
 ### Health Monitoring
 
 Health checks are optional and can be enabled by setting `health_check > 0` in the configuration. The system performs simple GET requests to `/health` endpoints and adjusts weights accordingly.
