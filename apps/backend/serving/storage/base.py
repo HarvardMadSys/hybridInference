@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
     from decimal import Decimal
 
@@ -876,6 +877,19 @@ class OperationalStore(ABC):
         route_id: str,
     ) -> bool:
         """Atomically delete a route candidate and any matching override row."""
+
+    @abstractmethod
+    async def delete_runtime_model_state(
+        self,
+        model_id: str,
+        setting_keys: Sequence[str],
+    ) -> bool:
+        """Atomically delete all persisted state owned by a runtime model.
+
+        ``setting_keys`` is supplied by the caller so the storage layer does not
+        depend on serving-layer key conventions. Returns True when at least one
+        provider route candidate was removed.
+        """
 
     # -- routewise probes ----------------------------------------------------
 

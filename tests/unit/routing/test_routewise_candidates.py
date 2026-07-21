@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from routing.routewise.candidates import (
@@ -9,6 +11,7 @@ from routing.routewise.candidates import (
     ProviderType,
     QuotaSource,
     build_provider_candidates,
+    endpoint_id_for_adapter,
 )
 from serving.adapters.base import ModelConfig
 
@@ -16,6 +19,26 @@ from serving.adapters.base import ModelConfig
 class _Adapter:
     def __init__(self, config: ModelConfig) -> None:
         self.config = config
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("endpoint_id", "provider", "expected"),
+    [
+        ("  normalized-endpoint  ", "zai", "normalized-endpoint"),
+        (None, "  normalized-provider  ", "normalized-provider"),
+        (None, "   ", "unknown"),
+        (123, "zai", "123"),
+    ],
+)
+def test_endpoint_id_compatibility_normalizes_malformed_routewise_config(
+    endpoint_id,
+    provider,
+    expected,
+):
+    adapter = SimpleNamespace(config=SimpleNamespace(endpoint_id=endpoint_id, provider=provider))
+
+    assert endpoint_id_for_adapter(adapter) == expected
 
 
 def _adapter(

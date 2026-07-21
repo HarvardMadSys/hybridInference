@@ -16,7 +16,7 @@ async def test_load_all_populates_snapshot_from_store():
     ]
     resolver = DisabledProviderResolver(store)
 
-    await resolver.load_all()
+    assert await resolver.load_all() is True
 
     assert resolver.is_disabled("openrouter")
     assert resolver.is_disabled("chutes")
@@ -47,9 +47,24 @@ async def test_load_all_replaces_previous_snapshot():
     ]
     resolver = DisabledProviderResolver(store)
 
-    await resolver.load_all()
+    assert await resolver.load_all() is True
     assert resolver.is_disabled("zai")
 
-    await resolver.load_all()
+    assert await resolver.load_all() is True
     assert not resolver.is_disabled("zai")
     assert resolver.is_disabled("chutes")
+
+
+@pytest.mark.asyncio
+async def test_load_all_reports_unchanged_snapshot_independent_of_row_order():
+    store = AsyncMock()
+    store.list_disabled_providers.side_effect = [
+        [{"provider": "zai"}, {"provider": "chutes"}],
+        [{"provider": "chutes"}, {"provider": "zai"}],
+        [],
+    ]
+    resolver = DisabledProviderResolver(store)
+
+    assert await resolver.load_all() is True
+    assert await resolver.load_all() is False
+    assert await resolver.load_all() is True

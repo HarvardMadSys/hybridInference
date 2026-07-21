@@ -8,17 +8,23 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+import routing.executor as executor_module
 from routing.executor import (
     AllCircuitsOpenError,
     ProviderPinError,
     RouteConfig,
     RouteExecutor,
-    _has_non_empty_content,
 )
+from routing.protocols import RoutingRequestOptions
+from routing.streaming import has_non_empty_content
 from serving.adapters.base import BaseAdapter, ModelConfig
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+
+def test_legacy_content_helper_alias_points_to_public_helper():
+    assert executor_module._has_non_empty_content is has_non_empty_content
 
 
 def _cfg(mid: str, provider: str = "p") -> ModelConfig:
@@ -210,7 +216,7 @@ async def test_pin_failure_attaches_routing_provider_to_exception():
         await exe.chat_completion(
             "m",
             messages=[{"role": "user", "content": "hi"}],
-            pin_provider="kimi_coding",
+            routing_options=RoutingRequestOptions(pin_provider="kimi_coding"),
         )
 
     routing = getattr(exc_info.value, "_routing", None)
@@ -273,7 +279,7 @@ async def test_no_route_configured_raises():
 
 
 @pytest.mark.unit
-def test_all_circuits_open_raises_all_circuits_open_error():
+def test_all_circuits_open_raises_all_circuits_open_error(monkeypatch):
     """Regression: when every circuit breaker is open, _select_adapter raises
     AllCircuitsOpenError so the API layer can return 503 Service Unavailable
     rather than a generic 500."""
@@ -282,14 +288,7 @@ def test_all_circuits_open_raises_all_circuits_open_error():
     b = _EchoAdapter(_cfg("m", provider="B"))
     exe.register_route("m", [(a, 0.5), (b, 0.5)])
 
-    # Force every circuit breaker for this route into the OPEN state so that
-    # ``allow_request()`` returns False for all candidates, leaving ``allowed``
-    # empty inside ``_select_adapter``.
-    # Trigger circuit population by calling _select_adapter once successfully.
-    assert exe._select_adapter("m") is not None  # type: ignore[attr-defined]
-    for cb in exe._circuits.values():  # type: ignore[attr-defined]
-        cb.state = "open"
-        cb.last_opened = float("inf")  # never cool down within this test
+    monkeypatch.setattr(exe._health_registry, "allow_request", lambda _endpoint_id: False)
 
     with pytest.raises(AllCircuitsOpenError):
         exe._select_adapter("m")  # type: ignore[attr-defined]
@@ -379,7 +378,7 @@ def test_route_selection_performance():
 
 
 # ---------------------------------------------------------------------------
-# _has_non_empty_content tests
+# has_non_empty_content tests
 # ---------------------------------------------------------------------------
 
 
@@ -388,11 +387,11 @@ class TestHasNonEmptyContent:
 
     def test_text_content(self):
         chunk = 'data: {"choices": [{"delta": {"content": "hello"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_empty_content(self):
         chunk = 'data: {"choices": [{"delta": {"content": ""}}]}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
     def test_tool_calls_delta(self):
         """tool_calls in delta should be treated as content (blocks stream fallback)."""
@@ -400,37 +399,37 @@ class TestHasNonEmptyContent:
             'data: {"choices": [{"delta": {"tool_calls": '
             '[{"index": 0, "function": {"arguments": "{\\"x\\": 1}"}}]}}]}\n\n'
         )
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_reasoning_content_delta(self):
         """reasoning_content should be treated as output for streaming TTFT/race gates."""
         chunk = 'data: {"choices": [{"delta": {"reasoning_content": "thinking"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_reasoning_delta(self):
         """Some providers use delta.reasoning instead of delta.reasoning_content."""
         chunk = 'data: {"choices": [{"delta": {"reasoning": "thinking"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_thinking_delta(self):
         """The real-eval transport also treats delta.thinking as output."""
         chunk = 'data: {"choices": [{"delta": {"thinking": "thinking"}}]}\n\n'
-        assert _has_non_empty_content(chunk) is True
+        assert has_non_empty_content(chunk) is True
 
     def test_empty_tool_calls(self):
         chunk = 'data: {"choices": [{"delta": {"tool_calls": []}}]}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
     def test_done_sentinel(self):
-        assert _has_non_empty_content("data: [DONE]\n\n") is False
+        assert has_non_empty_content("data: [DONE]\n\n") is False
 
     def test_no_choices(self):
         chunk = 'data: {"choices": []}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
     def test_null_delta(self):
         chunk = 'data: {"choices": [{"delta": {}}]}\n\n'
-        assert _has_non_empty_content(chunk) is False
+        assert has_non_empty_content(chunk) is False
 
 
 # ---------------------------------------------------------------------------
@@ -550,7 +549,9 @@ async def test_pin_miss_raises_provider_pin_error():
 
     with pytest.raises(ProviderPinError, match="nonexistent"):
         await exe.chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="nonexistent"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="nonexistent"),
         )
 
 
@@ -565,7 +566,9 @@ async def test_pin_no_fallback_on_failure():
 
     with pytest.raises(RuntimeError, match="fail"):
         await exe.chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zai"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="zai"),
         )
 
 
@@ -579,8 +582,28 @@ async def test_pin_success():
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
 
     resp = await exe.chat_completion(
-        "m", messages=[{"role": "user", "content": "hi"}], pin_provider="ollama"
+        "m",
+        messages=[{"role": "user", "content": "hi"}],
+        routing_options=RoutingRequestOptions(pin_provider="ollama"),
     )
+    assert resp["_routing"]["provider"] == "ollama"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_legacy_pin_keyword_is_consumed_by_fixed_router():
+    """The one-release shim must pin locally instead of forwarding upstream."""
+    exe = RouteExecutor()
+    a = _EchoAdapter(_cfg("m", provider="zai"))
+    b = _EchoAdapter(_cfg("m", provider="ollama"))
+    exe.register_route("m", [(a, 0.8), (b, 0.2)])
+
+    resp = await exe.chat_completion(
+        "m",
+        messages=[{"role": "user", "content": "hi"}],
+        pin_provider="ollama",
+    )
+
     assert resp["_routing"]["provider"] == "ollama"
 
 
@@ -618,7 +641,9 @@ async def test_stream_pin_success():
 
     chunks = []
     async for chunk in exe.stream_chat_completion(
-        "m", messages=[{"role": "user", "content": "hi"}], pin_provider="ollama"
+        "m",
+        messages=[{"role": "user", "content": "hi"}],
+        routing_options=RoutingRequestOptions(pin_provider="ollama"),
     ):
         chunks.append(chunk)
     assert len(chunks) > 0
@@ -634,7 +659,9 @@ async def test_stream_pin_miss_raises():
 
     with pytest.raises(ProviderPinError, match="nonexistent"):
         async for _ in exe.stream_chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="nonexistent"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="nonexistent"),
         ):
             pass
 
@@ -650,7 +677,9 @@ async def test_stream_pin_no_fallback():
 
     with pytest.raises(RuntimeError, match="fail"):
         async for _ in exe.stream_chat_completion(
-            "m", messages=[{"role": "user", "content": "hi"}], pin_provider="zai"
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            routing_options=RoutingRequestOptions(pin_provider="zai"),
         ):
             pass
 

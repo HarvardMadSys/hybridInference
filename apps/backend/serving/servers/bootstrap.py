@@ -12,19 +12,27 @@ import asyncio
 import contextlib
 import datetime as dt
 import os
-from typing import Any
+import random
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
+from routing.dependencies import RouterBuildDependencies
+from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
-from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
+from routing.routewise.router import RouteWiseRouter
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
+from serving.config.routewise_model_settings import (
+    RouteWiseSettingsResolver,
+    apply_routewise_settings_to_router,
+)
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
@@ -39,9 +47,12 @@ from serving.utils.logging import get_logger, setup_logging
 from .concurrency import UserConcurrencyLimiter
 from .deps import AppServices
 from .registry import ModelRegistrationInfo, register_from_models_yaml
+from .routewise_rebuild import rebuild_cached_routewise_routers
+
+if TYPE_CHECKING:
+    from routing.routers import ManagedRouter
 
 logger = get_logger(__name__)
-MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 
 # Strong references to fire-and-forget background tasks created at startup.
 # asyncio holds only weak refs to running tasks, so without this set the
@@ -49,27 +60,55 @@ MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 _BACKGROUND_TASKS: set = set()
 
 
+class _RouteWiseRouterTypeError(TypeError):
+    """Signal that a declared RouteWise strategy returned the wrong type."""
+
+
+@dataclass(slots=True)
+class _EffectiveRouteRefreshState:
+    """Remember a failed rebuild so a later unchanged reload retries it."""
+
+    rebuild_pending: bool = False
+
+
+async def _reload_effective_route_state(
+    resolver: Any,
+    model_router_registry: ModelRouterRegistry | None,
+    refresh_state: _EffectiveRouteRefreshState,
+) -> bool:
+    """Reload one resolver snapshot and apply any pending RouteWise rebuild."""
+    refresh_state.rebuild_pending = bool(await resolver.load_all()) or refresh_state.rebuild_pending
+    if refresh_state.rebuild_pending:
+        rebuild_cached_routewise_routers(model_router_registry)
+        refresh_state.rebuild_pending = False
+        return True
+    return False
+
+
 def _collect_routewise_routers(
     model_router_registry: ModelRouterRegistry,
     model_infos: list[ModelRegistrationInfo],
-    managed_routers: list[Any],
-) -> tuple[list[Any], dict[int, set[str]], dict[int, dict[str, str]]]:
+    managed_routers: list[ManagedRouter],
+) -> tuple[list[RouteWiseRouter], dict[int, set[str]], dict[int, dict[str, str]]]:
     """Collect RouteWise routers and their model aliases for lifecycle/bootstrap."""
-    from routing.routewise.router import RouteWiseRouter as _RWR
-
-    routewise_routers: list[_RWR] = []
+    routewise_routers: list[RouteWiseRouter] = []
     model_ids_by_router: dict[int, set[str]] = {}
     donor_overrides_by_router: dict[int, dict[str, str]] = {}
     aliases_by_model = {info.model_id: list(info.aliases) for info in model_infos}
     managed_ids = {id(existing) for existing in managed_routers}
     for info in model_infos:
-        routewise_router = model_router_registry.get_router(info.model_id)
-        if not isinstance(routewise_router, _RWR):
+        if model_router_registry.get_router_name(info.model_id) != "routewise":
             continue
+        routewise_router = model_router_registry.get_router(info.model_id)
+        if not isinstance(routewise_router, RouteWiseRouter):
+            raise _RouteWiseRouterTypeError(
+                "routewise strategy returned "
+                f"{type(routewise_router).__name__} for model {info.model_id!r}"
+            )
         model_ids_by_router.setdefault(id(routewise_router), set()).update(
             [info.model_id, *info.aliases]
         )
-        donors = getattr(routewise_router.config, "envelope_bootstrap_donor_models", None) or []
+        donors = routewise_router.config.envelope_bootstrap_donor_models or []
         for donor in donors:
             if donor == info.model_id:
                 continue
@@ -87,19 +126,20 @@ def _collect_routewise_routers(
 def _collect_routewise_runtime_routers(
     model_router_registry: ModelRouterRegistry,
     model_ids: set[str],
-    managed_routers: list[Any],
-) -> tuple[list[Any], dict[int, set[str]]]:
+    managed_routers: list[ManagedRouter],
+) -> tuple[list[RouteWiseRouter], dict[int, set[str]]]:
     """Collect DB-restored runtime RouteWise routers by their runtime model ids."""
-    from routing.routewise.router import RouteWiseRouter as _RWR
-
-    routewise_routers: list[_RWR] = []
+    routewise_routers: list[RouteWiseRouter] = []
     routewise_router_ids: set[int] = set()
     model_ids_by_router: dict[int, set[str]] = {}
     managed_ids = {id(existing) for existing in managed_routers}
     for model_id in sorted(model_ids):
         routewise_router = model_router_registry.get_router(model_id)
-        if not isinstance(routewise_router, _RWR):
-            continue
+        if not isinstance(routewise_router, RouteWiseRouter):
+            raise _RouteWiseRouterTypeError(
+                "restored routewise strategy returned "
+                f"{type(routewise_router).__name__} for model {model_id!r}"
+            )
         router_id = id(routewise_router)
         model_ids_by_router.setdefault(router_id, set()).add(model_id)
         if router_id not in routewise_router_ids:
@@ -113,35 +153,122 @@ def _collect_routewise_runtime_routers(
 
 async def _refresh_weight_override_snapshots(
     resolver: WeightOverrideResolver,
+    model_router_registry: ModelRouterRegistry | None = None,
     *,
     interval_seconds: float = 10.0,
+    rebuild_pending: bool = False,
 ) -> None:
     """Periodically reload route weight overrides so workers converge after admin edits."""
+    refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await resolver.load_all()
+            await _reload_effective_route_state(
+                resolver,
+                model_router_registry,
+                refresh_state,
+            )
         except Exception:
             logger.warning("Route weight override snapshot refresh failed", exc_info=True)
 
 
 async def _refresh_disabled_provider_snapshots(
     resolver: DisabledProviderResolver,
+    model_router_registry: ModelRouterRegistry | None = None,
     *,
     interval_seconds: float = 10.0,
+    rebuild_pending: bool = False,
 ) -> None:
     """Periodically reload the disabled-provider set so workers converge after admin edits."""
+    refresh_state = _EffectiveRouteRefreshState(rebuild_pending=rebuild_pending)
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            await resolver.load_all()
+            await _reload_effective_route_state(
+                resolver,
+                model_router_registry,
+                refresh_state,
+            )
         except Exception:
             logger.warning("Disabled provider snapshot refresh failed", exc_info=True)
 
 
+async def _apply_cached_routewise_model_settings(
+    resolver: RouteWiseSettingsResolver,
+    registry: ModelRouterRegistry,
+    transition_locks: dict[str, asyncio.Lock],
+    *,
+    refresh_probe_task: bool,
+) -> None:
+    """Apply effective settings to each cached canonical RouteWise router."""
+    seen_models: set[str] = set()
+    first_error: Exception | None = None
+    model_ids = [*registry.configured_model_ids(), *registry.registered_models()]
+    for model_id in model_ids:
+        canonical_model_id = registry.canonical_model_id(model_id)
+        if canonical_model_id in seen_models:
+            continue
+        seen_models.add(canonical_model_id)
+        try:
+            async with transition_locks.setdefault(canonical_model_id, asyncio.Lock()):
+                router_obj = registry.get_cached_router(canonical_model_id)
+                if not isinstance(router_obj, RouteWiseRouter):
+                    continue
+                await apply_routewise_settings_to_router(
+                    resolver,
+                    registry,
+                    canonical_model_id,
+                    router_obj,
+                    refresh_probe_task=refresh_probe_task,
+                )
+        except Exception as exc:
+            # One unhealthy router must not prevent other models from
+            # converging. Re-raise after the batch so callers still know the
+            # refresh was incomplete and the polling loop retries it.
+            if first_error is None:
+                first_error = exc
+            logger.warning(
+                "Failed to apply per-model RouteWise settings model=%s",
+                canonical_model_id,
+                exc_info=True,
+            )
+    if first_error is not None:
+        raise first_error
+
+
+async def _refresh_routewise_model_settings(
+    resolver: RouteWiseSettingsResolver,
+    registry: ModelRouterRegistry,
+    transition_locks: dict[str, asyncio.Lock],
+    *,
+    interval_seconds: float = 10.0,
+) -> None:
+    """Poll scoped settings so all workers converge after one admin write."""
+    # Workers typically boot together. Stagger the first read so they do not
+    # all scan site_settings in the same instant; later reads retain the fixed
+    # upper-bound convergence interval.
+    poll_interval = max(0.1, float(interval_seconds))
+    await asyncio.sleep(random.uniform(0.0, poll_interval))
+    while True:
+        try:
+            await resolver.load_all()
+            # Re-apply even when the DB snapshot is unchanged. This is cheap
+            # for unchanged routers and retries a prior transient live-apply
+            # failure that happened after the resolver had accepted a snapshot.
+            await _apply_cached_routewise_model_settings(
+                resolver,
+                registry,
+                transition_locks,
+                refresh_probe_task=True,
+            )
+        except Exception:
+            logger.warning("Per-model RouteWise settings refresh failed", exc_info=True)
+        await asyncio.sleep(poll_interval)
+
+
 async def _bootstrap_routewise_from_logs(
     log_store: Any,
-    routewise_routers: list[Any],
+    routewise_routers: list[RouteWiseRouter],
     model_ids_by_router: dict[int, set[str]],
     donor_overrides_by_router: dict[int, dict[str, str]] | None = None,
 ) -> None:
@@ -156,19 +283,19 @@ async def _bootstrap_routewise_from_logs(
         return
     now = dt.datetime.now(dt.timezone.utc)
     for rw in routewise_routers:
-        if not getattr(rw.config, "db_bootstrap_enabled", True):
+        if not rw.config.db_bootstrap_enabled:
             continue
         model_ids = sorted(model_ids_by_router.get(id(rw), set()))
-        max_rows = max(int(getattr(rw.config, "db_bootstrap_max_rows", 0) or 0), 0)
+        max_rows = max(int(rw.config.db_bootstrap_max_rows), 0)
         if not model_ids or max_rows <= 0:
             continue
-        latency_window_sec = max(float(getattr(rw.config, "latency_window_sec", 0.0) or 0.0), 1.0)
+        latency_window_sec = max(float(rw.config.latency_window_sec), 1.0)
         latency_history_sec = max(
-            float(getattr(rw.config, "latency_history_prior_window_sec", 0.0) or 0.0),
+            float(rw.config.latency_history_prior_window_sec),
             latency_window_sec,
         )
         envelope_window_sec = max(
-            float(getattr(rw.config, "envelope_window_hours", 0.0) or 0.0) * 3600.0,
+            float(rw.config.envelope_window_hours) * 3600.0,
             1.0,
         )
         try:
@@ -214,7 +341,7 @@ async def _bootstrap_routewise_from_logs(
 
 async def _bootstrap_routewise_from_probe_samples(
     operational_store: Any,
-    routewise_routers: list[Any],
+    routewise_routers: list[RouteWiseRouter],
     model_ids_by_router: dict[int, set[str]],
 ) -> None:
     """Best-effort warmup of RouteWise latency state from persisted probes."""
@@ -222,15 +349,15 @@ async def _bootstrap_routewise_from_probe_samples(
         return
     now = dt.datetime.now(dt.timezone.utc)
     for rw in routewise_routers:
-        if not getattr(rw.config, "db_bootstrap_enabled", True):
+        if not rw.config.db_bootstrap_enabled:
             continue
         model_ids = sorted(model_ids_by_router.get(id(rw), set()))
-        max_rows = max(int(getattr(rw.config, "db_bootstrap_max_rows", 0) or 0), 0)
+        max_rows = max(int(rw.config.db_bootstrap_max_rows), 0)
         if not model_ids or max_rows <= 0:
             continue
-        latency_window_sec = max(float(getattr(rw.config, "latency_window_sec", 0.0) or 0.0), 1.0)
+        latency_window_sec = max(float(rw.config.latency_window_sec), 1.0)
         history_sec = max(
-            float(getattr(rw.config, "latency_history_prior_window_sec", 0.0) or 0.0),
+            float(rw.config.latency_history_prior_window_sec),
             latency_window_sec,
         )
         try:
@@ -251,9 +378,7 @@ async def _bootstrap_routewise_from_probe_samples(
                 (int(row["id"]) for row in rows if row.get("id") is not None),
                 default=0,
             )
-            set_probe_sample_watermark = getattr(rw, "set_probe_sample_watermark", None)
-            if callable(set_probe_sample_watermark):
-                set_probe_sample_watermark(max_probe_id)
+            rw.set_probe_sample_watermark(max_probe_id)
             logger.info(
                 "RouteWise probe bootstrap replayed rows=%d latency_events=%d "
                 "latency_prior_samples=%d model_ids=%s",
@@ -268,60 +393,6 @@ async def _bootstrap_routewise_from_probe_samples(
                 model_ids,
                 exc_info=True,
             )
-
-
-async def _reset_failed_runtime_router_override(
-    *,
-    managed_router: Any,
-    model_router_registry: ModelRouterRegistry | None,
-    managed_routers: list[Any],
-    operational_store: Any,
-) -> bool:
-    """Reset a DB-backed router override that cannot start.
-
-    YAML-configured RouteWise routers still fail fast when envelope calibration
-    is required. This path is only for stale runtime overrides from older admin
-    writes that would otherwise brick startup before an admin can reset them.
-    """
-    if model_router_registry is None:
-        return False
-    model_id = getattr(managed_router, "_model_router_override_id", None)
-    fallback_strategy = getattr(managed_router, "_model_router_fallback_strategy", None)
-    if not isinstance(model_id, str) or not isinstance(fallback_strategy, str):
-        return False
-
-    logger.warning(
-        "Runtime model router override failed to start; resetting model=%s to strategy=%s",
-        model_id,
-        fallback_strategy,
-    )
-    model_router_registry.set_router_override(model_id, fallback_strategy)
-    fallback_router = model_router_registry.get_router(model_id)
-    managed_routers[:] = [
-        router_obj for router_obj in managed_routers if id(router_obj) != id(managed_router)
-    ]
-
-    if operational_store is not None:
-        try:
-            await operational_store.set_setting(
-                f"{MODEL_ROUTER_STRATEGY_SETTING_PREFIX}{model_id}",
-                fallback_strategy,
-                "string",
-                "bootstrap",
-            )
-        except Exception:
-            logger.warning(
-                "Failed to persist runtime model router override reset for model=%s",
-                model_id,
-                exc_info=True,
-            )
-
-    if isinstance(fallback_router, ManagedRouter) and all(
-        id(existing) != id(fallback_router) for existing in managed_routers
-    ):
-        await fallback_router.start()
-        managed_routers.append(fallback_router)
-    return True
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -457,7 +528,11 @@ async def initialize() -> AppServices:
             "the flag was removed; fallback routing is now always on."
         )
 
-    router = RouteExecutor()
+    endpoint_health_registry = EndpointHealthRegistry()
+    router_dependencies = RouterBuildDependencies(
+        health_registry=endpoint_health_registry,
+    )
+    router = RouteExecutor(health_registry=endpoint_health_registry)
 
     settings = get_settings()
     db_logger = _init_db_logger()
@@ -612,12 +687,14 @@ async def initialize() -> AppServices:
     if settings.enable_routewise and default_router_name == "fixed":
         default_router_name = "routewise"
 
-    model_router_registry: ModelRouterRegistry | None = ModelRouterRegistry(
+    model_router_registry = ModelRouterRegistry(
         models_config=models_config,
         default_router_name=default_router_name,
         alias_to_model=alias_to_model,
+        dependencies=router_dependencies,
+        shared_fixed_router=router,
     )
-    model_router_registry.bind_fixed_router(router)
+    model_router_transition_locks: dict[str, asyncio.Lock] = {}
 
     # Eagerly construct routers for every known model so config errors
     # (bad strategy name, bad router_params) surface at boot, not on the
@@ -636,7 +713,7 @@ async def initialize() -> AppServices:
     rw_models = [
         i.model_id
         for i in model_infos
-        if type(model_router_registry.get_router(i.model_id)).__name__ == "RouteWiseRouter"
+        if isinstance(model_router_registry.get_router(i.model_id), RouteWiseRouter)
     ]
     if rw_models:
         logger.info(f"RouteWise initialized for {len(rw_models)} model(s): {rw_models}")
@@ -679,27 +756,13 @@ async def initialize() -> AppServices:
         )
 
     for rw in routewise_routers:
-        attach_store = getattr(rw, "attach_operational_store", None)
-        if callable(attach_store):
-            attach_store(operational_store)
+        rw.attach_operational_store(operational_store)
 
     # Wire the operational store into the global Slack-alert snooze so admins
     # can pause alerting from the dashboard. Safe with a None store (no-op).
     from serving.observability.alert_snooze import init_alert_snooze
 
     init_alert_snooze(operational_store)
-
-    await _bootstrap_routewise_from_logs(
-        log_store,
-        routewise_routers,
-        routewise_model_ids_by_router,
-        routewise_donor_overrides_by_router,
-    )
-    await _bootstrap_routewise_from_probe_samples(
-        operational_store,
-        routewise_routers,
-        routewise_model_ids_by_router,
-    )
 
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
@@ -740,6 +803,7 @@ async def initialize() -> AppServices:
     # Seed dynamic provider keys from the operational store into the
     # adapter key pools registered during model loading. Best-effort —
     # a failure here should not prevent the server from starting.
+    restored_routewise_model_ids: set[str] = set()
     if operational_store is not None:
         try:
             from serving.adapters.provider_registry import apply_provider_definitions_at_boot
@@ -771,6 +835,7 @@ async def initialize() -> AppServices:
                 operational_store=operational_store,
                 model_router_registry=model_router_registry,
                 managed_routers=managed_routers,
+                model_router_transition_locks=model_router_transition_locks,
             )
             await apply_persisted_model_router_strategy_overrides(
                 provider_route_services,
@@ -789,23 +854,10 @@ async def initialize() -> AppServices:
             ]
             if new_routewise_routers:
                 for rw in new_routewise_routers:
-                    attach_store = getattr(rw, "attach_operational_store", None)
-                    if callable(attach_store):
-                        attach_store(operational_store)
-                await _bootstrap_routewise_from_logs(
-                    log_store,
-                    new_routewise_routers,
-                    updated_routewise_model_ids_by_router,
-                    updated_routewise_donor_overrides_by_router,
-                )
+                    rw.attach_operational_store(operational_store)
                 routewise_routers = updated_routewise_routers
                 routewise_model_ids_by_router = updated_routewise_model_ids_by_router
                 routewise_donor_overrides_by_router = updated_routewise_donor_overrides_by_router
-                await _bootstrap_routewise_from_probe_samples(
-                    operational_store,
-                    new_routewise_routers,
-                    updated_routewise_model_ids_by_router,
-                )
             restored_routewise_model_ids = await apply_persisted_provider_route_candidates(
                 provider_route_services,
                 operational_store,
@@ -814,59 +866,48 @@ async def initialize() -> AppServices:
                 provider_route_services,
                 operational_store,
             )
-            if restored_routewise_model_ids and model_router_registry is not None:
-                (
-                    runtime_routewise_routers,
-                    runtime_routewise_model_ids_by_router,
-                ) = _collect_routewise_runtime_routers(
-                    model_router_registry,
-                    restored_routewise_model_ids,
-                    managed_routers,
-                )
-                if runtime_routewise_routers:
-                    for rw in runtime_routewise_routers:
-                        attach_store = getattr(rw, "attach_operational_store", None)
-                        if callable(attach_store):
-                            attach_store(operational_store)
-                    await _bootstrap_routewise_from_logs(
-                        log_store,
-                        runtime_routewise_routers,
-                        runtime_routewise_model_ids_by_router,
-                    )
-                    await _bootstrap_routewise_from_probe_samples(
-                        operational_store,
-                        runtime_routewise_routers,
-                        runtime_routewise_model_ids_by_router,
-                    )
-                    known_routewise_ids = {id(router_obj) for router_obj in routewise_routers}
-                    for router_obj in runtime_routewise_routers:
-                        if id(router_obj) not in known_routewise_ids:
-                            routewise_routers.append(router_obj)
-                            known_routewise_ids.add(id(router_obj))
-                    for router_id, model_ids in runtime_routewise_model_ids_by_router.items():
-                        routewise_model_ids_by_router.setdefault(router_id, set()).update(model_ids)
-            (
-                routewise_routers,
-                routewise_model_ids_by_router,
-                routewise_donor_overrides_by_router,
-            ) = _collect_routewise_routers(model_router_registry, model_infos, managed_routers)
-            for rw in routewise_routers:
-                attach_store = getattr(rw, "attach_operational_store", None)
-                if callable(attach_store):
-                    attach_store(operational_store)
-            await _bootstrap_routewise_from_logs(
-                log_store,
-                routewise_routers,
-                routewise_model_ids_by_router,
-                routewise_donor_overrides_by_router,
-            )
-            await _bootstrap_routewise_from_probe_samples(
-                operational_store,
-                routewise_routers,
-                routewise_model_ids_by_router,
-            )
+        except _RouteWiseRouterTypeError:
+            raise
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider route configs at boot: {exc}")
+
+    # DB-backed strategies and route overrides can replace routers or endpoint
+    # identities. Collect and warm the final graph exactly once so envelope
+    # samples are neither double-counted nor applied to stale endpoints.
+    (
+        routewise_routers,
+        routewise_model_ids_by_router,
+        routewise_donor_overrides_by_router,
+    ) = _collect_routewise_routers(model_router_registry, model_infos, managed_routers)
+    if restored_routewise_model_ids:
+        (
+            runtime_routewise_routers,
+            runtime_routewise_model_ids_by_router,
+        ) = _collect_routewise_runtime_routers(
+            model_router_registry,
+            restored_routewise_model_ids,
+            managed_routers,
+        )
+        known_routewise_ids = {id(router_obj) for router_obj in routewise_routers}
+        for router_obj in runtime_routewise_routers:
+            if id(router_obj) not in known_routewise_ids:
+                routewise_routers.append(router_obj)
+                known_routewise_ids.add(id(router_obj))
+        for router_id, model_ids in runtime_routewise_model_ids_by_router.items():
+            routewise_model_ids_by_router.setdefault(router_id, set()).update(model_ids)
+    for rw in routewise_routers:
+        rw.attach_operational_store(operational_store)
+    await _bootstrap_routewise_from_logs(
+        log_store,
+        routewise_routers,
+        routewise_model_ids_by_router,
+        routewise_donor_overrides_by_router,
+    )
+    await _bootstrap_routewise_from_probe_samples(
+        operational_store,
+        routewise_routers,
+        routewise_model_ids_by_router,
+    )
 
     # Runtime settings (DB-backed feature flags with TTL cache)
     runtime_settings = None
@@ -892,11 +933,29 @@ async def initialize() -> AppServices:
 
     model_visibility_resolver = None
     model_concurrency_resolver = None
+    routewise_settings_resolver = None
+    routewise_settings_refresh_task = None
     weight_override_resolver = None
     weight_override_refresh_task = None
     disabled_provider_resolver = None
     disabled_provider_refresh_task = None
     if operational_store is not None:
+        try:
+            routewise_settings_resolver = RouteWiseSettingsResolver(
+                operational_store,
+                runtime_settings,
+                model_router_registry,
+            )
+            await routewise_settings_resolver.load_all()
+            await _apply_cached_routewise_model_settings(
+                routewise_settings_resolver,
+                model_router_registry,
+                model_router_transition_locks,
+                refresh_probe_task=False,
+            )
+            logger.info("Per-model RouteWise settings resolver initialized")
+        except Exception as exc:
+            logger.warning(f"Per-model RouteWise settings initialization failed: {exc}")
         try:
             model_visibility_resolver = ModelVisibilityResolver(operational_store)
             logger.info("Model visibility resolver initialized")
@@ -911,8 +970,24 @@ async def initialize() -> AppServices:
             weight_override_resolver = WeightOverrideResolver(operational_store)
             await weight_override_resolver.load_all()
             router.weight_override_resolver = weight_override_resolver
+            # RouteWise routers were constructed before the operational store
+            # and must ingest persisted effective weights once the resolver is
+            # attached to the shared FixedRouter.
+            weight_rebuild_pending = False
+            try:
+                rebuild_cached_routewise_routers(model_router_registry)
+            except Exception:
+                weight_rebuild_pending = True
+                logger.warning(
+                    "Initial RouteWise weight snapshot rebuild failed; will retry",
+                    exc_info=True,
+                )
             weight_override_refresh_task = asyncio.create_task(
-                _refresh_weight_override_snapshots(weight_override_resolver)
+                _refresh_weight_override_snapshots(
+                    weight_override_resolver,
+                    model_router_registry,
+                    rebuild_pending=weight_rebuild_pending,
+                )
             )
             _BACKGROUND_TASKS.add(weight_override_refresh_task)
             weight_override_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
@@ -923,8 +998,21 @@ async def initialize() -> AppServices:
             disabled_provider_resolver = DisabledProviderResolver(operational_store)
             await disabled_provider_resolver.load_all()
             router.disabled_provider_resolver = disabled_provider_resolver
+            disabled_rebuild_pending = False
+            try:
+                rebuild_cached_routewise_routers(model_router_registry)
+            except Exception:
+                disabled_rebuild_pending = True
+                logger.warning(
+                    "Initial RouteWise disabled-provider rebuild failed; will retry",
+                    exc_info=True,
+                )
             disabled_provider_refresh_task = asyncio.create_task(
-                _refresh_disabled_provider_snapshots(disabled_provider_resolver)
+                _refresh_disabled_provider_snapshots(
+                    disabled_provider_resolver,
+                    model_router_registry,
+                    rebuild_pending=disabled_rebuild_pending,
+                )
             )
             _BACKGROUND_TASKS.add(disabled_provider_refresh_task)
             disabled_provider_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
@@ -992,20 +1080,38 @@ async def initialize() -> AppServices:
         try:
             await managed_router.start()
         except EnvelopeNotCalibratedError:
-            reset = await _reset_failed_runtime_router_override(
-                managed_router=managed_router,
-                model_router_registry=model_router_registry,
-                managed_routers=managed_routers,
-                operational_store=operational_store,
-            )
-            if reset:
-                continue
-            # YAML-configured RouteWise quota shadow pricing requires
-            # workload-derived [L, U]. Do not silently fall back to a fabricated
-            # envelope for real config.
+            try:
+                override = model_router_registry.runtime_override_for_router(managed_router)
+            except Exception:
+                override = None
+                logger.debug(
+                    "Failed to resolve runtime override for uncalibrated router",
+                    exc_info=True,
+                )
+            if override is not None:
+                logger.error(
+                    "Runtime RouteWise override failed envelope calibration for "
+                    "model=%s; refusing unsafe fallback to strategy=%s",
+                    override.canonical_model_id,
+                    override.configured_strategy,
+                )
+            # Quota-only RouteWise pools require workload-derived [L, U]. A
+            # FixedRouter fallback would bypass their resource accounting, so
+            # both configured and runtime strategies fail closed.
             raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Managed router start() failed: {exc}")
+
+    if routewise_settings_resolver is not None:
+        routewise_settings_refresh_task = asyncio.create_task(
+            _refresh_routewise_model_settings(
+                routewise_settings_resolver,
+                model_router_registry,
+                model_router_transition_locks,
+            )
+        )
+        _BACKGROUND_TASKS.add(routewise_settings_refresh_task)
+        routewise_settings_refresh_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     return AppServices(
         router=router,
@@ -1016,8 +1122,10 @@ async def initialize() -> AppServices:
         routing_manager=routing_manager,
         model_router_registry=model_router_registry,
         managed_routers=managed_routers,
+        model_router_transition_locks=model_router_transition_locks,
         model_visibility_resolver=model_visibility_resolver,
         model_concurrency_resolver=model_concurrency_resolver,
+        routewise_settings_resolver=routewise_settings_resolver,
         weight_override_resolver=weight_override_resolver,
         disabled_provider_resolver=disabled_provider_resolver,
         user_concurrency_limiter=user_concurrency_limiter,
@@ -1027,6 +1135,7 @@ async def initialize() -> AppServices:
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
         responses_store=responses_store,
+        routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
     )
@@ -1038,6 +1147,11 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    if services.routewise_settings_refresh_task is not None:
+        services.routewise_settings_refresh_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.routewise_settings_refresh_task
+
     # Alert engine — stop drain task and remove scheduled jobs first so they
     # don't fire while we're tearing down stores below.
     if services.alert_engine is not None:

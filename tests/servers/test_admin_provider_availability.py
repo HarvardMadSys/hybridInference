@@ -9,17 +9,23 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
+from routing.model_router_registry import ModelRouterRegistry
+from serving.adapters import ModelConfig
 from serving.config.disabled_providers import DisabledProviderResolver
+from serving.servers import bootstrap
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
 
 
 def _adapter(provider: str, endpoint_id: str) -> MagicMock:
     adapter = MagicMock()
-    adapter.config.id = f"{provider}-model"
-    adapter.config.name = f"{provider} Model"
-    adapter.config.provider = provider
-    adapter.config.endpoint_id = endpoint_id
+    adapter.config = ModelConfig(
+        id="model-a",
+        name=f"{provider} Model",
+        provider=provider,
+        base_url=f"https://{provider}.example/v1",
+        endpoint_id=endpoint_id,
+    )
     return adapter
 
 
@@ -51,10 +57,21 @@ async def admin_client(monkeypatch):
 
     resolver = DisabledProviderResolver(op_store)
     await resolver.load_all()
+    router.disabled_provider_resolver = resolver
+    model_router_registry = ModelRouterRegistry(
+        models_config={
+            "model-a": {"router": "routewise"},
+            "model-b": {"router": "routewise"},
+        },
+        shared_fixed_router=router,
+    )
+    model_router_registry.get_router("model-a")
+    model_router_registry.get_router("model-b")
 
     app = FastAPI()
     app.state.services = AppServices(
         router=router,
+        model_router_registry=model_router_registry,
         operational_store=op_store,
         disabled_provider_resolver=resolver,
         db_logger=MagicMock(),
@@ -70,12 +87,12 @@ async def admin_client(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, op_store, resolver
+        yield client, op_store, resolver, model_router_registry
 
 
 @pytest.mark.asyncio
 async def test_list_routable_providers_aggregates_models_and_endpoints(admin_client):
-    client, _, _ = admin_client
+    client, _, _, _ = admin_client
 
     response = await client.get(
         "/admin/providers/routable",
@@ -92,7 +109,7 @@ async def test_list_routable_providers_aggregates_models_and_endpoints(admin_cli
 
 @pytest.mark.asyncio
 async def test_disable_provider_persists_and_updates_resolver(admin_client):
-    client, op_store, resolver = admin_client
+    client, op_store, resolver, _ = admin_client
 
     response = await client.patch(
         "/admin/providers/openrouter/disabled",
@@ -111,7 +128,7 @@ async def test_disable_provider_persists_and_updates_resolver(admin_client):
 
 @pytest.mark.asyncio
 async def test_enable_provider_clears_state(admin_client):
-    client, op_store, resolver = admin_client
+    client, op_store, resolver, _ = admin_client
     resolver.set_disabled("openrouter")
 
     response = await client.patch(
@@ -128,7 +145,7 @@ async def test_enable_provider_clears_state(admin_client):
 
 @pytest.mark.asyncio
 async def test_disable_unknown_provider_returns_404(admin_client):
-    client, _, _ = admin_client
+    client, _, _, _ = admin_client
 
     response = await client.patch(
         "/admin/providers/nonexistent/disabled",
@@ -137,3 +154,72 @@ async def test_disable_unknown_provider_returns_404(admin_client):
     )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_disable_and_reenable_provider_rebuilds_routewise_candidates(admin_client):
+    client, _, _, registry = admin_client
+    routewise = registry.get_router("model-a")
+
+    assert {
+        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+    } == {"openrouter", "zai"}
+
+    disabled = await client.patch(
+        "/admin/providers/openrouter/disabled",
+        json={"disabled": True},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert disabled.status_code == 200
+    assert [
+        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+    ] == ["zai"]
+    assert routewise.route_candidates["model-b"] == []
+
+    enabled = await client.patch(
+        "/admin/providers/openrouter/disabled",
+        json={"disabled": False},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert enabled.status_code == 200
+    assert {
+        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+    } == {"openrouter", "zai"}
+    assert [
+        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-b"]
+    ] == ["openrouter"]
+
+
+@pytest.mark.asyncio
+async def test_background_snapshot_refresh_rebuilds_routewise_candidates(admin_client):
+    _, op_store, resolver, registry = admin_client
+    routewise = registry.get_router("model-a")
+    refresh_state = bootstrap._EffectiveRouteRefreshState()
+
+    op_store.list_disabled_providers.side_effect = lambda: [{"provider": "openrouter"}]
+    assert (
+        await bootstrap._reload_effective_route_state(
+            resolver,
+            registry,
+            refresh_state,
+        )
+        is True
+    )
+    assert [
+        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+    ] == ["zai"]
+
+    op_store.list_disabled_providers.side_effect = lambda: []
+    assert (
+        await bootstrap._reload_effective_route_state(
+            resolver,
+            registry,
+            refresh_state,
+        )
+        is True
+    )
+    assert {
+        candidate.adapter.config.provider for candidate in routewise.route_candidates["model-a"]
+    } == {"openrouter", "zai"}

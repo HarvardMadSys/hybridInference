@@ -83,6 +83,7 @@ async def admin_client(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        client.app = app  # type: ignore[attr-defined]
         yield client, op_store
 
 
@@ -215,3 +216,30 @@ async def test_list_model_visibility_invalid_override_fails_closed_to_admin(admi
     model = _model_by_id(data["models"], "public-model")
     assert model["override_required_role"] == "not-a-role"
     assert model["effective_required_role"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_visibility_write_fences_cached_role(admin_client):
+    client, op_store = admin_client
+    resolver = client.app.state.services.model_visibility_resolver
+    op_store.get_model_visibility_override.return_value = {
+        "model_id": "public-model",
+        "required_role": "free",
+    }
+    assert await resolver.get_effective_required_role("public-model", "admin") == "free"
+    op_store.get_model_visibility_override.return_value = {
+        "model_id": "public-model",
+        "required_role": "admin",
+    }
+    op_store.set_model_visibility_override.side_effect = RuntimeError(
+        "connection dropped after commit"
+    )
+
+    with pytest.raises(RuntimeError, match="connection dropped after commit"):
+        await client.patch(
+            "/admin/models/public-model/visibility",
+            json={"required_role": "admin"},
+            headers={"Authorization": "Bearer test-admin"},
+        )
+
+    assert await resolver.get_effective_required_role("public-model", "admin") == "admin"

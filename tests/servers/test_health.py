@@ -12,9 +12,12 @@ Covers the AND-vs-OR semantics introduced in the reliability fixes:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+
+from routing.routers import RouteConfig
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
 
@@ -131,3 +134,34 @@ async def test_health_ready_both_down_returns_503(test_client, app_services) -> 
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "not_ready"
+
+
+async def test_discovery_and_health_counts_hide_unpublished_routes(
+    test_client,
+    app_services,
+) -> None:
+    await _set_store_health(app_services.operational_store, True)
+    await _set_store_health(app_services.log_store, True)
+    baseline_count = sum(
+        getattr(route, "published", True) for route in app_services.router.routes.values()
+    )
+    staged_adapter = SimpleNamespace(
+        config=SimpleNamespace(
+            id="staged-model",
+            provider="staged-provider",
+            base_url="https://staged.invalid/v1",
+        )
+    )
+    app_services.router.routes["staged-model"] = RouteConfig(
+        adapters=[(staged_adapter, 1.0)],
+        canonical_model_id="staged-model",
+        published=False,
+    )
+
+    health_response = await test_client.get("/health")
+    deep_response = await test_client.get("/health/deep")
+    routing_response = await test_client.get("/routing")
+
+    assert health_response.json()["routes_configured"] == baseline_count
+    assert deep_response.json()["routes_configured"] == baseline_count
+    assert "staged-model" not in routing_response.json()["routes"]

@@ -1,6 +1,7 @@
 """Tests for AlertEngine and individual rule classes."""
 
 import asyncio
+import json
 import logging
 from unittest.mock import AsyncMock, patch
 
@@ -581,38 +582,47 @@ async def test_provider_hourly_spend_job_fires(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# PendingDecisionsLeakRule (PR 2 of issue #4)
+# PendingPrefixCacheLeakRule
 # ---------------------------------------------------------------------------
 
 
-def _make_eviction_record(request_id: str = "r", age_sec: int = 400) -> logging.LogRecord:
-    """Build a synthetic routewise_decision_evicted log record for rule tests."""
+def _make_eviction_record(
+    request_id: str = "r",
+    age_sec: int = 400,
+    *,
+    reason: str = "ttl",
+) -> logging.LogRecord:
+    """Build a synthetic prefix-cache eviction log record for rule tests."""
     rec = logging.LogRecord(
-        name="routing.routewise.router",
+        name="routing.routewise.prefix_cache_pending",
         level=logging.INFO,
         pathname="",
         lineno=0,
-        msg="routewise_decision_evicted",
+        msg="routewise_prefix_cache_entry_evicted",
         args=None,
         exc_info=None,
     )
-    rec.event = "routewise_decision_evicted"
+    rec.event = "routewise_prefix_cache_entry_evicted"
     rec.request_id = request_id
     rec.age_sec = age_sec
+    rec.idle_sec = 301
+    rec.reason = reason
+    rec.pending_count = 42
+    rec.capacity = 10_000
     return rec
 
 
-def test_pending_decisions_leak_config_parses() -> None:
+def test_pending_prefix_cache_leak_config_parses() -> None:
     """The Pydantic config accepts the documented fields with documented defaults."""
-    from serving.observability.alert_config import PendingDecisionsLeakConfig
+    from serving.observability.alert_config import PendingPrefixCacheLeakConfig
 
-    cfg = PendingDecisionsLeakConfig()
+    cfg = PendingPrefixCacheLeakConfig()
     assert cfg.enabled is True
     assert cfg.window_sec == 600
     assert cfg.threshold_count == 20
     assert cfg.cooldown_sec == 3600
 
-    explicit = PendingDecisionsLeakConfig(
+    explicit = PendingPrefixCacheLeakConfig(
         enabled=False,
         window_sec=120,
         threshold_count=5,
@@ -624,44 +634,69 @@ def test_pending_decisions_leak_config_parses() -> None:
     assert explicit.cooldown_sec == 60
 
 
-async def test_leak_rule_fires_above_threshold() -> None:
+async def test_pending_prefix_cache_leak_rule_fires_above_threshold() -> None:
     """The rule fires once the in-window count exceeds threshold_count."""
-    from serving.observability.alert_config import PendingDecisionsLeakConfig
-    from serving.observability.alert_rules import PendingDecisionsLeakRule
+    from serving.observability.alert_config import PendingPrefixCacheLeakConfig
+    from serving.observability.alert_rules import PendingPrefixCacheLeakRule
 
-    cfg = PendingDecisionsLeakConfig(
+    cfg = PendingPrefixCacheLeakConfig(
         enabled=True,
         window_sec=600,
         threshold_count=20,
         cooldown_sec=0,
     )
-    rule = PendingDecisionsLeakRule(cfg)
+    rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
         "serving.observability.alert_rules.alert_slack",
         new_callable=AsyncMock,
     ) as mock_alert:
-        for i in range(21):
+        for i in range(20):
             await rule.on_record(_make_eviction_record(request_id=f"r{i}"))
+        await rule.on_record(_make_eviction_record(request_id="cap", reason="size_cap"))
 
     assert mock_alert.await_count >= 1
     payload = mock_alert.call_args_list[0].args[2]
     assert payload["evicted_count"] == 21
     assert payload["window_sec"] == 600
+    assert payload["ttl_count"] == 20
+    assert payload["size_cap_count"] == 1
+    assert payload["max_age_sec"] == 400
+    assert payload["max_idle_sec"] == 301
+    assert payload["max_pending_count"] == 42
+    assert payload["capacity"] == 10_000
 
 
-async def test_leak_rule_does_not_fire_at_threshold() -> None:
+def test_pending_prefix_cache_eviction_fields_survive_log_formatters() -> None:
+    """Operators retain eviction cause and pressure in JSON and plain logs."""
+    from serving.utils.logging import JsonFormatter, PlainFormatter
+
+    record = _make_eviction_record(reason="size_cap")
+    payload = json.loads(JsonFormatter().format(record))
+    plain = PlainFormatter("%(message)s").format(record)
+
+    assert payload["reason"] == "size_cap"
+    assert payload["age_sec"] == 400
+    assert payload["idle_sec"] == 301
+    assert payload["pending_count"] == 42
+    assert payload["capacity"] == 10_000
+    assert 'reason="size_cap"' in plain
+    assert "pending_count=42" in plain
+    assert "capacity=10000" in plain
+
+
+async def test_pending_prefix_cache_leak_rule_does_not_fire_at_threshold() -> None:
     """At exactly threshold_count events the rule stays silent (strict >)."""
-    from serving.observability.alert_config import PendingDecisionsLeakConfig
-    from serving.observability.alert_rules import PendingDecisionsLeakRule
+    from serving.observability.alert_config import PendingPrefixCacheLeakConfig
+    from serving.observability.alert_rules import PendingPrefixCacheLeakRule
 
-    cfg = PendingDecisionsLeakConfig(
+    cfg = PendingPrefixCacheLeakConfig(
         enabled=True,
         window_sec=600,
         threshold_count=20,
         cooldown_sec=0,
     )
-    rule = PendingDecisionsLeakRule(cfg)
+    rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
         "serving.observability.alert_rules.alert_slack",
@@ -673,43 +708,43 @@ async def test_leak_rule_does_not_fire_at_threshold() -> None:
     assert mock_alert.await_count == 0
 
 
-async def test_leak_rule_ignores_other_events() -> None:
-    """Records that are not routewise_decision_evicted must not advance the window."""
-    from serving.observability.alert_config import PendingDecisionsLeakConfig
-    from serving.observability.alert_rules import PendingDecisionsLeakRule
+async def test_pending_prefix_cache_leak_rule_ignores_retired_event() -> None:
+    """The retired pending-decision event must not advance the window."""
+    from serving.observability.alert_config import PendingPrefixCacheLeakConfig
+    from serving.observability.alert_rules import PendingPrefixCacheLeakRule
 
-    cfg = PendingDecisionsLeakConfig(
+    cfg = PendingPrefixCacheLeakConfig(
         enabled=True,
         window_sec=600,
         threshold_count=1,
         cooldown_sec=0,
     )
-    rule = PendingDecisionsLeakRule(cfg)
+    rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
         "serving.observability.alert_rules.alert_slack",
         new_callable=AsyncMock,
     ) as mock_alert:
         rec = _make_eviction_record()
-        rec.event = "something_else"
+        rec.event = "routewise_decision_evicted"
         await rule.on_record(rec)
         await rule.on_record(rec)
 
     assert mock_alert.await_count == 0
 
 
-async def test_leak_rule_disabled_does_not_fire() -> None:
+async def test_pending_prefix_cache_leak_rule_disabled_does_not_fire() -> None:
     """When disabled the rule never invokes alert_slack."""
-    from serving.observability.alert_config import PendingDecisionsLeakConfig
-    from serving.observability.alert_rules import PendingDecisionsLeakRule
+    from serving.observability.alert_config import PendingPrefixCacheLeakConfig
+    from serving.observability.alert_rules import PendingPrefixCacheLeakRule
 
-    cfg = PendingDecisionsLeakConfig(
+    cfg = PendingPrefixCacheLeakConfig(
         enabled=False,
         window_sec=600,
         threshold_count=0,
         cooldown_sec=0,
     )
-    rule = PendingDecisionsLeakRule(cfg)
+    rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
         "serving.observability.alert_rules.alert_slack",
@@ -721,7 +756,7 @@ async def test_leak_rule_disabled_does_not_fire() -> None:
     assert mock_alert.await_count == 0
 
 
-def test_alerts_yaml_loads_with_pending_decisions_leak() -> None:
+def test_alerts_yaml_loads_with_pending_prefix_cache_leak() -> None:
     """``config/alerts.yaml`` parses cleanly and the leak block matches defaults."""
     from pathlib import Path
 
@@ -735,12 +770,30 @@ def test_alerts_yaml_loads_with_pending_decisions_leak() -> None:
     with yaml_path.open() as f:
         data = yaml.safe_load(f)
 
+    assert "prefix_cache_pending_leak" in data["rules"]
     cfg = AlertConfig.model_validate(data)
-    leak = cfg.rules.pending_decisions_leak
+    leak = cfg.rules.prefix_cache_pending_leak
     assert leak.enabled is True
     assert leak.window_sec == 600
     assert leak.threshold_count == 20
     assert leak.cooldown_sec == 3600
+
+
+def test_legacy_pending_decisions_leak_config_migrates_for_one_release() -> None:
+    """The retired key keeps custom thresholds while deployments migrate."""
+    from serving.observability.alert_config import Rules
+
+    rules = Rules.model_validate(
+        {
+            "pending_decisions_leak": {
+                "enabled": False,
+                "threshold_count": 999,
+            }
+        }
+    )
+
+    assert rules.prefix_cache_pending_leak.enabled is False
+    assert rules.prefix_cache_pending_leak.threshold_count == 999
 
 
 # ----------------------------------------------------------------------

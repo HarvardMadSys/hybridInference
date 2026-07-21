@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 log = logging.getLogger(__name__)
 
@@ -50,14 +50,13 @@ class CountRule(BaseModel):
     cooldown_sec: int = 600
 
 
-class PendingDecisionsLeakConfig(BaseModel):
-    """Config for ``PendingDecisionsLeakRule``.
+class PendingPrefixCacheLeakConfig(BaseModel):
+    """Config for ``PendingPrefixCacheLeakRule``.
 
-    Fires when the number of ``routewise_decision_evicted`` events seen
-    over ``window_sec`` exceeds ``threshold_count``. Indicates that
-    ``RouteWiseRouter._pending_decisions`` is leaking entries (likely
-    because ``chat_completion`` / ``stream_chat_completion`` is not
-    consuming them on some code path).
+    Fires when the number of ``routewise_prefix_cache_entry_evicted`` events
+    seen over ``window_sec`` exceeds ``threshold_count``. Indicates that
+    pending RouteWise prefix-cache state is not being consumed before its
+    lifetime or capacity bound is reached.
     """
 
     enabled: bool = True
@@ -98,8 +97,12 @@ class Rules(BaseModel):
     fivexx_rate: RateRule = Field(default_factory=lambda: RateRule(threshold_pct=2.0))
     p95_latency_per_provider: LatencyRule = Field(default_factory=LatencyRule)
     auth_failure_spike: CountRule = Field(default_factory=CountRule)
-    pending_decisions_leak: PendingDecisionsLeakConfig = Field(
-        default_factory=PendingDecisionsLeakConfig
+    prefix_cache_pending_leak: PendingPrefixCacheLeakConfig = Field(
+        default_factory=PendingPrefixCacheLeakConfig,
+        validation_alias=AliasChoices(
+            "prefix_cache_pending_leak",
+            "pending_decisions_leak",
+        ),
     )
     tracked_task_failure_rate: TrackedTaskFailureRateConfig = Field(
         default_factory=TrackedTaskFailureRateConfig

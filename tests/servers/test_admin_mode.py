@@ -67,6 +67,19 @@ def _cfg(model_id: str) -> ModelConfig:
     )
 
 
+@pytest.mark.asyncio
+async def test_playground_models_hide_unpublished_routes() -> None:
+    router = RouteExecutor()
+    visible = _PlaygroundAdapter(_cfg("visible-model"))
+    staged = _PlaygroundAdapter(_cfg("staged-model"))
+    router.register_route("visible-model", [(visible, 1.0)])
+    router.register_route("staged-model", [(staged, 1.0)], published=False)
+
+    result = await playground.list_models(_admin={}, router_exec=router)
+
+    assert [model["id"] for model in result["models"]] == ["visible-model"]
+
+
 def _create_test_user(**overrides: Any) -> dict[str, Any]:
     """Create a user payload suitable for inserting into the test database."""
     user_id = generate_ulid()
@@ -277,6 +290,7 @@ class TestPlaygroundAccess:
             json={
                 "model": "playground-model",
                 "messages": [{"role": "user", "content": "hi"}],
+                "provider": "test",
             },
         ) as response:
             assert response.status_code == 200

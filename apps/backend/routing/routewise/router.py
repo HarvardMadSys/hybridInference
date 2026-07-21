@@ -27,7 +27,7 @@ import random
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 import aiohttp
@@ -43,18 +43,17 @@ from routewise.core import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Iterable, Mapping
 
+    from routing.protocols import RoutingRequestOptions
+    from routing.route_table import RouteTableView
+    from routing.routers import RoutingObservation
     from serving.adapters.base import BaseAdapter
 
     from .config import RouteWiseConfig
 
-from routing.routers import (
-    BaseRouter,
-    RoutingObservation,
-    _failed_attempt,
-    _get_endpoint_id,
-    _has_non_empty_content,
-    _routing_chunk,
-)
+from routing.endpoint_health import EndpointHealthRegistry
+from routing.endpoints import endpoint_id_for_adapter
+from routing.streaming import has_non_empty_content
+from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -68,9 +67,15 @@ from .candidates import (
     QuotaPolicy,
     QuotaSource,
     build_provider_candidates,
-    endpoint_id_for_adapter,
+    endpoint_id_for_adapter as routewise_endpoint_id_for_adapter,
 )
 from .concurrency import ConcurrencyManager
+from .decisions import (
+    ProviderReservation,
+    RoutingDecision,
+    RoutingTrace,
+    dedupe_failed_attempts,
+)
 from .effective_cost import api_request_cost_usd, quota_shadow_price_usd
 from .envelope import (
     CostEnvelopeEstimator,
@@ -82,25 +87,17 @@ from .latency import ProviderProfile
 from .lp import LPCandidate, LPSolution, solve_cost_budgeted_mean_ttft
 from .predictor import BucketMeanOutputPredictor, BucketMeanPrediction
 from .prefix_cache import PrefixCacheCoordinator, price_delta_per_token
+from .prefix_cache_pending import (
+    PREFIX_CACHE_PENDING_SWEEP_INTERVAL_SECONDS,
+    PendingPrefixCacheStore,
+)
 from .quota import ProviderQuotaSnapshotStore, QuotaPool
 
 logger = get_logger(__name__)
 
 
-PENDING_DECISIONS_TTL_SECONDS: float = 300.0
-PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS: float = 60.0
-# Hard cap on in-flight decision metadata. The TTL sweep normally bounds this
-# map, but it exempts active streaming entries, so a streaming generator that is
-# garbage-collected without its finally/aclose ever running would otherwise leak
-# its entry permanently. This cap is metadata-only defense-in-depth: evicting an
-# entry drops its routing metadata but never releases a concurrency reservation
-# (those stay owned by the execution finally blocks, so the slot is not freed
-# out from under a still-running request).
-_PENDING_DECISIONS_MAX: int = 50_000
 PROBABILITY_TARGET_HEDGE_MODE: str = "probability_target"
 RATE_LIMIT_ERROR_PENALTY_MS: float = 60_000.0
-_PREFIX_CACHE_PENDING_MAX: int = 10_000
-_EXCLUDED_ENDPOINTS_CONTEXT_KEY = "_routewise_excluded_endpoint_ids"
 _RETRYABLE_ROUTEWISE_STATUS_CODES = frozenset({408, 429})
 _PROBE_READBACK_MAX_ROWS = 10_000
 _PROBE_SELF_SAMPLE_ID_CAP = 10_000
@@ -119,6 +116,26 @@ _WORKER_COUNT_ENV_KEYS = (
     "UVICORN_WORKERS",
     "GUNICORN_WORKERS",
 )
+
+
+async def _await_cancelled_child(task: asyncio.Task[Any]) -> None:
+    """Await a cancelled child without swallowing cancellation of this task."""
+    try:
+        await task
+    except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise
+    except Exception:
+        pass
+    # Some maintenance loops intentionally turn their own CancelledError into
+    # a normal return.  If cancellation originated from this caller while it
+    # was awaiting that loop, asyncio then resumes us normally but leaves the
+    # caller's cancellation count set; propagate it before creating any
+    # replacement task.
+    current = asyncio.current_task()
+    if current is not None and current.cancelling():
+        raise asyncio.CancelledError
 
 
 @dataclass(frozen=True)
@@ -148,6 +165,7 @@ class HedgePlan:
     """In-flight checkpoint hedge schedule for one primary dispatch."""
 
     checkpoints_sec: tuple[float, ...]
+    latency_slo_sec: float
 
 
 @dataclass(frozen=True)
@@ -159,46 +177,6 @@ class RouteWiseProbeResult:
     ok: bool
     ttft_ms: float | None
     error: str | None = None
-
-
-@dataclass
-class ProviderReservation:
-    """Resource reservation for one concrete provider dispatch."""
-
-    router: RouteWiseRouter
-    candidate: FeasibleProviderCandidate
-    acquired: bool = False
-
-    def acquire(self) -> bool:
-        """Acquire quota or concurrency for the candidate if needed."""
-        if self.acquired:
-            return True
-        self.acquired = self.router._commit_candidate(self.candidate)
-        return self.acquired
-
-    def release(self) -> None:
-        """Release a previously acquired reservation."""
-        if not self.acquired:
-            return
-        self.router._release_candidate(self.candidate)
-        self.acquired = False
-
-
-def _dedupe_failed_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[tuple[str | None, str | None, str | None]] = set()
-    result: list[dict[str, Any]] = []
-    for attempt in attempts:
-        endpoint = attempt.get("endpoint_id") or attempt.get("base_url") or attempt.get("provider")
-        key = (
-            endpoint if isinstance(endpoint, str) else None,
-            attempt.get("error_type") if isinstance(attempt.get("error_type"), str) else None,
-            attempt.get("error") if isinstance(attempt.get("error"), str) else None,
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(attempt)
-    return result
 
 
 def _int_status(value: Any) -> int | None:
@@ -262,21 +240,32 @@ def _configured_worker_count() -> int | None:
     return None
 
 
-class RouteWiseRouter(BaseRouter):
+class RouteWiseRouter:
     """RouteWise router.
 
-    ``fixed_router.routes`` remains the source of model -> adapter mappings;
-    this router only changes the selection policy for models configured with
+    A read-only ``RouteTableView`` supplies model-to-adapter mappings; this
+    router only changes the selection policy for models configured with
     ``router: routewise``.
     """
 
     def __init__(
         self,
-        fixed_router: Any = None,
+        route_table: RouteTableView | None = None,
         config: RouteWiseConfig | None = None,
         params: Any = None,
+        health_registry: EndpointHealthRegistry | None = None,
+        *,
+        fixed_router: RouteTableView | None = None,
     ) -> None:
-        super().__init__()
+        if route_table is not None and fixed_router is not None:
+            raise TypeError("route_table and deprecated fixed_router cannot both be provided")
+        if route_table is None:
+            # One-release compatibility for callers using the former keyword.
+            route_table = fixed_router
+
+        self._health_registry = (
+            health_registry if health_registry is not None else EndpointHealthRegistry()
+        )
 
         if config is None and params is not None:
             from .config import RouteWiseConfig as _RWC
@@ -287,7 +276,7 @@ class RouteWiseRouter(BaseRouter):
 
             config = _RWC()
 
-        self.fixed_router = fixed_router
+        self.route_table = route_table
         self.config = config
         self._rng = random.Random(self.config.random_seed)
         self.reference_api_price = self._parse_reference_api_price(config.reference_api_price)
@@ -323,13 +312,15 @@ class RouteWiseRouter(BaseRouter):
 
         self._latency_profiles: dict[str, ProviderProfile] = {}
         self._latency_history_priors_ms: dict[str, float] = {}
-        self._pending_decisions: dict[str, dict[str, Any]] = {}
-        self._prefix_cache_pending: dict[str, tuple[Any, dict[str, Any]]] = {}
-        self._primary_reservations: dict[str, ProviderReservation] = {}
+        self.pending_prefix_cache = PendingPrefixCacheStore()
         self._route_commit_lock = threading.RLock()
-        self._sweep_task: asyncio.Task[None] | None = None
+        self._prefix_cache_sweep_task: asyncio.Task[None] | None = None
         self._quota_refresh_task: asyncio.Task[None] | None = None
         self._probe_task: asyncio.Task[None] | None = None
+        self._probe_task_config: tuple[bool, float] | None = None
+        self._lifecycle_lock = asyncio.Lock()
+        self._probe_task_reconcile_lock = asyncio.Lock()
+        self._lifecycle_started = False
         self._operational_store: Any | None = None
         self._last_probe_results: list[RouteWiseProbeResult] = []
         self._probe_holder_id = f"{os.getpid()}:{uuid.uuid4().hex}"
@@ -339,21 +330,64 @@ class RouteWiseRouter(BaseRouter):
         self._last_lp_statuses: dict[str, str] = {}
         self._last_lp_weights: dict[str, dict[str, float]] = {}
 
-        if self.fixed_router is not None:
-            self._rebuild_from_fixed_router()
+        if self.route_table is not None:
+            # Avoid dispatching to an overrideable public method before a
+            # subclass has finished initializing; this instance is not yet
+            # published, but keep the same lock invariant as runtime refresh.
+            with self._route_commit_lock:
+                self._rebuild_from_route_table()
+
+    def _ensure_health(self, endpoint_id: str) -> None:
+        self._health_registry.ensure(endpoint_id)
+
+    def _on_success(self, endpoint_id: str) -> None:
+        self._health_registry.record_success(endpoint_id)
+
+    def _on_failure(
+        self,
+        endpoint_id: str,
+        *,
+        reason: str = "error",
+        detail: str | None = None,
+        exc: BaseException | None = None,
+    ) -> None:
+        self._health_registry.record_failure(
+            endpoint_id,
+            reason=reason,
+            detail=detail,
+            exc=exc,
+        )
+
+    def get_provider_status(self) -> dict[str, dict[str, Any]]:
+        """Return a snapshot of provider availability and circuit state."""
+        return self._health_registry.snapshot()
 
     # ------------------------------------------------------------------
     # Lifecycle / registry binding
     # ------------------------------------------------------------------
 
-    def attach_fixed_router(self, fixed_router: Any) -> None:
-        """Bind the shared ``FixedRouter`` after strategy construction."""
-        self.fixed_router = fixed_router
-        self._pending_decisions = {}
-        self._primary_reservations = {}
-        self._last_lp_statuses = {}
-        self._last_lp_weights = {}
-        self._rebuild_from_fixed_router()
+    def attach_route_table(self, route_table: RouteTableView) -> None:
+        """Bind the shared read-only route table after strategy construction."""
+        with self._route_commit_lock:
+            self.route_table = route_table
+            self.pending_prefix_cache.clear()
+            self._last_lp_statuses = {}
+            self._last_lp_weights = {}
+            self._rebuild_from_route_table()
+
+    def attach_fixed_router(self, route_table: RouteTableView) -> None:
+        """Compatibility alias for :meth:`attach_route_table` for one release."""
+        self.attach_route_table(route_table)
+
+    @property
+    def fixed_router(self) -> RouteTableView | None:
+        """Return the route table under its former attribute name for one release."""
+        return self.route_table
+
+    @fixed_router.setter
+    def fixed_router(self, route_table: RouteTableView | None) -> None:
+        """Preserve direct assignment to the former attribute for one release."""
+        self.route_table = route_table
 
     def attach_operational_store(self, operational_store: Any | None) -> None:
         """Bind the operational store used for persisted probe samples."""
@@ -373,18 +407,35 @@ class RouteWiseRouter(BaseRouter):
         Only algorithm knobs are runtime-overridable; resource limits are
         route-level configuration (``quota:`` / ``concurrency:`` blocks).
         """
-        if budget_alpha is not None:
-            self.config.budget_alpha = budget_alpha
-        if latency_slo_sec is not None:
-            self.config.latency_slo_sec = latency_slo_sec
-        if latency_min_samples is not None:
-            self.config.latency_min_samples = latency_min_samples
-        if routewise_probe_enabled is not None:
-            self.config.routewise_probe_enabled = routewise_probe_enabled
-        if routewise_probe_interval_sec is not None:
-            self.config.routewise_probe_interval_sec = routewise_probe_interval_sec
+        with self._route_commit_lock:
+            current = self.config
+            # Publish one new immutable-by-convention snapshot while decision
+            # construction holds the same lock, so one decision cannot mix
+            # fields from two settings generations.
+            self.config = replace(
+                current,
+                budget_alpha=(current.budget_alpha if budget_alpha is None else budget_alpha),
+                latency_slo_sec=(
+                    current.latency_slo_sec if latency_slo_sec is None else latency_slo_sec
+                ),
+                latency_min_samples=(
+                    current.latency_min_samples
+                    if latency_min_samples is None
+                    else latency_min_samples
+                ),
+                routewise_probe_enabled=(
+                    current.routewise_probe_enabled
+                    if routewise_probe_enabled is None
+                    else routewise_probe_enabled
+                ),
+                routewise_probe_interval_sec=(
+                    current.routewise_probe_interval_sec
+                    if routewise_probe_interval_sec is None
+                    else routewise_probe_interval_sec
+                ),
+            )
 
-    def _rebuild_from_fixed_router(self) -> None:
+    def _rebuild_from_route_table(self) -> None:
         existing_latency_profiles = self._latency_profiles
         existing_latency_history_priors_ms = self._latency_history_priors_ms
         self.classified = {}
@@ -420,6 +471,15 @@ class RouteWiseRouter(BaseRouter):
                         )
         self._validate_routes()
 
+    def refresh_route_table(self) -> None:
+        """Refresh route-derived state while excluding concurrent decisions."""
+        with self._route_commit_lock:
+            self._rebuild_from_route_table()
+
+    def _rebuild_from_fixed_router(self) -> None:
+        """Compatibility alias for the former private rebuild hook."""
+        self.refresh_route_table()
+
     async def start(self) -> None:
         """Start periodic maintenance tasks.
 
@@ -431,204 +491,98 @@ class RouteWiseRouter(BaseRouter):
         bootstrap path propagates so deployment fails fast instead of leaving a
         model unroutable. See :meth:`_validate_envelope_calibration`.
         """
-        self._validate_envelope_calibration()
-        if self._sweep_task is None or self._sweep_task.done():
-            self._sweep_task = asyncio.create_task(
-                self._sweep_pending_decisions_loop(),
-                name="RouteWiseRouter.sweep_pending_decisions",
-            )
-        if self._quota_sources() and (
-            self._quota_refresh_task is None or self._quota_refresh_task.done()
-        ):
-            self._quota_refresh_task = asyncio.create_task(
-                self._refresh_quota_snapshots_loop(),
-                name="RouteWiseRouter.refresh_quota_snapshots",
-            )
-        if self.config.routewise_probe_enabled and (
-            self._probe_task is None or self._probe_task.done()
-        ):
-            self._probe_task = asyncio.create_task(
-                self._routewise_probe_loop(),
-                name="RouteWiseRouter.active_probe",
-            )
+        async with self._lifecycle_lock:
+            self._validate_envelope_calibration()
+            self._lifecycle_started = True
+            if self.prefix_cache.enabled and (
+                self._prefix_cache_sweep_task is None or self._prefix_cache_sweep_task.done()
+            ):
+                self._prefix_cache_sweep_task = asyncio.create_task(
+                    self._sweep_pending_prefix_cache_loop(),
+                    name="RouteWiseRouter.sweep_pending_prefix_cache",
+                )
+            if self._quota_sources() and (
+                self._quota_refresh_task is None or self._quota_refresh_task.done()
+            ):
+                self._quota_refresh_task = asyncio.create_task(
+                    self._refresh_quota_snapshots_loop(),
+                    name="RouteWiseRouter.refresh_quota_snapshots",
+                )
+            await self.refresh_probe_task()
 
     async def refresh_probe_task(self) -> None:
-        """Start or stop the active probe loop after runtime setting changes."""
-        if self.config.routewise_probe_enabled:
-            if self._probe_task is None or self._probe_task.done():
+        """Immediately reconcile the active probe loop with its config snapshot."""
+        async with self._probe_task_reconcile_lock:
+            config = self.config
+            desired = (
+                bool(config.routewise_probe_enabled),
+                float(config.routewise_probe_interval_sec),
+            )
+            task = self._probe_task
+            if (
+                desired[0]
+                and task is not None
+                and not task.done()
+                and self._probe_task_config == desired
+            ):
+                return
+            self._probe_task = None
+            self._probe_task_config = None
+            if task is not None:
+                task.cancel()
+                await _await_cancelled_child(task)
+            if desired[0] and self._lifecycle_started:
                 self._probe_task = asyncio.create_task(
                     self._routewise_probe_loop(),
                     name="RouteWiseRouter.active_probe",
                 )
-            return
-        task = self._probe_task
-        self._probe_task = None
-        if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+                self._probe_task_config = desired
 
     async def stop(self) -> None:
         """Stop periodic maintenance tasks."""
-        tasks = [
-            task
-            for task in (self._sweep_task, self._quota_refresh_task, self._probe_task)
-            if task is not None
-        ]
-        self._sweep_task = None
-        self._quota_refresh_task = None
-        self._probe_task = None
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await task
+        async with self._lifecycle_lock:
+            # Mark retirement before awaiting any task cleanup. A concurrent
+            # settings refresh can then stop a probe but cannot replace it, and
+            # a concurrent start waits until every old maintenance task is gone.
+            self._lifecycle_started = False
+            background_tasks = [
+                task
+                for task in (
+                    self._prefix_cache_sweep_task,
+                    self._quota_refresh_task,
+                )
+                if task is not None
+            ]
+            self._prefix_cache_sweep_task = None
+            self._quota_refresh_task = None
+            for task in background_tasks:
+                task.cancel()
+            for task in background_tasks:
+                await _await_cancelled_child(task)
 
-    async def _sweep_pending_decisions_loop(self) -> None:
+            async with self._probe_task_reconcile_lock:
+                probe_task = self._probe_task
+                self._probe_task = None
+                self._probe_task_config = None
+                if probe_task is not None:
+                    probe_task.cancel()
+                    await _await_cancelled_child(probe_task)
+
+    async def _sweep_pending_prefix_cache_loop(self) -> None:
         try:
             while True:
-                await asyncio.sleep(PENDING_DECISIONS_SWEEP_INTERVAL_SECONDS)
+                await asyncio.sleep(PREFIX_CACHE_PENDING_SWEEP_INTERVAL_SECONDS)
                 try:
-                    await self._sweep_pending_decisions_once()
+                    self.pending_prefix_cache.sweep_expired()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     logger.exception(
-                        "routewise_pending_decisions_sweep_failed",
-                        extra={"event": "routewise_pending_decisions_sweep_failed"},
+                        "routewise_pending_prefix_cache_sweep_failed",
+                        extra={"event": "routewise_pending_prefix_cache_sweep_failed"},
                     )
         except asyncio.CancelledError:
             return
-
-    def _store_pending_decision(self, request_id: str, metadata: dict[str, Any]) -> None:
-        """Record decision metadata for *request_id*, bounding the map size.
-
-        The TTL sweep normally reclaims these entries, but it exempts active
-        streaming requests, so an abandoned streaming generator (GC'd without
-        its finally/aclose running) would otherwise leak its entry forever.
-        This cap is the backstop. Eviction is oldest-first and metadata-only:
-        it never releases a concurrency reservation (those stay owned by the
-        execution finally blocks), so a still-running request never has its
-        slot freed out from under it. Each cap eviction mirrors the TTL
-        sweep's bookkeeping: it drops the sibling ``_prefix_cache_pending``
-        entry and emits ``routewise_decision_evicted`` so the leak this cap
-        guards against stays visible to ``PendingDecisionsLeakRule`` (the TTL
-        sweep deliberately skips streaming entries, so this is the only path
-        that reclaims an abandoned streaming generator's metadata).
-        """
-        now = time.time()
-        prior = self._pending_decisions.get(request_id)
-        if isinstance(prior, dict):
-            initial_endpoint = prior.get("initial_selected_endpoint") or prior.get(
-                "selected_endpoint"
-            )
-            if initial_endpoint is not None:
-                metadata["initial_selected_endpoint"] = initial_endpoint
-            initial_type = prior.get("initial_selected_provider_type") or prior.get(
-                "selected_provider_type"
-            )
-            if initial_type is not None:
-                metadata["initial_selected_provider_type"] = initial_type
-
-            failed_attempts = prior.get("failed_attempts")
-            if isinstance(failed_attempts, list) and failed_attempts:
-                current_failed = metadata.get("failed_attempts")
-                metadata["failed_attempts"] = _dedupe_failed_attempts(
-                    [
-                        *failed_attempts,
-                        *(current_failed if isinstance(current_failed, list) else []),
-                    ]
-                )
-            for key in (
-                "fallback_policy",
-                "fallback_attempts",
-                "fallback_excluded_endpoints",
-                "is_streaming",
-            ):
-                if key in prior:
-                    metadata[key] = prior[key]
-
-        self._pending_decisions[request_id] = metadata
-        while len(self._pending_decisions) > _PENDING_DECISIONS_MAX:
-            oldest = next(iter(self._pending_decisions))
-            if oldest == request_id:
-                break
-            decision = self._pending_decisions.pop(oldest, None)
-            with self._route_commit_lock:
-                self._prefix_cache_pending.pop(oldest, None)
-            if decision is None:
-                continue
-            logger.info(
-                "routewise_decision_evicted",
-                extra={
-                    "event": "routewise_decision_evicted",
-                    "request_id": oldest,
-                    "age_sec": int(now - float(decision.get("timestamp", now))),
-                    "reason": "size_cap",
-                },
-            )
-
-    def _record_routewise_fallback_attempt(
-        self,
-        request_id: str | None,
-        attempt: dict[str, Any],
-        *,
-        fallback_policy: str,
-    ) -> None:
-        """Attach a failed attempt to pending RouteWise metadata."""
-        if not request_id:
-            return
-        meta = self._pending_decisions.get(request_id)
-        if not isinstance(meta, dict):
-            return
-
-        meta.setdefault("initial_selected_endpoint", meta.get("selected_endpoint"))
-        meta.setdefault("initial_selected_provider_type", meta.get("selected_provider_type"))
-        existing = meta.get("failed_attempts")
-        attempts = _dedupe_failed_attempts(
-            [
-                *(existing if isinstance(existing, list) else []),
-                attempt,
-            ]
-        )
-        meta["failed_attempts"] = attempts
-        meta["fallback_policy"] = fallback_policy
-        meta["fallback_attempts"] = len(attempts)
-        excluded = {
-            item for item in meta.get("fallback_excluded_endpoints", []) if isinstance(item, str)
-        }
-        endpoint = attempt.get("endpoint_id")
-        if isinstance(endpoint, str) and endpoint:
-            excluded.add(endpoint)
-        meta["fallback_excluded_endpoints"] = sorted(excluded)
-
-    async def _sweep_pending_decisions_once(self) -> int:
-        now = time.time()
-        cutoff = now - PENDING_DECISIONS_TTL_SECONDS
-        stale = [
-            request_id
-            for request_id, decision in self._pending_decisions.items()
-            if not decision.get("is_streaming")
-            and isinstance(decision.get("timestamp"), (int, float))
-            and float(decision["timestamp"]) < cutoff
-        ]
-        evicted = 0
-        for request_id in stale:
-            decision = self._pending_decisions.pop(request_id, None)
-            with self._route_commit_lock:
-                self._prefix_cache_pending.pop(request_id, None)
-            if decision is None:
-                continue
-            evicted += 1
-            logger.info(
-                "routewise_decision_evicted",
-                extra={
-                    "event": "routewise_decision_evicted",
-                    "request_id": request_id,
-                    "age_sec": int(now - float(decision.get("timestamp", now))),
-                },
-            )
-        return evicted
 
     async def refresh_quota_snapshots_once(self) -> None:
         """Refresh provider quota snapshots for configured S_Q candidates."""
@@ -862,7 +816,7 @@ class RouteWiseRouter(BaseRouter):
         )
         try:
             async for chunk in stream:
-                if _has_non_empty_content(chunk):
+                if has_non_empty_content(chunk):
                     return (time.perf_counter() - start) * 1000.0
         finally:
             aclose = getattr(stream, "aclose", None)
@@ -941,7 +895,7 @@ class RouteWiseRouter(BaseRouter):
 
     @staticmethod
     def _endpoint_id(adapter: BaseAdapter) -> str:
-        return endpoint_id_for_adapter(adapter)
+        return routewise_endpoint_id_for_adapter(adapter)
 
     def _candidate_endpoint_id(self, adapter: BaseAdapter) -> str:
         return self._adapter_endpoint_ids.get(id(adapter), self._endpoint_id(adapter))
@@ -952,17 +906,14 @@ class RouteWiseRouter(BaseRouter):
         return float(pricing.get("prompt", "0")), float(pricing.get("completion", "0"))
 
     def _classify_all(self) -> None:
-        for route_key, route_cfg in self.fixed_router.routes.items():
-            model_id = getattr(route_cfg, "canonical_model_id", None) or route_key
+        route_table = self.route_table
+        if route_table is None:
+            return
+        for effective_route in route_table.iter_effective_routes():
+            model_id = effective_route.canonical_model_id
             if model_id in self.route_candidates:
                 continue
-            get_effective_adapters = getattr(self.fixed_router, "_get_effective_adapters", None)
-            adapters_with_weights = (
-                get_effective_adapters(route_key, route_cfg)
-                if callable(get_effective_adapters)
-                else route_cfg.adapters
-            )
-            candidates = build_provider_candidates(model_id, adapters_with_weights)
+            candidates = build_provider_candidates(model_id, effective_route.adapters)
             self.route_candidates[model_id] = candidates
             self.classified[model_id] = [
                 (candidate.adapter, candidate.weight, candidate.provider_type)
@@ -1092,9 +1043,10 @@ class RouteWiseRouter(BaseRouter):
             unit="requests",
         )
 
-    def _canonical_model_id(self, model_id: str) -> str:
-        route_cfg = getattr(self.fixed_router, "routes", {}).get(model_id)
-        return getattr(route_cfg, "canonical_model_id", None) or model_id
+    def canonical_model_id(self, model_id: str) -> str:
+        """Return the canonical id from the currently bound route table."""
+        route_table = self.route_table
+        return route_table.canonical_id(model_id) if route_table is not None else model_id
 
     def _validate_routes(self) -> None:
         has_stateful_provider = False
@@ -1143,7 +1095,7 @@ class RouteWiseRouter(BaseRouter):
         Rather than crash the whole gateway on a cold start, we degrade: a model
         that still has a non-quota leg (on-demand or concurrency) keeps serving
         on that leg while its quota provider is masked at request time (see
-        ``_select_adapter``), and the quota leg activates once real traffic
+        ``_select_decision``), and the quota leg activates once real traffic
         calibrates the envelope. We only hard-fail for a model whose *only*
         route is the uncalibrated quota pool, because that model would otherwise
         be unroutable. Pure API or pure concurrency models are unaffected.
@@ -1196,7 +1148,7 @@ class RouteWiseRouter(BaseRouter):
         return CandidatePricing.from_raw(raw, context="reference_api_price")
 
     def _routewise_pool(self, model_id: str) -> str:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         return self._model_routewise_pools.get(model_id, model_id)
 
     def _quota_sources(self) -> list[QuotaSource]:
@@ -1241,7 +1193,7 @@ class RouteWiseRouter(BaseRouter):
         prompt_tokens: int,
         context: dict[str, Any],
     ) -> BucketMeanPrediction:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         return self.predictor.predict(
             model_id,
             prompt_tokens,
@@ -1301,7 +1253,7 @@ class RouteWiseRouter(BaseRouter):
         prompt_tokens: int,
         output_tokens: float,
     ) -> float | None:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id, [])
         costs = [
             self._api_cost_for_pricing(
@@ -1338,7 +1290,7 @@ class RouteWiseRouter(BaseRouter):
 
     def _estimate_value(self, model_id: str, prompt_tokens: int) -> float:
         """Compatibility helper: cheapest cold-cache API cost for one request."""
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         prediction = self.predictor.predict(model_id, prompt_tokens)
         cost = self._reference_api_cost(
             model_id,
@@ -1357,7 +1309,7 @@ class RouteWiseRouter(BaseRouter):
         now: float,
         context: dict[str, Any] | None = None,
     ) -> tuple[list[FeasibleProviderCandidate], tuple[tuple[Any, ...], dict[str, Any]] | None]:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
         if entries is None:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
@@ -1368,9 +1320,8 @@ class RouteWiseRouter(BaseRouter):
         for route_candidate in entries:
             adapter = route_candidate.adapter
             endpoint_id = route_candidate.endpoint_id
-            self._ensure_health(endpoint_id)
-            circuit = self._circuits[endpoint_id]
-            if not circuit.allow_request():
+            self._health_registry.ensure(endpoint_id)
+            if not self._health_registry.allow_request(endpoint_id):
                 continue
 
             request_cost = self._api_cost_for_pricing(
@@ -1486,6 +1437,10 @@ class RouteWiseRouter(BaseRouter):
         """Return request prefix-cache inputs for cost adjustment, if eligible."""
         if not self.config.prefix_cache_cost_adjustment_enabled or context is None:
             return None
+        # Synthetic probes intentionally skip observations, so creating a
+        # pending warm for them would guarantee a later TTL eviction alert.
+        if bool(req_ctx.get().get("synthetic_probe")):
+            return None
         params = context.get("params")
         session = str(params.get("session_id") or "") if isinstance(params, dict) else ""
         if not session:
@@ -1592,74 +1547,38 @@ class RouteWiseRouter(BaseRouter):
                 return candidate
         return last
 
-    def _commit_candidate(self, candidate: FeasibleProviderCandidate) -> bool:
+    def _reserve_candidate(
+        self,
+        candidate: FeasibleProviderCandidate,
+    ) -> ProviderReservation | None:
+        """Commit one dispatch and return its exact refundable ownership.
+
+        Concurrency release is bound to the concrete pool instance acquired
+        here. A later route-table rebuild may replace ``concurrency_pools``;
+        looking the pool up again at release time would decrement the wrong
+        manager and leak the in-flight slot in the old one.
+        """
         if candidate.provider_type == "concurrency":
             pool = (
                 self.concurrency_pools.get(candidate.concurrency_pool)
                 if candidate.concurrency_pool
                 else None
             )
-            return pool is not None and pool.try_acquire()
+            if pool is None or not pool.try_acquire():
+                return None
+            return ProviderReservation(pool.release)
         if candidate.provider_type == "quota":
             quota_pool = (
                 self.quota_pools.get(candidate.quota_pool) if candidate.quota_pool else None
             )
             if quota_pool is None:
-                return False
+                return None
             # Commit at selection time and do not refund on provider failure:
             # fallback is API-only, so refunding would let failed quota attempts
             # become free retries against the same scarce subscription.
-            return quota_pool.consume()
-        return True
-
-    def _release_candidate(self, candidate: FeasibleProviderCandidate) -> None:
-        if candidate.provider_type != "concurrency" or not candidate.concurrency_pool:
-            return
-        pool = self.concurrency_pools.get(candidate.concurrency_pool)
-        if pool is not None:
-            pool.release()
-
-    def _reserve_candidate(self, candidate: FeasibleProviderCandidate) -> ProviderReservation:
-        return ProviderReservation(router=self, candidate=candidate)
-
-    def _remember_primary_reservation(
-        self,
-        request_id: str | None,
-        candidate: FeasibleProviderCandidate,
-    ) -> None:
-        if not request_id:
-            return
-        self._release_pending_primary_reservation(request_id)
-        if candidate.provider_type == "concurrency":
-            self._primary_reservations[request_id] = ProviderReservation(
-                router=self,
-                candidate=candidate,
-                acquired=True,
-            )
-
-    def _release_pending_primary_reservation(self, request_id: str | None) -> bool:
-        if not request_id:
-            return False
-        reservation = self._primary_reservations.pop(request_id, None)
-        if reservation is None:
-            return False
-        reservation.release()
-        return True
-
-    def _release_execution_primary_capacity(
-        self,
-        request_id: str | None,
-        primary_adapter: Any,
-    ) -> None:
-        if self._release_pending_primary_reservation(request_id):
-            return
-        if self._adapter_provider_type.get(id(primary_adapter)) is not ProviderType.CONCURRENCY:
-            return
-        endpoint_id = self._adapter_endpoint_ids.get(id(primary_adapter))
-        pool_id = self._endpoint_concurrency_pool.get(endpoint_id) if endpoint_id else None
-        pool = self.concurrency_pools.get(pool_id) if pool_id else None
-        if pool is not None:
-            pool.release()
+            if not quota_pool.consume():
+                return None
+        return ProviderReservation()
 
     def _quota_metadata_state(
         self,
@@ -1817,23 +1736,32 @@ class RouteWiseRouter(BaseRouter):
         now: float,
     ) -> HedgePlan | None:
         """Return the checkpoint schedule for probability-target hedging."""
-        if self.config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
+        config = self.config
+        if config.latency_hedge_mode != PROBABILITY_TARGET_HEDGE_MODE:
             return None
 
-        checkpoints = hedge_checkpoints_for_slo(self.config.latency_slo_sec * 1000.0)
-        return HedgePlan(checkpoints_sec=checkpoints) if checkpoints else None
+        checkpoints = hedge_checkpoints_for_slo(config.latency_slo_sec * 1000.0)
+        return (
+            HedgePlan(
+                checkpoints_sec=checkpoints,
+                latency_slo_sec=config.latency_slo_sec,
+            )
+            if checkpoints
+            else None
+        )
 
     def _select_checkpoint_backup(
         self,
         *,
         model_id: str,
-        request_id: str | None,
+        decision: RoutingDecision,
         context: dict[str, Any] | None,
         prompt_tokens: int,
         predicted_output_tokens: float,
         envelope: CostEnvelopeSnapshot | None,
         selected: FeasibleProviderCandidate,
         checkpoints_sec: tuple[float, ...],
+        latency_slo_sec: float,
         elapsed_sec: float,
         checkpoint_ts: float,
     ) -> CheckpointBackupDispatch | None:
@@ -1841,13 +1769,14 @@ class RouteWiseRouter(BaseRouter):
         with self._route_commit_lock:
             return self._select_checkpoint_backup_locked(
                 model_id=model_id,
-                request_id=request_id,
+                decision=decision,
                 context=context,
                 prompt_tokens=prompt_tokens,
                 predicted_output_tokens=predicted_output_tokens,
                 envelope=envelope,
                 selected=selected,
                 checkpoints_sec=checkpoints_sec,
+                latency_slo_sec=latency_slo_sec,
                 elapsed_sec=elapsed_sec,
                 checkpoint_ts=checkpoint_ts,
             )
@@ -1856,13 +1785,14 @@ class RouteWiseRouter(BaseRouter):
         self,
         *,
         model_id: str,
-        request_id: str | None,
+        decision: RoutingDecision,
         context: dict[str, Any] | None,
         prompt_tokens: int,
         predicted_output_tokens: float,
         envelope: CostEnvelopeSnapshot | None,
         selected: FeasibleProviderCandidate,
         checkpoints_sec: tuple[float, ...],
+        latency_slo_sec: float,
         elapsed_sec: float,
         checkpoint_ts: float,
     ) -> CheckpointBackupDispatch | None:
@@ -1878,12 +1808,18 @@ class RouteWiseRouter(BaseRouter):
             now=checkpoint_ts,
             context=context,
         )
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.endpoint_id not in decision.trace.excluded_endpoint_ids
+        ]
         current = self._select_hedge_candidate_at_elapsed(
             primary_profile=primary_profile,
             candidates=candidates,
             selected=selected,
             now=checkpoint_ts,
             elapsed_sec=elapsed_sec,
+            latency_slo_sec=latency_slo_sec,
         )
         if current is None:
             return None
@@ -1903,17 +1839,18 @@ class RouteWiseRouter(BaseRouter):
                     selected=selected,
                     now=checkpoint_ts,
                     elapsed_sec=future_elapsed,
+                    latency_slo_sec=latency_slo_sec,
                 )
                 if future is not None:
                     return None
 
         backup = current.provider
         reservation = self._reserve_candidate(backup)
-        if not reservation.acquire():
+        if reservation is None:
             return None
 
         self._record_hedge_dispatch(
-            request_id=request_id,
+            decision=decision,
             backup=backup,
             elapsed_sec=elapsed_sec,
             success_probability=current.success_probability,
@@ -1933,6 +1870,7 @@ class RouteWiseRouter(BaseRouter):
         selected: FeasibleProviderCandidate,
         now: float,
         elapsed_sec: float,
+        latency_slo_sec: float,
     ) -> BackupCandidate[FeasibleProviderCandidate] | None:
         backup_candidates: list[BackupCandidate[FeasibleProviderCandidate]] = []
         for candidate in candidates:
@@ -1948,7 +1886,7 @@ class RouteWiseRouter(BaseRouter):
                     now,
                 ),
                 elapsed_ms=elapsed_sec * 1000.0,
-                slo_ms=self.config.latency_slo_sec * 1000.0,
+                slo_ms=latency_slo_sec * 1000.0,
                 dispatch_overhead_ms=0.0,
             )
             backup_candidates.append(
@@ -1965,14 +1903,12 @@ class RouteWiseRouter(BaseRouter):
     def _record_hedge_dispatch(
         self,
         *,
-        request_id: str | None,
+        decision: RoutingDecision,
         backup: FeasibleProviderCandidate,
         elapsed_sec: float,
         success_probability: float,
     ) -> None:
-        if not request_id or request_id not in self._pending_decisions:
-            return
-        meta = self._pending_decisions[request_id]
+        meta = decision.metadata
         meta["backup_provider"] = backup.endpoint_id
         meta["backup_provider_type"] = backup.provider_type
         meta["hedge_delay_ms"] = elapsed_sec * 1000.0
@@ -1985,14 +1921,13 @@ class RouteWiseRouter(BaseRouter):
         else:
             meta["routing_estimated_cost_usd"] = backup_cost
 
-    def _apply_hedge_execution_metadata(self, adapter: Any, request_id: str | None) -> None:
-        """Update pending RouteWise metadata after a HedgedAdapter has run."""
-        if not request_id or request_id not in self._pending_decisions:
-            return
+    def _apply_hedge_execution_metadata(self, decision: RoutingDecision) -> None:
+        """Update request-local metadata after a HedgedAdapter has run."""
+        adapter = decision.adapter
         if not isinstance(adapter, HedgedAdapter):
             return
 
-        meta = self._pending_decisions[request_id]
+        meta = decision.metadata
         hedge_triggered = bool(getattr(adapter, "hedge_triggered", False))
         backup_won = bool(getattr(adapter, "backup_won", False))
         meta["hedged"] = hedge_triggered
@@ -2011,7 +1946,7 @@ class RouteWiseRouter(BaseRouter):
         failed_attempts = getattr(adapter, "failed_attempts", None)
         if failed_attempts:
             existing = meta.get("failed_attempts")
-            meta["failed_attempts"] = _dedupe_failed_attempts(
+            meta["failed_attempts"] = dedupe_failed_attempts(
                 [
                     *(existing if isinstance(existing, list) else []),
                     *failed_attempts,
@@ -2025,7 +1960,7 @@ class RouteWiseRouter(BaseRouter):
         ttfts = getattr(adapter, "leg_first_content_ttft_ms", None)
         if not isinstance(ttfts, dict) or not ttfts:
             return
-        winner_endpoint = str(_get_endpoint_id(adapter))
+        winner_endpoint = str(endpoint_id_for_adapter(adapter))
         now = time.time()
         for endpoint_id, ttft_ms in ttfts.items():
             if endpoint_id == winner_endpoint:
@@ -2035,24 +1970,6 @@ class RouteWiseRouter(BaseRouter):
             except (TypeError, ValueError):
                 continue
             self._record_latency_success(str(endpoint_id), now, ttft)
-
-    # ------------------------------------------------------------------
-    # BaseRouter integration
-    # ------------------------------------------------------------------
-
-    def on_provider_success(self, endpoint_id: str) -> None:
-        """Record a hedge-leg success emitted by HedgedAdapter (endpoint_id-keyed)."""
-        self._on_success(endpoint_id)
-
-    def on_provider_failure(
-        self, endpoint_id: str, reason: str, exc: BaseException | None = None
-    ) -> None:
-        """Record a hedge-leg failure emitted by HedgedAdapter (endpoint_id-keyed).
-
-        Passing ``exc`` through preserves the client-error (4xx) breaker
-        exemption for hedge legs, matching the non-hedged path.
-        """
-        self._on_failure(endpoint_id, reason=reason, exc=exc)
 
     @staticmethod
     def _ensure_response_routing(
@@ -2077,21 +1994,34 @@ class RouteWiseRouter(BaseRouter):
         if failed_attempts:
             routing["fallback"] = True
             routing["fallback_policy"] = "routewise_resolve"
-            routing["failed_attempts"] = _dedupe_failed_attempts(failed_attempts)
+            routing["failed_attempts"] = dedupe_failed_attempts(failed_attempts)
 
-    def _select_adapter(self, model_id: str, context: dict[str, Any]) -> BaseAdapter | None:
-        model_id = self._canonical_model_id(model_id)
-        if model_id not in self.classified:
-            raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
-
-        with self._route_commit_lock:
-            return self._select_adapter_locked(model_id, context)
-
-    def _select_adapter_locked(
+    def _select_decision(
         self,
         model_id: str,
         context: dict[str, Any],
-    ) -> BaseAdapter | None:
+        trace: RoutingTrace | None = None,
+    ) -> RoutingDecision | None:
+        model_id = self.canonical_model_id(model_id)
+        if model_id not in self.classified:
+            raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
+        request_id = context.get("request_id")
+        if trace is None:
+            trace = RoutingTrace(
+                request_id=str(request_id) if request_id else None,
+            )
+        elif trace.request_id is None and request_id:
+            trace.request_id = str(request_id)
+
+        with self._route_commit_lock:
+            return self._select_decision_locked(model_id, context, trace)
+
+    def _select_decision_locked(
+        self,
+        model_id: str,
+        context: dict[str, Any],
+        trace: RoutingTrace,
+    ) -> RoutingDecision | None:
         prompt_tokens = self._prompt_tokens_from_context(context)
         prediction = self._predict_output(model_id, prompt_tokens, context)
         pool = self._routewise_pool(model_id)
@@ -2106,11 +2036,7 @@ class RouteWiseRouter(BaseRouter):
             now=now,
             context=context,
         )
-        excluded_endpoint_ids = {
-            str(endpoint_id)
-            for endpoint_id in context.get(_EXCLUDED_ENDPOINTS_CONTEXT_KEY, ())
-            if endpoint_id
-        }
+        excluded_endpoint_ids = trace.excluded_endpoint_ids
         if excluded_endpoint_ids:
             candidates = [
                 candidate
@@ -2136,61 +2062,73 @@ class RouteWiseRouter(BaseRouter):
             selected = self._sample_solution(candidates, solution)
             if selected is None:
                 return None
-            if self._commit_candidate(selected):
-                request_id = context.get("request_id")
-                self._remember_primary_reservation(request_id, selected)
-                hedge_plan = self._select_hedge_plan(
-                    selected=selected,
-                    now=now,
-                )
-                adapter: BaseAdapter = selected.adapter
-                if hedge_plan is not None:
+            reservation = self._reserve_candidate(selected)
+            if reservation is not None:
+                try:
+                    hedge_plan = self._select_hedge_plan(
+                        selected=selected,
+                        now=now,
+                    )
+                    metadata = self._decision_metadata(
+                        model_id=model_id,
+                        request_id=trace.request_id,
+                        prompt_tokens=prompt_tokens,
+                        prediction=prediction,
+                        envelope=envelope,
+                        candidates=candidates,
+                        solution=solution,
+                        selected=selected,
+                        hedge_plan=hedge_plan,
+                    )
+                    trace.begin_decision(metadata)
+                    decision = RoutingDecision(
+                        adapter=selected.adapter,
+                        reservation=reservation,
+                        metadata=metadata,
+                        trace=trace,
+                    )
+                    if hedge_plan is not None:
 
-                    def _select_checkpoint_backup_for_request(
-                        elapsed_sec: float,
-                        checkpoint_ts: float,
-                        *,
-                        request_id: str | None = request_id,
-                        selected: FeasibleProviderCandidate = selected,
-                        checkpoints_sec: tuple[float, ...] = hedge_plan.checkpoints_sec,
-                    ) -> CheckpointBackupDispatch | None:
-                        return self._select_checkpoint_backup(
-                            model_id=model_id,
-                            request_id=request_id,
-                            context=context,
-                            prompt_tokens=prompt_tokens,
-                            predicted_output_tokens=prediction.tokens,
-                            envelope=envelope,
-                            selected=selected,
-                            checkpoints_sec=checkpoints_sec,
-                            elapsed_sec=elapsed_sec,
-                            checkpoint_ts=checkpoint_ts,
+                        def _select_checkpoint_backup_for_request(
+                            elapsed_sec: float,
+                            checkpoint_ts: float,
+                            *,
+                            decision: RoutingDecision = decision,
+                            selected: FeasibleProviderCandidate = selected,
+                            checkpoints_sec: tuple[float, ...] = hedge_plan.checkpoints_sec,
+                            latency_slo_sec: float = hedge_plan.latency_slo_sec,
+                        ) -> CheckpointBackupDispatch | None:
+                            return self._select_checkpoint_backup(
+                                model_id=model_id,
+                                decision=decision,
+                                context=context,
+                                prompt_tokens=prompt_tokens,
+                                predicted_output_tokens=prediction.tokens,
+                                envelope=envelope,
+                                selected=selected,
+                                checkpoints_sec=checkpoints_sec,
+                                latency_slo_sec=latency_slo_sec,
+                                elapsed_sec=elapsed_sec,
+                                checkpoint_ts=checkpoint_ts,
+                            )
+
+                        decision.adapter = HedgedAdapter(
+                            primary=selected.adapter,
+                            event_sink=self._health_registry,
+                            hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
+                            checkpoint_backup_selector=_select_checkpoint_backup_for_request,
                         )
-
-                    adapter = HedgedAdapter(
-                        primary=selected.adapter,
-                        event_sink=self,
-                        hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
-                        checkpoint_backup_selector=_select_checkpoint_backup_for_request,
-                    )
-                if request_id:
-                    self._store_pending_decision(
-                        request_id,
-                        self._decision_metadata(
-                            model_id=model_id,
-                            request_id=request_id,
-                            prompt_tokens=prompt_tokens,
-                            prediction=prediction,
-                            envelope=envelope,
-                            candidates=candidates,
-                            solution=solution,
-                            selected=selected,
-                            hedge_plan=hedge_plan,
-                        ),
-                    )
-                if self.prefix_cache.enabled:
-                    self._stash_prefix_for_commit(prefix_context, request_id)
-                return adapter
+                    if self.prefix_cache.enabled:
+                        self._stash_prefix_for_commit(
+                            prefix_context,
+                            trace.request_id,
+                        )
+                    return decision
+                except BaseException:
+                    # Construction happens after a provider commit. Keep the
+                    # ownership lexical even if metadata or hedge setup fails.
+                    reservation.release()
+                    raise
             candidates = [c for c in candidates if c.endpoint_id != selected.endpoint_id]
             if not candidates:
                 return None
@@ -2210,8 +2148,8 @@ class RouteWiseRouter(BaseRouter):
         id, so a winner without a scope here -- e.g. a rotating-key or no-delta
         provider -- is simply not warmed.
 
-        Keyed by the external request id from the request context, the same id the
-        observation path reads back.
+        Correlated explicitly by the request id carried in the request-local
+        trace and later copied into ``RoutingObservation``.
         """
         if prefix_context is None:
             return
@@ -2219,44 +2157,39 @@ class RouteWiseRouter(BaseRouter):
         scopes = info.get("scopes") or {}
         if not scopes:
             return
-        stash_key = str(req_ctx.get().get("request_id") or request_id or "")
+        stash_key = str(request_id or "")
         if not stash_key:
             return
-        self._prefix_cache_pending[stash_key] = (blocks, scopes)
-        while len(self._prefix_cache_pending) > _PREFIX_CACHE_PENDING_MAX:
-            self._prefix_cache_pending.pop(next(iter(self._prefix_cache_pending)), None)
+        self.pending_prefix_cache.put(stash_key, blocks, scopes)
 
     def _commit_prefix_cache_observation(self, obs: RoutingObservation) -> None:
         """On a selected success, commit the winning provider's prefix to memory.
 
         Only successful observations warm history, and only under the endpoint that
         actually served (``obs.endpoint_id``) — so failed, fallback, or lost-hedge
-        attempts are never recorded as warm. The request is correlated to its
-        route-time blocks via ``request_id`` from the request context.
+        attempts are never recorded as warm. ``RoutingObservation.request_id``
+        explicitly correlates the success with its route-time prefix snapshot.
         """
-        request_id = str(req_ctx.get().get("request_id") or "")
+        request_id = str(getattr(obs, "request_id", None) or "")
         if not request_id:
             return
-        # Failed observations must not consume the stash: the logging path
-        # emits one failed observation per failed attempt BEFORE the final
-        # success observation, and popping here would leave nothing for the
-        # winning fallback/hedge leg to warm. Final-failure entries are not
-        # leaked: the pending-decisions TTL sweep and size-cap eviction both
-        # drop the sibling _prefix_cache_pending entry, and
-        # _stash_prefix_for_commit bounds the dict at _PREFIX_CACHE_PENDING_MAX.
+        # A non-terminal failed attempt must not consume the stash because the
+        # winning fallback/hedge observation still needs it. A terminal failed
+        # observation (including an empty completion) has no future winner and
+        # therefore discards it without warming.
         if not obs.success:
+            if getattr(obs, "terminal", True):
+                self.pending_prefix_cache.discard(request_id)
             return
-        with self._route_commit_lock:
-            stashed = self._prefix_cache_pending.pop(request_id, None)
+        stashed = self.pending_prefix_cache.pop(request_id)
         if stashed is None:
             return
-        blocks, scopes = stashed
-        scope = scopes.get(obs.endpoint_id)
+        scope = stashed.scopes.get(obs.endpoint_id)
         if scope is None:
             return
         self.prefix_cache.remember(
             scope,
-            blocks,
+            stashed.blocks,
         )
 
     @staticmethod
@@ -2268,24 +2201,11 @@ class RouteWiseRouter(BaseRouter):
         relevant = {key: params[key] for key in keys if params.get(key) is not None}
         return json.dumps(relevant, sort_keys=True, default=str)
 
-    def _get_fallback_adapters(
-        self,
-        model_id: str,
-        failed_adapter: BaseAdapter,
-    ) -> list[BaseAdapter]:
-        # RouteWise does not use the BaseRouter fallback-list hook: it overrides
-        # chat_completion/stream_chat_completion and performs policy-aware
-        # re-solve fallback inline (re-running the LP over the remaining
-        # candidates), gated by ``config.fallback_mode``. This stub keeps the
-        # BaseRouter contract satisfied without introducing a second path.
-        del model_id, failed_adapter
-        return []
-
     def record_observation(self, obs: RoutingObservation) -> None:
         """Update output predictor, latency profile, and L/U envelope."""
         if self.prefix_cache.enabled:
             self._commit_prefix_cache_observation(obs)
-        model_id = self._canonical_model_id(obs.model_id)
+        model_id = self.canonical_model_id(obs.model_id)
         if obs.completion_tokens > 0:
             self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
@@ -2350,7 +2270,7 @@ class RouteWiseRouter(BaseRouter):
             if ts is None:
                 continue
 
-            model_id = self._canonical_model_id(str(row.get("model_id") or ""))
+            model_id = self.canonical_model_id(str(row.get("model_id") or ""))
             if include_latency:
                 endpoint_id = self._string_or_none(row.get("endpoint_id")) or self._string_or_none(
                     row.get("provider")
@@ -2516,54 +2436,63 @@ class RouteWiseRouter(BaseRouter):
 
     async def _execute_adapter(
         self,
-        adapter: Any,
+        decision: RoutingDecision,
         model_id: str,
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> dict[str, Any]:
-        primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
-        request_id = params.get("request_id")
+        adapter = decision.adapter
         original_config = getattr(adapter, "config", None)
         try:
-            result = await super()._execute_adapter(adapter, model_id, messages, **params)
-            if (
-                getattr(adapter, "config", None) is not original_config
-                and request_id
-                and request_id in self._pending_decisions
-            ):
-                self._pending_decisions[request_id]["backup_won"] = True
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                self._ensure_health(endpoint_id)
+                result = await adapter.chat_completion(messages, **params)
+                # HedgedAdapter reports every leg outcome, including the winner,
+                # directly to the shared registry. Counting the composite here
+                # would inflate availability and reset the breaker twice.
+                if not getattr(adapter, "reports_leg_outcomes", False):
+                    # A composite adapter may replace its config with the leg
+                    # that actually served, so resolve the endpoint after the call.
+                    self._on_success(endpoint_id_for_adapter(adapter))
+            if getattr(adapter, "config", None) is not original_config:
+                decision.metadata["backup_won"] = True
             return result
         finally:
             # Single call site: _record_hedge_explorer_samples appends a
             # latency sample per invocation, so calling this in both try and
             # finally double-recorded the losing leg's TTFT on success.
-            self._apply_hedge_execution_metadata(adapter, request_id)
-            self._release_execution_primary_capacity(request_id, primary_adapter)
+            self._apply_hedge_execution_metadata(decision)
+            decision.release()
 
     async def _execute_stream_adapter(
         self,
-        adapter: Any,
+        decision: RoutingDecision,
         model_id: str,
         messages: list[dict[str, Any]],
         **params: Any,
     ) -> AsyncIterator[Any]:
-        primary_adapter = adapter.primary if isinstance(adapter, HedgedAdapter) else adapter
-        request_id = params.get("request_id")
+        adapter = decision.adapter
         original_config = getattr(adapter, "config", None)
         try:
-            async for chunk in super()._execute_stream_adapter(
-                adapter, model_id, messages, **params
-            ):
-                yield chunk
+            endpoint_id = endpoint_id_for_adapter(adapter)
+            with req_ctx.push(model=model_id, provider=adapter.config.provider):
+                self._ensure_health(endpoint_id)
+                first = True
+                async for chunk in adapter.stream_chat_completion(messages, **params):
+                    if first and has_non_empty_content(chunk):
+                        first = False
+                        # HedgedAdapter already records the winning leg. For
+                        # other adapters, resolve the endpoint after first output
+                        # in case the adapter swapped its serving config.
+                        if not getattr(adapter, "reports_leg_outcomes", False):
+                            self._on_success(endpoint_id_for_adapter(adapter))
+                    yield chunk
         finally:
-            if (
-                getattr(adapter, "config", None) is not original_config
-                and request_id
-                and request_id in self._pending_decisions
-            ):
-                self._pending_decisions[request_id]["backup_won"] = True
-            self._apply_hedge_execution_metadata(adapter, request_id)
-            self._release_execution_primary_capacity(request_id, primary_adapter)
+            if getattr(adapter, "config", None) is not original_config:
+                decision.metadata["backup_won"] = True
+            self._apply_hedge_execution_metadata(decision)
+            decision.release()
 
     # ------------------------------------------------------------------
     # chat_completion / stream_chat_completion: merge decision metadata
@@ -2583,7 +2512,7 @@ class RouteWiseRouter(BaseRouter):
         if not isinstance(failed_attempts, list) or not failed_attempts:
             return
         existing = routing.get("failed_attempts")
-        routing["failed_attempts"] = _dedupe_failed_attempts(
+        routing["failed_attempts"] = dedupe_failed_attempts(
             [
                 *(existing if isinstance(existing, list) else []),
                 *failed_attempts,
@@ -2591,9 +2520,15 @@ class RouteWiseRouter(BaseRouter):
         )
 
     async def chat_completion(
-        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
     ) -> dict[str, Any]:
         """Run a non-streaming RouteWise chat completion."""
+        self._validate_routing_options(routing_options, params)
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
@@ -2602,38 +2537,37 @@ class RouteWiseRouter(BaseRouter):
             "params": params,
             "request_id": request_id,
         }
-        excluded: set[str] = set()
-        failed_attempts: list[dict[str, Any]] = []
+        trace = RoutingTrace(request_id=str(request_id))
+        decision: RoutingDecision | None = None
         last_attempted: BaseAdapter | None = None
         last_error: BaseException | None = None
 
         try:
             while True:
-                if excluded:
-                    context[_EXCLUDED_ENDPOINTS_CONTEXT_KEY] = tuple(sorted(excluded))
-                primary = self._select_adapter(model_id, context)
-                if not primary:
+                next_decision = self._select_decision(model_id, context, trace)
+                if next_decision is None:
                     if last_error is not None:
                         raise last_error
                     raise ValueError(f"No route configured for model {model_id}")
 
+                decision = next_decision
+                primary = decision.adapter
                 last_attempted = primary
                 try:
-                    resp = await self._execute_adapter(primary, model_id, messages, **params)
+                    resp = await self._execute_adapter(decision, model_id, messages, **params)
                     self._ensure_response_routing(
                         resp,
                         primary,
-                        failed_attempts=failed_attempts,
+                        failed_attempts=trace.failed_attempts,
                     )
-                    decision_info = self._pending_decisions.pop(request_id, None)
-                    if decision_info and isinstance(resp, dict) and "_routing" in resp:
-                        self._attach_decision_info(resp["_routing"], decision_info)
+                    if isinstance(resp, dict) and "_routing" in resp:
+                        self._attach_decision_info(resp["_routing"], decision.metadata)
                     return resp
                 except Exception as exc:
                     last_error = exc
-                    endpoint_id = _get_endpoint_id(primary)
-                    # A HedgedAdapter already recorded each failed leg through
-                    # its event sink under the leg's endpoint_id; recording the
+                    endpoint_id = endpoint_id_for_adapter(primary)
+                    # A HedgedAdapter already recorded each failed leg in its
+                    # registry under the leg's endpoint_id; recording the
                     # composite failure here as well would give the primary
                     # endpoint two failure samples for one request.
                     if not getattr(primary, "reports_leg_outcomes", False):
@@ -2641,33 +2575,27 @@ class RouteWiseRouter(BaseRouter):
                             endpoint_id,
                             reason=exc.__class__.__name__,
                             detail=operator_safe_error(exc),
-                            # Pass the exception so the base router can skip the
+                            # Pass the exception so the registry can skip the
                             # breaker on a client (4xx) error — otherwise one
                             # user's bad request opens the circuit for every
                             # user.
                             exc=exc,
                         )
-                    attempt = _failed_attempt(primary, exc)
-                    failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
+                    attempt = failed_attempt(primary, exc)
+                    trace.record_failed_attempt(attempt)
                     if self.config.fallback_mode != "policy" or not _is_routewise_retryable_error(
                         exc
                     ):
                         raise
-                    self._record_routewise_fallback_attempt(
-                        request_id,
+                    trace.record_fallback(
+                        decision,
                         attempt,
                         fallback_policy="routewise_resolve",
                     )
-                    excluded.add(endpoint_id)
+                    trace.excluded_endpoint_ids.add(endpoint_id)
                     continue
         except BaseException as exc:
-            decision_info = self._pending_decisions.pop(request_id, None)
-            # Terminal failure: no success observation will ever consume the
-            # prefix stash, and the TTL sweep only reaches it through the
-            # pending-decisions sibling popped above — reclaim it here instead
-            # of waiting for the size-cap eviction.
-            with self._route_commit_lock:
-                self._prefix_cache_pending.pop(request_id, None)
+            self.pending_prefix_cache.discard(str(request_id))
             routing = getattr(exc, "_routing", None)
             if not isinstance(routing, dict):
                 adapter = last_attempted
@@ -2681,18 +2609,26 @@ class RouteWiseRouter(BaseRouter):
                     ),
                 }
                 exc._routing = routing  # type: ignore[attr-defined]
-            if failed_attempts:
-                routing.setdefault("failed_attempts", failed_attempts)
-            if decision_info:
-                self._attach_decision_info(routing, decision_info)
+            if trace.failed_attempts:
+                routing.setdefault("failed_attempts", trace.failed_attempts)
+            if decision is not None:
+                trace.apply_to(decision.metadata)
+                self._attach_decision_info(routing, decision.metadata)
             raise
         finally:
-            self._release_pending_primary_reservation(request_id)
+            if decision is not None:
+                decision.release()
 
     async def stream_chat_completion(
-        self, model_id: str, messages: list[dict[str, Any]], **params: Any
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        *,
+        routing_options: RoutingRequestOptions | None = None,
+        **params: Any,
     ) -> AsyncIterator[Any]:
         """Run a streaming RouteWise chat completion."""
+        self._validate_routing_options(routing_options, params)
         if not params.get("request_id"):
             params["request_id"] = f"req-{uuid.uuid4().hex[:12]}"
         request_id = params["request_id"]
@@ -2701,8 +2637,8 @@ class RouteWiseRouter(BaseRouter):
             "params": params,
             "request_id": request_id,
         }
-        excluded: set[str] = set()
-        failed_attempts: list[dict[str, Any]] = []
+        trace = RoutingTrace(request_id=str(request_id))
+        decision: RoutingDecision | None = None
         last_attempted: BaseAdapter | None = None
         last_error: BaseException | None = None
         chunks_yielded = False
@@ -2710,99 +2646,89 @@ class RouteWiseRouter(BaseRouter):
 
         try:
             while True:
-                if excluded:
-                    context[_EXCLUDED_ENDPOINTS_CONTEXT_KEY] = tuple(sorted(excluded))
-                primary = self._select_adapter(model_id, context)
-                if not primary:
+                next_decision = self._select_decision(model_id, context, trace)
+                if next_decision is None:
                     if last_error is not None:
                         raise last_error
                     raise ValueError(f"No route configured for model {model_id}")
 
+                decision = next_decision
+                primary = decision.adapter
                 last_attempted = primary
                 try:
-                    yield _routing_chunk(
+                    yield routing_chunk(
                         primary,
-                        fallback=bool(failed_attempts),
-                        failed_attempts=failed_attempts,
+                        fallback=bool(trace.failed_attempts),
+                        failed_attempts=trace.failed_attempts,
                     )
-                    if request_id in self._pending_decisions:
-                        self._pending_decisions[request_id]["is_streaming"] = True
+                    decision.metadata["is_streaming"] = True
                     async for chunk in self._execute_stream_adapter(
-                        primary,
+                        decision,
                         model_id,
                         messages,
                         **params,
                     ):
-                        if request_id in self._pending_decisions:
-                            self._pending_decisions[request_id]["is_streaming"] = True
+                        self.pending_prefix_cache.touch(str(request_id))
                         if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
                             done_chunk = chunk
                             continue
                         yield chunk
                         chunks_yielded = True
 
-                    decision_info = self._pending_decisions.pop(request_id, None)
-                    if decision_info:
-                        decision_info["is_streaming"] = True
-                        routing: dict[str, Any] = {}
-                        if failed_attempts:
-                            routing["fallback"] = True
-                            routing["fallback_policy"] = "routewise_resolve"
-                            routing["failed_attempts"] = failed_attempts
-                        self._attach_decision_info(routing, decision_info)
-                        routing_chunk = {
-                            "choices": [],
-                            "_routing": routing,
-                        }
-                        yield f"data: {json.dumps(routing_chunk)}\n\n"
+                    decision.metadata["is_streaming"] = True
+                    routing: dict[str, Any] = {}
+                    if trace.failed_attempts:
+                        routing["fallback"] = True
+                        routing["fallback_policy"] = "routewise_resolve"
+                        routing["failed_attempts"] = trace.failed_attempts
+                    self._attach_decision_info(routing, decision.metadata)
+                    decision_routing_chunk = {
+                        "choices": [],
+                        "_routing": routing,
+                    }
+                    yield f"data: {json.dumps(decision_routing_chunk)}\n\n"
 
                     if done_chunk:
                         yield done_chunk
                     return
                 except Exception as exc:
                     last_error = exc
-                    endpoint_id = _get_endpoint_id(primary)
-                    # A HedgedAdapter records race-time leg failures through
-                    # its event sink under the leg's endpoint_id; recording
-                    # those here as well would double-count them. But the sink
-                    # stops at the race: a failure AFTER the winner started
-                    # streaming (chunks_yielded) is not sink-recorded, and by
-                    # then the hedged adapter's config points at the winner, so
+                    endpoint_id = endpoint_id_for_adapter(primary)
+                    # A HedgedAdapter records race-time leg failures in its
+                    # registry under the leg's endpoint_id; recording those
+                    # here as well would double-count them. But hedge outcome
+                    # recording stops at the race: a failure AFTER the winner
+                    # started streaming (chunks_yielded) is not recorded there.
+                    # By then the hedged adapter's config points at the winner, so
                     # endpoint_id attributes it correctly.
                     if chunks_yielded or not getattr(primary, "reports_leg_outcomes", False):
                         self._on_failure(
                             endpoint_id,
                             reason="stream_exception",
                             detail=operator_safe_error(exc),
-                            # Pass the exception so the base router can skip the
+                            # Pass the exception so the registry can skip the
                             # breaker on a client (4xx) error — otherwise one
                             # user's bad request opens the circuit for every
                             # user.
                             exc=exc,
                         )
-                    attempt = _failed_attempt(primary, exc)
-                    failed_attempts = _dedupe_failed_attempts([*failed_attempts, attempt])
+                    attempt = failed_attempt(primary, exc)
+                    trace.record_failed_attempt(attempt)
                     if (
                         chunks_yielded
                         or self.config.fallback_mode != "policy"
                         or not _is_routewise_retryable_error(exc)
                     ):
                         raise
-                    self._record_routewise_fallback_attempt(
-                        request_id,
+                    trace.record_fallback(
+                        decision,
                         attempt,
                         fallback_policy="routewise_resolve",
                     )
-                    excluded.add(endpoint_id)
+                    trace.excluded_endpoint_ids.add(endpoint_id)
                     continue
         except BaseException as exc:
-            decision_info = self._pending_decisions.pop(request_id, None)
-            # Terminal failure: no success observation will ever consume the
-            # prefix stash, and the TTL sweep only reaches it through the
-            # pending-decisions sibling popped above — reclaim it here instead
-            # of waiting for the size-cap eviction.
-            with self._route_commit_lock:
-                self._prefix_cache_pending.pop(request_id, None)
+            self.pending_prefix_cache.discard(str(request_id))
             routing = getattr(exc, "_routing", None)
             if not isinstance(routing, dict):
                 adapter = last_attempted
@@ -2816,10 +2742,23 @@ class RouteWiseRouter(BaseRouter):
                     ),
                 }
                 exc._routing = routing  # type: ignore[attr-defined]
-            if failed_attempts:
-                routing.setdefault("failed_attempts", failed_attempts)
-            if decision_info:
-                self._attach_decision_info(routing, decision_info)
+            if trace.failed_attempts:
+                routing.setdefault("failed_attempts", trace.failed_attempts)
+            if decision is not None:
+                trace.apply_to(decision.metadata)
+                self._attach_decision_info(routing, decision.metadata)
             raise
         finally:
-            self._release_pending_primary_reservation(request_id)
+            if decision is not None:
+                decision.release()
+
+    @staticmethod
+    def _validate_routing_options(
+        routing_options: RoutingRequestOptions | None,
+        params: dict[str, Any],
+    ) -> None:
+        """Consume router controls locally and fail fast on invalid dispatch."""
+        if "pin_provider" in params:
+            raise TypeError("pin_provider moved to routing_options=RoutingRequestOptions(...)")
+        if routing_options is not None and routing_options.pin_provider is not None:
+            raise ValueError("pinned requests must be dispatched through the shared FixedRouter")

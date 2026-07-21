@@ -7,6 +7,7 @@ test and avoids hidden global state.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
+    from serving.config.routewise_model_settings import RouteWiseSettingsResolver
     from serving.config.weight_overrides import WeightOverrideResolver
     from serving.observability.alert_rules import AlertEngine
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -54,9 +56,11 @@ class AppServices:
     routing_manager: RoutingManager | None = None
     model_router_registry: ModelRouterRegistry | None = None
     managed_routers: list[ManagedRouter] = field(default_factory=list)
+    model_router_transition_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     model_visibility_resolver: ModelVisibilityResolver | None = None
     model_concurrency_resolver: ModelConcurrencyResolver | None = None
     weight_override_resolver: WeightOverrideResolver | None = None
+    routewise_settings_resolver: RouteWiseSettingsResolver | None = None
     disabled_provider_resolver: DisabledProviderResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
@@ -66,7 +70,19 @@ class AppServices:
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
     weight_override_refresh_task: Any | None = None
+    routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
+
+
+def model_router_transition_lock(
+    services: AppServices,
+    canonical_model_id: str,
+) -> asyncio.Lock:
+    """Return the process-local mutation lock for one canonical model."""
+    return services.model_router_transition_locks.setdefault(
+        canonical_model_id,
+        asyncio.Lock(),
+    )
 
 
 def get_services(request: Request) -> AppServices:

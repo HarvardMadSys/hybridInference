@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from routing.route_table import EffectiveRoute
 from routing.routers import RoutingObservation
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.prefix_cache import (
@@ -20,6 +21,7 @@ from routing.routewise.prefix_cache import (
     longest_common_prefix_tokens,
     price_delta_per_token,
 )
+from routing.routewise.prefix_cache_pending import PendingPrefixCacheStore
 from routing.routewise.router import RouteWiseRouter
 from serving.utils import context as req_ctx
 
@@ -297,7 +299,13 @@ class TestPrefixCacheCoordinator:
         assert record.cache_discount == 0.0
 
 
-def _obs(endpoint_id: str, *, success: bool = True) -> RoutingObservation:
+def _obs(
+    endpoint_id: str,
+    *,
+    request_id: str,
+    success: bool = True,
+    terminal: bool = True,
+) -> RoutingObservation:
     return RoutingObservation(
         model_id="m1",
         endpoint_id=endpoint_id,
@@ -305,7 +313,9 @@ def _obs(endpoint_id: str, *, success: bool = True) -> RoutingObservation:
         total_latency_ms=1.0,
         token_count=1,
         success=success,
-        quota_committed=0.0,
+        request_id=request_id,
+        terminal=terminal,
+        strategy_metadata={"routewise": {"quota_committed": 0.0}},
     )
 
 
@@ -339,10 +349,25 @@ def _api_adapter(
     )
 
 
-def _fixed_router(*adapters: SimpleNamespace) -> SimpleNamespace:
-    return SimpleNamespace(
-        routes={"m1": SimpleNamespace(adapters=[(adapter, 1.0) for adapter in adapters])}
-    )
+class _StaticRouteTable:
+    def __init__(self, adapters: tuple[SimpleNamespace, ...]) -> None:
+        self._adapters = tuple((adapter, 1.0) for adapter in adapters)
+
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        return (
+            EffectiveRoute(
+                route_key="m1",
+                canonical_model_id="m1",
+                adapters=self._adapters,
+            ),
+        )
+
+    def canonical_id(self, model_id: str) -> str:
+        return model_id
+
+
+def _route_table(*adapters: SimpleNamespace) -> _StaticRouteTable:
+    return _StaticRouteTable(adapters)
 
 
 @pytest.mark.unit
@@ -378,16 +403,21 @@ class TestRouteWiseRouterPrefixCacheWarm:
         )
 
     def _stash(self, router, request_id, scopes, *, messages=_MSGS1):
-        # Mirror _select_adapter: the external id lives in req_ctx; scopes were
-        # collected by _apply (built directly here); stash keys off the external id.
-        req_ctx.set({"request_id": request_id, "affinity_key": "userA"})
+        # Mirror selection: scopes are collected while pricing and the request
+        # id is handed directly to the bounded pending-prefix store.
         blocks = router.prefix_cache.build_blocks(messages)
         router._stash_prefix_for_commit((blocks, {"scopes": scopes}), request_id)
 
     @staticmethod
     def _observe(router, request_id, endpoint_id, *, success=True):
-        req_ctx.set({"request_id": request_id, "affinity_key": "ignored-at-observe"})
-        router._commit_prefix_cache_observation(_obs(endpoint_id, success=success))
+        router._commit_prefix_cache_observation(
+            _obs(
+                endpoint_id,
+                request_id=request_id,
+                success=success,
+                terminal=success,
+            )
+        )
 
     def _lookup(self, router, scope, *, messages=_MSGS2):
         return router.prefix_cache.memory.lookup(scope, router.prefix_cache.build_blocks(messages))
@@ -415,12 +445,29 @@ class TestRouteWiseRouterPrefixCacheWarm:
         scope_b = self._scope(router, "prov-b", "prov-b:h:1")
         self._stash(router, "r1", {"prov-a:h:1": scope_a, "prov-b:h:1": scope_b})
         self._observe(router, "r1", "prov-a:h:1", success=False)  # primary failed
-        assert "r1" in router._prefix_cache_pending  # kept for the winner
+        assert "r1" in router.pending_prefix_cache  # kept for the winner
         assert self._lookup(router, scope_a).has_history is False
         self._observe(router, "r1", "prov-b:h:1")  # fallback succeeded
         assert self._lookup(router, scope_b).has_history is True  # winner warmed
         assert self._lookup(router, scope_a).has_history is False  # loser not warmed
-        assert "r1" not in router._prefix_cache_pending  # consumed by the success
+        assert "r1" not in router.pending_prefix_cache  # consumed by the success
+
+    def test_terminal_failed_observation_discards_stash_without_warming(self):
+        router = self._router()
+        scope_a = self._scope(router, "prov-a", "prov-a:h:1")
+        self._stash(router, "r1", {"prov-a:h:1": scope_a})
+
+        router._commit_prefix_cache_observation(
+            _obs(
+                "prov-a:h:1",
+                request_id="r1",
+                success=False,
+                terminal=True,
+            )
+        )
+
+        assert "r1" not in router.pending_prefix_cache
+        assert self._lookup(router, scope_a).has_history is False
 
     def test_warms_winner_among_eligible_not_others(self):
         # Both prov-a and prov-b were eligible (in scopes); prov-b actually served
@@ -438,7 +485,7 @@ class TestRouteWiseRouterPrefixCacheWarm:
         # nothing, so the `if not scopes` gate skips the stash entirely.
         router = self._router()
         self._stash(router, "r1", {})
-        assert "r1" not in router._prefix_cache_pending
+        assert "r1" not in router.pending_prefix_cache
         scope_a = self._scope(router, "prov-a", "prov-a:h:1")
         self._observe(router, "r1", "prov-a:h:1")  # nothing to commit
         assert self._lookup(router, scope_a).has_history is False
@@ -458,21 +505,24 @@ class TestRouteWiseRouterPrefixCacheWarm:
         scope_a = self._scope(router, "prov-a", "prov-a:h:1")
         blocks = router.prefix_cache.build_blocks(_MSGS1)
         router._stash_prefix_for_commit((blocks, {"scopes": {"prov-a:h:1": scope_a}}), None)
-        assert len(router._prefix_cache_pending) == 0
+        assert len(router.pending_prefix_cache) == 0
 
-    @pytest.mark.asyncio
-    async def test_stale_pending_decision_sweep_removes_prefix_stash(self):
+    def test_pending_prefix_store_sweeps_lost_observation_independently(self):
         router = self._router()
+        now = 100.0
+        router.pending_prefix_cache = PendingPrefixCacheStore(
+            ttl_seconds=10.0,
+            clock=lambda: now,
+        )
         scope_a = self._scope(router, "prov-a", "prov-a:h:1")
-        req_ctx.set({"request_id": "r1", "affinity_key": "userA"})
-        router._pending_decisions["r1"] = {"timestamp": -1_000_000_000.0}
         self._stash(router, "r1", {"prov-a:h:1": scope_a})
-        assert "r1" in router._prefix_cache_pending
+        assert "r1" in router.pending_prefix_cache
+        now = 111.0
 
-        evicted = await router._sweep_pending_decisions_once()
+        evicted = router.pending_prefix_cache.sweep_expired()
 
         assert evicted == 1
-        assert "r1" not in router._prefix_cache_pending
+        assert "r1" not in router.pending_prefix_cache
 
 
 @pytest.mark.unit
@@ -497,7 +547,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
             api_keys=warm_api_keys,
         )
         router = RouteWiseRouter(
-            fixed_router=_fixed_router(cold_cheaper, warm_slightly_pricier),
+            route_table=_route_table(cold_cheaper, warm_slightly_pricier),
             config=RouteWiseConfig(
                 budget_alpha=0.0,
                 prefix_cache_cost_adjustment_enabled=cost_adjustment,
@@ -528,7 +578,7 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
     @staticmethod
     def _select(router: RouteWiseRouter):
         req_ctx.set({"request_id": "r-select", "affinity_key": "userA"})
-        return router._select_adapter(
+        return router._select_decision(
             "m1",
             {
                 "request_id": "r-select",
@@ -544,10 +594,11 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         router, cold_cheaper, _warm_slightly_pricier = self._router(cost_adjustment=False)
         self._warm_provider_b(router)
 
-        selected = self._select(router)
+        decision = self._select(router)
 
-        assert selected is cold_cheaper
-        meta = router._pending_decisions["r-select"]
+        assert decision is not None
+        assert decision.adapter is cold_cheaper
+        meta = decision.metadata
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "cold_api_cost"
         assert meta["candidate_costs_usd"]["prov-b:h:1"] == pytest.approx(
             meta["candidate_request_costs_usd"]["prov-b:h:1"]
@@ -558,10 +609,11 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         router, _cold_cheaper, warm_slightly_pricier = self._router(cost_adjustment=True)
         self._warm_provider_b(router)
 
-        selected = self._select(router)
+        decision = self._select(router)
 
-        assert selected is warm_slightly_pricier
-        meta = router._pending_decisions["r-select"]
+        assert decision is not None
+        assert decision.adapter is warm_slightly_pricier
+        meta = decision.metadata
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "prefix_cache_adjusted_api_cost"
         assert meta["candidate_prefix_cache_discounts_usd"]["prov-b:h:1"] > 0
         assert meta["candidate_prefix_cache_expected_tokens"]["prov-b:h:1"] > 0
@@ -580,12 +632,38 @@ class TestRouteWiseRouterPrefixCacheCostAdjustment:
         )
         self._warm_provider_b(router)
 
-        selected = self._select(router)
+        decision = self._select(router)
 
-        assert selected is cold_cheaper
-        meta = router._pending_decisions["r-select"]
+        assert decision is not None
+        assert decision.adapter is cold_cheaper
+        meta = decision.metadata
         assert meta["candidate_cost_reasons"]["prov-b:h:1"] == "cold_api_cost"
         assert "prov-b:h:1" not in meta["candidate_prefix_cache_discounts_usd"]
+
+    def test_synthetic_probe_skips_cost_adjustment_and_pending_warm(self):
+        router, cold_cheaper, _warm_slightly_pricier = self._router(cost_adjustment=True)
+        self._warm_provider_b(router)
+
+        with req_ctx.push(
+            request_id="r-probe",
+            affinity_key="userA",
+            synthetic_probe=True,
+        ):
+            decision = router._select_decision(
+                "m1",
+                {
+                    "request_id": "r-probe",
+                    "messages": _MSGS2,
+                    "params": {
+                        "session_id": "sess-1",
+                        "prompt_tokens": 1000,
+                    },
+                },
+            )
+
+        assert decision is not None
+        assert decision.adapter is cold_cheaper
+        assert len(router.pending_prefix_cache) == 0
 
     def test_eligible_scopes_collected_excludes_rotating_pool(self):
         # prov-a is direct + cache-priced (eligible); prov-b is a rotating key

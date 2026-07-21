@@ -81,8 +81,8 @@ models:
     reg = ModelRouterRegistry(
         models_config=models_config,
         default_router_name="fixed",
+        shared_fixed_router=fixed,
     )
-    reg.bind_fixed_router(fixed)
 
     r_default = reg.get_router("m-default")
     r_fixed = reg.get_router("m-fixed")
@@ -142,8 +142,11 @@ models:
         }
         for info in infos
     }
-    reg = ModelRouterRegistry(models_config=models_config, default_router_name="fixed")
-    reg.bind_fixed_router(fixed)
+    reg = ModelRouterRegistry(
+        models_config=models_config,
+        default_router_name="fixed",
+        shared_fixed_router=fixed,
+    )
 
     routewise_router = reg.get_router("m-routewise")
     assert isinstance(routewise_router, RouteWiseRouter)

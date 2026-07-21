@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from routing.endpoints import endpoint_id_for_adapter as _canonical_endpoint_id_for_adapter
+
 if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
@@ -256,13 +258,31 @@ def build_provider_candidates(
 
 
 def endpoint_id_for_adapter(adapter: BaseAdapter) -> str:
-    """Return the configured endpoint id, falling back to provider."""
+    """Return RouteWise's normalized endpoint id for legacy malformed configs.
+
+    Valid adapter configs delegate to the canonical routing helper. RouteWise
+    historically stripped string-like values and tolerated mock/malformed
+    configs, so retain that compatibility at this parsing boundary.
+    """
     config = adapter.config
+    configured_endpoint_id = getattr(config, "endpoint_id", None)
     endpoint_id = _optional_str_attr(config, "endpoint_id")
     if endpoint_id:
+        if isinstance(configured_endpoint_id, str) and endpoint_id == configured_endpoint_id:
+            return _canonical_endpoint_id_for_adapter(adapter)
         return endpoint_id
+
     provider = _optional_str_attr(config, "provider")
-    return provider or "unknown"
+    if provider is None:
+        return "unknown"
+    configured_provider = getattr(config, "provider", None)
+    if (
+        configured_endpoint_id is None
+        and isinstance(configured_provider, str)
+        and provider == configured_provider
+    ):
+        return _canonical_endpoint_id_for_adapter(adapter)
+    return provider
 
 
 def provider_type_for_adapter(adapter: BaseAdapter) -> ProviderType:

@@ -11,7 +11,12 @@ from serving.schemas_admin import (
     UpdateModelVisibilityRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, get_services, verify_admin_access
+from serving.servers.deps import (
+    get_operational_store,
+    get_services,
+    model_router_transition_lock,
+    verify_admin_access,
+)
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
@@ -22,7 +27,11 @@ def _baseline_required_role(route) -> str:
 
 
 def _is_canonical_model(model_id: str, route) -> bool:
-    return bool(route.adapters) and route.adapters[0][0].config.id == model_id
+    return (
+        getattr(route, "published", True)
+        and bool(route.adapters)
+        and route.adapters[0][0].config.id == model_id
+    )
 
 
 def _effective_required_role_for_admin_list(baseline: str, override: str | None) -> str:
@@ -80,54 +89,61 @@ async def update_model_visibility(
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
-    route = services.router.routes.get(model_id)
-    if route is None or not _is_canonical_model(model_id, route):
-        raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
+    async with model_router_transition_lock(services, model_id):
+        route = services.router.routes.get(model_id)
+        if route is None or not _is_canonical_model(model_id, route):
+            raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
 
-    baseline = _baseline_required_role(route)
-    old_row = await op_store.get_model_visibility_override(model_id)
-    old_override = None if old_row is None else old_row.get("required_role")
+        baseline = _baseline_required_role(route)
+        old_row = await op_store.get_model_visibility_override(model_id)
+        old_override = None if old_row is None else old_row.get("required_role")
 
-    if payload.required_role is None:
-        await op_store.delete_model_visibility_override(model_id)
-        new_override = None
-    else:
-        if payload.required_role not in VALID_ROLES:
-            raise HTTPException(
-                status_code=400, detail=f"Invalid required_role: {payload.required_role}"
-            )
-        await op_store.set_model_visibility_override(model_id, payload.required_role, admin_id)
-        new_override = payload.required_role
+        resolver = services.model_visibility_resolver
+        try:
+            if payload.required_role is None:
+                await op_store.delete_model_visibility_override(model_id)
+                new_override = None
+            else:
+                if payload.required_role not in VALID_ROLES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid required_role: {payload.required_role}",
+                    )
+                await op_store.set_model_visibility_override(
+                    model_id, payload.required_role, admin_id
+                )
+                new_override = payload.required_role
+        finally:
+            # A write may commit before its transport surfaces an error. Fence
+            # any pre-existing or in-flight role read regardless of outcome.
+            if resolver is not None:
+                resolver.invalidate_model(model_id)
 
-    resolver = services.model_visibility_resolver
-    if resolver is not None:
-        resolver.invalidate_model(model_id)
+        new_effective = baseline
+        if resolver is not None:
+            new_effective = await resolver.get_effective_required_role(model_id, baseline)
+        elif new_override is not None:
+            new_effective = new_override
 
-    new_effective = baseline
-    if resolver is not None:
-        new_effective = await resolver.get_effective_required_role(model_id, baseline)
-    elif new_override is not None:
-        new_effective = new_override
+        await log_admin_action(
+            op_store,
+            get_client_ip(request),
+            "models.visibility.update",
+            None,
+            {
+                "model_id": model_id,
+                "old_override_required_role": old_override,
+                "new_override_required_role": new_override,
+                "old_effective_required_role": _effective_required_role_for_admin_list(
+                    baseline, old_override
+                ),
+                "new_effective_required_role": new_effective,
+            },
+        )
 
-    await log_admin_action(
-        op_store,
-        get_client_ip(request),
-        "models.visibility.update",
-        None,
-        {
-            "model_id": model_id,
-            "old_override_required_role": old_override,
-            "new_override_required_role": new_override,
-            "old_effective_required_role": _effective_required_role_for_admin_list(
-                baseline, old_override
-            ),
-            "new_effective_required_role": new_effective,
-        },
-    )
-
-    return ModelVisibilityItem(
-        model_id=model_id,
-        baseline_required_role=baseline,
-        override_required_role=new_override,
-        effective_required_role=new_effective,
-    )
+        return ModelVisibilityItem(
+            model_id=model_id,
+            baseline_required_role=baseline,
+            override_required_role=new_override,
+            effective_required_role=new_effective,
+        )

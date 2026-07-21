@@ -159,5 +159,5 @@ models:
     assert adapter.config.provider_type == "quota"
 
     routewise = RouteWiseRouter()
-    routewise.attach_fixed_router(fixed)
+    routewise.attach_route_table(fixed)
     assert routewise.classified["glm-4.7"][0][2] is ProviderType.QUOTA

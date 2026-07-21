@@ -17,6 +17,7 @@ import {
   updateUser,
   listModelVisibility,
   previewRoleQuotaApply,
+  resetRoutewiseSetting,
   runRoutewiseProbe,
   setRouteWeight,
   updateProviderRoute,
@@ -931,16 +932,19 @@ describe('provider route client', () => {
 });
 
 describe('routewise settings client', () => {
-  it('listRoutewiseSettings hits routewise settings endpoint', async () => {
+  it('listRoutewiseSettings scopes the request to an encoded model id', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
+          model_id: 'org/model',
           settings: [
             {
               key: 'routewise_budget_alpha',
               value: 0.75,
               value_type: 'float',
               default_value: 0.75,
+              source: 'global_default',
+              overridden: false,
               description: 'RouteWise LP cost budget interpolation',
               min: 0,
               max: 1,
@@ -950,6 +954,8 @@ describe('routewise settings client', () => {
               value: 2.5,
               value_type: 'float',
               default_value: 3,
+              source: 'runtime_override',
+              overridden: true,
               description: 'Latency SLO in seconds for Routewise LP decisions',
               min: 0.1,
               max: null,
@@ -960,7 +966,7 @@ describe('routewise settings client', () => {
       ),
     );
 
-    const out = await listRoutewiseSettings();
+    const out = await listRoutewiseSettings('org/model');
 
     expect(out.settings[0]).toMatchObject({
       key: 'routewise_budget_alpha',
@@ -968,12 +974,15 @@ describe('routewise settings client', () => {
       value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routewise/settings');
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe('/admin/routewise/model-settings');
+    expect(parsed.searchParams.get('model_id')).toBe('org/model');
+    expect(String(url)).toContain('model_id=org%2Fmodel');
     expect(init.headers).toBeInstanceOf(Headers);
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
   });
 
-  it('updateRoutewiseSetting PATCHes the routewise setting endpoint', async () => {
+  it('updateRoutewiseSetting PATCHes the model-scoped setting endpoint', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -981,6 +990,8 @@ describe('routewise settings client', () => {
           value: 0.4,
           value_type: 'float',
           default_value: 0.75,
+          source: 'runtime_override',
+          overridden: true,
           description: 'RouteWise LP cost budget interpolation',
           min: 0,
           max: 1,
@@ -989,7 +1000,7 @@ describe('routewise settings client', () => {
       ),
     );
 
-    const out = await updateRoutewiseSetting('routewise_budget_alpha', 0.4);
+    const out = await updateRoutewiseSetting('org/model', 'routewise_budget_alpha', 0.4);
 
     expect(out).toMatchObject({
       key: 'routewise_budget_alpha',
@@ -997,12 +1008,42 @@ describe('routewise settings client', () => {
       value_type: 'float',
     });
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/admin/routewise/settings/routewise_budget_alpha');
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe('/admin/routewise/model-settings/routewise_budget_alpha');
+    expect(parsed.searchParams.get('model_id')).toBe('org/model');
     expect(init.method).toBe('PATCH');
     expect(init.headers).toBeInstanceOf(Headers);
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
     expect(JSON.parse(init.body as string)).toEqual({ value: 0.4 });
+  });
+
+  it('resetRoutewiseSetting DELETEs the model override', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          key: 'routewise_budget_alpha',
+          value: 0.55,
+          value_type: 'float',
+          default_value: 0.55,
+          source: 'model_config',
+          overridden: false,
+          description: 'RouteWise LP cost budget interpolation',
+          min: 0,
+          max: 1,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const out = await resetRoutewiseSetting('org/model', 'routewise_budget_alpha');
+
+    expect(out).toMatchObject({ value: 0.55, source: 'model_config', overridden: false });
+    const [url, init] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe('/admin/routewise/model-settings/routewise_budget_alpha');
+    expect(parsed.searchParams.get('model_id')).toBe('org/model');
+    expect(init.method).toBe('DELETE');
   });
 
   it('listRoutewiseProbeSamples sends model and endpoint filters', async () => {

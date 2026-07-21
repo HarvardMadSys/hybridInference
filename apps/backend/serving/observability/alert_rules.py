@@ -23,7 +23,7 @@ if TYPE_CHECKING:
         AlertConfig,
         CountRule,
         LatencyRule,
-        PendingDecisionsLeakConfig,
+        PendingPrefixCacheLeakConfig,
         ProviderHourlySpend,
         RateRule,
         TrackedTaskFailureRateConfig,
@@ -316,41 +316,64 @@ class AuthFailureSpikeRule:
         )
 
 
-class PendingDecisionsLeakRule:
-    """Alert when RouteWise pending-decision evictions exceed a threshold.
+class PendingPrefixCacheLeakRule:
+    """Alert when pending RouteWise prefix-cache evictions exceed a threshold.
 
-    Fires when more than ``threshold_count`` ``routewise_decision_evicted``
-    events arrive within ``window_sec``. A sustained crossing means
-    ``RouteWiseRouter._pending_decisions`` is leaking entries (likely
-    because some code path constructs a decision but never reaches the
-    consume site in ``chat_completion`` / ``stream_chat_completion``).
+    Fires when more than ``threshold_count``
+    ``routewise_prefix_cache_entry_evicted`` events arrive within
+    ``window_sec``. A sustained crossing means pending prefix-cache state is
+    not being consumed before its lifetime or capacity bound is reached.
     """
 
-    name = "pending_decisions_leak"
+    name = "prefix_cache_pending_leak"
 
-    def __init__(self, cfg: PendingDecisionsLeakConfig) -> None:
+    def __init__(self, cfg: PendingPrefixCacheLeakConfig) -> None:
         self._cfg = cfg
         self._window = _SlidingWindow(cfg.window_sec)
 
     async def on_record(self, record: logging.LogRecord) -> None:
-        """Update the count window from a routewise_decision_evicted event."""
+        """Update the window from a prefix-cache entry eviction event."""
         if not self._cfg.enabled:
             return
-        if getattr(record, "event", None) != "routewise_decision_evicted":
+        if getattr(record, "event", None) != "routewise_prefix_cache_entry_evicted":
             return
         now = time.time()
-        self._window.add(now, {})
+        self._window.add(
+            now,
+            {
+                "reason": getattr(record, "reason", "unknown"),
+                "age_sec": getattr(record, "age_sec", None),
+                "idle_sec": getattr(record, "idle_sec", None),
+                "pending_count": getattr(record, "pending_count", None),
+                "capacity": getattr(record, "capacity", None),
+            },
+        )
         items = self._window.items(now)
         if len(items) <= self._cfg.threshold_count:
             return
+        reason_counts = collections.Counter(str(item["reason"]) for item in items)
+        ages = [item["age_sec"] for item in items if isinstance(item["age_sec"], (int, float))]
+        idle_times = [
+            item["idle_sec"] for item in items if isinstance(item["idle_sec"], (int, float))
+        ]
+        pending_counts = [
+            item["pending_count"] for item in items if isinstance(item["pending_count"], int)
+        ]
+        capacities = [item["capacity"] for item in items if isinstance(item["capacity"], int)]
         await alert_slack(
             AlertSeverity.WARN,
-            "RouteWise pending-decisions leaking",
+            "RouteWise pending prefix-cache entries leaking",
             {
                 "evicted_count": len(items),
                 "window_sec": self._cfg.window_sec,
+                "ttl_count": reason_counts["ttl"],
+                "size_cap_count": reason_counts["size_cap"],
+                "max_age_sec": max(ages, default=0),
+                "max_idle_sec": max(idle_times, default=0),
+                "max_pending_count": max(pending_counts, default=0),
+                "capacity": max(capacities, default=0),
             },
-            dedupe_key="pending_decisions_leak",
+            dedupe_key="prefix_cache_pending_leak",
             cooldown_sec=self._cfg.cooldown_sec,
         )
 
@@ -537,7 +560,7 @@ class AlertEngine:
         # No concurrency-exhausted rule: a user exhausting their per-user quota
         # or concurrency limit is expected user-facing rate limiting (429), not a
         # service fault, so it must never page Slack.
-        self._rules.append(PendingDecisionsLeakRule(self._config.rules.pending_decisions_leak))
+        self._rules.append(PendingPrefixCacheLeakRule(self._config.rules.prefix_cache_pending_leak))
         self._rules.append(TrackedTaskFailureRateRule(self._config.rules.tracked_task_failure_rate))
 
     def _schedule_periodic_jobs(self) -> None:

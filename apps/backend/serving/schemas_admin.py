@@ -937,6 +937,8 @@ class RoutewiseSettingItem(BaseModel):
     value: Any
     value_type: Literal["str", "int", "float", "bool"]
     default_value: Any
+    source: Literal["runtime_override", "model_config", "global_default"] = "global_default"
+    overridden: bool = False
     description: str
     min: int | float | None = None
     max: int | float | None = None
@@ -945,6 +947,13 @@ class RoutewiseSettingItem(BaseModel):
 class ListRoutewiseSettingsResponse(BaseModel):
     """Response payload for listing Routewise runtime settings."""
 
+    settings: list[RoutewiseSettingItem]
+
+
+class ListRoutewiseModelSettingsResponse(BaseModel):
+    """Effective RouteWise settings for one canonical model."""
+
+    model_id: str
     settings: list[RoutewiseSettingItem]
 
 
@@ -1345,6 +1354,7 @@ __all__ = [
     "ListProviderDefinitionsResponse",
     "ListProviderRoutesResponse",
     "ListRouteWeightsResponse",
+    "ListRoutewiseModelSettingsResponse",
     "ListRoutewiseProbeSamplesResponse",
     "ListRoutewiseSettingsResponse",
     "ListSettingsResponse",

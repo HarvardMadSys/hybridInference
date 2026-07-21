@@ -129,6 +129,29 @@ async def test_models_aggregation_and_slug(models_client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_models_omit_unpublished_routes():
+    router = RouteExecutor()
+    router.register_route("visible-model", [(_Adapter(_cfg(id="visible-model")), 1.0)])
+    router.register_route(
+        "staged-model",
+        [(_Adapter(_cfg(id="staged-model")), 1.0)],
+        published=False,
+    )
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.include_router(models.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    assert resp.status_code == status.HTTP_200_OK
+    model_ids = {model["id"] for model in resp.json()["data"]}
+    assert "visible-model" in model_ids
+    assert "staged-model" not in model_ids
+
+
+@pytest.mark.asyncio
 async def test_models_empty_routes_returns_empty_list():
     router = RouteExecutor()
     app = FastAPI()
