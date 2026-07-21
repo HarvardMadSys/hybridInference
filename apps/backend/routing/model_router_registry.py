@@ -13,6 +13,7 @@ from ``routing.yaml``'s ``default_router`` field) is used.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from routing.protocols import RouteTableRefreshable
@@ -26,6 +27,33 @@ if TYPE_CHECKING:
     from routing.routers import FixedRouter
 
 logger = get_logger(__name__)
+
+
+class StaleRouterStrategyChangeError(RuntimeError):
+    """Raised when a prepared router change no longer matches registry state."""
+
+
+@dataclass(frozen=True, slots=True)
+class RouterStrategyChange:
+    """Prepared router strategy transition that has not changed live state yet."""
+
+    canonical_model_id: str
+    strategy: str
+    target_override: str | None
+    previous_override: str | None
+    previous_router: RouterProtocol
+    router: RouterProtocol
+    revision: int
+    _registry_identity: object = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RouterRuntimeOverride:
+    """Effective runtime override owned by one canonical model router."""
+
+    canonical_model_id: str
+    strategy: str
+    configured_strategy: str
 
 
 class ModelRouterRegistry:
@@ -60,6 +88,8 @@ class ModelRouterRegistry:
         self._cache: dict[str, RouterProtocol] = {}
         self._alias_to_model = dict(alias_to_model or {})
         self._router_overrides: dict[str, str] = {}
+        self._router_revisions: dict[str, int] = {}
+        self._registry_identity = object()
         self._dependencies = dependencies
         self._shared_fixed: FixedRouter | None = None
         if shared_fixed_router is not None:
@@ -192,38 +222,131 @@ class ModelRouterRegistry:
         validate_router_config(strategy, params, dependencies=self._dependencies)
 
     def set_router_override(self, model_id: str, strategy: str) -> None:
-        """Install a runtime override only after its router builds successfully."""
-        canonical_model_id = self._alias_to_model.get(model_id, model_id)
-        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
-        configured_name = str(cfg.get("router") or self._default)
-        params = (cfg.get("router_params") or {}) if strategy == configured_name else {}
-        # Construct and attach the candidate before changing override/cache
-        # state. A constructor failure leaves the currently serving router
-        # fully intact and the successful candidate is cached exactly once.
-        router = self._build_router_for_spec(
-            canonical_model_id=canonical_model_id,
-            requested_model_id=model_id,
-            name=strategy,
-            params=dict(params),
-        )
-        self._router_overrides[canonical_model_id] = strategy
-        self._cache.pop(canonical_model_id, None)
-        self._cache.pop(model_id, None)
-        for alias, target in self._alias_to_model.items():
-            if target == canonical_model_id:
-                self._cache.pop(alias, None)
-        self._cache[canonical_model_id] = router
-        self._cache[model_id] = router
+        """Compatibility wrapper that prepares and commits one strategy change."""
+        change = self.prepare_router_strategy_change(model_id, strategy)
+        self.commit_router_strategy_change(change)
 
     def clear_router_override(self, model_id: str) -> None:
-        """Remove a runtime router strategy override and clear cached routers."""
+        """Remove an override and cached router without constructing a fallback.
+
+        This compatibility operation is also used while deleting runtime models,
+        where constructing and caching the configured fallback would resurrect a
+        route that no longer exists. Live transitions back to configuration should
+        use ``prepare_router_strategy_change(model_id, None)`` and commit it.
+        """
         canonical_model_id = self._alias_to_model.get(model_id, model_id)
         self._router_overrides.pop(canonical_model_id, None)
+        self._invalidate_router_cache(canonical_model_id)
+        self._bump_router_revision(canonical_model_id)
+
+    def prepare_router_strategy_change(
+        self,
+        model_id: str,
+        strategy: str | None,
+    ) -> RouterStrategyChange:
+        """Build a candidate router without changing the active registry state.
+
+        Passing ``None`` or the configured strategy removes the runtime override.
+        The returned frozen token can be committed only while the canonical
+        model's override revision and previous override still match.
+        """
+        canonical_model_id = self._alias_to_model.get(model_id, model_id)
+        cfg = self._configs.get(canonical_model_id, self._configs.get(model_id, {}))
+        configured_strategy = str(cfg.get("router") or self._default)
+        target_override = None if strategy is None or strategy == configured_strategy else strategy
+        effective_strategy = configured_strategy if target_override is None else target_override
+        previous_override = self._router_overrides.get(canonical_model_id)
+        previous_router = self.get_router(canonical_model_id)
+        previous_strategy = self.get_router_name(canonical_model_id)
+
+        if effective_strategy == previous_strategy:
+            router = previous_router
+        else:
+            params = (
+                (cfg.get("router_params") or {})
+                if effective_strategy == configured_strategy
+                else {}
+            )
+            router = self._build_router_for_spec(
+                canonical_model_id=canonical_model_id,
+                requested_model_id=model_id,
+                name=effective_strategy,
+                params=dict(params),
+            )
+
+        return RouterStrategyChange(
+            canonical_model_id=canonical_model_id,
+            strategy=effective_strategy,
+            target_override=target_override,
+            previous_override=previous_override,
+            previous_router=previous_router,
+            router=router,
+            revision=self._router_revisions.get(canonical_model_id, 0),
+            _registry_identity=self._registry_identity,
+        )
+
+    def commit_router_strategy_change(
+        self,
+        change: RouterStrategyChange,
+    ) -> RouterProtocol:
+        """Atomically publish a prepared router change or reject a stale token."""
+        if change._registry_identity is not self._registry_identity:
+            raise ValueError("router strategy change belongs to a different registry")
+
+        canonical_model_id = change.canonical_model_id
+        current_revision = self._router_revisions.get(canonical_model_id, 0)
+        current_override = self._router_overrides.get(canonical_model_id)
+        if current_revision != change.revision or current_override != change.previous_override:
+            raise StaleRouterStrategyChangeError(
+                f"router strategy change is stale for model {canonical_model_id!r}"
+            )
+
+        if change.target_override is None:
+            self._router_overrides.pop(canonical_model_id, None)
+        else:
+            self._router_overrides[canonical_model_id] = change.target_override
+        self._invalidate_router_cache(canonical_model_id)
+        self._cache[canonical_model_id] = change.router
+        self._bump_router_revision(canonical_model_id)
+        return change.router
+
+    def runtime_override_for_router(
+        self,
+        router: RouterProtocol,
+    ) -> RouterRuntimeOverride | None:
+        """Return the one effective runtime override currently owning ``router``."""
+        matches: list[RouterRuntimeOverride] = []
+        for canonical_model_id, strategy in self._router_overrides.items():
+            cfg = self._configs.get(canonical_model_id, {})
+            configured_strategy = str(cfg.get("router") or self._default)
+            if strategy == configured_strategy:
+                continue
+            if self._cache.get(canonical_model_id) is not router:
+                continue
+            matches.append(
+                RouterRuntimeOverride(
+                    canonical_model_id=canonical_model_id,
+                    strategy=strategy,
+                    configured_strategy=configured_strategy,
+                )
+            )
+
+        if len(matches) > 1:
+            raise RuntimeError("router owns multiple effective runtime overrides")
+        return matches[0] if matches else None
+
+    def _invalidate_router_cache(self, canonical_model_id: str) -> None:
+        """Evict the canonical router and every alias that resolves to it."""
         self._cache.pop(canonical_model_id, None)
-        self._cache.pop(model_id, None)
         for alias, target in self._alias_to_model.items():
             if target == canonical_model_id:
                 self._cache.pop(alias, None)
+
+    def _bump_router_revision(self, canonical_model_id: str) -> None:
+        """Fence any router strategy changes prepared against older state."""
+        self._router_revisions[canonical_model_id] = (
+            self._router_revisions.get(canonical_model_id, 0) + 1
+        )
 
     def get_router_override(self, model_id: str) -> str | None:
         """Return the runtime router override, if present."""
