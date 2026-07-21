@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from routing.strategies import build_router, validate_router_config
 from serving.utils.logging import get_logger
@@ -236,6 +237,32 @@ class ModelRouterRegistry:
     def cached_routers(self) -> list[RouterProtocol]:
         """Return cached router instances."""
         return list(self._cache.values())
+
+    def refresh_route_tables(self) -> None:
+        """Refresh each unique cached router that exposes the capability."""
+        seen_ids: set[int] = set()
+        for router in tuple(self._cache.values()):
+            if id(router) in seen_ids:
+                continue
+            seen_ids.add(id(router))
+            if isinstance(router, RouteTableRefreshable):
+                router.refresh_route_table()
+                continue
+
+            # One-release compatibility for external strategies that still
+            # expose the former private hook. Keep this adapter inside the
+            # routing composition boundary so serving never owns router locks.
+            refresh = getattr(router, "_rebuild_from_route_table", None)
+            if not callable(refresh):
+                refresh = getattr(router, "_rebuild_from_fixed_router", None)
+            if not callable(refresh):
+                continue
+            commit_lock = getattr(router, "_route_commit_lock", None)
+            if commit_lock is None:
+                refresh()
+            else:
+                with commit_lock:
+                    refresh()
 
     def configured_model_ids(self) -> list[str]:
         """Return model ids known to the registry config."""

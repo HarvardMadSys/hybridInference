@@ -484,3 +484,61 @@ class TestModelRouterRegistry:
         assert second in managed
         assert all(hasattr(router, "start") and hasattr(router, "stop") for router in managed)
         assert len({id(router) for router in managed}) == len(managed)
+
+    def test_refresh_route_tables_deduplicates_aliases_and_uses_public_capability(self):
+        from routing.model_router_registry import ModelRouterRegistry
+
+        class _RefreshableRouter:
+            def __init__(self) -> None:
+                self.refresh_calls = 0
+                self.legacy_calls = 0
+
+            def refresh_route_table(self) -> None:
+                self.refresh_calls += 1
+
+            def _rebuild_from_route_table(self) -> None:
+                self.legacy_calls += 1
+
+        router = _RefreshableRouter()
+        reg = ModelRouterRegistry(models_config={})
+        reg._cache.update({"canonical": router, "alias": router})
+
+        reg.refresh_route_tables()
+
+        assert router.refresh_calls == 1
+        assert router.legacy_calls == 0
+
+    def test_refresh_route_tables_runs_legacy_fallback_under_router_lock(self):
+        from routing.model_router_registry import ModelRouterRegistry
+
+        class _RecordingLock:
+            def __init__(self) -> None:
+                self.depth = 0
+
+            def __enter__(self) -> _RecordingLock:
+                self.depth += 1
+                return self
+
+            def __exit__(self, *_exc_info: object) -> None:
+                self.depth -= 1
+
+        commit_lock = _RecordingLock()
+
+        class _LegacyRouter:
+            _route_commit_lock = commit_lock
+
+            def __init__(self) -> None:
+                self.refresh_calls = 0
+
+            def _rebuild_from_fixed_router(self) -> None:
+                assert commit_lock.depth == 1
+                self.refresh_calls += 1
+
+        router = _LegacyRouter()
+        reg = ModelRouterRegistry(models_config={})
+        reg._cache.update({"canonical": router, "alias": router})
+
+        reg.refresh_route_tables()
+
+        assert router.refresh_calls == 1
+        assert commit_lock.depth == 0

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing.protocols import RouterProtocol, RoutingRequestOptions
+from routing.protocols import RouterProtocol, RouteTableRefreshable, RoutingRequestOptions
 from routing.route_table import RouteTableView
 from routing.routers import FixedRouter
 from routing.routewise.config import RouteWiseConfig
@@ -138,6 +138,14 @@ def test_serving_routers_satisfy_structural_protocol(router_factory: _RouterFact
 
 
 @pytest.mark.unit
+def test_routewise_router_exposes_public_route_table_refresh_capability() -> None:
+    routewise = RouteWiseRouter(config=RouteWiseConfig())
+
+    assert isinstance(routewise, RouteTableRefreshable)
+    assert not isinstance(FixedRouter(), RouteTableRefreshable)
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_routing_options_are_consumed_before_adapter_dispatch(
     router_factory: _RouterFactory,
@@ -190,6 +198,7 @@ def test_base_router_is_not_public_or_in_serving_router_mro() -> None:
 
     assert "BaseRouter" not in routing.__all__
     assert not hasattr(routing, "BaseRouter")
+    assert routing.RouteTableRefreshable is RouteTableRefreshable
     assert routing.RouterProtocol is RouterProtocol
     assert all(base.__name__ != "BaseRouter" for base in FixedRouter.__mro__[1:])
     assert all(base.__name__ != "BaseRouter" for base in RouteWiseRouter.__mro__[1:])

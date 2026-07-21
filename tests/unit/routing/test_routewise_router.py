@@ -805,6 +805,46 @@ class TestRouteWiseRouterScaffold:
         assert router.route_table is replacement
         rebuild.assert_called_once_with()
 
+    def test_public_route_table_refresh_rebuilds_under_commit_lock(self, monkeypatch):
+        router = RouteWiseRouter(config=RouteWiseConfig())
+
+        class _RecordingLock:
+            def __init__(self) -> None:
+                self.depth = 0
+
+            def __enter__(self) -> _RecordingLock:
+                self.depth += 1
+                return self
+
+            def __exit__(self, *_exc_info: object) -> None:
+                self.depth -= 1
+
+        commit_lock = _RecordingLock()
+        rebuild_depths: list[int] = []
+
+        def _record_rebuild() -> None:
+            rebuild_depths.append(commit_lock.depth)
+
+        router._route_commit_lock = commit_lock
+        monkeypatch.setattr(router, "_rebuild_from_route_table", _record_rebuild)
+
+        router.refresh_route_table()
+
+        assert rebuild_depths == [1]
+        assert commit_lock.depth == 0
+
+    def test_constructor_does_not_dispatch_to_overridden_public_refresh(self):
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(_make_adapter(), 1.0)])
+
+        class _Subclass(RouteWiseRouter):
+            def refresh_route_table(self) -> None:
+                raise AssertionError("subclass refresh called before initialization completed")
+
+        router = _Subclass(route_table=route_table, config=RouteWiseConfig())
+
+        assert set(router.classified) == {"test-model"}
+
     def test_route_table_and_legacy_fixed_router_are_mutually_exclusive(self):
         route_table = _FakeRouteTable()
 

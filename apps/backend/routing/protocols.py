@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
     from routing.routers import RoutingObservation
 
-__all__ = ["RouterProtocol", "RoutingRequestOptions"]
+__all__ = ["RouteTableRefreshable", "RouterProtocol", "RoutingRequestOptions"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +18,15 @@ class RoutingRequestOptions:
     """Router-owned request controls that must not reach provider adapters."""
 
     pin_provider: str | None = None
+
+
+@runtime_checkable
+class RouteTableRefreshable(Protocol):
+    """Capability for routers that can reload their bound route-table view."""
+
+    def refresh_route_table(self) -> None:
+        """Refresh route-derived state under the router's synchronization boundary."""
+        ...
 
 
 @runtime_checkable

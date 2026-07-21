@@ -306,7 +306,11 @@ class RouteWiseRouter:
         self._last_lp_weights: dict[str, dict[str, float]] = {}
 
         if self.route_table is not None:
-            self._rebuild_from_route_table()
+            # Avoid dispatching to an overrideable public method before a
+            # subclass has finished initializing; this instance is not yet
+            # published, but keep the same lock invariant as runtime refresh.
+            with self._route_commit_lock:
+                self._rebuild_from_route_table()
 
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
@@ -339,11 +343,12 @@ class RouteWiseRouter:
 
     def attach_route_table(self, route_table: RouteTableView) -> None:
         """Bind the shared read-only route table after strategy construction."""
-        self.route_table = route_table
-        self.pending_prefix_cache.clear()
-        self._last_lp_statuses = {}
-        self._last_lp_weights = {}
-        self._rebuild_from_route_table()
+        with self._route_commit_lock:
+            self.route_table = route_table
+            self.pending_prefix_cache.clear()
+            self._last_lp_statuses = {}
+            self._last_lp_weights = {}
+            self._rebuild_from_route_table()
 
     def attach_fixed_router(self, route_table: RouteTableView) -> None:
         """Compatibility alias for :meth:`attach_route_table` for one release."""
@@ -424,9 +429,14 @@ class RouteWiseRouter:
                         )
         self._validate_routes()
 
+    def refresh_route_table(self) -> None:
+        """Refresh route-derived state while excluding concurrent decisions."""
+        with self._route_commit_lock:
+            self._rebuild_from_route_table()
+
     def _rebuild_from_fixed_router(self) -> None:
         """Compatibility alias for the former private rebuild hook."""
-        self._rebuild_from_route_table()
+        self.refresh_route_table()
 
     async def start(self) -> None:
         """Start periodic maintenance tasks.
