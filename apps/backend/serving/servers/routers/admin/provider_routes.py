@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from routing.endpoints import endpoint_id_for_adapter
 from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
+from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.config.settings import VALID_ROLES
 from serving.schemas_admin import (
@@ -2407,21 +2408,17 @@ def _quota_state_for_row(services, model_id: str, adapter) -> dict[str, Any]:
     except Exception:
         logger.debug("provider route quota state unavailable", exc_info=True)
         return {}
-    quota_pools = getattr(router_obj, "quota_pools", None)
-    if not isinstance(quota_pools, dict):
+    if not isinstance(router_obj, RouteWiseRouter):
         return {}
-    quota_pool = quota_pools.get(str(quota_pool_id))
-    if quota_pool is None or not getattr(quota_pool, "ready", False):
+    quota_pool = router_obj.quota_pools.get(str(quota_pool_id))
+    if quota_pool is None or not quota_pool.ready:
         return {}
-    current_limit = getattr(quota_pool, "limit", None)
-    used = getattr(quota_pool, "effective_used", None)
-    remaining = getattr(quota_pool, "remaining", None)
-    reset_at = getattr(quota_pool, "reset_at", None)
+    used = quota_pool.effective_used
     return {
-        "quota_current_limit": int(current_limit) if current_limit is not None else None,
+        "quota_current_limit": int(quota_pool.limit),
         "quota_used": float(used) if used is not None else None,
-        "quota_remaining": int(remaining) if remaining is not None else None,
-        "quota_reset_at": reset_at,
+        "quota_remaining": int(quota_pool.remaining),
+        "quota_reset_at": quota_pool.reset_at,
     }
 
 

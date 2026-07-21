@@ -16,6 +16,7 @@ from routing.routewise.router import RouteWiseProbeResult, RouteWiseRouter
 from serving.config.runtime_settings import RuntimeSettings
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin import routewise as routewise_admin
 
 
 @pytest.fixture
@@ -137,7 +138,7 @@ async def test_patch_routewise_setting_refreshes_live_routewise_router(admin_cli
     )
 
     router = RouteWiseRouter(config=RouteWiseConfig())
-    registry = ModelRouterRegistry(models_config={})
+    registry = ModelRouterRegistry(models_config={"test-model": {"router": "routewise"}})
     registry._cache["test-model"] = router
     client._transport.app.state.services.model_router_registry = registry
 
@@ -198,7 +199,7 @@ async def test_patch_routewise_setting_refreshes_uncached_routewise_router(admin
 
 
 @pytest.mark.asyncio
-async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client):
+async def test_routewise_patch_refreshes_canonical_and_alias_cache_once(admin_client):
     client, op_store, _ = admin_client
     op_store.get_setting = AsyncMock(
         side_effect=lambda key: {
@@ -217,8 +218,14 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     )
 
     router = RouteWiseRouter(config=RouteWiseConfig())
-    registry = ModelRouterRegistry(models_config={})
+    router.apply_runtime_overrides = MagicMock(wraps=router.apply_runtime_overrides)
+    router.refresh_probe_task = AsyncMock()
+    registry = ModelRouterRegistry(
+        models_config={"test-model": {"router": "routewise"}},
+        alias_to_model={"test-alias": "test-model"},
+    )
     registry._cache["test-model"] = router
+    registry._cache["test-alias"] = router
     client._transport.app.state.services.model_router_registry = registry
 
     response = await client.patch(
@@ -231,6 +238,23 @@ async def test_routewise_patch_invalidates_all_routewise_cache_keys(admin_client
     assert router.config.budget_alpha == 0.25
     assert router.config.latency_slo_sec == 1.5
     assert router.config.latency_min_samples == 10
+    router.apply_runtime_overrides.assert_called_once()
+    router.refresh_probe_task.assert_awaited_once_with()
+
+
+def test_routewise_router_collection_rejects_invalid_runtime_override():
+    """Runtime-created models must satisfy the same concrete type invariant."""
+    same_named_router = type("RouteWiseRouter", (), {})()
+    registry = ModelRouterRegistry(models_config={})
+    registry._router_overrides["runtime-model"] = "routewise"
+    registry._cache["runtime-model"] = same_named_router
+    services = AppServices(router=MagicMock(), model_router_registry=registry)
+
+    with pytest.raises(
+        TypeError,
+        match="routewise strategy returned RouteWiseRouter for model 'runtime-model'",
+    ):
+        routewise_admin._routewise_routers(services, None)
 
 
 @pytest.mark.asyncio
@@ -276,8 +300,15 @@ async def test_list_routewise_probe_samples(admin_client):
 
 @pytest.mark.asyncio
 async def test_run_routewise_probe_calls_live_router(admin_client):
-    client, _op_store, _ = admin_client
-    router = RouteWiseRouter(config=RouteWiseConfig())
+    client, op_store, _ = admin_client
+    route_table = MagicMock()
+    route_table.iter_effective_routes.return_value = ()
+    route_table.canonical_id.side_effect = lambda model_id: {"test-alias": "test-model"}.get(
+        model_id, model_id
+    )
+    router = RouteWiseRouter(route_table=route_table, config=RouteWiseConfig())
+    router.attach_operational_store = MagicMock(wraps=router.attach_operational_store)
+    router.canonical_model_id = MagicMock(wraps=router.canonical_model_id)
     router.run_probe_once = AsyncMock(
         return_value=[
             RouteWiseProbeResult(
@@ -288,23 +319,48 @@ async def test_run_routewise_probe_calls_live_router(admin_client):
             )
         ]
     )
-    registry = ModelRouterRegistry(models_config={})
+    registry = ModelRouterRegistry(
+        models_config={"test-model": {"router": "routewise"}},
+        alias_to_model={"test-alias": "test-model"},
+    )
     registry._cache["test-model"] = router
     client._transport.app.state.services.model_router_registry = registry
 
     response = await client.post(
         "/admin/routewise/probes/run",
-        json={"model_id": "test-model", "endpoint_id": "test-model:api", "idle_only": False},
+        json={"model_id": "test-alias", "endpoint_id": "test-model:api", "idle_only": False},
         headers={"Authorization": "Bearer test-admin"},
     )
 
     assert response.status_code == 200
     assert response.json()["results"][0]["ttft_ms"] == 42.0
+    router.attach_operational_store.assert_called_once_with(op_store)
+    router.canonical_model_id.assert_called_once_with("test-alias")
     router.run_probe_once.assert_awaited_once_with(
         model_id="test-model",
         endpoint_id="test-model:api",
         idle_only=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_routewise_probe_does_not_silently_skip_required_public_method(admin_client):
+    client, _op_store, _ = admin_client
+    router = RouteWiseRouter(config=RouteWiseConfig())
+    router.attach_operational_store = None
+    router.run_probe_once = AsyncMock(return_value=[])
+    registry = ModelRouterRegistry(models_config={"test-model": {"router": "routewise"}})
+    registry._cache["test-model"] = router
+    client._transport.app.state.services.model_router_registry = registry
+
+    with pytest.raises(TypeError, match="not callable"):
+        await client.post(
+            "/admin/routewise/probes/run",
+            json={"model_id": "test-model", "idle_only": False},
+            headers={"Authorization": "Bearer test-admin"},
+        )
+
+    router.run_probe_once.assert_not_awaited()
 
 
 @pytest.mark.asyncio

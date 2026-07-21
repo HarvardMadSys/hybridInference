@@ -30,6 +30,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    AppServices,
     get_db_logger,
     get_operational_store,
     get_services,
@@ -95,30 +96,50 @@ def _serialize_existing_value(raw: str | None, expected_type: str) -> Any:
     return raw
 
 
-def _routewise_routers_for_probe(services: Any, model_id: str | None) -> list[RouteWiseRouter]:
-    registry = getattr(services, "model_router_registry", None)
+def _routewise_routers(
+    services: AppServices,
+    model_id: str | None,
+) -> list[RouteWiseRouter]:
+    """Return unique live RouteWise routers, optionally scoped to one model."""
+    registry = services.model_router_registry
     if registry is None:
         return []
-    if model_id:
-        router_obj = registry.get_router(model_id)
-        return [router_obj] if isinstance(router_obj, RouteWiseRouter) else []
-    for configured_model_id in registry.configured_model_ids():
-        if registry.get_router_name(configured_model_id) == "routewise":
-            registry.get_router(configured_model_id)
+    model_ids = (
+        [model_id]
+        if model_id
+        else list(
+            dict.fromkeys(
+                [
+                    *registry.configured_model_ids(),
+                    *registry.registered_models(),
+                ]
+            )
+        )
+    )
     seen: set[int] = set()
     routers: list[RouteWiseRouter] = []
-    for router_obj in registry.cached_routers():
-        if isinstance(router_obj, RouteWiseRouter) and id(router_obj) not in seen:
-            routers.append(router_obj)
-            seen.add(id(router_obj))
+    for active_model_id in model_ids:
+        if registry.get_router_name(active_model_id) != "routewise":
+            continue
+        router_obj = registry.get_router(active_model_id)
+        if not isinstance(router_obj, RouteWiseRouter):
+            raise TypeError(
+                "routewise strategy returned "
+                f"{type(router_obj).__name__} for model {active_model_id!r}"
+            )
+        if id(router_obj) in seen:
+            continue
+        routers.append(router_obj)
+        seen.add(id(router_obj))
     return routers
 
 
-async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings) -> None:
+async def _refresh_live_routewise_routers(
+    services: AppServices,
+    rt: RuntimeSettings,
+) -> None:
     """Refresh cached RouteWise router instances from current runtime settings."""
-    services = getattr(request.app.state, "services", None)
-    registry = getattr(services, "model_router_registry", None)
-    if registry is None:
+    if services.model_router_registry is None:
         return
 
     for key in ROUTEWISE_KEYS:
@@ -130,21 +151,15 @@ async def _refresh_live_routewise_routers(request: Request, rt: RuntimeSettings)
     routewise_probe_enabled = await rt.get_bool("routewise_probe_enabled")
     routewise_probe_interval_sec = await rt.get_float("routewise_probe_interval_sec")
 
-    for model_id in registry.configured_model_ids():
-        if registry.get_router_name(model_id) != "routewise":
-            continue
-        registry.get_router(model_id)
-
-    for router in registry.cached_routers():
-        if isinstance(router, RouteWiseRouter):
-            router.apply_runtime_overrides(
-                budget_alpha=budget_alpha,
-                latency_slo_sec=latency_slo_sec,
-                latency_min_samples=latency_min_samples,
-                routewise_probe_enabled=routewise_probe_enabled,
-                routewise_probe_interval_sec=routewise_probe_interval_sec,
-            )
-            await router.refresh_probe_task()
+    for routewise_router in _routewise_routers(services, None):
+        routewise_router.apply_runtime_overrides(
+            budget_alpha=budget_alpha,
+            latency_slo_sec=latency_slo_sec,
+            latency_min_samples=latency_min_samples,
+            routewise_probe_enabled=routewise_probe_enabled,
+            routewise_probe_interval_sec=routewise_probe_interval_sec,
+        )
+        await routewise_router.refresh_probe_task()
 
 
 @router.get("/settings", response_model=ListRoutewiseSettingsResponse)
@@ -181,6 +196,7 @@ async def update_routewise_setting_endpoint(
     key: str,
     payload: UpdateSettingRequest,
     admin_id: str = Depends(verify_admin_access),
+    services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
     rt: RuntimeSettings | None = Depends(get_runtime_settings),
 ) -> RoutewiseSettingItem:
@@ -232,7 +248,7 @@ async def update_routewise_setting_endpoint(
         old_value = getattr(get_settings(), key, entry["default"])
 
     await op_store.set_setting(key, str(value), expected_type, admin_id)
-    await _refresh_live_routewise_routers(request, rt)
+    await _refresh_live_routewise_routers(services, rt)
 
     ip = get_client_ip(request)
     await log_admin_action(
@@ -294,22 +310,19 @@ async def run_routewise_probe_endpoint(
     request: Request,
     payload: RunRoutewiseProbeRequest,
     admin_id: str = Depends(verify_admin_access),
-    services=Depends(get_services),
+    services: AppServices = Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> RunRoutewiseProbeResponse:
     """Manually run RouteWise latency probes against live route candidates."""
-    routers = _routewise_routers_for_probe(services, payload.model_id)
+    routers = _routewise_routers(services, payload.model_id)
     if not routers:
         raise HTTPException(status_code=404, detail="No RouteWise router found")
     results = []
     for router_obj in routers:
-        attach_store = getattr(router_obj, "attach_operational_store", None)
-        if callable(attach_store):
-            attach_store(op_store)
+        router_obj.attach_operational_store(op_store)
         probe_model_id = payload.model_id
-        canonical = getattr(router_obj, "_canonical_model_id", None)
-        if callable(canonical) and probe_model_id:
-            probe_model_id = canonical(probe_model_id)
+        if probe_model_id:
+            probe_model_id = router_obj.canonical_model_id(probe_model_id)
         results.extend(
             await router_obj.run_probe_once(
                 model_id=probe_model_id,

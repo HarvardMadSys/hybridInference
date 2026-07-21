@@ -983,7 +983,8 @@ class RouteWiseRouter:
             unit="requests",
         )
 
-    def _canonical_model_id(self, model_id: str) -> str:
+    def canonical_model_id(self, model_id: str) -> str:
+        """Return the canonical id from the currently bound route table."""
         route_table = self.route_table
         return route_table.canonical_id(model_id) if route_table is not None else model_id
 
@@ -1087,7 +1088,7 @@ class RouteWiseRouter:
         return CandidatePricing.from_raw(raw, context="reference_api_price")
 
     def _routewise_pool(self, model_id: str) -> str:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         return self._model_routewise_pools.get(model_id, model_id)
 
     def _quota_sources(self) -> list[QuotaSource]:
@@ -1132,7 +1133,7 @@ class RouteWiseRouter:
         prompt_tokens: int,
         context: dict[str, Any],
     ) -> BucketMeanPrediction:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         return self.predictor.predict(
             model_id,
             prompt_tokens,
@@ -1192,7 +1193,7 @@ class RouteWiseRouter:
         prompt_tokens: int,
         output_tokens: float,
     ) -> float | None:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id, [])
         costs = [
             self._api_cost_for_pricing(
@@ -1229,7 +1230,7 @@ class RouteWiseRouter:
 
     def _estimate_value(self, model_id: str, prompt_tokens: int) -> float:
         """Compatibility helper: cheapest cold-cache API cost for one request."""
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         prediction = self.predictor.predict(model_id, prompt_tokens)
         cost = self._reference_api_cost(
             model_id,
@@ -1248,7 +1249,7 @@ class RouteWiseRouter:
         now: float,
         context: dict[str, Any] | None = None,
     ) -> tuple[list[FeasibleProviderCandidate], tuple[tuple[Any, ...], dict[str, Any]] | None]:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         entries = self.route_candidates.get(model_id)
         if entries is None:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
@@ -1927,7 +1928,7 @@ class RouteWiseRouter:
         context: dict[str, Any],
         trace: RoutingTrace | None = None,
     ) -> RoutingDecision | None:
-        model_id = self._canonical_model_id(model_id)
+        model_id = self.canonical_model_id(model_id)
         if model_id not in self.classified:
             raise ValueError(f"RouteWiseRouter has no route for model '{model_id}'")
         request_id = context.get("request_id")
@@ -2128,7 +2129,7 @@ class RouteWiseRouter:
         """Update output predictor, latency profile, and L/U envelope."""
         if self.prefix_cache.enabled:
             self._commit_prefix_cache_observation(obs)
-        model_id = self._canonical_model_id(obs.model_id)
+        model_id = self.canonical_model_id(obs.model_id)
         if obs.completion_tokens > 0:
             self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
@@ -2193,7 +2194,7 @@ class RouteWiseRouter:
             if ts is None:
                 continue
 
-            model_id = self._canonical_model_id(str(row.get("model_id") or ""))
+            model_id = self.canonical_model_id(str(row.get("model_id") or ""))
             if include_latency:
                 endpoint_id = self._string_or_none(row.get("endpoint_id")) or self._string_or_none(
                     row.get("provider")

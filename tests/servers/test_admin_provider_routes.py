@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from routing.routewise.envelope import EnvelopeNotCalibratedError
+from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, OpenAICompatAdapter, dynamic_keys, provider_registry
 from serving.adapters.provider_registry import RuntimeProviderDefinition
 from serving.servers.deps import AppServices
@@ -265,10 +266,11 @@ async def admin_client(monkeypatch):
         dynamic_keys.register_known_provider(provider)
         dynamic_keys.register_adapter_for_provider(provider, adapter)
 
-    fake_routewise = MagicMock()
+    fake_routewise = MagicMock(spec=RouteWiseRouter)
     fake_routewise.refresh_route_table = MagicMock()
     fake_routewise.start = AsyncMock()
     fake_routewise.stop = AsyncMock()
+    fake_routewise.quota_pools = {}
     registry = MagicMock()
     strategy_state = {"minimax-fast": "routewise"}
     registry.get_router_name.side_effect = lambda model_id: strategy_state.get(

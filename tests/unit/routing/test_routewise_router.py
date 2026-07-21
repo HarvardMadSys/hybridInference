@@ -313,6 +313,7 @@ class TestRouteWiseRouterScaffold:
 
         assert sorted(router.classified) == ["minimax-m2.5"]
         assert "MiniMax-M2.5" not in router.route_candidates
+        assert router.canonical_model_id("MiniMax-M2.5") == "minimax-m2.5"
         assert router._routewise_pool("MiniMax-M2.5") == "minimax-m2.5"
 
         selected = router._select_decision("MiniMax-M2.5", {"prompt_tokens": 1000}).adapter
