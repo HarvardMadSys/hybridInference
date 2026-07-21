@@ -430,8 +430,13 @@ export interface AdminPerformanceMetricsResponse {
   windows: AdminPerformanceMetricsWindow[];
 }
 
-export async function getPerformanceMetrics(): Promise<AdminPerformanceMetricsResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/performance-metrics');
+export async function getPerformanceMetrics({
+  refresh = false,
+}: { refresh?: boolean } = {}): Promise<AdminPerformanceMetricsResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    refresh ? '/admin/performance-metrics?refresh=true' : '/admin/performance-metrics',
+  );
   return jsonOrThrow<AdminPerformanceMetricsResponse>(resp);
 }
 

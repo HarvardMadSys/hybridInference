@@ -92,10 +92,10 @@ export function PerformanceTab() {
   const [perfMetrics, setPerfMetrics] = useState<AdminPerformanceMetricsWindow[]>([]);
   const [perfMetricsLoading, setPerfMetricsLoading] = useState(false);
 
-  const loadPerformanceMetrics = useCallback(async () => {
+  const loadPerformanceMetrics = useCallback(async (refresh = false) => {
     setPerfMetricsLoading(true);
     try {
-      const d = await getPerformanceMetrics();
+      const d = await getPerformanceMetrics({ refresh });
       setPerfMetrics(d.windows);
     } catch (e) {
       toast.error(getErrorMessage(e));
@@ -125,7 +125,7 @@ export function PerformanceTab() {
             )}
             <button
               type="button"
-              onClick={() => loadPerformanceMetrics()}
+              onClick={() => loadPerformanceMetrics(true)}
               disabled={perfMetricsLoading}
               className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-600 hover:bg-gray-50 disabled:opacity-50"
             >
