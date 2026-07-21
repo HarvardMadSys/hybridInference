@@ -15,8 +15,12 @@ import type { Feature, Geometry } from 'geojson';
 import { useEffect, useRef } from 'react';
 import { feature } from 'topojson-client';
 import type { GeometryCollection, Topology } from 'topojson-specification';
-import type { GeoAnalyticsResponse } from '@/lib/api/admin';
-import { buildColumnIndex, CONTINENT_COLORS, type GeoMetric, type GeoMetricModel } from './geoMath';
+import {
+  CONTINENT_COLORS,
+  type GeoMetric,
+  type GeoMetricModel,
+  type OriginSummary,
+} from './geoMath';
 
 interface AtlasProperties {
   id?: string;
@@ -118,10 +122,6 @@ function metricLabel(metric: GeoMetric): string {
   return 'requests';
 }
 
-function positiveNumber(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
-}
-
 function keyboardSelect(event: KeyboardEvent, action: () => void): void {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault();
@@ -152,21 +152,23 @@ interface CountryDot {
 }
 
 export function GlobeCanvas({
-  data,
   atlas,
-  hourIndex,
   metricModel,
+  mode,
   viewRequest,
   onSelect,
   selectedCountry,
+  snapshotTimestamp,
+  summary,
 }: {
-  data: GeoAnalyticsResponse;
   atlas: PreparedAtlas;
-  hourIndex: number;
   metricModel: GeoMetricModel;
+  mode: 'window' | 'hour';
   viewRequest: GlobeViewRequest;
   onSelect: (selection: GlobeSelection) => void;
   selectedCountry: string | null;
+  snapshotTimestamp: string | undefined;
+  summary: OriginSummary;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -344,25 +346,8 @@ export function GlobeCanvas({
     const terminator = svg.select<SVGPathElement>('path[data-layer="terminator"]');
     const heatLayer = svg.select<SVGGElement>('g[data-layer="heat"]');
 
-    const bucketIndex = buildColumnIndex(data.bucket_cols);
-    const countryPosition = bucketIndex.c;
-    const continentPosition = bucketIndex.cont;
-    const requestPosition = bucketIndex.n;
-    const metricPosition = bucketIndex[metricModel.metric];
-    const countryValues = new Map<string, Omit<CountryDot, 'coordinate' | 'selectedOnly'>>();
-    for (const row of data.hours[hourIndex]?.b ?? []) {
-      const country = String(row[countryPosition] ?? '');
-      const existing = countryValues.get(country) ?? {
-        country,
-        continent: String(row[continentPosition] ?? '?'),
-        value: 0,
-        requests: 0,
-      };
-      existing.value += positiveNumber(row[metricPosition]);
-      existing.requests += positiveNumber(row[requestPosition]);
-      countryValues.set(country, existing);
-    }
-    const dots: CountryDot[] = [...countryValues.values()]
+    const countryValues = new Map(summary.origins.map((origin) => [origin.country, origin]));
+    const dots: CountryDot[] = summary.origins
       .map((dot) => {
         const coordinate = atlas.coordinates.get(dot.country);
         return coordinate ? { ...dot, coordinate, selectedOnly: false } : null;
@@ -385,7 +370,10 @@ export function GlobeCanvas({
       }
     }
     const radius = scaleSqrt()
-      .domain([0, Math.max(1, metricModel.countryHourP99)])
+      .domain([
+        0,
+        Math.max(1, mode === 'window' ? metricModel.countryWindowP99 : metricModel.countryHourP99),
+      ])
       .range([2.5, 26])
       .clamp(true);
 
@@ -430,11 +418,11 @@ export function GlobeCanvas({
       .select('title')
       .text((dot) =>
         dot.selectedOnly
-          ? `${atlasCountryName(atlas, dot.country)}: no positive ${metricLabel(metricModel.metric)} in this hour · ${dot.requests.toLocaleString()} requests`
-          : `${atlasCountryName(atlas, dot.country)}: ${Math.round(dot.value).toLocaleString()} ${metricLabel(metricModel.metric)} · ${dot.requests.toLocaleString()} requests`,
+          ? `${atlasCountryName(atlas, dot.country)}: no positive ${metricLabel(metricModel.metric)} ${mode === 'window' ? 'in selected window' : 'this hour'} · ${dot.requests.toLocaleString()} requests`
+          : `${atlasCountryName(atlas, dot.country)}: ${Math.round(dot.value).toLocaleString()} ${metricLabel(metricModel.metric)} ${mode === 'window' ? 'in selected window' : 'this hour'} · ${dot.requests.toLocaleString()} requests`,
       );
 
-    const selectedDate = new Date(data.hours_index[hourIndex]);
+    const selectedDate = new Date(snapshotTimestamp ?? '');
     const { day, night } = dayNightGeometry(
       Number.isNaN(selectedDate.getTime()) ? new Date(0) : selectedDate,
     );
@@ -465,7 +453,7 @@ export function GlobeCanvas({
         dynamicRedrawRef.current = () => undefined;
       }
     };
-  }, [atlas, data, hourIndex, metricModel, onSelect, selectedCountry]);
+  }, [atlas, metricModel, mode, onSelect, selectedCountry, snapshotTimestamp, summary]);
 
   useEffect(() => {
     const projection = projectionRef.current;

@@ -32,6 +32,7 @@ export interface GeoMetricModel {
   metric: GeoMetric;
   continentSeries: Map<string, number[]>;
   countryHourP99: number;
+  countryWindowP99: number;
   continentHourP99: number;
 }
 
@@ -42,7 +43,7 @@ export interface HourOrigin {
   value: number;
 }
 
-export interface HourOriginSummary {
+export interface OriginSummary {
   totalRequests: number;
   totalValue: number;
   activeCountries: number;
@@ -51,6 +52,8 @@ export interface HourOriginSummary {
   top: HourOrigin | null;
   topShare: number;
 }
+
+export type HourOriginSummary = OriginSummary;
 
 export function buildColumnIndex(columns: readonly string[]): GeoColumnIndex {
   return Object.fromEntries(columns.map((column, index) => [column, index]));
@@ -136,6 +139,7 @@ export function deriveGeoMetricModel(
   requiredIndex(bucketIndex, metric);
 
   const countryHourValues: number[] = [];
+  const countryWindowValues = new Map<string, number>();
   for (const hour of data.hours) {
     const byCountry = new Map<string, number>();
     for (const row of hour.b) {
@@ -144,7 +148,9 @@ export function deriveGeoMetricModel(
       // continent. Keep it in the globe's magnitude domain; the continent
       // ribbon independently excludes unknown continent buckets.
       if (!country || country.startsWith('?')) continue;
-      byCountry.set(country, (byCountry.get(country) ?? 0) + metricValue(row, metric, bucketIndex));
+      const value = metricValue(row, metric, bucketIndex);
+      byCountry.set(country, (byCountry.get(country) ?? 0) + value);
+      countryWindowValues.set(country, (countryWindowValues.get(country) ?? 0) + value);
     }
     countryHourValues.push(...byCountry.values());
   }
@@ -155,6 +161,7 @@ export function deriveGeoMetricModel(
     metric,
     continentSeries,
     countryHourP99: positiveNearestRankPercentile(countryHourValues, 0.99),
+    countryWindowP99: positiveNearestRankPercentile([...countryWindowValues.values()], 0.99),
     continentHourP99: positiveNearestRankPercentile(continentHourValues, 0.99),
   };
 }
@@ -176,7 +183,7 @@ export function buildCountryContinentMap(data: GeoAnalyticsResponse): Map<string
   return result;
 }
 
-function emptyHourOriginSummary(): HourOriginSummary {
+function emptyOriginSummary(): OriginSummary {
   return {
     totalRequests: 0,
     totalValue: 0,
@@ -188,17 +195,11 @@ function emptyHourOriginSummary(): HourOriginSummary {
   };
 }
 
-/** Per-country demand for one hour: feeds the hero line and the Top origins rail. */
-export function hourOriginSummary(
+function originSummaryForHours(
   data: GeoAnalyticsResponse,
-  hourIndex: number,
+  hours: readonly { b: GeoBucketRow[] }[],
   metricModel: GeoMetricModel,
-): HourOriginSummary {
-  const hour = data.hours[hourIndex];
-  if (!hour || hourIndex < 0 || hourIndex >= data.hours_index.length) {
-    return emptyHourOriginSummary();
-  }
-
+): OriginSummary {
   const bucketIndex = buildColumnIndex(data.bucket_cols);
   const countryPosition = requiredIndex(bucketIndex, 'c');
   const continentPosition = requiredIndex(bucketIndex, 'cont');
@@ -208,23 +209,25 @@ export function hourOriginSummary(
   let totalValue = 0;
   let locatedRequests = 0;
   const byCountry = new Map<string, HourOrigin>();
-  for (const row of hour.b) {
-    const requests = numberAt(row, requestPosition);
-    const value = metricValue(row, metricModel.metric, bucketIndex);
-    totalRequests += requests;
-    totalValue += value;
-    const country = stringAt(row, countryPosition);
-    if (!country || country.startsWith('?')) continue;
-    locatedRequests += requests;
-    const entry = byCountry.get(country) ?? {
-      country,
-      continent: stringAt(row, continentPosition),
-      requests: 0,
-      value: 0,
-    };
-    entry.requests += requests;
-    entry.value += value;
-    byCountry.set(country, entry);
+  for (const hour of hours) {
+    for (const row of hour.b) {
+      const requests = numberAt(row, requestPosition);
+      const value = metricValue(row, metricModel.metric, bucketIndex);
+      totalRequests += requests;
+      totalValue += value;
+      const country = stringAt(row, countryPosition);
+      if (!country || country.startsWith('?')) continue;
+      locatedRequests += requests;
+      const entry = byCountry.get(country) ?? {
+        country,
+        continent: stringAt(row, continentPosition),
+        requests: 0,
+        value: 0,
+      };
+      entry.requests += requests;
+      entry.value += value;
+      byCountry.set(country, entry);
+    }
   }
 
   const origins = [...byCountry.values()]
@@ -242,6 +245,27 @@ export function hourOriginSummary(
     top,
     topShare: top && totalValue > 0 ? clampFraction(top.value / totalValue) : 0,
   };
+}
+
+/** Per-country demand for the loaded window: feeds the default overview. */
+export function windowOriginSummary(
+  data: GeoAnalyticsResponse,
+  metricModel: GeoMetricModel,
+): OriginSummary {
+  return originSummaryForHours(data, data.hours, metricModel);
+}
+
+/** Per-country demand for one hour: feeds an hour-level drill-down. */
+export function hourOriginSummary(
+  data: GeoAnalyticsResponse,
+  hourIndex: number,
+  metricModel: GeoMetricModel,
+): HourOriginSummary {
+  const hour = data.hours[hourIndex];
+  if (!hour || hourIndex < 0 || hourIndex >= data.hours_index.length) {
+    return emptyOriginSummary();
+  }
+  return originSummaryForHours(data, [hour], metricModel);
 }
 
 /**

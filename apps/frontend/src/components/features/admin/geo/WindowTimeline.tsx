@@ -37,21 +37,25 @@ function dayLabel(timestamp: string): string {
 /** One timeline for the whole loaded window: stacked demand by continent plus the scrubber. */
 export function WindowTimeline({
   data,
-  hourIndex,
+  selectedHourIndex,
   metricModel,
   playing,
   onTogglePlay,
   onHourChange,
+  totalLabel,
 }: {
   data: GeoAnalyticsResponse;
-  hourIndex: number;
+  selectedHourIndex: number | null;
   metricModel: GeoMetricModel;
   playing: boolean;
   onTogglePlay: () => void;
   onHourChange: (hourIndex: number) => void;
+  totalLabel: string;
 }) {
   const hourCount = data.hours_index.length;
   const lastIndex = Math.max(0, hourCount - 1);
+  const isHourDetail = selectedHourIndex !== null;
+  const hourIndex = Math.max(0, Math.min(lastIndex, selectedHourIndex ?? lastIndex));
   const scrubbing = useRef(false);
 
   const { stacked, continents, yMax } = useMemo(() => {
@@ -155,7 +159,7 @@ export function WindowTimeline({
     onHourChange(Math.max(0, Math.min(lastIndex, next)));
   };
 
-  const readout = formatUtcReadout(data.hours_index[hourIndex]);
+  const readout = isHourDetail ? formatUtcReadout(data.hours_index[hourIndex]) : totalLabel;
 
   return (
     <section className="rounded-xl border border-gray-200 bg-white p-3">
@@ -163,7 +167,7 @@ export function WindowTimeline({
         <button
           type="button"
           className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-600 disabled:opacity-40"
-          disabled={hourIndex <= 0}
+          disabled={!isHourDetail || hourIndex <= 0}
           onClick={() => onHourChange(hourIndex - 1)}
         >
           ← 1h
@@ -181,7 +185,7 @@ export function WindowTimeline({
         <button
           type="button"
           className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-600 disabled:opacity-40"
-          disabled={hourIndex >= lastIndex}
+          disabled={!isHourDetail || hourIndex >= lastIndex}
           onClick={() => onHourChange(hourIndex + 1)}
         >
           1h →
@@ -194,7 +198,7 @@ export function WindowTimeline({
         aria-valuemax={lastIndex}
         aria-valuemin={0}
         aria-valuenow={hourIndex}
-        aria-valuetext={readout}
+        aria-valuetext={isHourDetail ? readout : `${readout}; select an hour for details`}
         className="mt-2 block h-24 w-full cursor-crosshair touch-none overflow-visible"
         onKeyDown={handleKeyDown}
         onPointerCancel={handlePointerEnd}
@@ -231,15 +235,17 @@ export function WindowTimeline({
             opacity={0.75}
           />
         ))}
-        <line
-          data-testid="selected-hour-marker"
-          stroke="#111827"
-          strokeWidth="1.2"
-          x1={x(hourIndex)}
-          x2={x(hourIndex)}
-          y1={MARGIN.top - 2}
-          y2={HEIGHT - MARGIN.bottom + 3}
-        />
+        {isHourDetail && (
+          <line
+            data-testid="selected-hour-marker"
+            stroke="#111827"
+            strokeWidth="1.2"
+            x1={x(hourIndex)}
+            x2={x(hourIndex)}
+            y1={MARGIN.top - 2}
+            y2={HEIGHT - MARGIN.bottom + 3}
+          />
+        )}
       </svg>
       <div className="mt-1.5 flex flex-wrap gap-3 text-[11px] text-gray-500">
         {continents.map((continent) => (

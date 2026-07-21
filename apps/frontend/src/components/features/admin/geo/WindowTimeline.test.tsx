@@ -43,11 +43,12 @@ function renderTimeline(
   render(
     <WindowTimeline
       data={data}
-      hourIndex={hourIndex}
       metricModel={deriveGeoMetricModel(data, 'n')}
       onHourChange={onHourChange}
       onTogglePlay={onTogglePlay}
       playing={false}
+      selectedHourIndex={hourIndex}
+      totalLabel={`${Math.max(1, Math.round(hourCount / 24))}-day total`}
       {...overrides}
     />,
   );
@@ -120,5 +121,21 @@ describe('WindowTimeline', () => {
     const last = screen.getByTestId('selected-hour-marker').getAttribute('x1');
 
     expect(Number(first)).toBeLessThan(Number(last));
+  });
+
+  it('labels the aggregate overview without pretending that the last hour is selected', () => {
+    const { onHourChange } = renderTimeline(26, 25, {
+      selectedHourIndex: null,
+      totalLabel: '14-day total',
+    });
+
+    const slider = screen.getByRole('slider', { name: 'Demand timeline for the loaded window' });
+    expect(screen.getByText('14-day total')).toBeInTheDocument();
+    expect(screen.queryByTestId('selected-hour-marker')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '← 1h' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '1h →' })).toBeDisabled();
+
+    fireEvent.keyDown(slider, { key: 'Home' });
+    expect(onHourChange).toHaveBeenLastCalledWith(0);
   });
 });
