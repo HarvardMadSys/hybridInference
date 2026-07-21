@@ -1,7 +1,7 @@
 'use client';
 
 import { atlasCountryName, type PreparedAtlas } from './GlobeCanvas';
-import { CONTINENT_COLORS, type GeoMetric, type HourOriginSummary } from './geoMath';
+import { CONTINENT_COLORS, type GeoMetric, type OriginSummary } from './geoMath';
 
 const MAX_ROWS = 8;
 
@@ -15,20 +15,22 @@ function metricLabel(metric: GeoMetric): string {
   return metric === 'tout' ? 'output tokens' : 'requests';
 }
 
-/** The selection surface: top request origins for the selected hour, click to focus. */
+/** The selection surface: top request origins for the active overview or hour, click to focus. */
 export function TopOrigins({
   summary,
   atlas,
-  hourLabel,
+  label,
   metric,
+  mode,
   selectedCountry,
   announce,
   onSelect,
 }: {
-  summary: HourOriginSummary;
+  summary: OriginSummary;
   atlas: PreparedAtlas;
-  hourLabel: string;
+  label: string;
   metric: GeoMetric;
+  mode: 'window' | 'hour';
   selectedCountry: string | null;
   announce: boolean;
   onSelect: (country: string) => void;
@@ -41,13 +43,15 @@ export function TopOrigins({
       className="rounded-xl border border-gray-200 bg-white p-3"
     >
       <h3 className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
-        Top origins · {hourLabel}
+        Top origins · {label}
       </h3>
       {rows.length === 0 ? (
         <p className="mt-2 text-xs text-gray-500">
           {summary.totalRequests > 0
-            ? 'No located origins this hour — origins are unknown for this traffic.'
-            : 'No requests this hour. Press Play or scrub the timeline.'}
+            ? `No located origins ${mode === 'window' ? 'in this window' : 'this hour'} — origins are unknown for this traffic.`
+            : mode === 'window'
+              ? 'No requests in this window. Select an hour to inspect its detail.'
+              : 'No requests this hour. Press Play or scrub the timeline.'}
         </p>
       ) : (
         <ul className="mt-2 space-y-1">
@@ -89,7 +93,9 @@ export function TopOrigins({
         </ul>
       )}
       {rows.length > 0 && (
-        <p className="mt-2 text-[11px] text-gray-400">{metricLabel(metric)} this hour</p>
+        <p className="mt-2 text-[11px] text-gray-400">
+          {metricLabel(metric)} {mode === 'window' ? 'in selected window' : 'this hour'}
+        </p>
       )}
     </aside>
   );

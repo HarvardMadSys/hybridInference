@@ -11,6 +11,7 @@ import {
   hourOriginSummary,
   positiveNearestRankPercentile,
   rotationForCoordinate,
+  windowOriginSummary,
 } from './geoMath';
 
 const BUCKET_COLS: GeoAnalyticsResponse['bucket_cols'] = ['c', 'cont', 'n', 'tout'];
@@ -161,6 +162,40 @@ describe('hourOriginSummary', () => {
     expect(summary.totalValue).toBe(0);
     expect(summary.origins.map((origin) => origin.country)).toEqual(['CHN', 'USA']);
     expect(summary.topShare).toBe(0);
+  });
+});
+
+describe('windowOriginSummary', () => {
+  it('aggregates countries, totals, and unknown traffic across the loaded window', () => {
+    const data = makeData([
+      {
+        b: [bucket('CHN', 'AS', 10, 100), bucket('USA', 'NA', 2, 20), bucket('?', '?', 3, 30)],
+      },
+      {
+        b: [
+          bucket('CHN', 'AS', 2, 5),
+          bucket('USA', 'NA', 10, 200),
+          bucket('JPN', 'AS', 4, 40),
+          bucket('?', '?', 5, 50),
+        ],
+      },
+    ]);
+
+    const summary = windowOriginSummary(data, deriveGeoMetricModel(data, 'tout'));
+
+    expect(summary).toMatchObject({
+      totalRequests: 36,
+      totalValue: 445,
+      activeCountries: 3,
+    });
+    expect(summary.unlocatedFraction).toBeCloseTo(8 / 36);
+    expect(summary.origins).toEqual([
+      { country: 'USA', continent: 'NA', requests: 12, value: 220 },
+      { country: 'CHN', continent: 'AS', requests: 12, value: 105 },
+      { country: 'JPN', continent: 'AS', requests: 4, value: 40 },
+    ]);
+    expect(summary.top).toMatchObject({ country: 'USA', value: 220 });
+    expect(summary.topShare).toBeCloseTo(220 / 445);
   });
 });
 

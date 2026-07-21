@@ -3,7 +3,12 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GeoAnalyticsResponse } from '@/lib/api/admin';
-import { CONTINENT_COLORS, deriveGeoMetricModel } from './geoMath';
+import {
+  CONTINENT_COLORS,
+  deriveGeoMetricModel,
+  hourOriginSummary,
+  windowOriginSummary,
+} from './geoMath';
 import { GlobeCanvas, type PreparedAtlas } from './GlobeCanvas';
 
 const china = {
@@ -54,36 +59,33 @@ function renderGlobe(
   metric: 'n' | 'tout' = 'n',
   data = response(),
   selectedCountry: string | null = null,
+  mode: 'window' | 'hour' = 'hour',
 ) {
   const metricModel = deriveGeoMetricModel(data, metric);
   const viewRequest = { id: 1, rotation: [-104, -35] as [number, number] };
-  const view = render(
+  const renderCanvas = (hourIndex: number, nextSelectedCountry: string | null) => (
     <GlobeCanvas
-      data={data}
       atlas={atlas}
-      hourIndex={0}
       metricModel={metricModel}
+      mode={mode}
       viewRequest={viewRequest}
       onSelect={onSelect}
-      selectedCountry={selectedCountry}
-    />,
+      selectedCountry={nextSelectedCountry}
+      snapshotTimestamp={data.hours_index[hourIndex]}
+      summary={
+        mode === 'window'
+          ? windowOriginSummary(data, metricModel)
+          : hourOriginSummary(data, hourIndex, metricModel)
+      }
+    />
   );
+  const view = render(renderCanvas(0, selectedCountry));
   return {
     ...view,
     metricModel,
     onSelect,
     rerenderAt(hourIndex: number, nextSelectedCountry = selectedCountry) {
-      view.rerender(
-        <GlobeCanvas
-          data={data}
-          atlas={atlas}
-          hourIndex={hourIndex}
-          metricModel={metricModel}
-          viewRequest={viewRequest}
-          onSelect={onSelect}
-          selectedCountry={nextSelectedCountry}
-        />,
-      );
+      view.rerender(renderCanvas(hourIndex, nextSelectedCountry));
     },
   };
 }
@@ -260,7 +262,7 @@ describe('GlobeCanvas', () => {
     );
     expect(origin.querySelector('circle[data-layer="selection-ring"]')).toHaveAttribute('r', '9');
     expect(origin.querySelector('title')).toHaveTextContent(
-      'China: no positive requests in this hour · 0 requests',
+      'China: no positive requests this hour · 0 requests',
     );
   });
 
@@ -292,5 +294,22 @@ describe('GlobeCanvas', () => {
     rerenderAt(100);
     expect(radiusAt()).toBe(capRadius);
     expect(screen.queryByText(/p99/)).not.toBeInTheDocument();
+  });
+
+  it('plots the full window aggregation when the overview is active', () => {
+    const data = response();
+    data.hours_index.push('2026-07-16T01:00:00Z');
+    data.hours.push({ b: [['USA', 'NA', 7, 70]] });
+    data.meta.rows_total = 19;
+    atlas.coordinates.set('USA', [-98, 39]);
+
+    renderGlobe(vi.fn(), 'n', data, null, 'window');
+
+    expect(screen.getByRole('button', { name: 'China request origin' })).toHaveTextContent(
+      'China: 12 requests in selected window · 12 requests',
+    );
+    expect(
+      screen.getByRole('button', { name: 'United States request origin', hidden: true }),
+    ).toHaveTextContent('United States: 7 requests in selected window · 7 requests');
   });
 });
