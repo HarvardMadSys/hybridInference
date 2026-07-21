@@ -458,6 +458,7 @@ async def update_model_routewise_setting_endpoint(
             "old_value": previous.value,
             "new_value": resolved.value,
             "source": resolved.source,
+            "admin_id": admin_id,
         },
     )
     return _resolved_setting_item(resolved)

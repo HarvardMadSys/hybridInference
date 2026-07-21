@@ -191,7 +191,7 @@ async def test_model_settings_get_canonicalizes_alias_without_building_router(ad
 
 @pytest.mark.asyncio
 async def test_model_settings_patch_isolates_models_and_persists_canonical_key(admin_client):
-    client, op_store, _ = admin_client
+    client, op_store, audit = admin_client
     registry, _resolver, rows = await _install_model_settings_registry(
         client,
         op_store,
@@ -229,6 +229,7 @@ async def test_model_settings_patch_isolates_models_and_persists_canonical_key(a
     scoped_key = model_routewise_setting_key("routewise_budget_alpha", "model-a")
     assert rows[scoped_key]["value"] == "0.4"
     assert model_routewise_setting_key("routewise_budget_alpha", "model/a") not in rows
+    assert audit.await_args.args[4]["admin_id"]
 
 
 @pytest.mark.asyncio
