@@ -20,6 +20,7 @@ from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
+from routing.model_router_registry import ModelRouterRegistry
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -588,6 +589,40 @@ async def test_model_not_found_returns_404(completions_client: AsyncClient):
     assert resp.status_code == status.HTTP_404_NOT_FOUND
     data = resp.json()
     assert "error" in data
+
+
+@pytest.mark.asyncio
+async def test_unpublished_model_returns_404_before_routewise_router_lookup(
+    completions_app: FastAPI,
+):
+    router = completions_app.state.services.router
+    router.register_route(
+        "staged-model",
+        [(DummyAdapter(_mk_cfg("staged-model")), 1.0)],
+        published=False,
+    )
+    model_router_registry = ModelRouterRegistry(
+        models_config={},
+        default_router_name="routewise",
+        shared_fixed_router=router,
+    )
+    assert model_router_registry.get_router_name("staged-model") == "routewise"
+    get_router = MagicMock(wraps=model_router_registry.get_router)
+    model_router_registry.get_router = get_router
+    completions_app.state.services.model_router_registry = model_router_registry
+
+    transport = ASGITransport(app=completions_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "staged-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+
+    assert resp.status_code == status.HTTP_404_NOT_FOUND
+    get_router.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -355,6 +355,7 @@ models:
         registry_instance.get_router = MagicMock(return_value=mock_routewise)
         registry_instance.get_router_name.return_value = "routewise"
         registry_instance.managed_routers.return_value = []
+        registry_instance.runtime_override_for_router.return_value = None
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -502,8 +503,8 @@ models:
 
         assert services.managed_routers == [runtime_routewise]
         assert events == ["configs", "bootstrap:runtime-m", "start"]
-        assert bootstrap_logs.await_count == 3
-        runtime_call = bootstrap_logs.await_args_list[1]
+        assert bootstrap_logs.await_count == 1
+        runtime_call = bootstrap_logs.await_args_list[0]
         assert runtime_call.args[0] is log_store
         assert runtime_call.args[1] == [runtime_routewise]
         assert runtime_call.args[2] == {id(runtime_routewise): {"runtime-m"}}
@@ -712,6 +713,7 @@ models:
         registry_instance.get_router = MagicMock(return_value=mock_routewise)
         registry_instance.get_router_name.return_value = "routewise"
         registry_instance.managed_routers.return_value = []
+        registry_instance.runtime_override_for_router.return_value = None
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -733,35 +735,55 @@ models:
             await bootstrap.initialize()
 
     @pytest.mark.asyncio
-    async def test_failed_runtime_router_override_resets_to_configured_strategy(self):
-        """A stale DB-backed strategy override should not brick startup."""
-        managed_router = SimpleNamespace(
-            _model_router_override_id="m",
-            _model_router_fallback_strategy="fixed",
+    async def test_failed_runtime_router_override_does_not_fall_back_to_fixed(self, mock_env):
+        """A resource-aware runtime override must fail closed at startup."""
+        from routing.routewise.envelope import EnvelopeNotCalibratedError
+
+        managed_router = _mock_routewise()
+        managed_router.start = AsyncMock(
+            side_effect=EnvelopeNotCalibratedError("envelope is uncalibrated")
         )
-        managed_routers = [managed_router]
-        fallback_router = object()
+
+        info = MagicMock()
+        info.model_id = "m"
+        info.aliases = []
+        info.router = "routewise"
+        info.strategy = None
+        info.router_params = None
+
+        override = SimpleNamespace(canonical_model_id="m", configured_strategy="fixed")
         registry = MagicMock()
-        registry.get_router.return_value = fallback_router
-        op_store = AsyncMock()
+        registry.get_router = MagicMock(return_value=managed_router)
+        registry.get_router_name.return_value = "routewise"
+        registry.managed_routers.return_value = []
+        registry.runtime_override_for_router.return_value = override
 
-        reset = await bootstrap._reset_failed_runtime_router_override(
-            managed_router=managed_router,
-            model_router_registry=registry,
-            managed_routers=managed_routers,
-            operational_store=op_store,
-        )
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [info])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch("serving.servers.bootstrap.ModelRouterRegistry", return_value=registry),
+            patch(
+                "serving.servers.bootstrap._bootstrap_routewise_from_logs",
+                new=AsyncMock(),
+            ),
+            patch("serving.servers.bootstrap.logger") as mock_logger,
+            pytest.raises(EnvelopeNotCalibratedError, match="uncalibrated"),
+        ):
+            await bootstrap.initialize()
 
-        assert reset is True
-        registry.set_router_override.assert_called_once_with("m", "fixed")
-        registry.get_router.assert_called_once_with("m")
-        op_store.set_setting.assert_awaited_once_with(
-            "model_router_strategy:m",
+        registry.runtime_override_for_router.assert_called_once_with(managed_router)
+        registry.prepare_router_strategy_change.assert_not_called()
+        registry.commit_router_strategy_change.assert_not_called()
+        mock_logger.error.assert_called_once_with(
+            "Runtime RouteWise override failed envelope calibration for "
+            "model=%s; refusing unsafe fallback to strategy=%s",
+            "m",
             "fixed",
-            "string",
-            "bootstrap",
         )
-        assert managed_routers == []
 
 
 class TestBootstrapShutdown:

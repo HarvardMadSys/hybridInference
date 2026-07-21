@@ -13,7 +13,7 @@ import contextlib
 import datetime as dt
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
@@ -22,7 +22,6 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
-from routing.routers import ManagedRouter
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.config.disabled_providers import DisabledProviderResolver
@@ -45,8 +44,10 @@ from .deps import AppServices
 from .registry import ModelRegistrationInfo, register_from_models_yaml
 from .routewise_rebuild import rebuild_cached_routewise_routers
 
+if TYPE_CHECKING:
+    from routing.routers import ManagedRouter
+
 logger = get_logger(__name__)
-MODEL_ROUTER_STRATEGY_SETTING_PREFIX = "model_router_strategy:"
 
 # Strong references to fire-and-forget background tasks created at startup.
 # asyncio holds only weak refs to running tasks, so without this set the
@@ -314,60 +315,6 @@ async def _bootstrap_routewise_from_probe_samples(
                 model_ids,
                 exc_info=True,
             )
-
-
-async def _reset_failed_runtime_router_override(
-    *,
-    managed_router: Any,
-    model_router_registry: ModelRouterRegistry | None,
-    managed_routers: list[Any],
-    operational_store: Any,
-) -> bool:
-    """Reset a DB-backed router override that cannot start.
-
-    YAML-configured RouteWise routers still fail fast when envelope calibration
-    is required. This path is only for stale runtime overrides from older admin
-    writes that would otherwise brick startup before an admin can reset them.
-    """
-    if model_router_registry is None:
-        return False
-    model_id = getattr(managed_router, "_model_router_override_id", None)
-    fallback_strategy = getattr(managed_router, "_model_router_fallback_strategy", None)
-    if not isinstance(model_id, str) or not isinstance(fallback_strategy, str):
-        return False
-
-    logger.warning(
-        "Runtime model router override failed to start; resetting model=%s to strategy=%s",
-        model_id,
-        fallback_strategy,
-    )
-    model_router_registry.set_router_override(model_id, fallback_strategy)
-    fallback_router = model_router_registry.get_router(model_id)
-    managed_routers[:] = [
-        router_obj for router_obj in managed_routers if id(router_obj) != id(managed_router)
-    ]
-
-    if operational_store is not None:
-        try:
-            await operational_store.set_setting(
-                f"{MODEL_ROUTER_STRATEGY_SETTING_PREFIX}{model_id}",
-                fallback_strategy,
-                "string",
-                "bootstrap",
-            )
-        except Exception:
-            logger.warning(
-                "Failed to persist runtime model router override reset for model=%s",
-                model_id,
-                exc_info=True,
-            )
-
-    if isinstance(fallback_router, ManagedRouter) and all(
-        id(existing) != id(fallback_router) for existing in managed_routers
-    ):
-        await fallback_router.start()
-        managed_routers.append(fallback_router)
-    return True
 
 
 def _init_db_logger() -> DatabaseLogger | None:
@@ -738,18 +685,6 @@ async def initialize() -> AppServices:
 
     init_alert_snooze(operational_store)
 
-    await _bootstrap_routewise_from_logs(
-        log_store,
-        routewise_routers,
-        routewise_model_ids_by_router,
-        routewise_donor_overrides_by_router,
-    )
-    await _bootstrap_routewise_from_probe_samples(
-        operational_store,
-        routewise_routers,
-        routewise_model_ids_by_router,
-    )
-
     # Ensure a shared HTTP client is created lazily; no-op here.
     _ = AsyncHTTPClient.shared()
 
@@ -789,6 +724,7 @@ async def initialize() -> AppServices:
     # Seed dynamic provider keys from the operational store into the
     # adapter key pools registered during model loading. Best-effort —
     # a failure here should not prevent the server from starting.
+    restored_routewise_model_ids: set[str] = set()
     if operational_store is not None:
         try:
             from serving.adapters.provider_registry import apply_provider_definitions_at_boot
@@ -839,20 +775,9 @@ async def initialize() -> AppServices:
             if new_routewise_routers:
                 for rw in new_routewise_routers:
                     rw.attach_operational_store(operational_store)
-                await _bootstrap_routewise_from_logs(
-                    log_store,
-                    new_routewise_routers,
-                    updated_routewise_model_ids_by_router,
-                    updated_routewise_donor_overrides_by_router,
-                )
                 routewise_routers = updated_routewise_routers
                 routewise_model_ids_by_router = updated_routewise_model_ids_by_router
                 routewise_donor_overrides_by_router = updated_routewise_donor_overrides_by_router
-                await _bootstrap_routewise_from_probe_samples(
-                    operational_store,
-                    new_routewise_routers,
-                    updated_routewise_model_ids_by_router,
-                )
             restored_routewise_model_ids = await apply_persisted_provider_route_candidates(
                 provider_route_services,
                 operational_store,
@@ -861,57 +786,48 @@ async def initialize() -> AppServices:
                 provider_route_services,
                 operational_store,
             )
-            if restored_routewise_model_ids:
-                (
-                    runtime_routewise_routers,
-                    runtime_routewise_model_ids_by_router,
-                ) = _collect_routewise_runtime_routers(
-                    model_router_registry,
-                    restored_routewise_model_ids,
-                    managed_routers,
-                )
-                if runtime_routewise_routers:
-                    for rw in runtime_routewise_routers:
-                        rw.attach_operational_store(operational_store)
-                    await _bootstrap_routewise_from_logs(
-                        log_store,
-                        runtime_routewise_routers,
-                        runtime_routewise_model_ids_by_router,
-                    )
-                    await _bootstrap_routewise_from_probe_samples(
-                        operational_store,
-                        runtime_routewise_routers,
-                        runtime_routewise_model_ids_by_router,
-                    )
-                    known_routewise_ids = {id(router_obj) for router_obj in routewise_routers}
-                    for router_obj in runtime_routewise_routers:
-                        if id(router_obj) not in known_routewise_ids:
-                            routewise_routers.append(router_obj)
-                            known_routewise_ids.add(id(router_obj))
-                    for router_id, model_ids in runtime_routewise_model_ids_by_router.items():
-                        routewise_model_ids_by_router.setdefault(router_id, set()).update(model_ids)
-            (
-                routewise_routers,
-                routewise_model_ids_by_router,
-                routewise_donor_overrides_by_router,
-            ) = _collect_routewise_routers(model_router_registry, model_infos, managed_routers)
-            for rw in routewise_routers:
-                rw.attach_operational_store(operational_store)
-            await _bootstrap_routewise_from_logs(
-                log_store,
-                routewise_routers,
-                routewise_model_ids_by_router,
-                routewise_donor_overrides_by_router,
-            )
-            await _bootstrap_routewise_from_probe_samples(
-                operational_store,
-                routewise_routers,
-                routewise_model_ids_by_router,
-            )
         except _RouteWiseRouterTypeError:
             raise
         except Exception as exc:
             logger.warning(f"Failed to apply DB-backed provider route configs at boot: {exc}")
+
+    # DB-backed strategies and route overrides can replace routers or endpoint
+    # identities. Collect and warm the final graph exactly once so envelope
+    # samples are neither double-counted nor applied to stale endpoints.
+    (
+        routewise_routers,
+        routewise_model_ids_by_router,
+        routewise_donor_overrides_by_router,
+    ) = _collect_routewise_routers(model_router_registry, model_infos, managed_routers)
+    if restored_routewise_model_ids:
+        (
+            runtime_routewise_routers,
+            runtime_routewise_model_ids_by_router,
+        ) = _collect_routewise_runtime_routers(
+            model_router_registry,
+            restored_routewise_model_ids,
+            managed_routers,
+        )
+        known_routewise_ids = {id(router_obj) for router_obj in routewise_routers}
+        for router_obj in runtime_routewise_routers:
+            if id(router_obj) not in known_routewise_ids:
+                routewise_routers.append(router_obj)
+                known_routewise_ids.add(id(router_obj))
+        for router_id, model_ids in runtime_routewise_model_ids_by_router.items():
+            routewise_model_ids_by_router.setdefault(router_id, set()).update(model_ids)
+    for rw in routewise_routers:
+        rw.attach_operational_store(operational_store)
+    await _bootstrap_routewise_from_logs(
+        log_store,
+        routewise_routers,
+        routewise_model_ids_by_router,
+        routewise_donor_overrides_by_router,
+    )
+    await _bootstrap_routewise_from_probe_samples(
+        operational_store,
+        routewise_routers,
+        routewise_model_ids_by_router,
+    )
 
     # Runtime settings (DB-backed feature flags with TTL cache)
     runtime_settings = None
@@ -1066,17 +982,24 @@ async def initialize() -> AppServices:
         try:
             await managed_router.start()
         except EnvelopeNotCalibratedError:
-            reset = await _reset_failed_runtime_router_override(
-                managed_router=managed_router,
-                model_router_registry=model_router_registry,
-                managed_routers=managed_routers,
-                operational_store=operational_store,
-            )
-            if reset:
-                continue
-            # YAML-configured RouteWise quota shadow pricing requires
-            # workload-derived [L, U]. Do not silently fall back to a fabricated
-            # envelope for real config.
+            try:
+                override = model_router_registry.runtime_override_for_router(managed_router)
+            except Exception:
+                override = None
+                logger.debug(
+                    "Failed to resolve runtime override for uncalibrated router",
+                    exc_info=True,
+                )
+            if override is not None:
+                logger.error(
+                    "Runtime RouteWise override failed envelope calibration for "
+                    "model=%s; refusing unsafe fallback to strategy=%s",
+                    override.canonical_model_id,
+                    override.configured_strategy,
+                )
+            # Quota-only RouteWise pools require workload-derived [L, U]. A
+            # FixedRouter fallback would bypass their resource accounting, so
+            # both configured and runtime strategies fail closed.
             raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Managed router start() failed: {exc}")

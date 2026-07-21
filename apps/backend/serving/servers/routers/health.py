@@ -14,6 +14,11 @@ from serving.servers.deps import get_log_store, get_operational_store, get_route
 router = APIRouter()
 
 
+def _route_is_published(route: Any) -> bool:
+    """Return whether a route may be exposed by serving discovery endpoints."""
+    return bool(getattr(route, "published", True))
+
+
 async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
     """Actively test database connection via store health checks.
 
@@ -152,7 +157,7 @@ async def health(
     readiness consumers should use ``/health/ready`` instead, which does
     AND-logic and returns 503 unless every configured store is up.
     """
-    routes_count = len(router_exec.routes)
+    routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
     store_health = await _test_store_health(op_store, log_store)
     db_connected = store_health["healthy"]
@@ -245,7 +250,7 @@ async def deep_health(
 
     Performs active database connection test and returns detailed system status.
     """
-    routes_count = len(router_exec.routes)
+    routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
     store_health = await _test_store_health(op_store, log_store)
     db_connected = store_health["healthy"]
@@ -313,6 +318,8 @@ async def get_routing(
     """Show current routing configuration and manager status if present."""
     routing_info: dict[str, Any] = {}
     for model_id, route in router_exec.routes.items():
+        if not _route_is_published(route):
+            continue
         routing_info[model_id] = [
             {
                 "provider": adapter.config.provider,

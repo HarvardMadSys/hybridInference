@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
-from routing.route_table import EffectiveRoute
+from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
@@ -74,6 +74,7 @@ class RouteConfig:
     canonical_model_id: str | None = None
     admin_only: bool = False
     required_role: str = "free"
+    published: bool = True
 
 
 @dataclass(kw_only=True)
@@ -235,21 +236,41 @@ class FixedRouter:
     def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
         """Return a stable effective-route snapshot built under the route lock."""
         with self._lock:
-            snapshot: list[EffectiveRoute] = []
-            seen_canonical_ids: set[str] = set()
-            for route_key, route in self.routes.items():
-                canonical_model_id = route.canonical_model_id or route_key
-                if canonical_model_id in seen_canonical_ids:
-                    continue
-                seen_canonical_ids.add(canonical_model_id)
-                snapshot.append(
-                    EffectiveRoute(
-                        route_key=route_key,
-                        canonical_model_id=canonical_model_id,
-                        adapters=tuple(self._get_effective_adapters(route_key, route)),
-                    )
+            return self._effective_routes_locked()
+
+    def snapshot_for_transition(self, model_id: str) -> RouteTableSnapshot:
+        """Capture published routes plus one staged canonical model privately."""
+        with self._lock:
+            routes = self._effective_routes_locked(include_unpublished_model_id=model_id)
+            canonical_ids = {
+                route_key: route.canonical_model_id or route_key
+                for route_key, route in self.routes.items()
+                if route.published or (route.canonical_model_id or route_key) == model_id
+            }
+        return RouteTableSnapshot(routes, canonical_ids)
+
+    def _effective_routes_locked(
+        self,
+        *,
+        include_unpublished_model_id: str | None = None,
+    ) -> tuple[EffectiveRoute, ...]:
+        snapshot: list[EffectiveRoute] = []
+        seen_canonical_ids: set[str] = set()
+        for route_key, route in self.routes.items():
+            canonical_model_id = route.canonical_model_id or route_key
+            if not route.published and canonical_model_id != include_unpublished_model_id:
+                continue
+            if canonical_model_id in seen_canonical_ids:
+                continue
+            seen_canonical_ids.add(canonical_model_id)
+            snapshot.append(
+                EffectiveRoute(
+                    route_key=route_key,
+                    canonical_model_id=canonical_model_id,
+                    adapters=tuple(self._get_effective_adapters(route_key, route)),
                 )
-            return tuple(snapshot)
+            )
+        return tuple(snapshot)
 
     def canonical_id(self, model_id: str) -> str:
         """Resolve aliases through the route table without exposing mutable routes."""
@@ -318,6 +339,7 @@ class FixedRouter:
         aliases: list[str] | None = None,
         admin_only: bool = False,
         required_role: str = "free",
+        published: bool = True,
     ) -> None:
         """Register a weighted route for a model.
 
@@ -331,6 +353,9 @@ class FixedRouter:
                 Deprecated: use required_role="admin" instead.
             required_role: Minimum role required to access this model
                 (free/pro/internal/admin).
+            published: Whether request selection may use this route. Runtime
+                model creation stages an unpublished route until its durable
+                strategy transition commits.
         """
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
@@ -350,6 +375,7 @@ class FixedRouter:
             canonical_model_id=model_id,
             admin_only=admin_only,
             required_role=effective_role,
+            published=published,
         )
         with self._lock:
             self.routes[model_id] = route_cfg
@@ -369,7 +395,7 @@ class FixedRouter:
             Selected adapter or None if no route configured / no match.
         """
         route = self.routes.get(model_id)
-        if not route or not route.adapters:
+        if not route or not route.published or not route.adapters:
             return None
 
         if pin_provider:

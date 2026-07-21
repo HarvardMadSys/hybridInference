@@ -71,6 +71,52 @@ def test_fixed_router_satisfies_route_table_view_with_frozen_tuple_snapshot():
 
 
 @pytest.mark.unit
+def test_unpublished_route_is_absent_from_effective_route_snapshot():
+    router = FixedRouter()
+    visible = _adapter("visible", "visible:primary")
+    staged = _adapter("staged", "staged:primary")
+    router.register_route("visible", [(visible, 1.0)])
+    router.register_route("staged", [(staged, 1.0)], published=False)
+
+    snapshot = router.iter_effective_routes()
+
+    assert [(route.canonical_model_id, route.adapters) for route in snapshot] == [
+        ("visible", ((visible, 1.0),))
+    ]
+
+
+@pytest.mark.unit
+def test_transition_snapshot_privately_includes_only_target_staged_model():
+    router = FixedRouter()
+    visible = _adapter("visible", "visible:primary")
+    staged = _adapter("staged", "staged:primary")
+    other_staged = _adapter("other-staged", "other-staged:primary")
+    router.register_route("visible", [(visible, 1.0)], aliases=["visible-alias"])
+    router.register_route(
+        "staged",
+        [(staged, 1.0)],
+        aliases=["staged-alias"],
+        published=False,
+    )
+    router.register_route(
+        "other-staged",
+        [(other_staged, 1.0)],
+        published=False,
+    )
+
+    transition = router.snapshot_for_transition("staged")
+
+    assert [route.canonical_model_id for route in transition.iter_effective_routes()] == [
+        "visible",
+        "staged",
+    ]
+    assert transition.canonical_id("visible-alias") == "visible"
+    assert transition.canonical_id("staged-alias") == "staged"
+    assert transition.canonical_id("other-staged") == "other-staged"
+    assert [route.canonical_model_id for route in router.iter_effective_routes()] == ["visible"]
+
+
+@pytest.mark.unit
 def test_effective_route_snapshot_is_first_wins_and_preserves_route_and_adapter_order():
     router = FixedRouter()
     first_a = _adapter("canonical", "canonical:first-a")

@@ -86,7 +86,7 @@ async def list_models(
     canonical_models: dict[str, PlaygroundModelItem] = {}
 
     for route in router_exec.routes.values():
-        if not route.adapters:
+        if not getattr(route, "published", True) or not route.adapters:
             continue
 
         primary_cfg = route.adapters[0][0].config

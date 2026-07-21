@@ -74,6 +74,7 @@ async def admin_client(monkeypatch):
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        client.app = app  # type: ignore[attr-defined]
         yield client, op_store
 
 
@@ -164,3 +165,24 @@ async def test_list_model_concurrency_reflects_exemption(admin_client):
     data = response.json()
     model = _model_by_id(data["models"], "public-model")
     assert model["exempt"] is True
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_concurrency_write_fences_cached_exemption(admin_client):
+    client, op_store = admin_client
+    resolver = client.app.state.services.model_concurrency_resolver
+    op_store.get_model_concurrency_exemption.return_value = {"model_id": "public-model"}
+    assert await resolver.is_exempt("public-model") is True
+    op_store.get_model_concurrency_exemption.return_value = None
+    op_store.set_model_concurrency_exemption.side_effect = RuntimeError(
+        "connection dropped after commit"
+    )
+
+    with pytest.raises(RuntimeError, match="connection dropped after commit"):
+        await client.patch(
+            "/admin/models/public-model/concurrency",
+            json={"exempt": True},
+            headers={"Authorization": "Bearer test-admin"},
+        )
+
+    assert await resolver.is_exempt("public-model") is False

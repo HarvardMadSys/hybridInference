@@ -105,6 +105,11 @@ def test_provider_route_candidate_signatures():
         "model_id",
         "route_id",
     ]
+    assert list(inspect.signature(OperationalStore.delete_runtime_model_state).parameters) == [
+        "self",
+        "model_id",
+        "setting_keys",
+    ]
 
 
 def test_routewise_probe_sample_signatures():

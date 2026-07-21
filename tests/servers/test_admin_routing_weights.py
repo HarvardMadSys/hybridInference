@@ -190,6 +190,22 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_weight_write_clears_sync_snapshot(admin_client):
+    client, op_store, resolver, _model_router_registry = admin_client
+    resolver.set_override("public-model", "public-model:remote", 9)
+    op_store.upsert_weight_override.side_effect = RuntimeError("connection dropped after commit")
+
+    with pytest.raises(RuntimeError, match="connection dropped after commit"):
+        await client.put(
+            "/admin/routing/weights/public-model/public-model:remote",
+            json={"weight": 4.5},
+            headers={"Authorization": "Bearer test-admin"},
+        )
+
+    assert resolver.get_snapshot_for_model("public-model") == {}
+
+
+@pytest.mark.asyncio
 async def test_put_rejects_negative_unknown_endpoint_and_all_zero(admin_client):
     client, op_store, _, _ = admin_client
     headers = {"Authorization": "Bearer test-admin"}

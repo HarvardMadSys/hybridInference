@@ -17,6 +17,7 @@ from serving.storage.base import OperationalStore, ProviderDefinitionRow, Provid
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
     from decimal import Decimal
 
@@ -2487,6 +2488,39 @@ class PostgresOperationalStore(OperationalStore):
                 route_id,
             )
         return _parse_command_tag_count(tag) > 0
+
+    async def delete_runtime_model_state(
+        self,
+        model_id: str,
+        setting_keys: Sequence[str],
+    ) -> bool:
+        """Atomically delete all persisted state owned by a runtime model."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            candidate_tag = await conn.execute(
+                "DELETE FROM provider_route_candidates WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_route_configs WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM model_visibility_overrides WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM model_concurrency_exemptions WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM provider_weight_overrides WHERE model_id = $1",
+                model_id,
+            )
+            await conn.execute(
+                "DELETE FROM site_settings WHERE key = ANY($1::text[])",
+                list(setting_keys),
+            )
+        return _parse_command_tag_count(candidate_tag) > 0
 
     async def insert_routewise_probe_sample(
         self,

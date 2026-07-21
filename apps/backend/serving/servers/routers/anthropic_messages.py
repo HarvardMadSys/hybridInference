@@ -215,7 +215,7 @@ async def _resolve(
     """Return (canonical_model_id, route, adapter)."""
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
-    if route is None:
+    if route is None or not route.published:
         req_ctx.mark_model_not_found()
         raise HTTPException(404, f"Model '{model_id}' not found")
     required = route.required_role or ("admin" if route.admin_only else "free")

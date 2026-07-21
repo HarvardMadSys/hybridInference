@@ -594,6 +594,9 @@ async def chat_completions(
 
     # Role-based model gate: insufficient role sees a 404 as if the model doesn't exist
     route = router_exec.routes[model]
+    if not route.published:
+        req_ctx.mark_model_not_found()
+        raise HTTPException(404, f"Model '{model}' not found")
     required = route.required_role or ("admin" if route.admin_only else "free")
     user_role = user_ctx.get("role", "free")
     if model_visibility_resolver is not None:

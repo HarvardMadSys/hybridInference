@@ -68,7 +68,9 @@ async def _format_anthropic_model_list(
     """
     data: list[dict] = []
     emitted: set[str] = set()
-    for _model_id, route in router_exec.routes.items():
+    for _model_id, route in tuple(router_exec.routes.items()):
+        if not route.published:
+            continue
         configs = [adapter.config for adapter, _ in route.adapters]
         if not configs:
             continue
@@ -169,7 +171,9 @@ def build_model_list(
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 
-    for model_id, route in router_exec.routes.items():
+    for model_id, route in tuple(router_exec.routes.items()):
+        if not route.published:
+            continue
         required = route.required_role or ("admin" if route.admin_only else "free")
         if not has_role(user_role, required):
             continue
@@ -268,7 +272,9 @@ async def _build_model_list_async(
     models: list[ModelItem] = []
     emitted_ids: set[str] = set()
 
-    for model_id, route in router_exec.routes.items():
+    for model_id, route in tuple(router_exec.routes.items()):
+        if not route.published:
+            continue
         configs = [adapter.config for adapter, _ in route.adapters]
         if not configs:
             continue
