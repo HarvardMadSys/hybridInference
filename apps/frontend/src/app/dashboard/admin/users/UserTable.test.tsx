@@ -48,6 +48,7 @@ function renderTable(
       users={[user]}
       costHistories={{}}
       turnAverages={{}}
+      askQuestionFractions={{}}
       automationScores={{}}
       scoreState="idle"
       scoreSortDir={null}
@@ -113,6 +114,7 @@ describe('UserTable disabled models editing', () => {
         admin_note: null,
         avg_turns: null,
         avg_user_turns: null,
+        ask_question_fraction: null,
       })
       .mockResolvedValueOnce({
         id: 'user-1',
@@ -138,6 +140,7 @@ describe('UserTable disabled models editing', () => {
         admin_note: null,
         avg_turns: null,
         avg_user_turns: null,
+        ask_question_fraction: null,
       });
     vi.mocked(listModelVisibility).mockResolvedValue({
       models: [
@@ -206,6 +209,7 @@ describe('UserTable disabled models editing', () => {
       admin_note: null,
       avg_turns: null,
       avg_user_turns: null,
+      ask_question_fraction: null,
     });
     vi.mocked(listModelVisibility).mockResolvedValue({
       models: [
@@ -292,6 +296,7 @@ describe('UserTable disabled models editing', () => {
       admin_note: null,
       avg_turns: null,
       avg_user_turns: null,
+      ask_question_fraction: null,
     });
     vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
 
@@ -329,6 +334,7 @@ function detailFixture(overrides: Partial<UserDetail> = {}): UserDetail {
     admin_note: null,
     avg_turns: null,
     avg_user_turns: null,
+    ask_question_fraction: null,
     ...overrides,
   };
 }
@@ -467,5 +473,23 @@ describe('UserTable admin note', () => {
     await waitFor(() => {
       expect(onUpdate).toHaveBeenCalledWith('user-1', { admin_note: 'spam risk' });
     });
+  });
+});
+
+describe('UserTable ask-question column', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('renders the ask-question tool fraction as a percentage', () => {
+    renderTable(baseUser, {
+      askQuestionFractions: {
+        'user-1': { ask_question_fraction: 0.5, n_requests: 10, n_ask_requests: 5 },
+      },
+    });
+
+    expect(screen.getByText('Ask-question')).toBeInTheDocument();
+    const cell = screen.getByTitle('5 of 10 requests offer an ask-question tool');
+    expect(cell).toHaveTextContent('50%');
   });
 });

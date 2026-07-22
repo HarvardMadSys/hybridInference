@@ -242,6 +242,25 @@ class BulkUserTurnAveragesResponse(BaseModel):
     averages: dict[str, UserTurnAverages]  # keyed by user_id
 
 
+class UserAskQuestionFraction(BaseModel):
+    """Share of a user's requests that offer an ask-the-user tool (all-time).
+
+    ``ask_question_fraction`` is ``n_ask_requests / n_requests`` — the fraction
+    of the user's logged requests whose available ``tools`` include a clarifying
+    ask-the-user tool. ``None`` when the user has no logged requests.
+    """
+
+    ask_question_fraction: float | None = None
+    n_requests: int = 0
+    n_ask_requests: int = 0
+
+
+class BulkUserAskQuestionFractionsResponse(BaseModel):
+    """Per-user ask-question fractions for many users (one round-trip per page)."""
+
+    fractions: dict[str, UserAskQuestionFraction]  # keyed by user_id
+
+
 class AutomationSignal(BaseModel):
     """One signal's contribution to a user's automation score.
 
@@ -377,6 +396,9 @@ class UserDetailResponse(BaseModel):
     # user-message count; both None when the user has no chat-style requests.
     avg_turns: float | None = None
     avg_user_turns: float | None = None
+    # All-time share of this user's requests whose available ``tools`` offer an
+    # ask-the-user clarifying tool; None when the user has no requests.
+    ask_question_fraction: float | None = None
 
 
 class UpdateUserRequest(BaseModel):

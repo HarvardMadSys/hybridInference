@@ -3,13 +3,18 @@
 import { Sparkline } from './Sparkline';
 import { isAnomalous } from './lib/anomaly';
 import { bandStyle } from './lib/automation';
-import type { UserAutomationScore, UserTurnAverages } from '@/lib/api/admin';
+import type {
+  UserAskQuestionFraction,
+  UserAutomationScore,
+  UserTurnAverages,
+} from '@/lib/api/admin';
 import type { CostHistoryPoint, Density, UserRow as User } from './types';
 
 interface UserRowProps {
   user: User;
   history: CostHistoryPoint[] | undefined; // 7d
   turns: UserTurnAverages | undefined;
+  askQuestion: UserAskQuestionFraction | undefined;
   automation: UserAutomationScore | undefined;
   scoreState: 'idle' | 'loading' | 'loaded';
   pageMedianToday: number;
@@ -54,6 +59,7 @@ export function UserRow({
   user,
   history,
   turns,
+  askQuestion,
   automation,
   scoreState,
   pageMedianToday,
@@ -140,6 +146,18 @@ export function UserRow({
       </td>
       <td className="px-2 font-mono text-sm text-gray-600 tabular-nums">
         {turns?.avg_user_turns != null ? turns.avg_user_turns.toFixed(1) : '—'}
+      </td>
+      <td
+        className="px-2 font-mono text-sm text-gray-600 tabular-nums"
+        title={
+          askQuestion?.ask_question_fraction != null
+            ? `${askQuestion.n_ask_requests.toLocaleString()} of ${askQuestion.n_requests.toLocaleString()} requests offer an ask-question tool`
+            : undefined
+        }
+      >
+        {askQuestion?.ask_question_fraction != null
+          ? `${(askQuestion.ask_question_fraction * 100).toFixed(0)}%`
+          : '—'}
       </td>
       <td className="px-2 text-sm">
         {automation ? (
