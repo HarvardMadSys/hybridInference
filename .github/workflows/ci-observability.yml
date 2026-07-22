@@ -1,0 +1,86 @@
+name: CI Observability
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  summarize-push:
+    name: Summarize CI Timing
+    if: github.event.workflow_run.event == 'push'
+    # Keep this control-plane observer off the self-hosted pool whose queue it
+    # measures. It runs only after dev/main push CI completes.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out trusted metrics code
+        uses: actions/checkout@v6
+        with:
+          # workflow_run can be triggered by untrusted heads. Never execute
+          # code from the triggering SHA with this workflow's token.
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 1
+
+      - name: Download Actions jobs metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          gh api --paginate --slurp \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${TARGET_RUN_ID}/jobs?per_page=100" \
+            > "${RUNNER_TEMP}/jobs.json"
+
+      - name: Summarize queue and execution time
+        env:
+          TARGET_RUN_ID: ${{ github.event.workflow_run.id }}
+          TARGET_RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
+        run: |
+          python3 ops/ci/summarize_actions_run.py \
+            --jobs "${RUNNER_TEMP}/jobs.json" \
+            --run-id "${TARGET_RUN_ID}" \
+            --run-created-at "${TARGET_RUN_CREATED_AT}" \
+            --output "${RUNNER_TEMP}/ci-metrics.json" \
+            --markdown "${RUNNER_TEMP}/ci-metrics.md"
+          cat "${RUNNER_TEMP}/ci-metrics.md" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Download pytest duration shards
+        if: github.event.workflow_run.conclusion == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pytest-file-durations-${{ github.event.workflow_run.id }}-*
+          path: ${{ runner.temp }}/pytest-file-durations
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Merge pytest duration shards
+        if: github.event.workflow_run.conclusion == 'success'
+        run: |
+          shopt -s nullglob
+          timing_files=("${RUNNER_TEMP}"/pytest-file-durations/*.json)
+          if [ "${#timing_files[@]}" -ne 4 ]; then
+            echo "Expected 4 pytest duration artifacts; found ${#timing_files[@]}." \
+              >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+          python3 ops/ci/merge_pytest_durations.py \
+            "${timing_files[@]}" \
+            --output "${RUNNER_TEMP}/pytest-file-durations.json"
+          timing_count=$(jq '.durations | length' "${RUNNER_TEMP}/pytest-file-durations.json")
+          echo "Collected timings for ${timing_count} pytest files." \
+            >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload CI metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-metrics-${{ github.event.workflow_run.id }}
+          path: |
+            ${{ runner.temp }}/ci-metrics.json
+            ${{ runner.temp }}/pytest-file-durations.json
+          if-no-files-found: error
+          retention-days: 30
