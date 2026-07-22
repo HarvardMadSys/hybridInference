@@ -603,6 +603,26 @@ async def test_get_user_detail_returns_disabled_models(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_get_user_detail_returns_ask_question_fraction(admin_client):
+    """GET /admin/users/{id}/detail surfaces the all-time ask-question fraction."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.get_active_key_by_account.return_value = None
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={
+            "avg_turns": None,
+            "avg_user_turns": None,
+            "ask_question_fraction": 0.5,
+        }
+    )
+
+    response = await client.get("/admin/users/u1/detail", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["ask_question_fraction"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
 async def test_patch_user_updates_disabled_models(admin_client):
     """PATCH /admin/users/{id} stores normalized disabled_models in preferences."""
     client, op_store, _log_store, mock_log = admin_client
@@ -1313,6 +1333,48 @@ async def test_get_bulk_cost_history_too_many_ids(admin_client):
     op_store.get_bulk_user_cost_history = AsyncMock(return_value={})
     ids = ",".join(f"u{i}" for i in range(201))
     resp = await client.get(f"/admin/users/cost-history?user_ids={ids}", headers=AUTH)
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_bulk_ask_question_fractions_route(admin_client):
+    """GET /admin/users/ask-question-fractions returns one entry per user."""
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_bulk_user_ask_question_fractions = AsyncMock(
+        return_value={
+            "u1": {"ask_question_fraction": 0.25, "n_requests": 8, "n_ask_requests": 2},
+            "u2": {"ask_question_fraction": None, "n_requests": 0, "n_ask_requests": 0},
+        }
+    )
+
+    resp = await client.get("/admin/users/ask-question-fractions?user_ids=u1,u2", headers=AUTH)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body["fractions"].keys()) == {"u1", "u2"}
+    assert body["fractions"]["u1"]["ask_question_fraction"] == pytest.approx(0.25)
+    assert body["fractions"]["u1"]["n_ask_requests"] == 2
+    assert body["fractions"]["u2"]["ask_question_fraction"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_bulk_ask_question_fractions_empty_ids(admin_client):
+    """Empty user_ids returns empty fractions without hitting the store."""
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_bulk_user_ask_question_fractions = AsyncMock(return_value={})
+    resp = await client.get("/admin/users/ask-question-fractions?user_ids=", headers=AUTH)
+    assert resp.status_code == 200
+    assert resp.json()["fractions"] == {}
+    log_store.get_bulk_user_ask_question_fractions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_bulk_ask_question_fractions_too_many_ids(admin_client):
+    """More than 200 user_ids returns 422."""
+    client, _op_store, log_store, _log = admin_client
+    log_store.get_bulk_user_ask_question_fractions = AsyncMock(return_value={})
+    ids = ",".join(f"u{i}" for i in range(201))
+    resp = await client.get(f"/admin/users/ask-question-fractions?user_ids={ids}", headers=AUTH)
     assert resp.status_code == 422
 
 

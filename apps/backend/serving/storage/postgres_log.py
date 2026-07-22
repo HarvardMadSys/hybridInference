@@ -25,6 +25,22 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Tool names (lowercased) that let the model ask the end user a clarifying
+# question. Matched case-insensitively against each request's ``tools`` list; a
+# tool name lives at ``function.name`` (OpenAI shape) or ``name`` (Anthropic
+# shape). Deliberately broad — it spans the coding-agent clients we serve
+# (e.g. Claude Code's ``AskUserQuestion``, plus ``question`` /
+# ``ask_followup_question`` / ``vscode_askquestions`` and the ``ask_user_*``
+# variants).
+ASK_QUESTION_TOOL_NAMES: tuple[str, ...] = (
+    "question",
+    "askuserquestion",
+    "ask_user_question",
+    "ask_user_questions",
+    "ask_followup_question",
+    "vscode_askquestions",
+)
+
 
 def _metadata_dict(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -453,6 +469,25 @@ class PostgresLogStore(LogStore):
                 """,
                 user_id,
             )
+            # Share of the user's requests whose available ``tools`` offer an
+            # ask-the-user clarifying tool (see ``ASK_QUESTION_TOOL_NAMES``).
+            ask = await conn.fetchrow(
+                """
+                SELECT COUNT(*) AS n_requests,
+                       COUNT(*) FILTER (
+                           WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
+                               SELECT 1 FROM jsonb_array_elements(tools) AS t
+                               WHERE lower(
+                                       COALESCE(t->'function'->>'name', t->>'name')
+                                     ) = ANY($2)
+                           )
+                       ) AS n_ask_requests
+                FROM api_logs
+                WHERE user_id = $1
+                """,
+                user_id,
+                list(ASK_QUESTION_TOOL_NAMES),
+            )
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
@@ -467,6 +502,11 @@ class PostgresLogStore(LogStore):
             "avg_user_turns": float(turns["avg_user_turns"])
             if turns and turns["avg_user_turns"] is not None
             else None,
+            "ask_question_fraction": (
+                int(ask["n_ask_requests"]) / int(ask["n_requests"])
+                if ask and ask["n_requests"]
+                else None
+            ),
         }
 
     async def get_bulk_user_turn_averages(
@@ -502,6 +542,53 @@ class PostgresLogStore(LogStore):
             }
             for r in rows
         }
+
+    async def get_bulk_user_ask_question_fractions(
+        self, user_ids: list[str]
+    ) -> dict[str, dict[str, float | int | None]]:
+        """Return per-user share of requests offering an ask-question tool.
+
+        Maps ``user_id`` → ``{"ask_question_fraction", "n_requests",
+        "n_ask_requests"}`` over all of the user's ``api_logs`` rows. A request
+        counts toward ``n_ask_requests`` when its ``tools`` list offers a tool
+        from :data:`ASK_QUESTION_TOOL_NAMES` (matched case-insensitively across
+        the OpenAI and Anthropic tool shapes); ``ask_question_fraction`` is
+        ``n_ask_requests / n_requests``. Users with no logged requests are
+        omitted (the caller fills a default). Bounded to the page's ``user_ids``
+        so it stays an indexed lookup.
+        """
+        if not user_ids:
+            return {}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT user_id,
+                       COUNT(*) AS n_requests,
+                       COUNT(*) FILTER (
+                           WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
+                               SELECT 1 FROM jsonb_array_elements(tools) AS t
+                               WHERE lower(
+                                       COALESCE(t->'function'->>'name', t->>'name')
+                                     ) = ANY($2)
+                           )
+                       ) AS n_ask_requests
+                FROM api_logs
+                WHERE user_id = ANY($1)
+                GROUP BY user_id
+                """,
+                user_ids,
+                list(ASK_QUESTION_TOOL_NAMES),
+            )
+        result: dict[str, dict[str, float | int | None]] = {}
+        for r in rows:
+            n_requests = int(r["n_requests"])
+            n_ask = int(r["n_ask_requests"])
+            result[r["user_id"]] = {
+                "ask_question_fraction": (n_ask / n_requests) if n_requests else None,
+                "n_requests": n_requests,
+                "n_ask_requests": n_ask,
+            }
+        return result
 
     async def get_user_automation_score(
         self, user_id: str, *, days: int = 30

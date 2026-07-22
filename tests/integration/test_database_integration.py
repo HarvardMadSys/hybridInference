@@ -182,6 +182,61 @@ async def test_user_turn_averages(db_logger: DatabaseLogger):
 
 
 @pytest.mark.asyncio
+async def test_user_ask_question_fractions(db_logger: DatabaseLogger):
+    """Per-user share of requests whose ``tools`` offer an ask-the-user tool.
+
+    Matching is case-insensitive and spans the OpenAI (``function.name``) and
+    Anthropic (``name``) tool shapes. Requests with no tools or only non-ask
+    tools do not count; a user with no rows at all is omitted from the bulk map.
+    """
+    usage: dict[str, Any] = {"prompt_tokens": 1, "completion_tokens": 1}
+    pricing = {"prompt": "0", "completion": "0"}
+
+    async def _log(rid: str, user_id: str, tools: Any) -> None:
+        await db_logger.log_request(
+            request_id=rid,
+            model_id="m",
+            provider="p",
+            prompt=[{"role": "user", "content": "hi"}],
+            response={"message": "ok"},
+            usage=usage,
+            latency_ms=10,
+            status_code=200,
+            params={} if tools is None else {"tools": tools},
+            metadata={"user_id": user_id},
+            pricing=pricing,
+        )
+
+    # user A: 4 requests, 2 of which offer an ask-the-user tool -> 0.5
+    #  - OpenAI shape, mixed-case name (exercises case-insensitive match)
+    await _log("a1", "u-A", [{"type": "function", "function": {"name": "AskUserQuestion"}}])
+    #  - Anthropic shape (name at top level)
+    await _log("a2", "u-A", [{"name": "question", "input_schema": {}}])
+    #  - a non-ask tool -> does not count
+    await _log("a3", "u-A", [{"type": "function", "function": {"name": "shell_command"}}])
+    #  - no tools at all -> does not count
+    await _log("a4", "u-A", None)
+    # user B: one request with only a non-ask tool -> 0.0
+    await _log("b1", "u-B", [{"type": "function", "function": {"name": "read_file"}}])
+
+    log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
+
+    detail_a = await log_store.get_user_detail_usage("u-A")
+    assert detail_a["ask_question_fraction"] == pytest.approx(0.5)
+    detail_b = await log_store.get_user_detail_usage("u-B")
+    assert detail_b["ask_question_fraction"] == pytest.approx(0.0)
+
+    bulk = await log_store.get_bulk_user_ask_question_fractions(["u-A", "u-B", "u-missing"])
+    assert bulk["u-A"]["ask_question_fraction"] == pytest.approx(0.5)
+    assert bulk["u-A"]["n_requests"] == 4
+    assert bulk["u-A"]["n_ask_requests"] == 2
+    assert bulk["u-B"]["ask_question_fraction"] == pytest.approx(0.0)
+    assert bulk["u-B"]["n_ask_requests"] == 0
+    # u-missing has no rows at all -> omitted entirely.
+    assert "u-missing" not in bulk
+
+
+@pytest.mark.asyncio
 async def test_log_request_normalizes_nested_cached_tokens(db_logger: DatabaseLogger):
     usage: dict[str, Any] = {
         "prompt_tokens": 13528,

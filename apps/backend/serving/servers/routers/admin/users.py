@@ -18,6 +18,7 @@ from serving.schemas_admin import (
     ApproveUserResponse,
     AuditLogEntry,
     AutomationSignal,
+    BulkUserAskQuestionFractionsResponse,
     BulkUserAutomationScoresResponse,
     BulkUserCostHistoryResponse,
     BulkUserTurnAveragesResponse,
@@ -36,6 +37,7 @@ from serving.schemas_admin import (
     SummaryUserItem,
     UpdateUserRequest,
     UpdateUserResponse,
+    UserAskQuestionFraction,
     UserAutomationScore,
     UserCostHistoryPoint,
     UserCostHistoryResponse,
@@ -250,6 +252,49 @@ async def admin_get_bulk_user_turn_averages(
         for uid, vals in raw.items()
     }
     return BulkUserTurnAveragesResponse(averages=averages)
+
+
+@router.get(
+    "/users/ask-question-fractions",
+    response_model=BulkUserAskQuestionFractionsResponse,
+)
+async def admin_get_bulk_user_ask_question_fractions(
+    user_ids: str = "",  # comma-separated
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> BulkUserAskQuestionFractionsResponse:
+    """Bulk all-time ask-question tool fractions for many users (one round-trip).
+
+    For each user, the share of their logged requests whose available ``tools``
+    offer an ask-the-user clarifying tool. Cheap and page-bounded, so the admin
+    UI auto-loads it alongside the visible page.
+
+    Query params:
+    - ``user_ids``: comma-separated user IDs (max 200)
+
+    Returns a map of user_id → {ask_question_fraction, n_requests,
+    n_ask_requests}. Users with no logged requests are omitted by the store; the
+    frontend renders ``—``.
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+
+    ids = [s.strip() for s in user_ids.split(",") if s.strip()]
+    if not ids:
+        return BulkUserAskQuestionFractionsResponse(fractions={})
+    if len(ids) > 200:
+        raise HTTPException(422, "Maximum 200 user_ids per request")
+
+    raw = await log_store.get_bulk_user_ask_question_fractions(ids)
+    fractions = {
+        uid: UserAskQuestionFraction(
+            ask_question_fraction=vals.get("ask_question_fraction"),
+            n_requests=vals.get("n_requests", 0),
+            n_ask_requests=vals.get("n_ask_requests", 0),
+        )
+        for uid, vals in raw.items()
+    }
+    return BulkUserAskQuestionFractionsResponse(fractions=fractions)
 
 
 def _automation_score_item(rec: dict) -> UserAutomationScore:
@@ -539,6 +584,7 @@ async def get_user_detail(
     last_request_at = None
     avg_turns: float | None = None
     avg_user_turns: float | None = None
+    ask_question_fraction: float | None = None
 
     # Usage detail is keyed by user_id in api_logs, so historical stats survive
     # key revocation (suspended / soft-deleted users). Read it whenever the log
@@ -549,6 +595,7 @@ async def get_user_detail(
         detail = await log_store.get_user_detail_usage(user_id)
         avg_turns = detail.get("avg_turns")
         avg_user_turns = detail.get("avg_user_turns")
+        ask_question_fraction = detail.get("ask_question_fraction")
         if has_key:
             usage_today_usd = detail.get("usage_today_usd", 0.0)
             usage_today_req = detail.get("usage_today_requests", 0)
@@ -585,6 +632,7 @@ async def get_user_detail(
         admin_note=user_row.get("admin_note"),
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
+        ask_question_fraction=ask_question_fraction,
     )
 
 

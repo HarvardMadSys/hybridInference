@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import type {
   AdminModelVisibilityItem,
   AdminUser,
+  UserAskQuestionFraction,
   UserAutomationScore,
   UserDetail,
   UserTurnAverages,
@@ -17,6 +18,7 @@ interface UserTableProps {
   users: UserRowType[];
   costHistories: Record<string, CostHistoryPoint[]>;
   turnAverages: Record<string, UserTurnAverages>;
+  askQuestionFractions: Record<string, UserAskQuestionFraction>;
   automationScores: Record<string, UserAutomationScore>;
   scoreState: 'idle' | 'loading' | 'loaded';
   scoreSortDir: 'desc' | 'asc' | null;
@@ -54,6 +56,7 @@ export function UserTable(props: UserTableProps) {
     users,
     costHistories,
     turnAverages,
+    askQuestionFractions,
     automationScores,
     scoreState,
     scoreSortDir,
@@ -81,7 +84,7 @@ export function UserTable(props: UserTableProps) {
   );
 
   const showSparkline = density === 'comfortable';
-  const colSpan = showSparkline ? 15 : 14;
+  const colSpan = showSparkline ? 16 : 15;
 
   const scoreIndicator =
     scoreState === 'loaded'
@@ -345,6 +348,12 @@ export function UserTable(props: UserTableProps) {
               <th className="px-2 py-2" title="Average user messages per chat request (all-time)">
                 Avg user turns
               </th>
+              <th
+                className="px-2 py-2"
+                title="Share of this user's requests whose available tools offer an ask-the-user question tool (all-time)"
+              >
+                Ask-question
+              </th>
               <th className="px-2 py-2">
                 <button
                   type="button"
@@ -402,6 +411,7 @@ export function UserTable(props: UserTableProps) {
                     user={u}
                     history={costHistories[u.id]}
                     turns={turnAverages[u.id]}
+                    askQuestion={askQuestionFractions[u.id]}
                     automation={automationScores[u.id]}
                     scoreState={scoreState}
                     pageMedianToday={pageMedianToday}

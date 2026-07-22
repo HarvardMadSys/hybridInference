@@ -190,6 +190,7 @@ export interface UserDetail {
   admin_note: string | null;
   avg_turns: number | null;
   avg_user_turns: number | null;
+  ask_question_fraction: number | null;
 }
 
 export async function getUserDetail(userId: string): Promise<UserDetail> {
@@ -211,6 +212,28 @@ export async function getBulkTurnAverages(userIds: string[]): Promise<BulkTurnAv
   const params = new URLSearchParams({ user_ids: userIds.join(',') });
   const resp = await fetchWithAuth(API_BASE, `/admin/users/turn-averages?${params.toString()}`);
   return jsonOrThrow<BulkTurnAveragesResponse>(resp);
+}
+
+export interface UserAskQuestionFraction {
+  ask_question_fraction: number | null;
+  n_requests: number;
+  n_ask_requests: number;
+}
+
+export interface BulkAskQuestionFractionsResponse {
+  fractions: Record<string, UserAskQuestionFraction>;
+}
+
+export async function getBulkAskQuestionFractions(
+  userIds: string[],
+): Promise<BulkAskQuestionFractionsResponse> {
+  if (userIds.length === 0) return { fractions: {} };
+  const params = new URLSearchParams({ user_ids: userIds.join(',') });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/ask-question-fractions?${params.toString()}`,
+  );
+  return jsonOrThrow<BulkAskQuestionFractionsResponse>(resp);
 }
 
 // One signal's contribution to a user's automation score. `sub` is the signal's

@@ -174,6 +174,15 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
           </div>
           <div className="text-[11px] text-gray-400">per request</div>
         </div>
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Ask-question</div>
+          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+            {detail.ask_question_fraction != null
+              ? `${(detail.ask_question_fraction * 100).toFixed(0)}%`
+              : '—'}
+          </div>
+          <div className="text-[11px] text-gray-400">of requests</div>
+        </div>
       </div>
 
       {/* Models */}

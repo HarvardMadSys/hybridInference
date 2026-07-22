@@ -21,6 +21,7 @@ import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
 import { useBulkCostHistory } from './hooks/useUserCostHistory';
 import { useBulkTurnAverages } from './hooks/useUserTurnAverages';
+import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions';
 import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
@@ -149,6 +150,8 @@ export default function UsersTab() {
   const costHistories = histQuery.data ?? {};
   const turnQuery = useBulkTurnAverages(userIds);
   const turnAverages = turnQuery.data ?? {};
+  const askQuestionQuery = useBulkAskQuestionFractions(userIds);
+  const askQuestionFractions = askQuestionQuery.data ?? {};
 
   // Automation score (human vs. script) is computed on demand: the admin clicks
   // the "Automation" column header to run it for the current page, then can
@@ -300,6 +303,7 @@ export default function UsersTab() {
             users={displayRows}
             costHistories={costHistories}
             turnAverages={turnAverages}
+            askQuestionFractions={askQuestionFractions}
             automationScores={automationScores}
             scoreState={scoreState}
             scoreSortDir={scoreSortDir}
