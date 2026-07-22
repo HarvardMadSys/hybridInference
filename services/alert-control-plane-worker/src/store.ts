@@ -1,3 +1,4 @@
+import { type DeliveryRef, parseDeliveryRef } from "./notification";
 import type { CanonicalAlertEnvelope } from "./types";
 
 export type IncidentLifecycleState =
@@ -66,7 +67,7 @@ export interface IncidentGeneration {
   highWatermark: LifecycleOrder;
   latestEnvelope: CanonicalAlertEnvelope;
   resolutionEnvelope: CanonicalAlertEnvelope | null;
-  slackThreadTs: string | null;
+  deliveryRef: DeliveryRef | null;
   nextGenerationCandidate: NextGenerationCandidate | null;
   createdAtMs: number;
   updatedAtMs: number;
@@ -203,7 +204,7 @@ export const SQL_SCHEMA = [
     high_watermark_event_id TEXT NOT NULL,
     latest_envelope_json TEXT NOT NULL,
     resolution_envelope_json TEXT,
-    slack_thread_ts TEXT,
+    delivery_ref_json TEXT,
     next_generation_candidate_json TEXT,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
@@ -331,7 +332,9 @@ function parseGeneration(row: Row): IncidentGeneration {
     resolutionEnvelope: row.resolution_envelope_json
       ? parseJson<CanonicalAlertEnvelope>(row.resolution_envelope_json)
       : null,
-    slackThreadTs: nullableString(row.slack_thread_ts),
+    deliveryRef: row.delivery_ref_json
+      ? parseDeliveryRef(JSON.parse(String(row.delivery_ref_json)))
+      : null,
     nextGenerationCandidate: row.next_generation_candidate_json
       ? parseJson<NextGenerationCandidate>(row.next_generation_candidate_json)
       : null,
@@ -482,7 +485,7 @@ export class DurableObjectSqlStore implements IncidentStore {
         generation, incident_id, lifecycle_state, state_version, resolution_epoch,
         quota_state, quota_lease_epoch, occurrence_count, first_seen, last_seen, high_watermark_at,
         high_watermark_at_ms, high_watermark_status, high_watermark_event_id,
-        latest_envelope_json, resolution_envelope_json, slack_thread_ts,
+        latest_envelope_json, resolution_envelope_json, delivery_ref_json,
         next_generation_candidate_json, created_at_ms, updated_at_ms
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(generation) DO UPDATE SET
@@ -501,7 +504,7 @@ export class DurableObjectSqlStore implements IncidentStore {
         high_watermark_event_id = excluded.high_watermark_event_id,
         latest_envelope_json = excluded.latest_envelope_json,
         resolution_envelope_json = excluded.resolution_envelope_json,
-        slack_thread_ts = excluded.slack_thread_ts,
+        delivery_ref_json = excluded.delivery_ref_json,
         next_generation_candidate_json = excluded.next_generation_candidate_json,
         created_at_ms = excluded.created_at_ms,
         updated_at_ms = excluded.updated_at_ms`,
@@ -521,7 +524,7 @@ export class DurableObjectSqlStore implements IncidentStore {
       generation.highWatermark.eventId,
       JSON.stringify(generation.latestEnvelope),
       generation.resolutionEnvelope ? JSON.stringify(generation.resolutionEnvelope) : null,
-      generation.slackThreadTs,
+      generation.deliveryRef ? JSON.stringify(generation.deliveryRef) : null,
       generation.nextGenerationCandidate
         ? JSON.stringify(generation.nextGenerationCandidate)
         : null,

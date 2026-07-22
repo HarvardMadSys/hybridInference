@@ -1,3 +1,4 @@
+import { deliveryRefEquals, parseDeliveryRef } from "./notification";
 import type { CanonicalAlertEnvelope } from "./types";
 import {
   type AnalysisJob,
@@ -93,7 +94,7 @@ function parentPayload(generation: IncidentGeneration): Record<string, unknown> 
 function updatePayload(generation: IncidentGeneration): Record<string, unknown> {
   return {
     ...parentPayload(generation),
-    slack_thread_ts: generation.slackThreadTs,
+    delivery_ref: generation.deliveryRef,
   };
 }
 
@@ -104,7 +105,7 @@ function recoveryPayload(generation: IncidentGeneration): Record<string, unknown
     state_version: generation.stateVersion,
     resolution_epoch: generation.resolutionEpoch,
     occurrence_count: generation.occurrenceCount,
-    slack_thread_ts: generation.slackThreadTs,
+    delivery_ref: generation.deliveryRef,
     envelope: generation.resolutionEnvelope,
   };
 }
@@ -249,14 +250,15 @@ export class IncidentStateMachine {
           "post_parent cannot complete without confirmed principal quota",
         );
       }
-      const slackThreadTs = result.slackThreadTs;
-      if (typeof slackThreadTs !== "string" || slackThreadTs.length === 0) {
-        throw new IncidentInvariantError("post_parent success must include slackThreadTs");
+      const receipt = (result as { receipt?: unknown }).receipt;
+      if (receipt === null || typeof receipt !== "object") {
+        throw new IncidentInvariantError("post_parent success must include a delivery receipt");
       }
-      if (generation.slackThreadTs && generation.slackThreadTs !== slackThreadTs) {
-        throw new IncidentInvariantError("parent action returned a different Slack timestamp");
+      const deliveryRef = parseDeliveryRef((receipt as { deliveryRef: unknown }).deliveryRef);
+      if (generation.deliveryRef && !deliveryRefEquals(generation.deliveryRef, deliveryRef)) {
+        throw new IncidentInvariantError("parent action returned a different delivery reference");
       }
-      generation.slackThreadTs = slackThreadTs;
+      generation.deliveryRef = deliveryRef;
       if (generation.state === "opening") generation.state = "firing";
       generation.stateVersion += 1;
       generation.updatedAtMs = nowMs;
@@ -402,7 +404,7 @@ export class IncidentStateMachine {
       highWatermark: order,
       latestEnvelope: envelope,
       resolutionEnvelope: null,
-      slackThreadTs: null,
+      deliveryRef: null,
       nextGenerationCandidate: null,
       createdAtMs: receivedAtMs,
       updatedAtMs: receivedAtMs,
@@ -565,7 +567,7 @@ export class IncidentStateMachine {
       recovery.updatedAtMs = receivedAtMs;
       this.store.putAction(recovery);
 
-      generation.state = generation.slackThreadTs ? "firing" : "opening";
+      generation.state = generation.deliveryRef ? "firing" : "opening";
       generation.stateVersion += 1;
       generation.resolutionEpoch += 1;
       generation.occurrenceCount += 1;
@@ -678,7 +680,7 @@ export class IncidentStateMachine {
       highWatermark: candidate.highWatermark,
       latestEnvelope: candidate.envelope,
       resolutionEnvelope: null,
-      slackThreadTs: null,
+      deliveryRef: null,
       nextGenerationCandidate: null,
       createdAtMs: nowMs,
       updatedAtMs: nowMs,
@@ -897,7 +899,7 @@ export class IncidentStateMachine {
           (action.status === "claimed" || action.status === "uncertain"),
       )
       .at(-1);
-    const dependency = generation.slackThreadTs
+    const dependency = generation.deliveryRef
       ? (updateFence?.actionId ?? null)
       : parent.actionId;
     this.putNewAction(
@@ -924,7 +926,7 @@ export class IncidentStateMachine {
           action.generation === generation.generation && action.type === "post_parent",
       );
     if (!parent) throw new IncidentInvariantError("resolving generation is missing parent action");
-    const dependency = generation.slackThreadTs
+    const dependency = generation.deliveryRef
       ? (updateFence?.actionId ?? null)
       : parent.actionId;
     if (existing) {

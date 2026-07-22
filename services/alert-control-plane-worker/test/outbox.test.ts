@@ -7,8 +7,10 @@ import {
   type AnalysisJob,
   type PendingAction,
 } from "../src/store";
+import type { DeliveryRef } from "../src/notification";
 import {
   deferred,
+  deliveryRef,
   deterministicIds,
   envelope,
   pendingAction,
@@ -118,7 +120,7 @@ describe("OutboxRunner", () => {
     );
     executor.enqueue(
       quotaAdmission,
-      { outcome: "success", result: { slackThreadTs: "100.001" } },
+      { outcome: "success", result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } } },
     );
 
     await expect(runner.runOne(0)).resolves.toMatchObject({
@@ -135,7 +137,7 @@ describe("OutboxRunner", () => {
     });
     expect(store.getGeneration(1)).toMatchObject({
       state: "firing",
-      slackThreadTs: "100.001",
+      deliveryRef: deliveryRef({ messageId: "100.001" }),
     });
     expect(store.listAnalysisJobs()[0]).toMatchObject({ status: "queued", deadlineAtMs: 500 });
     expect(actionOf(store, "dispatch_analysis").status).toBe("pending");
@@ -182,8 +184,16 @@ describe("OutboxRunner", () => {
     expect(actionOf(store, "post_recovery").status).toBe("blocked");
     executor.enqueue(
       quotaAdmission,
-      { outcome: "success", result: { slackThreadTs: "100.001" } },
-      { outcome: "success", result: { slackThreadTs: "100.002" } },
+      { outcome: "success", result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } } },
+      {
+        outcome: "success",
+        result: {
+          receipt: {
+            deliveryRef: deliveryRef({ messageId: "100.001" }),
+            externalEffectId: "100.002",
+          },
+        },
+      },
     );
 
     await runner.runOne(2);
@@ -236,7 +246,7 @@ describe("OutboxRunner", () => {
     const executor = new ScriptedExecutor();
     executor.enqueue(
       new Error("response was lost"),
-      { outcome: "success", result: { slackThreadTs: "100.001" } },
+      { outcome: "success", result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } } },
     );
     const runner = new OutboxRunner(store, executor, { reconcileDelayMs: 5 });
 
@@ -262,11 +272,11 @@ describe("OutboxRunner", () => {
     store.putAction(pendingAction({ nextRunAtMs: 0 }));
     const first = deferred<{
       outcome: "success";
-      result: { slackThreadTs: string };
+      result: { receipt: { deliveryRef: DeliveryRef } };
     }>();
     const second = deferred<{
       outcome: "success";
-      result: { slackThreadTs: string };
+      result: { receipt: { deliveryRef: DeliveryRef } };
     }>();
     const executor = new ScriptedExecutor();
     executor.enqueue(first.promise, second.promise);
@@ -281,16 +291,22 @@ describe("OutboxRunner", () => {
     const reconciler = runner.runOne(11);
     expect(executor.claims.map((claim) => claim.mode)).toEqual(["execute", "reconcile"]);
 
-    first.resolve({ outcome: "success", result: { slackThreadTs: "wrong-late-ts" } });
+    first.resolve({
+      outcome: "success",
+      result: { receipt: { deliveryRef: deliveryRef({ messageId: "wrong-late-ts" }) } },
+    });
     await expect(oldWorker).resolves.toMatchObject({ outcome: "stale_result" });
     expect(store.getAction("action-1")?.status).toBe("claimed");
 
-    second.resolve({ outcome: "success", result: { slackThreadTs: "100.001" } });
+    second.resolve({
+      outcome: "success",
+      result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } },
+    });
     await expect(reconciler).resolves.toMatchObject({ outcome: "success" });
     expect(store.getAction("action-1")).toMatchObject({
       status: "completed",
       claimEpoch: 2,
-      result: { slackThreadTs: "100.001" },
+      result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } },
     });
   });
 
@@ -304,7 +320,10 @@ describe("OutboxRunner", () => {
     );
     executor.enqueue(quotaAdmission);
     await admissionRunner.runOne(0);
-    executor.enqueue({ outcome: "success", result: { slackThreadTs: "100.001" } });
+    executor.enqueue({
+      outcome: "success",
+      result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } },
+    });
     const runner = new OutboxRunner(store, executor, {
       reconcileDelayMs: 5,
       hooks: {
@@ -318,7 +337,7 @@ describe("OutboxRunner", () => {
     await expect(runner.runOne(0)).rejects.toThrow("injected lifecycle commit failure");
     expect(store.getGeneration(1)).toMatchObject({
       state: "opening",
-      slackThreadTs: null,
+      deliveryRef: null,
     });
     expect(actionOf(store, "post_parent")).toMatchObject({
       status: "uncertain",
@@ -335,7 +354,7 @@ describe("OutboxRunner", () => {
     );
     executor.enqueue(
       quotaAdmission,
-      { outcome: "success", result: { slackThreadTs: "100.001" } },
+      { outcome: "success", result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } } },
     );
     await runner.runOne(0);
     await runner.runOne(0);
@@ -369,7 +388,7 @@ describe("OutboxRunner", () => {
     );
     executor.enqueue(
       quotaAdmission,
-      { outcome: "success", result: { slackThreadTs: "100.001" } },
+      { outcome: "success", result: { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } } },
     );
     await runner.runOne(0);
     await runner.runOne(0);

@@ -470,11 +470,16 @@ export function canonicalJson(value: unknown): string {
   throw new ValidationError("canonical JSON contains an unsupported value");
 }
 
-/** Digest used for same-shard event_id conflict detection. */
-export async function canonicalEventDigest(event: AlertEvent): Promise<string> {
-  const bytes = new TextEncoder().encode(canonicalJson(event));
+/** Stable SHA-256 digest over the canonical JSON of an arbitrary contract value. */
+export async function canonicalDigest(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalJson(value));
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", buffer));
   return `sha256:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** Digest used for same-shard event_id conflict detection. */
+export async function canonicalEventDigest(event: AlertEvent): Promise<string> {
+  return canonicalDigest(event);
 }

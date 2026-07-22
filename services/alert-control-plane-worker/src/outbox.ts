@@ -101,10 +101,12 @@ export class OutboxRunner {
     let executionResult: ActionExecutionResult;
     try {
       executionResult = await this.executor.execute(claim);
-    } catch (error) {
+    } catch {
+      // Never persist a raw exception message: a thrown executor is ambiguous,
+      // so record only a stable, redacted code and reconcile before any replay.
       executionResult = {
         outcome: "uncertain",
-        error: error instanceof Error ? error.message : String(error),
+        error: "action_executor_threw",
         reconcileAtMs: nowMs + this.reconcileDelayMs,
       };
     }
@@ -120,7 +122,7 @@ export class OutboxRunner {
         outcome: committed ? executionResult.outcome : "stale_result",
       };
     } catch (error) {
-      this.markCommitFailureUncertain(claim, error, nowMs);
+      this.markCommitFailureUncertain(claim, nowMs);
       throw error;
     }
   }
@@ -407,11 +409,7 @@ export class OutboxRunner {
     }
   }
 
-  private markCommitFailureUncertain(
-    claim: ActionClaim,
-    error: unknown,
-    nowMs: number,
-  ): void {
+  private markCommitFailureUncertain(claim: ActionClaim, nowMs: number): void {
     try {
       this.store.transaction(() => {
         const action = this.store.getAction(claim.action.actionId);
@@ -425,9 +423,8 @@ export class OutboxRunner {
           nowMs + this.reconcileDelayMs,
           action.finalDeadlineAtMs,
         );
-        action.lastError = `could not commit external result: ${
-          error instanceof Error ? error.message : String(error)
-        }`;
+        // Never persist the raw commit error; a fixed code keeps logs redacted.
+        action.lastError = "action_commit_failed";
         action.updatedAtMs = nowMs;
         this.store.putAction(action);
         refreshDesiredAlarmAt(this.store);

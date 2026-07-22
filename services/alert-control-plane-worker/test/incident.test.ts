@@ -10,7 +10,7 @@ import {
   SQL_SCHEMA,
   type PendingAction,
 } from "../src/store";
-import { deterministicIds, envelope } from "./fakes";
+import { deliveryRef, deterministicIds, envelope } from "./fakes";
 
 function harness() {
   const store = new InMemoryIncidentStore();
@@ -193,7 +193,7 @@ describe("IncidentStateMachine", () => {
     expect(store.getGeneration(1)).toMatchObject({
       state: "suppressed",
       quotaState: "suppressed",
-      slackThreadTs: null,
+      deliveryRef: null,
     });
     expect(actionOf(store, "post_parent").status).toBe("cancelled");
     expect(store.listAnalysisJobs()[0]).toMatchObject({
@@ -262,7 +262,7 @@ describe("IncidentStateMachine", () => {
       unclaimed.store,
       unclaimed.machine,
       "post_parent",
-      { slackThreadTs: "100.001" },
+      { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } },
       1,
     );
     unclaimed.machine.applyEvent(
@@ -292,7 +292,7 @@ describe("IncidentStateMachine", () => {
       inFlight.store,
       inFlight.machine,
       "post_parent",
-      { slackThreadTs: "100.001" },
+      { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } },
       1,
     );
     inFlight.machine.applyEvent(
@@ -329,7 +329,7 @@ describe("IncidentStateMachine", () => {
         0,
       );
       admitQuota(store, machine, 1);
-      completeAction(store, machine, "post_parent", { slackThreadTs: "100.001" }, 1);
+      completeAction(store, machine, "post_parent", { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } }, 1);
       machine.applyEvent(
         envelope("resolved-1", "resolved", "2026-07-20T00:00:02.000Z"),
         "sha256:r1",
@@ -376,7 +376,7 @@ describe("IncidentStateMachine", () => {
       0,
     );
     admitQuota(store, machine, 1);
-    completeAction(store, machine, "post_parent", { slackThreadTs: "100.001" }, 1);
+    completeAction(store, machine, "post_parent", { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } }, 1);
     machine.applyEvent(
       envelope("resolved-1", "resolved", "2026-07-20T00:00:02.000Z"),
       "sha256:r1",
@@ -402,7 +402,7 @@ describe("IncidentStateMachine", () => {
       0,
     );
     admitQuota(store, machine, 1);
-    completeAction(store, machine, "post_parent", { slackThreadTs: "100.001" }, 1);
+    completeAction(store, machine, "post_parent", { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } }, 1);
     machine.applyEvent(
       envelope("resolved-1", "resolved", "2026-07-20T00:00:02.000Z"),
       "sha256:r1",
@@ -467,7 +467,7 @@ describe("IncidentStateMachine", () => {
       0,
     );
     admitQuota(store, machine, 1);
-    completeAction(store, machine, "post_parent", { slackThreadTs: "100.001" }, 1);
+    completeAction(store, machine, "post_parent", { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } }, 1);
     const dispatch = actionOf(store, "dispatch_analysis");
     const job = store.listAnalysisJobs()[0];
     job.status = "succeeded";

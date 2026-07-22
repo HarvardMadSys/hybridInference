@@ -4,7 +4,15 @@ import type {
   ActionExecutionResult,
   ActionExecutor,
 } from "../src/outbox";
-import type { PendingAction } from "../src/store";
+import type {
+  DeliveryRef,
+  NotificationAction,
+  NotificationActionResult,
+  NotificationAttemptMode,
+  NotificationPlatform,
+  NotificationSink,
+} from "../src/notification";
+import type { IncidentGeneration, PendingAction } from "../src/store";
 
 export function envelope(
   eventId: string,
@@ -112,4 +120,131 @@ export function pendingAction(
     updatedAtMs: 0,
     ...overrides,
   };
+}
+
+/** Build a valid {@link DeliveryRef} with a threaded default shape. */
+export function deliveryRef(overrides: Partial<DeliveryRef> = {}): DeliveryRef {
+  return {
+    schemaVersion: 1,
+    sinkId: "slack-primary",
+    platform: "slack",
+    destinationId: "C123",
+    messageId: "100.001",
+    conversationId: "100.001",
+    ...overrides,
+  };
+}
+
+/** Build a complete {@link IncidentGeneration} fixture for executor unit tests. */
+export function incidentGeneration(
+  overrides: Partial<IncidentGeneration> = {},
+): IncidentGeneration {
+  const latest = envelope("gen-event", "firing", "2026-07-20T00:00:00.000Z");
+  return {
+    incidentId: "incident-1",
+    generation: 1,
+    state: "firing",
+    stateVersion: 1,
+    resolutionEpoch: 0,
+    quotaState: "confirmed",
+    quotaLeaseEpoch: 1,
+    occurrenceCount: 1,
+    firstSeen: latest.event.occurred_at,
+    lastSeen: latest.event.occurred_at,
+    highWatermark: {
+      occurredAt: latest.event.occurred_at,
+      occurredAtMs: Date.parse(latest.event.occurred_at),
+      statusPrecedence: 0,
+      eventId: latest.event.event_id,
+    },
+    latestEnvelope: latest,
+    resolutionEnvelope: null,
+    deliveryRef: null,
+    nextGenerationCandidate: null,
+    createdAtMs: 0,
+    updatedAtMs: 0,
+    ...overrides,
+  };
+}
+
+export interface FakeSinkCall {
+  readonly action: NotificationAction;
+  readonly mode: NotificationAttemptMode;
+}
+
+/**
+ * A fake sink whose parent messages carry a `conversationId` (thread root),
+ * modelling a Slack-like platform. It never throws and records every call.
+ */
+export class ThreadedFakeSink implements NotificationSink {
+  readonly sinkId = "slack-primary";
+  readonly platform: NotificationPlatform = "slack";
+  readonly calls: FakeSinkCall[] = [];
+
+  async execute(
+    action: NotificationAction,
+    mode: NotificationAttemptMode,
+  ): Promise<NotificationActionResult> {
+    this.calls.push({ action, mode });
+    if (action.type === "post_parent") {
+      const messageId = `ts-${action.actionId}`;
+      return {
+        outcome: "success",
+        receipt: {
+          deliveryRef: {
+            schemaVersion: 1,
+            sinkId: this.sinkId,
+            platform: this.platform,
+            destinationId: "C123",
+            messageId,
+            conversationId: messageId,
+          },
+        },
+      };
+    }
+    const ref = action.deliveryRef;
+    if (ref === null) return { outcome: "failed", errorCode: "missing_delivery_ref" };
+    return {
+      outcome: "success",
+      receipt: { deliveryRef: ref, externalEffectId: `reply-${action.actionId}` },
+    };
+  }
+}
+
+/**
+ * A fake sink for a thread-less platform: parent messages return a
+ * `DeliveryRef` WITHOUT `conversationId`, and replies relate on `messageId`
+ * only. It never throws and records every call.
+ */
+export class ThreadlessFakeSink implements NotificationSink {
+  readonly sinkId = "slack-primary";
+  readonly platform: NotificationPlatform = "slack";
+  readonly calls: FakeSinkCall[] = [];
+
+  async execute(
+    action: NotificationAction,
+    mode: NotificationAttemptMode,
+  ): Promise<NotificationActionResult> {
+    this.calls.push({ action, mode });
+    if (action.type === "post_parent") {
+      return {
+        outcome: "success",
+        receipt: {
+          deliveryRef: {
+            schemaVersion: 1,
+            sinkId: this.sinkId,
+            platform: this.platform,
+            destinationId: "C123",
+            messageId: `ts-${action.actionId}`,
+          },
+        },
+      };
+    }
+    const ref = action.deliveryRef;
+    if (ref === null) return { outcome: "failed", errorCode: "missing_delivery_ref" };
+    return {
+      outcome: "success",
+      receipt: { deliveryRef: ref, externalEffectId: `reply-${action.actionId}` },
+    };
+  }
 }
