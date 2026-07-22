@@ -155,6 +155,43 @@ describe("IncidentStateMachine", () => {
     });
   });
 
+  it("carries generation first/last seen timestamps through notification payloads", () => {
+    const { store, machine } = harness();
+    const firstSeen = "2026-07-20T00:00:00.000Z";
+    const repeatSeen = "2026-07-20T00:00:02.000Z";
+    const resolvedSeen = "2026-07-20T00:00:03.000Z";
+
+    machine.applyEvent(envelope("firing-1", "firing", firstSeen), "sha256:f1", 0);
+    expect(actionOf(store, "post_parent").payload).toMatchObject({
+      first_seen: firstSeen,
+      last_seen: firstSeen,
+    });
+
+    admitQuota(store, machine, 1);
+    completeAction(
+      store,
+      machine,
+      "post_parent",
+      { receipt: { deliveryRef: deliveryRef({ messageId: "100.001" }) } },
+      1,
+    );
+    machine.applyEvent(envelope("firing-2", "firing", repeatSeen), "sha256:f2", 2);
+    expect(actionOf(store, "update_parent").payload).toMatchObject({
+      first_seen: firstSeen,
+      last_seen: repeatSeen,
+    });
+
+    machine.applyEvent(
+      envelope("resolved-1", "resolved", resolvedSeen),
+      "sha256:r1",
+      3,
+    );
+    expect(actionOf(store, "post_recovery").payload).toMatchObject({
+      first_seen: firstSeen,
+      last_seen: resolvedSeen,
+    });
+  });
+
   it("never makes the parent runnable before principal quota is confirmed", () => {
     const { store, machine } = harness();
     machine.applyEvent(

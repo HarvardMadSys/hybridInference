@@ -13,6 +13,7 @@ import {
   InMemoryIncidentStore,
   type PendingAction,
 } from "../src/store";
+import { SlackSink } from "../src/slack";
 import {
   deterministicIds,
   envelope,
@@ -78,6 +79,38 @@ async function drain(runner: OutboxRunner, nowMs: number, max = 100): Promise<vo
     if (!result.ran) return;
   }
   throw new Error("outbox did not settle within the iteration budget");
+}
+
+interface SlackFetchCall {
+  readonly url: string;
+  readonly init: RequestInit | undefined;
+}
+
+function slackTransport(...timestamps: readonly string[]): {
+  readonly fetch: typeof fetch;
+  readonly calls: SlackFetchCall[];
+} {
+  const remaining = [...timestamps];
+  const calls: SlackFetchCall[] = [];
+  const fake = async (
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    calls.push({ url, init });
+    const ts = remaining.shift();
+    if (ts === undefined) throw new Error("unexpected Slack request");
+    return new Response(JSON.stringify({ ok: true, channel: "C123", ts }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  return { fetch: fake as typeof fetch, calls };
 }
 
 /**
@@ -206,5 +239,107 @@ describe.each(sinkCases)("incident lifecycle with the $label sink", ({ label, ma
     expect(kinds).toContain("update_parent");
     expect(kinds).toContain("post_recovery");
     expect(kinds).toContain("post_analysis");
+  });
+});
+
+describe("incident lifecycle with the real Slack sink boundary", () => {
+  it("renders and sends parent, update, and recovery actions from real incident payloads", async () => {
+    const store = new InMemoryIncidentStore();
+    const machine = new IncidentStateMachine(store, {
+      idFactory: deterministicIds(),
+      repeatUpdateDelayMs: 5,
+      actionDeadlineMs: 1_000_000,
+      analysisDeadlineMs: 1_000_000,
+    });
+    const parentTs = "1784505600.000001";
+    const recoveryTs = "1784505602.000001";
+    const transport = slackTransport(parentTs, parentTs, recoveryTs);
+    const sink = new SlackSink({
+      sinkId: "slack-primary",
+      botToken: "unit-test-token",
+      channelId: "C123",
+      fetch: transport.fetch,
+      now: () => Date.parse("2026-07-20T00:00:10.000Z"),
+    });
+    const executor = new CompositeExecutor(
+      new NotificationActionExecutor(store, sink),
+      new InfraExecutor(),
+    );
+    const runner = new OutboxRunner(store, executor, {
+      claimLeaseMs: 30_000,
+      hooks: {
+        onActionCompleted: machine.onActionCompleted.bind(machine),
+        onActionTerminal: machine.onActionTerminal.bind(machine),
+      },
+    });
+
+    machine.applyEvent(
+      envelope("firing-1", "firing", "2026-07-20T00:00:00.000Z"),
+      "sha256:f1",
+      0,
+    );
+    await drain(runner, 0);
+
+    machine.applyEvent(
+      envelope("firing-2", "firing", "2026-07-20T00:00:01.000Z"),
+      "sha256:f2",
+      5,
+    );
+    await drain(runner, 10);
+
+    machine.applyEvent(
+      envelope("resolved-1", "resolved", "2026-07-20T00:00:02.000Z"),
+      "sha256:r1",
+      20,
+    );
+    await drain(runner, 20);
+
+    const parent = actionOf(store, "post_parent");
+    const update = actionOf(store, "update_parent");
+    const recovery = actionOf(store, "post_recovery");
+    for (const action of [parent, update, recovery]) {
+      expect(action).toMatchObject({ status: "completed", lastError: null });
+      expect(action.result).toBeDefined();
+    }
+    expect(store.getGeneration(1)).toMatchObject({
+      state: "resolved",
+      deliveryRef: {
+        sinkId: "slack-primary",
+        platform: "slack",
+        destinationId: "C123",
+        messageId: parentTs,
+        conversationId: parentTs,
+      },
+    });
+
+    expect(transport.calls.map((call) => call.url)).toEqual([
+      "https://slack.com/api/chat.postMessage",
+      "https://slack.com/api/chat.update",
+      "https://slack.com/api/chat.postMessage",
+    ]);
+    const bodies = transport.calls.map(
+      (call) => JSON.parse(String(call.init?.body)) as Record<string, unknown>,
+    );
+    expect(bodies[0]).toMatchObject({ channel: "C123" });
+    expect(bodies[0]).not.toHaveProperty("thread_ts");
+    expect(bodies[1]).toMatchObject({ channel: "C123", ts: parentTs });
+    expect(bodies[1]).not.toHaveProperty("thread_ts");
+    expect(bodies[2]).toMatchObject({ channel: "C123", thread_ts: parentTs });
+
+    for (const [body, action] of [
+      [bodies[0], parent],
+      [bodies[1], update],
+      [bodies[2], recovery],
+    ] as const) {
+      expect(body.metadata).toEqual({
+        event_type: "alert_control_plane_action",
+        event_payload: {
+          action_id: action.actionId,
+          incident_id: action.incidentId,
+          generation: action.generation,
+          payload_digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        },
+      });
+    }
   });
 });

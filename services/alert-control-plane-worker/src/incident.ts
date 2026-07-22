@@ -87,6 +87,8 @@ function parentPayload(generation: IncidentGeneration): Record<string, unknown> 
     generation: generation.generation,
     state_version: generation.stateVersion,
     occurrence_count: generation.occurrenceCount,
+    first_seen: generation.firstSeen,
+    last_seen: generation.lastSeen,
     envelope: generation.latestEnvelope,
   };
 }
@@ -105,6 +107,8 @@ function recoveryPayload(generation: IncidentGeneration): Record<string, unknown
     state_version: generation.stateVersion,
     resolution_epoch: generation.resolutionEpoch,
     occurrence_count: generation.occurrenceCount,
+    first_seen: generation.firstSeen,
+    last_seen: generation.lastSeen,
     delivery_ref: generation.deliveryRef,
     envelope: generation.resolutionEnvelope,
   };
