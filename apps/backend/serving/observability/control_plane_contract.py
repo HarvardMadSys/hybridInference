@@ -77,15 +77,27 @@ def _safe_untrusted_text(value: str, *, field: str, max_length: int) -> str:
     return normalized
 
 
+_IPV4_PORT_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}$")
+
+
 def _contains_ip_address(value: str) -> bool:
     for token in re.split(r"[^0-9A-Fa-f:.]+", value):
+        token = token.strip("[]")
         if not token or ("." not in token and ":" not in token):
             continue
-        try:
-            ipaddress.ip_address(token.strip("[]"))
-        except ValueError:
-            continue
-        return True
+        candidates = [token]
+        # A bare IPv4 host:port stays one token (":8000" is not split off), so
+        # ip_address rejects it and the identifier would slip through. IPv6
+        # literals use brackets, which the split above already strips to the host.
+        ipv4_port = _IPV4_PORT_RE.match(token)
+        if ipv4_port is not None:
+            candidates.append(ipv4_port.group(1))
+        for candidate in candidates:
+            try:
+                ipaddress.ip_address(candidate)
+            except ValueError:
+                continue
+            return True
     return False
 
 
@@ -182,8 +194,13 @@ class ControlPlaneAlertEvent(BaseModel):
         """Require a real RFC 3339 timestamp and normalize it to UTC."""
         if not _RFC3339_RE.fullmatch(value):
             raise ValueError("occurred_at must be an ISO timestamp")
+        # datetime.fromisoformat on Python 3.10 (a supported runtime) rejects
+        # 7-9 digit fractional seconds. Truncate to microseconds before parsing;
+        # the value is normalized to milliseconds below regardless, so this only
+        # widens which producers parse, without changing the stored timestamp.
+        candidate = re.sub(r"(\.\d{6})\d+", r"\1", value.replace("Z", "+00:00"))
         try:
-            parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            parsed = dt.datetime.fromisoformat(candidate)
         except ValueError as exc:
             raise ValueError("occurred_at must be an ISO timestamp") from exc
         if parsed.tzinfo is None:

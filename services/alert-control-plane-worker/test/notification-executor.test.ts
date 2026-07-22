@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import notificationSource from "../src/notification.ts?raw";
-import type { NotificationActionResult } from "../src/notification";
+import type { NotificationActionResult, NotificationSink } from "../src/notification";
 import {
   NotificationActionExecutor,
   projectNotificationAction,
@@ -150,6 +150,25 @@ describe("serializeNotificationResult", () => {
       error: "auth",
     });
   });
+
+  it("replaces a non-stable error code so response bodies cannot be persisted", () => {
+    for (const errorCode of [
+      "Rate limited: retry after 30s",
+      "https://slack.com/api/chat.postMessage?token=xoxb-secret",
+      "UPPER_CASE",
+      "x".repeat(65),
+      "",
+    ]) {
+      expect(serializeNotificationResult({ outcome: "failed", errorCode })).toEqual({
+        outcome: "failed",
+        error: "sink_error_unclassified",
+      });
+    }
+    // A well-formed stable code is preserved verbatim.
+    expect(
+      serializeNotificationResult({ outcome: "retry", errorCode: "slack_rate_limited" }),
+    ).toMatchObject({ error: "slack_rate_limited" });
+  });
 });
 
 describe("NotificationActionExecutor", () => {
@@ -203,6 +222,62 @@ describe("NotificationActionExecutor", () => {
 
     expect(result).toMatchObject({ outcome: "success" });
     expect(sink.calls[0].action.deliveryRef).toEqual(deliveryRef({ messageId: "100.001" }));
+  });
+
+  function sinkReturning(receiptRef: unknown): NotificationSink {
+    return {
+      sinkId: "slack-primary",
+      platform: "slack",
+      async execute(): Promise<NotificationActionResult> {
+        return {
+          outcome: "success",
+          receipt: { deliveryRef: receiptRef as never },
+        };
+      },
+    };
+  }
+
+  it("rejects a post_parent receipt bound to a different sink", async () => {
+    const executor = new NotificationActionExecutor(
+      new InMemoryIncidentStore(),
+      sinkReturning(deliveryRef({ sinkId: "other-sink" })),
+    );
+    await expect(
+      executor.execute(claim(pendingAction({ type: "post_parent", generation: 1 }))),
+    ).resolves.toEqual({
+      outcome: "manual_reconciliation_required",
+      error: "receipt_sink_mismatch",
+    });
+  });
+
+  it("rejects a recovery receipt that mutates the parent reference and cannot resolve", async () => {
+    const store = new InMemoryIncidentStore();
+    store.putGeneration(
+      incidentGeneration({ generation: 1, deliveryRef: deliveryRef({ messageId: "100.001" }) }),
+    );
+    const executor = new NotificationActionExecutor(
+      store,
+      sinkReturning(deliveryRef({ messageId: "999.999" })),
+    );
+    await expect(
+      executor.execute(claim(pendingAction({ type: "post_recovery", generation: 1 }))),
+    ).resolves.toEqual({
+      outcome: "manual_reconciliation_required",
+      error: "receipt_reference_mismatch",
+    });
+  });
+
+  it("rejects a structurally invalid or secret-bearing receipt reference", async () => {
+    const executor = new NotificationActionExecutor(
+      new InMemoryIncidentStore(),
+      sinkReturning(deliveryRef({ messageId: "https://hooks.slack.com/services/x" })),
+    );
+    await expect(
+      executor.execute(claim(pendingAction({ type: "post_parent", generation: 1 }))),
+    ).resolves.toEqual({
+      outcome: "manual_reconciliation_required",
+      error: "receipt_reference_invalid",
+    });
   });
 });
 

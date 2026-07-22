@@ -87,3 +87,40 @@ def test_python_contract_rejects_home_relative_evidence_path() -> None:
 
     with pytest.raises((ValidationError, ValueError)):
         parse_control_plane_alert_event(payload, now=_NOW)
+
+
+@pytest.mark.parametrize(
+    "network_identifier",
+    [
+        "127.0.0.1",
+        "127.0.0.1:8000",
+        "10.0.0.5:443",
+        "::1",
+        "[::1]:8000",
+    ],
+)
+def test_python_contract_rejects_network_identifiers_with_ports(
+    network_identifier: str,
+) -> None:
+    """Reject bare and host:port network identifiers, including IPv4 with a port."""
+    payload = _fixture("valid-provider-circuit-firing.json")
+    assert isinstance(payload, dict)
+    payload["summary"] = f"Provider at {network_identifier} refused connections"
+
+    with pytest.raises((ValidationError, ValueError)):
+        parse_control_plane_alert_event(payload, now=_NOW)
+
+
+def test_python_contract_normalizes_nanosecond_timestamp() -> None:
+    """Accept 7-9 digit fractional seconds and normalize to milliseconds.
+
+    datetime.fromisoformat rejects sub-microsecond fractions on Python 3.10, a
+    supported runtime, so the validator must truncate before parsing.
+    """
+    payload = _fixture("valid-provider-circuit-firing.json")
+    assert isinstance(payload, dict)
+    payload["occurred_at"] = "2026-07-19T06:00:00.123456789Z"
+
+    event = parse_control_plane_alert_event(payload, now=_NOW)
+
+    assert event.occurred_at == "2026-07-19T06:00:00.123Z"

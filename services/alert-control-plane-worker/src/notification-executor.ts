@@ -8,10 +8,13 @@
  */
 import {
   type DeliveryRef,
+  deliveryRefEquals,
   isNotificationActionType,
   type NotificationAction,
   type NotificationActionResult,
+  type NotificationReceipt,
   type NotificationSink,
+  parseDeliveryRef,
 } from "./notification";
 import type { ActionClaim, ActionExecutionResult, ActionExecutor } from "./outbox";
 import type { IncidentStore, PendingAction } from "./store";
@@ -89,6 +92,17 @@ export async function projectNotificationAction(
   };
 }
 
+const STABLE_ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
+ * A sink must return a stable, redacted error code. Any value that is not a
+ * narrow snake_case token is replaced so a response body, URL, or token can
+ * never reach the outbox's persisted `last_error`.
+ */
+export function stableErrorCode(code: string): string {
+  return STABLE_ERROR_CODE_RE.test(code) ? code : "sink_error_unclassified";
+}
+
 /** Map a sink result onto the generic outbox result union. */
 export function serializeNotificationResult(
   result: NotificationActionResult,
@@ -97,18 +111,53 @@ export function serializeNotificationResult(
     case "success":
       return { outcome: "success", result: { receipt: result.receipt } };
     case "retry":
-      return { outcome: "retry", error: result.errorCode, retryAtMs: result.retryAtMs };
+      return {
+        outcome: "retry",
+        error: stableErrorCode(result.errorCode),
+        retryAtMs: result.retryAtMs,
+      };
     case "uncertain":
       return {
         outcome: "uncertain",
-        error: result.errorCode,
+        error: stableErrorCode(result.errorCode),
         reconcileAtMs: result.reconcileAtMs,
       };
     case "manual_reconciliation_required":
-      return { outcome: "manual_reconciliation_required", error: result.errorCode };
+      return {
+        outcome: "manual_reconciliation_required",
+        error: stableErrorCode(result.errorCode),
+      };
     case "failed":
-      return { outcome: "failed", error: result.errorCode };
+      return { outcome: "failed", error: stableErrorCode(result.errorCode) };
   }
+}
+
+/**
+ * Validate a success receipt before it can be committed. Returns a stable error
+ * code when the receipt is unusable, or `null` when it is safe to commit.
+ *
+ * A structurally valid but mismatched reference must never be accepted: a wrong
+ * `post_recovery` reference would otherwise advance the incident to resolved,
+ * and a wrong `post_parent` reference would bind the incident to a foreign sink.
+ */
+export function receiptViolation(
+  receipt: NotificationReceipt,
+  expectedRef: DeliveryRef | null,
+  sink: Pick<NotificationSink, "sinkId" | "platform">,
+): string | null {
+  let ref: DeliveryRef;
+  try {
+    ref = parseDeliveryRef(receipt.deliveryRef);
+  } catch {
+    return "receipt_reference_invalid";
+  }
+  if (ref.sinkId !== sink.sinkId || ref.platform !== sink.platform) {
+    return "receipt_sink_mismatch";
+  }
+  if (expectedRef !== null && !deliveryRefEquals(expectedRef, ref)) {
+    return "receipt_reference_mismatch";
+  }
+  return null;
 }
 
 /**
@@ -130,13 +179,22 @@ export class NotificationActionExecutor implements ActionExecutor {
       throw new Error("NotificationActionExecutor received non-notification action");
     }
     const generation = this.store.getGeneration(action.generation);
-    const deliveryRef = generation?.deliveryRef ?? null;
+    const existingRef = generation?.deliveryRef ?? null;
     const projected = await projectNotificationAction(
       action,
-      action.type === "post_parent" ? null : deliveryRef,
+      action.type === "post_parent" ? null : existingRef,
       this.sink.sinkId,
     );
     const result = await this.sink.execute(projected, claim.mode);
+    if (result.outcome === "success") {
+      // post_parent may mint a new reference (existingRef null on first open),
+      // but a retry must match it; every other action must echo the input ref.
+      const expectedRef = action.type === "post_parent" ? existingRef : projected.deliveryRef;
+      const violation = receiptViolation(result.receipt, expectedRef, this.sink);
+      if (violation !== null) {
+        return { outcome: "manual_reconciliation_required", error: violation };
+      }
+    }
     return serializeNotificationResult(result);
   }
 }

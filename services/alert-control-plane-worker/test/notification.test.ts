@@ -113,6 +113,36 @@ describe("parseDeliveryRef", () => {
       /must be a string/,
     );
   });
+
+  it.each([
+    ["a Slack bot token", "xoxb-1234567890abcdef"],
+    ["a Slack webhook URL", "https://hooks.slack.com/services/T000/B000/xxxx"],
+    ["an authorization header", "Authorization: Bearer abcdefghijklmnop"],
+    ["a github PAT", "github_pat_ABCDEFGHIJ0123456789"],
+    ["a bare bearer token", "Bearer abcdefghijklmnop"],
+    ["a hybrid inference key", "hyi-abcdefghijklmnopqrstuvwxyz"],
+    ["any URL scheme", "slack://channel/C123"],
+  ])("rejects %s as an opaque identifier", (_label, secret) => {
+    expect(() => parseDeliveryRef({ ...validRef(), destinationId: secret })).toThrow(
+      /opaque identifier/,
+    );
+    expect(() => parseDeliveryRef({ ...validRef(), messageId: secret })).toThrow(
+      /opaque identifier/,
+    );
+  });
+
+  it("still accepts realistic opaque Slack identifiers", () => {
+    expect(
+      parseDeliveryRef({
+        schemaVersion: 1,
+        sinkId: "slack-primary",
+        platform: "slack",
+        destinationId: "C0123ABCDEF",
+        messageId: "1620000000.000100",
+        conversationId: "1620000000.000100",
+      }).messageId,
+    ).toBe("1620000000.000100");
+  });
 });
 
 describe("deliveryRefEquals", () => {

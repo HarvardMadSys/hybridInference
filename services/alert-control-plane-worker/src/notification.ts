@@ -124,6 +124,16 @@ const DELIVERY_REF_KEYS: ReadonlySet<string> = new Set([
 const MAX_DELIVERY_REF_FIELD_LENGTH = 256;
 const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f-\u009f]/;
 
+/**
+ * Delivery-reference fields are opaque platform identifiers (channel/message
+ * IDs, a configured sink name). They must never carry a secret, an auth header,
+ * or a URL. This is defense-in-depth: the real guarantee is that a sink only
+ * returns opaque IDs. Whitespace and `://` are rejected outright (no legitimate
+ * identifier contains them), alongside common bearer/token/webhook shapes.
+ */
+const SECRET_LIKE_RE =
+  /\s|:\/\/|bearer|xox[baprs]-|xapp-|github_pat_|gh[oprsu]_[A-Za-z0-9]|hyi-[A-Za-z0-9]|AKIA[0-9A-Z]|AIza[0-9A-Za-z_-]|-----BEGIN/i;
+
 function refString(value: unknown, field: string): string {
   if (typeof value !== "string") {
     throw new DeliveryRefValidationError(`${field} must be a string`);
@@ -138,6 +148,11 @@ function refString(value: unknown, field: string): string {
   }
   if (CONTROL_CHAR_RE.test(value)) {
     throw new DeliveryRefValidationError(`${field} must not contain control characters`);
+  }
+  if (SECRET_LIKE_RE.test(value)) {
+    throw new DeliveryRefValidationError(
+      `${field} must be an opaque identifier without secrets, URLs, or auth material`,
+    );
   }
   return value;
 }
