@@ -120,9 +120,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-
       - name: Check formatting
         run: npm run format:check
 
@@ -134,6 +131,11 @@ jobs:
 
       - name: Run frontend tests
         run: npm run test
+
+      # Keep the audit fail-closed, but run it last so an upstream advisory
+      # does not suppress formatting, lint, type-check, and test results.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
   test:
     name: Test (shard ${{ matrix.shard }}/4)
@@ -356,6 +358,9 @@ jobs:
           uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
           uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
 
+  # Do not configure this check as required while the workflow still has
+  # top-level paths-ignore rules: docs-only PRs would never report the check.
+  # Phase 2 must remove those rules before the required-check migration.
   ci-gate:
     name: CI Gate
     if: always()
@@ -375,6 +380,10 @@ jobs:
         run: |
           set -euo pipefail
           failed=0
+          # Phase 1 jobs always run, so any non-success result is an error.
+          # Phase 2 must define the allowed skipped results when it adds job
+          # conditions. Every new required job must also be added to needs and
+          # this result list.
           for result_name in \
             BACKEND_QUALITY_RESULT \
             FRONTEND_QUALITY_RESULT \

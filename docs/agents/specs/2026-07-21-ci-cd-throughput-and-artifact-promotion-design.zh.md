@@ -16,8 +16,10 @@ workaround 迁移约束、frontend 制品等价边界、release retention 与 ma
 
 **实施记录：** 2026-07-22，首批代码合并 backend/frontend quality job，修复 pytest
 发现范围并引入确定性 LPT 分片、版本化 timing manifest 与稳定 `CI Gate`。branch
-protection 迁移仍需在 workflow 合并窗口由维护者同步完成；历史 timing 初始为空，后续
-按本文的数据更新流程填充。平台架构矩阵与 registry 决策仍是制品晋级的硬阻塞项。
+protection 迁移延后到 Phase 2：必须先移除顶层 `paths-ignore` 并定义条件 job 的
+`skipped` 汇总语义，再在同一维护窗口把 required check 切到 `CI Gate`。历史 timing
+初始为空，后续按本文的数据更新流程填充。平台架构矩阵与 registry 决策仍是制品晋级的
+硬阻塞项。
 
 **相关文档：**
 
@@ -688,16 +690,21 @@ push→staging healthy 数据；平台矩阵已有书面结论。Phase 1/2 的�
 2. 合并五个 frontend quality job。
 3. 删除独立 Prepare Pytest Shards job，启用本地分片脚本。
 4. 引入 timing manifest 与 LPT 均衡分片。
-5. 增加 `CI Gate` 并迁移 branch protection。
+5. 增加 shadow `CI Gate`；顶层 `paths-ignore` 移除前不得将其设为 required check。
 
 **退出条件：** 全量 PR 的功能 gate 等价；CI P90 连续两周不高于 3 分钟；无新增 flaky。
+`CI Gate` 在本阶段只验证汇总行为，不迁移 branch protection。
 
 ### Phase 2：启用保守路径过滤与受影响镜像矩阵
 
-1. 对 pure frontend、pure backend、status-monitor 三类启用条件 job。
-2. unknown/shared 继续全量。
-3. Docker Build 纳入主 CI 的最终 gate，只构建受影响镜像。
-4. 观察 skipped job 与后续失败/补跑之间是否存在相关性。
+1. 移除 workflow 顶层 `paths-ignore`，保证每个 PR 都会上报 `CI Gate`。
+2. 对 pure frontend、pure backend、status-monitor 三类启用条件 job。
+3. unknown/shared 继续全量。
+4. 明确 Gate 对分类产生的 `skipped` 放行，而 `failure`、`cancelled`、空结果继续失败；
+   新增 required job 必须同步加入 Gate 的 `needs` 与结果列表。
+5. Docker Build 纳入主 CI 的最终 gate，只构建受影响镜像。
+6. 在同一维护窗口把 branch protection required checks 切换为 `CI Gate`。
+7. 观察 skipped job 与后续失败/补跑之间是否存在相关性。
 
 **退出条件：** 至少 50 个 PR 无误跳；纯前端/纯后端性能目标达到；全量 fallback 可用。
 
