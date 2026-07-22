@@ -158,7 +158,9 @@ class _TTFTTracker:
 
     The first non-empty delta (content, tool_calls, reasoning_content,
     reasoning, or thinking) sets the value; subsequent deltas leave it
-    untouched.
+    untouched. The reference clock restarts when a fallback attempt
+    begins, so ttft_ms measures the attempt that actually produced the
+    first token rather than accumulating the failed attempts before it.
     """
 
     def __init__(self, start_time: float) -> None:
@@ -170,6 +172,17 @@ class _TTFTTracker:
         if self._ttft_ms is None and has_meaningful_delta:
             self._ttft_ms = int((time.time() - self._start) * 1000)
             logger.debug(f"TTFT recorded: {self._ttft_ms}ms")
+
+    def restart(self, new_start: float) -> None:
+        """Restart the reference clock because a new upstream attempt began.
+
+        No-op once a TTFT has been recorded: a first token already
+        delivered belongs to the attempt that produced it (RouteWise also
+        emits a trailing fallback-flagged decision chunk after content,
+        which must not move a recorded value).
+        """
+        if self._ttft_ms is None:
+            self._start = new_start
 
     @property
     def ttft_ms(self) -> int | None:
@@ -220,8 +233,9 @@ class StreamSession:
             messages: Inbound messages list.
             params: Forwarded request params (already filtered).
             request_id: Per-request id used for DB log + error scrubbing.
-            start_time: ``time.time()`` at request entry — used for TTFT
-                and total latency.
+            start_time: ``time.time()`` at request entry — used for total
+                latency, and as the initial TTFT reference (the TTFT clock
+                restarts when a fallback attempt begins).
             request_headers: Starlette headers (case-insensitive).
             metadata: Mutable metadata dict the handler will update with
                 adapter routing keys (minus ``upstream_cost_usd``).
@@ -392,6 +406,14 @@ class StreamSession:
                                 self._routing = merge_adapter_routing(
                                     self._routing, result.routing_info
                                 )
+                                if result.routing_info.get("fallback"):
+                                    # A fallback-flagged routing chunk marks the
+                                    # start of a new upstream attempt: restart the
+                                    # TTFT clock so ttft_ms measures this attempt
+                                    # instead of including the failed attempts'
+                                    # latency. latency_ms keeps total wall time
+                                    # from request entry.
+                                    self._ttft.restart(time.time())
                                 logger.debug(
                                     f"Extracted routing from chunk "
                                     f"{self._chunk_count}: {result.routing_info}"
