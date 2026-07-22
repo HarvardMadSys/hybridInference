@@ -29,6 +29,16 @@ def _is_canonical_model(model_id: str, route) -> bool:
     )
 
 
+def _canonical_embedding_ids(services) -> list[str]:
+    adapters = getattr(services, "embedding_adapters", None) or {}
+    by_identity: dict[int, str] = {}
+    for adapter in adapters.values():
+        cid = getattr(getattr(adapter, "config", None), "id", None)
+        if cid:
+            by_identity[id(adapter)] = cid
+    return list(by_identity.values())
+
+
 @router.get("/models/concurrency", response_model=ListModelConcurrencyResponse)
 async def list_model_concurrency(
     _admin_id: str = Depends(verify_admin_access),
@@ -55,6 +65,12 @@ async def list_model_concurrency(
             )
         )
 
+    existing = {m.model_id for m in models}
+    for cid in _canonical_embedding_ids(services):
+        if cid not in existing:
+            models.append(ModelConcurrencyItem(model_id=cid, exempt=cid in exempt_ids))
+    models.sort(key=lambda m: m.model_id)
+
     return ListModelConcurrencyResponse(models=models)
 
 
@@ -73,7 +89,9 @@ async def update_model_concurrency(
 
     async with model_router_transition_lock(services, model_id):
         route = services.router.routes.get(model_id)
-        if route is None or not _is_canonical_model(model_id, route):
+        is_chat = route is not None and _is_canonical_model(model_id, route)
+        is_embedding = model_id in set(_canonical_embedding_ids(services))
+        if not (is_chat or is_embedding):
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
 
         old_row = await op_store.get_model_concurrency_exemption(model_id)
