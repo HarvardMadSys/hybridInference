@@ -294,7 +294,8 @@ flowchart LR
 可以使用固定 SHA pin 的 paths-filter action，也可以使用仓库内脚本解析 base/head diff；
 无论使用哪种方式，都必须：
 
-1. PR 比较 `base.sha...head.sha`；push 比较 `before...sha`。
+1. PR 比较 `base.sha...head.sha`（三点：分支自 base 分叉后的改动）；push 比较
+   `before..sha`（两点端点比较，force/非快进 push 也能看到旧 tip 上被删除的文件）。
 2. `before` 为全零、base 不可达或 diff 命令失败时输出 `full=true`。
 3. 对重命名同时考虑 old path 与 new path。
 4. 将分类结果和命中文件写入 GitHub job summary，便于审计。
