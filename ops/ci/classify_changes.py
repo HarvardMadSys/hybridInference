@@ -215,6 +215,10 @@ def compute_changed_files(
 ) -> list[str] | None:
     """Return changed files for the event, or ``None`` when it cannot be known.
 
+    PRs use three-dot ``base...head`` (changes the branch introduced since it
+    diverged from base); pushes use two-dot ``before..sha`` (endpoint diff) so a
+    force / non-fast-forward push that drops files on the old tip is still seen.
+
     ``--no-renames`` is intentional: a rename then surfaces as delete(old) +
     add(new), so both the old and new path are considered by the classifier.
     """
@@ -227,7 +231,11 @@ def compute_changed_files(
         if not _commit_exists(repo_root, push_before) or not _commit_exists(repo_root, push_sha):
             # First push / branch creation (zero base) or unreachable SHA.
             return None
-        diff_range = f"{push_before}...{push_sha}"
+        # Two-dot endpoint comparison (NOT three-dot). A non-fast-forward /
+        # force push can drop commits that only existed on the old tip;
+        # three-dot (merge-base..sha) would miss those removed files and could,
+        # e.g., misclassify a diverged push as frontend-only.
+        diff_range = f"{push_before}..{push_sha}"
     else:
         # workflow_dispatch and anything else: no reliable base -> full.
         return None

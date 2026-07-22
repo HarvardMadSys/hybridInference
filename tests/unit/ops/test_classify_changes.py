@@ -208,3 +208,38 @@ def test_compute_changed_files_zero_base_returns_none(tmp_path: Path) -> None:
 
     files = compute_changed_files(tmp_path, "push", None, None, "0" * 40, _rev(tmp_path))
     assert files is None  # first push / unknown base -> caller forces full
+
+
+def test_push_endpoint_diff_sees_files_dropped_by_force_push(tmp_path: Path) -> None:
+    # Regression: a force / non-fast-forward push must be diffed endpoint-to-
+    # endpoint (before..sha), not three-dot (merge-base..sha). A diverged new
+    # tip that drops the old tip's backend file would otherwise look
+    # frontend-only.
+    _init_repo(tmp_path)
+    (tmp_path / "base.txt").write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "common ancestor")
+    ancestor = _rev(tmp_path)
+
+    # Old tip: adds a backend file.
+    (tmp_path / "apps/backend").mkdir(parents=True)
+    (tmp_path / "apps/backend/service.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "old tip backend")
+    before = _rev(tmp_path)
+
+    # New tip diverges from the common ancestor and adds only a frontend file.
+    _git(tmp_path, "checkout", "-q", "-b", "newtip", ancestor)
+    (tmp_path / "apps/frontend").mkdir(parents=True)
+    (tmp_path / "apps/frontend/page.tsx").write_text("export {}\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "new tip frontend")
+    sha = _rev(tmp_path)
+
+    files = compute_changed_files(tmp_path, "push", None, None, before, sha)
+    assert files is not None
+    result = classify(files)
+    # Endpoint diff reveals both the removed backend file and the added frontend
+    # file; three-dot would have missed the backend deletion.
+    assert result.backend is True
+    assert result.frontend is True
