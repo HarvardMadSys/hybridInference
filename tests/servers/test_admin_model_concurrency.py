@@ -59,6 +59,7 @@ async def admin_client(monkeypatch):
     app = FastAPI()
     app.state.services = AppServices(
         router=router,
+        embedding_adapters={"bge-m3": _make_adapter("bge-m3", "BGE M3")},
         operational_store=op_store,
         model_concurrency_resolver=ModelConcurrencyResolver(op_store),
         db_logger=MagicMock(),
@@ -186,3 +187,60 @@ async def test_ambiguous_concurrency_write_fences_cached_exemption(admin_client)
         )
 
     assert await resolver.is_exempt("public-model") is False
+
+
+@pytest.mark.asyncio
+async def test_list_model_concurrency_includes_embedding_models(admin_client):
+    client, _ = admin_client
+
+    response = await client.get(
+        "/admin/models/concurrency",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    model = _model_by_id(response.json()["models"], "bge-m3")
+    assert model["exempt"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_model_concurrency_reflects_embedding_exemption(admin_client):
+    client, op_store = admin_client
+    op_store.list_model_concurrency_exemptions.return_value = [{"model_id": "bge-m3"}]
+
+    response = await client.get(
+        "/admin/models/concurrency",
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    model = _model_by_id(response.json()["models"], "bge-m3")
+    assert model["exempt"] is True
+
+
+@pytest.mark.asyncio
+async def test_patch_embedding_model_concurrency_sets_exemption(admin_client):
+    client, op_store = admin_client
+
+    response = await client.patch(
+        "/admin/models/bge-m3/concurrency",
+        json={"exempt": True},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["exempt"] is True
+    op_store.set_model_concurrency_exemption.assert_awaited_once_with("bge-m3", "127.0.0.1")
+
+
+@pytest.mark.asyncio
+async def test_patch_unknown_model_concurrency_returns_404(admin_client):
+    client, _ = admin_client
+
+    response = await client.patch(
+        "/admin/models/does-not-exist/concurrency",
+        json={"exempt": True},
+        headers={"Authorization": "Bearer test-admin"},
+    )
+
+    assert response.status_code == 404

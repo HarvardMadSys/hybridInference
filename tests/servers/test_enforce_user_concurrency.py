@@ -8,6 +8,7 @@ isolation, including streaming-hold / disconnect / exception cleanup.
 from __future__ import annotations
 
 import asyncio
+import types
 from typing import Any, ClassVar
 
 import pytest
@@ -24,6 +25,7 @@ from serving.servers.concurrency import (
     static_limits_provider,
 )
 from serving.servers.deps import (
+    get_embedding_adapters,
     get_model_concurrency_resolver,
     get_router,
     get_user_concurrency_limiter,
@@ -47,6 +49,7 @@ def _make_app(user: dict[str, Any], limiter: UserConcurrencyLimiter | None) -> F
     # model-exemption short-circuit by returning no router / resolver.
     app.dependency_overrides[get_router] = lambda: None
     app.dependency_overrides[get_model_concurrency_resolver] = lambda: None
+    app.dependency_overrides[get_embedding_adapters] = lambda: {}
 
     # Unary endpoint
     app.unary_event = asyncio.Event()  # type: ignore[attr-defined]
@@ -353,6 +356,7 @@ def _make_exempt_app(
     app.dependency_overrides[get_user_concurrency_limiter] = fake_get_limiter
     app.dependency_overrides[get_router] = lambda: _StubRouter()
     app.dependency_overrides[get_model_concurrency_resolver] = lambda: _StubResolver()
+    app.dependency_overrides[get_embedding_adapters] = lambda: {}
 
     app.unary_event = asyncio.Event()  # type: ignore[attr-defined]
 
@@ -536,6 +540,102 @@ async def test_exempt_model_caps_custom_limit_above_ceiling(monkeypatch):
         app.unary_event.set()  # type: ignore[attr-defined]
         for t in tasks:
             assert (await t).status_code == 200
+
+
+def _make_embedding_exempt_app(
+    user: dict[str, Any],
+    limiter: UserConcurrencyLimiter | None,
+    exempt_models: set[str],
+) -> FastAPI:
+    """Build an app whose POST endpoint routes an embedding ``model``.
+
+    Embedding models never register as chat routes, so the stub router
+    resolves nothing and the gate must fall back to ``embedding_adapters``
+    (keyed by model id, with ``config.id`` == the canonical id) to resolve
+    the canonical model for the exemption check.
+    """
+    app = FastAPI()
+
+    async def fake_verify_api_key() -> dict[str, Any]:
+        return user
+
+    def fake_get_limiter() -> UserConcurrencyLimiter | None:
+        return limiter
+
+    class _EmptyRoutes:
+        def get(self, model_id: str, default: Any = None) -> Any:
+            return default
+
+    class _StubRouter:
+        routes: ClassVar[Any] = _EmptyRoutes()
+
+    class _StubResolver:
+        async def is_exempt(self, model_id: str) -> bool:
+            return model_id in exempt_models
+
+    embedding_adapters = {
+        "bge-m3": types.SimpleNamespace(config=types.SimpleNamespace(id="bge-m3")),
+    }
+
+    app.dependency_overrides[verify_api_key] = fake_verify_api_key
+    app.dependency_overrides[get_user_concurrency_limiter] = fake_get_limiter
+    app.dependency_overrides[get_router] = lambda: _StubRouter()
+    app.dependency_overrides[get_model_concurrency_resolver] = lambda: _StubResolver()
+    app.dependency_overrides[get_embedding_adapters] = lambda: embedding_adapters
+
+    app.unary_event = asyncio.Event()  # type: ignore[attr-defined]
+
+    @app.post("/probe", dependencies=[Depends(enforce_user_concurrency)])
+    async def probe():
+        await app.unary_event.wait()
+        return {"ok": True}
+
+    return app
+
+
+@pytest.mark.asyncio
+async def test_exempt_embedding_model_uses_separate_budget():
+    """An exempt embedding model (resolved via embedding_adapters, not the
+    chat router) draws on the separate exempt budget, not the role cap."""
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_embedding_exempt_app(user, limiter, exempt_models={"bge-m3"})
+    app.unary_event.set()  # type: ignore[attr-defined]  # don't block handler
+
+    # Saturate the user's single free (normal) slot up-front.
+    granted, _, _ = await limiter.try_acquire("u1", "free", False)
+    assert granted
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Despite the full normal slot, the exempt embedding model is served
+        # from its separate per-user budget (cap 64).
+        resp = await client.post("/probe", json={"model": "bge-m3"})
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+
+    # The exempt path used the separate budget, never the user's normal slot.
+    assert limiter.role_for(_exempt_slot_key("u1")) is not None
+
+
+@pytest.mark.asyncio
+async def test_non_exempt_embedding_model_falls_under_role_cap():
+    """When the embedding model is NOT exempt, it draws on the normal
+    role-based budget and is rejected once that budget is full."""
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_embedding_exempt_app(user, limiter, exempt_models=set())
+    app.unary_event.set()  # type: ignore[attr-defined]
+
+    # Saturate the single free normal slot.
+    granted, _, _ = await limiter.try_acquire("u1", "free", False)
+    assert granted
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/probe", json={"model": "bge-m3"})
+        assert resp.status_code == 429
+        assert resp.json()["detail"]["error"]["limit"] == 1
 
 
 @pytest.mark.asyncio

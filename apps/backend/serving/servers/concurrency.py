@@ -188,7 +188,12 @@ from typing import TYPE_CHECKING, Any
 from fastapi import Depends, HTTPException, Request
 
 from .auth import verify_api_key
-from .deps import get_model_concurrency_resolver, get_router, get_user_concurrency_limiter
+from .deps import (
+    get_embedding_adapters,
+    get_model_concurrency_resolver,
+    get_router,
+    get_user_concurrency_limiter,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -211,6 +216,7 @@ async def enforce_user_concurrency(
     limiter: UserConcurrencyLimiter | None = Depends(get_user_concurrency_limiter),
     router: Any = Depends(get_router),
     concurrency_resolver: Any = Depends(get_model_concurrency_resolver),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
 ) -> AsyncGenerator[None, None]:
     """Acquire a per-user concurrency slot or raise 429.
 
@@ -255,6 +261,9 @@ async def enforce_user_concurrency(
                 canonical = (
                     route.adapters[0][0].config.id if route is not None and route.adapters else None
                 )
+                if canonical is None and embedding_adapters:
+                    emb = embedding_adapters.get(resolved)
+                    canonical = getattr(getattr(emb, "config", None), "id", None)
                 if canonical is not None and await concurrency_resolver.is_exempt(canonical):
                     logger.debug(
                         "user_concurrency: model exempt; using separate per-user budget",
