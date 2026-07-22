@@ -52,6 +52,7 @@ def _make_session(
     routing: RoutingInfo | None = None,
     request_headers: Any | None = None,
     timeout_fired_probe: Any | None = None,
+    start_time: float | None = None,
 ) -> StreamSession:
     routing = routing or _routing()
     if log_store is None:
@@ -76,7 +77,7 @@ def _make_session(
         messages=[{"role": "user", "content": "hi"}],
         params={"stream": True},
         request_id="rid-1",
-        start_time=time.time(),
+        start_time=start_time if start_time is not None else time.time(),
         request_headers=request_headers or {},
         metadata=metadata if metadata is not None else {},
         user_id="user-1",
@@ -120,6 +121,26 @@ def _usage_chunk(model: str, usage: dict[str, int]) -> str:
         "usage": usage,
     }
     return f"data: {json.dumps(payload)}\n\n"
+
+
+def _routing_chunk(provider: str, *, fallback: bool = False) -> str:
+    """Synthetic ``_routing`` SSE chunk mirroring ``routing.telemetry.routing_chunk``."""
+    routing: dict[str, Any] = {
+        "provider": provider,
+        "base_url": f"https://api.{provider}.example/v1",
+        "endpoint_id": f"{provider}:api:443",
+    }
+    if fallback:
+        routing["fallback"] = True
+        routing["failed_attempts"] = [
+            {
+                "provider": "openai",
+                "endpoint_id": "openai:api:443",
+                "error_type": "RuntimeError",
+                "error": "boom",
+            }
+        ]
+    return f"data: {json.dumps({'choices': [], '_routing': routing})}\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +244,26 @@ def test_ttft_tracker_records_on_first_meaningful_delta():
     assert t.ttft_ms is not None
     first = t.ttft_ms
     # Subsequent calls don't overwrite.
+    t.maybe_record(True)
+    assert t.ttft_ms == first
+
+
+def test_ttft_tracker_restart_moves_reference_clock():
+    # Reference set 10s in the past — a failed primary attempt burned that time.
+    t = _TTFTTracker(time.time() - 10.0)
+    t.restart(time.time())
+    t.maybe_record(True)
+    # Measured from the restart, not the original reference.
+    assert t.ttft_ms < 5000
+
+
+def test_ttft_tracker_restart_is_noop_after_record():
+    t = _TTFTTracker(time.time() - 0.1)
+    t.maybe_record(True)
+    first = t.ttft_ms
+    # RouteWise emits a trailing fallback-flagged decision chunk after
+    # content; a restart then must not disturb the recorded value.
+    t.restart(time.time() - 100.0)
     t.maybe_record(True)
     assert t.ttft_ms == first
 
@@ -412,6 +453,48 @@ async def test_ttft_recorded_on_first_content_chunk():
     log_data = cl_logger.schedule_log.call_args.args[1]
     assert log_data["ttft_ms"] is not None
     assert log_data["ttft_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_ttft_clock_restarts_on_fallback_routing_chunk():
+    """TTFT must exclude the failed primary attempt's latency after a fallback.
+
+    The handler's ``start_time`` is 10s in the past, standing in for a primary
+    attempt that burned 10s before failing. The fallback-flagged routing chunk
+    (emitted by the router before the fallback adapter's stream starts) must
+    restart the TTFT clock, while latency_ms keeps the full wall time.
+    """
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger, start_time=time.time() - 10.0)
+    chunks = [
+        _routing_chunk("anthropic", fallback=True),
+        _content_chunk("gpt-4", "hello", finish="stop"),
+    ]
+    await _consume(session.stream(_aiter(chunks)))
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["ttft_ms"] is not None
+    assert log_data["ttft_ms"] < 5000
+    assert log_data["latency_ms"] >= 10000
+    # The routing observation reports the same per-attempt TTFT.
+    obs_kwargs = cl_logger.record_routing_observation.call_args.kwargs
+    assert obs_kwargs["ttft_ms"] < 5000
+    assert obs_kwargs["total_latency_ms"] >= 10000
+
+
+@pytest.mark.asyncio
+async def test_ttft_clock_not_restarted_by_primary_routing_chunk():
+    """A non-fallback routing chunk keeps the request-entry TTFT reference."""
+    cl_logger = MagicMock(spec=CompletionsLogger)
+    session = _make_session(completions_logger=cl_logger, start_time=time.time() - 10.0)
+    chunks = [
+        _routing_chunk("openai"),
+        _content_chunk("gpt-4", "hello", finish="stop"),
+    ]
+    await _consume(session.stream(_aiter(chunks)))
+
+    log_data = cl_logger.schedule_log.call_args.args[1]
+    assert log_data["ttft_ms"] >= 10000
 
 
 # ---------------------------------------------------------------------------
