@@ -73,6 +73,16 @@ export SLACK_LIVE_GATE_CONFIRM=write-synthetic-messages
 npm run test:slack-live
 ```
 
+After the reviewed workflow is promoted through the normal `dev` → `main`
+release path, an operator can instead run **Slack Readback Gate** from GitHub
+Actions and select `ref=dev` for the staging test. GitHub only dispatches a
+workflow that already exists on the repository's default branch, so merging it
+to `dev` alone is not sufficient. Enter the same channel ID, sink ID, and
+confirmation value. That manual-only workflow uses the existing
+`CODEX_ONCALL_SLACK_BOT_TOKEN` repository secret only in the live-test step; it
+never exposes the token or runs on a push or pull request. Use this path only
+when that secret is the exact bot installation planned for the target sink.
+
 The test visibly leaves one `[LIVE GATE]` synthetic parent in the target
 conversation, updates that parent, and adds recovery and analysis replies in
 the same thread. It does not delete these audit artifacts.
