@@ -332,9 +332,19 @@ jobs:
           COOKIE_SAMESITE: lax
           BASE_URL: http://localhost:8000
           PYTEST_SHARD: ${{ matrix.shard }}
+          PYTEST_FILE_DURATIONS_OUTPUT: ${{ runner.temp }}/pytest-file-durations-${{ matrix.shard }}.json
         run: |
           mapfile -t pytest_files < "${{ steps.pytest-shard.outputs.file }}"
-          uv run pytest -n auto --dist=loadfile --cov=. --cov-report=term-missing --cov-report=xml:coverage-${PYTEST_SHARD}.xml -v -m "not external" "${pytest_files[@]}"
+          uv run pytest \
+            -p ops.ci.pytest_file_durations \
+            -n auto \
+            --dist=loadfile \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report="xml:coverage-${PYTEST_SHARD}.xml" \
+            -v \
+            -m "not external" \
+            "${pytest_files[@]}"
 
       - name: Upload coverage to Codecov
         if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'
@@ -344,6 +354,16 @@ jobs:
           flags: backend-shard-${{ matrix.shard }}
           fail_ci_if_error: false
           verbose: true
+
+      - name: Upload pytest file durations
+        if: always() && github.event_name == 'push'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-file-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-file-durations-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   security:
     name: Security Scan
