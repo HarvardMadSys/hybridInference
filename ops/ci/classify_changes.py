@@ -54,7 +54,10 @@ FULL_PREFIXES = (
 
 FRONTEND_PREFIX = "apps/frontend/"
 BACKEND_PREFIXES = ("apps/backend/", "tests/")
-ONCALL_PREFIX = "apps/backend/serving/oncall/"
+# Dockerfile.oncall COPYs the entire apps/backend/serving tree, so any serving
+# change -- not just serving/oncall -- is baked into the on-call image and must
+# rebuild it. Keep this in sync with that Dockerfile's COPY scope.
+ONCALL_PREFIX = "apps/backend/serving/"
 ONCALL_FILES = frozenset({"deploy/docker/Dockerfile.oncall"})
 STATUS_MONITOR_PREFIX = "services/status-monitor-worker/"
 DOCKER_SHARED_FILES = frozenset(

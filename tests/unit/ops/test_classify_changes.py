@@ -43,6 +43,13 @@ def test_oncall_dockerfile_is_oncall_only() -> None:
     assert _true_categories(result) == {"oncall"}
 
 
+def test_shared_serving_change_triggers_oncall_and_backend() -> None:
+    # Dockerfile.oncall COPYs the whole apps/backend/serving tree, so shared
+    # serving code (not just serving/oncall) is baked into the on-call image.
+    result = classify(["apps/backend/serving/config/settings.py"])
+    assert _true_categories(result) == {"oncall", "backend"}
+
+
 def test_status_monitor_change() -> None:
     result = classify(["services/status-monitor-worker/main.py"])
     assert _true_categories(result) == {"status_monitor"}
