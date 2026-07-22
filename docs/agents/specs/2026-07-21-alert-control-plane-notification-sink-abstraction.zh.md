@@ -4,7 +4,7 @@ _在 #980 统一告警控制面中隔离 Slack 实现，并为未来通知平台
 
 ---
 
-- **状态：** Proposed — 范围已确认，待随 #980 实现评审
+- **状态：** Phase B implemented — mock/contract tests complete；目标 Slack workspace readback 门禁待验证
 - **决策范围：** `NotificationSink`、`DeliveryRef`、通知类 outbox action/result、Slack 映射与迁移
 - **依赖设计：** [PR #980](https://github.com/HarvardMadSys/hybridInference/pull/980) 中的
   `2026-07-20-unified-alert-control-plane-target-design.zh.md`
@@ -164,6 +164,7 @@ interface NotificationAction {
   readonly sinkId: string;
   readonly incidentId: string;
   readonly generation: number;
+  readonly attemptStartedAtMs: number;
   readonly payloadDigest: string;
   readonly deliveryRef: DeliveryRef | null;
   readonly payload: Readonly<Record<string, unknown>>;
@@ -184,6 +185,10 @@ count 和结构化 analysis。它不得保存 Slack blocks、mrkdwn、channel、
 card JSON，也不得包含 state version、resolution epoch、claim epoch 等 fence 字段。平台
 renderer 从该 payload 构建请求；`payloadDigest` 在 action 创建时确定，用于确认 execute 与
 reconcile 查找的是同一个效果。
+
+`attemptStartedAtMs` 来自 outbox 已持久化的 `PendingAction.startedAtMs`，只限定本次外部写入的
+reconciliation 时间窗。它不是 incident fence，也不能由 producer 或 sink 改写；普通 retry
+开始新 attempt 时由 outbox 重新赋值，uncertain → reconcile 则保留原值。
 
 依赖关系保持 #980 现有语义：
 
@@ -260,7 +265,7 @@ class NotificationActionExecutor implements ActionExecutor {
   constructor(private readonly sink: NotificationSink) {}
 
   async execute(claim: ActionClaim): Promise<ActionExecutionResult> {
-    const action = projectNotificationAction(claim.action);
+    const action = projectNotificationAction(claim.action); // 包含原 attempt startedAt
     return serializeNotificationResult(await this.sink.execute(action, claim.mode));
   }
 }
@@ -305,7 +310,11 @@ thread reply”的用户体验。以后若产品希望更新父消息状态，�
 `post_parent` 响应丢失时尚无 `DeliveryRef`，只能在已配置 channel 与严格时间窗内按必选
 metadata 做对账。这是 Phase B 的最高风险和 exit criterion：必须在目标 workspace 实测
 channel-scoped readback 能稳定读到 `action_id` 与 `payload_digest`，并能唯一恢复父消息引用。
-本设计不预设未经验证的 Slack API 细节。
+代码使用 `conversations.history(include_all_metadata=true)` 在 channel 与固定 attempt 时间窗内
+读取父消息；update 只读取已知父消息 `ts`；recovery/analysis 使用
+`conversations.replies(include_all_metadata=true)` 限定已知 thread。所有游标页必须读取完整；
+Slack 返回 `is_limited`、游标缺失/循环或达到分页上限均视为查询不完整。这些 API 行为仍须
+在目标 workspace 验证。
 
 若能力不存在、查询不完整或无法唯一匹配，只能进入 `manual_reconciliation_required`，不得
 repost。该门禁未通过前，不能声称 strict single parent，也不能启用 staging/production
@@ -317,13 +326,15 @@ producer；类型抽象和 fake 测试通过不等于该风险已解决。
 
 1. 调用前，outbox 已持久化稳定 `actionId`、`payloadDigest`、attempt 和 `startedAt`
 2. API 明确成功时，sink 验证返回值并返回 `success`
-3. API 明确未接受请求时，sink 返回 `retry` 或永久 `failed`
-4. 网络超时、连接中断、响应解析失败、未知 5xx 等可能已成功的情况返回 `uncertain`
-5. 下一次 claim 使用 `mode="reconcile"`，限定在 `DeliveryRef.destinationId`、已知 thread、
+3. HTTP 429 / `ratelimited` / `rate_limited` 尊重 `Retry-After` 并 retry
+4. 只有明确认证、权限、配置或参数拒绝才永久 `failed`
+5. 网络超时、连接中断、响应解析失败、HTTP 5xx、`internal_error`、`fatal_error` 与未知
+   `ok:false` 均可能已成功，返回 `uncertain`
+6. 下一次 claim 使用 `mode="reconcile"`，限定在 `DeliveryRef.destinationId`、已知 thread、
    action 时间窗和稳定 metadata 内查询
-6. 找到唯一且 payload digest 一致的效果时返回 `success`
-7. 找到多个匹配、匹配内容冲突或查询不完整时返回 `manual_reconciliation_required`
-8. 只有 Slack API 能可靠证明不存在该效果时才返回 `retry`；否则不 repost
+7. 找到唯一且 payload digest 一致的效果时返回 `success`
+8. 找到多个匹配、匹配内容冲突或查询不完整时返回 `manual_reconciliation_required`
+9. 零匹配在 metadata 可见性 grace 内仍为 `uncertain`；grace 后且查询完整才返回 `retry`
 
 对 `post_parent`，reconciliation 成功后从唯一匹配父消息恢复完整 `DeliveryRef`。对其余
 action，查询必须限制在已有 `DeliveryRef` 所指向的 channel/message/thread 内。任何时候都
@@ -342,9 +353,9 @@ Payload:    slack_thread_ts   → deliveryRef
 Result:     slackThreadTs     → receipt.deliveryRef
 ```
 
-#980 尚未合并且 Worker 固定返回 503，没有真实 producer 或生产 incident。本设计应在 merge
-前直接替换 TypeScript 类型、SQLite schema、payload 和 result；保留四个 action type，不做
-dual-read、dual-write 或 action 类型迁移。这样可以避免为不存在的线上数据永久携带兼容状态。
+#980 已合并，Worker 仍固定返回 503，且没有真实 producer 或生产 incident。Phase A 已直接
+替换 TypeScript 类型、SQLite schema、payload 和 result；保留四个 action type，未引入
+dual-read、dual-write 或 action 类型兼容。
 
 `incident.ts` 必须一次改全：success hook 的 receipt 解析/ref 不可变比较、`opening/firing`
 判定、recovery/analysis dependency、parent/update/recovery payload helper，以及 generation
@@ -411,26 +422,26 @@ action ID 与状态不变。无法唯一确认 channel 时转人工处理，不�
 
 ## 🚀 分阶段落地
 
-本 worktree 基于 `dev`，不含 #980 Worker 实现，因此这里只落设计文档。代码必须直接并入
-#980 分支，或等 #980 合并后基于它实现；不能在当前分支另造一份并行 control plane。
+Phase B 基于 #980 合并后的 `dev` 实现，继续保持 Worker dormant；真实 Slack sink 不在
+`index.ts` 注册，且没有 producer、route 或 secret binding。
 
 | 阶段 | 内容 |
 | --- | --- |
-| A：内部模型 | 新类型、平台无关 store/schema、fake sink；Worker 保持 dormant |
-| B：SlackSink | renderer/client、四类 action；channel-level parent reconciliation 实测是 exit criterion |
+| A：内部模型（完成） | 新类型、平台无关 store/schema、fake sink；Worker 保持 dormant |
+| B：SlackSink（代码完成，实测待办） | renderer/client、四类 action 与 scoped reconciliation；channel-level parent reconciliation 实测仍是 exit criterion |
 | C：#980 发布 | staging synthetic lifecycle 和指标观察；production 仍需单独批准 |
 | Future | 有需求后分别设计腾讯 Source Adapter、`WeComSink`；多 sink 另写 ownership/部分失败设计 |
 
 ## ✅ 验收标准
 
-- [ ] `incident.ts`、通用 store model 和 outbox contract 不含 `slack`、channel、`thread_ts`
-- [ ] generation 只保存一个版本化、可验证的 `DeliveryRef | null`
-- [ ] 保留四个 action；sink 投影不含平台 payload 或 fence 内部字段
-- [ ] 只注册 `SlackSink`；其模块不能 import store/incident/`PendingAction`/`ActionClaim`
+- [x] `incident.ts`、通用 store model 和 outbox contract 不含 `slack`、channel、`thread_ts`
+- [x] generation 只保存一个版本化、可验证的 `DeliveryRef | null`
+- [x] 保留四个 action；sink 投影不含平台 payload 或 fence 内部字段
+- [x] `SlackSink` 模块不能 import store/incident/`PendingAction`/`ActionClaim`（runtime 仍不注册）
 - [ ] Slack 的用户可见行为仍为单父消息、合并 refresh、同 thread recovery/analysis
-- [ ] 无 thread fake 能通过完整 incident lifecycle contract test
+- [x] 无 thread fake 能通过完整 incident lifecycle contract test
 - [ ] 目标 workspace 通过 channel-level parent readback；否则不启用 producer/声明 strict single parent
-- [ ] sink/outbox 的错误与意外 throw 路径只持久化稳定 code，绝不持久化原始异常
+- [x] sink/outbox 的错误与意外 throw 路径只持久化稳定 code，绝不持久化原始异常
 - [ ] 确认零生产数据；若测试 namespace 有数据，在 merge 前完成一次性处置
 - [ ] producer、Source Adapter 和 GitHub workflow 均不能选择 sink 或直接写通知平台
 - [ ] staging synthetic lifecycle 与 #980 原验收项全部继续通过
