@@ -50,8 +50,10 @@ def test_rejects_overlapping_shards(tmp_path: Path) -> None:
     ("durations", "message"),
     [
         ({"../outside.py": 1.0}, "stay within"),
+        ({r"C:\outside.py": 1.0}, "stay within"),
         ({"tests/test_a.py": 0}, "non-positive"),
-        ({"tests/test_a.py": "slow"}, "non-numeric"),
+        ({"tests/test_a.py": "slow"}, "invalid entry"),
+        ({"tests/test_a.py": "1.0"}, "invalid entry"),
     ],
 )
 def test_rejects_invalid_duration_entries(

@@ -10,7 +10,7 @@ import os
 import sys
 import tempfile
 from contextlib import suppress
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -23,7 +23,7 @@ class MergeError(ValueError):
 
 def _normalize_path(raw_path: str) -> str:
     path = PurePosixPath(raw_path.replace("\\", "/"))
-    if path.is_absolute() or ".." in path.parts:
+    if path.is_absolute() or PureWindowsPath(raw_path).is_absolute() or ".." in path.parts:
         raise MergeError(f"duration path must stay within the repository: {raw_path!r}")
     normalized = path.as_posix()
     if normalized in {"", "."}:
@@ -31,13 +31,15 @@ def _normalize_path(raw_path: str) -> str:
     return normalized
 
 
-def _read_manifest(path: Path) -> dict[str, float]:
+def read_duration_manifest(path: Path) -> dict[str, float]:
+    """Read one version-1 duration manifest with strict validation."""
     try:
         payload: Any = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise MergeError(f"cannot read duration manifest {path}: {exc}") from exc
 
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if isinstance(version, bool) or not isinstance(version, int) or version != 1:
         raise MergeError(f"duration manifest {path} must use version 1")
     raw_durations = payload.get("durations")
     if not isinstance(raw_durations, dict):
@@ -45,14 +47,13 @@ def _read_manifest(path: Path) -> dict[str, float]:
 
     durations: dict[str, float] = {}
     for raw_test_path, raw_duration in raw_durations.items():
-        if not isinstance(raw_test_path, str) or isinstance(raw_duration, bool):
+        if (
+            not isinstance(raw_test_path, str)
+            or isinstance(raw_duration, bool)
+            or not isinstance(raw_duration, (int, float))
+        ):
             raise MergeError(f"duration manifest {path} contains an invalid entry")
-        try:
-            duration = float(raw_duration)
-        except (TypeError, ValueError) as exc:
-            raise MergeError(
-                f"duration manifest {path} has a non-numeric value for {raw_test_path!r}"
-            ) from exc
+        duration = float(raw_duration)
         if not math.isfinite(duration) or duration <= 0:
             raise MergeError(
                 f"duration manifest {path} has a non-positive value for {raw_test_path!r}"
@@ -71,7 +72,7 @@ def merge_duration_files(paths: Sequence[Path]) -> dict[str, Any]:
 
     merged: dict[str, float] = {}
     for path in sorted(paths):
-        shard = _read_manifest(path)
+        shard = read_duration_manifest(path)
         duplicates = sorted(set(merged).intersection(shard))
         if duplicates:
             raise MergeError(f"duration manifests overlap on test file(s): {', '.join(duplicates)}")
@@ -85,7 +86,8 @@ def merge_duration_files(paths: Sequence[Path]) -> dict[str, Any]:
     }
 
 
-def _write_atomic(path: Path, payload: dict[str, Any]) -> None:
+def write_duration_manifest_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write a duration manifest."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent,
@@ -119,7 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the duration manifest merger."""
     args = _build_parser().parse_args(argv)
     try:
-        _write_atomic(args.output, merge_duration_files(args.inputs))
+        write_duration_manifest_atomic(args.output, merge_duration_files(args.inputs))
         return 0
     except (OSError, MergeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
