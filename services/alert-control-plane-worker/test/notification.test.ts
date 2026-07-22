@@ -116,18 +116,18 @@ describe("parseDeliveryRef", () => {
   });
 
   it.each([
-    ["a Slack bot token", "xoxb-1234567890abcdef"],
+    ["a Slack bot token", "xoxb-" + "1234567890abcdef"],
     ["a Slack webhook URL", "https://hooks.slack.com/services/T000/B000/xxxx"],
     ["an authorization header", "Authorization: Bearer abcdefghijklmnop"],
-    ["a github PAT", "github_pat_ABCDEFGHIJ0123456789"],
+    ["a github PAT", "github_" + "pat_ABCDEFGHIJ0123456789"],
     ["a bare bearer token", "Bearer abcdefghijklmnop"],
-    ["a hybrid inference key", "hyi-abcdefghijklmnopqrstuvwxyz"],
+    ["a hybrid inference key", "hyi-" + "abcdefghijklmnopqrstuvwxyz"],
     ["any URL scheme", "slack://channel/C123"],
-    ["an OpenAI-style key", "sk-test-NOTAREAL"],
-    ["a Groq-style key", "gsk_NOTAREAL"],
-    ["an xAI-style key", "xai-NOTAREAL"],
-    ["an rk-style key", "rk_NOTAREAL"],
-    ["a labeled API key", "api_key=NOTAREAL"],
+    ["an OpenAI-style key", "sk-" + "test-NOTAREAL"],
+    ["a Groq-style key", "gsk_" + "NOTAREAL"],
+    ["an xAI-style key", "xai-" + "NOTAREAL"],
+    ["an rk-style key", "rk_" + "NOTAREAL"],
+    ["a labeled API key", "api_" + "key=NOTAREAL"],
     ["a labeled authorization value", "authorization=NOTAREAL"],
     ["a labeled cookie", "cookie=NOTAREAL"],
     ["a labeled password", "password=NOTAREAL"],
@@ -199,8 +199,8 @@ describe("parseNotificationReceipt", () => {
   );
 
   it.each([
-    "xoxb-1234567890abcdef",
-    "api_key=NOTAREAL",
+    "xoxb-" + "1234567890abcdef",
+    "api_" + "key=NOTAREAL",
     "https://slack.com/api/chat.postMessage",
     "reply\u0000id",
     "x".repeat(257),

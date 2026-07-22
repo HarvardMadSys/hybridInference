@@ -180,7 +180,7 @@ describe("serializeNotificationResult", () => {
   it("replaces a non-stable error code so response bodies cannot be persisted", () => {
     for (const errorCode of [
       "Rate limited: retry after 30s",
-      "https://slack.com/api/chat.postMessage?token=xoxb-secret",
+      "https://slack.com/api/chat.postMessage?token=" + "xoxb-" + "secret",
       "UPPER_CASE",
       "x".repeat(65),
       "",
@@ -201,7 +201,7 @@ describe("serializeNotificationResult", () => {
       "an unsafe external effect ID",
       {
         deliveryRef: deliveryRef(),
-        externalEffectId: "xoxb-1234567890abcdef",
+        externalEffectId: "xoxb-" + "1234567890abcdef",
       },
       "receipt_external_effect_id_invalid",
     ],
@@ -353,7 +353,7 @@ describe("NotificationActionExecutor", () => {
       new InMemoryIncidentStore(),
       sinkReturningReceipt({
         deliveryRef: deliveryRef(),
-        externalEffectId: "api_key=NOTAREAL",
+        externalEffectId: "api_" + "key=NOTAREAL",
       }),
     );
 
