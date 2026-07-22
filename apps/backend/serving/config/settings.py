@@ -127,7 +127,7 @@ class Settings(BaseSettings):
     # Slack alerting (optional). Empty SLACK_WEBHOOK_URL disables the feature
     # entirely — no scheduler job is registered and no errors are raised.
     slack_webhook_url: str = ""
-    failed_request_alert_threshold: int = Field(default=20, ge=0)
+    failed_request_alert_threshold: int = Field(default=200, ge=0)
     failed_request_alert_window_minutes: int = Field(default=5, ge=1)
     failed_request_alert_cooldown_minutes: int = Field(default=5, ge=0)
 
