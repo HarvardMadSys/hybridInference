@@ -48,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # Full history so base...head / before...sha diffs resolve; matches
+          # Full history so base...head / before..sha diffs resolve; matches
           # the shallow-clone workaround used by every other job here.
           fetch-depth: 0
 
