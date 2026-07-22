@@ -13,8 +13,9 @@ import {
   type NotificationAction,
   type NotificationActionResult,
   type NotificationReceipt,
+  NotificationReceiptValidationError,
   type NotificationSink,
-  parseDeliveryRef,
+  parseNotificationReceipt,
 } from "./notification";
 import type { ActionClaim, ActionExecutionResult, ActionExecutor } from "./outbox";
 import type { IncidentStore, PendingAction } from "./store";
@@ -108,8 +109,20 @@ export function serializeNotificationResult(
   result: NotificationActionResult,
 ): ActionExecutionResult {
   switch (result.outcome) {
-    case "success":
-      return { outcome: "success", result: { receipt: result.receipt } };
+    case "success": {
+      try {
+        const receipt = parseNotificationReceipt(result.receipt);
+        return { outcome: "success", result: { receipt } };
+      } catch (error) {
+        return {
+          outcome: "manual_reconciliation_required",
+          error:
+            error instanceof NotificationReceiptValidationError
+              ? error.errorCode
+              : "receipt_invalid",
+        };
+      }
+    }
     case "retry":
       return {
         outcome: "retry",
@@ -133,8 +146,9 @@ export function serializeNotificationResult(
 }
 
 /**
- * Validate a success receipt before it can be committed. Returns a stable error
- * code when the receipt is unusable, or `null` when it is safe to commit.
+ * Validate a parsed success receipt against the expected delivery location.
+ * Returns a stable error code when it is unusable, or `null` when it is safe to
+ * commit.
  *
  * A structurally valid but mismatched reference must never be accepted: a wrong
  * `post_recovery` reference would otherwise advance the incident to resolved,
@@ -145,12 +159,7 @@ export function receiptViolation(
   expectedRef: DeliveryRef | null,
   sink: Pick<NotificationSink, "sinkId" | "platform">,
 ): string | null {
-  let ref: DeliveryRef;
-  try {
-    ref = parseDeliveryRef(receipt.deliveryRef);
-  } catch {
-    return "receipt_reference_invalid";
-  }
+  const ref = receipt.deliveryRef;
   if (ref.sinkId !== sink.sinkId || ref.platform !== sink.platform) {
     return "receipt_sink_mismatch";
   }
@@ -187,13 +196,19 @@ export class NotificationActionExecutor implements ActionExecutor {
     );
     const result = await this.sink.execute(projected, claim.mode);
     if (result.outcome === "success") {
+      const serialized = serializeNotificationResult(result);
+      if (serialized.outcome !== "success") {
+        return serialized;
+      }
+      const receipt = (serialized.result as { receipt: NotificationReceipt }).receipt;
       // post_parent may mint a new reference (existingRef null on first open),
       // but a retry must match it; every other action must echo the input ref.
       const expectedRef = action.type === "post_parent" ? existingRef : projected.deliveryRef;
-      const violation = receiptViolation(result.receipt, expectedRef, this.sink);
+      const violation = receiptViolation(receipt, expectedRef, this.sink);
       if (violation !== null) {
         return { outcome: "manual_reconciliation_required", error: violation };
       }
+      return serialized;
     }
     return serializeNotificationResult(result);
   }

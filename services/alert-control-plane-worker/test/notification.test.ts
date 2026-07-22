@@ -4,6 +4,7 @@ import {
   DeliveryRefValidationError,
   deliveryRefEquals,
   parseDeliveryRef,
+  parseNotificationReceipt,
 } from "../src/notification";
 
 function validRef(): Record<string, unknown> {
@@ -122,6 +123,16 @@ describe("parseDeliveryRef", () => {
     ["a bare bearer token", "Bearer abcdefghijklmnop"],
     ["a hybrid inference key", "hyi-abcdefghijklmnopqrstuvwxyz"],
     ["any URL scheme", "slack://channel/C123"],
+    ["an OpenAI-style key", "sk-test-NOTAREAL"],
+    ["a Groq-style key", "gsk_NOTAREAL"],
+    ["an xAI-style key", "xai-NOTAREAL"],
+    ["an rk-style key", "rk_NOTAREAL"],
+    ["a labeled API key", "api_key=NOTAREAL"],
+    ["a labeled authorization value", "authorization=NOTAREAL"],
+    ["a labeled cookie", "cookie=NOTAREAL"],
+    ["a labeled password", "password=NOTAREAL"],
+    ["a labeled secret", "secret=NOTAREAL"],
+    ["a labeled token", "token=NOTAREAL"],
   ])("rejects %s as an opaque identifier", (_label, secret) => {
     expect(() => parseDeliveryRef({ ...validRef(), destinationId: secret })).toThrow(
       /opaque identifier/,
@@ -142,6 +153,61 @@ describe("parseDeliveryRef", () => {
         conversationId: "1620000000.000100",
       }).messageId,
     ).toBe("1620000000.000100");
+  });
+});
+
+describe("parseNotificationReceipt", () => {
+  it("accepts and normalizes realistic Slack parent and reply IDs", () => {
+    const parsed = parseNotificationReceipt({
+      deliveryRef: {
+        ...validRef(),
+        messageId: "1620000000.000100",
+        conversationId: "1620000000.000100",
+      },
+      externalEffectId: "1620000001.000200",
+    });
+
+    expect(parsed).toEqual({
+      deliveryRef: {
+        schemaVersion: 1,
+        sinkId: "slack-primary",
+        platform: "slack",
+        destinationId: "C123",
+        messageId: "1620000000.000100",
+        conversationId: "1620000000.000100",
+      },
+      externalEffectId: "1620000001.000200",
+    });
+  });
+
+  it("rejects unknown receipt fields", () => {
+    expect(() =>
+      parseNotificationReceipt({
+        deliveryRef: validRef(),
+        responseBody: "ok",
+      }),
+    ).toThrow(/unsupported field: responseBody/);
+  });
+
+  it.each([null, undefined, 42, true, {}, []])(
+    "rejects a non-string externalEffectId: %s",
+    (externalEffectId) => {
+      expect(() =>
+        parseNotificationReceipt({ deliveryRef: validRef(), externalEffectId }),
+      ).toThrow(/externalEffectId is invalid/);
+    },
+  );
+
+  it.each([
+    "xoxb-1234567890abcdef",
+    "api_key=NOTAREAL",
+    "https://slack.com/api/chat.postMessage",
+    "reply\u0000id",
+    "x".repeat(257),
+  ])("rejects an unsafe externalEffectId: %s", (externalEffectId) => {
+    expect(() =>
+      parseNotificationReceipt({ deliveryRef: validRef(), externalEffectId }),
+    ).toThrow(/externalEffectId is invalid/);
   });
 });
 

@@ -112,6 +112,22 @@ export class DeliveryRefValidationError extends Error {
   }
 }
 
+export type NotificationReceiptValidationCode =
+  | "receipt_invalid"
+  | "receipt_reference_invalid"
+  | "receipt_external_effect_id_invalid";
+
+/** Raised when an untrusted value cannot be parsed into a notification receipt. */
+export class NotificationReceiptValidationError extends Error {
+  constructor(
+    readonly errorCode: NotificationReceiptValidationCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "NotificationReceiptValidationError";
+  }
+}
+
 const DELIVERY_REF_KEYS: ReadonlySet<string> = new Set([
   "schemaVersion",
   "sinkId",
@@ -119,6 +135,10 @@ const DELIVERY_REF_KEYS: ReadonlySet<string> = new Set([
   "destinationId",
   "messageId",
   "conversationId",
+]);
+const NOTIFICATION_RECEIPT_KEYS: ReadonlySet<string> = new Set([
+  "deliveryRef",
+  "externalEffectId",
 ]);
 
 const MAX_DELIVERY_REF_FIELD_LENGTH = 256;
@@ -131,8 +151,19 @@ const CONTROL_CHAR_RE = /[\u0000-\u001f\u007f-\u009f]/;
  * returns opaque IDs. Whitespace and `://` are rejected outright (no legitimate
  * identifier contains them), alongside common bearer/token/webhook shapes.
  */
-const SECRET_LIKE_RE =
-  /\s|:\/\/|bearer|xox[baprs]-|xapp-|github_pat_|gh[oprsu]_[A-Za-z0-9]|hyi-[A-Za-z0-9]|AKIA[0-9A-Z]|AIza[0-9A-Za-z_-]|-----BEGIN/i;
+const SECRET_LIKE_PATTERNS: readonly RegExp[] = [
+  /\s|:\/\//,
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/i,
+  /\b(?:api[_-]?key|authorization|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+/i,
+  /\bhyi-[A-Za-z0-9_-]{20,}\b/,
+  /\b(?:gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/i,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\b(?:sk|gsk|xai|rk)[-_][A-Za-z0-9._-]{6,}/i,
+  /\bAIza[0-9A-Za-z_-]{10,}/i,
+  /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/i,
+  /\bxox[baprs]-[A-Za-z0-9-]+/i,
+  /\bxapp-[A-Za-z0-9-]+/i,
+];
 
 function refString(value: unknown, field: string): string {
   if (typeof value !== "string") {
@@ -149,7 +180,7 @@ function refString(value: unknown, field: string): string {
   if (CONTROL_CHAR_RE.test(value)) {
     throw new DeliveryRefValidationError(`${field} must not contain control characters`);
   }
-  if (SECRET_LIKE_RE.test(value)) {
+  if (SECRET_LIKE_PATTERNS.some((pattern) => pattern.test(value))) {
     throw new DeliveryRefValidationError(
       `${field} must be an opaque identifier without secrets, URLs, or auth material`,
     );
@@ -199,6 +230,60 @@ export function parseDeliveryRef(value: unknown): DeliveryRef {
     destinationId,
     messageId,
     ...(conversationId !== undefined ? { conversationId } : {}),
+  };
+}
+
+/**
+ * Strictly parse a sink result before it can enter the durable outbox. The
+ * returned object contains only allowlisted fields and a normalized
+ * {@link DeliveryRef}; both the reference and optional external effect ID are
+ * bounded, secret-free opaque identifiers.
+ */
+export function parseNotificationReceipt(value: unknown): NotificationReceipt {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new NotificationReceiptValidationError(
+      "receipt_invalid",
+      "notification receipt must be an object",
+    );
+  }
+  const input = value as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (!NOTIFICATION_RECEIPT_KEYS.has(key)) {
+      throw new NotificationReceiptValidationError(
+        "receipt_invalid",
+        `notification receipt contains unsupported field: ${key}`,
+      );
+    }
+  }
+
+  let deliveryRef: DeliveryRef;
+  try {
+    deliveryRef = parseDeliveryRef(input.deliveryRef);
+  } catch {
+    throw new NotificationReceiptValidationError(
+      "receipt_reference_invalid",
+      "notification receipt deliveryRef is invalid",
+    );
+  }
+
+  let externalEffectId: string | undefined;
+  if (Object.hasOwn(input, "externalEffectId")) {
+    try {
+      externalEffectId = refString(
+        input.externalEffectId,
+        "notification receipt externalEffectId",
+      );
+    } catch {
+      throw new NotificationReceiptValidationError(
+        "receipt_external_effect_id_invalid",
+        "notification receipt externalEffectId is invalid",
+      );
+    }
+  }
+
+  return {
+    deliveryRef,
+    ...(externalEffectId !== undefined ? { externalEffectId } : {}),
   };
 }
 

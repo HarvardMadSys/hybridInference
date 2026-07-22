@@ -151,6 +151,32 @@ describe("serializeNotificationResult", () => {
     });
   });
 
+  it("persists the normalized receipt rather than the sink-owned object", () => {
+    const sinkReceipt = {
+      deliveryRef: {
+        ...deliveryRef(),
+        conversationId: undefined,
+      },
+      externalEffectId: "1620000001.000200",
+    };
+
+    expect(serializeNotificationResult({ outcome: "success", receipt: sinkReceipt })).toEqual({
+      outcome: "success",
+      result: {
+        receipt: {
+          deliveryRef: {
+            schemaVersion: 1,
+            sinkId: "slack-primary",
+            platform: "slack",
+            destinationId: "C123",
+            messageId: "100.001",
+          },
+          externalEffectId: "1620000001.000200",
+        },
+      },
+    });
+  });
+
   it("replaces a non-stable error code so response bodies cannot be persisted", () => {
     for (const errorCode of [
       "Rate limited: retry after 30s",
@@ -168,6 +194,35 @@ describe("serializeNotificationResult", () => {
     expect(
       serializeNotificationResult({ outcome: "retry", errorCode: "slack_rate_limited" }),
     ).toMatchObject({ error: "slack_rate_limited" });
+  });
+
+  it.each([
+    [
+      "an unsafe external effect ID",
+      {
+        deliveryRef: deliveryRef(),
+        externalEffectId: "xoxb-1234567890abcdef",
+      },
+      "receipt_external_effect_id_invalid",
+    ],
+    [
+      "an unknown receipt field",
+      {
+        deliveryRef: deliveryRef(),
+        responseBody: "ok",
+      },
+      "receipt_invalid",
+    ],
+  ])("does not serialize a success receipt with %s", (_label, receipt, error) => {
+    expect(
+      serializeNotificationResult({
+        outcome: "success",
+        receipt,
+      } as unknown as NotificationActionResult),
+    ).toEqual({
+      outcome: "manual_reconciliation_required",
+      error,
+    });
   });
 });
 
@@ -237,6 +292,19 @@ describe("NotificationActionExecutor", () => {
     };
   }
 
+  function sinkReturningReceipt(receipt: unknown): NotificationSink {
+    return {
+      sinkId: "slack-primary",
+      platform: "slack",
+      async execute(): Promise<NotificationActionResult> {
+        return {
+          outcome: "success",
+          receipt: receipt as never,
+        };
+      },
+    };
+  }
+
   it("rejects a post_parent receipt bound to a different sink", async () => {
     const executor = new NotificationActionExecutor(
       new InMemoryIncidentStore(),
@@ -277,6 +345,23 @@ describe("NotificationActionExecutor", () => {
     ).resolves.toEqual({
       outcome: "manual_reconciliation_required",
       error: "receipt_reference_invalid",
+    });
+  });
+
+  it("rejects an unsafe externalEffectId before it reaches the outbox result", async () => {
+    const executor = new NotificationActionExecutor(
+      new InMemoryIncidentStore(),
+      sinkReturningReceipt({
+        deliveryRef: deliveryRef(),
+        externalEffectId: "api_key=NOTAREAL",
+      }),
+    );
+
+    await expect(
+      executor.execute(claim(pendingAction({ type: "post_parent", generation: 1 }))),
+    ).resolves.toEqual({
+      outcome: "manual_reconciliation_required",
+      error: "receipt_external_effect_id_invalid",
     });
   });
 });
