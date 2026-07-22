@@ -55,6 +55,8 @@ export interface NotificationAction {
   readonly sinkId: string;
   readonly incidentId: string;
   readonly generation: number;
+  /** Wall-clock start of the current external write attempt, persisted by the outbox. */
+  readonly attemptStartedAtMs: number;
   readonly payloadDigest: string;
   readonly deliveryRef: DeliveryRef | null;
   readonly payload: Readonly<Record<string, unknown>>;

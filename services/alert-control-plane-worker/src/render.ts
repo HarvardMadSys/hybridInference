@@ -12,6 +12,7 @@ export interface IncidentRenderState {
   readonly action_id: string;
   readonly incident_id: string;
   readonly generation: number;
+  readonly payload_digest: string;
   readonly occurrence_count: number;
   readonly first_seen: string;
   readonly last_seen: string;
@@ -116,6 +117,7 @@ function metadata(state: IncidentRenderState): SlackMessage["metadata"] {
       action_id: state.action_id,
       incident_id: state.incident_id,
       generation: state.generation,
+      payload_digest: state.payload_digest,
     },
   };
 }
@@ -218,6 +220,39 @@ export function renderRecoveryReply(
         ),
       },
       { type: "section", fields: recoveryFields },
+    ],
+    metadata: metadata(state),
+  };
+}
+
+/** Render a fenced Codex analysis as a thread reply without trusting mrkdwn input. */
+export function renderAnalysisReply(
+  analysis: Readonly<Record<string, unknown>>,
+  state: IncidentRenderState,
+): SlackMessage {
+  const serialized = JSON.stringify(analysis);
+  if (serialized === undefined) throw new Error("analysis must be JSON serializable");
+  const safeAnalysis = escapeSlackMrkdwn(serialized, 2_700);
+  return {
+    text: truncate(`Incident ${escapeSlackMrkdwn(state.incident_id, 128)} analysis available`, 4_000),
+    blocks: [
+      {
+        type: "header",
+        text: { type: "plain_text", text: "🧠 Incident analysis", emoji: true },
+      },
+      {
+        type: "section",
+        text: mrkdwn(`*Codex analysis*\n\`${safeAnalysis}\``),
+      },
+      {
+        type: "context",
+        elements: [
+          mrkdwn(
+            `Incident: ${escapeSlackMrkdwn(state.incident_id, 128)} · ` +
+              `Generation: ${state.generation}`,
+          ),
+        ],
+      },
     ],
     metadata: metadata(state),
   };

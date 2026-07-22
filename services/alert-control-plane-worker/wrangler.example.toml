@@ -15,4 +15,10 @@ tag = "v1"
 new_sqlite_classes = ["IncidentDurableObject"]
 
 # ROUTE_KEY_V1 and producer credentials are Worker secrets. They must not be
-# stored in this file. No Slack or GitHub binding is enabled in Phase 1.
+# stored in this file. Phase B includes a SlackSink implementation but does not
+# register it here or in src/index.ts; the Worker remains dormant.
+#
+# A future, separately reviewed environment config will need the secret
+# SLACK_BOT_TOKEN and non-secret SLACK_CHANNEL_ID / SLACK_SINK_ID bindings.
+# Their values must not be committed. The Slack app also needs chat:write and
+# the target conversation's matching *:history scope for reconciliation.

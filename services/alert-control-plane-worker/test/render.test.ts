@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   escapeSlackMrkdwn,
+  renderAnalysisReply,
   renderParent,
   renderRecoveryReply,
   type IncidentRenderState,
@@ -66,6 +67,7 @@ function renderState(actionId = "action-parent-1"): IncidentRenderState {
     action_id: actionId,
     incident_id: "incident-1",
     generation: 3,
+    payload_digest: `sha256:${"c".repeat(64)}`,
     occurrence_count: 8,
     first_seen: "2026-07-19T06:00:00.000Z",
     last_seen: "2026-07-19T06:04:12.000Z",
@@ -131,6 +133,7 @@ describe("Slack renderer", () => {
         action_id: "action-parent-stable",
         incident_id: "incident-1",
         generation: 3,
+        payload_digest: `sha256:${"c".repeat(64)}`,
       },
     });
   });
@@ -146,6 +149,33 @@ describe("Slack renderer", () => {
     expect(renderedText(recovery)).toContain("4m 12s");
     expect(recovery.metadata.event_payload.action_id).toBe("action-recovery-1");
     expect(() => renderRecoveryReply(envelope("firing"), renderState())).toThrow(/resolved event/);
+  });
+
+  it("renders analysis as an escaped, bounded reply with complete metadata", () => {
+    const analysis = renderAnalysisReply(
+      {
+        summary: "Root cause <@U012345> & <!channel>",
+        detail: "<&>".repeat(2_000),
+      },
+      renderState("action-analysis-1"),
+    );
+    const text = renderedText(analysis);
+
+    expect(text).toContain("Incident analysis");
+    expect(text).not.toContain("<@U012345>");
+    expect(text).not.toContain("<!channel>");
+    expect(text).toContain("&lt;@U012345&gt;");
+    expect(analysis.metadata.event_payload).toEqual({
+      action_id: "action-analysis-1",
+      incident_id: "incident-1",
+      generation: 3,
+      payload_digest: `sha256:${"c".repeat(64)}`,
+    });
+    for (const block of analysis.blocks) {
+      if (block.type === "section" && block.text) {
+        expect([...block.text.text].length).toBeLessThanOrEqual(3_000);
+      }
+    }
   });
 
   it("stays within Slack text and block limits after entity expansion", () => {

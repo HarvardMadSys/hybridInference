@@ -8,13 +8,17 @@ import {
   serializeNotificationResult,
 } from "../src/notification-executor";
 import type { ActionClaim } from "../src/outbox";
-import { InMemoryIncidentStore } from "../src/store";
+import { InMemoryIncidentStore, type PendingAction } from "../src/store";
 import {
   deliveryRef,
   incidentGeneration,
-  pendingAction,
+  pendingAction as basePendingAction,
   ThreadedFakeSink,
 } from "./fakes";
+
+function pendingAction(overrides: Partial<PendingAction> = {}): PendingAction {
+  return basePendingAction({ startedAtMs: 100, ...overrides });
+}
 
 function claim(action: ActionClaim["action"], mode: ActionClaim["mode"] = "execute"): ActionClaim {
   return { action, mode };
@@ -54,6 +58,7 @@ describe("projectNotificationAction", () => {
     expect(projected.payload).not.toHaveProperty("slack_thread_ts");
     expect(projected.deliveryRef).toEqual(deliveryRef());
     expect(projected.sinkId).toBe("slack-primary");
+    expect(projected.attemptStartedAtMs).toBe(100);
     expect(projected.payloadDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
@@ -122,6 +127,16 @@ describe("projectNotificationAction", () => {
         "slack-primary",
       ),
     ).rejects.toThrow(/sinkId does not match/);
+  });
+
+  it("requires the persisted start of the external attempt", async () => {
+    await expect(
+      projectNotificationAction(
+        basePendingAction({ type: "post_parent", startedAtMs: null }),
+        null,
+        "slack-primary",
+      ),
+    ).rejects.toThrow(/persisted attempt start time/);
   });
 });
 

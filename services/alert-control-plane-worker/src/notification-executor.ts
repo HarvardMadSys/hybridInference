@@ -25,7 +25,8 @@ import { canonicalDigest } from "./validation";
  * Only platform-agnostic, already-validated semantic fields are forwarded to a
  * sink. Fence/platform fields such as `state_version`, `resolution_epoch`,
  * `delivery_ref`, and any Slack-specific keys are intentionally excluded by
- * being absent from this allowlist.
+ * being absent from this allowlist. The outbox's persisted `startedAtMs` is
+ * projected separately as the sole reconciliation-window timestamp.
  */
 const NOTIFICATION_PAYLOAD_ALLOWLIST: ReadonlySet<string> = new Set([
   "incident_id",
@@ -66,6 +67,9 @@ export async function projectNotificationAction(
   if (deliveryRef !== null && deliveryRef.sinkId !== sinkId) {
     throw new Error("delivery reference sinkId does not match the target sink");
   }
+  if (action.startedAtMs === null || !Number.isFinite(action.startedAtMs)) {
+    throw new Error("notification action requires a persisted attempt start time");
+  }
 
   const payload: Record<string, unknown> = {};
   for (const key of Object.keys(action.payload)) {
@@ -87,6 +91,7 @@ export async function projectNotificationAction(
     sinkId,
     incidentId: action.incidentId,
     generation: action.generation,
+    attemptStartedAtMs: action.startedAtMs,
     payloadDigest,
     deliveryRef: type === "post_parent" ? null : deliveryRef,
     payload,

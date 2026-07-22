@@ -84,6 +84,7 @@ export interface SlackMessageMetadata {
     readonly action_id: string;
     readonly incident_id: string;
     readonly generation: number;
+    readonly payload_digest: string;
   };
 }
 
