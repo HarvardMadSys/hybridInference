@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "wrangler dev --config wrangler.example.toml",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:slack-live": "vitest run --config vitest.live.config.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",

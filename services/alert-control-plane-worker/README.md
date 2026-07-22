@@ -46,6 +46,53 @@ npm run typecheck
 npm test
 ```
 
+`npm test` only includes `test/**/*.test.ts`; it never discovers the opt-in
+suite under `live/` and therefore never calls Slack.
+
+## Target-workspace Slack readback gate
+
+Run this gate once for each exact bot installation and target conversation
+before enabling a producer. It uses the real `SlackSink` with its production
+defaults (30-second visibility grace, bounded reconciliation windows, complete
+cursor pagination, and a 10-second request timeout).
+
+The Slack app needs `chat:write` and the history scope matching the target
+conversation: `channels:history`, `groups:history`, `im:history`, or
+`mpim:history`. The bot must be a member of the conversation. Both
+`conversations.history` and `conversations.replies` must return complete
+metadata when `include_all_metadata=true`.
+
+The command is deliberately separate from normal tests and requires an exact
+confirmation value:
+
+```bash
+# Populate SLACK_BOT_TOKEN through the operator's secret manager first.
+export SLACK_CHANNEL_ID=C0123456789
+export SLACK_SINK_ID=slack-staging
+export SLACK_LIVE_GATE_CONFIRM=write-synthetic-messages
+npm run test:slack-live
+```
+
+The test visibly leaves one `[LIVE GATE]` synthetic parent in the target
+conversation, updates that parent, and adds recovery and analysis replies in
+the same thread. It does not delete these audit artifacts.
+
+For each of the four writes, the transport first verifies that Slack accepted
+the write and then deliberately drops the successful response. The sink must
+return `uncertain`; the gate subsequently calls only reconciliation until it
+finds the exact four-field metadata. It also proves that reconciling the parent
+twice yields the same `DeliveryRef`, that the updated parent metadata is
+readable, and that both replies have distinct non-parent effect IDs in the
+original thread. Retry timing always honors Slack's `Retry-After` through
+`reconcileAtMs`; a response without a retry time uses a one-minute fallback.
+
+On success, stdout contains only sanitized evidence: the run, sink, channel,
+parent, update, recovery, and analysis IDs. The token and Slack response bodies
+are never printed. A pass proves the strict-single-parent readback assumption
+for that token/channel at that time. It does not register the sink in the
+Worker, enable `/v1/events`, activate a producer, or replace staging lifecycle
+verification.
+
 Later phases register the reviewed environment bindings and sink, run a
 synthetic Slack lifecycle in staging, and only then enable an authenticated
 producer. None of those activation steps are enabled by this package.
