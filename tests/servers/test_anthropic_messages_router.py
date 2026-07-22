@@ -6,6 +6,9 @@ import asyncio
 import json
 
 import pytest
+from fastapi import HTTPException
+
+from serving.servers.routers import anthropic_messages
 
 NATIVE_MODEL = "claude-opus-4.7"
 OPENAI_MODEL = "glm-4.7"
@@ -179,6 +182,20 @@ async def test_unknown_model_returns_anthropic_format_404(anthropic_test_client)
     err = r.json()
     assert err["type"] == "error"
     assert err["error"]["type"] == "not_found_error"
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejects_unpublished_route(anthropic_test_client):
+    app = anthropic_test_client._transport.app
+    router_exec = app.state.services.router
+    route = router_exec.routes[OPENAI_MODEL]
+    route.published = False
+
+    with pytest.raises(HTTPException) as exc_info:
+        await anthropic_messages._resolve(OPENAI_MODEL, router_exec, None)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == f"Model '{OPENAI_MODEL}' not found"
 
 
 @pytest.mark.asyncio

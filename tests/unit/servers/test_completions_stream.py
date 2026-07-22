@@ -281,6 +281,7 @@ async def test_finalization_schedules_log_and_records_observation():
     assert log_data["response"]["choices"][0]["finish_reason"] == "stop"
     cl_logger.record_routing_observation.assert_called_once()
     obs_kwargs = cl_logger.record_routing_observation.call_args.kwargs
+    assert obs_kwargs["request_id"] == "rid-1"
     assert obs_kwargs["success"] is True
 
 
@@ -490,6 +491,7 @@ async def test_error_emits_error_chunk_and_schedules_error_log():
     assert log_data["error"] == "upstream blew up"
     cl_logger.record_routing_observation.assert_called_once()
     obs_kwargs = cl_logger.record_routing_observation.call_args.kwargs
+    assert obs_kwargs["request_id"] == "rid-1"
     assert obs_kwargs["success"] is False
 
 

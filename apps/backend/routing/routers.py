@@ -1,7 +1,6 @@
 """Routing strategies for request distribution.
 
 Provides:
-- BaseRouter: Abstract base with shared infrastructure (circuit breaker, EWMA health)
 - FixedRouter: Weighted random routing with automatic fallback
 - RouteConfig, RoutingObservation, ProviderPinError
 """
@@ -9,12 +8,10 @@ Provides:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import random
 import threading
 import time
-from collections import Counter
 from dataclasses import dataclass, field
 from inspect import isawaitable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -22,27 +19,20 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from routing.protocols import RoutingRequestOptions
     from serving.adapters.base import BaseAdapter
 
+from routing.endpoint_health import EndpointHealthRegistry
+from routing.endpoints import endpoint_id_for_adapter
+from routing.route_table import EffectiveRoute, RouteTableSnapshot
+from routing.streaming import has_non_empty_content
+from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
-from serving.observability.alerts import AlertSeverity, alert_slack, escape_slack_text
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-# Strong references to fire-and-forget Slack alert tasks. asyncio holds only
-# weak refs to scheduled tasks, so without this set the GC may cancel an alert
-# mid-flight (e.g. when the breaker that scheduled it is dropped). Tasks
-# remove themselves via add_done_callback once they finish.
-_ALERT_TASKS: set[asyncio.Task[bool]] = set()
-
-# Bound on the number of distinct users tracked per circuit breaker for a
-# single failure streak. Caps memory when a long outage spans many callers;
-# users already being tracked keep accumulating their failure counts.
-_MAX_TRACKED_OFFENDERS = 50
-# How many of the top offenders to name explicitly in the circuit-open alert.
-_OFFENDERS_IN_ALERT = 10
+_LEGACY_ROUTING_OPTION_UNSET = object()
 
 # ============================================================================
 # Exceptions
@@ -84,17 +74,18 @@ class RouteConfig:
     canonical_model_id: str | None = None
     admin_only: bool = False
     required_role: str = "free"
+    published: bool = True
 
 
-_OBSERVATION_LEGACY_UNSET = object()
-
-
-@dataclass(init=False)
+@dataclass(kw_only=True)
 class RoutingObservation:
     """Observation from a completed request, for online learning routers.
 
     RouteWiseRouter overrides record_observation() to update its cost model;
-    FixedRouter ignores observations (no-op).
+    FixedRouter ignores observations (no-op). All fields are keyword-only so
+    request correlation, terminal disposition, and strategy-owned metadata stay
+    explicit at construction sites. Supplied ``strategy_metadata`` is borrowed
+    from its caller; observations and router consumers treat it as read-only.
     """
 
     model_id: str
@@ -103,100 +94,11 @@ class RoutingObservation:
     total_latency_ms: float
     token_count: int
     success: bool
+    request_id: str | None = None
+    terminal: bool = True
     prompt_tokens: int = 0
     completion_tokens: int = 0
     strategy_metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __init__(
-        self,
-        model_id: str,
-        endpoint_id: str,
-        ttft_ms: float | None,
-        total_latency_ms: float,
-        token_count: int,
-        success: bool,
-        *legacy_tail: Any,
-        prompt_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
-        completion_tokens: int | object = _OBSERVATION_LEGACY_UNSET,
-        strategy_metadata: dict[str, Any] | None = None,
-        quota_committed: float | object = _OBSERVATION_LEGACY_UNSET,
-        selected_provider_type: str | None | object = _OBSERVATION_LEGACY_UNSET,
-        sc_committed: bool | object = _OBSERVATION_LEGACY_UNSET,
-        hedged: bool | object = _OBSERVATION_LEGACY_UNSET,
-        backup_won: bool | object = _OBSERVATION_LEGACY_UNSET,
-        lp_status: str | None | object = _OBSERVATION_LEGACY_UNSET,
-    ) -> None:
-        if len(legacy_tail) > 8:
-            raise TypeError(
-                f"RoutingObservation.__init__() takes at most 14 positional arguments "
-                f"but {6 + len(legacy_tail)} were given"
-            )
-
-        values: dict[str, Any] = {
-            "quota_committed": quota_committed,
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "selected_provider_type": selected_provider_type,
-            "sc_committed": sc_committed,
-            "hedged": hedged,
-            "backup_won": backup_won,
-            "lp_status": lp_status,
-        }
-        legacy_names = [
-            "quota_committed",
-            "prompt_tokens",
-            "completion_tokens",
-            "selected_provider_type",
-            "sc_committed",
-            "hedged",
-            "backup_won",
-            "lp_status",
-        ]
-        for name, value in zip(legacy_names, legacy_tail, strict=False):
-            if values[name] is not _OBSERVATION_LEGACY_UNSET:
-                raise TypeError(
-                    f"RoutingObservation.__init__() got multiple values for argument '{name}'"
-                )
-            values[name] = value
-
-        metadata = dict(strategy_metadata or {})
-        legacy_routewise: dict[str, Any] = {}
-        for name in (
-            "quota_committed",
-            "selected_provider_type",
-            "sc_committed",
-            "hedged",
-            "backup_won",
-            "lp_status",
-        ):
-            if values[name] is not _OBSERVATION_LEGACY_UNSET:
-                legacy_routewise[name] = values[name]
-        if legacy_routewise:
-            existing_routewise = metadata.get("routewise")
-            merged_routewise = (
-                dict(existing_routewise) if isinstance(existing_routewise, dict) else {}
-            )
-            merged_routewise.update(legacy_routewise)
-            metadata["routewise"] = merged_routewise
-
-        resolved_prompt_tokens = (
-            0 if values["prompt_tokens"] is _OBSERVATION_LEGACY_UNSET else values["prompt_tokens"]
-        )
-        resolved_completion_tokens = (
-            0
-            if values["completion_tokens"] is _OBSERVATION_LEGACY_UNSET
-            else values["completion_tokens"]
-        )
-
-        self.model_id = model_id
-        self.endpoint_id = endpoint_id
-        self.ttft_ms = ttft_ms
-        self.total_latency_ms = total_latency_ms
-        self.token_count = token_count
-        self.success = success
-        self.prompt_tokens = resolved_prompt_tokens
-        self.completion_tokens = resolved_completion_tokens
-        self.strategy_metadata = metadata
 
 
 @dataclass
@@ -217,450 +119,77 @@ AFFINITY_SWEEP_THRESHOLD: int = 1000
 AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 
 
-def _get_endpoint_id(adapter: BaseAdapter) -> str:
-    """Get the unique endpoint identifier for health tracking.
-
-    Uses endpoint_id if set, otherwise falls back to provider.
-    """
-    return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
-
-
-def _failed_attempt(adapter: BaseAdapter, exc: BaseException) -> dict[str, str]:
-    """Return fallback-attempt telemetry."""
-    return {
-        "provider": adapter.config.provider,
-        "endpoint_id": _get_endpoint_id(adapter),
-        "error_type": exc.__class__.__name__,
-        "error": str(exc),
-    }
-
-
-def _routing_chunk(
-    adapter: BaseAdapter,
-    *,
-    fallback: bool = False,
-    failed_attempts: list[dict[str, str]] | None = None,
-) -> str:
-    """Build a synthetic SSE chunk carrying ``_routing`` metadata for streaming.
-
-    Mirrors the ``resp["_routing"]`` injection used by ``chat_completion`` so
-    the ``completions`` router can recover the actual upstream provider,
-    base_url, and endpoint_id during streaming. Without this, the request
-    context's ``provider`` (set inside ``_execute_stream_adapter``) is
-    invisible to the parent coroutine when the adapter stream is consumed
-    via an ``asyncio.create_task`` reader, and api_logs end up with
-    ``provider="router"`` and ``cost_usd=NULL``.
-
-    The chunk is emitted before any adapter chunks so the completions router
-    sees routing info on the very first iteration. ``sanitize_chunk`` pops
-    ``_routing`` before forwarding to the client, so users never see this
-    field on the wire.
-    """
-    routing: dict[str, Any] = {
-        "provider": adapter.config.provider,
-        "base_url": adapter.config.base_url,
-        "endpoint_id": getattr(adapter.config, "endpoint_id", None),
-    }
-    if fallback:
-        routing["fallback"] = True
-    if failed_attempts:
-        routing["failed_attempts"] = failed_attempts
-    return f"data: {json.dumps({'choices': [], '_routing': routing})}\n\n"
-
-
-def _has_non_empty_content(chunk: Any) -> bool:
-    r"""Return True if the SSE ``chunk`` carries a non-empty delta.
-
-    The streaming protocol emits lines like ``"data: {json}\n\n"`` and a
-    terminal ``"data: [DONE]\n\n"``. We consider a chunk as having started
-    output when delta.content, delta.reasoning_content, delta.reasoning, or
-    delta.thinking is a non-empty string **or** delta.tool_calls is a non-empty
-    list.
-    """
-    try:
-        if not isinstance(chunk, str | bytes):
-            return True  # Unknown type; assume it carries content
-        s = chunk.decode() if isinstance(chunk, bytes) else chunk
-        if "[DONE]" in s:
-            return False
-        prefix = "data: "
-        if not s.startswith(prefix):
-            return True  # Non-standard; assume content
-        import json as _json
-
-        payload = s[len(prefix) :].strip()
-        obj = _json.loads(payload)
-        choices = obj.get("choices") or []
-        if not choices:
-            return False
-        delta = choices[0].get("delta") or {}
-        content = delta.get("content")
-        if isinstance(content, str) and len(content) > 0:
-            return True
-        reasoning = (
-            delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
-        )
-        if isinstance(reasoning, str) and len(reasoning) > 0:
-            return True
-        tool_calls = delta.get("tool_calls")
-        return isinstance(tool_calls, list) and len(tool_calls) > 0
-    except Exception:
-        # Be conservative and treat as content to avoid missing TTFT altogether
-        return True
-
-
-def _reason_str(s: str) -> str:
-    return s if s and len(s) < 64 else "error"
-
-
-def _http_status_of(exc: BaseException) -> int | None:
-    """Best-effort extract of an upstream HTTP status code from an exception.
-
-    Adapters surface upstream HTTP errors as exceptions that carry the status on
-    one of a few attributes depending on the client library (aiohttp's
-    ``ClientResponseError`` uses ``.status``; others use ``.status_code`` or
-    ``.code``). Duck-type rather than importing the HTTP client into the routing
-    layer. Returns ``None`` when no status is present (e.g. a timeout or
-    connection error, which is a genuine upstream fault).
-    """
-    for attr in ("status", "status_code", "code"):
-        val = getattr(exc, attr, None)
-        if isinstance(val, int) and 100 <= val <= 599:
-            return val
-    # httpx / requests carry the status on a nested response object.
-    response = getattr(exc, "response", None)
-    if response is not None:
-        for attr in ("status_code", "status"):
-            val = getattr(response, attr, None)
-            if isinstance(val, int) and 100 <= val <= 599:
-                return val
-    return None
-
-
-def _is_client_error(exc: BaseException) -> bool:
-    """Return True if ``exc`` is an upstream client error that must NOT trip the breaker.
-
-    A client (4xx) error means the upstream is healthy and correctly rejected a
-    bad request (e.g. vLLM's 400 "max context length exceeded"). Counting it as
-    an upstream fault lets one user's bad request open the circuit for everyone.
-    A 5xx / timeout / connection error is a genuine fault and returns False.
-    """
-    status = _http_status_of(exc)
-    if status is None or not (400 <= status < 500):
-        # No status, or a 5xx — a genuine upstream fault. Count it.
-        return False
-    # 408 (Request Timeout) and 429 (Too Many Requests) are 4xx but signal the
-    # upstream is slow/overloaded, not that the request was malformed. Let those
-    # trip the breaker so it sheds load. Every other 4xx (400 bad request, 401/403
-    # auth, 404, 413 payload too large, 422) is a per-request/config error: the
-    # upstream is healthy and correctly rejected it, so spare the breaker.
-    return status not in (408, 429)
-
-
-def _detail_str(s: str | None, *, limit: int = 500) -> str | None:
-    """Normalize an upstream error message for inclusion in alerts.
-
-    Collapses whitespace and truncates to keep Slack messages readable.
-    Returns ``None`` for empty/blank input.
-    """
-    if not s:
-        return None
-    # Bound the input before splitting/joining so a massive upstream body
-    # (e.g. an HTML 502 page) can't cause large allocations / CPU spikes.
-    if len(s) > limit * 2:
-        s = s[: limit * 2]
-    cleaned = " ".join(s.split())
-    if not cleaned:
-        return None
-    return cleaned if len(cleaned) <= limit else cleaned[: limit - 1] + "…"
-
-
-def _offender_str() -> str | None:
-    """Identify the user behind the current request for failure attribution.
-
-    Reads the request-scoped context populated by the completions handler.
-    Prefers a human-readable ``user_name`` when present but always pins the
-    stable ``user_id`` so operators can act on the alert. Returns ``None`` when
-    no identity is available (e.g. health probes or background tasks running
-    outside a request).
-
-    The (caller-controlled) display name has its whitespace collapsed so a
-    name containing newlines can't forge extra lines in an alert; Slack control
-    characters are escaped later, at format time.
-    """
-    ctx = req_ctx.get()
-    user_id = ctx.get("user_id")
-    raw_name = ctx.get("user_name")
-    user_name = " ".join(str(raw_name).split()) if raw_name else None
-    if user_id and user_name:
-        return f"{user_name} ({user_id})"
-    if user_id:
-        return str(user_id)
-    if user_name:
-        return user_name
-    return None
-
-
 # ============================================================================
-# Health Tracking
+# FixedRouter
 # ============================================================================
 
 
-class _ProviderHealth:
-    """Track provider availability via exponentially weighted counters."""
+class FixedRouter:
+    """Weighted random routing with automatic fallback.
 
-    def __init__(self, provider: str, alpha: float | None = None) -> None:
-        self.provider = provider
-        env_alpha = os.getenv("ROUTER_HEALTH_EWMA_ALPHA")
-        self.alpha = (
-            float(env_alpha) if env_alpha is not None else (alpha if alpha is not None else 0.1)
-        )
-        self.ewma_success = 1.0
-        self.ewma_total = 1.0
-        self._lock = threading.Lock()
+    Drop-in replacement for RouteExecutor. Selects adapters via weighted
+    random selection and tries remaining adapters on failure.
 
-    def record(self, success: bool) -> None:
-        inc_s = 1.0 if success else 0.0
-        with self._lock:
-            self.ewma_success = (1 - self.alpha) * self.ewma_success + self.alpha * inc_s
-            self.ewma_total = (1 - self.alpha) * self.ewma_total + self.alpha * 1.0
-
-    @property
-    def availability(self) -> float:
-        if self.ewma_total <= 0:
-            return 1.0
-        return max(0.0, min(1.0, self.ewma_success / self.ewma_total))
-
-
-class _CircuitState:
-    CLOSED = "closed"
-    OPEN = "open"
-    HALF_OPEN = "half_open"
-
-
-class _CircuitBreaker:
-    """Simple circuit breaker per provider.
-
-    - Open when consecutive failures exceed threshold or availability too low.
-    - Remain open for a cooldown, then transition to HALF_OPEN to allow a trial.
-    - On trial success, close; on failure, reopen and reset cooldown.
+    Args:
+        params: Optional Pydantic ``FixedParams`` (passed by the strategy
+            registry).  ``None`` keeps existing call-site behavior.
+            ``params.local_fraction`` is currently informational; the existing
+            weighted-random selection over ``routes`` is unchanged.
     """
 
     def __init__(
         self,
-        provider: str,
-        *,
-        failure_threshold: int | None = None,
-        cooldown_seconds: float | None = None,
-        min_availability: float | None = None,
+        params: Any = None,
+        weight_override_resolver: Any | None = None,
+        disabled_provider_resolver: Any | None = None,
+        health_registry: EndpointHealthRegistry | None = None,
     ) -> None:
-        self.provider = provider
-        self.state = _CircuitState.CLOSED
-        # Read configuration from environment with sensible defaults.
-        self.failure_threshold = int(
-            os.getenv(
-                "CIRCUIT_FAILURE_THRESHOLD",
-                str(failure_threshold if failure_threshold is not None else 3),
-            )
+        self._health_registry = (
+            health_registry if health_registry is not None else EndpointHealthRegistry()
         )
-        self.cooldown_seconds = float(
-            os.getenv(
-                "CIRCUIT_COOLDOWN_SECONDS",
-                str(cooldown_seconds if cooldown_seconds is not None else 30.0),
-            )
-        )
-        self.min_availability = float(
-            os.getenv(
-                "CIRCUIT_MIN_AVAILABILITY",
-                str(min_availability if min_availability is not None else 0.7),
-            )
-        )
-        self.consecutive_failures = 0
-        self.last_opened: float | None = None
-        # Users whose requests contributed to the current failure streak,
-        # keyed by identity with a per-user failure count. Cleared whenever the
-        # streak resets on success so it always reflects the live outage.
-        self._offenders: Counter[str] = Counter()
-        self._lock = threading.Lock()
-
-    def allow_request(self) -> bool:
-        with self._lock:
-            if self.state == _CircuitState.CLOSED:
-                return True
-            if self.state == _CircuitState.OPEN:
-                if self.last_opened is None:
-                    return False
-                if (time.perf_counter() - self.last_opened) >= self.cooldown_seconds:
-                    # Move to half-open for a trial request.
-                    self.state = _CircuitState.HALF_OPEN
-                    return True
-                return False
-            # HALF_OPEN allows a single trial at a time; conservative approach: allow.
-            return True
-
-    def on_success(self) -> None:
-        with self._lock:
-            self.consecutive_failures = 0
-            # The failure streak is broken — drop the offenders accumulated for
-            # it so a later trip only names users behind the new streak.
-            self._offenders.clear()
-            if self.state in (_CircuitState.OPEN, _CircuitState.HALF_OPEN):
-                # Capture how long the circuit stayed open before clearing the
-                # timestamp, so the recovery log carries the outage duration.
-                duration_ms = (
-                    (time.perf_counter() - self.last_opened) * 1000.0
-                    if self.last_opened is not None
-                    else None
-                )
-                self.state = _CircuitState.CLOSED
-                self.last_opened = None
-                logger.info(
-                    "circuit_closed",
-                    extra={
-                        "event": "circuit_closed",
-                        "provider": self.provider,
-                        "duration_ms": duration_ms,
-                    },
-                )
-
-    def on_failure(
-        self,
-        *,
-        availability: float | None = None,
-        reason: str = "error",
-        detail: str | None = None,
-        offender: str | None = None,
-    ) -> None:
-        with self._lock:
-            self.consecutive_failures += 1
-            # Attribute the failure to its user. Already-tracked offenders keep
-            # accumulating; only the number of *distinct* users is capped so a
-            # long, broad outage can't grow this counter without limit.
-            if offender and (
-                offender in self._offenders or len(self._offenders) < _MAX_TRACKED_OFFENDERS
-            ):
-                self._offenders[offender] += 1
-            trip = False
-            if self.consecutive_failures >= self.failure_threshold:
-                trip = True
-            if availability is not None and availability < self.min_availability:
-                trip = True
-            if trip:
-                prev_state = self.state
-                self.state = _CircuitState.OPEN
-                self.last_opened = time.perf_counter()
-                # Fire-and-forget Slack alert on CLOSED→OPEN or HALF_OPEN→OPEN.
-                if prev_state in (_CircuitState.CLOSED, _CircuitState.HALF_OPEN):
-                    context: dict[str, Any] = {
-                        "provider": self.provider,
-                        "consecutive_failures": self.consecutive_failures,
-                        "availability": (
-                            f"{availability:.2f}" if availability is not None else "n/a"
-                        ),
-                        "reason": reason or "unknown",
-                    }
-                    # Surface the actual upstream error text when available so
-                    # the alert is actionable without grepping logs.
-                    if detail:
-                        context["upstream_error"] = detail
-                    # Name the users whose requests drove this failure streak so
-                    # operators can see who is affected (and who may be abusing
-                    # a provider, as with coding-only upstream restrictions).
-                    offenders = self._format_offenders()
-                    if offenders:
-                        context["offending_users"] = offenders
-                    # Emit a structured log record for the circuit-open
-                    # transition. The Slack alert is fire-and-forget and writes
-                    # no log line, so without this the event is invisible in the
-                    # application logs.
-                    logger.warning(
-                        "circuit_open",
-                        extra={
-                            "event": "circuit_open",
-                            "provider": self.provider,
-                            "consecutive_failures": self.consecutive_failures,
-                            "availability": availability,
-                            "reason": reason or "unknown",
-                            "upstream_error": detail,
-                            # Log the raw {user: failure_count} mapping rather
-                            # than the pre-formatted alert string so log
-                            # aggregators can filter/aggregate by user.
-                            "offending_users": dict(self._offenders) or None,
-                        },
-                    )
-                    try:
-                        task = asyncio.ensure_future(
-                            alert_slack(
-                                AlertSeverity.ERROR,
-                                "Provider circuit opened",
-                                context,
-                                dedupe_key=f"circuit_open:{self.provider}",
-                                cooldown_sec=300,
-                            )
-                        )
-                    except RuntimeError:
-                        # No running event loop (e.g., unit test outside
-                        # pytest-asyncio). Best-effort alert; skip silently.
-                        pass
-                    else:
-                        # Keep a strong reference until the task finishes so
-                        # the GC cannot cancel it mid-flight.
-                        _ALERT_TASKS.add(task)
-                        task.add_done_callback(_ALERT_TASKS.discard)
-
-    def _format_offenders(self, *, top: int = _OFFENDERS_IN_ALERT) -> str | None:
-        """Render the failure-streak offenders for an alert, busiest first.
-
-        Caller must hold ``self._lock``. Returns ``None`` when no offenders were
-        attributed (e.g. failures raised outside any request context). User
-        identities are Slack-escaped here because they may include a
-        caller-controlled display name.
-        """
-        if not self._offenders:
-            return None
-        named = self._offenders.most_common(top)
-        parts = [f"{escape_slack_text(user)} x{count}" for user, count in named]
-        remaining = len(self._offenders) - len(named)
-        if remaining > 0:
-            parts.append(f"+{remaining} more")
-        return ", ".join(parts)
-
-
-# ============================================================================
-# BaseRouter
-# ============================================================================
-
-
-class BaseRouter:
-    """Abstract base router with circuit breaker, health tracking, and metrics.
-
-    Provides shared infrastructure for all routing strategies:
-    - Circuit breaker protection per provider/endpoint
-    - EWMA health tracking
-    - Provider availability metrics
-
-    Subclasses implement their own chat_completion / stream_chat_completion
-    using the shared infrastructure methods.
-    """
-
-    def __init__(self) -> None:
-        self._health: dict[str, _ProviderHealth] = {}
-        self._circuits: dict[str, _CircuitBreaker] = {}
         self._lock = threading.RLock()
         self._affinity: dict[tuple[str, str], _Affinity] = {}
+        self.routes: dict[str, RouteConfig] = {}
+        # Keep the validated params accessible for future use (e.g. honoring
+        # local_fraction in adapter selection).  Today FixedRouter ignores it
+        # because per-route weights already encode local-vs-remote balance.
+        self.params = params
+        self.weight_override_resolver = weight_override_resolver
+        # Admin kill switch: adapters whose provider is disabled are forced to
+        # weight 0 so the existing ``weight > 0`` gates in selection and every
+        # fallback loop skip them without any per-call-site change.
+        self.disabled_provider_resolver = disabled_provider_resolver
+
+    @property
+    def endpoint_health_registry(self) -> EndpointHealthRegistry:
+        """Return the process-scoped endpoint-health collaborator."""
+        return self._health_registry
+
+    @staticmethod
+    def _resolve_pin_provider(
+        routing_options: RoutingRequestOptions | None,
+        params: dict[str, Any],
+    ) -> str | None:
+        """Resolve the explicit pin without forwarding router controls upstream."""
+        option_pin = routing_options.pin_provider if routing_options is not None else None
+        legacy_pin = params.pop("pin_provider", _LEGACY_ROUTING_OPTION_UNSET)
+        if legacy_pin is _LEGACY_ROUTING_OPTION_UNSET:
+            return option_pin
+        if legacy_pin is None:
+            return option_pin
+        # One-release compatibility for direct FixedRouter callers. The public
+        # serving path uses RoutingRequestOptions and never enters this branch.
+        if option_pin is not None:
+            raise TypeError("pin_provider was supplied both directly and in routing_options")
+        if not isinstance(legacy_pin, str):
+            raise TypeError("pin_provider must be a string or None")
+        return legacy_pin
 
     def _ensure_health(self, endpoint_id: str) -> None:
-        with self._lock:
-            if endpoint_id not in self._health:
-                self._health[endpoint_id] = _ProviderHealth(endpoint_id)
-            if endpoint_id not in self._circuits:
-                self._circuits[endpoint_id] = _CircuitBreaker(endpoint_id)
+        self._health_registry.ensure(endpoint_id)
 
     def _on_success(self, endpoint_id: str) -> None:
-        with self._lock:
-            self._ensure_health(endpoint_id)
-            self._health[endpoint_id].record(True)
-            self._circuits[endpoint_id].on_success()
+        self._health_registry.record_success(endpoint_id)
 
     def _on_failure(
         self,
@@ -670,31 +199,12 @@ class BaseRouter:
         detail: str | None = None,
         exc: BaseException | None = None,
     ) -> None:
-        if exc is not None and _is_client_error(exc):
-            # Upstream returned a client (4xx) error: it is healthy and correctly
-            # rejected a bad request. Do not penalize availability or trip the
-            # circuit breaker — otherwise one user's bad request opens the
-            # circuit for every user of this model.
-            logger.info(
-                "client_error_skip_breaker",
-                extra={
-                    "event": "client_error_skip_breaker",
-                    "endpoint_id": endpoint_id,
-                    "status": _http_status_of(exc),
-                    "detail": _detail_str(detail),
-                },
-            )
-            return
-        with self._lock:
-            self._ensure_health(endpoint_id)
-            self._health[endpoint_id].record(False)
-            avail = self._health[endpoint_id].availability
-            self._circuits[endpoint_id].on_failure(
-                availability=avail,
-                reason=_reason_str(reason),
-                detail=_detail_str(detail),
-                offender=_offender_str(),
-            )
+        self._health_registry.record_failure(
+            endpoint_id,
+            reason=reason,
+            detail=detail,
+            exc=exc,
+        )
 
     def _drop_affinity(self, model_id: str) -> None:
         """Drop affinity entry for the current request's affinity_key + model.
@@ -717,299 +227,56 @@ class BaseRouter:
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
         """Return a snapshot of provider availability and circuit state."""
-        out: dict[str, dict[str, Any]] = {}
-        with self._lock:
-            for provider, h in self._health.items():
-                state = (
-                    self._circuits.get(provider).state if provider in self._circuits else "closed"
-                )
-                out[provider] = {
-                    "availability": h.availability,
-                    "circuit_state": state,
-                }
-        return out
+        return self._health_registry.snapshot()
 
     def record_observation(self, obs: RoutingObservation) -> None:
-        """Record a routing observation. No-op by default; override in online learning routers."""
-
-    # ------------------------------------------------------------------
-    # Adapter execution helpers (overridable by subclasses)
-    # ------------------------------------------------------------------
-
-    async def _execute_adapter(
-        self,
-        adapter: BaseAdapter,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> dict[str, Any]:
-        """Execute a request through an adapter with monitoring.
-
-        Provides a single-adapter execution path with context, health checks,
-        and latency tracking. Subclasses (e.g. RouteWiseRouter) can override
-        to add slot lifecycle management.
-        """
-        endpoint_id = _get_endpoint_id(adapter)
-        with req_ctx.push(model=model_id, provider=adapter.config.provider):
-            self._ensure_health(endpoint_id)
-            resp = await adapter.chat_completion(messages, **params)
-            # A HedgedAdapter reports each leg's outcome (winner success
-            # included) through its event sink under the leg's endpoint_id;
-            # recording here as well would double-count the winning endpoint.
-            # Recompute the endpoint after the call for everything else — an
-            # adapter may swap its config to the leg that actually served.
-            if not getattr(adapter, "reports_leg_outcomes", False):
-                self._on_success(_get_endpoint_id(adapter))
-        return resp
-
-    async def _execute_stream_adapter(
-        self,
-        adapter: BaseAdapter,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> AsyncIterator[Any]:
-        """Execute a streaming request through an adapter with monitoring.
-
-        Parallel to ``_execute_adapter`` for streaming. Subclasses can
-        override for per-adapter instrumentation (e.g. S_C slot cleanup).
-        """
-        endpoint_id = _get_endpoint_id(adapter)
-        with req_ctx.push(model=model_id, provider=adapter.config.provider):
-            self._ensure_health(endpoint_id)
-            first = True
-            async for chunk in adapter.stream_chat_completion(messages, **params):
-                if first and _has_non_empty_content(chunk):
-                    first = False
-                    # A HedgedAdapter reports each leg's outcome through its
-                    # event sink under the leg's endpoint_id; recording here
-                    # as well would double-count the winning endpoint.
-                    # Recompute the endpoint for everything else — an adapter
-                    # may swap its config to the leg that actually served.
-                    if not getattr(adapter, "reports_leg_outcomes", False):
-                        self._on_success(_get_endpoint_id(adapter))
-                yield chunk
-
-    # ------------------------------------------------------------------
-    # Chat completion with fallback (used by RouteWiseRouter via super())
-    # ------------------------------------------------------------------
-
-    async def chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> dict[str, Any]:
-        """Execute chat completion with automatic fallback.
-
-        Subclass-agnostic orchestration: calls ``_select_adapter`` (subclass)
-        then ``_execute_adapter`` (overridable) with fallback logic.
-        """
-        context = {
-            "messages": messages,
-            "params": params,
-            "request_id": params.get("request_id"),
-        }
-        primary = self._select_adapter(model_id, context)
-        if not primary:
-            raise ValueError(f"No route configured for model {model_id}")
-
-        last_attempted = primary
-        failed_attempts: list[dict[str, str]] = []
-        try:
-            try:
-                resp = await self._execute_adapter(primary, model_id, messages, **params)
-                if "_routing" not in resp:
-                    resp["_routing"] = {
-                        "provider": primary.config.provider,
-                        "base_url": primary.config.base_url,
-                    }
-                # Always inject endpoint_id so observation keys match latency profiles.
-                resp["_routing"].setdefault(
-                    "endpoint_id", getattr(primary.config, "endpoint_id", None)
-                )
-                return resp
-            except Exception as primary_error:
-                self._on_failure(
-                    _get_endpoint_id(primary),
-                    reason=primary_error.__class__.__name__,
-                    detail=operator_safe_error(primary_error),
-                    exc=primary_error,
-                )
-                failed_attempts.append(_failed_attempt(primary, primary_error))
-                fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                for adapter in fallback_adapters:
-                    last_attempted = adapter
-                    try:
-                        resp = await self._execute_adapter(adapter, model_id, messages, **params)
-                        if "_routing" not in resp:
-                            resp["_routing"] = {
-                                "provider": adapter.config.provider,
-                                "base_url": adapter.config.base_url,
-                                "fallback": True,
-                            }
-                        resp["_routing"].setdefault(
-                            "endpoint_id",
-                            getattr(adapter.config, "endpoint_id", None),
-                        )
-                        resp["_routing"].setdefault("failed_attempts", failed_attempts)
-                        return resp
-                    except Exception as fallback_error:
-                        self._on_failure(
-                            _get_endpoint_id(adapter),
-                            reason="chat_exception",
-                            detail=operator_safe_error(fallback_error),
-                            exc=fallback_error,
-                        )
-                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
-                        continue
-                raise primary_error
-        except BaseException as e:
-            if not hasattr(e, "_routing"):
-                e._routing = {  # type: ignore[attr-defined]
-                    "provider": last_attempted.config.provider,
-                    "base_url": last_attempted.config.base_url,
-                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
-                }
-            if failed_attempts:
-                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
-            raise
-
-    async def stream_chat_completion(
-        self,
-        model_id: str,
-        messages: list[dict[str, Any]],
-        **params: Any,
-    ) -> AsyncIterator[Any]:
-        """Stream chat completion with automatic fallback.
-
-        Subclass-agnostic orchestration: calls ``_select_adapter`` (subclass)
-        then ``_execute_stream_adapter`` (overridable) with fallback logic.
-        """
-        context = {
-            "messages": messages,
-            "params": params,
-            "request_id": params.get("request_id"),
-        }
-        primary = self._select_adapter(model_id, context)
-        if not primary:
-            raise ValueError(f"No route configured for model {model_id}")
-
-        last_attempted = primary
-        failed_attempts: list[dict[str, str]] = []
-        chunks_yielded = False
-        try:
-            try:
-                yield _routing_chunk(primary)
-                async for chunk in self._execute_stream_adapter(
-                    primary, model_id, messages, **params
-                ):
-                    yield chunk
-                    chunks_yielded = True
-                return
-            except Exception as primary_error:
-                self._on_failure(
-                    _get_endpoint_id(primary),
-                    reason="stream_exception",
-                    detail=operator_safe_error(primary_error),
-                    exc=primary_error,
-                )
-                failed_attempts.append(_failed_attempt(primary, primary_error))
-                # Once provider bytes have reached the client, the SSE response
-                # is committed to that upstream. Falling back would splice a
-                # second provider into the same stream.
-                if chunks_yielded:
-                    raise
-                fallback_adapters = self._get_fallback_adapters(model_id, primary)
-                for adapter in fallback_adapters:
-                    last_attempted = adapter
-                    try:
-                        yield _routing_chunk(
-                            adapter,
-                            fallback=True,
-                            failed_attempts=failed_attempts,
-                        )
-                        async for chunk in self._execute_stream_adapter(
-                            adapter, model_id, messages, **params
-                        ):
-                            yield chunk
-                            chunks_yielded = True
-                        return
-                    except Exception as fallback_error:
-                        self._on_failure(
-                            _get_endpoint_id(adapter),
-                            reason="stream_exception",
-                            detail=operator_safe_error(fallback_error),
-                            exc=fallback_error,
-                        )
-                        failed_attempts.append(_failed_attempt(adapter, fallback_error))
-                        # Same commit invariant as the primary path: once this
-                        # fallback provider's bytes reached the client, the SSE
-                        # stream is committed to it. Re-raise instead of splicing
-                        # a further provider into the same response.
-                        if chunks_yielded:
-                            raise
-                        continue
-                raise
-        except BaseException as e:
-            if not hasattr(e, "_routing"):
-                e._routing = {  # type: ignore[attr-defined]
-                    "provider": last_attempted.config.provider,
-                    "base_url": last_attempted.config.base_url,
-                    "endpoint_id": getattr(last_attempted.config, "endpoint_id", None),
-                }
-            if failed_attempts:
-                e._routing.setdefault("failed_attempts", failed_attempts)  # type: ignore[attr-defined]
-            raise
-
-    def _select_adapter(
-        self, model_id: str, context: dict[str, Any] | None = None, **kwargs: Any
-    ) -> BaseAdapter | None:
-        """Select an adapter for the given model. Override in subclasses."""
+        """Ignore observations because fixed routing has no online-learning state."""
         return None
 
-    def _get_fallback_adapters(
-        self, model_id: str, failed_adapter: BaseAdapter
-    ) -> list[BaseAdapter]:
-        """Return fallback adapters after primary failure. Override in subclasses."""
-        return []
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        """Return a stable effective-route snapshot built under the route lock."""
+        with self._lock:
+            return self._effective_routes_locked()
 
+    def snapshot_for_transition(self, model_id: str) -> RouteTableSnapshot:
+        """Capture published routes plus one staged canonical model privately."""
+        with self._lock:
+            routes = self._effective_routes_locked(include_unpublished_model_id=model_id)
+            canonical_ids = {
+                route_key: route.canonical_model_id or route_key
+                for route_key, route in self.routes.items()
+                if route.published or (route.canonical_model_id or route_key) == model_id
+            }
+        return RouteTableSnapshot(routes, canonical_ids)
 
-# ============================================================================
-# FixedRouter
-# ============================================================================
-
-
-class FixedRouter(BaseRouter):
-    """Weighted random routing with automatic fallback.
-
-    Drop-in replacement for RouteExecutor. Selects adapters via weighted
-    random selection and tries remaining adapters on failure.
-
-    Args:
-        params: Optional Pydantic ``FixedParams`` (passed by the strategy
-            registry).  ``None`` keeps existing call-site behavior.
-            ``params.local_fraction`` is currently informational; the existing
-            weighted-random selection over ``routes`` is unchanged.
-    """
-
-    def __init__(
+    def _effective_routes_locked(
         self,
-        params: Any = None,
-        weight_override_resolver: Any | None = None,
-        disabled_provider_resolver: Any | None = None,
-    ) -> None:
-        super().__init__()
-        self.routes: dict[str, RouteConfig] = {}
-        # Keep the validated params accessible for future use (e.g. honoring
-        # local_fraction in adapter selection).  Today FixedRouter ignores it
-        # because per-route weights already encode local-vs-remote balance.
-        self.params = params
-        self.weight_override_resolver = weight_override_resolver
-        # Admin kill switch: adapters whose provider is disabled are forced to
-        # weight 0 so the existing ``weight > 0`` gates in selection and every
-        # fallback loop skip them without any per-call-site change.
-        self.disabled_provider_resolver = disabled_provider_resolver
+        *,
+        include_unpublished_model_id: str | None = None,
+    ) -> tuple[EffectiveRoute, ...]:
+        snapshot: list[EffectiveRoute] = []
+        seen_canonical_ids: set[str] = set()
+        for route_key, route in self.routes.items():
+            canonical_model_id = route.canonical_model_id or route_key
+            if not route.published and canonical_model_id != include_unpublished_model_id:
+                continue
+            if canonical_model_id in seen_canonical_ids:
+                continue
+            seen_canonical_ids.add(canonical_model_id)
+            snapshot.append(
+                EffectiveRoute(
+                    route_key=route_key,
+                    canonical_model_id=canonical_model_id,
+                    adapters=tuple(self._get_effective_adapters(route_key, route)),
+                )
+            )
+        return tuple(snapshot)
+
+    def canonical_id(self, model_id: str) -> str:
+        """Resolve aliases through the route table without exposing mutable routes."""
+        with self._lock:
+            route = self.routes.get(model_id)
+            return route.canonical_model_id if route and route.canonical_model_id else model_id
 
     def _apply_disabled_providers(
         self, adapters: list[tuple[BaseAdapter, float]]
@@ -1072,6 +339,7 @@ class FixedRouter(BaseRouter):
         aliases: list[str] | None = None,
         admin_only: bool = False,
         required_role: str = "free",
+        published: bool = True,
     ) -> None:
         """Register a weighted route for a model.
 
@@ -1085,12 +353,15 @@ class FixedRouter(BaseRouter):
                 Deprecated: use required_role="admin" instead.
             required_role: Minimum role required to access this model
                 (free/pro/internal/admin).
+            published: Whether request selection may use this route. Runtime
+                model creation stages an unpublished route until its durable
+                strategy transition commits.
         """
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
             return
         raw_adapters = [
-            (adapter, float(weight), _get_endpoint_id(adapter))
+            (adapter, float(weight), endpoint_id_for_adapter(adapter))
             for adapter, weight in adapters_with_weights
         ]
         normalized = [(adapter, weight / total_weight) for adapter, weight in adapters_with_weights]
@@ -1104,12 +375,14 @@ class FixedRouter(BaseRouter):
             canonical_model_id=model_id,
             admin_only=admin_only,
             required_role=effective_role,
+            published=published,
         )
-        self.routes[model_id] = route_cfg
-        for alias in aliases or []:
-            self.routes[alias] = route_cfg  # shared reference, not a copy
+        with self._lock:
+            self.routes[model_id] = route_cfg
+            for alias in aliases or []:
+                self.routes[alias] = route_cfg  # shared reference, not a copy
 
-    def _select_adapter(  # type: ignore[override]
+    def _select_adapter(
         self, model_id: str, *, pin_provider: str | None = None
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
@@ -1122,35 +395,29 @@ class FixedRouter(BaseRouter):
             Selected adapter or None if no route configured / no match.
         """
         route = self.routes.get(model_id)
-        if not route or not route.adapters:
+        if not route or not route.published or not route.adapters:
             return None
 
         if pin_provider:
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if weight <= 0:
                     continue
-                eid = _get_endpoint_id(adapter)
+                eid = endpoint_id_for_adapter(adapter)
                 if adapter.config.provider == pin_provider or eid == pin_provider:
                     return adapter
             return None
 
         with self._lock:
-            snapshot: list[tuple[BaseAdapter, float, _CircuitBreaker]] = []
-            for adapter, weight in self._get_effective_adapters(model_id, route):
-                endpoint_id = _get_endpoint_id(adapter)
-                cb = self._circuits.get(endpoint_id)
-                if not cb:
-                    cb = self._circuits[endpoint_id] = _CircuitBreaker(endpoint_id)
-                snapshot.append((adapter, weight, cb))
+            snapshot = list(self._get_effective_adapters(model_id, route))
 
         allowed: list[tuple[BaseAdapter, float]] = [
             (adapter, weight)
-            for (adapter, weight, cb) in snapshot
-            if weight > 0 and cb.allow_request()
+            for adapter, weight in snapshot
+            if weight > 0 and self._health_registry.allow_request(endpoint_id_for_adapter(adapter))
         ]
 
         if not allowed:
-            provider_names = [_get_endpoint_id(a) for a, _w, _cb in snapshot]
+            provider_names = [endpoint_id_for_adapter(adapter) for adapter, _weight in snapshot]
             raise AllCircuitsOpenError(
                 f"All provider circuits are open for model {model_id}: {provider_names}"
             )
@@ -1165,7 +432,7 @@ class FixedRouter(BaseRouter):
                 entry = self._affinity.get((affinity_key, model_id))
                 if entry is not None and entry.expires_at > now:
                     for adapter, _w in allowed:
-                        if _get_endpoint_id(adapter) == entry.endpoint_id:
+                        if endpoint_id_for_adapter(adapter) == entry.endpoint_id:
                             entry.expires_at = now + AFFINITY_TTL_SECONDS
                             return adapter
                     del self._affinity[(affinity_key, model_id)]
@@ -1194,7 +461,7 @@ class FixedRouter(BaseRouter):
             now = time.monotonic()
             with self._lock:
                 self._affinity[(affinity_key, model_id)] = _Affinity(
-                    endpoint_id=_get_endpoint_id(chosen),
+                    endpoint_id=endpoint_id_for_adapter(chosen),
                     expires_at=now + AFFINITY_TTL_SECONDS,
                 )
                 self._maybe_sweep_affinity_locked(now)
@@ -1206,7 +473,7 @@ class FixedRouter(BaseRouter):
         model_id: str,
         messages: list[dict[str, Any]],
         *,
-        pin_provider: str | None = None,
+        routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> dict[str, Any]:
         """Execute chat completion with automatic fallback.
@@ -1214,7 +481,7 @@ class FixedRouter(BaseRouter):
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
-            pin_provider: Optional provider name to force routing to.
+            routing_options: Router-owned controls such as an explicit provider pin.
             **params: Additional parameters for the adapter.
 
         Returns:
@@ -1223,6 +490,7 @@ class FixedRouter(BaseRouter):
         Raises:
             ValueError: If no route configured for model.
         """
+        pin_provider = self._resolve_pin_provider(routing_options, params)
         primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
             if pin_provider:
@@ -1232,7 +500,7 @@ class FixedRouter(BaseRouter):
             raise ValueError(f"No route configured for model {model_id}")
         try:
             with req_ctx.push(model=model_id, provider=primary.config.provider):
-                endpoint_id = _get_endpoint_id(primary)
+                endpoint_id = endpoint_id_for_adapter(primary)
                 self._ensure_health(endpoint_id)
                 resp = await primary.chat_completion(messages, **params)
                 self._on_success(endpoint_id)
@@ -1244,21 +512,21 @@ class FixedRouter(BaseRouter):
                     "base_url": primary.config.base_url,
                 }
             # Always inject endpoint_id so observation keys match latency profiles.
-            resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(primary))
+            resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(primary))
             return resp
         except Exception as primary_error:
             # Record failure for primary endpoint before attempting fallback
             self._on_failure(
-                _get_endpoint_id(primary),
+                endpoint_id_for_adapter(primary),
                 reason="chat_exception",
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [_failed_attempt(primary, primary_error)]
+            failed_attempts = [failed_attempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
-            # sentinel — mirrors the success-path resp["_routing"] injection and
-            # BaseRouter's fallback handler. Covers both re-raise points below
+            # sentinel — mirrors the success-path resp["_routing"] injection.
+            # The outer error handler covers both re-raise points below
             # (pin mode and all-providers-failed); ``failed_attempts`` is stored
             # by reference so it reflects any fallback attempts appended before
             # ``primary_error`` is finally re-raised.
@@ -1266,7 +534,7 @@ class FixedRouter(BaseRouter):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
                     "base_url": primary.config.base_url,
-                    "endpoint_id": _get_endpoint_id(primary),
+                    "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
             # Pin mode: never fallback — the caller explicitly requested this
@@ -1278,9 +546,15 @@ class FixedRouter(BaseRouter):
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
+                endpoint_id = endpoint_id_for_adapter(adapter)
+                # Fallback is still automatic routing, so it must honor the
+                # same shared circuit eligibility as the initial selection.
+                # Explicit pinning returned above and remains the sole circuit
+                # override.
+                if not self._health_registry.allow_request(endpoint_id):
+                    continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        endpoint_id = _get_endpoint_id(adapter)
                         self._ensure_health(endpoint_id)
                         resp = await adapter.chat_completion(messages, **params)
                         self._on_success(endpoint_id)
@@ -1290,17 +564,17 @@ class FixedRouter(BaseRouter):
                             "base_url": adapter.config.base_url,
                             "fallback": True,
                         }
-                    resp["_routing"].setdefault("endpoint_id", _get_endpoint_id(adapter))
+                    resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(adapter))
                     resp["_routing"].setdefault("failed_attempts", failed_attempts)
                     return resp
                 except Exception as fallback_error:
                     self._on_failure(
-                        _get_endpoint_id(adapter),
+                        endpoint_id,
                         reason="chat_exception",
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
                     )
-                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
+                    failed_attempts.append(failed_attempt(adapter, fallback_error))
                     continue
             raise primary_error
 
@@ -1309,7 +583,7 @@ class FixedRouter(BaseRouter):
         model_id: str,
         messages: list[dict[str, Any]],
         *,
-        pin_provider: str | None = None,
+        routing_options: RoutingRequestOptions | None = None,
         **params: Any,
     ) -> AsyncIterator[Any]:
         """Stream chat completion with automatic fallback.
@@ -1317,7 +591,7 @@ class FixedRouter(BaseRouter):
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
-            pin_provider: Optional provider name to force routing to.
+            routing_options: Router-owned controls such as an explicit provider pin.
             **params: Additional parameters for the adapter.
 
         Yields:
@@ -1326,6 +600,7 @@ class FixedRouter(BaseRouter):
         Raises:
             ValueError: If no route configured for model.
         """
+        pin_provider = self._resolve_pin_provider(routing_options, params)
         primary = self._select_adapter(model_id, pin_provider=pin_provider)
         if not primary:
             if pin_provider:
@@ -1342,11 +617,11 @@ class FixedRouter(BaseRouter):
                 # to the parent coroutine when the stream is consumed via an
                 # asyncio.create_task reader, and api_logs ends up with
                 # provider="router" and cost_usd=NULL.
-                yield _routing_chunk(primary)
+                yield routing_chunk(primary)
                 first = True
-                primary_endpoint_id = _get_endpoint_id(primary)
+                primary_endpoint_id = endpoint_id_for_adapter(primary)
                 async for chunk in primary.stream_chat_completion(messages, **params):
-                    if first and _has_non_empty_content(chunk):
+                    if first and has_non_empty_content(chunk):
                         # Providers may emit keep-alives or empty terminal chunks.
                         first = False
                         # Consider first non-empty token as a success signal for availability.
@@ -1356,17 +631,17 @@ class FixedRouter(BaseRouter):
             return
         except Exception as primary_error:
             self._on_failure(
-                _get_endpoint_id(primary),
+                endpoint_id_for_adapter(primary),
                 reason="stream_exception",
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [_failed_attempt(primary, primary_error)]
+            failed_attempts = [failed_attempt(primary, primary_error)]
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
             # set resp["_routing"] on success, so the consumer instead tracks
-            # provider via in-band _routing_chunk SSE events -- but those are
+            # provider via in-band routing_chunk SSE events -- but those are
             # emitted before each fallback attempt even starts (so req_ctx is
             # visible across the asyncio.create_task reader boundary), and
             # the consumer keeps overwriting its provider with the latest one
@@ -1383,7 +658,7 @@ class FixedRouter(BaseRouter):
                 primary_error._routing = {  # type: ignore[attr-defined]
                     "provider": primary.config.provider,
                     "base_url": primary.config.base_url,
-                    "endpoint_id": _get_endpoint_id(primary),
+                    "endpoint_id": endpoint_id_for_adapter(primary),
                     "failed_attempts": failed_attempts,
                 }
             # Pin mode: never fallback — re-raise immediately.
@@ -1402,17 +677,22 @@ class FixedRouter(BaseRouter):
             for adapter, weight in self._get_effective_adapters(model_id, route):
                 if adapter == primary or weight <= 0:
                     continue
+                adapter_endpoint_id = endpoint_id_for_adapter(adapter)
+                # Synthetic routing chunks are emitted only after circuit
+                # admission so an open automatic fallback is never exposed as
+                # an attempted upstream. Explicit pinning returned above.
+                if not self._health_registry.allow_request(adapter_endpoint_id):
+                    continue
                 try:
                     with req_ctx.push(model=model_id, provider=adapter.config.provider):
-                        yield _routing_chunk(
+                        yield routing_chunk(
                             adapter,
                             fallback=True,
                             failed_attempts=failed_attempts,
                         )
                         first = True
-                        adapter_endpoint_id = _get_endpoint_id(adapter)
                         async for chunk in adapter.stream_chat_completion(messages, **params):
-                            if first and _has_non_empty_content(chunk):
+                            if first and has_non_empty_content(chunk):
                                 first = False
                                 self._on_success(adapter_endpoint_id)
                             yield chunk
@@ -1425,7 +705,7 @@ class FixedRouter(BaseRouter):
                         detail=operator_safe_error(fallback_error),
                         exc=fallback_error,
                     )
-                    failed_attempts.append(_failed_attempt(adapter, fallback_error))
+                    failed_attempts.append(failed_attempt(adapter, fallback_error))
                     # Once this fallback provider's bytes reached the client the
                     # SSE stream has committed to it (same invariant as the
                     # primary path above). Re-raise instead of splicing yet

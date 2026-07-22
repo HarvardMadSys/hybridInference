@@ -21,12 +21,14 @@ class DisabledProviderResolver:
         self._disabled: frozenset[str] = frozenset()
         self._lock = RLock()
 
-    async def load_all(self) -> None:
-        """Reload the disabled set from the operational store."""
+    async def load_all(self) -> bool:
+        """Reload the disabled set and return whether its contents changed."""
         rows = await self._store.list_disabled_providers()
         disabled = frozenset(str(row["provider"]) for row in rows)
         with self._lock:
+            changed = disabled != self._disabled
             self._disabled = disabled
+            return changed
 
     def is_disabled(self, provider: str) -> bool:
         """Return whether a provider label is currently disabled (sync snapshot)."""

@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
+from routing.endpoints import endpoint_id_for_adapter
+from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AFFINITY_SWEEP_THRESHOLD,
     AFFINITY_TTL_SECONDS,
@@ -269,11 +271,6 @@ def test_disabled_via_env(monkeypatch):
     assert r._affinity == {}
 
 
-def _get_endpoint_id_for(adapter):
-    """Mirror routers._get_endpoint_id without exposing the helper as public."""
-    return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
-
-
 @pytest.mark.unit
 def test_chat_completion_drops_affinity_on_primary_error():
     """Affinity entry is gone before fallback runs (regardless of fallback success)."""
@@ -287,7 +284,7 @@ def test_chat_completion_drops_affinity_on_primary_error():
     req_ctx.set({"affinity_key": "u1"})
     # Pin to BAD so _select_adapter returns it deterministically via affinity.
     r._affinity[("u1", "m")] = _Affinity(
-        endpoint_id=_get_endpoint_id_for(bad),
+        endpoint_id=endpoint_id_for_adapter(bad),
         expires_at=time.monotonic() + 60,
     )
 
@@ -311,7 +308,7 @@ def test_chat_completion_drops_affinity_when_all_fail():
 
     req_ctx.set({"affinity_key": "u1"})
     r._affinity[("u1", "m")] = _Affinity(
-        endpoint_id=_get_endpoint_id_for(bad),
+        endpoint_id=endpoint_id_for_adapter(bad),
         expires_at=time.monotonic() + 60,
     )
 
@@ -330,7 +327,7 @@ def test_stream_chat_completion_drops_affinity_on_primary_error():
 
     req_ctx.set({"affinity_key": "u1"})
     r._affinity[("u1", "m")] = _Affinity(
-        endpoint_id=_get_endpoint_id_for(bad),
+        endpoint_id=endpoint_id_for_adapter(bad),
         expires_at=time.monotonic() + 60,
     )
 
@@ -385,15 +382,21 @@ def test_pin_provider_failure_preserves_affinity_chat():
 
     req_ctx.set({"affinity_key": "u1"})
     r._affinity[("u1", "m")] = _Affinity(
-        endpoint_id=_get_endpoint_id_for(good),
+        endpoint_id=endpoint_id_for_adapter(good),
         expires_at=time.monotonic() + 60,
     )
 
     with pytest.raises(RuntimeError):
-        asyncio.run(r.chat_completion("m", [], pin_provider="BAD"))
+        asyncio.run(
+            r.chat_completion(
+                "m",
+                [],
+                routing_options=RoutingRequestOptions(pin_provider="BAD"),
+            )
+        )
 
     assert ("u1", "m") in r._affinity
-    assert r._affinity[("u1", "m")].endpoint_id == _get_endpoint_id_for(good)
+    assert r._affinity[("u1", "m")].endpoint_id == endpoint_id_for_adapter(good)
 
 
 @pytest.mark.unit
@@ -408,16 +411,20 @@ def test_pin_provider_failure_preserves_affinity_stream():
 
     req_ctx.set({"affinity_key": "u1"})
     r._affinity[("u1", "m")] = _Affinity(
-        endpoint_id=_get_endpoint_id_for(good),
+        endpoint_id=endpoint_id_for_adapter(good),
         expires_at=time.monotonic() + 60,
     )
 
     async def _consume():
-        async for _ in r.stream_chat_completion("m", [], pin_provider="BAD"):
+        async for _ in r.stream_chat_completion(
+            "m",
+            [],
+            routing_options=RoutingRequestOptions(pin_provider="BAD"),
+        ):
             pass
 
     with pytest.raises(RuntimeError):
         asyncio.run(_consume())
 
     assert ("u1", "m") in r._affinity
-    assert r._affinity[("u1", "m")].endpoint_id == _get_endpoint_id_for(good)
+    assert r._affinity[("u1", "m")].endpoint_id == endpoint_id_for_adapter(good)

@@ -8,15 +8,16 @@ import itertools
 import json
 import logging
 import time
-from dataclasses import dataclass
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from routing.route_table import EffectiveRoute
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.candidates import QuotaSource
 from routing.routewise.config import RouteWiseConfig
+from routing.routewise.decisions import ProviderReservation, RoutingDecision, RoutingTrace
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.hedging import HedgedAdapter
 from routing.routewise.quota import ProviderQuotaSnapshotStore
@@ -34,6 +35,20 @@ class _StatusError(RuntimeError):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def _unreserved_decision(
+    adapter: Any,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> RoutingDecision:
+    """Build an execution decision for tests that exercise an adapter directly."""
+    return RoutingDecision(
+        adapter=adapter,
+        reservation=ProviderReservation(),
+        metadata=metadata if metadata is not None else {},
+        trace=RoutingTrace(),
+    )
 
 
 def _make_model_config(
@@ -122,33 +137,34 @@ def _make_adapter(
     return adapter
 
 
-@dataclass
-class _FakeRouteConfig:
-    adapters: list[tuple[Any, float]]
-
-
-class _FakeFixedRouter:
-    """Minimal stand-in for FixedRouter with a `routes` dict."""
+class _FakeRouteTable:
+    """Minimal RouteTableView double with mutable effective-weight fixtures."""
 
     def __init__(self) -> None:
-        self.routes: dict[str, _FakeRouteConfig] = {}
+        self._routes: dict[str, tuple[tuple[Any, float], ...]] = {}
         self.weight_overrides: dict[str, float] = {}
 
     def add(self, model_id: str, adapters_with_weights: list[tuple[Any, float]]) -> None:
-        self.routes[model_id] = _FakeRouteConfig(adapters=adapters_with_weights)
+        self._routes[model_id] = tuple(adapters_with_weights)
 
-    def _get_effective_adapters(
-        self,
-        _model_id: str,
-        route: _FakeRouteConfig,
-    ) -> list[tuple[Any, float]]:
-        return [
-            (
-                adapter,
-                float(self.weight_overrides.get(adapter.config.endpoint_id, weight)),
+    def iter_effective_routes(self) -> tuple[EffectiveRoute, ...]:
+        return tuple(
+            EffectiveRoute(
+                route_key=model_id,
+                canonical_model_id=model_id,
+                adapters=tuple(
+                    (
+                        adapter,
+                        float(self.weight_overrides.get(adapter.config.endpoint_id, weight)),
+                    )
+                    for adapter, weight in adapters
+                ),
             )
-            for adapter, weight in route.adapters
-        ]
+            for model_id, adapters in self._routes.items()
+        )
+
+    def canonical_id(self, model_id: str) -> str:
+        return model_id
 
 
 def _quota_pool(router: RouteWiseRouter):
@@ -211,9 +227,9 @@ def _make_router_with_quota_and_api(
         completion_price=completion_price,
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     _seed_quota_snapshots(router)
     return router, quota_adapter, api_adapter
 
@@ -256,12 +272,34 @@ class TestRouteWiseRouterScaffold:
     def test_scaffold_selects_adapter(self):
         """Router returns an adapter for a registered model."""
         adapter = _make_adapter()
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        selected = router._select_adapter("test-model", {})
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+        selected = router._select_decision("test-model", {}).adapter
         assert selected is adapter
+
+    async def test_open_circuit_candidate_is_excluded(self, monkeypatch):
+        monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "1")
+        monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+        blocked = _make_adapter(endpoint_id="test-model:blocked", prompt_price="0.001")
+        active = _make_adapter(endpoint_id="test-model:active", prompt_price="0.002")
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(blocked, 0.5), (active, 0.5)])
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+
+        with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+            router._health_registry.record_failure(
+                "test-model:blocked",
+                reason="upstream_502",
+                exc=_StatusError(502, "bad gateway"),
+            )
+            await asyncio.sleep(0)
+
+        selected = router._select_decision("test-model", {}).adapter
+
+        assert selected is active
+        assert router.get_provider_status()["test-model:blocked"]["circuit_state"] == "open"
 
     def test_alias_routes_use_canonical_routewise_state(self):
         """Alias requests must share RouteWise per-model state with canonical requests."""
@@ -271,13 +309,14 @@ class TestRouteWiseRouterScaffold:
         )
         fr = FixedRouter()
         fr.register_route("minimax-m2.5", [(adapter, 1.0)], aliases=["MiniMax-M2.5"])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert sorted(router.classified) == ["minimax-m2.5"]
         assert "MiniMax-M2.5" not in router.route_candidates
+        assert router.canonical_model_id("MiniMax-M2.5") == "minimax-m2.5"
         assert router._routewise_pool("MiniMax-M2.5") == "minimax-m2.5"
 
-        selected = router._select_adapter("MiniMax-M2.5", {"prompt_tokens": 1000})
+        selected = router._select_decision("MiniMax-M2.5", {"prompt_tokens": 1000}).adapter
         assert selected is adapter
         assert "minimax-m2.5" in router._last_lp_statuses
         assert "MiniMax-M2.5" not in router._last_lp_statuses
@@ -292,7 +331,7 @@ class TestRouteWiseRouterScaffold:
                 prompt_tokens=100,
                 completion_tokens=500,
                 success=True,
-                quota_committed=0.0,
+                strategy_metadata={"routewise": {"quota_committed": 0.0}},
             )
         )
 
@@ -303,26 +342,26 @@ class TestRouteWiseRouterScaffold:
 
     def test_unregistered_model_raises(self):
         """Requesting an unknown model raises ValueError."""
-        fr = _FakeFixedRouter()
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        fr = _FakeRouteTable()
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         with pytest.raises(ValueError, match="no route"):
-            router._select_adapter("nonexistent", {})
+            router._select_decision("nonexistent", {})
 
     def test_provider_type_classification(self):
         """Adapters are correctly classified by their provider_type."""
         quota_adapter = _make_adapter(provider_type="quota")
         api_adapter = _make_adapter(provider_type="on_demand")
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         entries = router.classified["test-model"]
         types = {s for _, _, s in entries}
         assert ProviderType.QUOTA in types
         assert ProviderType.ON_DEMAND in types
 
-    def test_rebuild_honors_fixed_router_weight_overrides(self):
+    def test_rebuild_honors_route_table_effective_weights(self):
         """Weight overrides should remove disabled endpoints from RouteWise candidates."""
         disabled_adapter = _make_adapter(
             provider_type="on_demand",
@@ -336,16 +375,16 @@ class TestRouteWiseRouterScaffold:
             prompt_price="0.002",
             completion_price="0.020",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(disabled_adapter, 1.0), (active_adapter, 1.0)])
         fr.weight_overrides["test-model:disabled-provider"] = 0.0
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert [c.endpoint_id for c in router.route_candidates["test-model"]] == [
             "test-model:active-provider"
         ]
-        selected = router._select_adapter("test-model", {})
+        selected = router._select_decision("test-model", {}).adapter
         assert selected is active_adapter
 
     def test_rebuild_preserves_profiles_for_remaining_endpoints(self):
@@ -365,11 +404,11 @@ class TestRouteWiseRouterScaffold:
             provider_type="on_demand",
             endpoint_id="model-b:api",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("model-a", [(disabled_adapter, 1.0), (active_adapter, 1.0)])
         fr.add("model-b", [(other_model_adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         now = time.time()
         router._latency_profiles["model-a:disabled"].record(now, 200.0)
         router._latency_profiles["model-a:active"].record(now, 300.0)
@@ -385,7 +424,7 @@ class TestRouteWiseRouterScaffold:
         other_model_profile = router._latency_profiles["model-b:api"]
 
         fr.weight_overrides["model-a:disabled"] = 0.0
-        router._rebuild_from_fixed_router()
+        router._rebuild_from_route_table()
 
         assert "model-a:disabled" not in router._latency_profiles
         assert "model-a:disabled" not in router._latency_history_priors_ms
@@ -417,13 +456,13 @@ class TestRouteWiseRouterScaffold:
             endpoint_id="test-model:api-provider",
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_adapter, 0.5), (quota_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
-        selected = router._select_adapter("test-model", {})
+        selected = router._select_decision("test-model", {}).adapter
         assert selected is quota_adapter
 
     def test_scaffold_selects_cheapest_api_by_request_cost(self):
@@ -442,11 +481,11 @@ class TestRouteWiseRouterScaffold:
             provider_type="on_demand", prompt_price="0.003", completion_price="0.003"
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(provider_a, 0.5), (provider_b, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        selected = router._select_adapter("test-model", {})
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+        selected = router._select_decision("test-model", {}).adapter
         assert selected is provider_b
 
     def test_per_request_cheapest_varies_by_prompt_ratio(self):
@@ -469,10 +508,10 @@ class TestRouteWiseRouterScaffold:
             completion_price="5.0",
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(provider_a, 0.5), (provider_b, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         # Warm predictor so predicted output is ~100 (small output).
         for _ in range(25):
@@ -482,44 +521,26 @@ class TestRouteWiseRouterScaffold:
         # A: 0.5/1M * 10000 + 20.0/1M * 100 = 0.005 + 0.002 = 0.007
         # B: 5.0/1M * 10000 + 5.0/1M * 100  = 0.050 + 0.0005 = 0.0505
         # A is cheaper.
-        selected = router._select_adapter("test-model", {"prompt_tokens": 10000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 10000}).adapter
         assert selected is provider_a
-
-    def test_generic_fallback_disabled(self):
-        """RouteWise owns fallback via policy re-solve, not BaseRouter fallback lists."""
-        a1 = _make_adapter(provider="provider_a")
-        a2 = _make_adapter(provider="provider_b")
-
-        fr = _FakeFixedRouter()
-        fr.add("test-model", [(a1, 0.5), (a2, 0.5)])
-
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        fallbacks = router._get_fallback_adapters("test-model", a1)
-        assert fallbacks == []
-
-    def test_fallback_empty_for_unknown_model(self):
-        """Fallback returns empty list for an unregistered model."""
-        fr = _FakeFixedRouter()
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        assert router._get_fallback_adapters("nonexistent", MagicMock()) == []
 
     def test_unknown_provider_type_raises(self):
         """Unknown provider_type values are rejected."""
         adapter = _make_adapter(provider_type="unknown_tier")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(adapter, 1.0)])
 
         with pytest.raises(ValueError, match="provider_type must be one of"):
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_subscription_only_route_uses_reference_api_price_for_value(self):
         """Routes without S_A can still price requests with reference_api_price."""
         quota_adapter = _make_adapter(provider_type="quota")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 1.0)])
 
         router = RouteWiseRouter(
-            fixed_router=fr,
+            route_table=fr,
             config=RouteWiseConfig(reference_api_price={"prompt": "2.0", "completion": "4.0"}),
         )
 
@@ -541,12 +562,12 @@ class TestRouteWiseRouterScaffold:
             provider_type="on_demand",
             endpoint_id="test-model:api-provider",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
 
         assert selected is api_adapter
         assert router._quota_sources() == [
@@ -577,18 +598,18 @@ class TestRouteWiseRouterScaffold:
             completion_price="15.0",
             endpoint_id="test-model:api-provider",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _warm_envelope(router, lower=0.0000001, upper=0.001)
 
-        selected = router._select_adapter(
+        decision = router._select_decision(
             "test-model",
             {"prompt_tokens": 1000, "request_id": "req-local-fallback"},
         )
 
-        assert selected is quota_adapter
+        assert decision.adapter is quota_adapter
         assert router._quota_sources() == []
         source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
         assert router.quota_snapshots.get(source_obj) is None
@@ -603,8 +624,7 @@ class TestRouteWiseRouterScaffold:
         assert snapshot is not None
         assert snapshot.limit == 5000
         assert snapshot.remaining == 4999
-        decision = router._pending_decisions["req-local-fallback"]
-        assert decision["quota_remaining"] == 4999
+        assert decision.metadata["quota_remaining"] == 4999
 
     def test_upstream_override_quota_fallback_does_not_mask_shared_source(self):
         """A local fallback pool must not suppress real refresh for another pool."""
@@ -633,11 +653,11 @@ class TestRouteWiseRouterScaffold:
             quota_pool="normal-pool",
             endpoint_id="other-model:normal-quota",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(override_adapter, 1.0)])
         fr.add("other-model", [(normal_adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         source_obj = QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
 
         assert router.quota_pools["override-pool"].source == QuotaSource(
@@ -667,7 +687,7 @@ class TestRouteWiseRouterScaffold:
             completion_price="15.0",
             endpoint_id="test-model:api-provider",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
         async def fake_fetch_chutes() -> list[ProviderQuotaResult]:
@@ -693,27 +713,26 @@ class TestRouteWiseRouterScaffold:
             ]
 
         config = RouteWiseConfig()
-        router = RouteWiseRouter(fixed_router=fr, config=config)
+        router = RouteWiseRouter(route_table=fr, config=config)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
         router.quota_snapshots = ProviderQuotaSnapshotStore(fetchers={"chutes": fake_fetch_chutes})
         # Snapshot pools hold a store reference; rebuild after swapping it.
         router._build_resource_pools()
         await router.refresh_quota_snapshots_once()
 
-        selected = router._select_adapter(
+        decision = router._select_decision(
             "test-model",
             {"prompt_tokens": 1000, "request_id": "req-with-snapshot"},
         )
 
-        assert selected is quota_adapter
+        assert decision.adapter is quota_adapter
         snapshot = router.quota_snapshots.get(
             QuotaSource(provider="chutes", usage_label="Daily requests", unit="requests")
         )
         assert snapshot is not None
         assert snapshot.remaining == 89
-        decision = router._pending_decisions["req-with-snapshot"]
-        assert decision["quota_remaining"] == 89
-        assert decision["quota_source"] == source
+        assert decision.metadata["quota_remaining"] == 89
+        assert decision.metadata["quota_source"] == source
 
     def test_stateful_providers_raise_when_worker_count_is_multi_process(self, monkeypatch):
         """S_Q/S_C are process-local and guarded in multi-worker deployments."""
@@ -721,99 +740,142 @@ class TestRouteWiseRouterScaffold:
 
         quota_adapter = _make_adapter(provider_type="quota")
         api_adapter = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 0.5), (api_adapter, 0.5)])
 
         with pytest.raises(RuntimeError, match="process-local"):
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_multi_worker_guard_does_not_block_api_only_routes(self, monkeypatch):
         """API-only RouteWise routes remain safe with multiple workers."""
         monkeypatch.setenv("WEB_CONCURRENCY", "2")
 
         api_adapter = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        assert router._select_adapter("test-model", {}) is api_adapter
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+        assert router._select_decision("test-model", {}).adapter is api_adapter
 
-    def test_attach_fixed_router_clears_derived_state_on_rebind(self):
-        """Rebinding resets all derived state that depends on prior routing activity."""
+    def test_attach_route_table_rebuilds_derived_route_state(self):
+        """Rebinding resets derived state owned by the route table."""
         adapter = _make_adapter()
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(adapter, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        router._pending_decisions["req-1"] = {"decision": "quota"}
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
-        replacement = _FakeFixedRouter()
+        replacement = _FakeRouteTable()
         replacement.add("test-model", [(adapter, 1.0)])
 
-        router.attach_fixed_router(replacement)
+        router.attach_route_table(replacement)
 
-        assert router.fixed_router is replacement
-        assert router._pending_decisions == {}
+        assert router.route_table is replacement
+        assert set(router.classified) == {"test-model"}
+
+    def test_legacy_fixed_router_keyword_delegates_to_route_table(self):
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(_make_adapter(), 1.0)])
+
+        router = RouteWiseRouter(fixed_router=route_table, config=RouteWiseConfig())
+
+        assert router.route_table is route_table
+        assert router.fixed_router is route_table
+
+    def test_legacy_fixed_router_attribute_assignment_updates_route_table(self):
+        router = RouteWiseRouter(config=RouteWiseConfig())
+        route_table = _FakeRouteTable()
+
+        router.fixed_router = route_table
+
+        assert router.route_table is route_table
+
+    def test_legacy_attach_and_rebuild_shims_delegate_to_route_table(self, monkeypatch):
+        first = _FakeRouteTable()
+        first.add("test-model", [(_make_adapter(), 1.0)])
+        replacement = _FakeRouteTable()
+        replacement.add("test-model", [(_make_adapter(), 1.0)])
+        router = RouteWiseRouter(route_table=first, config=RouteWiseConfig())
+
+        router.attach_fixed_router(replacement)
+        rebuild = MagicMock(wraps=router._rebuild_from_route_table)
+        monkeypatch.setattr(router, "_rebuild_from_route_table", rebuild)
+
+        router._rebuild_from_fixed_router()
+
+        assert router.route_table is replacement
+        rebuild.assert_called_once_with()
+
+    def test_public_route_table_refresh_rebuilds_under_commit_lock(self, monkeypatch):
+        router = RouteWiseRouter(config=RouteWiseConfig())
+
+        class _RecordingLock:
+            def __init__(self) -> None:
+                self.depth = 0
+
+            def __enter__(self) -> _RecordingLock:
+                self.depth += 1
+                return self
+
+            def __exit__(self, *_exc_info: object) -> None:
+                self.depth -= 1
+
+        commit_lock = _RecordingLock()
+        rebuild_depths: list[int] = []
+
+        def _record_rebuild() -> None:
+            rebuild_depths.append(commit_lock.depth)
+
+        router._route_commit_lock = commit_lock
+        monkeypatch.setattr(router, "_rebuild_from_route_table", _record_rebuild)
+
+        router.refresh_route_table()
+
+        assert rebuild_depths == [1]
+        assert commit_lock.depth == 0
+
+    def test_constructor_does_not_dispatch_to_overridden_public_refresh(self):
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(_make_adapter(), 1.0)])
+
+        class _Subclass(RouteWiseRouter):
+            def refresh_route_table(self) -> None:
+                raise AssertionError("subclass refresh called before initialization completed")
+
+        router = _Subclass(route_table=route_table, config=RouteWiseConfig())
+
+        assert set(router.classified) == {"test-model"}
+
+    def test_route_table_and_legacy_fixed_router_are_mutually_exclusive(self):
+        route_table = _FakeRouteTable()
+
+        with pytest.raises(TypeError, match="cannot both be provided"):
+            RouteWiseRouter(
+                route_table=route_table,
+                fixed_router=route_table,
+                config=RouteWiseConfig(),
+            )
 
     def test_concurrency_adapter_skipped_when_pool_exhausted(self):
         """S_C adapter is not selected when its pool has no free slots."""
         conc = _make_adapter(provider_type="concurrency", concurrency={"limit": 1})
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         assert _conc_pool(router).try_acquire() is True
-        selected = router._select_adapter("test-model", {})
-        assert selected is None
+        decision = router._select_decision("test-model", {})
+        assert decision is None
 
     def test_concurrency_adapter_selected_with_route_policy(self):
         """S_C adapter is returned when its route declares a concurrency block."""
         conc = _make_adapter(provider_type="concurrency")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        selected = router._select_adapter("test-model", {})
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+        selected = router._select_decision("test-model", {}).adapter
         assert selected is conc
-
-    def test_generic_fallback_does_not_expose_concurrency(self):
-        """BaseRouter fallback is disabled; RouteWise re-solve accounts for S_C slots."""
-        api = _make_adapter(provider_type="on_demand")
-        conc = _make_adapter(provider_type="concurrency")
-
-        fr = _FakeFixedRouter()
-        fr.add("test-model", [(api, 0.5), (conc, 0.5)])
-
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-        assert router._get_fallback_adapters("test-model", api) == []
-
-    def test_generic_fallback_returns_empty_for_all_route_types(self):
-        """No generic fallback adapters are exposed for RouteWise routes."""
-        quota = _make_adapter(provider_type="quota")
-        conc = _make_adapter(provider_type="concurrency")
-        api_a = _make_adapter(provider_type="on_demand", provider="provider_a")
-        api_b = _make_adapter(provider_type="on_demand", provider="provider_b")
-
-        fr = _FakeFixedRouter()
-        fr.add(
-            "test-model",
-            [
-                (quota, 0.2),
-                (conc, 0.2),
-                (api_a, 0.3),
-                (api_b, 0.3),
-            ],
-        )
-
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
-
-        # S_A failed -> only other S_A in fallback.
-        fallbacks = router._get_fallback_adapters("test-model", api_a)
-        assert fallbacks == []
-
-        # S_Q failed -> only S_A adapters in fallback.
-        fallbacks = router._get_fallback_adapters("test-model", quota)
-        assert fallbacks == []
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +896,7 @@ class TestRouteWiseQuotaDecision:
             router.predictor.update("test-model", 500)
 
         initial_remaining = _quota_pool(router).remaining
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is quota_adapter
         # Selection-commit: quota consumed at selection time.
         assert _quota_pool(router).remaining < initial_remaining
@@ -850,7 +912,7 @@ class TestRouteWiseQuotaDecision:
             router.predictor.update("test-model", 500)
 
         initial_remaining = _quota_pool(router).remaining
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is api_adapter
         # No selection-commit: quota unchanged.
         assert _quota_pool(router).remaining == initial_remaining
@@ -858,12 +920,12 @@ class TestRouteWiseQuotaDecision:
     def test_no_quota_adapter_always_selects_api(self):
         """Models with only S_A adapters never route to S_Q."""
         api_only = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_only, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is api_only
 
     def test_quota_exhausted_routes_to_api(self):
@@ -878,7 +940,7 @@ class TestRouteWiseQuotaDecision:
             _quota_pool(router).consume()
         assert _quota_pool(router).remaining == 0
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is api_adapter
 
     def test_context_prompt_tokens_used(self):
@@ -906,7 +968,7 @@ class TestRouteWiseQuotaDecision:
         }
         # Should still route correctly (not silently use 0 prompt_tokens).
         initial_remaining = _quota_pool(router).remaining
-        selected = router._select_adapter("test-model", context_with_messages)
+        selected = router._select_decision("test-model", context_with_messages).adapter
         assert selected is quota_adapter
         # Quota consumed: one request slot.
         consumed = initial_remaining - _quota_pool(router).remaining
@@ -920,7 +982,7 @@ class TestRouteWiseQuotaDecision:
             router.predictor.update("test-model", 500)
 
         before = _quota_pool(router).remaining
-        selected = router._select_adapter("test-model", {"prompt_tokens": 200})
+        selected = router._select_decision("test-model", {"prompt_tokens": 200}).adapter
         assert selected is quota_adapter
 
         after = _quota_pool(router).remaining
@@ -943,7 +1005,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -973,7 +1035,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -995,7 +1057,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1003,8 +1065,8 @@ class TestRouteWiseObservation:
 
     def test_record_observation_does_not_raise(self):
         """record_observation never raises, even with edge-case data."""
-        fr = _FakeFixedRouter()
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        fr = _FakeRouteTable()
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         obs = RoutingObservation(
             model_id="unknown-model",
             endpoint_id="unknown:provider",
@@ -1014,7 +1076,7 @@ class TestRouteWiseObservation:
             prompt_tokens=0,
             completion_tokens=0,
             success=False,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)  # Should not raise.
 
@@ -1046,9 +1108,9 @@ def _make_router_with_two_api(
         completion_price="20.0",
         endpoint_id="test-model:api-b",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add("test-model", [(api_a, 0.5), (api_b, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     return router, api_a, api_b
 
 
@@ -1073,7 +1135,7 @@ class TestRouteWiseLayer2:
             router._latency_profiles["test-model:api-b"].record(now, 300.0)
 
         # Select adapter -- should use LP path.
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is not None
 
         # LP should have run: check that last_lp_status was updated.
@@ -1091,7 +1153,7 @@ class TestRouteWiseLayer2:
             router.predictor.update("test-model", 500)
 
         # No latency data -> cold start -> cheapest API.
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         # api_a is cheaper (3.0/15.0 vs 4.0/20.0).
         assert selected is api_a
 
@@ -1109,7 +1171,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1132,7 +1194,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1152,17 +1214,17 @@ class TestRouteWiseLayer2:
             completion_price="15.0",
             endpoint_id="test-model:api-only",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_only, 1.0)])
 
         config = RouteWiseConfig(latency_min_samples=1)
-        router = RouteWiseRouter(fixed_router=fr, config=config)
+        router = RouteWiseRouter(route_table=fr, config=config)
 
         # Warm predictor.
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is api_only
         assert router._last_lp_statuses.get("test-model") == "single_provider"
 
@@ -1180,7 +1242,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=0,
             success=False,
-            quota_committed=0.0,
+            strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
@@ -1497,11 +1559,11 @@ class TestRouteWiseLayer2:
             endpoint_id="model-b:ep2",
         )
 
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("model-a", [(a1, 0.5), (a2, 0.5)])
         fr.add("model-b", [(b1, 0.5), (b2, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=config)
+        router = RouteWiseRouter(route_table=fr, config=config)
 
         # Warm predictors for both models.
         for _ in range(25):
@@ -1517,12 +1579,12 @@ class TestRouteWiseLayer2:
             router._latency_profiles["model-b:ep2"].record(now, 500.0)
 
         # Route model A.
-        sel_a = router._select_adapter("model-a", {"prompt_tokens": 1000})
+        sel_a = router._select_decision("model-a", {"prompt_tokens": 1000}).adapter
         assert sel_a is not None
         assert sel_a in (a1, a2), "Model A must select from its own endpoints"
 
         # Route model B.
-        sel_b = router._select_adapter("model-b", {"prompt_tokens": 1000})
+        sel_b = router._select_decision("model-b", {"prompt_tokens": 1000}).adapter
         assert sel_b is not None
         assert sel_b in (b1, b2), "Model B must select from its own endpoints"
 
@@ -1560,10 +1622,10 @@ class TestEnvelopeDonorBootstrap:
             endpoint_id="donor-model:api",
             model_id="donor-model",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("target-model", [(target_api, 1.0)])
         fr.add("donor-model", [(donor_api, 1.0)])
-        return RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        return RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_donor_rows_priced_with_target_routes_into_target_pool(self):
         router = self._router_with_donor_sibling()
@@ -1613,6 +1675,55 @@ class TestEnvelopeDonorBootstrap:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ("chat", "stream"))
+async def test_routewise_owned_execution_sets_context_and_ensures_before_error(operation):
+    from serving.utils import context as req_ctx
+
+    endpoint_id = f"test-model:context-{operation}"
+    adapter = _make_adapter(
+        provider="context-provider",
+        endpoint_id=endpoint_id,
+    )
+    adapter.reports_leg_outcomes = False
+    router = RouteWiseRouter(config=RouteWiseConfig(db_bootstrap_enabled=False))
+    seen_contexts: list[dict[str, Any]] = []
+    error = _StatusError(400, "bad request")
+
+    async def _failed_chat(messages, **params):
+        seen_contexts.append(dict(req_ctx.get()))
+        raise error
+
+    async def _failed_stream(messages, **params):
+        seen_contexts.append(dict(req_ctx.get()))
+        raise error
+        yield  # pragma: no cover - marks this as an async generator
+
+    adapter.chat_completion = _failed_chat
+    adapter.stream_chat_completion = _failed_stream
+
+    with req_ctx.push(user_id="context-test-user"):
+        outer_context = dict(req_ctx.get())
+        with pytest.raises(_StatusError, match="bad request"):
+            if operation == "chat":
+                await router._execute_adapter(_unreserved_decision(adapter), "test-model", [])
+            else:
+                async for _ in router._execute_stream_adapter(
+                    _unreserved_decision(adapter), "test-model", []
+                ):
+                    pass
+        assert req_ctx.get() == outer_context
+
+    assert seen_contexts[-1]["model"] == "test-model"
+    assert seen_contexts[-1]["provider"] == "context-provider"
+    assert seen_contexts[-1]["user_id"] == "context-test-user"
+    assert router.get_provider_status()[endpoint_id] == {
+        "availability": 1.0,
+        "circuit_state": "closed",
+    }
+
+
 def _make_router_with_conc_and_api(
     config: RouteWiseConfig | None = None,
     prompt_price: str = "3.0",
@@ -1639,9 +1750,9 @@ def _make_router_with_conc_and_api(
         completion_price=completion_price,
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add("test-model", [(conc_adapter, 0.5), (api_adapter, 0.5)])
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     return router, conc_adapter, api_adapter
 
 
@@ -1677,7 +1788,7 @@ def _make_router_three_tier(
         completion_price="15.0",
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add(
         "test-model",
         [
@@ -1686,7 +1797,7 @@ def _make_router_three_tier(
             (api_adapter, 0.4),
         ],
     )
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     _seed_quota_snapshots(router)
     return router, conc_adapter, quota_adapter, api_adapter
 
@@ -1703,7 +1814,7 @@ class TestRouteWiseSCDecision:
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is conc_adapter
         assert _conc_pool(router).active == 1
 
@@ -1717,7 +1828,7 @@ class TestRouteWiseSCDecision:
         # Fill the single slot.
         _conc_pool(router).try_acquire()
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is api_adapter
 
     def test_sc_preferred_over_sq_when_both_available(self):
@@ -1728,7 +1839,7 @@ class TestRouteWiseSCDecision:
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is conc_adapter
 
     def test_sc_pool_built_from_route_policy(self):
@@ -1745,7 +1856,7 @@ class TestRouteWiseSCDecision:
         assert pool.try_acquire() is True
 
         conc_adapter.config.concurrency = {"limit": 3}
-        router._rebuild_from_fixed_router()
+        router._rebuild_from_route_table()
 
         updated_pool = _conc_pool(router)
         assert updated_pool is pool
@@ -1755,7 +1866,7 @@ class TestRouteWiseSCDecision:
         assert updated_pool.try_acquire() is True
 
         conc_adapter.config.concurrency = {"limit": 2}
-        router._rebuild_from_fixed_router()
+        router._rebuild_from_route_table()
 
         assert _conc_pool(router) is pool
         assert pool.limit == 2
@@ -1775,9 +1886,9 @@ class TestRouteWiseSCDecision:
             endpoint_id="test-model:conc-b",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc_a, 0.5), (conc_b, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert len(router.concurrency_pools) == 2
         pool_a = router.concurrency_pools["test-model:test-model:conc-a"]
@@ -1788,7 +1899,7 @@ class TestRouteWiseSCDecision:
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is conc_b
 
     def test_conflicting_shared_pool_policies_rejected(self):
@@ -1805,10 +1916,10 @@ class TestRouteWiseSCDecision:
             concurrency={"limit": 2},
             concurrency_pool="shared-subscription",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc_a, 0.5), (conc_b, 0.5)])
         with pytest.raises(ValueError, match="conflicting limits"):
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
     def test_shared_pool_routes_share_slots(self):
         """Routes declaring the same pool id draw from one slot budget."""
@@ -1824,17 +1935,17 @@ class TestRouteWiseSCDecision:
             concurrency={"limit": 1},
             concurrency_pool="shared-subscription",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc_a, 0.5), (conc_b, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         assert len(router.concurrency_pools) == 1
         assert router.concurrency_pools["shared-subscription"].try_acquire() is True
 
         for _ in range(25):
             router.predictor.update("test-model", 500)
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
-        assert selected is None
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision is None
 
     def test_sc_full_sq_available_routes_to_sq(self):
         """When S_C is full, falls to S_Q if theta_Q condition met."""
@@ -1849,7 +1960,7 @@ class TestRouteWiseSCDecision:
         # Fill S_C.
         _conc_pool(router).try_acquire()
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is quota_adapter
 
     def test_sc_full_sq_exhausted_routes_to_api(self):
@@ -1868,7 +1979,7 @@ class TestRouteWiseSCDecision:
         for _ in range(100):
             _quota_pool(router).consume()
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        selected = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert selected is api_adapter
 
     def test_three_tier_priority_cascade(self):
@@ -1882,15 +1993,15 @@ class TestRouteWiseSCDecision:
             router.predictor.update("test-model", 500)
 
         # First request: S_C (slot available).
-        sel1 = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        sel1 = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert sel1 is conc_adapter
 
         # S_C now full (limit=1). Second request: S_Q.
-        sel2 = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        sel2 = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert sel2 is quota_adapter
 
         # S_Q now exhausted (quota=1). Third request: S_A.
-        sel3 = router._select_adapter("test-model", {"prompt_tokens": 1000})
+        sel3 = router._select_decision("test-model", {"prompt_tokens": 1000}).adapter
         assert sel3 is api_adapter
 
     def test_commit_retry_keeps_resolving_until_candidate_success(self, monkeypatch):
@@ -1910,17 +2021,19 @@ class TestRouteWiseSCDecision:
 
         def fail_first_two_commits(candidate):
             commit_attempts.append(candidate.endpoint_id)
-            return len(commit_attempts) >= 3
+            if len(commit_attempts) >= 3:
+                return ProviderReservation()
+            return None
 
         monkeypatch.setattr(router, "_sample_solution", sample_first_candidate)
-        monkeypatch.setattr(router, "_commit_candidate", fail_first_two_commits)
+        monkeypatch.setattr(router, "_reserve_candidate", fail_first_two_commits)
 
-        selected = router._select_adapter(
+        decision = router._select_decision(
             "test-model",
             {"prompt_tokens": 1000, "request_id": "req-commit-retry"},
         )
 
-        assert selected is api_adapter
+        assert decision.adapter is api_adapter
         assert sampled_attempts == [
             [
                 "test-model:conc-provider",
@@ -1935,7 +2048,7 @@ class TestRouteWiseSCDecision:
             "test-model:quota-provider",
             "test-model:api-provider",
         ]
-        meta = router._pending_decisions["req-commit-retry"]
+        meta = decision.metadata
         assert meta["selected_endpoint"] == "test-model:api-provider"
         assert meta["selected_provider_type"] == "on_demand"
 
@@ -1953,22 +2066,19 @@ class TestRouteWiseSCLifecycle:
             router.predictor.update("test-model", 500)
 
         # Select -> acquires slot.
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
-        assert selected is conc_adapter
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is conc_adapter
         assert _conc_pool(router).active == 1
 
-        # Mock super()._execute_adapter.
-        with patch.object(
-            type(router).__mro__[1],  # BaseRouter
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            return_value={"choices": [{"message": {"content": "ok"}}]},
-        ):
-            await router._execute_adapter(
-                conc_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            )
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}}]}
+        )
+        await router._execute_adapter(
+            decision,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
@@ -1979,24 +2089,46 @@ class TestRouteWiseSCLifecycle:
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
-        assert selected is conc_adapter
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is conc_adapter
         assert _conc_pool(router).active == 1
 
-        with (
-            patch.object(
-                type(router).__mro__[1],
-                "_execute_adapter",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("provider error"),
-            ),
-            pytest.raises(RuntimeError, match="provider error"),
-        ):
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.chat_completion = AsyncMock(side_effect=RuntimeError("provider error"))
+        with pytest.raises(RuntimeError, match="provider error"):
             await router._execute_adapter(
-                conc_adapter,
+                decision,
                 "test-model",
                 [{"role": "user", "content": "hi"}],
             )
+        assert _conc_pool(router).active == 0
+
+    @pytest.mark.parametrize("operation", ("chat", "stream"))
+    @pytest.mark.asyncio
+    async def test_slot_released_when_endpoint_resolution_raises(self, operation):
+        """Capacity release still runs when endpoint metadata is malformed."""
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
+
+        for _ in range(25):
+            router.predictor.update("test-model", 500)
+
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is conc_adapter
+        assert _conc_pool(router).active == 1
+
+        with (
+            patch(
+                "routing.routewise.router.endpoint_id_for_adapter",
+                side_effect=RuntimeError("invalid endpoint metadata"),
+            ),
+            pytest.raises(RuntimeError, match="invalid endpoint metadata"),
+        ):
+            if operation == "chat":
+                await router._execute_adapter(decision, "test-model", [])
+            else:
+                async for _ in router._execute_stream_adapter(decision, "test-model", []):
+                    pass
+
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
@@ -2007,21 +2139,15 @@ class TestRouteWiseSCLifecycle:
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
-        assert selected is conc_adapter
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is conc_adapter
         assert _conc_pool(router).active == 1
 
-        with (
-            patch.object(
-                type(router).__mro__[1],
-                "_execute_adapter",
-                new_callable=AsyncMock,
-                side_effect=asyncio.CancelledError(),
-            ),
-            pytest.raises(asyncio.CancelledError),
-        ):
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.chat_completion = AsyncMock(side_effect=asyncio.CancelledError())
+        with pytest.raises(asyncio.CancelledError):
             await router._execute_adapter(
-                conc_adapter,
+                decision,
                 "test-model",
                 [{"role": "user", "content": "hi"}],
             )
@@ -2035,27 +2161,24 @@ class TestRouteWiseSCLifecycle:
         for _ in range(25):
             router.predictor.update("test-model", 500)
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
-        assert selected is conc_adapter
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is conc_adapter
         assert _conc_pool(router).active == 1
 
         async def _fake_stream(*args, **kwargs):
             yield {"choices": [{"delta": {"content": "hello"}}]}
             yield {"choices": [{"delta": {"content": " world"}}]}
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_stream_adapter",
-            side_effect=_fake_stream,
+        conc_adapter.reports_leg_outcomes = False
+        conc_adapter.stream_chat_completion = _fake_stream
+        chunks = []
+        async for chunk in router._execute_stream_adapter(
+            decision,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
         ):
-            chunks = []
-            async for chunk in router._execute_stream_adapter(
-                conc_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            ):
-                chunks.append(chunk)
-            assert len(chunks) == 2
+            chunks.append(chunk)
+        assert len(chunks) == 2
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
@@ -2068,21 +2191,19 @@ class TestRouteWiseSCLifecycle:
 
         # Fill S_C so next request goes to S_A.
         _conc_pool(router).try_acquire()
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
-        assert selected is api_adapter
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is api_adapter
         assert _conc_pool(router).active == 1  # From manual acquire.
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            return_value={"choices": [{"message": {"content": "ok"}}]},
-        ):
-            await router._execute_adapter(
-                api_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            )
+        api_adapter.reports_leg_outcomes = False
+        api_adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}}]}
+        )
+        await router._execute_adapter(
+            decision,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
         # conc_mgr unchanged -- S_A doesn't release.
         assert _conc_pool(router).active == 1
 
@@ -2101,22 +2222,75 @@ class TestRouteWiseSCLifecycle:
             _conc_pool(router).try_acquire()
         assert _conc_pool(router).active == 4
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 1000})
-        assert selected is quota_adapter
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is quota_adapter
 
-        with patch.object(
-            type(router).__mro__[1],
-            "_execute_adapter",
-            new_callable=AsyncMock,
-            return_value={"choices": [{"message": {"content": "ok"}}]},
-        ):
-            await router._execute_adapter(
-                quota_adapter,
-                "test-model",
-                [{"role": "user", "content": "hi"}],
-            )
+        quota_adapter.reports_leg_outcomes = False
+        quota_adapter.chat_completion = AsyncMock(
+            return_value={"choices": [{"message": {"content": "ok"}}]}
+        )
+        await router._execute_adapter(
+            decision,
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+        )
         # conc_mgr unchanged -- S_Q doesn't release.
         assert _conc_pool(router).active == 4
+
+    def test_rebuild_releases_the_pool_captured_at_acquire_time(self):
+        """A decision releases its old pool even after route state is rebuilt."""
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api(concurrency_limit=2)
+        decision = router._select_decision("test-model", {"prompt_tokens": 1000})
+        assert decision.adapter is conc_adapter
+        old_pool = _conc_pool(router)
+        assert old_pool.active == 1
+
+        conc_adapter.config.concurrency_pool = "replacement-pool"
+        router._rebuild_from_route_table()
+        replacement_pool = router.concurrency_pools["replacement-pool"]
+        assert replacement_pool is not old_pool
+        assert replacement_pool.try_acquire() is True
+        assert replacement_pool.active == 1
+
+        decision.release()
+        decision.release()
+
+        assert old_pool.active == 0
+        assert replacement_pool.active == 1
+        replacement_pool.release()
+
+    @pytest.mark.parametrize("failure_stage", ("metadata", "hedge_plan", "hedged_adapter"))
+    def test_selection_construction_failure_releases_acquired_slot(
+        self,
+        monkeypatch,
+        failure_stage,
+    ):
+        """Failures after acquire cannot strand a concurrency reservation."""
+        router, conc_adapter, _api_adapter = _make_router_with_conc_and_api()
+
+        def _choose_concurrency(candidates, _solution):
+            return next(candidate for candidate in candidates if candidate.adapter is conc_adapter)
+
+        def _raise_construction_error(*args, **kwargs):
+            raise RuntimeError(f"{failure_stage} construction failed")
+
+        monkeypatch.setattr(router, "_sample_solution", _choose_concurrency)
+        if failure_stage == "metadata":
+            monkeypatch.setattr(router, "_decision_metadata", _raise_construction_error)
+        elif failure_stage == "hedge_plan":
+            monkeypatch.setattr(router, "_select_hedge_plan", _raise_construction_error)
+        else:
+            hedge_plan = MagicMock(checkpoints_sec=(0.01,))
+            monkeypatch.setattr(router, "_select_hedge_plan", lambda **_kwargs: hedge_plan)
+            monkeypatch.setattr(
+                "routing.routewise.router.HedgedAdapter",
+                MagicMock(side_effect=_raise_construction_error),
+            )
+
+        with pytest.raises(RuntimeError, match=f"{failure_stage} construction failed"):
+            router._select_decision("test-model", {"prompt_tokens": 1000})
+
+        assert _conc_pool(router).active == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2135,17 +2309,17 @@ class TestRouteWiseNoApiBaseline:
             endpoint_id="test-model:conc",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         # Fill the single slot externally.
         _conc_pool(router).try_acquire()
         assert _conc_pool(router).active == 1
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 100})
-        assert selected is None
+        decision = router._select_decision("test-model", {"prompt_tokens": 100})
+        assert decision is None
         # Active must not change -- no spurious acquire or release.
         assert _conc_pool(router).active == 1
 
@@ -2156,10 +2330,10 @@ class TestRouteWiseNoApiBaseline:
             endpoint_id="test-model:quota",
             quota={"limit": 5},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
 
         # Exhaust quota.
@@ -2167,8 +2341,8 @@ class TestRouteWiseNoApiBaseline:
             _quota_pool(router).consume()
         assert _quota_pool(router).remaining == 0
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 100})
-        assert selected is None
+        decision = router._select_decision("test-model", {"prompt_tokens": 100})
+        assert decision is None
         # Quota must not change.
         assert _quota_pool(router).remaining == 0
 
@@ -2184,10 +2358,10 @@ class TestRouteWiseNoApiBaseline:
             endpoint_id="test-model:quota",
             quota={"limit": 3},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 0.5), (quota, 0.5)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
 
         # Fill S_C.
@@ -2196,8 +2370,8 @@ class TestRouteWiseNoApiBaseline:
         for _ in range(3):
             _quota_pool(router).consume()
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 100})
-        assert selected is None
+        decision = router._select_decision("test-model", {"prompt_tokens": 100})
+        assert decision is None
         assert _conc_pool(router).active == 1
         assert _quota_pool(router).remaining == 0
 
@@ -2207,12 +2381,12 @@ class TestRouteWiseNoApiBaseline:
             provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
-        selected = router._select_adapter("test-model", {"prompt_tokens": 100})
+        selected = router._select_decision("test-model", {"prompt_tokens": 100}).adapter
         assert selected is conc
         assert _conc_pool(router).active == 1
 
@@ -2223,7 +2397,7 @@ class TestRouteWiseNoApiBaseline:
             provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
         stream_entered = False
@@ -2235,7 +2409,7 @@ class TestRouteWiseNoApiBaseline:
 
         conc.stream_chat_completion = _stream
 
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         stream = router.stream_chat_completion(
             "test-model",
@@ -2253,17 +2427,63 @@ class TestRouteWiseNoApiBaseline:
 
         assert _conc_pool(router).active == 0
 
+    @pytest.mark.asyncio
+    async def test_stream_close_after_provider_payload_releases_only_its_slot(self):
+        """Closing mid-stream finalizes the inner stream and releases exactly once."""
+        conc = _make_adapter(
+            provider_type="concurrency",
+            endpoint_id="test-model:conc",
+            concurrency={"limit": 2},
+        )
+        conc.reports_leg_outcomes = False
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(conc, 1.0)])
+        inner_finalized = asyncio.Event()
+
+        async def _stream(*args, **kwargs):
+            try:
+                yield 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+                await asyncio.Event().wait()
+            finally:
+                inner_finalized.set()
+
+        conc.stream_chat_completion = _stream
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+        router.pending_prefix_cache.touch = MagicMock(wraps=router.pending_prefix_cache.touch)
+        pool = _conc_pool(router)
+        assert pool.try_acquire() is True  # Unrelated in-flight request.
+
+        stream = router.stream_chat_completion(
+            "test-model",
+            [{"role": "user", "content": "hi"}],
+            request_id="req-close-after-payload",
+        )
+        routing = await stream.__anext__()
+        payload = await stream.__anext__()
+        assert '"_routing"' in routing
+        assert '"content":"hi"' in payload
+        assert pool.active == 2
+        router.pending_prefix_cache.touch.assert_called_once_with("req-close-after-payload")
+
+        await stream.aclose()
+        await asyncio.wait_for(inner_finalized.wait(), timeout=1.0)
+        await stream.aclose()
+
+        assert pool.active == 1
+        pool.release()
+        assert pool.active == 0
+
     def test_validation_warns_no_on_demand_baseline(self):
         """Construction-time warning when model has no P_O adapter."""
         conc = _make_adapter(
             provider_type="concurrency",
             endpoint_id="test-model:conc",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(conc, 1.0)])
 
         with patch("routing.routewise.router.logger") as mock_logger:
-            RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+            RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
             mock_logger.warning.assert_called()
             warning_msg = mock_logger.warning.call_args[0][0]
             assert "no P_O" in warning_msg
@@ -2302,18 +2522,18 @@ def _make_router_with_all_tiers(
         completion_price="15.0",
         endpoint_id="test-model:api-provider",
     )
-    fr = _FakeFixedRouter()
+    fr = _FakeRouteTable()
     fr.add(
         "test-model",
         [(conc_adapter, 0.3), (quota_adapter, 0.3), (api_adapter, 0.4)],
     )
-    router = RouteWiseRouter(fixed_router=fr, config=config)
+    router = RouteWiseRouter(route_table=fr, config=config)
     return router, conc_adapter, quota_adapter, api_adapter
 
 
 @pytest.mark.unit
 class TestRouteWiseDecisionMetadata:
-    """Verify _pending_decisions is populated and merged into responses."""
+    """Verify request-local decision metadata is merged into responses."""
 
     def test_sc_decision_stores_metadata(self):
         """S_C selection stores metadata with selected_provider_type='concurrency'."""
@@ -2321,11 +2541,11 @@ class TestRouteWiseDecisionMetadata:
         request_id = "req-test-sc"
         context = {"request_id": request_id}
 
-        selected = router._select_adapter("test-model", context)
-        assert selected is conc
-        assert request_id in router._pending_decisions
+        decision = router._select_decision("test-model", context)
+        assert decision.adapter is conc
+        assert decision.trace.request_id == request_id
 
-        meta = router._pending_decisions[request_id]
+        meta = decision.metadata
         assert meta["selected_provider_type"] == "concurrency"
         assert meta["sc_committed"] is True
         assert meta["quota_committed"] == 0.0
@@ -2343,8 +2563,8 @@ class TestRouteWiseDecisionMetadata:
         request_id = "req-test-canonical"
         context = {"request_id": request_id}
 
-        router._select_adapter("test-model", context)
-        meta = router._pending_decisions[request_id]
+        decision = router._select_decision("test-model", context)
+        meta = decision.metadata
 
         assert meta["policy"] == "routewise"
         # Canonical aliases agree with the prod-native fields.
@@ -2378,11 +2598,11 @@ class TestRouteWiseDecisionMetadata:
         request_id = "req-test-sq"
         context = {"request_id": request_id}
 
-        selected = router._select_adapter("test-model", context)
-        assert selected is quota
-        assert request_id in router._pending_decisions
+        decision = router._select_decision("test-model", context)
+        assert decision.adapter is quota
+        assert decision.trace.request_id == request_id
 
-        meta = router._pending_decisions[request_id]
+        meta = decision.metadata
         assert meta["selected_provider_type"] == "quota"
         assert (
             meta["quota_committed"] == 0.0
@@ -2399,23 +2619,54 @@ class TestRouteWiseDecisionMetadata:
         request_id = "req-test-sa"
         context = {"request_id": request_id}
 
-        selected = router._select_adapter("test-model", context)
-        assert selected is api
-        assert request_id in router._pending_decisions
+        decision = router._select_decision("test-model", context)
+        assert decision.adapter is api
+        assert decision.trace.request_id == request_id
 
-        meta = router._pending_decisions[request_id]
+        meta = decision.metadata
         assert meta["selected_provider_type"] == "on_demand"
         assert meta["quota_committed"] == 0.0
         assert meta["sc_committed"] is False
 
     def test_no_request_id_still_works(self):
-        """Selection works without request_id (no metadata stored)."""
+        """Selection without request_id still returns request-local metadata."""
         router, _quota, _api = _make_router_with_quota_and_api()
-        # No request_id in context
-        selected = router._select_adapter("test-model", {})
-        assert selected is not None
-        # _pending_decisions should remain empty
-        assert len(router._pending_decisions) == 0
+        decision = router._select_decision("test-model", {})
+        assert decision is not None
+        assert decision.trace.request_id is None
+        assert "selected_provider_type" in decision.metadata
+
+    def test_same_request_id_decisions_remain_isolated(self):
+        """Repeated external ids do not alias request-local decision state."""
+        concurrency = _make_adapter(
+            provider_type="concurrency",
+            concurrency={"limit": 2},
+        )
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(concurrency, 1.0)])
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+
+        first = router._select_decision("test-model", {"request_id": "reused-id"})
+        second = router._select_decision("test-model", {"request_id": "reused-id"})
+        assert first is not None
+        assert second is not None
+        pool = _conc_pool(router)
+        assert pool.active == 2
+        first.metadata["backup_won"] = True
+        first.trace.record_failed_attempt({"endpoint_id": "first-only"})
+
+        assert first is not second
+        assert first.metadata is not second.metadata
+        assert first.trace is not second.trace
+        assert second.metadata["backup_won"] is False
+        assert second.trace.failed_attempts == []
+        assert not hasattr(router, "_pending_decisions")
+        assert not hasattr(router, "_primary_reservations")
+
+        first.release()
+        assert pool.active == 1
+        second.release()
+        assert pool.active == 0
 
     @pytest.mark.asyncio
     async def test_chat_completion_merges_routewise_into_routing(self):
@@ -2441,8 +2692,7 @@ class TestRouteWiseDecisionMetadata:
         rw = resp["_routing"]["routewise"]
         assert rw["selected_provider_type"] in ("quota", "on_demand")
         assert "v_t" in rw
-        # _pending_decisions should be cleaned up
-        assert "req-merge-test" not in router._pending_decisions
+        assert not hasattr(router, "_pending_decisions")
 
     @pytest.mark.asyncio
     async def test_chat_completion_re_solves_routewise_after_provider_failure(self):
@@ -2457,9 +2707,9 @@ class TestRouteWiseDecisionMetadata:
             endpoint_id="test-model:conc-provider",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
 
@@ -2496,6 +2746,33 @@ class TestRouteWiseDecisionMetadata:
         assert _conc_pool(router).active == 0
 
     @pytest.mark.asyncio
+    async def test_chat_retry_exhaustion_keeps_last_decision_metadata(self):
+        """A retryable single-provider failure retains its terminal trace."""
+        primary = _make_adapter(
+            provider="primary",
+            provider_type="on_demand",
+            endpoint_id="test-model:primary",
+        )
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(primary, 1.0)])
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+        primary.chat_completion = AsyncMock(side_effect=_StatusError(503, "unavailable"))
+
+        with pytest.raises(_StatusError, match="unavailable") as exc_info:
+            await router.chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-exhausted",
+            )
+
+        routing = exc_info.value._routing
+        routewise = routing["routewise"]
+        assert routewise["selected_endpoint"] == "test-model:primary"
+        assert routewise["fallback_policy"] == "routewise_resolve"
+        assert routewise["fallback_attempts"] == 1
+        assert routewise["fallback_excluded_endpoints"] == ["test-model:primary"]
+
+    @pytest.mark.asyncio
     async def test_chat_completion_does_not_resolve_after_nonretryable_error(self):
         """Non-transient provider errors surface directly but keep S_Q attempts charged."""
         quota = _make_adapter(
@@ -2508,9 +2785,9 @@ class TestRouteWiseDecisionMetadata:
             endpoint_id="test-model:conc-provider",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         _warm_envelope(router, lower=0.0000001, upper=0.001)
 
@@ -2554,10 +2831,10 @@ class TestRouteWiseDecisionMetadata:
             endpoint_id="test-model:conc-provider",
             concurrency={"limit": 1},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota, 0.5), (conc, 0.5)])
         router = RouteWiseRouter(
-            fixed_router=fr,
+            route_table=fr,
             config=RouteWiseConfig(fallback_mode="strict"),
         )
         _seed_quota_snapshots(router)
@@ -2637,8 +2914,7 @@ class TestRouteWiseDecisionMetadata:
         # [DONE] should be last
         assert chunks[-1].strip() == "data: [DONE]"
 
-        # Cleanup
-        assert "req-stream-test" not in router._pending_decisions
+        assert not hasattr(router, "_pending_decisions")
 
     @pytest.mark.asyncio
     async def test_stream_does_not_fallback_after_provider_chunk(self):
@@ -2653,9 +2929,9 @@ class TestRouteWiseDecisionMetadata:
             provider_type="on_demand",
             endpoint_id="test-model:backup",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         async def _primary_stream(*args, **kwargs):
             yield 'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
@@ -2667,7 +2943,11 @@ class TestRouteWiseDecisionMetadata:
 
         primary.stream_chat_completion = _primary_stream
         backup.stream_chat_completion = _backup_stream
-        router._select_adapter = lambda model_id, context: primary  # type: ignore[method-assign]
+
+        def _choose_primary(candidates, _solution):
+            return next(candidate for candidate in candidates if candidate.adapter is primary)
+
+        router._sample_solution = _choose_primary  # type: ignore[method-assign]
 
         chunks: list[str] = []
         with pytest.raises(RuntimeError, match="primary stream failed mid-flight"):
@@ -2694,9 +2974,9 @@ class TestRouteWiseDecisionMetadata:
             provider_type="on_demand",
             endpoint_id="test-model:backup",
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(primary, 0.5), (backup, 0.5)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
         async def _primary_stream(*args, **kwargs):
             raise _StatusError(400, "bad stream request")
@@ -2728,23 +3008,55 @@ class TestRouteWiseDecisionMetadata:
         assert routing["routewise"]["fallback_policy"] is None
 
     @pytest.mark.asyncio
-    async def test_pending_decisions_cleaned_on_error(self):
-        """_pending_decisions is cleaned up when chat_completion raises."""
+    async def test_stream_retry_exhaustion_keeps_last_decision_metadata(self):
+        """Pre-content retry exhaustion carries the last stream decision trace."""
+        primary = _make_adapter(
+            provider="primary",
+            provider_type="on_demand",
+            endpoint_id="test-model:primary",
+        )
+        fr = _FakeRouteTable()
+        fr.add("test-model", [(primary, 1.0)])
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
+
+        async def _failed_stream(*args, **kwargs):
+            raise _StatusError(503, "stream unavailable")
+            yield
+
+        primary.stream_chat_completion = _failed_stream
+        with pytest.raises(_StatusError, match="stream unavailable") as exc_info:
+            async for _ in router.stream_chat_completion(
+                "test-model",
+                [{"role": "user", "content": "hi"}],
+                request_id="req-stream-exhausted",
+            ):
+                pass
+
+        routing = exc_info.value._routing
+        routewise = routing["routewise"]
+        assert routewise["selected_endpoint"] == "test-model:primary"
+        assert routewise["fallback_policy"] == "routewise_resolve"
+        assert routewise["fallback_attempts"] == 1
+        assert routewise["fallback_excluded_endpoints"] == ["test-model:primary"]
+
+    @pytest.mark.asyncio
+    async def test_error_does_not_create_router_global_decision_state(self):
+        """Failed requests keep decision metadata local to their exception."""
         router, quota, api = _make_router_with_quota_and_api()
 
         # Both adapters fail
         quota.chat_completion = AsyncMock(side_effect=RuntimeError("fail"))
         api.chat_completion = AsyncMock(side_effect=RuntimeError("fail"))
 
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError) as exc_info:
             await router.chat_completion(
                 "test-model",
                 [{"role": "user", "content": "hi"}],
                 request_id="req-error-test",
             )
 
-        # Should be cleaned up
-        assert "req-error-test" not in router._pending_decisions
+        assert not hasattr(router, "_pending_decisions")
+        assert "routewise" in exc_info.value._routing
 
     @pytest.mark.asyncio
     async def test_backup_won_detected_on_config_swap(self):
@@ -2766,12 +3078,11 @@ class TestRouteWiseDecisionMetadata:
             primary=primary_adapter,
             backup=backup_adapter,
             hedge_threshold_sec=0.0,
-            event_sink=router,
+            event_sink=router._health_registry,
         )
 
-        # Pre-populate _pending_decisions as if _select_adapter ran
         request_id = "req-backup-test"
-        router._pending_decisions[request_id] = {
+        metadata = {
             "selected_provider_type": "on_demand",
             "hedged": True,
             "backup_won": False,
@@ -2787,6 +3098,8 @@ class TestRouteWiseDecisionMetadata:
             "sc_active": 0,
             "sc_limit": 0,
         }
+        decision = _unreserved_decision(hedged, metadata=metadata)
+        decision.trace.request_id = request_id
 
         # Simulate primary failing (slow), backup winning
         async def _slow_primary(messages, **params):
@@ -2801,7 +3114,7 @@ class TestRouteWiseDecisionMetadata:
 
         # Execute through RouteWise's _execute_adapter
         await router._execute_adapter(
-            hedged,
+            decision,
             "test-model",
             [{"role": "user", "content": "hi"}],
             request_id=request_id,
@@ -2809,7 +3122,7 @@ class TestRouteWiseDecisionMetadata:
 
         # HedgedAdapter should have swapped config -> backup won
         assert hedged.config is backup_adapter.config
-        assert router._pending_decisions[request_id]["backup_won"] is True
+        assert decision.metadata["backup_won"] is True
 
     @pytest.mark.asyncio
     async def test_exception_carries_routewise_in_routing(self):
@@ -2835,8 +3148,7 @@ class TestRouteWiseDecisionMetadata:
         assert rw["selected_provider_type"] in ("quota", "on_demand")
         assert "v_t" in rw
 
-        # _pending_decisions should be cleaned up
-        assert "req-exc-meta" not in router._pending_decisions
+        assert not hasattr(router, "_pending_decisions")
 
     @pytest.mark.asyncio
     async def test_stream_exception_carries_routewise_in_routing(self):
@@ -2870,18 +3182,15 @@ class TestRouteWiseDecisionMetadata:
         router, _conc, _quota, _api = _make_router_with_all_tiers()
 
         # S_C path
-        meta_sc = None
-        router._select_adapter("test-model", {"request_id": "req-sc-qc"})
-        meta_sc = router._pending_decisions.get("req-sc-qc")
-        if meta_sc:
-            assert meta_sc["quota_committed"] == 0.0
+        decision_sc = router._select_decision("test-model", {"request_id": "req-sc-qc"})
+        assert decision_sc.metadata["quota_committed"] == 0.0
 
         # S_Q path (quota + API only -- no concurrency route in this fixture)
         router2, _quota2, _api2 = _make_router_with_quota_and_api()
         _warm_envelope(router2, lower=0.0000001, upper=0.001)
-        router2._select_adapter("test-model", {"request_id": "req-sq-qc"})
-        meta_sq = router2._pending_decisions.get("req-sq-qc")
-        if meta_sq and meta_sq["selected_provider_type"] == "quota":
+        decision_sq = router2._select_decision("test-model", {"request_id": "req-sq-qc"})
+        meta_sq = decision_sq.metadata
+        if meta_sq["selected_provider_type"] == "quota":
             assert meta_sq["quota_committed"] == 0.0
             assert meta_sq["v_t"] > 0  # v_t is separate
 
@@ -2889,10 +3198,8 @@ class TestRouteWiseDecisionMetadata:
         config_sa = RouteWiseConfig()
         router3, _quota3, _api3 = _make_router_with_quota_and_api(config=config_sa)
         _warm_envelope(router3, lower=1000.0, upper=10000.0)
-        router3._select_adapter("test-model", {"request_id": "req-sa-qc"})
-        meta_sa = router3._pending_decisions.get("req-sa-qc")
-        if meta_sa:
-            assert meta_sa["quota_committed"] == 0.0
+        decision_sa = router3._select_decision("test-model", {"request_id": "req-sa-qc"})
+        assert decision_sa.metadata["quota_committed"] == 0.0
 
 
 @pytest.mark.unit
@@ -2922,9 +3229,9 @@ class TestRouteWiseEnvelopeCalibration:
             endpoint_id="quota-only:quota-provider",
             quota={"limit": 5000},
         )
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(quota_adapter, 1.0)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         _seed_quota_snapshots(router)
         with pytest.raises(EnvelopeNotCalibratedError, match="quota-only"):
             await router.start()
@@ -2942,9 +3249,9 @@ class TestRouteWiseEnvelopeCalibration:
     async def test_start_passes_for_api_only_models(self):
         """Models without any quota provider don't need a calibrated envelope."""
         api_only = _make_adapter(provider_type="on_demand")
-        fr = _FakeFixedRouter()
+        fr = _FakeRouteTable()
         fr.add("test-model", [(api_only, 1.0)])
-        router = RouteWiseRouter(fixed_router=fr, config=RouteWiseConfig())
+        router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
         try:
             await router.start()
         finally:
@@ -2956,5 +3263,5 @@ class TestRouteWiseEnvelopeCalibration:
         """
         router, _quota, api = _make_router_with_quota_and_api()
         # No _warm_envelope call: snapshot returns None and quota is skipped.
-        selected = router._select_adapter("test-model", {"prompt_tokens": 100})
+        selected = router._select_decision("test-model", {"prompt_tokens": 100}).adapter
         assert selected is api

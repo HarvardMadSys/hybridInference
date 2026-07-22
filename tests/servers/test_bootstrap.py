@@ -13,17 +13,117 @@ import pytest
 
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
+from routing.routewise.config import RouteWiseConfig
+from routing.routewise.router import RouteWiseRouter
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
+from serving.servers.registry import ModelRegistrationInfo
+
+
+def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
+    """Return a strict RouteWise double with production-shaped configuration."""
+    router = MagicMock(spec=RouteWiseRouter)
+    router.config = config or RouteWiseConfig()
+    return router
 
 
 class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
 
     @pytest.mark.asyncio
+    async def test_routewise_settings_apply_continues_after_one_router_fails(
+        self,
+        monkeypatch,
+    ):
+        resolver = MagicMock()
+        registry = MagicMock()
+        registry.configured_model_ids.return_value = ["model-a", "model-b"]
+        registry.registered_models.return_value = {}
+        registry.canonical_model_id.side_effect = lambda model_id: model_id
+        routers = {
+            "model-a": RouteWiseRouter(),
+            "model-b": RouteWiseRouter(),
+        }
+        registry.get_cached_router.side_effect = routers.get
+        apply_settings = AsyncMock(side_effect=[RuntimeError("model-a apply failed"), None])
+        monkeypatch.setattr(
+            bootstrap,
+            "apply_routewise_settings_to_router",
+            apply_settings,
+        )
+
+        with pytest.raises(RuntimeError, match="model-a apply failed"):
+            await bootstrap._apply_cached_routewise_model_settings(
+                resolver,
+                registry,
+                {},
+                refresh_probe_task=True,
+            )
+
+        assert [call.args[2] for call in apply_settings.await_args_list] == [
+            "model-a",
+            "model-b",
+        ]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("changed", [False, True])
+    async def test_reload_effective_route_state_rebuilds_only_on_change(
+        self,
+        monkeypatch,
+        changed,
+    ):
+        resolver = SimpleNamespace(load_all=AsyncMock(return_value=changed))
+        registry = MagicMock()
+        rebuild = MagicMock()
+        refresh_state = bootstrap._EffectiveRouteRefreshState()
+        monkeypatch.setattr(bootstrap, "rebuild_cached_routewise_routers", rebuild)
+
+        result = await bootstrap._reload_effective_route_state(
+            resolver,
+            registry,
+            refresh_state,
+        )
+
+        assert result is changed
+        resolver.load_all.assert_awaited_once_with()
+        if changed:
+            rebuild.assert_called_once_with(registry)
+        else:
+            rebuild.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reload_effective_route_state_retries_failed_rebuild(self, monkeypatch):
+        resolver = SimpleNamespace(load_all=AsyncMock(side_effect=[True, False]))
+        registry = MagicMock()
+        rebuild = MagicMock(side_effect=[RuntimeError("rebuild failed"), None])
+        refresh_state = bootstrap._EffectiveRouteRefreshState()
+        monkeypatch.setattr(bootstrap, "rebuild_cached_routewise_routers", rebuild)
+
+        with pytest.raises(RuntimeError, match="rebuild failed"):
+            await bootstrap._reload_effective_route_state(
+                resolver,
+                registry,
+                refresh_state,
+            )
+
+        assert refresh_state.rebuild_pending is True
+        assert (
+            await bootstrap._reload_effective_route_state(
+                resolver,
+                registry,
+                refresh_state,
+            )
+            is True
+        )
+        assert refresh_state.rebuild_pending is False
+        assert rebuild.call_count == 2
+
+    @pytest.mark.asyncio
     async def test_initialize_returns_app_services(self, mock_env):
         """Test that initialize returns properly typed AppServices."""
+        from routing.model_router_registry import ModelRouterRegistry
+
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch(
@@ -31,6 +131,15 @@ class TestBootstrapInitialization:
                 new=AsyncMock(return_value=({}, [])),
             ),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch(
+                "serving.servers.bootstrap.ModelRouterRegistry",
+                wraps=ModelRouterRegistry,
+            ) as registry_factory,
+            patch.object(
+                ModelRouterRegistry,
+                "bind_fixed_router",
+                side_effect=AssertionError("bootstrap must inject shared FixedRouter"),
+            ),
         ):
             services = await bootstrap.initialize()
 
@@ -39,6 +148,13 @@ class TestBootstrapInitialization:
             assert services.db_logger is None  # Disabled in mock_env
             assert services.routing_manager is None
             assert services.model_visibility_resolver is None
+            assert services.model_router_registry is not None
+            assert (
+                services.model_router_registry._dependencies.health_registry
+                is services.router._health_registry
+            )
+            assert registry_factory.call_args.kwargs["shared_fixed_router"] is services.router
+            assert services.model_router_registry._shared_fixed is services.router
 
     @pytest.mark.asyncio
     async def test_initialize_with_database(self, mock_env, monkeypatch):
@@ -206,6 +322,9 @@ models:
         # The alias must not split off a second RouteWise instance.
         assert alias is canonical
         assert alias.concurrency_pools is canonical.concurrency_pools
+        # Startup composes Fixed and RouteWise around one process-scoped
+        # registry so circuit/availability state cannot split by strategy.
+        assert canonical._health_registry is services.router._health_registry
 
     @pytest.mark.asyncio
     async def test_initialize_constructs_user_concurrency_limiter(self, mock_env):
@@ -256,7 +375,7 @@ models:
     @pytest.mark.asyncio
     async def test_initialize_does_not_start_routewise_until_bootstrap_succeeds(self, mock_env):
         """A later bootstrap failure must not leave the RouteWise sweep task running."""
-        mock_routewise = MagicMock()
+        mock_routewise = _mock_routewise()
         mock_routewise.start = AsyncMock()
 
         info = MagicMock()
@@ -266,16 +385,12 @@ models:
         info.strategy = None
         info.router_params = None
 
-        # Make the registry hand out our mock RouteWiseRouter so we can assert
-        # on its lifecycle.
+        # A spec-backed instance keeps the production isinstance boundary honest.
         registry_instance = MagicMock()
-        registry_instance.bind_fixed_router = MagicMock()
         registry_instance.get_router = MagicMock(return_value=mock_routewise)
-        # type(...).__name__ == "RouteWiseRouter" check in bootstrap relies on
-        # the class name; using a real subclass keeps that branch honest.
-        from routing.routewise.router import RouteWiseRouter as _RWR
-
-        mock_routewise.__class__ = _RWR
+        registry_instance.get_router_name.return_value = "routewise"
+        registry_instance.managed_routers.return_value = []
+        registry_instance.runtime_override_for_router.return_value = None
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -299,26 +414,82 @@ models:
         mock_routewise.start.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_initialize_fails_when_routewise_returns_same_named_object(self, mock_env):
+        """A declared strategy cannot satisfy RouteWise using only its class name."""
+        same_named_router = type("RouteWiseRouter", (), {})()
+        info = ModelRegistrationInfo(model_id="m", router="routewise")
+        registry_instance = MagicMock()
+        registry_instance.get_router.return_value = same_named_router
+        registry_instance.get_router_name.return_value = "routewise"
+        registry_instance.managed_routers.return_value = []
+
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [info])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch(
+                "serving.servers.bootstrap.ModelRouterRegistry",
+                return_value=registry_instance,
+            ),
+            pytest.raises(
+                TypeError,
+                match="routewise strategy returned RouteWiseRouter for model 'm'",
+            ),
+        ):
+            await bootstrap.initialize()
+
+    def test_collect_restored_routewise_rejects_same_named_object(self):
+        """The dedicated type error lets DB restore escape its best-effort catch."""
+        same_named_router = type("RouteWiseRouter", (), {})()
+        registry_instance = MagicMock()
+        registry_instance.get_router.return_value = same_named_router
+
+        with pytest.raises(
+            bootstrap._RouteWiseRouterTypeError,
+            match="restored routewise strategy returned RouteWiseRouter for model 'runtime-m'",
+        ):
+            bootstrap._collect_routewise_runtime_routers(
+                registry_instance,
+                {"runtime-m"},
+                [],
+            )
+
+    @pytest.mark.asyncio
     async def test_initialize_bootstraps_restored_runtime_routewise_before_start(self, mock_env):
         """Runtime-restored RouteWise models should replay DB logs before start()."""
-        from routing.routewise.router import RouteWiseRouter as _RWR
-
         events: list[str] = []
-        runtime_routewise = MagicMock()
-        runtime_routewise.__class__ = _RWR
+        runtime_routewise = _mock_routewise()
         runtime_routewise.start = AsyncMock(side_effect=lambda: events.append("start"))
+        runtime_routewise.bootstrap_from_probe_rows.return_value = {
+            "rows": 0,
+            "latency_events": 0,
+            "latency_prior_samples": 0,
+        }
 
         registry_instance = MagicMock()
-        registry_instance.bind_fixed_router = MagicMock()
         registry_instance.get_router = MagicMock(return_value=runtime_routewise)
         registry_instance.managed_routers.return_value = []
+        registry_instance.configured_model_ids.return_value = []
+        registry_instance.registered_models.return_value = {"runtime-m": "RouteWiseRouter"}
+        registry_instance.canonical_model_id.side_effect = lambda model_id: model_id
+        registry_instance.has_model.return_value = True
+        registry_instance.get_configured_routewise_params.return_value = {}
+        registry_instance.get_cached_router.return_value = runtime_routewise
 
         mock_db_logger = AsyncMock()
         mock_db_logger.pool = object()
         pg_store = AsyncMock()
         cached_store = MagicMock()
+        cached_store.list_settings = AsyncMock(return_value=[])
+        cached_store.get_setting = AsyncMock(return_value=None)
         cached_store.list_routewise_probe_samples = AsyncMock(return_value=[])
         log_store = MagicMock()
+        runtime_routewise.apply_runtime_overrides.side_effect = lambda **_kwargs: events.append(
+            "settings"
+        )
 
         async def record_routewise_bootstrap(
             _log_store, routewise_routers, model_ids_by_router, *_
@@ -377,12 +548,15 @@ models:
             services = await bootstrap.initialize()
 
         assert services.managed_routers == [runtime_routewise]
-        assert events == ["configs", "bootstrap:runtime-m", "start"]
-        assert bootstrap_logs.await_count == 3
-        runtime_call = bootstrap_logs.await_args_list[1]
+        assert events == ["configs", "bootstrap:runtime-m", "settings", "start"]
+        assert bootstrap_logs.await_count == 1
+        runtime_call = bootstrap_logs.await_args_list[0]
         assert runtime_call.args[0] is log_store
         assert runtime_call.args[1] == [runtime_routewise]
         assert runtime_call.args[2] == {id(runtime_routewise): {"runtime-m"}}
+        runtime_routewise.attach_operational_store.assert_called_once_with(cached_store)
+        runtime_routewise.bootstrap_from_probe_rows.assert_called_once_with([])
+        runtime_routewise.set_probe_sample_watermark.assert_called_once_with(0)
 
     @pytest.mark.asyncio
     async def test_routewise_db_bootstrap_replays_recent_logs(self):
@@ -392,12 +566,13 @@ models:
             [{"model_id": "m", "source": "latency"}],
             [{"model_id": "m", "source": "envelope"}],
         ]
-        rw = MagicMock()
-        rw.config = SimpleNamespace(
-            db_bootstrap_enabled=True,
-            db_bootstrap_max_rows=123,
-            latency_window_sec=900.0,
-            envelope_window_hours=24,
+        rw = _mock_routewise(
+            config=RouteWiseConfig(
+                db_bootstrap_max_rows=123,
+                latency_window_sec=900.0,
+                latency_history_prior_window_sec=3600.0,
+                envelope_window_hours=24,
+            )
         )
         rw.bootstrap_from_log_rows.return_value = {
             "rows": 1,
@@ -440,12 +615,12 @@ models:
             [{"model_id": "m", "source": "latency"}],
             [{"model_id": "donor", "source": "envelope"}],
         ]
-        rw = MagicMock()
-        rw.config = SimpleNamespace(
-            db_bootstrap_enabled=True,
-            db_bootstrap_max_rows=123,
-            latency_window_sec=900.0,
-            envelope_window_hours=24,
+        rw = _mock_routewise(
+            config=RouteWiseConfig(
+                db_bootstrap_max_rows=123,
+                latency_window_sec=900.0,
+                envelope_window_hours=24,
+            )
         )
         rw.bootstrap_from_log_rows.return_value = {
             "rows": 1,
@@ -478,12 +653,12 @@ models:
         """RouteWise DB bootstrap is best-effort and must not block startup."""
         log_store = AsyncMock()
         log_store.get_routewise_bootstrap_rows.side_effect = RuntimeError("db down")
-        rw = MagicMock()
-        rw.config = SimpleNamespace(
-            db_bootstrap_enabled=True,
-            db_bootstrap_max_rows=123,
-            latency_window_sec=900.0,
-            envelope_window_hours=24,
+        rw = _mock_routewise(
+            config=RouteWiseConfig(
+                db_bootstrap_max_rows=123,
+                latency_window_sec=900.0,
+                envelope_window_hours=24,
+            )
         )
 
         await bootstrap._bootstrap_routewise_from_logs(
@@ -503,12 +678,12 @@ models:
             [{"model_id": "m", "source": "latency"}],
             RuntimeError("db blip"),
         ]
-        rw = MagicMock()
-        rw.config = SimpleNamespace(
-            db_bootstrap_enabled=True,
-            db_bootstrap_max_rows=123,
-            latency_window_sec=900.0,
-            envelope_window_hours=24,
+        rw = _mock_routewise(
+            config=RouteWiseConfig(
+                db_bootstrap_max_rows=123,
+                latency_window_sec=900.0,
+                envelope_window_hours=24,
+            )
         )
         rw.bootstrap_from_log_rows.return_value = {
             "rows": 1,
@@ -531,11 +706,44 @@ models:
         )
 
     @pytest.mark.asyncio
+    async def test_probe_bootstrap_reports_missing_required_watermark_method(self):
+        """A broken typed router must warn instead of silently skipping its watermark."""
+        store = AsyncMock()
+        store.list_routewise_probe_samples.return_value = [
+            {
+                "id": 7,
+                "model_id": "m",
+                "checked_at": None,
+            }
+        ]
+        rw = _mock_routewise(config=RouteWiseConfig(db_bootstrap_max_rows=10))
+        rw.bootstrap_from_probe_rows.return_value = {
+            "rows": 1,
+            "latency_events": 1,
+            "latency_prior_samples": 0,
+        }
+        rw.set_probe_sample_watermark = None
+
+        with patch("serving.servers.bootstrap.logger") as mock_logger:
+            await bootstrap._bootstrap_routewise_from_probe_samples(
+                store,
+                [rw],
+                {id(rw): {"m"}},
+            )
+
+        rw.bootstrap_from_probe_rows.assert_called_once()
+        mock_logger.warning.assert_called_once_with(
+            "RouteWise probe bootstrap failed for models %s",
+            ["m"],
+            exc_info=True,
+        )
+
+    @pytest.mark.asyncio
     async def test_envelope_not_calibrated_aborts_initialization(self, mock_env):
         """An uncalibrated quota envelope must fail boot, not silently start."""
         from routing.routewise.envelope import EnvelopeNotCalibratedError
 
-        mock_routewise = MagicMock()
+        mock_routewise = _mock_routewise()
         mock_routewise.start = AsyncMock(
             side_effect=EnvelopeNotCalibratedError("envelope is uncalibrated")
         )
@@ -548,11 +756,10 @@ models:
         info.router_params = None
 
         registry_instance = MagicMock()
-        registry_instance.bind_fixed_router = MagicMock()
         registry_instance.get_router = MagicMock(return_value=mock_routewise)
-        from routing.routewise.router import RouteWiseRouter as _RWR
-
-        mock_routewise.__class__ = _RWR
+        registry_instance.get_router_name.return_value = "routewise"
+        registry_instance.managed_routers.return_value = []
+        registry_instance.runtime_override_for_router.return_value = None
 
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
@@ -574,35 +781,55 @@ models:
             await bootstrap.initialize()
 
     @pytest.mark.asyncio
-    async def test_failed_runtime_router_override_resets_to_configured_strategy(self):
-        """A stale DB-backed strategy override should not brick startup."""
-        managed_router = SimpleNamespace(
-            _model_router_override_id="m",
-            _model_router_fallback_strategy="fixed",
+    async def test_failed_runtime_router_override_does_not_fall_back_to_fixed(self, mock_env):
+        """A resource-aware runtime override must fail closed at startup."""
+        from routing.routewise.envelope import EnvelopeNotCalibratedError
+
+        managed_router = _mock_routewise()
+        managed_router.start = AsyncMock(
+            side_effect=EnvelopeNotCalibratedError("envelope is uncalibrated")
         )
-        managed_routers = [managed_router]
-        fallback_router = object()
+
+        info = MagicMock()
+        info.model_id = "m"
+        info.aliases = []
+        info.router = "routewise"
+        info.strategy = None
+        info.router_params = None
+
+        override = SimpleNamespace(canonical_model_id="m", configured_strategy="fixed")
         registry = MagicMock()
-        registry.get_router.return_value = fallback_router
-        op_store = AsyncMock()
+        registry.get_router = MagicMock(return_value=managed_router)
+        registry.get_router_name.return_value = "routewise"
+        registry.managed_routers.return_value = []
+        registry.runtime_override_for_router.return_value = override
 
-        reset = await bootstrap._reset_failed_runtime_router_override(
-            managed_router=managed_router,
-            model_router_registry=registry,
-            managed_routers=managed_routers,
-            operational_store=op_store,
-        )
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=None),
+            patch(
+                "serving.servers.bootstrap._init_router_and_models",
+                new=AsyncMock(return_value=({}, [info])),
+            ),
+            patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
+            patch("serving.servers.bootstrap.ModelRouterRegistry", return_value=registry),
+            patch(
+                "serving.servers.bootstrap._bootstrap_routewise_from_logs",
+                new=AsyncMock(),
+            ),
+            patch("serving.servers.bootstrap.logger") as mock_logger,
+            pytest.raises(EnvelopeNotCalibratedError, match="uncalibrated"),
+        ):
+            await bootstrap.initialize()
 
-        assert reset is True
-        registry.set_router_override.assert_called_once_with("m", "fixed")
-        registry.get_router.assert_called_once_with("m")
-        op_store.set_setting.assert_awaited_once_with(
-            "model_router_strategy:m",
+        registry.runtime_override_for_router.assert_called_once_with(managed_router)
+        registry.prepare_router_strategy_change.assert_not_called()
+        registry.commit_router_strategy_change.assert_not_called()
+        mock_logger.error.assert_called_once_with(
+            "Runtime RouteWise override failed envelope calibration for "
+            "model=%s; refusing unsafe fallback to strategy=%s",
+            "m",
             "fixed",
-            "string",
-            "bootstrap",
         )
-        assert managed_routers == []
 
 
 class TestBootstrapShutdown:

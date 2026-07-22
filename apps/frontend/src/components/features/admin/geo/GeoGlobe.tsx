@@ -19,6 +19,7 @@ import {
   deriveGeoMetricModel,
   hourOriginSummary,
   rotationForCoordinate,
+  windowOriginSummary,
 } from './geoMath';
 import { TopOrigins } from './TopOrigins';
 import { WindowTimeline } from './WindowTimeline';
@@ -63,6 +64,13 @@ function hourShortLabel(timestamp: string | undefined): string {
   const date = new Date(timestamp ?? '');
   if (Number.isNaN(date.getTime())) return '--:00 UTC';
   return `${String(date.getUTCHours()).padStart(2, '0')}:00 UTC`;
+}
+
+function windowHeadline(days: GeoRangeDays, timestamp: string | undefined): string {
+  const date = new Date(timestamp ?? '');
+  if (Number.isNaN(date.getTime())) return `last ${days} days`;
+  const day = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return `last ${days} days · through ${day} ${String(date.getUTCHours()).padStart(2, '0')}:00 UTC`;
 }
 
 function isStale(generatedAt: string): boolean {
@@ -162,23 +170,26 @@ function EmptyState({
 }
 
 function Hero({
-  data,
-  hourIndex,
+  mode,
+  days,
+  timestamp,
   metric,
   summary,
   atlas,
 }: {
-  data: GeoAnalyticsResponse;
-  hourIndex: number;
+  mode: 'window' | 'hour';
+  days: GeoRangeDays;
+  timestamp: string | undefined;
   metric: GeoMetric;
-  summary: ReturnType<typeof hourOriginSummary>;
+  summary: ReturnType<typeof windowOriginSummary>;
   atlas: PreparedAtlas;
 }) {
   const unit = metricUnit(metric);
   const countryWord = summary.activeCountries === 1 ? 'country' : 'countries';
-  let subline = 'No requests recorded in this hour.';
+  const scope = mode === 'window' ? `this ${days}-day window` : 'this hour';
+  let subline = `No requests recorded in ${scope}.`;
   if (summary.totalRequests > 0 && summary.top === null) {
-    subline = 'Origins unknown for all requests this hour.';
+    subline = `Origins unknown for all requests in ${scope}.`;
   } else if (summary.top !== null) {
     const topName = atlasCountryName(atlas, summary.top.country);
     const topShare = Math.round(summary.topShare * 100);
@@ -191,7 +202,7 @@ function Hero({
           {summary.totalValue > 0 ? `${formatCount(summary.totalValue)} ${unit}` : `No ${unit}`}
         </span>
         <span className="ml-2 text-base font-medium text-gray-500">
-          {hourHeadline(data.hours_index[hourIndex])}
+          {mode === 'window' ? windowHeadline(days, timestamp) : hourHeadline(timestamp)}
         </span>
       </p>
       <p aria-live="polite" className="mt-0.5 text-sm text-gray-600">
@@ -213,55 +224,61 @@ function GeoDashboard({
   onDaysChange: (next: GeoRangeDays) => void;
 }) {
   const lastIndex = Math.max(0, data.hours_index.length - 1);
-  const [hourIndex, setHourIndex] = useState(lastIndex);
+  const [selectedHourIndex, setSelectedHourIndex] = useState<number | null>(null);
   const [metric, setMetric] = useState<GeoMetric>('n');
   const [playing, setPlaying] = useState(false);
   const [selection, setSelection] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const initialRotation = useMemo(
-    () =>
-      demandWeightedRotation(data, atlas.coordinates, lastIndex) ??
-      demandWeightedRotation(data, atlas.coordinates) ??
-      DEFAULT_ROTATION,
-    [atlas.coordinates, data, lastIndex],
+    () => demandWeightedRotation(data, atlas.coordinates) ?? DEFAULT_ROTATION,
+    [atlas.coordinates, data],
   );
   const [viewRequest, setViewRequest] = useState<GlobeViewRequest>({
     id: 0,
     rotation: initialRotation,
   });
-  const safeHourIndex = Math.min(hourIndex, lastIndex);
+  const safeHourIndex = Math.max(0, Math.min(selectedHourIndex ?? lastIndex, lastIndex));
+  const mode = selectedHourIndex === null ? 'window' : 'hour';
 
-  // A cached range switch swaps `data` without remounting (the key is the range,
-  // and the dashboard first mounts with the previous payload). Re-anchor the
-  // hour, selection, and camera whenever the payload identity changes.
+  // A cached range switch swaps `data` without remounting. Reset to the range
+  // overview rather than carrying a drilled-down hour into a different window.
   const dataRef = useRef(data);
   useEffect(() => {
     if (dataRef.current === data) return;
     dataRef.current = data;
-    const last = Math.max(0, data.hours_index.length - 1);
-    setHourIndex(last);
+    setSelectedHourIndex(null);
+    setPlaying(false);
     setSelection(null);
     setViewRequest((request) => ({
       id: request.id + 1,
-      rotation:
-        demandWeightedRotation(data, atlas.coordinates, last) ??
-        demandWeightedRotation(data, atlas.coordinates) ??
-        DEFAULT_ROTATION,
+      rotation: demandWeightedRotation(data, atlas.coordinates) ?? DEFAULT_ROTATION,
     }));
   }, [atlas.coordinates, data]);
 
   useEffect(() => {
     if (!playing) return;
     const interval = window.setInterval(() => {
-      setHourIndex((current) => (current + 1 > lastIndex ? 0 : current + 1));
+      setSelectedHourIndex((current) => {
+        const next = current ?? 0;
+        return next + 1 > lastIndex ? 0 : next + 1;
+      });
     }, 150);
     return () => window.clearInterval(interval);
   }, [lastIndex, playing]);
 
   const setBoundedHour = useCallback(
-    (next: number) => setHourIndex(Math.max(0, Math.min(lastIndex, next))),
+    (next: number) => setSelectedHourIndex(Math.max(0, Math.min(lastIndex, next))),
     [lastIndex],
   );
+  const togglePlay = useCallback(() => {
+    setPlaying((current) => !current);
+    setSelectedHourIndex((current) => current ?? 0);
+  }, []);
+  const returnToWindowTotal = useCallback(() => {
+    setPlaying(false);
+    setSelectedHourIndex(null);
+    setSelection(null);
+  }, []);
   const selectionRef = useRef<string | null>(null);
   useEffect(() => {
     selectionRef.current = selection;
@@ -291,8 +308,11 @@ function GeoDashboard({
   const closeDetails = useCallback(() => setDetailsOpen(false), []);
   const metricModel = useMemo(() => deriveGeoMetricModel(data, metric), [data, metric]);
   const summary = useMemo(
-    () => hourOriginSummary(data, safeHourIndex, metricModel),
-    [data, safeHourIndex, metricModel],
+    () =>
+      mode === 'hour'
+        ? hourOriginSummary(data, safeHourIndex, metricModel)
+        : windowOriginSummary(data, metricModel),
+    [data, metricModel, mode, safeHourIndex],
   );
   const stale = isStale(data.meta.generated_at);
 
@@ -317,7 +337,26 @@ function GeoDashboard({
         </div>
       </div>
 
-      <Hero atlas={atlas} data={data} hourIndex={safeHourIndex} metric={metric} summary={summary} />
+      <Hero
+        atlas={atlas}
+        days={days}
+        metric={metric}
+        mode={mode}
+        summary={summary}
+        timestamp={data.hours_index[safeHourIndex]}
+      />
+
+      {mode === 'hour' && (
+        <div>
+          <button
+            type="button"
+            className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            onClick={returnToWindowTotal}
+          >
+            Back to {days}-day total
+          </button>
+        </div>
+      )}
 
       {(data.meta.degraded || !data.meta.geoip.country) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
@@ -328,18 +367,24 @@ function GeoDashboard({
       <div className="grid min-w-0 items-start gap-3 lg:grid-cols-[minmax(0,1fr)_15rem]">
         <GlobeCanvas
           atlas={atlas}
-          data={data}
-          hourIndex={safeHourIndex}
           metricModel={metricModel}
+          mode={mode}
           onSelect={handleGlobeSelect}
           selectedCountry={selection}
+          snapshotTimestamp={data.hours_index[safeHourIndex]}
+          summary={summary}
           viewRequest={viewRequest}
         />
         <TopOrigins
           announce={!playing}
           atlas={atlas}
-          hourLabel={hourShortLabel(data.hours_index[safeHourIndex])}
+          label={
+            mode === 'window'
+              ? `last ${days} days`
+              : hourShortLabel(data.hours_index[safeHourIndex])
+          }
           metric={metric}
+          mode={mode}
           onSelect={handleOriginSelect}
           selectedCountry={selection}
           summary={summary}
@@ -348,11 +393,12 @@ function GeoDashboard({
 
       <WindowTimeline
         data={data}
-        hourIndex={safeHourIndex}
         metricModel={metricModel}
         onHourChange={setBoundedHour}
-        onTogglePlay={() => setPlaying((current) => !current)}
+        onTogglePlay={togglePlay}
         playing={playing}
+        selectedHourIndex={selectedHourIndex}
+        totalLabel={`${days}-day total`}
       />
 
       <footer className="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 text-[13px] text-gray-500">

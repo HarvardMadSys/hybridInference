@@ -38,7 +38,8 @@ vi.mock('@/lib/api/admin', () => ({
   ),
   listRouteWeights: vi.fn(),
   listRoutewiseProbeSamples: vi.fn(),
-  listRoutewiseSettings: vi.fn(() => Promise.resolve({ settings: [] })),
+  listRoutewiseSettings: vi.fn(() => Promise.resolve({ model_id: 'minimax-fast', settings: [] })),
+  resetRoutewiseSetting: vi.fn(),
   runRoutewiseProbe: vi.fn(),
   setRouteWeight: vi.fn(),
   updateRoutewiseSetting: vi.fn(),
@@ -285,12 +286,15 @@ describe('ProviderRoutesTab', () => {
     });
     vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'featherless', keys: [] });
     vi.mocked(listRoutewiseSettings).mockResolvedValue({
+      model_id: 'minimax-fast',
       settings: [
         {
           key: 'routewise_budget_alpha',
           value: 0.75,
           value_type: 'float',
           default_value: 0.75,
+          source: 'global_default',
+          overridden: false,
           description: 'RouteWise LP cost budget interpolation.',
           min: 0,
           max: 1,
@@ -300,6 +304,8 @@ describe('ProviderRoutesTab', () => {
           value: 3,
           value_type: 'float',
           default_value: 3,
+          source: 'global_default',
+          overridden: false,
           description: 'Latency SLO in seconds for Routewise LP decisions.',
           min: 0.1,
           max: null,
@@ -309,6 +315,8 @@ describe('ProviderRoutesTab', () => {
           value: false,
           value_type: 'bool',
           default_value: false,
+          source: 'global_default',
+          overridden: false,
           description: 'Enable RouteWise background active latency probes.',
           min: null,
           max: null,
@@ -363,11 +371,13 @@ describe('ProviderRoutesTab', () => {
         },
       ],
     });
-    vi.mocked(updateRoutewiseSetting).mockImplementation(async (key, value) => ({
+    vi.mocked(updateRoutewiseSetting).mockImplementation(async (_modelId, key, value) => ({
       key,
       value,
       value_type: key === 'routewise_probe_enabled' ? 'bool' : 'float',
       default_value: key === 'routewise_probe_enabled' ? false : 0.75,
+      source: 'runtime_override',
+      overridden: true,
       description:
         key === 'routewise_probe_enabled'
           ? 'Enable RouteWise background active latency probes.'
@@ -386,7 +396,11 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Cost budget alpha' }));
 
     await waitFor(() => {
-      expect(updateRoutewiseSetting).toHaveBeenCalledWith('routewise_budget_alpha', 0.4);
+      expect(updateRoutewiseSetting).toHaveBeenCalledWith(
+        'minimax-fast',
+        'routewise_budget_alpha',
+        0.4,
+      );
     });
     expect(alphaInput).toHaveValue(0.4);
 
@@ -396,7 +410,11 @@ describe('ProviderRoutesTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save Background probes' }));
 
     await waitFor(() => {
-      expect(updateRoutewiseSetting).toHaveBeenCalledWith('routewise_probe_enabled', true);
+      expect(updateRoutewiseSetting).toHaveBeenCalledWith(
+        'minimax-fast',
+        'routewise_probe_enabled',
+        true,
+      );
     });
 
     expect((await screen.findAllByText('minimax-fast:featherless-api')).length).toBeGreaterThan(0);

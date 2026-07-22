@@ -101,6 +101,7 @@ class CompletionsLogger:
         model_id: str,
         routing: RoutingInfo | dict[str, Any] | None,
         *,
+        request_id: str,
         ttft_ms: float | None,
         total_latency_ms: float,
         prompt_tokens: int,
@@ -112,7 +113,8 @@ class CompletionsLogger:
         Accepts either a ``RoutingInfo`` (preferred) or the legacy untyped
         dict (e.g., ``getattr(exc, "_routing", None)``) so the handler's
         exception path — which today receives a raw dict from the adapter —
-        keeps working without further plumbing changes.
+        keeps working without further plumbing changes. ``request_id`` is
+        forwarded explicitly rather than recovered from ambient request context.
         """
         failed_attempts = _extract_failed_attempts(routing)
         seen_failed_attempts: set[tuple[str, str | None, str | None]] = set()
@@ -137,7 +139,9 @@ class CompletionsLogger:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=0,
                     success=False,
-                    quota_committed=0.0,
+                    request_id=request_id,
+                    terminal=False,
+                    strategy_metadata={"routewise": {"quota_committed": 0.0}},
                 )
             )
 
@@ -151,6 +155,8 @@ class CompletionsLogger:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             success=success,
+            request_id=request_id,
+            terminal=True,
             strategy_metadata=strategy_metadata,
         )
         active_router.record_observation(obs)

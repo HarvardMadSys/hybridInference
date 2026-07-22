@@ -7,6 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from routing.endpoints import endpoint_id_for_adapter
 from serving.admin.provider_quotas import gather_all
 from serving.schemas_admin import (
     AdminProviderQuotasResponse,
@@ -35,6 +36,7 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _require_aware_utc, _truncate_hour
+from serving.servers.routewise_rebuild import rebuild_routewise_routers
 from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
@@ -109,7 +111,7 @@ def _enumerate_routable_providers(
                 continue
             models, endpoints = by_provider.setdefault(provider, (set(), set()))
             models.add(canonical)
-            endpoints.add(getattr(adapter.config, "endpoint_id", None) or provider)
+            endpoints.add(endpoint_id_for_adapter(adapter))
     return by_provider
 
 
@@ -202,6 +204,8 @@ async def admin_set_provider_disabled(
         await op_store.clear_provider_disabled(provider)
         if resolver is not None:
             resolver.clear_disabled(provider)
+
+    rebuild_routewise_routers(services)
 
     await log_admin_action(
         op_store,

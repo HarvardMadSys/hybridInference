@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,6 +14,7 @@ from routing.model_router_registry import ModelRouterRegistry
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.servers.deps import AppServices
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin import routing_weights
 
 
 def _adapter(model_id: str, provider: str, endpoint_id: str):
@@ -27,6 +29,16 @@ def _adapter(model_id: str, provider: str, endpoint_id: str):
 
 def _row_by_endpoint(rows: list[dict], endpoint_id: str) -> dict:
     return next(row for row in rows if row["endpoint_id"] == endpoint_id)
+
+
+def test_routewise_rebuild_delegates_to_registry_capability() -> None:
+    refresh_route_tables = MagicMock()
+    registry = SimpleNamespace(refresh_route_tables=refresh_route_tables)
+    services = SimpleNamespace(model_router_registry=registry)
+
+    routing_weights._rebuild_routewise_routers(services)
+
+    refresh_route_tables.assert_called_once_with()
 
 
 @pytest.fixture
@@ -59,8 +71,8 @@ async def admin_client(monkeypatch):
             "zero-model": {"router": "fixed"},
         },
         default_router_name="fixed",
+        shared_fixed_router=router,
     )
-    model_router_registry.bind_fixed_router(router)
 
     app = FastAPI()
     resolver = WeightOverrideResolver(op_store)
@@ -154,9 +166,7 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
     client, op_store, resolver, model_router_registry = admin_client
     await resolver.get_for_model("public-model")
     assert op_store.list_weight_overrides_for_model.await_count == 1
-    routewise_router = MagicMock()
-    routewise_router._route_commit_lock = None
-    model_router_registry.cached_routers = MagicMock(return_value=[routewise_router])
+    model_router_registry.refresh_route_tables = MagicMock()
     model_router_registry.get_router = MagicMock(
         side_effect=AssertionError("should not call get_router")
     )
@@ -176,7 +186,23 @@ async def test_put_route_weight_upserts_and_invalidates_cache(admin_client):
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.5}
     ]
     assert await resolver.get_for_model("public-model") == {"public-model:remote": 4.5}
-    routewise_router._rebuild_from_fixed_router.assert_called_once_with()
+    model_router_registry.refresh_route_tables.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_weight_write_clears_sync_snapshot(admin_client):
+    client, op_store, resolver, _model_router_registry = admin_client
+    resolver.set_override("public-model", "public-model:remote", 9)
+    op_store.upsert_weight_override.side_effect = RuntimeError("connection dropped after commit")
+
+    with pytest.raises(RuntimeError, match="connection dropped after commit"):
+        await client.put(
+            "/admin/routing/weights/public-model/public-model:remote",
+            json={"weight": 4.5},
+            headers={"Authorization": "Bearer test-admin"},
+        )
+
+    assert resolver.get_snapshot_for_model("public-model") == {}
 
 
 @pytest.mark.asyncio
@@ -235,9 +261,7 @@ async def test_delete_route_weight_clears_override(admin_client):
     op_store.list_weight_overrides_for_model.return_value = [
         {"model_id": "public-model", "endpoint_id": "public-model:remote", "weight": 4.0}
     ]
-    routewise_router = MagicMock()
-    routewise_router._route_commit_lock = None
-    model_router_registry.cached_routers = MagicMock(return_value=[routewise_router])
+    model_router_registry.refresh_route_tables = MagicMock()
     model_router_registry.get_router = MagicMock(
         side_effect=AssertionError("should not call get_router")
     )
@@ -254,7 +278,7 @@ async def test_delete_route_weight_clears_override(admin_client):
     assert row["strategy"] == "routewise"
     assert row["override_weight"] is None
     assert row["effective_weight"] == 2.0
-    routewise_router._rebuild_from_fixed_router.assert_called_once_with()
+    model_router_registry.refresh_route_tables.assert_called_once_with()
 
 
 @pytest.mark.asyncio

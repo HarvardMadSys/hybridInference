@@ -20,6 +20,7 @@ from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
+from routing.model_router_registry import ModelRouterRegistry
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -279,7 +280,13 @@ async def completions_client(completions_app: FastAPI) -> AsyncGenerator[AsyncCl
 
 
 @pytest.mark.asyncio
-async def test_non_streaming_basic(completions_client: AsyncClient):
+async def test_non_streaming_basic(
+    completions_client: AsyncClient,
+    completions_app: FastAPI,
+):
+    active_router = completions_app.state.services.router
+    active_router.record_observation = MagicMock()
+
     resp = await completions_client.post(
         "/v1/chat/completions",
         json={"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]},
@@ -288,6 +295,8 @@ async def test_non_streaming_basic(completions_client: AsyncClient):
     body = resp.json()
     assert body["model"] == "gpt-4"
     assert body["choices"][0]["message"]["content"] == "Test response"
+    observation = active_router.record_observation.call_args.args[0]
+    assert observation.request_id.startswith("req_")
 
 
 @pytest.mark.asyncio
@@ -543,8 +552,7 @@ async def test_runtime_forced_buffered_stream_preserves_all_circuits_open_503(
     router = RouteExecutor()
     adapter = DummyAdapter(_mk_cfg("circuit-open-model"))
     router.register_route("circuit-open-model", [(adapter, 1.0)])
-    router._circuits[adapter.config.provider] = MagicMock()
-    router._circuits[adapter.config.provider].allow_request.return_value = False
+    monkeypatch.setattr(router._health_registry, "allow_request", lambda _endpoint_id: False)
 
     app = FastAPI(title="Forced Buffered Circuit Open App")
     app.state.services = AppServices(
@@ -581,6 +589,40 @@ async def test_model_not_found_returns_404(completions_client: AsyncClient):
     assert resp.status_code == status.HTTP_404_NOT_FOUND
     data = resp.json()
     assert "error" in data
+
+
+@pytest.mark.asyncio
+async def test_unpublished_model_returns_404_before_routewise_router_lookup(
+    completions_app: FastAPI,
+):
+    router = completions_app.state.services.router
+    router.register_route(
+        "staged-model",
+        [(DummyAdapter(_mk_cfg("staged-model")), 1.0)],
+        published=False,
+    )
+    model_router_registry = ModelRouterRegistry(
+        models_config={},
+        default_router_name="routewise",
+        shared_fixed_router=router,
+    )
+    assert model_router_registry.get_router_name("staged-model") == "routewise"
+    get_router = MagicMock(wraps=model_router_registry.get_router)
+    model_router_registry.get_router = get_router
+    completions_app.state.services.model_router_registry = model_router_registry
+
+    transport = ASGITransport(app=completions_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "staged-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            },
+        )
+
+    assert resp.status_code == status.HTTP_404_NOT_FOUND
+    get_router.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1744,13 +1786,75 @@ async def test_streaming_upstream_error_body_logged_to_db(monkeypatch, mock_log_
 # ===========================================================================
 
 
+class _ProviderEchoAdapter(DummyAdapter):
+    """Expose the selected provider in response content for pin assertions."""
+
+    async def chat_completion(
+        self, messages: list[dict[str, Any]], **params: Any
+    ) -> dict[str, Any]:
+        return self.format_response(content=self.config.provider, model=self.config.id)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, Any]], **params: Any
+    ) -> AsyncGenerator[str, None]:
+        provider = self.config.provider
+        yield self.format_stream_chunk(model=self.config.id, content=provider)
+        yield make_final_usage_chunk(
+            model=self.config.id,
+            messages=messages,
+            total_content=provider,
+        )
+        yield done_sentinel()
+
+
+class _LegacyCustomRouter:
+    """One-release custom strategy shape that accepts only arbitrary params."""
+
+    def __init__(self) -> None:
+        self.adapter = _ProviderEchoAdapter(
+            ModelConfig(
+                id="test-model",
+                name="test-model",
+                provider="custom",
+                base_url="http://custom",
+            )
+        )
+        self.chat_params: list[dict[str, Any]] = []
+        self.stream_params: list[dict[str, Any]] = []
+
+    async def chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> dict[str, Any]:
+        self.chat_params.append(dict(params))
+        return await self.adapter.chat_completion(messages, **params)
+
+    async def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        **params: Any,
+    ) -> AsyncGenerator[str, None]:
+        self.stream_params.append(dict(params))
+        async for chunk in self.adapter.stream_chat_completion(messages, **params):
+            yield chunk
+
+    def record_observation(self, _observation: Any) -> None:
+        return None
+
+    def get_provider_status(self) -> dict[str, dict[str, Any]]:
+        return {}
+
+
 @pytest.fixture
 async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
     """App with multi-provider routes for pin testing."""
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")  # all callers are admin
 
     router = RouteExecutor()
-    zai = DummyAdapter(_mk_cfg("test-model"))
+    zai = _ProviderEchoAdapter(_mk_cfg("test-model"))
     zai.config = ModelConfig(
         id="test-model",
         name="test-model",
@@ -1759,7 +1863,7 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
         context_length=8192,
         max_output_length=4096,
     )
-    ollama = DummyAdapter(_mk_cfg("test-model"))
+    ollama = _ProviderEchoAdapter(_mk_cfg("test-model"))
     ollama.config = ModelConfig(
         id="test-model",
         name="test-model",
@@ -1768,7 +1872,7 @@ async def pin_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI:
         context_length=8192,
         max_output_length=4096,
     )
-    disabled = DummyAdapter(_mk_cfg("test-model"))
+    disabled = _ProviderEchoAdapter(_mk_cfg("test-model"))
     disabled.config = ModelConfig(
         id="test-model",
         name="test-model",
@@ -1810,7 +1914,85 @@ async def test_pin_nonstream_success(pin_client: AsyncClient):
     )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["choices"][0]["message"]["content"]
+    assert body["choices"][0]["message"]["content"] == "ollama"
+
+
+@pytest.mark.asyncio
+async def test_pin_stream_success(pin_client: AsyncClient):
+    """Streaming request uses the unified router options call path."""
+    async with pin_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json=_chat_body(stream=True),
+        headers={"X-Route-Pin": "ollama"},
+    ) as resp:
+        assert resp.status_code == 200
+        lines = [line async for line in resp.aiter_lines()]
+
+    assert "data: [DONE]" in lines
+    assert not any('"error"' in line for line in lines)
+    assert _content_from_sse_lines(lines) == "ollama"
+
+
+@pytest.mark.asyncio
+async def test_pin_bypasses_model_router_registry(
+    pin_client: AsyncClient,
+    pin_app: FastAPI,
+):
+    """A provider pin must never dispatch through the per-model strategy."""
+    routewise_router = MagicMock(name="routewise_router")
+    registry = MagicMock()
+    registry.get_router.return_value = routewise_router
+    pin_app.state.services.model_router_registry = registry
+
+    resp = await pin_client.post(
+        "/v1/chat/completions",
+        json=_chat_body(),
+        headers={"X-Route-Pin": "ollama"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["message"]["content"] == "ollama"
+    registry.get_router.assert_not_called()
+    routewise_router.chat_completion.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_unpinned_custom_strategy_does_not_receive_routing_options(
+    pin_client: AsyncClient,
+    pin_app: FastAPI,
+    stream: bool,
+):
+    """Legacy custom strategies keep receiving only upstream request params."""
+    custom_router = _LegacyCustomRouter()
+    registry = MagicMock()
+    registry.get_router.return_value = custom_router
+    pin_app.state.services.model_router_registry = registry
+
+    if stream:
+        async with pin_client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json=_chat_body(stream=True),
+        ) as resp:
+            assert resp.status_code == 200
+            lines = [line async for line in resp.aiter_lines()]
+        assert "data: [DONE]" in lines
+        assert _content_from_sse_lines(lines) == "custom"
+        observed_params = custom_router.stream_params
+    else:
+        resp = await pin_client.post(
+            "/v1/chat/completions",
+            json=_chat_body(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "custom"
+        observed_params = custom_router.chat_params
+
+    registry.get_router.assert_called_once_with("test-model")
+    assert observed_params
+    assert all("routing_options" not in params for params in observed_params)
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
     from decimal import Decimal
     from typing import Literal
@@ -843,6 +844,14 @@ class CachedOperationalStore(OperationalStore):
     ) -> bool:
         """Delegate to wrapped store."""
         return await self._store.delete_provider_route_candidate_with_config(model_id, route_id)
+
+    async def delete_runtime_model_state(
+        self,
+        model_id: str,
+        setting_keys: Sequence[str],
+    ) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_runtime_model_state(model_id, setting_keys)
 
     async def insert_routewise_probe_sample(
         self,

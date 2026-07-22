@@ -29,34 +29,9 @@ env:
   GITLEAKS_VERSION: "8.30.1"
 
 jobs:
-  pytest-shards:
-    name: Prepare Pytest Shards
+  backend-quality:
+    name: Backend Quality
     runs-on: self-hosted
-    outputs:
-      count: ${{ steps.shards.outputs.count }}
-      shards: ${{ steps.shards.outputs.shards }}
-    steps:
-      - name: Set shard matrix
-        id: shards
-        run: |
-          shards='[1,2,3,4]'
-          count=$(SHARDS="${shards}" python3 -c 'import json, os; print(len(json.loads(os.environ["SHARDS"])))')
-          echo "shards=${shards}" >> "${GITHUB_OUTPUT}"
-          echo "count=${count}" >> "${GITHUB_OUTPUT}"
-
-  backend-lint:
-    name: Backend ${{ matrix.check.name }}
-    runs-on: self-hosted
-    strategy:
-      fail-fast: false
-      matrix:
-        check:
-          - name: Ruff Format
-            command: uv run ruff format --check .
-          - name: Ruff Lint
-            command: uv run ruff check --no-fix .
-          - name: Pydocstyle
-            command: uv run pydocstyle --match-dir='^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -71,10 +46,8 @@ jobs:
         # runner context. Concurrent self-hosted jobs otherwise share
         # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
         # with ENOENT while hardlinking into the venv — before tests start.
-        env:
-          UV_CACHE_SUFFIX: ${{ strategy.job-index }}
         run: |
-          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}-${UV_CACHE_SUFFIX}" >> "${GITHUB_ENV}"
+          echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}" >> "${GITHUB_ENV}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -113,29 +86,21 @@ jobs:
           echo "uv sync failed after 3 attempts" >&2
           exit 1
 
-      - name: Run ${{ matrix.check.name }}
-        run: ${{ matrix.check.command }}
+      - name: Check Ruff formatting
+        run: uv run ruff format --check .
 
-  frontend-check:
-    name: Frontend ${{ matrix.check.name }}
+      - name: Run Ruff lint
+        run: uv run ruff check --no-fix .
+
+      - name: Run pydocstyle
+        run: uv run pydocstyle --match-dir='^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$'
+
+  frontend-quality:
+    name: Frontend Quality
     runs-on: self-hosted
     defaults:
       run:
         working-directory: ./apps/frontend
-    strategy:
-      fail-fast: false
-      matrix:
-        check:
-          - name: Audit
-            command: npm audit --omit=dev --audit-level=high
-          - name: ESLint
-            command: npm run lint
-          - name: Prettier
-            command: npm run format:check
-          - name: TypeScript
-            command: npm run type-check
-          - name: Tests
-            command: npm run test
     steps:
       - uses: actions/checkout@v6
         with:
@@ -145,27 +110,32 @@ jobs:
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
 
-      - name: Check for package-lock.json
-        id: check-lock
-        run: |
-          if [ -f "package-lock.json" ]; then
-            echo "cache=npm" >> $GITHUB_OUTPUT
-          else
-            echo "cache=" >> $GITHUB_OUTPUT
-          fi
-
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: ${{ steps.check-lock.outputs.cache }}
+          cache: npm
           cache-dependency-path: apps/frontend/package-lock.json
 
       - name: Install dependencies
-        run: npm ci || npm install
+        run: npm ci
 
-      - name: Run ${{ matrix.check.name }}
-        run: ${{ matrix.check.command }}
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run TypeScript checks
+        run: npm run type-check
+
+      - name: Run frontend tests
+        run: npm run test
+
+      # Keep the audit fail-closed, but run it last so an upstream advisory
+      # does not suppress formatting, lint, type-check, and test results.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
   alert-control-plane-check:
     name: Alert Control Plane ${{ matrix.check.name }}
@@ -202,16 +172,14 @@ jobs:
         run: ${{ matrix.check.command }}
 
   test:
-    name: Test (shard ${{ matrix.shard }}/${{ needs.pytest-shards.outputs.count }})
+    name: Test (shard ${{ matrix.shard }}/4)
     # Service containers need Docker socket access; keep these jobs off the
     # generic pool that includes gpu1, which lacks that access.
     runs-on: [self-hosted, Linux]
-    needs: pytest-shards
-
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.pytest-shards.outputs.shards) }}
+        shard: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -243,7 +211,7 @@ jobs:
         # ~/.cache/uv; when a cache entry disappears mid-install, uv fails
         # with ENOENT while hardlinking into the venv — before tests start.
         env:
-          UV_CACHE_SUFFIX: ${{ strategy.job-index }}
+          UV_CACHE_SUFFIX: ${{ matrix.shard }}
         run: |
           echo "UV_CACHE_DIR=${RUNNER_TEMP}/uv-${GITHUB_RUN_ID}-${GITHUB_JOB}-${UV_CACHE_SUFFIX}" >> "${GITHUB_ENV}"
 
@@ -288,22 +256,13 @@ jobs:
         id: pytest-shard
         env:
           PYTEST_SHARD: ${{ matrix.shard }}
-          PYTEST_SHARDS: ${{ needs.pytest-shards.outputs.count }}
+          PYTEST_SHARDS: "4"
           PYTEST_SHARD_FILE: ${{ runner.temp }}/pytest-shard-${{ matrix.shard }}.txt
         run: |
-          uv run python - <<'PY' > "${PYTEST_SHARD_FILE}"
-          import os
-          import pathlib
-          import sys
-          import zlib
-
-          shard = int(os.environ["PYTEST_SHARD"])
-          total = int(os.environ["PYTEST_SHARDS"])
-          paths = sorted(pathlib.Path("tests").rglob("test_*.py"))
-          selected = [str(path) for path in paths if zlib.crc32(str(path).encode()) % total == shard - 1]
-          print("\n".join(selected))
-          print(f"Selected {len(selected)} of {len(paths)} test files for shard {shard}/{total}", file=sys.stderr)
-          PY
+          uv run python ops/ci/partition_pytest_files.py \
+            --shard-index "${PYTEST_SHARD}" \
+            --shard-count "${PYTEST_SHARDS}" \
+            --output "${PYTEST_SHARD_FILE}"
           cat "${PYTEST_SHARD_FILE}"
           echo "file=${PYTEST_SHARD_FILE}" >> "${GITHUB_OUTPUT}"
           if [ -s "${PYTEST_SHARD_FILE}" ]; then
@@ -313,15 +272,15 @@ jobs:
             echo "No tests selected for this shard"
           fi
 
-      - name: Run tests (PR, sharded, no coverage)
-        if: github.event_name == 'pull_request' && steps.pytest-shard.outputs.has_tests == 'true'
+      - name: Run tests (PR/manual, sharded, no coverage)
+        if: github.event_name != 'push' && steps.pytest-shard.outputs.has_tests == 'true'
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth tests
           DB_HOST: localhost
-          DB_PORT: ${{ job.services.postgres.ports[5432] }}
+          DB_PORT: ${{ job.services.postgres.ports['5432'] }}
           DB_NAME: freeinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
@@ -338,7 +297,8 @@ jobs:
           COOKIE_SAMESITE: lax
           BASE_URL: http://localhost:8000
         run: |
-          uv run pytest -n auto --dist=loadfile -v -m "not external" $(cat "${{ steps.pytest-shard.outputs.file }}")
+          mapfile -t pytest_files < "${{ steps.pytest-shard.outputs.file }}"
+          uv run pytest -n auto --dist=loadfile -v -m "not external" "${pytest_files[@]}"
 
       - name: Run tests (push, coverage shard)
         if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'
@@ -348,7 +308,7 @@ jobs:
           ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
           # Database configuration for auth tests
           DB_HOST: localhost
-          DB_PORT: ${{ job.services.postgres.ports[5432] }}
+          DB_PORT: ${{ job.services.postgres.ports['5432'] }}
           DB_NAME: freeinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
@@ -365,8 +325,19 @@ jobs:
           COOKIE_SAMESITE: lax
           BASE_URL: http://localhost:8000
           PYTEST_SHARD: ${{ matrix.shard }}
+          PYTEST_FILE_DURATIONS_OUTPUT: ${{ runner.temp }}/pytest-file-durations-${{ matrix.shard }}.json
         run: |
-          uv run pytest -n auto --dist=loadfile --cov=. --cov-report=term-missing --cov-report=xml:coverage-${PYTEST_SHARD}.xml -v -m "not external" $(cat "${{ steps.pytest-shard.outputs.file }}")
+          mapfile -t pytest_files < "${{ steps.pytest-shard.outputs.file }}"
+          uv run pytest \
+            -p ops.ci.pytest_file_durations \
+            -n auto \
+            --dist=loadfile \
+            --cov=. \
+            --cov-report=term-missing \
+            --cov-report="xml:coverage-${PYTEST_SHARD}.xml" \
+            -v \
+            -m "not external" \
+            "${pytest_files[@]}"
 
       - name: Upload coverage to Codecov
         if: github.event_name == 'push' && steps.pytest-shard.outputs.has_tests == 'true'
@@ -376,6 +347,16 @@ jobs:
           flags: backend-shard-${{ matrix.shard }}
           fail_ci_if_error: false
           verbose: true
+
+      - name: Upload pytest file durations
+        if: always() && github.event_name == 'push'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-file-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/pytest-file-durations-${{ matrix.shard }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   security:
     name: Security Scan
@@ -430,3 +411,42 @@ jobs:
         run: |
           uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
           uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
+
+  # Do not configure this check as required while the workflow still has
+  # top-level paths-ignore rules: docs-only PRs would never report the check.
+  # Phase 2 must remove those rules before the required-check migration.
+  ci-gate:
+    name: CI Gate
+    if: always()
+    runs-on: self-hosted
+    needs:
+      - backend-quality
+      - frontend-quality
+      - test
+      - security
+    steps:
+      - name: Verify required CI jobs
+        env:
+          BACKEND_QUALITY_RESULT: ${{ needs.backend-quality.result }}
+          FRONTEND_QUALITY_RESULT: ${{ needs.frontend-quality.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          SECURITY_RESULT: ${{ needs.security.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          # Phase 1 jobs always run, so any non-success result is an error.
+          # Phase 2 must define the allowed skipped results when it adds job
+          # conditions. Every new required job must also be added to needs and
+          # this result list.
+          for result_name in \
+            BACKEND_QUALITY_RESULT \
+            FRONTEND_QUALITY_RESULT \
+            TEST_RESULT \
+            SECURITY_RESULT; do
+            result="${!result_name}"
+            echo "${result_name}=${result}"
+            if [ "${result}" != "success" ]; then
+              failed=1
+            fi
+          done
+          exit "${failed}"

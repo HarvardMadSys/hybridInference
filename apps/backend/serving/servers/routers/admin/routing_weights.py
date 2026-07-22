@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from routing.routers import _get_endpoint_id
+from routing.endpoints import endpoint_id_for_adapter
 from serving.schemas_admin import (
     ListAllRouteWeightsResponse,
     ListRouteWeightsResponse,
@@ -12,7 +12,15 @@ from serving.schemas_admin import (
     UpdateRouteWeightRequest,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, get_services, verify_admin_access
+from serving.servers.deps import (
+    get_operational_store,
+    get_services,
+    model_router_transition_lock,
+    verify_admin_access,
+)
+from serving.servers.routewise_rebuild import (
+    rebuild_routewise_routers as _rebuild_routewise_routers,
+)
 
 router = APIRouter(prefix="/admin")
 
@@ -25,7 +33,11 @@ def _strategy_for_model(services, model_id: str) -> str:
 
 
 def _is_canonical_model(model_id: str, route) -> bool:
-    return bool(route.adapters) and route.adapters[0][0].config.id == model_id
+    return (
+        getattr(route, "published", True)
+        and bool(route.adapters)
+        and route.adapters[0][0].config.id == model_id
+    )
 
 
 def _raw_route_entries(route) -> list[tuple[object, float, str]]:
@@ -33,7 +45,8 @@ def _raw_route_entries(route) -> list[tuple[object, float, str]]:
     if raw_adapters:
         return raw_adapters
     return [
-        (adapter, float(weight), _get_endpoint_id(adapter)) for adapter, weight in route.adapters
+        (adapter, float(weight), endpoint_id_for_adapter(adapter))
+        for adapter, weight in route.adapters
     ]
 
 
@@ -53,7 +66,7 @@ def _route_row(
     yaml_weight: float,
     override_weight: float | None,
 ) -> RouteWeightItem:
-    endpoint_id = _get_endpoint_id(adapter)
+    endpoint_id = endpoint_id_for_adapter(adapter)
     return RouteWeightItem(
         model_id=model_id,
         strategy=strategy,
@@ -119,24 +132,11 @@ def _clear_weight_override_snapshot(services, model_id: str, endpoint_id: str) -
         resolver.clear_override(model_id, endpoint_id)
 
 
-def _rebuild_routewise_routers(services) -> None:
-    registry = getattr(services, "model_router_registry", None)
-    if registry is None:
-        return
-    seen: set[int] = set()
-    for router_obj in registry.cached_routers():
-        if id(router_obj) in seen:
-            continue
-        seen.add(id(router_obj))
-        rebuild = getattr(router_obj, "_rebuild_from_fixed_router", None)
-        if not callable(rebuild):
-            continue
-        commit_lock = getattr(router_obj, "_route_commit_lock", None)
-        if commit_lock is not None:
-            with commit_lock:
-                rebuild()
-        else:
-            rebuild()
+def _clear_weight_override_model_snapshot(services, model_id: str) -> None:
+    resolver = getattr(services, "weight_override_resolver", None)
+    clear_model = getattr(resolver, "clear_model", None)
+    if callable(clear_model):
+        clear_model(model_id)
 
 
 @router.get("/routing/weights/{model_id:path}", response_model=ListRouteWeightsResponse)
@@ -199,40 +199,50 @@ async def set_route_weight(
     if payload.weight < 0:
         raise HTTPException(status_code=400, detail="weight must be >= 0")
 
-    model_id, endpoint_id, route = _split_model_endpoint_path(services, model_endpoint_path)
-    adapter, yaml_weight, endpoint_id = _entry_for_endpoint(route, endpoint_id)
-    overrides = await _overrides_for_model(op_store, model_id)
-    effective = {
-        adapter_endpoint_id: float(overrides.get(adapter_endpoint_id, raw_weight))
-        for _, raw_weight, adapter_endpoint_id in _raw_route_entries(route)
-    }
-    old_override = overrides.get(endpoint_id)
-    effective[endpoint_id] = float(payload.weight)
-    if sum(effective.values()) <= 0:
-        raise HTTPException(status_code=400, detail="cannot zero all routes for model")
+    model_id, _endpoint_id, _route = _split_model_endpoint_path(services, model_endpoint_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, endpoint_id, route = _split_model_endpoint_path(services, model_endpoint_path)
+        adapter, yaml_weight, endpoint_id = _entry_for_endpoint(route, endpoint_id)
+        overrides = await _overrides_for_model(op_store, model_id)
+        effective = {
+            adapter_endpoint_id: float(overrides.get(adapter_endpoint_id, raw_weight))
+            for _, raw_weight, adapter_endpoint_id in _raw_route_entries(route)
+        }
+        old_override = overrides.get(endpoint_id)
+        effective[endpoint_id] = float(payload.weight)
+        if sum(effective.values()) <= 0:
+            raise HTTPException(status_code=400, detail="cannot zero all routes for model")
 
-    await op_store.upsert_weight_override(model_id, endpoint_id, float(payload.weight), admin_id)
-    _set_weight_override_snapshot(services, model_id, endpoint_id, float(payload.weight))
-    _rebuild_routewise_routers(services)
-    await log_admin_action(
-        op_store,
-        admin_id,
-        "routing.weights.update",
-        None,
-        {
-            "model_id": model_id,
-            "endpoint_id": endpoint_id,
-            "old_override_weight": old_override,
-            "new_override_weight": float(payload.weight),
-        },
-    )
-    return _route_row(
-        model_id,
-        _strategy_for_model(services, model_id),
-        adapter,
-        yaml_weight,
-        float(payload.weight),
-    )
+        try:
+            await op_store.upsert_weight_override(
+                model_id, endpoint_id, float(payload.weight), admin_id
+            )
+        except BaseException:
+            # The write may have committed before the transport failed. Drop
+            # the whole synchronous snapshot instead of routing on stale data.
+            _clear_weight_override_model_snapshot(services, model_id)
+            raise
+        _set_weight_override_snapshot(services, model_id, endpoint_id, float(payload.weight))
+        _rebuild_routewise_routers(services)
+        await log_admin_action(
+            op_store,
+            admin_id,
+            "routing.weights.update",
+            None,
+            {
+                "model_id": model_id,
+                "endpoint_id": endpoint_id,
+                "old_override_weight": old_override,
+                "new_override_weight": float(payload.weight),
+            },
+        )
+        return _route_row(
+            model_id,
+            _strategy_for_model(services, model_id),
+            adapter,
+            yaml_weight,
+            float(payload.weight),
+        )
 
 
 @router.delete("/routing/weights/{model_endpoint_path:path}", response_model=RouteWeightItem)
@@ -246,36 +256,42 @@ async def clear_route_weight(
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
 
-    model_id, endpoint_id, route = _split_model_endpoint_path(services, model_endpoint_path)
-    adapter, yaml_weight, endpoint_id = _entry_for_endpoint(route, endpoint_id)
-    overrides = await _overrides_for_model(op_store, model_id)
-    old_override = overrides.get(endpoint_id)
-    effective = {
-        adapter_endpoint_id: float(overrides.get(adapter_endpoint_id, raw_weight))
-        for _, raw_weight, adapter_endpoint_id in _raw_route_entries(route)
-    }
-    effective[endpoint_id] = float(yaml_weight)
-    if sum(effective.values()) <= 0:
-        raise HTTPException(status_code=400, detail="cannot zero all routes for model")
+    model_id, _endpoint_id, _route = _split_model_endpoint_path(services, model_endpoint_path)
+    async with model_router_transition_lock(services, model_id):
+        model_id, endpoint_id, route = _split_model_endpoint_path(services, model_endpoint_path)
+        adapter, yaml_weight, endpoint_id = _entry_for_endpoint(route, endpoint_id)
+        overrides = await _overrides_for_model(op_store, model_id)
+        old_override = overrides.get(endpoint_id)
+        effective = {
+            adapter_endpoint_id: float(overrides.get(adapter_endpoint_id, raw_weight))
+            for _, raw_weight, adapter_endpoint_id in _raw_route_entries(route)
+        }
+        effective[endpoint_id] = float(yaml_weight)
+        if sum(effective.values()) <= 0:
+            raise HTTPException(status_code=400, detail="cannot zero all routes for model")
 
-    await op_store.delete_weight_override(model_id, endpoint_id)
-    _clear_weight_override_snapshot(services, model_id, endpoint_id)
-    _rebuild_routewise_routers(services)
-    await log_admin_action(
-        op_store,
-        admin_id,
-        "routing.weights.clear",
-        None,
-        {
-            "model_id": model_id,
-            "endpoint_id": endpoint_id,
-            "old_override_weight": old_override,
-        },
-    )
-    return _route_row(
-        model_id,
-        _strategy_for_model(services, model_id),
-        adapter,
-        yaml_weight,
-        None,
-    )
+        try:
+            await op_store.delete_weight_override(model_id, endpoint_id)
+        except BaseException:
+            _clear_weight_override_model_snapshot(services, model_id)
+            raise
+        _clear_weight_override_snapshot(services, model_id, endpoint_id)
+        _rebuild_routewise_routers(services)
+        await log_admin_action(
+            op_store,
+            admin_id,
+            "routing.weights.clear",
+            None,
+            {
+                "model_id": model_id,
+                "endpoint_id": endpoint_id,
+                "old_override_weight": old_override,
+            },
+        )
+        return _route_row(
+            model_id,
+            _strategy_for_model(services, model_id),
+            adapter,
+            yaml_weight,
+            None,
+        )
