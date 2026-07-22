@@ -29,6 +29,47 @@ env:
   GITLEAKS_VERSION: "8.30.1"
 
 jobs:
+  # Phase 2 (shadow mode): compute which checks a change *would* trigger and
+  # publish it to outputs + the job summary. Nothing consumes these outputs yet
+  # and no job is skipped -- this only validates the rules against real PRs.
+  # `continue-on-error` keeps this advisory classifier from ever reddening CI.
+  changes:
+    name: Classify Changes
+    runs-on: self-hosted
+    continue-on-error: true
+    outputs:
+      backend: ${{ steps.classify.outputs.backend }}
+      frontend: ${{ steps.classify.outputs.frontend }}
+      oncall: ${{ steps.classify.outputs.oncall }}
+      status_monitor: ${{ steps.classify.outputs.status_monitor }}
+      docker_shared: ${{ steps.classify.outputs.docker_shared }}
+      security_only: ${{ steps.classify.outputs.security_only }}
+      full: ${{ steps.classify.outputs.full }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history so base...head / before...sha diffs resolve; matches
+          # the shallow-clone workaround used by every other job here.
+          fetch-depth: 0
+
+      - name: Classify changed paths (shadow mode)
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          python3 ops/ci/classify_changes.py \
+            --event-name "${EVENT_NAME}" \
+            --pr-base "${PR_BASE_SHA}" \
+            --pr-head "${PR_HEAD_SHA}" \
+            --push-before "${PUSH_BEFORE}" \
+            --push-sha "${PUSH_SHA}" \
+            --github-output "${GITHUB_OUTPUT}" \
+            --summary "${GITHUB_STEP_SUMMARY}"
+
   backend-quality:
     name: Backend Quality
     runs-on: self-hosted

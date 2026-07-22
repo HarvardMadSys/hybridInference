@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""Classify which CI checks a change set touches.
+
+Phase 2 lands this in *shadow mode*: the ``changes`` job publishes the
+classification to outputs and the job summary, but no other job is skipped and
+no image build is changed. The output is advisory only until the rules are
+validated against real PRs.
+
+The classifier is deliberately conservative. Any file that does not match a
+known narrow rule -- and any failure to compute the diff -- forces ``full`` so
+CI never skips a check it should have run. See the CI/CD design doc, section
+"Change Classifier", for the rule table and rationale.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+# The seven boolean outputs the design doc requires, in a stable order.
+CATEGORIES = (
+    "backend",
+    "frontend",
+    "oncall",
+    "status_monitor",
+    "docker_shared",
+    "security_only",
+    "full",
+)
+
+# Files whose blast radius is broad enough to force a full run. The repo-root
+# README is included because it is a COPY input to the backend/oncall images.
+FULL_FILES = frozenset(
+    {
+        "pyproject.toml",
+        "uv.lock",
+        "README.md",
+        "Makefile",
+    }
+)
+FULL_PREFIXES = (
+    ".github/workflows/",
+    "config/",
+    "distributions/",
+)
+
+FRONTEND_PREFIX = "apps/frontend/"
+BACKEND_PREFIXES = ("apps/backend/", "tests/")
+ONCALL_PREFIX = "apps/backend/serving/oncall/"
+ONCALL_FILES = frozenset({"deploy/docker/Dockerfile.oncall"})
+STATUS_MONITOR_PREFIX = "services/status-monitor-worker/"
+DOCKER_SHARED_FILES = frozenset(
+    {
+        ".dockerignore",
+        "deploy/docker/docker-compose.yml",
+    }
+)
+
+# Documentation never triggers application checks. Any markdown outside the
+# repo-root README counts as docs regardless of directory.
+DOCS_FILES = frozenset({"LICENSE"})
+DOCS_PREFIXES = ("docs/",)
+
+
+@dataclass
+class Classification:
+    """Result of classifying a change set into CI trigger booleans."""
+
+    backend: bool = False
+    frontend: bool = False
+    oncall: bool = False
+    status_monitor: bool = False
+    docker_shared: bool = False
+    security_only: bool = False
+    full: bool = False
+    reason: str = ""
+    matched: dict[str, list[str]] = field(default_factory=dict)
+
+    def as_outputs(self) -> dict[str, str]:
+        """Return the GitHub-Actions string outputs for each category."""
+        return {name: ("true" if getattr(self, name) else "false") for name in CATEGORIES}
+
+
+def _normalize(path: str) -> str:
+    normalized = PurePosixPath(path.replace("\\", "/")).as_posix()
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.strip().rstrip("/")
+
+
+def _is_full(path: str) -> bool:
+    return path in FULL_FILES or any(path.startswith(prefix) for prefix in FULL_PREFIXES)
+
+
+def _is_docs(path: str) -> bool:
+    if path in DOCS_FILES or any(path.startswith(prefix) for prefix in DOCS_PREFIXES):
+        return True
+    # Any markdown other than the repo-root README (handled by FULL_FILES).
+    return path.endswith(".md")
+
+
+def classify(files: Sequence[str] | None) -> Classification:
+    """Classify a diff into trigger booleans; ``None`` forces a full run."""
+    if files is None:
+        return Classification(full=True, reason="diff unavailable; forcing full run")
+
+    normalized = sorted({_normalize(path) for path in files if path.strip()})
+    if not normalized:
+        return Classification(full=True, reason="empty diff; forcing full run")
+
+    result = Classification()
+    matched: dict[str, list[str]] = {}
+    unknown: list[str] = []
+
+    def hit(category: str, path: str) -> None:
+        matched.setdefault(category, []).append(path)
+
+    for path in normalized:
+        # 1. Full triggers win outright (broadest blast radius / build inputs).
+        if _is_full(path):
+            result.full = True
+            hit("full", path)
+            continue
+        # 2. Documentation never triggers application checks.
+        if _is_docs(path):
+            hit("docs", path)
+            continue
+        # 3. Narrow buckets (a path may hit more than one, e.g. oncall+backend).
+        recognized = False
+        if path.startswith(FRONTEND_PREFIX):
+            result.frontend = True
+            hit("frontend", path)
+            recognized = True
+        if any(path.startswith(prefix) for prefix in BACKEND_PREFIXES):
+            result.backend = True
+            hit("backend", path)
+            recognized = True
+        if path.startswith(ONCALL_PREFIX) or path in ONCALL_FILES:
+            result.oncall = True
+            hit("oncall", path)
+            recognized = True
+        if path.startswith(STATUS_MONITOR_PREFIX):
+            result.status_monitor = True
+            hit("status_monitor", path)
+            recognized = True
+        if path in DOCKER_SHARED_FILES:
+            result.docker_shared = True
+            hit("docker_shared", path)
+            recognized = True
+        # 4. Unknown path -> conservative full run.
+        if not recognized:
+            result.full = True
+            unknown.append(path)
+            hit("full", path)
+
+    narrow = (
+        result.frontend
+        or result.backend
+        or result.oncall
+        or result.status_monitor
+        or result.docker_shared
+    )
+    if not result.full and not narrow:
+        # Everything was documentation: only security scan + gate are needed.
+        result.security_only = True
+
+    if unknown:
+        result.reason = f"unknown paths force full: {', '.join(sorted(unknown))}"
+    elif result.full:
+        result.reason = "matched full triggers"
+    elif result.security_only:
+        result.reason = "docs-only change; only security + gate needed"
+    else:
+        result.reason = "matched narrow rules"
+
+    result.matched = matched
+    return result
+
+
+def _run_git(repo_root: Path, args: Sequence[str]) -> tuple[int, str]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo_root), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, proc.stdout
+
+
+def _commit_exists(repo_root: Path, sha: str | None) -> bool:
+    if not sha or set(sha) <= {"0"}:
+        return False
+    code, _ = _run_git(repo_root, ["cat-file", "-e", f"{sha}^{{commit}}"])
+    return code == 0
+
+
+def compute_changed_files(
+    repo_root: Path,
+    event_name: str,
+    pr_base: str | None,
+    pr_head: str | None,
+    push_before: str | None,
+    push_sha: str | None,
+) -> list[str] | None:
+    """Return changed files for the event, or ``None`` when it cannot be known.
+
+    ``--no-renames`` is intentional: a rename then surfaces as delete(old) +
+    add(new), so both the old and new path are considered by the classifier.
+    """
+    if event_name == "pull_request":
+        base, head = pr_base, pr_head
+        if not _commit_exists(repo_root, base) or not _commit_exists(repo_root, head):
+            return None
+        diff_range = f"{base}...{head}"
+    elif event_name == "push":
+        if not _commit_exists(repo_root, push_before) or not _commit_exists(repo_root, push_sha):
+            # First push / branch creation (zero base) or unreachable SHA.
+            return None
+        diff_range = f"{push_before}...{push_sha}"
+    else:
+        # workflow_dispatch and anything else: no reliable base -> full.
+        return None
+
+    code, out = _run_git(repo_root, ["diff", "--name-only", "--no-renames", diff_range])
+    if code != 0:
+        return None
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _write_outputs(result: Classification, output_path: str | None) -> None:
+    if not output_path:
+        return
+    lines = [f"{name}={value}" for name, value in result.as_outputs().items()]
+    with open(output_path, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def _write_summary(
+    result: Classification, summary_path: str | None, file_count: int | None
+) -> None:
+    if not summary_path:
+        return
+    lines = [
+        "## Change classification (shadow mode -- advisory only)",
+        "",
+        "Nothing is skipped yet; this run only records what a future path filter "
+        "*would* do so the rules can be validated first.",
+        "",
+        f"- **reason:** {result.reason}",
+        f"- **changed files:** {file_count if file_count is not None else 'unavailable'}",
+        "",
+        "| output | value |",
+        "|---|---|",
+    ]
+    lines += [f"| `{name}` | {value} |" for name, value in result.as_outputs().items()]
+    narrow_matches = {k: v for k, v in result.matched.items() if k != "docs"}
+    if narrow_matches:
+        lines += ["", "<details><summary>matched files</summary>", ""]
+        for category in sorted(narrow_matches):
+            shown = narrow_matches[category][:20]
+            more = len(narrow_matches[category]) - len(shown)
+            suffix = f" (+{more} more)" if more > 0 else ""
+            lines.append(f"- **{category}**: {', '.join(f'`{p}`' for p in shown)}{suffix}")
+        lines += ["", "</details>"]
+    with open(summary_path, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--event-name", default="", help="github.event_name")
+    parser.add_argument("--pr-base", default="", help="pull_request base SHA")
+    parser.add_argument("--pr-head", default="", help="pull_request head SHA")
+    parser.add_argument("--push-before", default="", help="push before SHA")
+    parser.add_argument("--push-sha", default="", help="push head SHA")
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[2],
+        help="repository root (default: inferred from this script)",
+    )
+    parser.add_argument(
+        "--changed-files-file",
+        type=Path,
+        help="read newline-separated changed files instead of running git (testing/debug)",
+    )
+    parser.add_argument("--github-output", help="append name=value outputs here (GITHUB_OUTPUT)")
+    parser.add_argument("--summary", help="append a markdown summary here (GITHUB_STEP_SUMMARY)")
+    parser.add_argument("--print-json", action="store_true", help="print the result as JSON")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run the classifier. Always exits 0; failures classify as ``full``."""
+    args = _build_parser().parse_args(argv)
+
+    files: list[str] | None
+    if args.changed_files_file is not None:
+        try:
+            text = args.changed_files_file.read_text(encoding="utf-8")
+            files = [line for line in text.splitlines() if line.strip()]
+        except OSError:
+            files = None
+    else:
+        try:
+            files = compute_changed_files(
+                args.repo_root.resolve(),
+                args.event_name,
+                args.pr_base,
+                args.pr_head,
+                args.push_before,
+                args.push_sha,
+            )
+        except Exception as exc:  # never fail CI in shadow mode
+            print(f"warning: change classification failed ({exc}); forcing full", file=sys.stderr)
+            files = None
+
+    result = classify(files)
+    _write_outputs(result, args.github_output)
+    _write_summary(result, args.summary, None if files is None else len(files))
+
+    payload = {**result.as_outputs(), "reason": result.reason}
+    if args.print_json:
+        print(json.dumps(payload))
+    else:
+        print(f"classification: {payload}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
