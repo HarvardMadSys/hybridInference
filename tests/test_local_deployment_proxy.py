@@ -989,3 +989,52 @@ def test_single_gpu_backend_omits_ipc_host(monkeypatch: Any, tmp_path: Path) -> 
 
     assert "--ipc=host" not in cmd
     assert cmd[cmd.index("--tensor-parallel-size") + 1] == "1"
+
+
+def test_copy_stream_forwards_sse_chunks_as_they_arrive(monkeypatch: Any, tmp_path: Path) -> None:
+    # Regression: read(8192) accumulated transfer-encoding chunks until 8 KB or
+    # EOF, so sub-8KB completions reached the gateway as one end-of-stream blob
+    # (recorded ttft_ms ~= latency_ms). The backend gates its second event on
+    # the client flushing the first, so only per-chunk reads complete the
+    # handshake and receive both events.
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    events = (b"data: one\n\n", b"data: two\n\n")
+    first_event_flushed = threading.Event()
+
+    class DribbleHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for index, event in enumerate(events):
+                if index and not first_event_flushed.wait(timeout=5):
+                    break
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(event), event))
+                self.wfile.flush()
+            self.wfile.write(b"0\r\n\r\n")
+
+        def log_message(self, fmt: str, *args: object) -> None:
+            return
+
+    class RecordingFile:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+
+        def write(self, data: bytes) -> None:
+            self.writes.append(bytes(data))
+
+        def flush(self) -> None:
+            first_event_flushed.set()
+
+    wfile = RecordingFile()
+    with (
+        _serve(DribbleHandler) as port,
+        urlopen(f"http://127.0.0.1:{port}/stream", timeout=5) as resp,
+    ):
+        proxy._copy_stream(resp, wfile)
+
+    assert len(wfile.writes) >= 2
+    assert b"".join(wfile.writes) == b"".join(events)

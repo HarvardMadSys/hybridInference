@@ -874,8 +874,10 @@ class BackendManager:
 
 
 def _copy_stream(resp: Any, wfile: Any) -> None:
+    # read1 returns as soon as any data is available; read(8192) would block
+    # accumulating 8192 bytes, batching short SSE streams into a single blob.
     while True:
-        chunk = resp.read(8192)
+        chunk = resp.read1(8192)
         if not chunk:
             break
         wfile.write(chunk)
