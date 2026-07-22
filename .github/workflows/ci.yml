@@ -319,7 +319,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-file-durations-${{ github.run_id }}-${{ matrix.shard }}
+          name: pytest-file-durations-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/pytest-file-durations-${{ matrix.shard }}.json
           if-no-files-found: warn
           retention-days: 30

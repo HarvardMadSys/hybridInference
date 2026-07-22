@@ -52,7 +52,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: pytest-file-durations-${{ github.event.workflow_run.id }}-*
+          pattern: pytest-file-durations-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}-*
           path: ${{ runner.temp }}/pytest-file-durations
           merge-multiple: true
           github-token: ${{ github.token }}
