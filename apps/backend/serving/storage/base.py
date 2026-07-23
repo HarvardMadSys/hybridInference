@@ -1167,6 +1167,8 @@ class LogStore(ABC):
     async def get_user_detail_usage(
         self,
         user_id: str,
+        *,
+        include_activity_stats: bool = False,
     ) -> dict[str, Any]:
         """Return usage detail for admin user-detail view.
 
@@ -1178,6 +1180,11 @@ class LogStore(ABC):
         (``None`` when they have none); ``ask_question_fraction`` is the
         all-time share of the user's requests whose ``tools`` offer an
         ask-the-user tool (``None`` when they have no requests).
+
+        The two averages and ``ask_question_fraction`` require full-history
+        scans of the user's rows, so they are computed only when
+        ``include_activity_stats`` is set; otherwise those three keys are
+        ``None`` (the admin UI loads them on demand behind a button).
         """
 
     @abstractmethod

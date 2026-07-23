@@ -425,8 +425,22 @@ class PostgresLogStore(LogStore):
             )
         return {row["user_id"]: float(row["cost"]) for row in rows}
 
-    async def get_user_detail_usage(self, user_id: str) -> dict[str, Any]:
-        """Return usage detail for admin user-detail view."""
+    async def get_user_detail_usage(
+        self, user_id: str, *, include_activity_stats: bool = False
+    ) -> dict[str, Any]:
+        """Return usage detail for admin user-detail view.
+
+        The all-time turn averages (``avg_turns``, ``avg_user_turns``) and
+        ``ask_question_fraction`` require full-history scans of the user's
+        ``api_logs`` rows (no time bound), so for heavy users they dominate the
+        cost of this call. They are computed only when ``include_activity_stats``
+        is set; otherwise those three keys are ``None`` and the admin UI loads
+        them on demand behind a button. The remaining fields are time-bounded (or
+        an indexed ``MAX``) and are always computed.
+        """
+        avg_turns: float | None = None
+        avg_user_turns: float | None = None
+        ask_question_fraction: float | None = None
         async with self.pool.acquire() as conn:
             today = await conn.fetchrow(
                 """
@@ -458,36 +472,50 @@ class PostgresLogStore(LogStore):
                 "SELECT MAX(timestamp) AS ts FROM api_logs WHERE user_id = $1",
                 user_id,
             )
-            # AVG ignores the NULL num_turns / num_user_turns of non-chat
-            # requests, so these average over chat-style requests only.
-            turns = await conn.fetchrow(
-                """
-                SELECT AVG(num_turns) AS avg_turns,
-                       AVG(num_user_turns) AS avg_user_turns
-                FROM api_logs
-                WHERE user_id = $1
-                """,
-                user_id,
-            )
-            # Share of the user's requests whose available ``tools`` offer an
-            # ask-the-user clarifying tool (see ``ASK_QUESTION_TOOL_NAMES``).
-            ask = await conn.fetchrow(
-                """
-                SELECT COUNT(*) AS n_requests,
-                       COUNT(*) FILTER (
-                           WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
-                               SELECT 1 FROM jsonb_array_elements(tools) AS t
-                               WHERE lower(
-                                       COALESCE(t->'function'->>'name', t->>'name')
-                                     ) = ANY($2)
-                           )
-                       ) AS n_ask_requests
-                FROM api_logs
-                WHERE user_id = $1
-                """,
-                user_id,
-                list(ASK_QUESTION_TOOL_NAMES),
-            )
+            if include_activity_stats:
+                # AVG ignores the NULL num_turns / num_user_turns of non-chat
+                # requests, so these average over chat-style requests only.
+                turns = await conn.fetchrow(
+                    """
+                    SELECT AVG(num_turns) AS avg_turns,
+                           AVG(num_user_turns) AS avg_user_turns
+                    FROM api_logs
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                )
+                avg_turns = (
+                    float(turns["avg_turns"]) if turns and turns["avg_turns"] is not None else None
+                )
+                avg_user_turns = (
+                    float(turns["avg_user_turns"])
+                    if turns and turns["avg_user_turns"] is not None
+                    else None
+                )
+                # Share of the user's requests whose available ``tools`` offer an
+                # ask-the-user clarifying tool (see ``ASK_QUESTION_TOOL_NAMES``).
+                ask = await conn.fetchrow(
+                    """
+                    SELECT COUNT(*) AS n_requests,
+                           COUNT(*) FILTER (
+                               WHERE jsonb_typeof(tools) = 'array' AND EXISTS (
+                                   SELECT 1 FROM jsonb_array_elements(tools) AS t
+                                   WHERE lower(
+                                           COALESCE(t->'function'->>'name', t->>'name')
+                                         ) = ANY($2)
+                               )
+                           ) AS n_ask_requests
+                    FROM api_logs
+                    WHERE user_id = $1
+                    """,
+                    user_id,
+                    list(ASK_QUESTION_TOOL_NAMES),
+                )
+                ask_question_fraction = (
+                    int(ask["n_ask_requests"]) / int(ask["n_requests"])
+                    if ask and ask["n_requests"]
+                    else None
+                )
 
         return {
             "usage_today_usd": float(today["cost"]) if today else 0.0,
@@ -496,17 +524,9 @@ class PostgresLogStore(LogStore):
             "usage_month_requests": int(month["reqs"]) if month else 0,
             "models_used": [r["model_id"] for r in models_rows],
             "last_request_at": last_req["ts"] if last_req and last_req["ts"] else None,
-            "avg_turns": float(turns["avg_turns"])
-            if turns and turns["avg_turns"] is not None
-            else None,
-            "avg_user_turns": float(turns["avg_user_turns"])
-            if turns and turns["avg_user_turns"] is not None
-            else None,
-            "ask_question_fraction": (
-                int(ask["n_ask_requests"]) / int(ask["n_requests"])
-                if ask and ask["n_requests"]
-                else None
-            ),
+            "avg_turns": avg_turns,
+            "avg_user_turns": avg_user_turns,
+            "ask_question_fraction": ask_question_fraction,
         }
 
     async def get_bulk_user_turn_averages(

@@ -193,8 +193,19 @@ export interface UserDetail {
   ask_question_fraction: number | null;
 }
 
-export async function getUserDetail(userId: string): Promise<UserDetail> {
-  const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/detail`);
+export async function getUserDetail(
+  userId: string,
+  opts: { includeActivityStats?: boolean } = {},
+): Promise<UserDetail> {
+  // The all-time activity stats (avg_turns, avg_user_turns,
+  // ask_question_fraction) require full-history log scans, so the detail
+  // endpoint skips them unless explicitly requested. Ask for them only when the
+  // admin opts in, keeping the default row-expand fast.
+  const qs = opts.includeActivityStats ? '?include_activity_stats=true' : '';
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/detail${qs}`,
+  );
   return jsonOrThrow<UserDetail>(resp);
 }
 

@@ -164,11 +164,17 @@ async def test_user_turn_averages(db_logger: DatabaseLogger):
 
     log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
 
-    detail_a = await log_store.get_user_detail_usage("u-A")
+    # Turn averages are gated behind include_activity_stats; omitting it (the
+    # default) skips the full-history scan and returns None.
+    default_a = await log_store.get_user_detail_usage("u-A")
+    assert default_a["avg_turns"] is None
+    assert default_a["avg_user_turns"] is None
+
+    detail_a = await log_store.get_user_detail_usage("u-A", include_activity_stats=True)
     assert detail_a["avg_turns"] == pytest.approx(2.0)
     assert detail_a["avg_user_turns"] == pytest.approx(1.5)
 
-    detail_b = await log_store.get_user_detail_usage("u-B")
+    detail_b = await log_store.get_user_detail_usage("u-B", include_activity_stats=True)
     assert detail_b["avg_turns"] is None
     assert detail_b["avg_user_turns"] is None
 
@@ -221,9 +227,11 @@ async def test_user_ask_question_fractions(db_logger: DatabaseLogger):
 
     log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
 
-    detail_a = await log_store.get_user_detail_usage("u-A")
+    # Gated behind include_activity_stats: the default skips the scan.
+    assert (await log_store.get_user_detail_usage("u-A"))["ask_question_fraction"] is None
+    detail_a = await log_store.get_user_detail_usage("u-A", include_activity_stats=True)
     assert detail_a["ask_question_fraction"] == pytest.approx(0.5)
-    detail_b = await log_store.get_user_detail_usage("u-B")
+    detail_b = await log_store.get_user_detail_usage("u-B", include_activity_stats=True)
     assert detail_b["ask_question_fraction"] == pytest.approx(0.0)
 
     bulk = await log_store.get_bulk_user_ask_question_fractions(["u-A", "u-B", "u-missing"])
