@@ -162,6 +162,69 @@ class TestAPIKeyManagement:
         assert "*" in data["keys"][0]["key_masked"]
 
     @pytest.mark.asyncio
+    async def test_list_api_keys_reveals_full_key_for_active_key(
+        self, auth_app_client: AsyncClient, test_user, auth_headers
+    ):
+        """A key created after this feature exposes the decrypted full key.
+
+        The plaintext round-trips through the stored ciphertext
+        (``encrypt`` at create time -> DB -> ``decrypt`` at list time).
+        """
+        create = await auth_app_client.post("/user/api-keys", headers=auth_headers)
+        assert create.status_code == 201
+        created_key = create.json()["api_key"]
+
+        response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
+        assert response.status_code == 200
+        keys = response.json()["keys"]
+        assert len(keys) == 1
+        assert keys[0]["status"] == "active"
+        assert keys[0]["api_key"] == created_key
+        assert keys[0]["api_key"].startswith("hyi-")
+
+    @pytest.mark.asyncio
+    async def test_list_api_keys_revoked_key_stays_masked(
+        self, auth_app_client: AsyncClient, test_user, auth_headers, auth_db_logger
+    ):
+        """A revoked key returns ``api_key=None`` even though ciphertext exists."""
+        create = await auth_app_client.post("/user/api-keys", headers=auth_headers)
+        assert create.status_code == 201
+        key_prefix = create.json()["key_prefix"]
+
+        async with auth_db_logger.pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked' WHERE key_prefix = $1",
+                key_prefix,
+            )
+            # Sanity check: ciphertext is present, so masking is driven by status.
+            encrypted = await conn.fetchval(
+                "SELECT api_key_encrypted FROM api_keys WHERE key_prefix = $1",
+                key_prefix,
+            )
+        assert encrypted is not None
+
+        response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
+        assert response.status_code == 200
+        keys = response.json()["keys"]
+        assert len(keys) == 1
+        assert keys[0]["status"] == "revoked"
+        assert keys[0]["api_key"] is None
+        assert "*" in keys[0]["key_masked"]
+
+    @pytest.mark.asyncio
+    async def test_list_api_keys_legacy_key_masked(
+        self, auth_app_client: AsyncClient, test_user_with_key, auth_headers
+    ):
+        """A legacy active key (``api_key_encrypted`` NULL) stays masked."""
+        response = await auth_app_client.get("/user/api-keys/all", headers=auth_headers)
+        assert response.status_code == 200
+        keys = response.json()["keys"]
+        assert len(keys) == 1
+        assert keys[0]["status"] == "active"
+        assert keys[0]["api_key"] is None
+        assert "*" in keys[0]["key_masked"]
+
+    @pytest.mark.asyncio
     async def test_delete_api_key_revokes_active_key(
         self, auth_app_client: AsyncClient, test_user_with_key, auth_headers, auth_db_logger
     ):

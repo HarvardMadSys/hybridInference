@@ -7,6 +7,61 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 
+function EyeIcon(): JSX.Element {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon(): JSX.Element {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M10.6 5.1A9.9 9.9 0 0 1 12 5c6.5 0 10 7 10 7a17.6 17.6 0 0 1-3.3 4.2M6.6 6.6A17.6 17.6 0 0 0 2 12s3.5 7 10 7a9.9 9.9 0 0 0 4.2-.9" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+      <path d="m2 2 20 20" />
+    </svg>
+  );
+}
+
+function CopyIcon(): JSX.Element {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="11" height="11" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
 function formatDate(value?: string | null): string {
   if (!value) return 'Never';
   return new Date(value).toLocaleString();
@@ -27,6 +82,7 @@ export function ApiKeyManager(): JSX.Element {
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [deletingKeyPrefix, setDeletingKeyPrefix] = useState<string | null>(null);
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
   const createMutation = useCreateApiKey();
@@ -82,6 +138,20 @@ export function ApiKeyManager(): JSX.Element {
     }
   }
 
+  function toggleReveal(prefix: string): void {
+    setRevealedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(prefix)) next.delete(prefix);
+      else next.add(prefix);
+      return next;
+    });
+  }
+
+  function handleCopyKey(value: string): void {
+    void navigator.clipboard.writeText(value);
+    toast.success('API key copied to clipboard');
+  }
+
   const apiKeys = apiKeysResponse?.keys ?? [];
   const activeKeys = apiKeys.filter((key) => key.status === 'active');
   const hasActiveKey = activeKeys.length > 0;
@@ -113,9 +183,20 @@ export function ApiKeyManager(): JSX.Element {
           <p className="text-sm font-medium text-yellow-800 mb-2">
             Save this key now. It will only be shown once.
           </p>
-          <code className="break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
-            {newApiKey}
-          </code>
+          <div className="flex items-center gap-2">
+            <code className="min-w-0 flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
+              {newApiKey}
+            </code>
+            <button
+              type="button"
+              onClick={() => handleCopyKey(newApiKey)}
+              title="Copy key"
+              aria-label="Copy key"
+              className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            >
+              <CopyIcon />
+            </button>
+          </div>
         </div>
       )}
 
@@ -143,63 +224,92 @@ export function ApiKeyManager(): JSX.Element {
             <span className="text-right">Actions</span>
           </div>
           <div className="divide-y divide-gray-200 bg-white">
-            {apiKeys.map((apiKey) => (
-              <div
-                key={apiKey.key_prefix}
-                className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center"
-              >
-                <div>
-                  <code className="block break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
-                    {apiKey.api_key ?? apiKey.key_masked}
-                  </code>
-                  {!apiKey.api_key && (
-                    <p className="mt-1 text-xs text-gray-500">
-                      Full key is only shown immediately after creation or regeneration.
-                    </p>
-                  )}
-                </div>
-                <span
-                  className={`w-fit rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ring-inset ${statusClassName(
-                    apiKey.status,
-                  )}`}
+            {apiKeys.map((apiKey) => {
+              const canReveal = Boolean(apiKey.api_key);
+              const revealed = revealedKeys.has(apiKey.key_prefix);
+              const shownValue = canReveal && revealed ? apiKey.api_key! : apiKey.key_masked;
+              return (
+                <div
+                  key={apiKey.key_prefix}
+                  className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1.5fr)_auto_minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center"
                 >
-                  {apiKey.status}
-                </span>
-                <div className="text-sm text-gray-600">
-                  <span className="md:hidden font-medium text-gray-500">Created: </span>
-                  {formatDate(apiKey.created_at)}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <code className="min-w-0 flex-1 break-all rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-800 ring-1 ring-inset ring-gray-200">
+                        {shownValue}
+                      </code>
+                      {canReveal && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => toggleReveal(apiKey.key_prefix)}
+                            title={revealed ? 'Hide key' : 'Show key'}
+                            aria-label={revealed ? 'Hide key' : 'Show key'}
+                            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                          >
+                            {revealed ? <EyeOffIcon /> : <EyeIcon />}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCopyKey(apiKey.api_key!)}
+                            title="Copy key"
+                            aria-label="Copy key"
+                            className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                          >
+                            <CopyIcon />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {!apiKey.api_key && apiKey.status === 'active' && (
+                      <p className="mt-1 text-xs text-gray-500">
+                        Full key is only shown immediately after creation or regeneration.
+                      </p>
+                    )}
+                  </div>
+                  <span
+                    className={`w-fit rounded-full px-2.5 py-1 text-xs font-medium capitalize ring-1 ring-inset ${statusClassName(
+                      apiKey.status,
+                    )}`}
+                  >
+                    {apiKey.status}
+                  </span>
+                  <div className="text-sm text-gray-600">
+                    <span className="md:hidden font-medium text-gray-500">Created: </span>
+                    {formatDate(apiKey.created_at)}
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    <span className="md:hidden font-medium text-gray-500">Last used: </span>
+                    {formatDate(apiKey.last_used_at)}
+                  </div>
+                  <div className="flex gap-2 md:justify-end">
+                    {apiKey.status === 'active' ? (
+                      <Button
+                        onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
+                        disabled={isLoading}
+                        isLoading={deletingKeyPrefix === apiKey.key_prefix}
+                        size="sm"
+                        variant="danger"
+                      >
+                        Delete
+                      </Button>
+                    ) : apiKey.status === 'revoked' ? (
+                      <Button
+                        onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
+                        disabled={isLoading}
+                        isLoading={deletingKeyPrefix === apiKey.key_prefix}
+                        size="sm"
+                        variant="subtle"
+                      >
+                        Remove
+                      </Button>
+                    ) : (
+                      <span className="text-sm text-gray-400">No actions</span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-sm text-gray-600">
-                  <span className="md:hidden font-medium text-gray-500">Last used: </span>
-                  {formatDate(apiKey.last_used_at)}
-                </div>
-                <div className="flex gap-2 md:justify-end">
-                  {apiKey.status === 'active' ? (
-                    <Button
-                      onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
-                      disabled={isLoading}
-                      isLoading={deletingKeyPrefix === apiKey.key_prefix}
-                      size="sm"
-                      variant="danger"
-                    >
-                      Delete
-                    </Button>
-                  ) : apiKey.status === 'revoked' ? (
-                    <Button
-                      onClick={() => void handleDeleteKey(apiKey.key_prefix, apiKey.status)}
-                      disabled={isLoading}
-                      isLoading={deletingKeyPrefix === apiKey.key_prefix}
-                      size="sm"
-                      variant="subtle"
-                    >
-                      Remove
-                    </Button>
-                  ) : (
-                    <span className="text-sm text-gray-400">No actions</span>
-                  )}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

@@ -363,6 +363,7 @@ class OperationalStore(ABC):
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
+        api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
     ) -> Row:
