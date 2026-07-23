@@ -350,7 +350,7 @@ export function UserTable(props: UserTableProps) {
               </th>
               <th
                 className="px-2 py-2"
-                title="Share of this user's requests whose available tools offer an ask-the-user question tool (all-time)"
+                title="Share of this user's early-conversation requests (first 5 turns) whose available tools offer an ask-the-user question tool"
               >
                 Ask-question
               </th>

@@ -151,7 +151,7 @@ export function UserRow({
         className="px-2 font-mono text-sm text-gray-600 tabular-nums"
         title={
           askQuestion?.ask_question_fraction != null
-            ? `${askQuestion.n_ask_requests.toLocaleString()} of ${askQuestion.n_requests.toLocaleString()} requests offer an ask-question tool`
+            ? `${askQuestion.n_ask_requests.toLocaleString()} of ${askQuestion.n_requests.toLocaleString()} opening requests (first 5 turns) offer an ask-question tool`
             : undefined
         }
       >

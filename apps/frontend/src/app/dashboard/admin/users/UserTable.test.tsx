@@ -489,7 +489,9 @@ describe('UserTable ask-question column', () => {
     });
 
     expect(screen.getByText('Ask-question')).toBeInTheDocument();
-    const cell = screen.getByTitle('5 of 10 requests offer an ask-question tool');
+    const cell = screen.getByTitle(
+      '5 of 10 opening requests (first 5 turns) offer an ask-question tool',
+    );
     expect(cell).toHaveTextContent('50%');
   });
 });

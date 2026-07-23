@@ -189,21 +189,25 @@ async def test_user_turn_averages(db_logger: DatabaseLogger):
 
 @pytest.mark.asyncio
 async def test_user_ask_question_fractions(db_logger: DatabaseLogger):
-    """Per-user share of requests whose ``tools`` offer an ask-the-user tool.
+    """Per-user share of early-conversation requests whose ``tools`` offer an ask tool.
 
-    Matching is case-insensitive and spans the OpenAI (``function.name``) and
-    Anthropic (``name``) tool shapes. Requests with no tools or only non-ask
-    tools do not count; a user with no rows at all is omitted from the bulk map.
+    Only requests within the first few turns (``num_turns <= ASK_QUESTION_TURN_CAP``)
+    count, so a deep-turn request is excluded even if it offers the tool, and a
+    user with only deep-turn requests is omitted. Matching is case-insensitive
+    and spans the OpenAI (``function.name``) and Anthropic (``name``) tool
+    shapes; requests with no tools or only non-ask tools do not count.
     """
     usage: dict[str, Any] = {"prompt_tokens": 1, "completion_tokens": 1}
     pricing = {"prompt": "0", "completion": "0"}
+    # A prompt whose message count exceeds ASK_QUESTION_TURN_CAP (num_turns = 7).
+    deep = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"} for i in range(7)]
 
-    async def _log(rid: str, user_id: str, tools: Any) -> None:
+    async def _log(rid: str, user_id: str, tools: Any, prompt: Any = None) -> None:
         await db_logger.log_request(
             request_id=rid,
             model_id="m",
             provider="p",
-            prompt=[{"role": "user", "content": "hi"}],
+            prompt=prompt or [{"role": "user", "content": "hi"}],  # default num_turns = 1
             response={"message": "ok"},
             usage=usage,
             latency_ms=10,
@@ -213,7 +217,7 @@ async def test_user_ask_question_fractions(db_logger: DatabaseLogger):
             pricing=pricing,
         )
 
-    # user A: 4 requests, 2 of which offer an ask-the-user tool -> 0.5
+    # user A: 4 early-turn requests (num_turns = 1), 2 offering an ask tool -> 0.5
     #  - OpenAI shape, mixed-case name (exercises case-insensitive match)
     await _log("a1", "u-A", [{"type": "function", "function": {"name": "AskUserQuestion"}}])
     #  - Anthropic shape (name at top level)
@@ -222,8 +226,14 @@ async def test_user_ask_question_fractions(db_logger: DatabaseLogger):
     await _log("a3", "u-A", [{"type": "function", "function": {"name": "shell_command"}}])
     #  - no tools at all -> does not count
     await _log("a4", "u-A", None)
-    # user B: one request with only a non-ask tool -> 0.0
+    #  - a DEEP-turn request (num_turns = 7 > cap) that offers an ask tool: EXCLUDED,
+    #    so A stays at 2/4 (proves the turn cap).
+    await _log("a5", "u-A", [{"type": "function", "function": {"name": "question"}}], deep)
+    # user B: one early-turn request with only a non-ask tool -> 0.0
     await _log("b1", "u-B", [{"type": "function", "function": {"name": "read_file"}}])
+    # user C: ONLY a deep-turn request (num_turns > cap) -> no early-conversation
+    #         rows, so C is omitted from the bulk map and its detail fraction is None.
+    await _log("c1", "u-C", [{"type": "function", "function": {"name": "question"}}], deep)
 
     log_store = PostgresLogStore(db_logger.pool, store_full_prompts=False)
 
@@ -233,14 +243,17 @@ async def test_user_ask_question_fractions(db_logger: DatabaseLogger):
     assert detail_a["ask_question_fraction"] == pytest.approx(0.5)
     detail_b = await log_store.get_user_detail_usage("u-B", include_activity_stats=True)
     assert detail_b["ask_question_fraction"] == pytest.approx(0.0)
+    detail_c = await log_store.get_user_detail_usage("u-C", include_activity_stats=True)
+    assert detail_c["ask_question_fraction"] is None  # no early-conversation requests
 
-    bulk = await log_store.get_bulk_user_ask_question_fractions(["u-A", "u-B", "u-missing"])
+    bulk = await log_store.get_bulk_user_ask_question_fractions(["u-A", "u-B", "u-C", "u-missing"])
     assert bulk["u-A"]["ask_question_fraction"] == pytest.approx(0.5)
-    assert bulk["u-A"]["n_requests"] == 4
+    assert bulk["u-A"]["n_requests"] == 4  # deep-turn a5 excluded by the cap
     assert bulk["u-A"]["n_ask_requests"] == 2
     assert bulk["u-B"]["ask_question_fraction"] == pytest.approx(0.0)
     assert bulk["u-B"]["n_ask_requests"] == 0
-    # u-missing has no rows at all -> omitted entirely.
+    # u-C has only a deep-turn request, u-missing has no rows -> both omitted.
+    assert "u-C" not in bulk
     assert "u-missing" not in bulk
 
 

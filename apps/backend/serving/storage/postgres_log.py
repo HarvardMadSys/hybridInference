@@ -41,6 +41,15 @@ ASK_QUESTION_TOOL_NAMES: tuple[str, ...] = (
     "vscode_askquestions",
 )
 
+# Ask-question adoption is measured over each user's *early-conversation*
+# requests only — those with ``num_turns <= ASK_QUESTION_TURN_CAP``. Agentic
+# clients re-send the same tool manifest on every turn, so a single long
+# conversation would otherwise dominate the per-request count; capping to the
+# opening turns approximates one observation per conversation. The manifest is
+# fixed within a conversation (an ask tool present at turn 1 is present
+# throughout), so the opening turns are representative of the whole trajectory.
+ASK_QUESTION_TURN_CAP = 5
+
 
 def _metadata_dict(value: object) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -430,13 +439,14 @@ class PostgresLogStore(LogStore):
     ) -> dict[str, Any]:
         """Return usage detail for admin user-detail view.
 
-        The all-time turn averages (``avg_turns``, ``avg_user_turns``) and
-        ``ask_question_fraction`` require full-history scans of the user's
-        ``api_logs`` rows (no time bound), so for heavy users they dominate the
-        cost of this call. They are computed only when ``include_activity_stats``
-        is set; otherwise those three keys are ``None`` and the admin UI loads
-        them on demand behind a button. The remaining fields are time-bounded (or
-        an indexed ``MAX``) and are always computed.
+        The all-time turn averages (``avg_turns``, ``avg_user_turns``) require
+        full-history scans of the user's ``api_logs`` rows (no time bound), so
+        for heavy users they dominate the cost of this call; ``ask_question_fraction``
+        is measured over just the early-conversation requests (first few turns,
+        see ``ASK_QUESTION_TURN_CAP``). These three are computed only when
+        ``include_activity_stats`` is set; otherwise those keys are ``None`` and
+        the admin UI loads them on demand behind a button. The remaining fields
+        are time-bounded (or an indexed ``MAX``) and are always computed.
         """
         avg_turns: float | None = None
         avg_user_turns: float | None = None
@@ -492,8 +502,9 @@ class PostgresLogStore(LogStore):
                     if turns and turns["avg_user_turns"] is not None
                     else None
                 )
-                # Share of the user's requests whose available ``tools`` offer an
-                # ask-the-user clarifying tool (see ``ASK_QUESTION_TOOL_NAMES``).
+                # Share of the user's early-conversation requests (first
+                # ``ASK_QUESTION_TURN_CAP`` turns) whose available ``tools`` offer
+                # an ask-the-user clarifying tool (see ``ASK_QUESTION_TOOL_NAMES``).
                 ask = await conn.fetchrow(
                     """
                     SELECT COUNT(*) AS n_requests,
@@ -507,9 +518,11 @@ class PostgresLogStore(LogStore):
                            ) AS n_ask_requests
                     FROM api_logs
                     WHERE user_id = $1
+                      AND num_turns <= $3
                     """,
                     user_id,
                     list(ASK_QUESTION_TOOL_NAMES),
+                    ASK_QUESTION_TURN_CAP,
                 )
                 ask_question_fraction = (
                     int(ask["n_ask_requests"]) / int(ask["n_requests"])
@@ -566,14 +579,17 @@ class PostgresLogStore(LogStore):
     async def get_bulk_user_ask_question_fractions(
         self, user_ids: list[str]
     ) -> dict[str, dict[str, float | int | None]]:
-        """Return per-user share of requests offering an ask-question tool.
+        """Return per-user share of early-conversation requests offering an ask tool.
 
         Maps ``user_id`` → ``{"ask_question_fraction", "n_requests",
-        "n_ask_requests"}`` over all of the user's ``api_logs`` rows. A request
-        counts toward ``n_ask_requests`` when its ``tools`` list offers a tool
-        from :data:`ASK_QUESTION_TOOL_NAMES` (matched case-insensitively across
-        the OpenAI and Anthropic tool shapes); ``ask_question_fraction`` is
-        ``n_ask_requests / n_requests``. Users with no logged requests are
+        "n_ask_requests"}`` over the user's early-conversation ``api_logs`` rows
+        (those with ``num_turns <= ASK_QUESTION_TURN_CAP``). A request counts
+        toward ``n_ask_requests`` when its ``tools`` list offers a tool from
+        :data:`ASK_QUESTION_TOOL_NAMES` (matched case-insensitively across the
+        OpenAI and Anthropic tool shapes); ``ask_question_fraction`` is
+        ``n_ask_requests / n_requests``. Capping to opening turns keeps a long
+        agentic conversation (which re-sends the same manifest every turn) from
+        dominating the count. Users with no early-conversation requests are
         omitted (the caller fills a default). Bounded to the page's ``user_ids``
         so it stays an indexed lookup.
         """
@@ -594,10 +610,12 @@ class PostgresLogStore(LogStore):
                        ) AS n_ask_requests
                 FROM api_logs
                 WHERE user_id = ANY($1)
+                  AND num_turns <= $3
                 GROUP BY user_id
                 """,
                 user_ids,
                 list(ASK_QUESTION_TOOL_NAMES),
+                ASK_QUESTION_TURN_CAP,
             )
         result: dict[str, dict[str, float | int | None]] = {}
         for r in rows:

@@ -243,11 +243,12 @@ class BulkUserTurnAveragesResponse(BaseModel):
 
 
 class UserAskQuestionFraction(BaseModel):
-    """Share of a user's requests that offer an ask-the-user tool (all-time).
+    """Share of a user's early-conversation requests that offer an ask-the-user tool.
 
     ``ask_question_fraction`` is ``n_ask_requests / n_requests`` — the fraction
-    of the user's logged requests whose available ``tools`` include a clarifying
-    ask-the-user tool. ``None`` when the user has no logged requests.
+    of the user's early-conversation requests (first few turns) whose available
+    ``tools`` include a clarifying ask-the-user tool. ``None`` when the user has
+    no early-conversation requests.
     """
 
     ask_question_fraction: float | None = None
@@ -399,9 +400,10 @@ class UserDetailResponse(BaseModel):
     # otherwise they are None (the admin UI loads them on demand behind a button).
     avg_turns: float | None = None
     avg_user_turns: float | None = None
-    # All-time share of this user's requests whose available ``tools`` offer an
-    # ask-the-user clarifying tool; None when the user has no requests (or when
-    # activity stats were not requested — see ``avg_turns`` above).
+    # Share of this user's early-conversation requests (first few turns) whose
+    # available ``tools`` offer an ask-the-user clarifying tool; None when the
+    # user has none (or when activity stats were not requested — see
+    # ``avg_turns`` above).
     ask_question_fraction: float | None = None
 
 
