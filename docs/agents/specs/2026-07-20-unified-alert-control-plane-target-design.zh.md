@@ -603,13 +603,47 @@ Control Plane 至少暴露：
 - C1：先接线 staging Slack runtime 与 `PrincipalQuota` Durable Object；配置严格
   fail-closed，公共 `/v1/events` 继续返回 503，`dispatch_analysis` 明确标记
   `analysis_not_enabled`，不迁移 producer
-- C2：接入 staging deployment identity、认证 ingress，并完成 synthetic lifecycle
-- C3：迁移真实 staging producer；确认旧 writer drain 后再关闭 V1 Relay 与 direct webhook
+- C2：在选定并验证 CI attestation 机制后，绑定 `DeploymentRegistry` Durable Object，
+  接入 staging deployment identity 与认证 ingress，并完成 synthetic lifecycle。不能为了
+  提前创建 binding 而使用 allow-all/fake verifier；GitHub OIDC 或受控 CI identity 的
+  issuer、audience、repository、workflow、ref 与 environment 约束是该阶段的准入门禁
+- C3：按 alert type 逐个迁移真实 staging producer；每种类型都必须先进入 canonical
+  contract，再确认其旧 writer drain，最后移除对应的 V1 Relay 与 direct webhook
 - Provision staging principal 与 Control Plane secrets
 - staging producer 只配置一个 `ALERT_SINK_URL` 与 credential
 - 禁用 staging 的 V1 Relay 和 direct Slack webhook
 - 运行 synthetic firing → repeat → Codex success/failure → resolved → re-fire
 - 完成至少一个约定观察窗口后再进入 production
+
+#### C2/C3 准入与 writer 清单
+
+Slack readback gate 与 staging synthetic lifecycle 是两个独立门禁。目标 staging
+bot/channel 已于 2026-07-23 通过 `conversations.history` / `conversations.replies`
+metadata readback；token、app installation 或 channel 变化时必须先重跑。C2 随后验证完整
+firing → repeat → resolved → re-fire 生命周期，不能用 mock readback 代替前一个门禁。
+
+C3 切换前必须按调用路径盘点所有 Slack writer，而不只按进程名盘点。当前至少包括：
+
+- `services/status-monitor-worker/src/alerts.ts` 的 `deliverAlert`：
+  on-call relay 失败后回退到 `SLACK_WEBHOOK_URL`
+- `apps/backend/serving/observability/alerts.py` 的 `alert_slack`：
+  被 endpoint health、alert rules、failed-request alerter 与 health route 等调用，relay
+  失败后回退到 `SLACK_ALERTS_WEBHOOK_URL` / `SLACK_WEBHOOK_URL`
+- `apps/backend/serving/admin/failed_request_alerter.py` 保留的
+  `post_slack_alert` 兼容 wrapper；即使主路径已调用 `alert_slack`，删除 legacy 前仍要确认
+  没有剩余调用或外部 patch-point 依赖
+
+迁移某种 alert type 时，以上对应路径都不得继续写同一 Slack destination。Control Plane
+不可达、超时或返回非 2xx 时，producer 只能使用相同 `event_id` 重试同一 canonical event；
+禁止 `Control Plane → V1 Relay → incoming webhook` fallback，也禁止 shadow 阶段同时写
+两份 Slack。新增 alert type 必须先扩展 schema/context allowlist 与 contract fixtures，
+不能把旧 `slack_text` 原样塞进入口。
+
+若需要用真实流量 shadow 状态机，只能使用与正式 incident/quota 完全隔离、验证后整体丢弃
+的 namespace。不能在未来要接管的 namespace 中让 fake/log-only sink 返回伪造
+`DeliveryRef`：这会把 generation 推进到不可迁移的假成功状态；让它不返回成功又无法验证
+完整 lifecycle。因此默认降风险手段仍是 readback gate + staging synthetic lifecycle +
+按 fingerprint 的单 owner 切换。
 
 ### Phase 4：Production 单路切换
 
@@ -628,6 +662,13 @@ Control Plane 至少暴露：
 - 将 canonical 变量收敛为 `ALERT_SINK_URL` 与 `ALERT_SINK_TOKEN`
 
 ### 回滚
+
+`PrincipalQuota` / `DeploymentRegistry` SQLite class migration 是 additive 的 Wrangler
+迁移；已经创建的 DO class 记录不应通过删除 migration tag “回滚”。C1/C2 的行为开关仍可逆：
+缺少完整 active 配置时 executor fail-closed，C2 ingress kill switch 恢复固定 503。C3
+开始产生 ownership 后不能简单地“打开旧 producer + 把 Control Plane 设 dormant”，否则
+Control Plane 已拥有的 active fingerprint 会失去 repeat/resolved，并可能被 legacy 重开
+第二个 Slack incident；必须执行下面的 owner-aware rollback。
 
 稳定态下任一 environment 只有一个 sink/writer。迁移期间为了 drain 已由 Control Plane
 拥有的 incident，允许一个有明确截止时间的 `DrainOwnership` 例外：路由表以
