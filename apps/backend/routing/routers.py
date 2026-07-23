@@ -124,6 +124,21 @@ AFFINITY_ENABLED: bool = os.environ.get("ROUTING_AFFINITY_ENABLED", "1") != "0"
 # ============================================================================
 
 
+def adapter_supports_modalities(adapter: BaseAdapter, required: frozenset[str] | None) -> bool:
+    """Return True if the adapter's route accepts every required input modality.
+
+    ``required`` is the set of non-text modalities a request needs (e.g.
+    ``{"image"}``). Each route inherits the model-level ``input_modalities``
+    unless a route-level override narrows it, so this lets the router skip a
+    fallback that cannot accept the media even when the model as a whole
+    advertises that modality.
+    """
+    if not required:
+        return True
+    supported = set(getattr(adapter.config, "input_modalities", None) or ["text"])
+    return required <= supported
+
+
 class FixedRouter:
     """Weighted random routing with automatic fallback.
 
@@ -383,13 +398,20 @@ class FixedRouter:
                 self.routes[alias] = route_cfg  # shared reference, not a copy
 
     def _select_adapter(
-        self, model_id: str, *, pin_provider: str | None = None
+        self,
+        model_id: str,
+        *,
+        pin_provider: str | None = None,
+        required_modalities: frozenset[str] | None = None,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
         Args:
             model_id: Model identifier.
             pin_provider: Optional provider/endpoint_id to pin to. Overrides affinity.
+            required_modalities: Non-text input modalities the request needs.
+                Routes that do not declare all of them are excluded so media is
+                never dispatched to a route that cannot handle it.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -398,8 +420,21 @@ class FixedRouter:
         if not route or not route.published or not route.adapters:
             return None
 
+        effective = self._get_effective_adapters(model_id, route)
+        if required_modalities:
+            effective = [
+                (adapter, weight)
+                for adapter, weight in effective
+                if adapter_supports_modalities(adapter, required_modalities)
+            ]
+            if not effective:
+                raise AllCircuitsOpenError(
+                    f"No route for model {model_id} accepts input modalities "
+                    f"{sorted(required_modalities)}"
+                )
+
         if pin_provider:
-            for adapter, weight in self._get_effective_adapters(model_id, route):
+            for adapter, weight in effective:
                 if weight <= 0:
                     continue
                 eid = endpoint_id_for_adapter(adapter)
@@ -408,7 +443,7 @@ class FixedRouter:
             return None
 
         with self._lock:
-            snapshot = list(self._get_effective_adapters(model_id, route))
+            snapshot = list(effective)
 
         allowed: list[tuple[BaseAdapter, float]] = [
             (adapter, weight)
@@ -481,7 +516,8 @@ class FixedRouter:
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
-            routing_options: Router-owned controls such as an explicit provider pin.
+            routing_options: Router-owned controls such as an explicit provider pin
+                and required input modalities.
             **params: Additional parameters for the adapter.
 
         Returns:
@@ -491,7 +527,12 @@ class FixedRouter:
             ValueError: If no route configured for model.
         """
         pin_provider = self._resolve_pin_provider(routing_options, params)
-        primary = self._select_adapter(model_id, pin_provider=pin_provider)
+        required_modalities = (
+            routing_options.required_modalities if routing_options is not None else frozenset()
+        )
+        primary = self._select_adapter(
+            model_id, pin_provider=pin_provider, required_modalities=required_modalities
+        )
         if not primary:
             if pin_provider:
                 raise ProviderPinError(
@@ -547,6 +588,8 @@ class FixedRouter:
                 if adapter == primary or weight <= 0:
                     continue
                 endpoint_id = endpoint_id_for_adapter(adapter)
+                if not adapter_supports_modalities(adapter, required_modalities):
+                    continue
                 # Fallback is still automatic routing, so it must honor the
                 # same shared circuit eligibility as the initial selection.
                 # Explicit pinning returned above and remains the sole circuit
@@ -591,7 +634,8 @@ class FixedRouter:
         Args:
             model_id: Model identifier.
             messages: Chat messages in OpenAI format.
-            routing_options: Router-owned controls such as an explicit provider pin.
+            routing_options: Router-owned controls such as an explicit provider pin
+                and required input modalities.
             **params: Additional parameters for the adapter.
 
         Yields:
@@ -601,7 +645,12 @@ class FixedRouter:
             ValueError: If no route configured for model.
         """
         pin_provider = self._resolve_pin_provider(routing_options, params)
-        primary = self._select_adapter(model_id, pin_provider=pin_provider)
+        required_modalities = (
+            routing_options.required_modalities if routing_options is not None else frozenset()
+        )
+        primary = self._select_adapter(
+            model_id, pin_provider=pin_provider, required_modalities=required_modalities
+        )
         if not primary:
             if pin_provider:
                 raise ProviderPinError(
@@ -678,6 +727,8 @@ class FixedRouter:
                 if adapter == primary or weight <= 0:
                     continue
                 adapter_endpoint_id = endpoint_id_for_adapter(adapter)
+                if not adapter_supports_modalities(adapter, required_modalities):
+                    continue
                 # Synthetic routing chunks are emitted only after circuit
                 # admission so an open automatic fallback is never exposed as
                 # an attempted upstream. Explicit pinning returned above.

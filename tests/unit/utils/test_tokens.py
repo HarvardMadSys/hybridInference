@@ -10,6 +10,7 @@ from __future__ import annotations
 from serving.utils.tokens import (
     AUDIO_TOKEN_ESTIMATE,
     IMAGE_TOKEN_ESTIMATE,
+    VIDEO_TOKEN_ESTIMATE,
     estimate_prompt_tokens,
     estimate_text_tokens,
 )
@@ -110,6 +111,29 @@ class TestEstimatePromptTokensMultimodal:
             + 4
             + 3
         )
+        assert estimate_prompt_tokens(messages) == expected
+
+    def test_video_block_uses_flat_estimate(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": "data:video/mp4;base64," + ("C" * 300_000)},
+                    },
+                ],
+            }
+        ]
+        expected = (
+            estimate_text_tokens("user")
+            + estimate_text_tokens("describe")
+            + VIDEO_TOKEN_ESTIMATE
+            + 4
+            + 3
+        )
+        # A large inline video blob must contribute the flat estimate, not its size.
         assert estimate_prompt_tokens(messages) == expected
 
     def test_unknown_block_counts_embedded_text_only(self):

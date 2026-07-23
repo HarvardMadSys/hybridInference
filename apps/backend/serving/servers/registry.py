@@ -501,6 +501,14 @@ def register_from_models_yaml(
                 if "processor" in r:
                     adapter_cfg["processor"] = r["processor"]
 
+                # Route-level input_modalities override (default: inherit the
+                # model-level declaration). Lets a narrower fallback (e.g. a
+                # text-only mirror of a vision model) advertise fewer modalities
+                # than the model as a whole, so the modality-aware router never
+                # dispatches media a route can't accept to that route.
+                if "input_modalities" in r:
+                    adapter_cfg["input_modalities"] = r["input_modalities"]
+
                 # RouteWise provider category classification
                 route_metadata = dict(adapter_cfg.get("route_metadata") or {})
                 if isinstance(r.get("route_metadata"), dict):

@@ -1054,3 +1054,57 @@ def test_pin_to_disabled_provider_returns_none():
 
     assert exe._select_adapter("m", pin_provider="zai") is None  # type: ignore[attr-defined]
     assert exe._select_adapter("m", pin_provider="ollama") is not None  # type: ignore[attr-defined]
+
+
+def _mcfg(provider: str, modalities: list[str]) -> ModelConfig:
+    return ModelConfig(
+        id="m",
+        name="m",
+        provider=provider,
+        base_url=f"http://{provider}",
+        input_modalities=modalities,
+    )
+
+
+@pytest.mark.unit
+def test_select_adapter_filters_routes_by_required_modality():
+    """Media requests never select a route that doesn't declare the modality."""
+    exe = RouteExecutor()
+    text_only = _EchoAdapter(_mcfg("TEXT", ["text"]))
+    vision = _EchoAdapter(_mcfg("VIS", ["text", "image"]))
+    # Text-only route dominates by weight; without filtering it would win most picks.
+    exe.register_route("m", [(text_only, 0.9), (vision, 0.1)])
+
+    random.seed(3)
+    for _ in range(200):
+        chosen = exe._select_adapter("m", required_modalities=frozenset({"image"}))
+        assert chosen is vision
+
+    # Sanity: without the filter the text-only route is reachable.
+    seen = {exe._select_adapter("m").config.provider for _ in range(200)}
+    assert "TEXT" in seen
+
+
+@pytest.mark.unit
+def test_select_adapter_raises_when_no_route_supports_modality():
+    exe = RouteExecutor()
+    exe.register_route("m", [(_EchoAdapter(_mcfg("A", ["text"])), 1.0)])
+    with pytest.raises(AllCircuitsOpenError):
+        exe._select_adapter("m", required_modalities=frozenset({"image"}))
+
+
+@pytest.mark.unit
+async def test_chat_completion_dispatches_media_only_to_supporting_route():
+    exe = RouteExecutor()
+    text_only = _EchoAdapter(_mcfg("TEXT", ["text"]))
+    vision = _EchoAdapter(_mcfg("VIS", ["text", "image"]))
+    exe.register_route("m", [(text_only, 0.9), (vision, 0.1)])
+
+    random.seed(5)
+    for _ in range(50):
+        resp = await exe.chat_completion(
+            "m",
+            [{"role": "user", "content": "x"}],
+            routing_options=RoutingRequestOptions(required_modalities=frozenset({"image"})),
+        )
+        assert resp["_routing"]["provider"] == "VIS"

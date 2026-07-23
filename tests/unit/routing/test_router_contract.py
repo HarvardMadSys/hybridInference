@@ -10,7 +10,7 @@ import pytest
 
 from routing.protocols import RouterProtocol, RouteTableRefreshable, RoutingRequestOptions
 from routing.route_table import RouteTableView
-from routing.routers import FixedRouter
+from routing.routers import AllCircuitsOpenError, FixedRouter
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
@@ -74,6 +74,7 @@ def _adapter(
     provider: str,
     *,
     price: str = "1",
+    input_modalities: list[str] | None = None,
     chat_error: BaseException | None = None,
     stream_chunks: tuple[str, ...] = (),
     stream_error: BaseException | None = None,
@@ -85,6 +86,7 @@ def _adapter(
         base_url=f"https://{provider}.example/v1",
         endpoint_id=f"{_MODEL_ID}:{provider}",
         pricing={"prompt": price, "completion": price},
+        input_modalities=input_modalities or ["text"],
     )
     return _ContractAdapter(
         config,
@@ -174,6 +176,67 @@ async def test_routing_options_are_consumed_before_adapter_dispatch(
 
     assert all("routing_options" not in params for params in primary.chat_params)
     assert all("routing_options" not in params for params in primary.stream_params)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_required_modalities_filter_chat_and_stream_routes(
+    router_factory: _RouterFactory,
+) -> None:
+    text_only = _adapter(
+        "text-only",
+        price="0.001",
+        stream_chunks=('data: {"choices":[{"delta":{"content":"wrong"}}]}\n\n',),
+    )
+    vision = _adapter(
+        "vision",
+        price="100",
+        input_modalities=["text", "image"],
+        stream_chunks=(
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+            "data: [DONE]\n\n",
+        ),
+    )
+    router = router_factory.build([text_only, vision])
+    options = RoutingRequestOptions(required_modalities=frozenset({"image"}))
+
+    response = await router.chat_completion(
+        _MODEL_ID,
+        _MESSAGES,
+        routing_options=options,
+    )
+    chunks = [
+        chunk
+        async for chunk in router.stream_chat_completion(
+            _MODEL_ID,
+            _MESSAGES,
+            routing_options=options,
+        )
+    ]
+
+    assert response["_routing"]["provider"] == "vision"
+    assert any(routing["provider"] == "vision" for routing in _routing_payloads(chunks))
+    assert text_only.chat_calls == 0
+    assert text_only.stream_calls == 0
+    assert vision.chat_calls == 1
+    assert vision.stream_calls == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_required_modalities_raise_when_no_route_supports_them(
+    router_factory: _RouterFactory,
+) -> None:
+    router = router_factory.build([_adapter("text-only")])
+
+    with pytest.raises(AllCircuitsOpenError, match="accepts input modalities"):
+        await router.chat_completion(
+            _MODEL_ID,
+            _MESSAGES,
+            routing_options=RoutingRequestOptions(
+                required_modalities=frozenset({"image"}),
+            ),
+        )
 
 
 @pytest.mark.unit
