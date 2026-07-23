@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, 
 
 from serving.auth.signup_policy import allowlist_is_empty, is_domain_allowed
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
+from serving.exceptions import AccountSuspendedError
 from serving.schemas_auth import (
     ForgotPasswordRequest,
     LoginRequest,
@@ -340,23 +341,13 @@ async def login(
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Check if email verification is required and if email is verified
-    require_verification = settings.signup_require_email_verification
-    try:
-        from serving.config.runtime_settings import get_runtime_settings_instance
-
-        rs = get_runtime_settings_instance()
-        require_verification = await rs.get_bool("signup_require_email_verification")
-    except (RuntimeError, KeyError):
-        pass
-    if require_verification and not user_row["email_verified"]:
-        await _record("failure", failure_reason="email_unverified", user_id=user_row["id"])
-        raise HTTPException(
-            status_code=403,
-            detail="Email not verified. Please check your email for the verification link.",
-        )
-
-    # Check account status
+    # Check account status *before* email verification. A suspended, rejected,
+    # or pending account must be reported as such: otherwise an account that is
+    # both non-active and unverified would be told to "verify your email" — a
+    # prompt it cannot act on that masks the real reason it can't log in (e.g. a
+    # suspended user shown "needs verification" instead of "suspended"). This
+    # mirrors the status-before-verification ordering already used by refresh()
+    # and deps.get_current_user.
     if user_row["status"] == "pending_approval":
         await _record("failure", failure_reason="account_pending_approval", user_id=user_row["id"])
         raise HTTPException(
@@ -371,11 +362,36 @@ async def login(
             detail="Your registration was not approved. Please contact support for details.",
         )
 
+    if user_row["status"] == "suspended":
+        await _record("failure", failure_reason="account_inactive", user_id=user_row["id"])
+        # Typed exception → install_exception_handlers returns a 403 carrying
+        # error_code "ACCOUNT_SUSPENDED", so the client can show a dedicated
+        # "account suspended" message rather than a generic/unknown error.
+        raise AccountSuspendedError(user_row["status"])
+
     if user_row["status"] != "active":
+        # Any other non-active state (e.g. "deleted"): keep a generic message.
+        # ACCOUNT_SUSPENDED would mislabel it as suspended on the client.
         await _record("failure", failure_reason="account_inactive", user_id=user_row["id"])
         raise HTTPException(
             status_code=403,
             detail=f"Account is {user_row['status']}. Please contact support.",
+        )
+
+    # Check if email verification is required and if email is verified
+    require_verification = settings.signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except (RuntimeError, KeyError):
+        pass
+    if require_verification and not user_row["email_verified"]:
+        await _record("failure", failure_reason="email_unverified", user_id=user_row["id"])
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please check your email for the verification link.",
         )
 
     await _record("success", failure_reason=None, user_id=user_row["id"])
