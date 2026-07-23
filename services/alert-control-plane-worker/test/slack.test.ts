@@ -334,6 +334,44 @@ describe("SlackSink reconciliation", () => {
     expect(url.searchParams.get("oldest")).toBe(slackTs(START_MS - 1_000).slice(0, -3));
   });
 
+  it("reconciles a recent parent when older free-workspace history is retention-limited", async () => {
+    const target = action("post_parent");
+    const effectTs = slackTs(START_MS + 500);
+    const transport = scriptedFetch(
+      apiResponse({
+        ok: true,
+        messages: [{ ts: effectTs, metadata: metadataFor(target) }],
+        has_more: false,
+        is_limited: true,
+        response_metadata: { next_cursor: "" },
+      }),
+    );
+
+    const result = await sinkWith(transport.fetch).execute(target, "reconcile");
+
+    expectSuccess(result);
+    expect(result.receipt.deliveryRef.messageId).toBe(effectTs);
+  });
+
+  it("does not replay an update when retention hides the referenced parent", async () => {
+    const transport = scriptedFetch(
+      apiResponse({
+        ok: true,
+        messages: [],
+        has_more: false,
+        is_limited: true,
+        response_metadata: { next_cursor: "" },
+      }),
+    );
+
+    await expect(
+      sinkWith(transport.fetch).execute(action("update_parent"), "reconcile"),
+    ).resolves.toEqual({
+      outcome: "manual_reconciliation_required",
+      errorCode: "slack_reconcile_incomplete",
+    });
+  });
+
   it("waits through visibility grace, then retries only after a complete zero-match query", async () => {
     const empty = () =>
       apiResponse({

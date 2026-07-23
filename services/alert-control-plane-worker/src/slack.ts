@@ -133,7 +133,11 @@ interface SlackMessageRecord {
 }
 
 type QueryResult =
-  | { readonly outcome: "success"; readonly messages: readonly SlackMessageRecord[] }
+  | {
+      readonly outcome: "success";
+      readonly messages: readonly SlackMessageRecord[];
+      readonly retentionLimited: boolean;
+    }
   | { readonly outcome: "uncertain"; readonly reconcileAtMs?: number }
   | { readonly outcome: "incomplete" };
 
@@ -614,6 +618,16 @@ export class SlackSink implements NotificationSink {
       };
     }
     if (matches.length === 0) {
+      if (
+        action.type === "update_parent" &&
+        query.retentionLimited &&
+        candidates.length === 0
+      ) {
+        return {
+          outcome: "manual_reconciliation_required",
+          errorCode: "slack_reconcile_incomplete",
+        };
+      }
       const graceEndsAtMs = action.attemptStartedAtMs + this.reconciliationGraceMs;
       if (this.now() < graceEndsAtMs) {
         return {
@@ -672,6 +686,7 @@ export class SlackSink implements NotificationSink {
   ): Promise<QueryResult> {
     const messages: SlackMessageRecord[] = [];
     const seenCursors = new Set<string>();
+    let retentionLimited = false;
     let cursor = "";
     for (let page = 0; page < this.maxPages; page += 1) {
       const params = new URLSearchParams(baseParams);
@@ -707,7 +722,10 @@ export class SlackSink implements NotificationSink {
         if (PERMANENT_SLACK_ERRORS.has(error)) return { outcome: "incomplete" };
         return { outcome: "uncertain" };
       }
-      if (parsed.is_limited === true) return { outcome: "incomplete" };
+      if (parsed.is_limited !== undefined && typeof parsed.is_limited !== "boolean") {
+        return { outcome: "uncertain" };
+      }
+      retentionLimited ||= parsed.is_limited === true;
       if (parsed.has_more !== undefined && typeof parsed.has_more !== "boolean") {
         return { outcome: "uncertain" };
       }
@@ -717,7 +735,9 @@ export class SlackSink implements NotificationSink {
 
       const nextCursor = responseCursor(parsed);
       if (nextCursor === "") {
-        return parsed.has_more === true ? { outcome: "incomplete" } : { outcome: "success", messages };
+        return parsed.has_more === true
+          ? { outcome: "incomplete" }
+          : { outcome: "success", messages, retentionLimited };
       }
       if (seenCursors.has(nextCursor)) return { outcome: "incomplete" };
       seenCursors.add(nextCursor);
