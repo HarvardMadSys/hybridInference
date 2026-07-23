@@ -8,12 +8,16 @@
     "dev": "wrangler dev --config wrangler.example.toml",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:slack-live": "vitest run --config vitest.live.config.ts"
+    "test:slack-live": "vitest run --config vitest.live.config.ts live/slack-readback.live.test.ts",
+    "test:control-plane-live": "vitest run --config vitest.live.config.ts live/control-plane-lifecycle.live.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0",
     "wrangler": "^3.80.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.3"
   }
 }

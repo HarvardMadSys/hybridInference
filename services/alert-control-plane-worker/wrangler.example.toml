@@ -14,6 +14,10 @@ class_name = "IncidentDurableObject"
 name = "PRINCIPAL_QUOTAS"
 class_name = "PrincipalQuotaDurableObject"
 
+[[durable_objects.bindings]]
+name = "DEPLOYMENT_REGISTRIES"
+class_name = "DeploymentRegistryDurableObject"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["IncidentDurableObject"]
@@ -22,8 +26,13 @@ new_sqlite_classes = ["IncidentDurableObject"]
 tag = "v2"
 new_sqlite_classes = ["PrincipalQuotaDurableObject"]
 
-# CONTROL_PLANE_MODE must be explicitly set to "staging-runtime" in the staging
-# environment before the runtime will construct any external executor.
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["DeploymentRegistryDurableObject"]
+
+# CONTROL_PLANE_MODE must be explicitly set to "staging-runtime" before the
+# runtime will construct an external executor. "staging-ingress" additionally
+# requires every C2 identity binding and allowlist below before /v1/events opens.
 #
 # ROUTE_KEY_V1 and SLACK_BOT_TOKEN are secrets and must never be stored here.
 # Staging also requires non-secret SLACK_CHANNEL_ID, SLACK_SINK_ID,
@@ -31,3 +40,8 @@ new_sqlite_classes = ["PrincipalQuotaDurableObject"]
 # (30000..900000). Their real values belong in environment configuration, not
 # this example. The Slack app needs chat:write and the target conversation's
 # matching *:history scope for reconciliation.
+#
+# C2 also requires PRODUCER_TOKEN_SIGNING_KEY_V1 as a secret and non-secret
+# PRODUCER_TOKEN_TTL_SECONDS plus exact GitHub OIDC repository/workflow/ref/
+# environment allowlists. The manual staging lifecycle workflow supplies those
+# values; this example deliberately contains no active configuration.

@@ -3,6 +3,13 @@ const MAXIMUM_ROUTE_KEY_BYTES = 4_096;
 const CHANNEL_ID_RE = /^[CGD][A-Z0-9]{1,255}$/;
 const SINK_ID_RE = /^[a-z][a-z0-9._-]{0,63}$/;
 const BOT_TOKEN_RE = /^xoxb-[A-Za-z0-9-]{10,1019}$/;
+const REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const NUMERIC_ID_RE = /^[1-9][0-9]{0,31}$/;
+const WORKFLOW_REF_RE =
+  /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml@refs\/heads\/dev$/;
+
+export const GITHUB_DEPLOYMENT_ATTESTATION_AUDIENCE =
+  "alert-control-plane-deployment-attestation";
 
 export interface RuntimeEnvironment {
   readonly CONTROL_PLANE_MODE?: string;
@@ -13,10 +20,20 @@ export interface RuntimeEnvironment {
   readonly PRINCIPAL_ACTIVE_LIMIT?: string;
   readonly QUOTA_PENDING_LEASE_MS?: string;
   readonly PRINCIPAL_QUOTAS?: DurableObjectNamespace;
+  readonly DEPLOYMENT_REGISTRIES?: DurableObjectNamespace;
+  readonly PRODUCER_TOKEN_SIGNING_KEY_V1?: string;
+  readonly PRODUCER_TOKEN_TTL_SECONDS?: string;
+  readonly GITHUB_OIDC_SUBJECT?: string;
+  readonly GITHUB_OIDC_REPOSITORY?: string;
+  readonly GITHUB_OIDC_REPOSITORY_ID?: string;
+  readonly GITHUB_OIDC_REPOSITORY_OWNER_ID?: string;
+  readonly GITHUB_OIDC_WORKFLOW_REF?: string;
+  readonly GITHUB_OIDC_REF?: string;
+  readonly GITHUB_OIDC_ENVIRONMENT?: string;
+  readonly GITHUB_OIDC_EVENT_NAME?: string;
 }
 
-export interface StagingRuntimeConfig {
-  readonly mode: "staging-runtime";
+interface StagingRuntimeConfigBase {
   readonly routeKey: string;
   readonly slack: {
     readonly botToken: string;
@@ -29,6 +46,34 @@ export interface StagingRuntimeConfig {
     readonly namespace: DurableObjectNamespace;
   };
 }
+
+export interface StagingRuntimeOnlyConfig extends StagingRuntimeConfigBase {
+  readonly mode: "staging-runtime";
+}
+
+export interface StagingIngressConfig extends StagingRuntimeConfigBase {
+  readonly mode: "staging-ingress";
+  readonly identity: {
+    readonly registryNamespace: DurableObjectNamespace;
+    readonly producerTokenSigningKey: string;
+    readonly producerTokenTtlSeconds: number;
+    readonly githubOidc: {
+      readonly audience: typeof GITHUB_DEPLOYMENT_ATTESTATION_AUDIENCE;
+      readonly subject: string;
+      readonly repository: string;
+      readonly repositoryId: string;
+      readonly repositoryOwnerId: string;
+      readonly workflowRef: string;
+      readonly ref: "refs/heads/dev";
+      readonly environment: "staging";
+      readonly eventName: "workflow_dispatch";
+    };
+  };
+}
+
+export type StagingRuntimeConfig =
+  | StagingRuntimeOnlyConfig
+  | StagingIngressConfig;
 
 export type RuntimeConfigResult =
   | { readonly mode: "dormant" }
@@ -49,7 +94,28 @@ export type RuntimeConfigErrorCode =
   | "principal_active_limit_invalid"
   | "quota_pending_lease_ms_missing"
   | "quota_pending_lease_ms_invalid"
-  | "principal_quota_binding_missing";
+  | "principal_quota_binding_missing"
+  | "deployment_registry_binding_missing"
+  | "producer_token_signing_key_missing"
+  | "producer_token_signing_key_invalid"
+  | "producer_token_ttl_seconds_missing"
+  | "producer_token_ttl_seconds_invalid"
+  | "github_oidc_subject_missing"
+  | "github_oidc_subject_invalid"
+  | "github_oidc_repository_missing"
+  | "github_oidc_repository_invalid"
+  | "github_oidc_repository_id_missing"
+  | "github_oidc_repository_id_invalid"
+  | "github_oidc_repository_owner_id_missing"
+  | "github_oidc_repository_owner_id_invalid"
+  | "github_oidc_workflow_ref_missing"
+  | "github_oidc_workflow_ref_invalid"
+  | "github_oidc_ref_missing"
+  | "github_oidc_ref_invalid"
+  | "github_oidc_environment_missing"
+  | "github_oidc_environment_invalid"
+  | "github_oidc_event_name_missing"
+  | "github_oidc_event_name_invalid";
 
 function present(value: string | undefined): value is string {
   return value !== undefined && value.length > 0;
@@ -90,7 +156,7 @@ export function parseRuntimeConfig(
 ): RuntimeConfigResult {
   const mode = env?.CONTROL_PLANE_MODE;
   if (mode === undefined || mode === "dormant") return { mode: "dormant" };
-  if (mode !== "staging-runtime") {
+  if (mode !== "staging-runtime" && mode !== "staging-ingress") {
     return { mode: "invalid", errorCode: "control_plane_mode_invalid" };
   }
   if (env === undefined) return { mode: "dormant" };
@@ -170,14 +236,181 @@ export function parseRuntimeConfig(
     };
   }
 
-  return {
-    mode: "staging-runtime",
+  const activeBase: StagingRuntimeConfigBase = {
     routeKey: routeMaterial,
     slack: { botToken, channelId, sinkId },
     quota: {
       activeLimit,
       pendingLeaseMs,
       namespace: env.PRINCIPAL_QUOTAS,
+    },
+  };
+
+  if (mode === "staging-runtime") {
+    return { mode, ...activeBase };
+  }
+
+  if (!isDurableObjectNamespace(env.DEPLOYMENT_REGISTRIES)) {
+    return {
+      mode: "invalid",
+      errorCode: "deployment_registry_binding_missing",
+    };
+  }
+
+  const producerTokenSigningKey = env.PRODUCER_TOKEN_SIGNING_KEY_V1;
+  if (!present(producerTokenSigningKey)) {
+    return {
+      mode: "invalid",
+      errorCode: "producer_token_signing_key_missing",
+    };
+  }
+  const producerSigningKeyBytes = new TextEncoder().encode(
+    producerTokenSigningKey,
+  ).byteLength;
+  if (
+    producerSigningKeyBytes < MINIMUM_ROUTE_KEY_BYTES ||
+    producerSigningKeyBytes > MAXIMUM_ROUTE_KEY_BYTES
+  ) {
+    return {
+      mode: "invalid",
+      errorCode: "producer_token_signing_key_invalid",
+    };
+  }
+
+  if (env.PRODUCER_TOKEN_TTL_SECONDS === undefined) {
+    return {
+      mode: "invalid",
+      errorCode: "producer_token_ttl_seconds_missing",
+    };
+  }
+  const producerTokenTtlSeconds = parseInteger(
+    env.PRODUCER_TOKEN_TTL_SECONDS,
+    60,
+    60 * 60,
+  );
+  if (producerTokenTtlSeconds === null) {
+    return {
+      mode: "invalid",
+      errorCode: "producer_token_ttl_seconds_invalid",
+    };
+  }
+
+  const subject = env.GITHUB_OIDC_SUBJECT;
+  if (!present(subject)) {
+    return { mode: "invalid", errorCode: "github_oidc_subject_missing" };
+  }
+  if (
+    subject.length > 512 ||
+    !subject.endsWith(":environment:staging") ||
+    /[\u0000-\u001f\u007f]/u.test(subject)
+  ) {
+    return { mode: "invalid", errorCode: "github_oidc_subject_invalid" };
+  }
+
+  const repository = env.GITHUB_OIDC_REPOSITORY;
+  if (!present(repository)) {
+    return { mode: "invalid", errorCode: "github_oidc_repository_missing" };
+  }
+  if (!REPOSITORY_RE.test(repository)) {
+    return { mode: "invalid", errorCode: "github_oidc_repository_invalid" };
+  }
+
+  const repositoryId = env.GITHUB_OIDC_REPOSITORY_ID;
+  if (!present(repositoryId)) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_repository_id_missing",
+    };
+  }
+  if (!NUMERIC_ID_RE.test(repositoryId)) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_repository_id_invalid",
+    };
+  }
+
+  const repositoryOwnerId = env.GITHUB_OIDC_REPOSITORY_OWNER_ID;
+  if (!present(repositoryOwnerId)) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_repository_owner_id_missing",
+    };
+  }
+  if (!NUMERIC_ID_RE.test(repositoryOwnerId)) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_repository_owner_id_invalid",
+    };
+  }
+
+  const workflowRef = env.GITHUB_OIDC_WORKFLOW_REF;
+  if (!present(workflowRef)) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_workflow_ref_missing",
+    };
+  }
+  if (
+    !WORKFLOW_REF_RE.test(workflowRef) ||
+    !workflowRef.startsWith(`${repository}/.github/workflows/`)
+  ) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_workflow_ref_invalid",
+    };
+  }
+
+  if (env.GITHUB_OIDC_REF === undefined) {
+    return { mode: "invalid", errorCode: "github_oidc_ref_missing" };
+  }
+  if (env.GITHUB_OIDC_REF !== "refs/heads/dev") {
+    return { mode: "invalid", errorCode: "github_oidc_ref_invalid" };
+  }
+
+  if (env.GITHUB_OIDC_ENVIRONMENT === undefined) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_environment_missing",
+    };
+  }
+  if (env.GITHUB_OIDC_ENVIRONMENT !== "staging") {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_environment_invalid",
+    };
+  }
+
+  if (env.GITHUB_OIDC_EVENT_NAME === undefined) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_event_name_missing",
+    };
+  }
+  if (env.GITHUB_OIDC_EVENT_NAME !== "workflow_dispatch") {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_event_name_invalid",
+    };
+  }
+
+  return {
+    mode,
+    ...activeBase,
+    identity: {
+      registryNamespace: env.DEPLOYMENT_REGISTRIES,
+      producerTokenSigningKey,
+      producerTokenTtlSeconds,
+      githubOidc: {
+        audience: GITHUB_DEPLOYMENT_ATTESTATION_AUDIENCE,
+        subject,
+        repository,
+        repositoryId,
+        repositoryOwnerId,
+        workflowRef,
+        ref: "refs/heads/dev",
+        environment: "staging",
+        eventName: "workflow_dispatch",
+      },
     },
   };
 }

@@ -51,11 +51,11 @@ function activation(
 }
 
 describe("DeploymentRegistry", () => {
-  it("publishes only verifier-produced metadata and resolves an exact active identity", () => {
+  it("publishes only verifier-produced metadata and resolves an exact active identity", async () => {
     const calls: FakeAttestation[] = [];
     const registry = new InMemoryDeploymentRegistry(verifier(calls));
 
-    const published = registry.apply(activation());
+    const published = await registry.apply(activation());
     const resolved = registry.lookup({
       environment: "staging",
       service: "gateway",
@@ -95,22 +95,22 @@ describe("DeploymentRegistry", () => {
     expect(calls).toHaveLength(25);
   });
 
-  it("rejects producer attestations before a registry write", () => {
+  it("rejects producer attestations before a registry write", async () => {
     const calls: FakeAttestation[] = [];
     const registry = new InMemoryDeploymentRegistry(verifier(calls));
     const forged = activation();
     forged.issuer = "producer";
 
-    expect(() => registry.apply(forged)).toThrow(
+    await expect(registry.apply(forged)).rejects.toThrow(
       "untrusted attestation identity",
     );
     expect(registry.version()).toBe(0);
     expect(calls).toEqual([forged]);
   });
 
-  it("distinguishes unknown, retired, and mismatched runtime identities", () => {
+  it("distinguishes unknown, retired, and mismatched runtime identities", async () => {
     const registry = new InMemoryDeploymentRegistry(verifier([]));
-    registry.apply(activation());
+    await registry.apply(activation());
 
     expect(() =>
       registry.lookup({
@@ -134,7 +134,7 @@ describe("DeploymentRegistry", () => {
       code: "deployment_mismatch",
     }));
 
-    registry.apply({
+    await registry.apply({
       issuer: "trusted-ci",
       command: {
         action: "retire",
@@ -160,9 +160,9 @@ describe("DeploymentRegistry", () => {
     }));
   });
 
-  it("retires idempotently and never reactivates the retired identity", () => {
+  it("retires idempotently and never reactivates the retired identity", async () => {
     const registry = new InMemoryDeploymentRegistry(verifier([]));
-    registry.apply(activation());
+    await registry.apply(activation());
     const retirement: FakeAttestation = {
       issuer: "trusted-ci",
       command: {
@@ -177,23 +177,23 @@ describe("DeploymentRegistry", () => {
       },
     };
 
-    expect(registry.apply(retirement).registryVersion).toBe(2);
-    expect(registry.apply(retirement).registryVersion).toBe(2);
+    expect((await registry.apply(retirement)).registryVersion).toBe(2);
+    expect((await registry.apply(retirement)).registryVersion).toBe(2);
     expect(registry.version()).toBe(2);
-    expect(() => registry.apply(activation())).toThrowError(
+    await expect(registry.apply(activation())).rejects.toEqual(
       expect.objectContaining<Partial<DeploymentRegistryWriteError>>({
         code: "deployment_retired",
       }),
     );
   });
 
-  it("keeps rolling deployment records isolated by the full composite key", () => {
+  it("keeps rolling deployment records isolated by the full composite key", async () => {
     const registry = new InMemoryDeploymentRegistry(verifier([]));
-    registry.apply(activation());
+    await registry.apply(activation());
     const otherDigest = `sha256:${"c".repeat(64)}`;
     const otherSha = "d".repeat(40);
 
-    const second = registry.apply(
+    const second = await registry.apply(
       activation({
         artifactDigest: otherDigest,
         deploymentSha: otherSha,
@@ -219,13 +219,13 @@ describe("DeploymentRegistry", () => {
     ).toBe(SHA);
   });
 
-  it("does not rewrite an existing composite key with conflicting history", () => {
+  it("does not rewrite an existing composite key with conflicting history", async () => {
     const registry = new InMemoryDeploymentRegistry(verifier([]));
-    registry.apply(activation());
+    await registry.apply(activation());
 
-    expect(() =>
+    await expect(
       registry.apply(activation({ deploymentSha: "c".repeat(40) })),
-    ).toThrowError(
+    ).rejects.toEqual(
       expect.objectContaining<Partial<DeploymentRegistryWriteError>>({
         code: "deployment_conflict",
       }),

@@ -2,6 +2,7 @@ import type { AlertEvent, TrustedAlertMetadata } from "./types";
 
 const ROUTE_DOMAIN = "alert-control-plane:route-key:v1";
 const QUOTA_ROUTE_DOMAIN = "alert-control-plane:principal-quota:v1";
+const REGISTRY_ROUTE_DOMAIN = "alert-control-plane:deployment-registry:v1";
 const MINIMUM_ROUTE_KEY_BYTES = 32;
 const encoder = new TextEncoder();
 
@@ -100,6 +101,21 @@ export async function derivePrincipalQuotaRouteName(
     concatenate([
       lengthPrefixed(identity.environment),
       lengthPrefixed(identity.principal),
+    ]),
+  );
+}
+
+/** Derive one opaque registry-object name for a trusted environment + service. */
+export async function deriveDeploymentRegistryRouteName(
+  routeKey: string | Uint8Array,
+  identity: { readonly environment: string; readonly service: string },
+): Promise<string> {
+  return deriveRouteName(
+    routeKey,
+    REGISTRY_ROUTE_DOMAIN,
+    concatenate([
+      lengthPrefixed(identity.environment),
+      lengthPrefixed(identity.service),
     ]),
   );
 }

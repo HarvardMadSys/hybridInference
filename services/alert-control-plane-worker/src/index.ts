@@ -2,6 +2,7 @@ import { createRuntimeActionExecutor } from "./action-executor";
 import { EventIdConflictError, IncidentStateMachine } from "./incident";
 import {
   type IncidentAcknowledgement,
+  handleIngressRequest,
   IngressConflictError,
   IngressUnavailableError,
   jsonResponse,
@@ -13,6 +14,13 @@ import {
   OutboxRunner,
 } from "./outbox";
 import { PrincipalQuotaDurableObject } from "./quota-runtime";
+import { authenticateProducer } from "./producer-identity";
+import {
+  BoundDeploymentRegistryClient,
+  DeploymentRegistryDurableObject,
+  handleDeploymentAttestationRequest,
+} from "./registry-runtime";
+import { routeNameForEnvelope } from "./routing";
 import {
   parseRuntimeConfig,
   type RuntimeEnvironment,
@@ -122,7 +130,7 @@ export class IncidentDurableObject {
     this.machine = new IncidentStateMachine(this.store);
     const config = parseRuntimeConfig(env);
     const executor =
-      config.mode === "staging-runtime"
+      config.mode === "staging-runtime" || config.mode === "staging-ingress"
         ? createRuntimeActionExecutor(this.store, config)
         : new DormantActionExecutor();
     this.outbox = new OutboxRunner(this.store, executor, {
@@ -210,7 +218,7 @@ export class IncidentDurableObject {
   }
 }
 
-export { PrincipalQuotaDurableObject };
+export { DeploymentRegistryDurableObject, PrincipalQuotaDurableObject };
 
 /** Submit an already authenticated envelope to its opaque incident object. */
 export async function submitToIncident(
@@ -241,10 +249,12 @@ const worker = {
     if (request.method === "GET" && url.pathname === "/healthz") {
       const config = parseRuntimeConfig(env);
       if (config.mode === "invalid") {
+        const phase =
+          env?.CONTROL_PLANE_MODE === "staging-ingress" ? "c2" : "c1";
         return jsonResponse({
           status: "configuration_error",
           ready: false,
-          phase: "c1",
+          phase,
           accepts_events: false,
           external_actions_enabled: false,
           configuration_error: config.errorCode,
@@ -259,6 +269,15 @@ const worker = {
           external_actions_enabled: true,
         });
       }
+      if (config.mode === "staging-ingress") {
+        return jsonResponse({
+          status: "staging_ingress_configured",
+          ready: true,
+          phase: "c2",
+          accepts_events: true,
+          external_actions_enabled: true,
+        });
+      }
       return jsonResponse({
         status: "dormant",
         ready: false,
@@ -268,7 +287,34 @@ const worker = {
       });
     }
     if (request.method === "POST" && url.pathname === "/v1/events") {
-      return jsonResponse({ error: "control_plane_dormant" }, 503);
+      const config = parseRuntimeConfig(env);
+      if (config.mode !== "staging-ingress" || env === undefined) {
+        return jsonResponse({ error: "control_plane_dormant" }, 503);
+      }
+      const registry = new BoundDeploymentRegistryClient(config);
+      return handleIngressRequest(request, {
+        authenticate: (authorization) =>
+          authenticateProducer(authorization, config, registry),
+        incidentName: (envelope) =>
+          routeNameForEnvelope(config.routeKey, envelope.trusted, envelope.event),
+        submit: (incidentName, envelope, bodyDigest) =>
+          submitToIncident(
+            env.INCIDENTS,
+            incidentName,
+            envelope,
+            bodyDigest,
+          ),
+      });
+    }
+    if (
+      request.method === "POST" &&
+      url.pathname === "/v1/deployments/attest"
+    ) {
+      const config = parseRuntimeConfig(env);
+      if (config.mode !== "staging-ingress") {
+        return jsonResponse({ error: "control_plane_dormant" }, 503);
+      }
+      return handleDeploymentAttestationRequest(request, config);
     }
     return jsonResponse({ error: "not_found" }, 404);
   },

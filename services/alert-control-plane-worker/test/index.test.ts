@@ -5,6 +5,12 @@ import worker, {
   submitToIncident,
 } from "../src/index";
 import { IngressConflictError, IngressUnavailableError } from "../src/ingress";
+import { mintProducerCapability } from "../src/producer-identity";
+import type { TrustedDeploymentMetadata } from "../src/registry";
+import {
+  parseRuntimeConfig,
+  type StagingIngressConfig,
+} from "../src/runtime-config";
 import type { SchedulerState } from "../src/store";
 import type { CanonicalAlertEnvelope } from "../src/types";
 import { deferred } from "./fakes";
@@ -58,6 +64,30 @@ function configuredEnv(
     QUOTA_PENDING_LEASE_MS: "120000",
     ...overrides,
   };
+}
+
+function configuredIngressEnv(
+  registryBinding: DurableObjectNamespace,
+  incidentBinding: DurableObjectNamespace,
+): NonNullable<Parameters<typeof worker.fetch>[1]> {
+  return configuredEnv({
+    CONTROL_PLANE_MODE: "staging-ingress",
+    INCIDENTS: incidentBinding,
+    DEPLOYMENT_REGISTRIES: registryBinding,
+    PRODUCER_TOKEN_SIGNING_KEY_V1:
+      "producer-signing-key-material-with-at-least-32-bytes",
+    PRODUCER_TOKEN_TTL_SECONDS: "900",
+    GITHUB_OIDC_SUBJECT:
+      "repo:HarvardMadSys/hybridInference:environment:staging",
+    GITHUB_OIDC_REPOSITORY: "HarvardMadSys/hybridInference",
+    GITHUB_OIDC_REPOSITORY_ID: "123",
+    GITHUB_OIDC_REPOSITORY_OWNER_ID: "456",
+    GITHUB_OIDC_WORKFLOW_REF:
+      "HarvardMadSys/hybridInference/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev",
+    GITHUB_OIDC_REF: "refs/heads/dev",
+    GITHUB_OIDC_ENVIRONMENT: "staging",
+    GITHUB_OIDC_EVENT_NAME: "workflow_dispatch",
+  });
 }
 
 function schedulerState(
@@ -119,6 +149,98 @@ describe("Phase 1 runtime", () => {
     );
     expect(event.status).toBe(503);
     await expect(event.json()).resolves.toEqual({
+      error: "control_plane_dormant",
+    });
+  });
+
+  it("opens C2 ingress only for a capability backed by an active deployment", async () => {
+    const deployment: TrustedDeploymentMetadata = {
+      environment: "staging",
+      service: "synthetic-alert-producer",
+      deploymentId: "run-123-attempt-1",
+      artifactDigest: `sha256:${"b".repeat(64)}`,
+      deploymentSha: "a".repeat(40),
+      activatedAt: Date.now(),
+      retiredAt: null,
+      registryVersion: 1,
+    };
+    const registryBinding = namespace(
+      new Response(JSON.stringify(deployment), { status: 200 }),
+    );
+    const incidentBinding = namespace(
+      new Response(
+        JSON.stringify({
+          accepted: true,
+          incident_id: "incident-1",
+          generation: 1,
+          lifecycle_state: "opening",
+          action: "opened",
+          occurrence_count: 1,
+          state_version: 1,
+        }),
+        { status: 202 },
+      ),
+    );
+    const env = configuredIngressEnv(registryBinding, incidentBinding);
+    const parsed = parseRuntimeConfig(env);
+    expect(parsed.mode).toBe("staging-ingress");
+    const token = await mintProducerCapability(
+      parsed as StagingIngressConfig,
+      {
+        deployment,
+        source: "gateway",
+        principal: "staging-synthetic",
+      },
+    );
+
+    const health = await worker.fetch(
+      new Request("https://alerts.example.test/healthz"),
+      env,
+    );
+    await expect(health.json()).resolves.toEqual({
+      status: "staging_ingress_configured",
+      ready: true,
+      phase: "c2",
+      accepts_events: true,
+      external_actions_enabled: true,
+    });
+
+    const response = await worker.fetch(
+      new Request("https://alerts.example.test/v1/events", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(envelope.event),
+      }),
+      env,
+    );
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      incident_id: "incident-1",
+    });
+    expect(registryBinding.get).toHaveBeenCalledOnce();
+    expect(incidentBinding.get).toHaveBeenCalledOnce();
+  });
+
+  it("keeps malformed C2 configuration closed", async () => {
+    const env = configuredIngressEnv(
+      namespace(new Response()),
+      namespace(new Response()),
+    );
+    delete (env as { PRODUCER_TOKEN_SIGNING_KEY_V1?: string })
+      .PRODUCER_TOKEN_SIGNING_KEY_V1;
+
+    const response = await worker.fetch(
+      new Request("https://alerts.example.test/v1/events", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({
       error: "control_plane_dormant",
     });
   });

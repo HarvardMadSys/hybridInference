@@ -5,14 +5,16 @@ plane described in
 [`docs/agents/specs/2026-07-20-unified-alert-control-plane-target-design.zh.md`](../../docs/agents/specs/2026-07-20-unified-alert-control-plane-target-design.zh.md).
 
 It owns the canonical alert contract, per-incident Durable Object state,
-SQLite outbox, alarm scheduling, deterministic rendering, Slack sink, and
-principal quota authority. Phase C1 can compose those executors only when
-`CONTROL_PLANE_MODE=staging-runtime` and every required binding validates.
-The checked-in example has no such mode or credential, so it remains dormant.
-Public `/v1/events` still returns `503` in every mode; no producer has been
+SQLite outbox, alarm scheduling, deterministic rendering, Slack sink, principal
+quota authority, CI-attested deployment registry, and authenticated staging
+ingress. `CONTROL_PLANE_MODE=staging-runtime` composes the C1 executors while
+keeping public ingress closed. C2 uses the separate
+`CONTROL_PLANE_MODE=staging-ingress` gate and opens `/v1/events` only when every
+runtime, identity, and registry binding validates. The checked-in example has
+no mode or credential, so it remains dormant. No real producer has been
 migrated and the existing alert path is unchanged.
 
-## Current Phase C1 boundaries
+## Current Phase C2 boundaries
 
 - Producers submit one canonical `AlertEvent`; trusted environment, source,
   principal, and deployment fields are injected outside the producer body.
@@ -39,10 +41,21 @@ migrated and the existing alert path is unchanged.
 - Principal quota is wired in C1. A reservation stays pending on its first
   outbox attempt and is confirmed only during reconciliation, so a failed
   incident-side commit cannot immediately create a permanent quota lease.
-- Deployment registry ingress and producer authentication remain disabled for
-  the identity-wiring phase. C2 must first choose and validate the real
-  CI-attestation verifier; an allow-all/fake verifier is not an acceptable
-  reason to bind an otherwise unusable registry object in C1.
+- `DeploymentRegistryDurableObject` verifies GitHub Actions OIDC with a pinned
+  RS256 issuer/JWKS and exact audience, subject, repository ID, owner ID,
+  workflow ref, branch ref, environment, event, and hosted-runner allowlist.
+  Unknown signing keys force a JWKS refresh; fetch/rotation failures fail
+  closed. The ordinary producer credential cannot write this registry.
+- A successful CI activation mints a one-hour HMAC capability bound to one
+  exact environment, service, deployment ID, artifact digest, principal,
+  source, and registry version. Every `/v1/events` request verifies the
+  capability and rechecks that exact registry record is still active before
+  injecting trusted metadata. Retirement therefore revokes the capability
+  immediately even before its expiration.
+- The only checked-in caller is the manual staging lifecycle workflow. It
+  activates a synthetic deployment, runs firing → repeat → resolved → re-fire,
+  verifies the resulting Slack parent/update/recovery/new-generation effects,
+  and retires the deployment in an `always()` cleanup step.
 - `dispatch_analysis` terminates with `analysis_not_enabled`; C1 never pretends
   that a Codex/GitHub analysis was dispatched.
 - Unknown alert types and unknown context fields are rejected. New producer
@@ -58,6 +71,58 @@ npm test
 
 `npm test` only includes `test/**/*.test.ts`; it never discovers the opt-in
 suite under `live/` and therefore never calls Slack.
+
+## Authenticated staging lifecycle
+
+The manual **Alert Control Plane Staging Lifecycle** workflow is the C2 exit
+gate. Like the Slack readback gate, GitHub can dispatch it at `ref=dev` only
+after the reviewed workflow also exists on the default branch through the
+normal `dev` → `main` promotion.
+
+The `staging` GitHub environment must provide:
+
+- variable `ALERT_CONTROL_PLANE_STAGING_URL` containing the exact Worker HTTPS
+  origin (the dispatching user cannot override this OIDC destination)
+- variable `ALERT_CONTROL_PLANE_SLACK_CHANNEL_ID` containing the exact
+  readback-approved staging conversation
+- `CLOUDFLARE_API_TOKEN`
+- `CODEX_ONCALL_SLACK_BOT_TOKEN`
+- `ALERT_CONTROL_PLANE_ROUTE_KEY_V1` (at least 32 random bytes)
+- `ALERT_CONTROL_PLANE_PRODUCER_SIGNING_KEY_V1` (a different random value of at
+  least 32 bytes)
+
+Dispatch the workflow with the exact confirmation
+`run-staging-control-plane-lifecycle`. The job has only `contents: read` and
+`id-token: write`, runs in the protected `staging` environment, and requires
+`ref=dev`. It first deploys a dormant version to apply the additive
+`DeploymentRegistryDurableObject` SQLite migration, provisions Worker secrets,
+then deploys the fail-closed `staging-ingress` configuration.
+
+The workflow requests a GitHub OIDC token with audience
+`alert-control-plane-deployment-attestation`. The registry accepts only this
+repository's exact ID/owner ID and
+`.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev`
+under `environment=staging` and `event_name=workflow_dispatch`. The current
+repository uses GitHub's default non-immutable subject
+`repo:HarvardMadSys/hybridInference:environment:staging`; changing the
+repository OIDC subject mode intentionally makes attestation fail closed until
+the reviewed allowlist is updated.
+
+The live test visibly leaves two synthetic parent messages (generation 1 and
+the re-fire generation 2) plus the generation-1 recovery reply. It verifies
+that repeat updated the original parent to occurrence count 2 and that there is
+exactly one parent per generation. Default CI never runs this test. To invoke
+the same test against already-provisioned credentials:
+
+```bash
+export CONTROL_PLANE_URL=https://example.workers.dev
+export CONTROL_PLANE_PRODUCER_TOKEN=...
+export CONTROL_PLANE_SYNTHETIC_RUN_ID=manual-1
+export CONTROL_PLANE_LIVE_CONFIRM=run-staging-control-plane-lifecycle
+export SLACK_BOT_TOKEN=...
+export SLACK_CHANNEL_ID=C0123456789
+npm run test:control-plane-live
+```
 
 ## Target-workspace Slack readback gate
 
@@ -120,16 +185,14 @@ for that token/channel at that time. It does not activate the conditionally
 registered sink, enable `/v1/events`, activate a producer, or replace staging
 lifecycle verification.
 
-The next phase provisions reviewed staging identity bindings, enables the
-authenticated ingress, and runs a synthetic lifecycle. The real producer is
-migrated only after that gate; production remains a separate approval.
+The real producer is migrated only after this C2 gate; production remains a
+separate approval.
 
 ## Later activation gates
 
-- C2 adds the `DeploymentRegistry` Durable Object only with a reviewed
-  GitHub-OIDC or controlled-CI verifier, then exposes authenticated staging
-  ingress and runs firing → repeat → resolved → re-fire. The live Slack
-  readback gate above remains a separate prerequisite.
+- C2 uses the GitHub-OIDC registry verifier and manual synthetic lifecycle
+  described above. The live Slack readback gate remains a separate
+  prerequisite and does not substitute for the full lifecycle.
 - C3 inventories writers by call path. Today that includes status-monitor's
   relay/webhook fallback and the backend `alert_slack` helper used by endpoint
   health, alert rules, the failed-request alerter, and health routes.

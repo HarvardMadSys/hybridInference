@@ -182,7 +182,7 @@ export class PrincipalQuotaDurableObject {
   constructor(state: DurableObjectState, env: RuntimeEnvironment) {
     const config = parseRuntimeConfig(env);
     this.quota =
-      config.mode === "staging-runtime"
+      config.mode === "staging-runtime" || config.mode === "staging-ingress"
         ? new PrincipalQuota(state.storage, {
             activeLimit: config.quota.activeLimit,
             pendingLeaseMs: config.quota.pendingLeaseMs,

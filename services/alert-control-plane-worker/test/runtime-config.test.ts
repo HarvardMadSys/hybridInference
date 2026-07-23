@@ -33,7 +33,30 @@ function validEnvironment(
   };
 }
 
-describe("Phase C1 runtime configuration", () => {
+function validIngressEnvironment(
+  overrides: Partial<RuntimeEnvironment> = {},
+): RuntimeEnvironment {
+  return validEnvironment({
+    CONTROL_PLANE_MODE: "staging-ingress",
+    DEPLOYMENT_REGISTRIES: namespace(),
+    PRODUCER_TOKEN_SIGNING_KEY_V1:
+      "producer-signing-key-material-with-at-least-32-bytes",
+    PRODUCER_TOKEN_TTL_SECONDS: "900",
+    GITHUB_OIDC_SUBJECT:
+      "repo:HarvardMadSys/hybridInference:environment:staging",
+    GITHUB_OIDC_REPOSITORY: "HarvardMadSys/hybridInference",
+    GITHUB_OIDC_REPOSITORY_ID: "123",
+    GITHUB_OIDC_REPOSITORY_OWNER_ID: "456",
+    GITHUB_OIDC_WORKFLOW_REF:
+      "HarvardMadSys/hybridInference/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev",
+    GITHUB_OIDC_REF: "refs/heads/dev",
+    GITHUB_OIDC_ENVIRONMENT: "staging",
+    GITHUB_OIDC_EVENT_NAME: "workflow_dispatch",
+    ...overrides,
+  });
+}
+
+describe("Phase C1/C2 runtime configuration", () => {
   it("remains dormant unless the explicit staging gate is set", () => {
     expect(parseRuntimeConfig(undefined)).toEqual({ mode: "dormant" });
     expect(
@@ -59,6 +82,22 @@ describe("Phase C1 runtime configuration", () => {
     });
   });
 
+  it("opens C2 only when every identity binding and allowlist is valid", () => {
+    expect(parseRuntimeConfig(validIngressEnvironment())).toMatchObject({
+      mode: "staging-ingress",
+      identity: {
+        producerTokenTtlSeconds: 900,
+        githubOidc: {
+          audience: "alert-control-plane-deployment-attestation",
+          repository: "HarvardMadSys/hybridInference",
+          ref: "refs/heads/dev",
+          environment: "staging",
+          eventName: "workflow_dispatch",
+        },
+      },
+    });
+  });
+
   it.each([
     [{ CONTROL_PLANE_MODE: "production" }, "control_plane_mode_invalid"],
     [{ ROUTE_KEY_V1: undefined }, "route_key_missing"],
@@ -78,6 +117,31 @@ describe("Phase C1 runtime configuration", () => {
     "fails closed for malformed active configuration %#",
     (override, errorCode: RuntimeConfigErrorCode) => {
       expect(parseRuntimeConfig(validEnvironment(override))).toEqual({
+        mode: "invalid",
+        errorCode,
+      });
+    },
+  );
+
+  it.each([
+    [{ DEPLOYMENT_REGISTRIES: undefined }, "deployment_registry_binding_missing"],
+    [{ PRODUCER_TOKEN_SIGNING_KEY_V1: undefined }, "producer_token_signing_key_missing"],
+    [{ PRODUCER_TOKEN_SIGNING_KEY_V1: "short" }, "producer_token_signing_key_invalid"],
+    [{ PRODUCER_TOKEN_TTL_SECONDS: undefined }, "producer_token_ttl_seconds_missing"],
+    [{ PRODUCER_TOKEN_TTL_SECONDS: "3601" }, "producer_token_ttl_seconds_invalid"],
+    [{ GITHUB_OIDC_SUBJECT: undefined }, "github_oidc_subject_missing"],
+    [{ GITHUB_OIDC_SUBJECT: "repo:x/y:ref:refs/heads/dev" }, "github_oidc_subject_invalid"],
+    [{ GITHUB_OIDC_REPOSITORY: "invalid" }, "github_oidc_repository_invalid"],
+    [{ GITHUB_OIDC_REPOSITORY_ID: "repo" }, "github_oidc_repository_id_invalid"],
+    [{ GITHUB_OIDC_REPOSITORY_OWNER_ID: "owner" }, "github_oidc_repository_owner_id_invalid"],
+    [{ GITHUB_OIDC_WORKFLOW_REF: "invalid" }, "github_oidc_workflow_ref_invalid"],
+    [{ GITHUB_OIDC_REF: "refs/heads/main" }, "github_oidc_ref_invalid"],
+    [{ GITHUB_OIDC_ENVIRONMENT: "production" }, "github_oidc_environment_invalid"],
+    [{ GITHUB_OIDC_EVENT_NAME: "pull_request" }, "github_oidc_event_name_invalid"],
+  ] as const)(
+    "fails closed for malformed C2 identity configuration %#",
+    (override, errorCode: RuntimeConfigErrorCode) => {
+      expect(parseRuntimeConfig(validIngressEnvironment(override))).toEqual({
         mode: "invalid",
         errorCode,
       });

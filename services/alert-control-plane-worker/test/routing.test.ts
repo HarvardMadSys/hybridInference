@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  deriveDeploymentRegistryRouteName,
   deriveIncidentRouteName,
   derivePrincipalQuotaRouteName,
   encodeIncidentRouteMaterial,
@@ -106,6 +107,22 @@ describe("incident route HMAC", () => {
     await expect(
       derivePrincipalQuotaRouteName(ROUTE_KEY, identity),
     ).resolves.toBe(quota);
+  });
+
+  it("uses another opaque domain for deployment registry objects", async () => {
+    const registry = await deriveDeploymentRegistryRouteName(ROUTE_KEY, {
+      environment: "staging",
+      service: "gateway",
+    });
+    const quota = await derivePrincipalQuotaRouteName(ROUTE_KEY, {
+      environment: "staging",
+      principal: "gateway",
+    });
+
+    expect(registry).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(registry).not.toContain("staging");
+    expect(registry).not.toContain("gateway");
+    expect(registry).not.toBe(quota);
   });
 
   it("derives the route only from trusted environment/principal plus event fingerprint", async () => {

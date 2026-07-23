@@ -34,7 +34,9 @@ export type VerifiedDeploymentCommand =
     };
 
 export interface DeploymentAttestationVerifier<Attestation> {
-  verify(attestation: Attestation): VerifiedDeploymentCommand;
+  verify(
+    attestation: Attestation,
+  ): VerifiedDeploymentCommand | Promise<VerifiedDeploymentCommand>;
 }
 
 export type DeploymentLookupErrorCode =
@@ -273,8 +275,8 @@ class DeploymentRegistryCore<Attestation> {
     private readonly verifier: DeploymentAttestationVerifier<Attestation>,
   ) {}
 
-  apply(attestation: Attestation): TrustedDeploymentMetadata {
-    const command = this.verifier.verify(attestation);
+  async apply(attestation: Attestation): Promise<TrustedDeploymentMetadata> {
+    const command = await this.verifier.verify(attestation);
     validateCommand(command);
 
     return this.repository.transaction(() => {

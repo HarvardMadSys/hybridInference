@@ -603,10 +603,12 @@ Control Plane 至少暴露：
 - C1：先接线 staging Slack runtime 与 `PrincipalQuota` Durable Object；配置严格
   fail-closed，公共 `/v1/events` 继续返回 503，`dispatch_analysis` 明确标记
   `analysis_not_enabled`，不迁移 producer
-- C2：在选定并验证 CI attestation 机制后，绑定 `DeploymentRegistry` Durable Object，
-  接入 staging deployment identity 与认证 ingress，并完成 synthetic lifecycle。不能为了
-  提前创建 binding 而使用 allow-all/fake verifier；GitHub OIDC 或受控 CI identity 的
-  issuer、audience、repository、workflow、ref 与 environment 约束是该阶段的准入门禁
+- C2：采用 GitHub Actions OIDC 作为 deployment attestation，绑定
+  `DeploymentRegistry` Durable Object，接入 staging deployment identity 与认证 ingress，
+  并完成 synthetic lifecycle。Verifier 固定 RS256 issuer/JWKS 和专用 audience，并逐项
+  校验 subject、repository/owner 的稳定 numeric ID、workflow、ref、environment、event 与
+  hosted runner；未知 `kid` 立即刷新 JWKS，网络/轮换失败 fail closed。普通 producer
+  capability 不能写 registry
 - C3：按 alert type 逐个迁移真实 staging producer；每种类型都必须先进入 canonical
   contract，再确认其旧 writer drain，最后移除对应的 V1 Relay 与 direct webhook
 - Provision staging principal 与 Control Plane secrets
@@ -739,19 +741,20 @@ Control Plane 必须提供只针对 active incident 的 operator reconciliation 
 2. Durable Object、D1 audit 和 alarm retry 的预算与 retention 上限
 3. External watchdog 的运行位置、owner 与独立通知通道
 4. Producer credential 使用随机 bearer token 还是 Cloudflare Access service token
-5. DeploymentRegistry attestation 使用 GitHub OIDC 还是现有受控 CI identity，以及滚动部署
-   active set 的最大重叠窗口
+5. DeploymentRegistry attestation 已选 GitHub OIDC；真实 producer 滚动部署 active set 的
+   最大重叠窗口仍需在 C3 按服务确定
 6. Slack API 在目标 workspace 是否能按 message metadata 可靠 reconciliation；staging 的
    目标 bot/channel 已于 2026-07-23 通过 parent/update/recovery/analysis 真实 readback
    门禁，若 token、app installation 或 channel 变化必须重跑；production 仍需独立验证
-7. GitHub OIDC allowlist 的 owner、JWKS cache/rotation 策略与 staging/production environment
-   claim 约束
+7. staging OIDC 已固定 repository/owner numeric ID、workflow/ref/environment/event 与
+   GitHub-hosted runner，JWKS 缓存 10 分钟且未知 `kid` 强制刷新；production workflow 与
+   environment allowlist 仍需独立批准
 8. Operator reconciliation API 的认证方式、审计字段与最小权限
 9. Staging 观察窗口长度和 production 切换批准人
 
-其中第 1、5、6、7 项是实现门禁；在资源能力、实际部署证明、Slack reconciliation 与
-GitHub OIDC 身份约束的可行性确认前，不应开始替换 #974 的 orchestration 或承诺严格
-单父消息。
+其中第 1、6 项以及第 5、7 项剩余的 C3/production 参数是后续门禁；在资源能力、实际部署
+证明、Slack reconciliation 与对应 environment 的身份约束确认前，不应迁移真实 producer
+或承诺 production 的严格单父消息。
 
 ## 🔀 备选方案
 
