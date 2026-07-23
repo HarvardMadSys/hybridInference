@@ -20,6 +20,24 @@ _FAKE_API_KEY = "hyi-" + "a" * 44
 _FAKE_KEY_HASH = "fakehash123"
 
 
+@pytest.fixture(autouse=True)
+def _api_key_secret(monkeypatch):
+    """Make these tests self-contained w.r.t. ``API_KEY_SECRET``.
+
+    ``create_api_key`` / ``regenerate_api_key`` reach the real
+    ``_api_key_cipher`` (only ``generate_api_key`` and ``hash_api_key`` are
+    patched), which reads ``API_KEY_SECRET`` through the ``lru_cache``-d
+    ``get_settings``. Set the secret and clear the settings cache so it is
+    picked up regardless of test order; otherwise these tests pass only when
+    another test happens to leave the secret in the environment, which flakes
+    under xdist sharding.
+    """
+    from serving.config.settings import get_settings
+
+    monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
+    get_settings.cache_clear()
+
+
 @contextmanager
 def _patch_auth():
     """Patch crypto helpers that require env secrets."""
