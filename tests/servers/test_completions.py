@@ -2078,6 +2078,37 @@ async def image_gate_app(monkeypatch, mock_db_logger, mock_log_store) -> FastAPI
     )
     router.register_route("audio-model", [(DummyAdapter(audio_cfg), 1.0)])
 
+    video_cfg = ModelConfig(
+        id="video-model",
+        name="Video Model",
+        provider="minimax",
+        base_url="http://minimax.test",
+        input_modalities=["text", "image", "video"],
+    )
+    router.register_route("video-model", [(DummyAdapter(video_cfg), 1.0)])
+
+    # Model whose FIRST route is text-only but a later route accepts image. The
+    # union gate must still admit image (route-aware dispatch then sends it to
+    # the image-capable route, not the text-only primary).
+    mixed_text = ModelConfig(
+        id="mixed-model",
+        name="Mixed Primary",
+        provider="text-p",
+        base_url="http://text.test",
+        input_modalities=["text"],
+    )
+    mixed_vision = ModelConfig(
+        id="mixed-model",
+        name="Mixed Vision",
+        provider="vis-p",
+        base_url="http://vis.test",
+        input_modalities=["text", "image"],
+    )
+    router.register_route(
+        "mixed-model",
+        [(DummyAdapter(mixed_text), 0.5), (DummyAdapter(mixed_vision), 0.5)],
+    )
+
     app = FastAPI(title="Image Gate Test App")
     app.state.services = AppServices(
         router=router,
@@ -2208,6 +2239,72 @@ async def test_image_rejected_for_audio_only_model(image_gate_client: AsyncClien
     )
     assert resp.status_code == 400
     assert "does not support image" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_image_accepted_when_only_a_secondary_route_supports_it(
+    image_gate_client: AsyncClient,
+):
+    """Union gate: image is admitted when ANY route supports it, not just the first."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "mixed-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_video_rejected_for_text_only_model(image_gate_client: AsyncClient):
+    """Sending a video_url block to a text-only model returns 400."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "text-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Summarize this clip"},
+                        {"type": "video_url", "video_url": {"url": "https://example.com/v.mp4"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 400
+    assert "does not support video" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_video_accepted_for_video_model(image_gate_client: AsyncClient):
+    """Sending a video_url block to a video-capable model succeeds."""
+    resp = await image_gate_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "video-model",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Summarize this clip"},
+                        {"type": "video_url", "video_url": {"url": "https://example.com/v.mp4"}},
+                    ],
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio

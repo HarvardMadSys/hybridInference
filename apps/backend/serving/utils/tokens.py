@@ -98,6 +98,7 @@ def estimate_text_tokens(text: str) -> int:
 # of thousands of phantom text tokens and corrupt quota/cost accounting.
 IMAGE_TOKEN_ESTIMATE = 85  # matches OpenAI's low-detail image base cost
 AUDIO_TOKEN_ESTIMATE = 200  # coarse placeholder; precise counts come from upstream
+VIDEO_TOKEN_ESTIMATE = 1000  # coarse placeholder; real cost scales with frames/fps upstream
 
 
 def _estimate_block_tokens(block: Any) -> int:
@@ -122,6 +123,8 @@ def _estimate_block_tokens(block: Any) -> int:
         return IMAGE_TOKEN_ESTIMATE
     if block_type in ("input_audio", "audio"):
         return AUDIO_TOKEN_ESTIMATE
+    if block_type in ("video_url", "video", "input_video"):
+        return VIDEO_TOKEN_ESTIMATE
 
     # Unknown block: count any embedded text, but never the raw payload/blob.
     text = block.get("text")

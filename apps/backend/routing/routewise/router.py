@@ -52,6 +52,7 @@ if TYPE_CHECKING:
 
 from routing.endpoint_health import EndpointHealthRegistry
 from routing.endpoints import endpoint_id_for_adapter
+from routing.routers import AllCircuitsOpenError, adapter_supports_modalities
 from routing.streaming import has_non_empty_content
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.exceptions import operator_safe_error
@@ -1316,9 +1317,16 @@ class RouteWiseRouter:
 
         candidates: list[FeasibleProviderCandidate] = []
         prefix_context = self._prefix_cache_cost_context(model_id, context)
+        required_modalities = (
+            context.get("required_modalities", frozenset()) if context is not None else frozenset()
+        )
+        has_modality_match = not required_modalities
 
         for route_candidate in entries:
             adapter = route_candidate.adapter
+            if not adapter_supports_modalities(adapter, required_modalities):
+                continue
+            has_modality_match = True
             endpoint_id = route_candidate.endpoint_id
             self._health_registry.ensure(endpoint_id)
             if not self._health_registry.allow_request(endpoint_id):
@@ -1426,6 +1434,11 @@ class RouteWiseRouter:
                     quota_used_fraction=used_fraction,
                     quota_remaining=quota_remaining,
                 )
+            )
+        if not has_modality_match:
+            raise AllCircuitsOpenError(
+                f"No route for model {model_id} accepts input modalities "
+                f"{sorted(required_modalities)}"
             )
         return candidates, prefix_context
 
@@ -2536,6 +2549,9 @@ class RouteWiseRouter:
             "messages": messages,
             "params": params,
             "request_id": request_id,
+            "required_modalities": (
+                routing_options.required_modalities if routing_options is not None else frozenset()
+            ),
         }
         trace = RoutingTrace(request_id=str(request_id))
         decision: RoutingDecision | None = None
@@ -2636,6 +2652,9 @@ class RouteWiseRouter:
             "messages": messages,
             "params": params,
             "request_id": request_id,
+            "required_modalities": (
+                routing_options.required_modalities if routing_options is not None else frozenset()
+            ),
         }
         trace = RoutingTrace(request_id=str(request_id))
         decision: RoutingDecision | None = None
