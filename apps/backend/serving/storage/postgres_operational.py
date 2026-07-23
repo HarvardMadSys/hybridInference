@@ -1454,6 +1454,7 @@ class PostgresOperationalStore(OperationalStore):
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
+        api_key_encrypted: str | None = None,
         metadata: str | dict[str, Any] | None = None,
         account_id: str | None = None,
     ) -> Row:
@@ -1478,8 +1479,8 @@ class PostgresOperationalStore(OperationalStore):
                     "INSERT INTO api_keys "
                     "(key_hash, key_prefix, user_id, user_name, "
                     "quota_daily_cost_usd, quota_monthly_cost_usd, "
-                    "expires_at, notes, metadata, account_id) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10) "
+                    "expires_at, notes, metadata, account_id, api_key_encrypted) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11) "
                     "RETURNING id, created_at",
                     key_hash,
                     key_prefix,
@@ -1491,6 +1492,7 @@ class PostgresOperationalStore(OperationalStore):
                     notes,
                     metadata,
                     effective_account_id,
+                    api_key_encrypted,
                 )
             except _asyncpg.UniqueViolationError as exc:
                 # Active-key uniqueness is enforced per user_id

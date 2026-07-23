@@ -413,6 +413,7 @@ class CachedOperationalStore(OperationalStore):
         quota_monthly_cost_usd: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
+        api_key_encrypted: str | None = None,
         metadata: str | None = None,
         account_id: str | None = None,
     ) -> Row:
@@ -426,6 +427,7 @@ class CachedOperationalStore(OperationalStore):
             quota_monthly_cost_usd=quota_monthly_cost_usd,
             expires_at=expires_at,
             notes=notes,
+            api_key_encrypted=api_key_encrypted,
             metadata=metadata,
             account_id=account_id,
         )

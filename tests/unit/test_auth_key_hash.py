@@ -97,3 +97,30 @@ def test_completions_handler_falls_back_to_anon_sentinel():
     req_ctx.update({"auth_key_hash": user_ctx_without_hash.get("auth_key_hash") or "_anon"})
 
     assert req_ctx.get().get("auth_key_hash") == "_anon"
+
+
+def test_encrypt_api_key_round_trips_plaintext(monkeypatch):
+    """``decrypt_api_key(encrypt_api_key(k)) == k`` and ciphertext hides the key.
+
+    Backs the dashboard reveal feature: the stored ciphertext must decrypt
+    back to the exact plaintext key so the API Keys list can display it.
+    """
+    from serving.servers.auth import decrypt_api_key, encrypt_api_key
+
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+
+    plaintext_key = "hyi-display-round-trip"
+    encrypted = encrypt_api_key(plaintext_key)
+
+    assert encrypted != plaintext_key
+    assert decrypt_api_key(encrypted) == plaintext_key
+
+
+def test_decrypt_api_key_returns_none_for_missing_ciphertext(monkeypatch):
+    """Legacy rows (NULL/empty ciphertext) decrypt to None, driving the mask fallback."""
+    from serving.servers.auth import decrypt_api_key
+
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+
+    assert decrypt_api_key(None) is None
+    assert decrypt_api_key("") is None

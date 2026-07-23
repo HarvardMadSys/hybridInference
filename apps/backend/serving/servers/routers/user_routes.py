@@ -42,6 +42,8 @@ from serving.schemas_auth import (
     UserProfileUpdate,
 )
 from serving.servers.auth import (
+    decrypt_api_key,
+    encrypt_api_key,
     generate_api_key,
     hash_api_key,
     log_admin_action,
@@ -408,6 +410,7 @@ async def create_api_key(
         user_id=current_user["user_id"],
         account_id=current_user["user_id"],
         quota_daily_cost_usd=default_quota,
+        api_key_encrypted=encrypt_api_key(api_key),
     )
 
     logger.info(f"API key created for user: {current_user['user_id']}")
@@ -473,7 +476,7 @@ async def list_api_keys(
     async with db_logger.pool.acquire() as conn:
         rows = await conn.fetch(
             """
-            SELECT key_prefix, created_at, last_used_at, status
+            SELECT key_prefix, created_at, last_used_at, status, api_key_encrypted
             FROM api_keys
             WHERE account_id = $1
             ORDER BY (status = 'active') DESC, created_at DESC
@@ -481,17 +484,26 @@ async def list_api_keys(
             current_user["user_id"],
         )
 
-    keys = [
-        APIKeyListItem(
-            api_key=None,
-            key_prefix=row["key_prefix"],
-            key_masked=mask_key_prefix(row["key_prefix"]),
-            created_at=row["created_at"],
-            last_used_at=row["last_used_at"],
-            status=row["status"],
+    keys: list[APIKeyListItem] = []
+    for row in rows:
+        full_key: str | None = None
+        if row["status"] == "active" and row["api_key_encrypted"]:
+            # Display-only decryption: never break the listing on a bad
+            # ciphertext — log and fall back to a masked (api_key=None) row.
+            try:
+                full_key = decrypt_api_key(row["api_key_encrypted"])
+            except Exception:
+                logger.warning("api_key_decrypt_failed key_prefix=%s", row["key_prefix"])
+        keys.append(
+            APIKeyListItem(
+                api_key=full_key,
+                key_prefix=row["key_prefix"],
+                key_masked=mask_key_prefix(row["key_prefix"]),
+                created_at=row["created_at"],
+                last_used_at=row["last_used_at"],
+                status=row["status"],
+            )
         )
-        for row in rows
-    ]
     return APIKeyListResponse(keys=keys)
 
 
@@ -627,6 +639,7 @@ async def regenerate_api_key(
         user_id=current_user["user_id"],
         account_id=current_user["user_id"],
         quota_daily_cost_usd=default_quota,
+        api_key_encrypted=encrypt_api_key(api_key),
     )
 
     logger.info(f"API key regenerated for user: {current_user['user_id']}")

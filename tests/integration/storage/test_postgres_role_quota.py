@@ -180,3 +180,31 @@ async def test_apply_role_quota_skips_revoked_keys(
     )
     updated = await postgres_op_store.apply_role_quota("pro", Decimal("250.00"))
     assert updated == 0
+
+
+async def test_create_key_persists_encrypted_column(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """create_key writes the api_key_encrypted ciphertext to the row verbatim."""
+    await postgres_op_store.create_user(
+        user_id="u-free-enc",
+        email="enc@x.com",
+        password_hash="x",
+    )
+
+    ciphertext = "gAAAAA-example-display-ciphertext"
+    await postgres_op_store.create_key(
+        key_hash="hash-u-free-enc",
+        key_prefix="sk-encff",
+        user_id="u-free-enc",
+        account_id="u-free-enc",
+        quota_daily_cost_usd=Decimal("100.00"),
+        api_key_encrypted=ciphertext,
+    )
+
+    async with postgres_op_store._pool.acquire() as conn:
+        stored = await conn.fetchval(
+            "SELECT api_key_encrypted FROM api_keys WHERE user_id = $1",
+            "u-free-enc",
+        )
+    assert stored == ciphertext
