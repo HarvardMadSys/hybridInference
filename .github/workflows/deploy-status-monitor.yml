@@ -23,7 +23,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy freeinference-monitor Worker
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, deploy-edge]
     timeout-minutes: 15
     defaults:
       run:

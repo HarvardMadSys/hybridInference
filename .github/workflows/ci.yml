@@ -35,7 +35,7 @@ jobs:
   # `continue-on-error` keeps this advisory classifier from ever reddening CI.
   changes:
     name: Classify Changes
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, ci-general]
     continue-on-error: true
     outputs:
       backend: ${{ steps.classify.outputs.backend }}
@@ -72,7 +72,7 @@ jobs:
 
   backend-quality:
     name: Backend Quality
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, ci-general]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -138,7 +138,7 @@ jobs:
 
   frontend-quality:
     name: Frontend Quality
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, ci-general]
     defaults:
       run:
         working-directory: ./apps/frontend
@@ -180,7 +180,7 @@ jobs:
 
   alert-control-plane-check:
     name: Alert Control Plane ${{ matrix.check.name }}
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, ci-general]
     defaults:
       run:
         working-directory: services/alert-control-plane-worker
@@ -216,7 +216,7 @@ jobs:
     name: Test (shard ${{ matrix.shard }}/4)
     # Service containers need Docker socket access; keep these jobs off the
     # generic pool that includes gpu1, which lacks that access.
-    runs-on: [self-hosted, Linux]
+    runs-on: [self-hosted, Linux, ci-general]
     strategy:
       fail-fast: false
       matrix:
@@ -435,7 +435,7 @@ jobs:
 
   security:
     name: Security Scan
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, ci-general]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -493,7 +493,7 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, ci-general]
     needs:
       - backend-quality
       - frontend-quality

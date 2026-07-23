@@ -43,7 +43,7 @@ env:
 jobs:
   rebuild:
     name: Rebuild docs RAG index
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, trusted-automation]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

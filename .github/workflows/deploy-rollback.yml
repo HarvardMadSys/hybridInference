@@ -33,7 +33,7 @@ permissions:
 jobs:
   rollback:
     name: Roll back Docker Compose stack
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, deploy-production]
     environment: production
     timeout-minutes: 30
 
