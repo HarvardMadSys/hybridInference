@@ -109,7 +109,7 @@ function ActivityStats({ userId, initial }: { userId: string; initial: ActivityS
             ? `${(data.ask_question_fraction * 100).toFixed(0)}%`
             : '—'}
         </div>
-        <div className="text-[11px] text-gray-400">of requests</div>
+        <div className="text-[11px] text-gray-400">of opening turns</div>
       </div>
     </div>
   );

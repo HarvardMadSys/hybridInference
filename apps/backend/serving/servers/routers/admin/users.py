@@ -263,18 +263,19 @@ async def admin_get_bulk_user_ask_question_fractions(
     admin_id: str = Depends(verify_admin_access),
     log_store=Depends(get_log_store),
 ) -> BulkUserAskQuestionFractionsResponse:
-    """Bulk all-time ask-question tool fractions for many users (one round-trip).
+    """Bulk ask-question tool fractions for many users (one round-trip).
 
-    For each user, the share of their logged requests whose available ``tools``
-    offer an ask-the-user clarifying tool. Cheap and page-bounded, so the admin
-    UI auto-loads it alongside the visible page.
+    For each user, the share of their early-conversation requests (first few
+    turns) whose available ``tools`` offer an ask-the-user clarifying tool.
+    Cheap and page-bounded, so the admin UI auto-loads it alongside the visible
+    page.
 
     Query params:
     - ``user_ids``: comma-separated user IDs (max 200)
 
     Returns a map of user_id → {ask_question_fraction, n_requests,
-    n_ask_requests}. Users with no logged requests are omitted by the store; the
-    frontend renders ``—``.
+    n_ask_requests}. Users with no early-conversation requests are omitted by
+    the store; the frontend renders ``—``.
     """
     if not log_store:
         raise HTTPException(500, "Log store not configured")

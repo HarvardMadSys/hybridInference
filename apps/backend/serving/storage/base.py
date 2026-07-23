@@ -1177,14 +1177,14 @@ class LogStore(ABC):
         ``last_request_at``, ``avg_turns``, ``avg_user_turns``,
         ``ask_question_fraction``. The two averages are the all-time mean
         message / user-message count across the user's chat-style requests
-        (``None`` when they have none); ``ask_question_fraction`` is the
-        all-time share of the user's requests whose ``tools`` offer an
-        ask-the-user tool (``None`` when they have no requests).
+        (``None`` when they have none); ``ask_question_fraction`` is the share
+        of the user's early-conversation requests (first few turns) whose
+        ``tools`` offer an ask-the-user tool (``None`` when they have none).
 
-        The two averages and ``ask_question_fraction`` require full-history
-        scans of the user's rows, so they are computed only when
-        ``include_activity_stats`` is set; otherwise those three keys are
-        ``None`` (the admin UI loads them on demand behind a button).
+        These three are computed only when ``include_activity_stats`` is set;
+        otherwise those keys are ``None`` (the admin UI loads them on demand
+        behind a button). The turn averages need full-history scans;
+        ``ask_question_fraction`` scans only the early-conversation rows.
         """
 
     @abstractmethod
@@ -1202,12 +1202,12 @@ class LogStore(ABC):
     async def get_bulk_user_ask_question_fractions(
         self, user_ids: list[str]
     ) -> dict[str, dict[str, float | int | None]]:
-        """Return per-user share of requests offering an ask-question tool.
+        """Return per-user share of early-conversation requests offering an ask tool.
 
         Maps ``user_id`` → ``{"ask_question_fraction", "n_requests",
-        "n_ask_requests"}`` over each user's all-time ``api_logs`` rows. Users
-        with no logged requests are omitted. Used by the admin list endpoint to
-        avoid N+1 queries.
+        "n_ask_requests"}`` over each user's early-conversation ``api_logs`` rows
+        (first few turns). Users with no early-conversation requests are omitted.
+        Used by the admin list endpoint to avoid N+1 queries.
         """
 
     @abstractmethod
