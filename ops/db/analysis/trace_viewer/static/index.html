@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>api_logs trace viewer</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">◆</span>
+      <div>
+        <div class="title">api_logs trace viewer</div>
+        <div id="meta-line" class="subtitle">loading…</div>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="overview">Overview</button>
+      <button class="tab" data-view="requests">Requests</button>
+      <button class="tab" data-view="sessions">Sessions</button>
+    </nav>
+  </header>
+
+  <div id="filterbar" class="filterbar">
+    <input id="f-q" type="search" placeholder="search id / user / model / error…" />
+    <select id="f-model" title="model"><option value="">model: all</option></select>
+    <select id="f-provider" title="provider"><option value="">provider: all</option></select>
+    <select id="f-status" title="status"><option value="">status: all</option></select>
+    <input id="f-user" type="text" placeholder="user_id" />
+    <input id="f-start" type="text" placeholder="start (ISO / epoch)" />
+    <input id="f-end" type="text" placeholder="end (ISO / epoch)" />
+    <label class="chk"><input id="f-errors" type="checkbox" /> errors only</label>
+    <button id="f-apply" class="btn primary">Apply</button>
+    <button id="f-reset" class="btn">Reset</button>
+  </div>
+
+  <main>
+    <section id="view-overview" class="view">
+      <div id="kpis" class="kpis"></div>
+      <div class="card">
+        <div class="card-head"><h3>Requests over time</h3><span id="ts-legend" class="legend"></span></div>
+        <div id="chart-timeseries" class="chart"></div>
+      </div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>By model</h3></div><div id="chart-model" class="chart"></div></div>
+        <div class="card"><div class="card-head"><h3>By provider</h3></div><div id="chart-provider" class="chart"></div></div>
+        <div class="card"><div class="card-head"><h3>By status code</h3></div><div id="chart-status" class="chart"></div></div>
+        <div class="card"><div class="card-head"><h3>Top users</h3></div><div id="chart-users" class="chart"></div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card"><div class="card-head"><h3>Latency (ms)</h3><span id="lat-stats" class="legend"></span></div><div id="chart-latency" class="chart"></div></div>
+        <div class="card"><div class="card-head"><h3>TTFT (ms)</h3><span id="ttft-stats" class="legend"></span></div><div id="chart-ttft" class="chart"></div></div>
+        <div class="card"><div class="card-head"><h3>Prompt tokens</h3></div><div id="chart-ptok" class="chart"></div></div>
+        <div class="card"><div class="card-head"><h3>Completion tokens</h3></div><div id="chart-ctok" class="chart"></div></div>
+      </div>
+    </section>
+
+    <section id="view-requests" class="view hidden">
+      <div class="card">
+        <div class="table-wrap">
+          <table id="req-table" class="data">
+            <thead><tr>
+              <th data-sort="ts">time</th>
+              <th data-sort="model_id">model</th>
+              <th data-sort="provider">provider</th>
+              <th data-sort="status_code">status</th>
+              <th data-sort="latency_ms">latency</th>
+              <th data-sort="ttft_ms">ttft</th>
+              <th data-sort="prompt_tokens">prompt</th>
+              <th data-sort="completion_tokens">compl</th>
+              <th data-sort="cost_usd">cost</th>
+              <th data-sort="user_id">user</th>
+              <th data-sort="num_tool_calls">tools</th>
+            </tr></thead>
+            <tbody id="req-body"></tbody>
+          </table>
+        </div>
+        <div id="req-pager" class="pager"></div>
+      </div>
+    </section>
+
+    <section id="view-sessions" class="view hidden">
+      <div class="sess-controls">
+        <label class="chk">min requests
+          <input id="s-min" type="number" min="1" value="2" />
+        </label>
+        <span id="sess-count" class="legend"></span>
+      </div>
+      <div class="card">
+        <div class="table-wrap">
+          <table id="sess-table" class="data">
+            <thead><tr>
+              <th data-sort="start_ts">start</th>
+              <th data-sort="user_id">user</th>
+              <th data-sort="n_requests">requests</th>
+              <th data-sort="duration_s">duration</th>
+              <th>models</th>
+              <th data-sort="total_tokens">tokens</th>
+              <th data-sort="total_cost">cost</th>
+              <th data-sort="n_tool_calls">tools</th>
+              <th>source</th>
+            </tr></thead>
+            <tbody id="sess-body"></tbody>
+          </table>
+        </div>
+        <div id="sess-pager" class="pager"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="drawer" class="drawer hidden">
+    <div class="drawer-head">
+      <div id="drawer-title" class="drawer-title"></div>
+      <div class="drawer-actions">
+        <button id="drawer-raw" class="btn">Raw JSON</button>
+        <button id="drawer-close" class="btn">✕</button>
+      </div>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </div>
+  <div id="scrim" class="scrim hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

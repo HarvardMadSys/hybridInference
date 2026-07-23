@@ -8,6 +8,10 @@ These scripts are intended for one-off analysis work after exporting logs from `
 
 - `pretty_print_logs.py`
   - human-readable inspection for raw `api_logs` JSONL exports
+- `trace_viewer/`
+  - local web UI that visualizes a raw `api_logs` JSONL export in the browser
+    (overview dashboard + request/session drill-down); the graphical
+    counterpart to `pretty_print_logs.py`
 - `tokenize_log_prompts.py`
   - converts raw prompt payloads into tokenized JSONL rows
   - can also emit hashed prompt chunks or Qwen-trace-style `hash_ids`
@@ -47,6 +51,9 @@ Use this when you want to read prompts and responses directly.
 ```bash
 uv run python ops/db/analysis/pretty_print_logs.py api_logs_export.jsonl
 ```
+
+For an interactive browser UI over the same export (charts + drill-down),
+see the [`trace_viewer/`](#trace_viewer-web-ui) section below.
 
 ### 2. Analyze prompt shape and token counts
 
@@ -119,6 +126,56 @@ DB-IP" attribution; synthetic demo data does not.
 the UI). Local provider coordinates are a hand-maintained map
 (`PROVIDER_SITES`) — edit it when deployments move; API providers are
 deliberately shown without a location claim.
+
+## `trace_viewer/` (web UI)
+
+A local web server that **visualizes** a raw `api_logs` export in the browser —
+the graphical counterpart to `pretty_print_logs.py`. It reads the JSONL
+(optionally zstd-compressed) produced by `ops/db/export_logs.py`, indexes it in
+memory, and serves an interactive single-page UI. It never connects to a
+database or the network.
+
+```bash
+# either entrypoint works; pass the export from ops/db/export_logs.py
+uv run python ops/db/analysis/trace_viewer/server.py api_logs_export.jsonl.zst
+uv run python -m ops.db.analysis.trace_viewer api_logs_export.jsonl
+```
+
+Then open the printed URL (default <http://127.0.0.1:8677/>); it also tries to
+open your browser automatically.
+
+Three views, all driven by the shared filter bar (time range, model, provider,
+status, user, errors-only, and a search box):
+
+- **Overview** — KPI tiles (requests, users, errors, cost, tokens, latency /
+  TTFT percentiles), a requests-over-time chart with errors overlaid, and
+  breakdowns by model / provider / status / top users, plus latency, TTFT and
+  prompt/completion-token histograms.
+- **Requests** — a filterable, sortable, paginated table; click any row for a
+  drill-down drawer that renders the prompt as a role-colored conversation
+  (decoding tool calls), the response, the tools offered, timing / token / cost
+  metadata, and a raw-JSON toggle.
+- **Sessions** — requests grouped into conversations (by the `session_id`
+  column when present, otherwise inferred per user by idle gap). Click a
+  session for its request-by-request timeline (per-turn latency bar and
+  cumulative tokens); each turn links back to the request detail.
+
+### CLI options
+
+- `trace` (positional) — path to the export (`.jsonl` or `.jsonl.zst`)
+- `--host` — bind host (default `127.0.0.1`)
+- `--port` — bind port (default `8677`)
+- `--no-open` — do not open a browser automatically
+
+### Notes
+
+- `.jsonl.zst` inputs are transparently decompressed to a temp file for the
+  server's lifetime and removed on exit.
+- The search box matches request id / user / model / provider / error text
+  only; it does not scan prompt or response bodies.
+- Session grouping prefers the `session_id` column and otherwise uses a
+  30-minute idle-gap heuristic per user, so inferred sessions are approximate
+  (like `split_api_logs_sessions.py`).
 
 ## `pretty_print_logs.py`
 
