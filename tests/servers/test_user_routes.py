@@ -94,7 +94,8 @@ class TestAPIKeyManagement:
 
         assert response.status_code == 409
         data = response.json()
-        assert "already" in data["detail"].lower()  # More flexible matching
+        assert data["error"]["code"] == "DUPLICATE_API_KEY"
+        assert "already" in data["message"].lower()
 
     @pytest.mark.asyncio
     async def test_get_api_key_info_success(
@@ -121,6 +122,7 @@ class TestAPIKeyManagement:
         response = await auth_app_client.get("/user/api-keys", headers=auth_headers)
 
         assert response.status_code == 404
+        assert response.json()["error"]["code"] == "API_KEY_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_list_api_keys_no_key(
@@ -284,6 +286,7 @@ class TestAPIKeyManagement:
         response = await auth_app_client.delete("/user/api-keys/hyi-missing", headers=auth_headers)
 
         assert response.status_code == 404
+        assert response.json()["error"]["code"] == "API_KEY_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_delete_api_key_removes_revoked_key(
@@ -359,6 +362,7 @@ class TestAPIKeyManagement:
         response = await auth_app_client.post("/user/api-keys/regenerate", headers=auth_headers)
 
         assert response.status_code == 404
+        assert response.json()["error"]["code"] == "API_KEY_NOT_FOUND"
 
     @pytest.mark.asyncio
     async def test_regenerate_api_key_transaction(

@@ -50,6 +50,26 @@ describe('jsonOrThrow', () => {
     await expect(jsonOrThrow(resp)).rejects.toMatchObject({ code: 'TOKEN_EXPIRED' });
   });
 
+  it('uses the stable backend error code without parsing the message', async () => {
+    const resp = new Response(
+      JSON.stringify({
+        error: {
+          code: 'EMAIL_NOT_VERIFIED',
+          message: 'Localized text without legacy matching phrases.',
+          details: {},
+        },
+        request_id: 'req-1',
+      }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+
+    await expect(jsonOrThrow(resp)).rejects.toMatchObject({
+      code: 'EMAIL_NOT_VERIFIED',
+      message: 'Localized text without legacy matching phrases.',
+      statusCode: 403,
+    });
+  });
+
   it('maps a typed { error } 403 whose message names unverified email to EMAIL_NOT_VERIFIED', async () => {
     const resp = new Response(
       JSON.stringify({ error: { message: 'Email not verified. Please verify your email first.' } }),

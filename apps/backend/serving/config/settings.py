@@ -149,13 +149,9 @@ class Settings(BaseSettings):
         ),
     )
 
-    # Distribution manifest (serving.config.distribution). Empty path = pure
-    # legacy behavior. Mode "dark" (the default) loads and validates the
-    # manifest and logs what would change while current resolution stays
-    # effective; applying manifest paths requires an explicit
-    # DISTRIBUTION_CONFIG_MODE=active. Values are case-insensitive; anything
-    # else degrades to "dark" with a warning — neither a typo nor a missing
-    # mode can ever activate the manifest.
+    # Distribution runtime manifest. Schema v1 preserves the global dark/active
+    # compatibility switch. Schema v2 uses one explicit selector per runtime
+    # resource; local non-required omission means legacy. REQUIRED is opt-in.
     distribution_config_path: str = Field(
         default="",
         validation_alias=AliasChoices("DISTRIBUTION_CONFIG_PATH", "distribution_config_path"),
@@ -163,6 +159,33 @@ class Settings(BaseSettings):
     distribution_config_mode: str = Field(
         default="dark",
         validation_alias=AliasChoices("DISTRIBUTION_CONFIG_MODE", "distribution_config_mode"),
+    )
+    distribution_models_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("DISTRIBUTION_MODELS_MODE", "distribution_models_mode"),
+    )
+    distribution_routing_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("DISTRIBUTION_ROUTING_MODE", "distribution_routing_mode"),
+    )
+    distribution_alerts_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices("DISTRIBUTION_ALERTS_MODE", "distribution_alerts_mode"),
+    )
+    distribution_config_required: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "DISTRIBUTION_CONFIG_REQUIRED",
+            "distribution_config_required",
+        ),
+    )
+    distribution_expected_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("DISTRIBUTION_EXPECTED_ID", "distribution_expected_id"),
+    )
+    distribution_target: str = Field(
+        default="",
+        validation_alias=AliasChoices("DISTRIBUTION_TARGET", "distribution_target"),
     )
 
     # Alerting framework

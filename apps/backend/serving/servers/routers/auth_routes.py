@@ -8,7 +8,11 @@ from fastapi import APIRouter, BackgroundTasks, Cookie, Depends, HTTPException, 
 
 from serving.auth.signup_policy import allowlist_is_empty, is_domain_allowed
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
-from serving.exceptions import AccountSuspendedError
+from serving.exceptions import (
+    AccountSuspendedError,
+    EmailNotVerifiedError,
+    InvalidCredentialsError,
+)
 from serving.schemas_auth import (
     ForgotPasswordRequest,
     LoginRequest,
@@ -334,12 +338,12 @@ async def login(
 
     if not user_row:
         await _record("failure", failure_reason="user_not_found", user_id=None)
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise InvalidCredentialsError
 
     # Verify password
     if not password_utils.verify_password(body.password, user_row["password_hash"]):
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise InvalidCredentialsError
 
     # Check account status *before* email verification. A suspended, rejected,
     # or pending account must be reported as such: otherwise an account that is
@@ -389,9 +393,8 @@ async def login(
         pass
     if require_verification and not user_row["email_verified"]:
         await _record("failure", failure_reason="email_unverified", user_id=user_row["id"])
-        raise HTTPException(
-            status_code=403,
-            detail="Email not verified. Please check your email for the verification link.",
+        raise EmailNotVerifiedError(
+            "Email not verified. Please check your email for the verification link."
         )
 
     await _record("success", failure_reason=None, user_id=user_row["id"])

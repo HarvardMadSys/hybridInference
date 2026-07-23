@@ -8,7 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.executor import RouteExecutor
 from serving.adapters.base import BaseAdapter, ModelConfig
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.middleware.error import (
     FallbackErrorMiddleware,
     install_error_handlers,
@@ -36,10 +36,27 @@ def _cfg(model_id: str) -> ModelConfig:
 
 
 @pytest.mark.asyncio
+async def test_admin_routing_requires_admin_authentication():
+    router = RouteExecutor()
+    router.register_route("m1", [(_EchoAdapter(_cfg("m1")), 1.0)])
+    app = FastAPI()
+    app.state.services = AppServices(router=router)
+    app.include_router(admin.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/admin/routing")
+
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_admin_routing_status_with_and_without_manager():
     # Build router with one model
     router = RouteExecutor()
     router.register_route("m1", [(_EchoAdapter(_cfg("m1")), 1.0)])
+    router.register_route("hidden", [(_EchoAdapter(_cfg("hidden")), 1.0)])
+    router.routes["hidden"].published = False
 
     # Case 1: with routing manager
     class _Mgr:
@@ -54,6 +71,7 @@ async def test_admin_routing_status_with_and_without_manager():
     app.state.services = AppServices(router=router, db_logger=None, routing_manager=_Mgr())  # type: ignore[attr-defined]
     app.include_router(models.router)
     app.include_router(admin.router)
+    app.dependency_overrides[verify_admin_access] = lambda: "test-admin"
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -62,12 +80,14 @@ async def test_admin_routing_status_with_and_without_manager():
         data = resp.json()
         assert "routes" in data and "manager_status" in data
         assert "m1" in data["routes"]
+        assert "hidden" not in data["routes"]
 
     # Case 2: without routing manager
     app2 = FastAPI()
     app2.state.services = AppServices(router=router, db_logger=None, routing_manager=None)  # type: ignore[attr-defined]
     app2.include_router(models.router)
     app2.include_router(admin.router)
+    app2.dependency_overrides[verify_admin_access] = lambda: "test-admin"
 
     transport2 = ASGITransport(app=app2)
     async with AsyncClient(transport=transport2, base_url="http://test") as client:

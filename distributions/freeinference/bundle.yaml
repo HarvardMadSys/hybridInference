@@ -1,0 +1,23 @@
+bundle_schema_version: 1
+runtime_manifest: distribution.v2.yaml
+
+external_inputs:
+  upstream_backend_image:
+    kind: image-ref
+    from_env: HYBRIDINFERENCE_BACKEND_IMAGE
+
+resources:
+  phase1_runtime_manifest:
+    path: distribution.yaml
+    classification: private
+    consumer: backend
+  phase1_dark_load_smoke:
+    path: smoke_dark_load.py
+    classification: private
+    consumer: ops
+  phase1_overlay_tests:
+    path: tests
+    classification: private
+    consumer: targets
+
+environment_contract: config/environment-contract.yaml

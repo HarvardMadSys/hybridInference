@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from serving.exceptions import (
+    APIKeyNotFoundError,
+    EmailNotVerifiedError,
     UserNotFoundError,
     user_safe_error_for_log,
 )
@@ -384,7 +386,7 @@ async def create_api_key(
     except (RuntimeError, KeyError):
         pass
     if require_verification and not current_user.get("email_verified"):
-        raise HTTPException(status_code=403, detail="Email is not verified.")
+        raise EmailNotVerifiedError("Email is not verified.")
 
     # Check if user already has an active API key. Use the account-or-user
     # lookup so legacy keys with account_id IS NULL are also detected — the DB
@@ -392,7 +394,15 @@ async def create_api_key(
     # let the INSERT fail with a 500 instead of a clean 409.
     existing = await op_store.get_key_by_account_or_user(current_user["user_id"])
     if existing:
-        raise HTTPException(status_code=409, detail="You already have an active API key")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": {
+                    "code": "DUPLICATE_API_KEY",
+                    "message": "You already have an active API key",
+                }
+            },
+        )
 
     # Generate new API key
     api_key = generate_api_key()
@@ -448,7 +458,7 @@ async def get_api_key_info(
     key_row = await op_store.get_active_key_by_account(current_user["user_id"])
 
     if not key_row:
-        raise HTTPException(status_code=404, detail="No active API key found")
+        raise APIKeyNotFoundError("No active API key found")
 
     return APIKeyInfo(
         has_key=True,
@@ -596,7 +606,7 @@ async def delete_api_key(
         return response
 
     if not existing:
-        raise HTTPException(status_code=404, detail="API key not found")
+        raise APIKeyNotFoundError("API key not found")
     raise HTTPException(status_code=409, detail="Only active or revoked API keys can be deleted")
 
 
@@ -619,7 +629,7 @@ async def regenerate_api_key(
     # 404 for these users even though they have a working key.
     old_key_row = await op_store.get_key_by_account_or_user(current_user["user_id"])
     if not old_key_row:
-        raise HTTPException(status_code=404, detail="No active API key found")
+        raise APIKeyNotFoundError("No active API key found")
 
     # Generate new API key
     api_key = generate_api_key()

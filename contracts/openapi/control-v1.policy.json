@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "control_api_version": "1.0",
+  "rules": [
+    {
+      "path_match": "exact",
+      "path": "/capabilities",
+      "auth": "none",
+      "permission": "public"
+    },
+    {
+      "path_match": "prefix",
+      "path": "/auth/",
+      "auth": "none",
+      "permission": "public"
+    },
+    {
+      "path_match": "prefix",
+      "path": "/user/",
+      "auth": "bearer-jwt",
+      "permission": "active-user"
+    },
+    {
+      "path_match": "prefix",
+      "path": "/admin/",
+      "auth": "bearer-jwt-or-admin-token",
+      "permission": "admin"
+    },
+    {
+      "path_match": "prefix",
+      "path": "/control/v1/playground/",
+      "auth": "bearer-jwt",
+      "permission": "internal-or-admin"
+    }
+  ],
+  "exceptions": [
+    {
+      "path": "/auth/signup",
+      "method": "post",
+      "auth": "credentials-body",
+      "permission": "public"
+    },
+    {
+      "path": "/auth/login",
+      "method": "post",
+      "auth": "credentials-body",
+      "permission": "public"
+    },
+    {
+      "path": "/auth/logout",
+      "method": "post",
+      "auth": "bearer-jwt+refresh-cookie",
+      "permission": "active-user"
+    },
+    {
+      "path": "/auth/refresh",
+      "method": "post",
+      "auth": "refresh-cookie",
+      "permission": "active-session"
+    },
+    {
+      "path": "/auth/verify-email",
+      "method": "get",
+      "auth": "verification-token",
+      "permission": "public"
+    },
+    {
+      "path": "/auth/reset-password",
+      "method": "post",
+      "auth": "reset-token",
+      "permission": "public"
+    },
+    {
+      "path": "/user/api-keys",
+      "method": "post",
+      "auth": "bearer-jwt",
+      "permission": "active-verified-user"
+    }
+  ],
+  "streaming_responses": [
+    {
+      "path": "/admin/export/requests",
+      "method": "get",
+      "status_code": 200,
+      "media_type": "application/x-ndjson"
+    },
+    {
+      "path": "/control/v1/playground/chat",
+      "method": "post",
+      "status_code": 200,
+      "media_type": "text/event-stream"
+    }
+  ]
+}

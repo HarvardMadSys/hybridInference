@@ -39,6 +39,9 @@ dependencies = [
     "maxminddb>=3.1.1",
 ]
 
+[project.scripts]
+hybridinference-distribution = "serving.config.distribution_cli:main"
+
 [tool.setuptools]
 include-package-data = true
 
@@ -148,4 +151,5 @@ dev = [
   "sphinx-rtd-theme>=3.0.2",
   "mypy>=1.20.2",
   "pytest-timeout>=2.3.0",
+  "jsonschema>=4.25.1",
 ]

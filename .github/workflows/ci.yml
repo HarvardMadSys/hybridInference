@@ -133,6 +133,15 @@ jobs:
       - name: Run Ruff lint
         run: uv run ruff check --no-fix .
 
+      - name: Enforce upstream/distribution boundaries
+        run: uv run python ops/ci/check_distribution_boundaries.py
+
+      - name: Verify generated frontend/backend contracts
+        run: |
+          uv run python contracts/openapi/generate_frontend_operation_inventory.py --check
+          uv run python contracts/openapi/generate_control_snapshot.py --check
+          uv run python ops/ci/generate_phase2_repo_baseline.py --check
+
       - name: Run pydocstyle
         run: uv run pydocstyle --match-dir='^((?!(tests|\.venv|node_modules|apps/frontend|ops|docs)).)*$'
 
@@ -172,6 +181,19 @@ jobs:
 
       - name: Run frontend tests
         run: npm run test
+
+      - name: Verify frontend/backend rewrite inventory
+        run: node ../../contracts/verify_frontend_rewrites.mjs
+
+      - name: Verify independent frontend contract fixture
+        working-directory: ./contracts/fixtures/independent-frontend
+        run: |
+          npm ci
+          npm run lint
+          npm test
+          npm run build
+          npm pack --dry-run
+          npm run verify:isolated
 
       # Keep the audit fail-closed, but run it last so an upstream advisory
       # does not suppress formatting, lint, type-check, and test results.

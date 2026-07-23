@@ -42,11 +42,15 @@ async def get_stats(
 
 @router.get("/routing")
 async def admin_get_routing(
-    router_exec=Depends(get_router), services=Depends(get_services)
+    router_exec=Depends(get_router),
+    services=Depends(get_services),
+    _admin_id: str = Depends(verify_admin_access),
 ) -> dict[str, Any]:
     """Admin alias for routing information."""
     routing_info = {}
     for model_id, route in router_exec.routes.items():
+        if not getattr(route, "published", True):
+            continue
         routing_info[model_id] = [
             {
                 "provider": adapter.config.provider,

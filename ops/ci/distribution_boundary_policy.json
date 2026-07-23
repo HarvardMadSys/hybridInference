@@ -1,0 +1,428 @@
+{
+  "schema_version": 1,
+  "import_scan_paths": [
+    "apps",
+    "ops",
+    "services",
+    "tests"
+  ],
+  "distribution_read_scan_paths": [
+    "apps/backend",
+    "services"
+  ],
+  "upstream_excluded_prefixes": [
+    "distributions"
+  ],
+  "upstream_required_paths": [
+    "README.md",
+    "pyproject.toml",
+    "uv.lock",
+    "apps/backend/serving/__init__.py",
+    "apps/backend/routing/__init__.py",
+    "config/examples",
+    "deploy/docker/Dockerfile.backend"
+  ],
+  "backend_dockerfile": "deploy/docker/Dockerfile.backend",
+  "dockerignore": ".dockerignore",
+  "ownership_document": "docs/agents/specs/2026-07-17-repo-ownership-classification.zh.md",
+  "ownership_directories": {
+    ".codex": "internal",
+    ".codex/skills": "internal",
+    ".github": "mixed",
+    ".github/workflows": "mixed",
+    ".kilo": "internal",
+    ".kilo/skills": "internal",
+    "apps": "mixed",
+    "apps/backend": "mixed",
+    "apps/frontend": "freeinference",
+    "benchmark": "mixed",
+    "benchmark/local": "mixed",
+    "benchmark/provider": "mixed",
+    "config": "mixed",
+    "config/examples": "upstream",
+    "contracts": "upstream",
+    "contracts/evidence": "upstream",
+    "contracts/fixtures": "upstream",
+    "contracts/openapi": "upstream",
+    "deploy": "mixed",
+    "deploy/docker": "mixed",
+    "deploy/systemd": "freeinference",
+    "distributions": "freeinference",
+    "distributions/freeinference": "freeinference",
+    "docs": "mixed",
+    "docs/agents": "internal",
+    "docs/developer": "mixed",
+    "docs/free_inference": "freeinference",
+    "docs/reviews": "internal",
+    "docs/superpowers": "internal",
+    "ops": "mixed",
+    "ops/admin": "mixed",
+    "ops/ci": "upstream",
+    "ops/db": "mixed",
+    "ops/deploy": "freeinference",
+    "ops/h200_idle_proxy": "freeinference",
+    "ops/local_deployment_proxy": "mixed",
+    "ops/setup": "mixed",
+    "ops/spark_idle_proxy": "freeinference",
+    "services": "mixed",
+    "services/alert-control-plane-worker": "mixed",
+    "services/freeinference-harness": "mixed",
+    "services/status-monitor-worker": "mixed",
+    "tests": "mixed",
+    "tests/api": "mixed",
+    "tests/e2e": "mixed",
+    "tests/external": "freeinference",
+    "tests/fixtures": "mixed",
+    "tests/integration": "mixed",
+    "tests/observability": "mixed",
+    "tests/servers": "mixed",
+    "tests/unit": "mixed",
+    "tests/utils": "mixed"
+  },
+  "import_smoke_modules": [
+    "serving",
+    "routing",
+    "serving.config.settings",
+    "serving.config.distribution",
+    "routing.routers"
+  ],
+  "brand_scan_paths": [
+    ".github/workflows/ci.yml",
+    "README.md",
+    "apps/backend",
+    "config/examples",
+    "contracts",
+    "deploy/docker/Dockerfile.backend",
+    "pyproject.toml",
+    "services/alert-control-plane-worker/src",
+    "services/status-monitor-worker"
+  ],
+  "brand_rules": [
+    {
+      "id": "freeinference-identity",
+      "pattern": "(?i)free[ _-]?inference(?:\\.org)?"
+    },
+    {
+      "id": "harvard-operator-identity",
+      "pattern": "(?i)harvard(?:sys|madsys|[ _-]+seas)"
+    },
+    {
+      "id": "production-infrastructure",
+      "pattern": "(?i)(?:staging(?:-internal)?|internal)\\.freeinference\\.org|s3://(?:harvardsys-backup|freeinference)/|/home/freeinference|/srv/hybridinference"
+    }
+  ],
+  "brand_allowlist": [
+    {
+      "rule_id": "freeinference-identity",
+      "path": ".github/workflows/ci.yml",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy CI database identity remains until the distribution test stack is relocated.",
+      "expires_on": "2026-12-31",
+      "match_count": 3
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "README.md",
+      "owner": "Murphy + Juncheng",
+      "reason": "The public upstream README currently documents the hosted distribution and migration layout.",
+      "expires_on": "2026-12-31",
+      "match_count": 8
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/routing/routewise/candidates.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy compatibility identifiers remain pending upstream-neutral cleanup.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/routing/routewise/effective_cost.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy compatibility identifiers remain pending upstream-neutral cleanup.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/routing/routewise/router.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy compatibility identifiers remain pending upstream-neutral cleanup.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/adapters/openrouter.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Provider attribution defaults must move behind distribution configuration.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/admin/provider_quotas.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy user-agent identity remains pending upstream-neutral cleanup.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/config/settings.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy site defaults remain until distribution-owned runtime values are required.",
+      "expires_on": "2026-12-31",
+      "match_count": 11
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/observability/alerts.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy deployment classification remains pending capability and environment contracts.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/oncall/config.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy deployment defaults remain pending operations relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/rag/__init__.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Distribution-specific RAG copy remains until docs and corpus relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/rag/config.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Distribution-specific RAG endpoint remains until docs and corpus relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/rag/pipeline.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Distribution-specific RAG copy remains until docs and corpus relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/auth.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy database identity remains until distribution runtime settings are required.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/routers/admin/provider_definitions.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "A distribution-specific provider preset remains pending frontend and config relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/routers/admin/provider_routes.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Provider attribution defaults must move behind distribution configuration.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/routers/admin/usage_insights.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Distribution-specific analysis defaults remain pending frontend and config relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 6
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/routers/anthropic_messages.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Protocol documentation still uses the hosted distribution name.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/routers/qdrant_proxy.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Distribution-specific RAG documentation remains until corpus relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/routers/rag.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Distribution-specific RAG response copy remains until corpus relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/servers/routers/user_routes.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Legacy contact identity remains until site policy becomes distribution-owned.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/utils/email.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Email content remains distribution-owned debt until the content relocation wave.",
+      "expires_on": "2026-12-31",
+      "match_count": 19
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "pyproject.toml",
+      "owner": "Murphy + Juncheng",
+      "reason": "Current package metadata, private dependency, and test discovery document legacy ownership.",
+      "expires_on": "2026-12-31",
+      "match_count": 3
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/README.md",
+      "owner": "Murphy + Juncheng",
+      "reason": "Status monitor distribution documentation moves with the site-specific worker overlay.",
+      "expires_on": "2026-12-31",
+      "match_count": 3
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/src/alerts.ts",
+      "owner": "Murphy + Juncheng",
+      "reason": "Status monitor alert identity moves with distribution monitoring configuration.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/src/dashboard.ts",
+      "owner": "Murphy + Juncheng",
+      "reason": "Status monitor page branding moves with distribution monitoring content.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/src/env.ts",
+      "owner": "Murphy + Juncheng",
+      "reason": "Status monitor site defaults move with distribution monitoring configuration.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/test/alerts.test.ts",
+      "owner": "Murphy + Juncheng",
+      "reason": "Tests mirror status monitor site identity until the distribution fixture is relocated.",
+      "expires_on": "2026-12-31",
+      "match_count": 6
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/test/dashboard.test.ts",
+      "owner": "Murphy + Juncheng",
+      "reason": "Tests mirror status monitor page branding until the distribution fixture is relocated.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/test/probe.test.ts",
+      "owner": "Murphy + Juncheng",
+      "reason": "Tests mirror status monitor site identity until the distribution fixture is relocated.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/wrangler.toml",
+      "owner": "Murphy + Juncheng",
+      "reason": "Site-specific Cloudflare deployment metadata moves with distribution monitoring configuration.",
+      "expires_on": "2026-12-31",
+      "match_count": 3
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "apps/backend/serving/rag/prebuilt/docs_index.json",
+      "owner": "Murphy + Juncheng",
+      "reason": "The generated hosted-site RAG index moves with its distribution corpus in Wave 3.",
+      "expires_on": "2026-12-31",
+      "match_count": 112
+    },
+    {
+      "rule_id": "freeinference-identity",
+      "path": "services/status-monitor-worker/package.json",
+      "owner": "Murphy + Juncheng",
+      "reason": "The status worker package identity remains until distribution monitoring relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 3
+    },
+    {
+      "rule_id": "harvard-operator-identity",
+      "path": "apps/backend/serving/rag/prebuilt/docs_index.json",
+      "owner": "Murphy + Juncheng",
+      "reason": "The generated hosted-site RAG index moves with its distribution corpus in Wave 3.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "harvard-operator-identity",
+      "path": "pyproject.toml",
+      "owner": "Murphy + Juncheng",
+      "reason": "Current author and RouteWise dependency metadata remain until public artifact ownership is settled.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "production-infrastructure",
+      "path": "apps/backend/serving/config/settings.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "Internal deployment origins remain until runtime site policy is fully distribution-owned.",
+      "expires_on": "2026-12-31",
+      "match_count": 2
+    },
+    {
+      "rule_id": "production-infrastructure",
+      "path": "apps/backend/serving/servers/routers/admin/provider_definitions.py",
+      "owner": "Murphy + Juncheng",
+      "reason": "The staging provider preset remains pending distribution configuration relocation.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    },
+    {
+      "rule_id": "production-infrastructure",
+      "path": "services/status-monitor-worker/test/alerts.test.ts",
+      "owner": "Murphy + Juncheng",
+      "reason": "Tests mirror production status URLs until the distribution fixture is relocated.",
+      "expires_on": "2026-12-31",
+      "match_count": 4
+    },
+    {
+      "rule_id": "production-infrastructure",
+      "path": "services/status-monitor-worker/wrangler.toml",
+      "owner": "Murphy + Juncheng",
+      "reason": "The production status route moves with distribution monitoring configuration.",
+      "expires_on": "2026-12-31",
+      "match_count": 1
+    }
+  ]
+}

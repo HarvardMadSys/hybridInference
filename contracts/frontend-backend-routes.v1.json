@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "source_file": "apps/frontend/next.config.js",
+  "classification_values": [
+    "stable-control",
+    "inference-protocol",
+    "compatibility",
+    "distribution-private",
+    "ops-only"
+  ],
+  "routes": [
+    {
+      "source": "/v1/:path*",
+      "destination": "/v1/:path*",
+      "classification": "inference-protocol",
+      "notes": "OpenAI-compatible inference APIs; governed by protocol conformance rather than the control allowlist."
+    },
+    {
+      "source": "/anthropic/:path*",
+      "destination": "/anthropic/:path*",
+      "classification": "inference-protocol",
+      "notes": "Anthropic-compatible inference APIs; governed by protocol conformance rather than the control allowlist."
+    },
+    {
+      "source": "/auth/:path*",
+      "destination": "/auth/:path*",
+      "classification": "stable-control",
+      "notes": "Authentication transport. Only operations named in the control allowlist are versioned promises."
+    },
+    {
+      "source": "/user/:path*",
+      "destination": "/user/:path*",
+      "classification": "stable-control",
+      "notes": "Authenticated user control plane. Only operations named in the control allowlist are versioned promises."
+    },
+    {
+      "source": "/admin/:path*",
+      "destination": "/admin/:path*",
+      "classification": "stable-control",
+      "notes": "Admin control plane. Only operations named in the control allowlist are versioned promises."
+    },
+    {
+      "source": "/internal/verify-grafana",
+      "destination": "/internal/verify-grafana",
+      "classification": "ops-only",
+      "notes": "Legacy operator rewrite; no FastAPI handler is currently registered, so retention or removal must be decided explicitly."
+    },
+    {
+      "source": "/internal/verify-admin",
+      "destination": "/internal/verify-admin",
+      "classification": "ops-only",
+      "notes": "Reverse-proxy authorization hook; not a browser client contract."
+    },
+    {
+      "source": "/internal/playground/:path*",
+      "destination": "/internal/playground/:path*",
+      "classification": "compatibility",
+      "notes": "Deprecated alias retained while clients migrate to /control/v1/playground."
+    },
+    {
+      "source": "/control/:path*",
+      "destination": "/control/:path*",
+      "classification": "stable-control",
+      "notes": "Versioned control-plane namespace."
+    },
+    {
+      "source": "/capabilities",
+      "destination": "/capabilities",
+      "classification": "stable-control",
+      "notes": "Public effective-capability discovery contract."
+    },
+    {
+      "source": "/health",
+      "destination": "/health",
+      "classification": "ops-only",
+      "notes": "Load-balancer and operator health probe."
+    },
+    {
+      "source": "/site-updates",
+      "destination": "/site-updates",
+      "classification": "distribution-private",
+      "notes": "Distribution homepage content, not an upstream multi-distribution contract."
+    },
+    {
+      "source": "/site-config",
+      "destination": "/site-config",
+      "classification": "compatibility",
+      "notes": "Legacy distribution identity endpoint retained for the frontend migration window."
+    }
+  ]
+}

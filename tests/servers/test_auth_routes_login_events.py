@@ -63,6 +63,7 @@ async def test_login_records_user_not_found(app, fake_op_store):
     fake_op_store.get_user_by_email.return_value = None
     resp = await _post_login(app, email="ghost@example.com")
     assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
     fake_op_store.record_login_event.assert_awaited_once()
     kw = fake_op_store.record_login_event.await_args.kwargs
     assert kw["email"] == "ghost@example.com"
@@ -90,6 +91,7 @@ async def test_login_records_invalid_password(app, fake_op_store, monkeypatch):
     )
     resp = await _post_login(app, email="a@b.com")
     assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "INVALID_CREDENTIALS"
     fake_op_store.record_login_event.assert_awaited_once()
     kw = fake_op_store.record_login_event.await_args.kwargs
     assert kw["failure_reason"] == "invalid_password"
@@ -121,6 +123,7 @@ async def test_login_records_email_unverified(app, fake_op_store, monkeypatch):
     )
     resp = await _post_login(app, email="a@b.com")
     assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "EMAIL_NOT_VERIFIED"
     kw = fake_op_store.record_login_event.await_args.kwargs
     assert kw["failure_reason"] == "email_unverified"
 

@@ -14,6 +14,7 @@ from serving.exceptions import (
     UserAlreadyExistsError,
 )
 from serving.servers.middleware.exception_handler import install_exception_handlers
+from serving.servers.middleware.request_id import RequestIdMiddleware
 
 
 @pytest.fixture
@@ -44,6 +45,7 @@ def app_with_handlers():
 
     # Install exception handlers
     install_exception_handlers(app)
+    app.add_middleware(RequestIdMiddleware)
 
     return app
 
@@ -137,6 +139,16 @@ class TestExceptionHandlers:
                 assert "error_code" in data
                 assert "message" in data
                 assert "timestamp" in data
+                assert data["error"] == {
+                    "code": data["error_code"],
+                    "message": data["message"],
+                    "details": {
+                        key: data[key]
+                        for key in ("email", "status", "quota", "spent")
+                        if key in data
+                    },
+                }
+                assert data["request_id"] == response.headers["x-request-id"]
 
                 # Timestamp should be valid ISO format
                 datetime.fromisoformat(data["timestamp"].replace("Z", "+00:00"))

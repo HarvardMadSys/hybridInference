@@ -138,5 +138,19 @@ def install_error_handlers(app: FastAPI) -> None:
             exc_info=exc,
         )
         user_msg = scrub_error_for_user(exc, request_id, 500)
+        from serving.servers.middleware.exception_handler import (
+            _domain_error_payload,
+            is_stable_control_path,
+        )
+
+        if is_stable_control_path(request.url.path):
+            return JSONResponse(
+                status_code=500,
+                content=_domain_error_payload(
+                    request,
+                    code="INTERNAL_ERROR",
+                    message=user_msg,
+                ),
+            )
         content = _build_error_response(user_msg, code=500, typ=err_type)
         return JSONResponse(status_code=500, content=content)

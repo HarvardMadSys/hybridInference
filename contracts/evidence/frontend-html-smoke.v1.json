@@ -1,0 +1,536 @@
+{
+  "schema_version": 1,
+  "evidence_status": "specification-only",
+  "execution_contract": {
+    "client": "hydrated-browser",
+    "live_or_source_build_execution_required": true,
+    "notes": "This checked specification is not proof that any build or deployment passed it. A captured run must be attached as deployment evidence.",
+    "session": "unauthenticated"
+  },
+  "routes": [
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Service is provided without guarantee."
+      },
+      "path": "/"
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/chat",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/analytics",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/analytics/geo",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/announcements",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/audit",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/broadcast",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/log",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/providers",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/requests",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/routing",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/settings",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/token-usage",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/updates",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/admin/users",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/playground",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "protected",
+      "http": {
+        "accepted_initial_statuses": [
+          200,
+          307,
+          308
+        ],
+        "required_final_status": 200
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/dashboard/settings",
+      "redirect": {
+        "accepted_modes": [
+          "client",
+          "server"
+        ],
+        "required_final_path": "/login"
+      }
+    },
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Forgot Password"
+      },
+      "path": "/forgot-password"
+    },
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Log In"
+      },
+      "path": "/login"
+    },
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Reset Password"
+      },
+      "path": "/reset-password"
+    },
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text-any",
+        "values": [
+          "Sign Up",
+          "Public signup is unavailable"
+        ]
+      },
+      "path": "/signup"
+    },
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Our team"
+      },
+      "path": "/team"
+    },
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text",
+        "value": "Terms of Service"
+      },
+      "path": "/terms"
+    },
+    {
+      "access": "public",
+      "http": {
+        "accepted_statuses": [
+          200
+        ]
+      },
+      "marker": {
+        "kind": "visible-text-any",
+        "values": [
+          "Verifying Email",
+          "Verification Failed"
+        ]
+      },
+      "path": "/verify-email"
+    }
+  ]
+}

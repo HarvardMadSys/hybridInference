@@ -36,6 +36,14 @@ const nextConfig = {
         source: '/internal/playground/:path*',
         destination: `${BACKEND_INTERNAL_URL}/internal/playground/:path*`,
       },
+      {
+        source: '/control/:path*',
+        destination: `${BACKEND_INTERNAL_URL}/control/:path*`,
+      },
+      {
+        source: '/capabilities',
+        destination: `${BACKEND_INTERNAL_URL}/capabilities`,
+      },
       { source: '/health', destination: `${BACKEND_INTERNAL_URL}/health` },
       // Public homepage updates. Nginx routes unmatched paths to the frontend,
       // so this rewrite forwards the request on to FastAPI (same pattern as

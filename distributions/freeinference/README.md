@@ -10,11 +10,17 @@ the
 [self-contained distribution design](../../docs/agents/specs/2026-07-22-phase2-self-contained-distribution-design.zh.md).
 What belongs here vs. upstream is ruled per directory by the
 [ownership-classification PR #953](https://github.com/HarvardMadSys/hybridInference/pull/953).
-Its document still needs to land on `dev` before Phase 2 Wave 0 can close.
+The implementation and that classification land together; the design is not
+published as a separate Phase 2 implementation unit.
 
 ## Current state
 
-Skeleton only. `distribution.yaml` is a real, loadable manifest, but its
+Skeleton only. `distribution.yaml` is the real Phase 1 manifest, while
+`distribution.v2.yaml` is a strict, closed-root Phase 2 candidate with all
+selectors defaulting to `legacy` unless supplied by the deployment.
+`bundle.yaml`, `bundle.lock.json`, and `config/environment-contract.yaml`
+exercise the new source-inventory boundary without switching production
+truth. The Phase 1 manifest
 `paths:` deliberately point back at the legacy `config/*.yaml` locations —
 **the legacy paths remain production truth** (Phase 1). To try it on
 staging, add to the repo-root `.env` (Compose passes it via `env_file`; the
@@ -48,6 +54,26 @@ the temporary Phase 1 assertion that this overlay aliases the legacy truth.
 Phase 2 adds the stricter runtime/bundle and detached-copy gates described in
 the detailed design.
 
+The checked-in candidate and source lock can be validated without loading any
+secret values:
+
+```bash
+uv run hybridinference-distribution runtime-validate \
+  distribution.v2.yaml --root distributions/freeinference --strict
+uv run hybridinference-distribution bundle-validate \
+  bundle.yaml --root distributions/freeinference --strict
+```
+
+Both commands accept a detached-copy directory through `--root` and keep every
+path inside that root. Stable failure codes are 10 (schema), 11 (path), 12
+(semantic parser), 13 (environment contract), and 14 (bundle lock).
+
+RAG has a production parser for its JSON vector index but not yet for
+distribution YAML settings or generated metadata. Strict validation therefore
+uses `VectorStore.load` for the index plus a deliberately minimal, closed local
+schema for settings/metadata and cross-checks model and embedding dimension
+between all three artifacts.
+
 ## Target layout (grows in Phase 2, one category per PR)
 
 ```text
@@ -75,8 +101,9 @@ Two temporary states to be aware of:
   must not reach outside itself.
 - `site:` / `features:` are exposed read-only via `GET /site-config`; the
   frontend consumes the safe identity fields and public signup/RAG flags only
-  when `DISTRIBUTION_CONFIG_MODE=active`. Dark mode returns the neutral
-  fallback and does not alter the public UI. Local content paths remain
+  when the selected manifest is active. Runtime v1 dark mode returns the
+  neutral fallback; runtime v2 uses its independent resource selectors and
+  does not accept the legacy global mode. Local content paths remain
   server-only and are not exposed.
 
 ## Rules

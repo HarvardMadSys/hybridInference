@@ -117,6 +117,8 @@ async def test_streaming_sse_contract(contract_client: AsyncClient):
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
+    assert resp.headers["cache-control"] == "no-cache, no-transform"
+    assert resp.headers["x-accel-buffering"] == "no"
 
     # SSE events are separated by a blank line; each event of this stream is
     # exactly one single-line data frame. Splitting on "\n\n" (not "\n")

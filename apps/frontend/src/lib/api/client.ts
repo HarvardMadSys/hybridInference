@@ -169,8 +169,9 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
       errorMessage = (error.message as string) || errorMessage;
       const lowerMessage = errorMessage.toLowerCase();
 
-      // Extract error patterns from message
-      if (
+      if (typeof error.code === 'string' && error.code) {
+        errorCode = error.code;
+      } else if (
         lowerMessage.includes('reset link has already been used') ||
         (lowerMessage.includes('reset token') && lowerMessage.includes('used'))
       ) {

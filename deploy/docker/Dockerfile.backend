@@ -43,10 +43,10 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy application source (only the packages needed at runtime)
 COPY apps/backend/serving/ serving/
 COPY apps/backend/routing/ routing/
-COPY config/ config/
+COPY config/examples/ config/examples/
 
-# config/ will be overridden by a read-only volume mount at runtime,
-# but we copy a default so the image can run standalone for testing.
+# The neutral image carries examples only. Deployments mount their selected
+# runtime configuration read-only instead of baking distribution data here.
 
 EXPOSE 8080
 

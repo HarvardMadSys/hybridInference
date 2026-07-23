@@ -1,0 +1,600 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/contracts/phase2-deployment-evidence.schema.json",
+  "title": "Phase 2 deployment evidence",
+  "description": "Evidence captured from a concrete source build and a live deployment. A repository baseline, template, planned run, or pending result does not satisfy this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_status",
+    "deployment_target",
+    "environment",
+    "source_build",
+    "selected_runtime_manifest",
+    "live_database",
+    "dark_load",
+    "smoke_tests",
+    "metrics",
+    "rollback",
+    "attestation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "evidence_status": {
+      "const": "captured",
+      "description": "The value is valid only after every required observation below has been recorded."
+    },
+    "deployment_target": {
+      "$ref": "#/$defs/evidence_string",
+      "description": "Operator-facing target identifier; do not put credentials or connection strings here."
+    },
+    "environment": {
+      "enum": [
+        "staging",
+        "production"
+      ]
+    },
+    "source_build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_kind",
+        "source_revision",
+        "repo_baseline_sha256",
+        "local_image_id",
+        "repository_digest",
+        "built_at",
+        "build_log_reference"
+      ],
+      "properties": {
+        "build_kind": {
+          "const": "source-build"
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}([a-f0-9]{24})?$"
+        },
+        "repo_baseline_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "local_image_id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "repository_digest": {
+          "description": "Null is expected when the source-built image was not pushed. A non-null value must be the immutable repository digest, never a mutable tag.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sha256"
+            }
+          ]
+        },
+        "built_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "build_log_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        }
+      }
+    },
+    "selected_runtime_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "distribution_id",
+        "schema_version",
+        "sha256",
+        "selectors",
+        "startup_result",
+        "startup_comparison_reference",
+        "startup_hash_log_reference"
+      ],
+      "properties": {
+        "distribution_id": {
+          "$ref": "#/$defs/evidence_string"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "selectors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "models",
+            "routing",
+            "alerts"
+          ],
+          "properties": {
+            "models": {
+              "$ref": "#/$defs/runtime_selector"
+            },
+            "routing": {
+              "$ref": "#/$defs/runtime_selector"
+            },
+            "alerts": {
+              "$ref": "#/$defs/runtime_selector"
+            }
+          }
+        },
+        "startup_result": {
+          "const": "passed"
+        },
+        "startup_comparison_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        },
+        "startup_hash_log_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        }
+      }
+    },
+    "live_database": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_ddl_source_fingerprint",
+        "live_schema_fingerprint",
+        "server",
+        "server_version",
+        "captured_at",
+        "capture_reference",
+        "backup"
+      ],
+      "properties": {
+        "repo_ddl_source_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "live_schema_fingerprint": {
+          "$ref": "#/$defs/sha256"
+        },
+        "server": {
+          "$ref": "#/$defs/evidence_string"
+        },
+        "server_version": {
+          "$ref": "#/$defs/evidence_string"
+        },
+        "captured_at": {
+          "$ref": "#/$defs/date_time"
+        },
+        "capture_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        },
+        "backup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "backup_id",
+            "captured_at",
+            "location_reference",
+            "integrity_sha256",
+            "restore_readiness_verified"
+          ],
+          "properties": {
+            "backup_id": {
+              "$ref": "#/$defs/evidence_string"
+            },
+            "captured_at": {
+              "$ref": "#/$defs/date_time"
+            },
+            "location_reference": {
+              "$ref": "#/$defs/evidence_reference"
+            },
+            "integrity_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "restore_readiness_verified": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "dark_load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "window_start",
+        "window_end",
+        "request_count",
+        "success_count",
+        "success_rate",
+        "required_success_rate",
+        "production_traffic_mutated",
+        "report_reference"
+      ],
+      "properties": {
+        "result": {
+          "const": "passed"
+        },
+        "window_start": {
+          "$ref": "#/$defs/date_time"
+        },
+        "window_end": {
+          "$ref": "#/$defs/date_time"
+        },
+        "request_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "success_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "success_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "required_success_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "production_traffic_mutated": {
+          "const": false
+        },
+        "report_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        }
+      }
+    },
+    "smoke_tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "overall_result",
+        "frontend_html",
+        "api",
+        "sse",
+        "auth",
+        "quota",
+        "model",
+        "routing"
+      ],
+      "properties": {
+        "overall_result": {
+          "const": "passed"
+        },
+        "frontend_html": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "result",
+            "spec_sha256",
+            "route_count",
+            "passed_route_count",
+            "failure_count",
+            "report_reference"
+          ],
+          "properties": {
+            "result": {
+              "const": "passed"
+            },
+            "spec_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "route_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "passed_route_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "failure_count": {
+              "const": 0
+            },
+            "report_reference": {
+              "$ref": "#/$defs/evidence_reference"
+            }
+          }
+        },
+        "api": {
+          "$ref": "#/$defs/smoke_result"
+        },
+        "sse": {
+          "$ref": "#/$defs/smoke_result"
+        },
+        "auth": {
+          "$ref": "#/$defs/smoke_result"
+        },
+        "quota": {
+          "$ref": "#/$defs/smoke_result"
+        },
+        "model": {
+          "$ref": "#/$defs/smoke_result"
+        },
+        "routing": {
+          "$ref": "#/$defs/smoke_result"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "window_start",
+        "window_end",
+        "request_count",
+        "critical_alert_count",
+        "bucket_dimensions",
+        "bucket_baselines",
+        "observed_maxima",
+        "abort_thresholds",
+        "dashboard_reference"
+      ],
+      "properties": {
+        "result": {
+          "const": "passed"
+        },
+        "window_start": {
+          "$ref": "#/$defs/date_time"
+        },
+        "window_end": {
+          "$ref": "#/$defs/date_time"
+        },
+        "request_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "critical_alert_count": {
+          "const": 0
+        },
+        "bucket_dimensions": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "const": "model"
+            },
+            {
+              "const": "provider"
+            },
+            {
+              "const": "client"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "bucket_baselines": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "provider",
+            "client"
+          ],
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/metric_bucket_baseline"
+            },
+            "provider": {
+              "$ref": "#/$defs/metric_bucket_baseline"
+            },
+            "client": {
+              "$ref": "#/$defs/metric_bucket_baseline"
+            }
+          }
+        },
+        "abort_thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latency_p95_ms",
+            "error_rate",
+            "cost_usd"
+          ],
+          "properties": {
+            "latency_p95_ms": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "error_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "cost_usd": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "observed_maxima": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latency_p95_ms",
+            "error_rate",
+            "cost_usd"
+          ],
+          "properties": {
+            "latency_p95_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "error_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "cost_usd": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "dashboard_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "mode",
+        "target",
+        "execution_reference",
+        "duration_seconds",
+        "recovery_verified",
+        "database_restore_required"
+      ],
+      "properties": {
+        "result": {
+          "const": "passed"
+        },
+        "mode": {
+          "enum": [
+            "rehearsal",
+            "executed"
+          ]
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "known_good_source_revision",
+            "local_image_id",
+            "record_reference"
+          ],
+          "properties": {
+            "known_good_source_revision": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}([a-f0-9]{24})?$"
+            },
+            "local_image_id": {
+              "$ref": "#/$defs/sha256"
+            },
+            "record_reference": {
+              "$ref": "#/$defs/evidence_reference"
+            }
+          }
+        },
+        "execution_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "recovery_verified": {
+          "const": true
+        },
+        "database_restore_required": {
+          "type": "boolean"
+        }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator",
+        "reviewer",
+        "recorded_at"
+      ],
+      "properties": {
+        "operator": {
+          "$ref": "#/$defs/evidence_string"
+        },
+        "reviewer": {
+          "$ref": "#/$defs/evidence_string"
+        },
+        "recorded_at": {
+          "$ref": "#/$defs/date_time"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "date_time": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "runtime_selector": {
+      "enum": [
+        "legacy",
+        "shadow",
+        "active"
+      ]
+    },
+    "smoke_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "report_reference"
+      ],
+      "properties": {
+        "result": {
+          "const": "passed"
+        },
+        "report_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        }
+      }
+    },
+    "metric_bucket_baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latency_report_reference",
+        "error_report_reference",
+        "cost_report_reference"
+      ],
+      "properties": {
+        "latency_report_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        },
+        "error_report_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        },
+        "cost_report_reference": {
+          "$ref": "#/$defs/evidence_reference"
+        }
+      }
+    },
+    "evidence_string": {
+      "type": "string",
+      "minLength": 1,
+      "allOf": [
+        {
+          "not": {
+            "pattern": "^([Pp][Ee][Nn][Dd][Ii][Nn][Gg]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Tt][Oo][Dd][Oo]|[Tt][Bb][Dd]|[Uu][Nn][Kk][Nn][Oo][Ww][Nn]|[Pp][Ll][Aa][Cc][Ee][Hh][Oo][Ll][Dd][Ee][Rr])$"
+          }
+        },
+        {
+          "not": {
+            "pattern": "^<.*>$"
+          }
+        }
+      ]
+    },
+    "evidence_reference": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidence_string"
+        },
+        {
+          "pattern": "^(artifact|backup|dashboard|registry|run|https)[:/]"
+        }
+      ]
+    }
+  }
+}

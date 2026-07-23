@@ -779,9 +779,9 @@ class AdminAnalyticsResponse(BaseModel):
 class UsageInsightsRequest(BaseModel):
     """Request body for POST /admin/usage-insights/analyze.
 
-    The analysis provider (freeinference.org API key + model) is configured once
-    in Admin → Settings and read server-side; the request only chooses the scope
-    and sample size. Optionally analyze a single user (by id or email).
+    The analysis provider API key and model are configured once in Admin →
+    Settings and read server-side; the request only chooses the scope and sample
+    size. Optionally analyze a single user (by id or email).
     """
 
     user_id: str | None = Field(None, description="Limit the sample to this user id")
@@ -1483,6 +1483,12 @@ class BroadcastPreviewResponse(BaseModel):
     rendered_body_text: str
 
 
+class TestBroadcastEmailResponse(BaseModel):
+    """Response for sending a broadcast preview to the requesting admin."""
+
+    message: str
+
+
 class CreateBroadcastRequest(BroadcastPreviewRequest):
     scheduled_at: datetime | None = None
 
@@ -1522,6 +1528,12 @@ class BroadcastDetailResponse(BaseModel):
     broadcast: BroadcastListItem
     recipients: list[BroadcastRecipientItem]
     total_recipients: int
+
+
+class CancelBroadcastResponse(BaseModel):
+    """Response for cancelling a scheduled broadcast."""
+
+    message: str
 
 
 # ============================================================
@@ -1928,6 +1940,12 @@ class ListSiteUpdatesResponse(BaseModel):  # type: ignore[no-any-unimported]
 
     total: int
     updates: list[SiteUpdateItem]
+
+
+class DeleteSiteUpdateResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``DELETE /admin/site-updates/{id}``."""
+
+    message: str
 
 
 class CreateSiteUpdateRequest(BaseModel):  # type: ignore[no-any-unimported]

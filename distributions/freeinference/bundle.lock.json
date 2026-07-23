@@ -1,0 +1,48 @@
+{
+  "bundle_lock_schema_version": 1,
+  "bundle_schema_version": 1,
+  "files": [
+    {
+      "classification": "private",
+      "mode": "0644",
+      "path": "bundle.yaml",
+      "sha256": "74440619b332be70b578a9bf7af77569cdd0454849d70b80ecb94f4730e75e06",
+      "type": "file"
+    },
+    {
+      "classification": "secret-reference",
+      "mode": "0644",
+      "path": "config/environment-contract.yaml",
+      "sha256": "99416b087a8d5b71d95c34db67eef7831d6644ff02bd66a905e19224c85c30d8",
+      "type": "file"
+    },
+    {
+      "classification": "private",
+      "mode": "0644",
+      "path": "distribution.v2.yaml",
+      "sha256": "b717cf0a81f86e1fece8dc0c1d976891c1d9ab8b69390c271aa18dfa14621ede",
+      "type": "file"
+    },
+    {
+      "classification": "private",
+      "mode": "0644",
+      "path": "distribution.yaml",
+      "sha256": "b5e3c16093f8835d7bdb378eb5c4b9cdb92dd9a6d95383dad7dc6c7d40451f0b",
+      "type": "file"
+    },
+    {
+      "classification": "private",
+      "mode": "0644",
+      "path": "smoke_dark_load.py",
+      "sha256": "e6cc2a932fd87235a626e22e1087e7bdd6868725ce02a7eb7183f6273415ebce",
+      "type": "file"
+    },
+    {
+      "classification": "private",
+      "mode": "0644",
+      "path": "tests/test_overlay_manifest.py",
+      "sha256": "5413ba030df5d72591d35d11e5765e6f4ea6c14a6a3f70a9b74619c10bc4cd02",
+      "type": "file"
+    }
+  ]
+}

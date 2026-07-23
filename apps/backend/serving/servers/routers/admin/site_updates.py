@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from serving.schemas_admin import (
     CreateSiteUpdateRequest,
+    DeleteSiteUpdateResponse,
     ListSiteUpdatesResponse,
     SiteUpdateItem,
     UpdateSiteUpdateRequest,
@@ -140,12 +141,12 @@ async def update_site_update(
     return _row_to_item(row)
 
 
-@router.delete("/site-updates/{update_id}")
+@router.delete("/site-updates/{update_id}", response_model=DeleteSiteUpdateResponse)
 async def delete_site_update(
     update_id: str,
     admin: str = Depends(verify_admin_access),
     db=Depends(get_db_logger),
-):
+) -> DeleteSiteUpdateResponse:
     """Delete a site update. Returns 404 when it does not exist.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
@@ -159,4 +160,4 @@ async def delete_site_update(
         raise HTTPException(status_code=404, detail="Site update not found")
 
     await log_admin_action(db, admin, "site_update_delete", None, {"id": update_id})
-    return {"message": "Site update deleted"}
+    return DeleteSiteUpdateResponse(message="Site update deleted")

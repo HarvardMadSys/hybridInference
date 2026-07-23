@@ -25,11 +25,33 @@ features:
   public_signup: true
 """
 
+V2_MANIFEST = """\
+schema_version: 2
+distribution:
+  id: example
+  display_name: Example Distribution
+site:
+  base_url: https://example.test
+  support_email: support@example.test
+features:
+  auth.public_signup: false
+resources:
+  gateway: {}
+  rag: {}
+environment_contract: environment-contract.yaml
+"""
+
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     monkeypatch.delenv("DISTRIBUTION_CONFIG_MODE", raising=False)
+    monkeypatch.delenv("DISTRIBUTION_MODELS_MODE", raising=False)
+    monkeypatch.delenv("DISTRIBUTION_ROUTING_MODE", raising=False)
+    monkeypatch.delenv("DISTRIBUTION_ALERTS_MODE", raising=False)
+    monkeypatch.delenv("DISTRIBUTION_CONFIG_REQUIRED", raising=False)
+    monkeypatch.delenv("DISTRIBUTION_EXPECTED_ID", raising=False)
+    monkeypatch.delenv("DISTRIBUTION_TARGET", raising=False)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
     yield
@@ -89,6 +111,32 @@ async def test_dark_mode_does_not_publish_manifest_identity(client, monkeypatch,
     body = (await client.get("/site-config")).json()
     assert body["distribution"]["id"] == "neutral"
     assert body["site"] == {"public_base_url": "", "support_email": ""}
+
+
+@pytest.mark.asyncio
+async def test_v2_manifest_publishes_identity_without_legacy_global_mode(
+    client, monkeypatch, tmp_path
+):
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text(V2_MANIFEST)
+    (tmp_path / "environment-contract.yaml").write_text(
+        "environment_schema_version: 1\nvariables: []\n"
+    )
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    get_settings.cache_clear()
+    get_distribution_config.cache_clear()
+
+    body = (await client.get("/site-config")).json()
+    assert body["distribution"] == {
+        "id": "example",
+        "display_name": "Example Distribution",
+        "release": "",
+    }
+    assert body["site"] == {
+        "public_base_url": "https://example.test",
+        "support_email": "support@example.test",
+    }
+    assert body["features"]["public_signup"] is False
 
 
 @pytest.mark.asyncio

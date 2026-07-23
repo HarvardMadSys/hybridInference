@@ -10,6 +10,12 @@ apps/frontend/.next
 # Data & logs (never bake into images)
 var/
 
+# Distribution-owned data never enters the shared root build context.
+distributions/
+config/*
+!config/examples/
+!config/examples/**
+
 # Dev/test
 tests/
 docs/

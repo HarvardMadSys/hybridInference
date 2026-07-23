@@ -1,0 +1,30 @@
+# Phase 2 runtime-manifest candidate.
+#
+# This file is intentionally not the current DISTRIBUTION_CONFIG_PATH. The
+# production-compatible distribution.yaml remains schema v1 until a
+# per-resource rollout explicitly supplies the three v2 selectors.
+
+schema_version: 2
+
+distribution:
+  id: freeinference
+  display_name: FreeInference
+
+site:
+  base_url: https://freeinference.org
+  docs_url: https://doc.freeinference.org/
+  status_url: https://status.freeinference.org/
+  support_email: admin@freeinference.org
+
+features:
+  auth.public_signup: true
+  # The candidate has not moved RAG resources yet, so it makes no availability
+  # promise until the Wave 3 resources exist and pass strict validation.
+  rag.chat: null
+  admin.routing.routewise: true
+
+resources:
+  gateway: {}
+  rag: {}
+
+environment_contract: config/environment-contract.yaml

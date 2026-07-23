@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from routing.executor import RouteExecutor
+from serving.config.distribution import DistributionStartupError, get_distribution_config
+from serving.config.settings import get_settings
 from serving.servers import bootstrap
 
 MODELS_YAML = """\
@@ -72,3 +76,57 @@ async def test_dark_mode_ignores_manifest_paths_in_bootstrap(monkeypatch, tmp_pa
     await bootstrap._init_router_and_models(router)
 
     assert "dist-model" not in router.routes
+
+
+def _write_v2_required_fixture(tmp_path, *, models: str = "models.yaml"):
+    (tmp_path / "environment.yaml").write_text("environment_schema_version: 1\nvariables: []\n")
+    manifest = tmp_path / "distribution.v2.yaml"
+    manifest.write_text(
+        f"""\
+schema_version: 2
+distribution:
+  id: testdist
+resources:
+  gateway:
+    models: {models}
+environment_contract: environment.yaml
+"""
+    )
+    return manifest
+
+
+def _configure_v2_required(monkeypatch, manifest):
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_REQUIRED", "1")
+    monkeypatch.setenv("DISTRIBUTION_MODELS_MODE", "active")
+    monkeypatch.setenv("DISTRIBUTION_ROUTING_MODE", "legacy")
+    monkeypatch.setenv("DISTRIBUTION_ALERTS_MODE", "legacy")
+    get_settings.cache_clear()
+    get_distribution_config.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_required_model_parser_error_escapes_bootstrap_catch(monkeypatch, tmp_path):
+    (tmp_path / "models.yaml").write_text("models:\n  - invalid scalar\n")
+    manifest = _write_v2_required_fixture(tmp_path)
+    _configure_v2_required(monkeypatch, manifest)
+
+    with pytest.raises(DistributionStartupError, match="models config failed"):
+        await bootstrap._init_router_and_models(RouteExecutor())
+
+
+@pytest.mark.asyncio
+async def test_initialize_runs_distribution_preflight_before_database_setup():
+    startup_error = DistributionStartupError("static failure")
+    with (
+        patch(
+            "serving.servers.bootstrap.preflight_distribution_config",
+            side_effect=startup_error,
+        ) as preflight,
+        patch("serving.servers.bootstrap._init_db_logger") as init_db,
+        pytest.raises(DistributionStartupError, match="static failure"),
+    ):
+        await bootstrap.initialize()
+
+    preflight.assert_called_once_with()
+    init_db.assert_not_called()

@@ -1,0 +1,1232 @@
+{
+  "operations": [
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "clear_alert_snooze_endpoint_admin_alerts_snooze_delete",
+      "path": "/admin/alerts/snooze",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_alert_snooze_endpoint_admin_alerts_snooze_get",
+      "path": "/admin/alerts/snooze",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "snooze_alerts_endpoint_admin_alerts_snooze_post",
+      "path": "/admin/alerts/snooze",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_analytics_admin_analytics_get",
+      "path": "/admin/analytics",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_geo_analytics_admin_analytics_geo_get",
+      "path": "/admin/analytics/geo",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_api_keys_admin_api_keys_get",
+      "path": "/admin/api-keys",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "create_api_key_admin_api_keys_post",
+      "path": "/admin/api-keys",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "revoke_api_key_admin_api_keys__user_id__delete",
+      "path": "/admin/api-keys/{user_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_api_key_detail_admin_api_keys__user_id__get",
+      "path": "/admin/api-keys/{user_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_api_key_admin_api_keys__user_id__patch",
+      "path": "/admin/api-keys/{user_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_provider_observability_admin_api_provider_observability_get",
+      "path": "/admin/api/provider-observability",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_provider_stats_admin_api_provider_stats_get",
+      "path": "/admin/api/provider-stats",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_provider_token_usage_admin_api_provider_token_usage_get",
+      "path": "/admin/api/provider-token-usage",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_audit_log_admin_audit_log_get",
+      "path": "/admin/audit-log",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_broadcasts_admin_broadcast_email_get",
+      "path": "/admin/broadcast-email",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "create_broadcast_admin_broadcast_email_post",
+      "path": "/admin/broadcast-email",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "preview_broadcast_admin_broadcast_email_preview_post",
+      "path": "/admin/broadcast-email/preview",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "test_broadcast_email_admin_broadcast_email_test_post",
+      "path": "/admin/broadcast-email/test",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "cancel_broadcast_admin_broadcast_email__broadcast_id__delete",
+      "path": "/admin/broadcast-email/{broadcast_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_broadcast_detail_admin_broadcast_email__broadcast_id__get",
+      "path": "/admin/broadcast-email/{broadcast_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_export_requests_admin_export_requests_get",
+      "path": "/admin/export/requests",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "purge_login_events_endpoint_admin_login_events_delete",
+      "path": "/admin/login-events",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_model_concurrency_admin_models_concurrency_get",
+      "path": "/admin/models/concurrency",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_model_visibility_admin_models_visibility_get",
+      "path": "/admin/models/visibility",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_model_concurrency_admin_models__model_id__concurrency_patch",
+      "path": "/admin/models/{model_id}/concurrency",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_model_visibility_admin_models__model_id__visibility_patch",
+      "path": "/admin/models/{model_id}/visibility",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_performance_metrics_admin_performance_metrics_get",
+      "path": "/admin/performance-metrics",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_provider_definitions_admin_provider_definitions_get",
+      "path": "/admin/provider-definitions",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "create_provider_definition_admin_provider_definitions_post",
+      "path": "/admin/provider-definitions",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "probe_provider_definition_admin_provider_definitions_verify_post",
+      "path": "/admin/provider-definitions/verify",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "delete_provider_definition_admin_provider_definitions__provider__delete",
+      "path": "/admin/provider-definitions/{provider}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_provider_definition_admin_provider_definitions__provider__patch",
+      "path": "/admin/provider-definitions/{provider}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_provider_keys_admin_provider_keys_get",
+      "path": "/admin/provider-keys",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "add_provider_key_admin_provider_keys_post",
+      "path": "/admin/provider-keys",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "disable_provider_env_key_admin_provider_keys_disable_env_post",
+      "path": "/admin/provider-keys/disable-env",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "enable_provider_env_key_admin_provider_keys_enable_env_post",
+      "path": "/admin/provider-keys/enable-env",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_provider_key_providers_admin_provider_keys_providers_get",
+      "path": "/admin/provider-keys/providers",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "verify_provider_key_admin_provider_keys_verify_post",
+      "path": "/admin/provider-keys/verify",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "delete_provider_key_admin_provider_keys__key_id__delete",
+      "path": "/admin/provider-keys/{key_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "disable_provider_key_admin_provider_keys__key_id__disable_post",
+      "path": "/admin/provider-keys/{key_id}/disable",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "enable_provider_key_admin_provider_keys__key_id__enable_post",
+      "path": "/admin/provider-keys/{key_id}/enable",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_provider_quotas_admin_provider_quotas_get",
+      "path": "/admin/provider-quotas",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_list_routable_providers_admin_providers_routable_get",
+      "path": "/admin/providers/routable",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "admin_set_provider_disabled_admin_providers__provider__disabled_patch",
+      "path": "/admin/providers/{provider}/disabled",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "apply_role_quota_admin_quota_role_apply_post",
+      "path": "/admin/quota/role-apply",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "preview_role_apply_admin_quota_role_apply_preview_get",
+      "path": "/admin/quota/role-apply-preview",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_list_recent_requests_admin_recent_requests_get",
+      "path": "/admin/recent-requests",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "admin_clear_error_requests_admin_recent_requests_clear_errors_post",
+      "path": "/admin/recent-requests/clear-errors",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_recent_request_content_admin_recent_requests__request_id__content_get",
+      "path": "/admin/recent-requests/{request_id}/content",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_request_metrics_admin_request_metrics_get",
+      "path": "/admin/request-metrics",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_routewise_decisions_endpoint_admin_routewise_decisions_get",
+      "path": "/admin/routewise/decisions",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_model_routewise_settings_endpoint_admin_routewise_model_settings_get",
+      "path": "/admin/routewise/model-settings",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "reset_model_routewise_setting_endpoint_admin_routewise_model_settings__key__delete",
+      "path": "/admin/routewise/model-settings/{key}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_model_routewise_setting_endpoint_admin_routewise_model_settings__key__patch",
+      "path": "/admin/routewise/model-settings/{key}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_routewise_probe_samples_endpoint_admin_routewise_probes_get",
+      "path": "/admin/routewise/probes",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "run_routewise_probe_endpoint_admin_routewise_probes_run_post",
+      "path": "/admin/routewise/probes/run",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_routewise_settings_endpoint_admin_routewise_settings_get",
+      "path": "/admin/routewise/settings",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_routewise_setting_endpoint_admin_routewise_settings__key__patch",
+      "path": "/admin/routewise/settings/{key}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_routing_admin_routing_get",
+      "path": "/admin/routing",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_openrouter_provider_options_admin_routing_openrouter_providers_get",
+      "path": "/admin/routing/openrouter-providers",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "verify_provider_route_candidate_admin_routing_provider_route_candidate_verifications__model_id__post",
+      "path": "/admin/routing/provider-route-candidate-verifications/{model_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "create_provider_route_candidate_admin_routing_provider_route_candidates__model_id__post",
+      "path": "/admin/routing/provider-route-candidates/{model_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "delete_provider_route_candidate_admin_routing_provider_route_candidates__model_route_path__delete",
+      "path": "/admin/routing/provider-route-candidates/{model_route_path}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_provider_route_candidate_admin_routing_provider_route_candidates__model_route_path__patch",
+      "path": "/admin/routing/provider-route-candidates/{model_route_path}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "verify_provider_route_model_admin_routing_provider_route_model_verifications_post",
+      "path": "/admin/routing/provider-route-model-verifications",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "create_provider_route_model_admin_routing_provider_route_models_post",
+      "path": "/admin/routing/provider-route-models",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_provider_route_strategy_admin_routing_provider_route_strategies__model_id__patch",
+      "path": "/admin/routing/provider-route-strategies/{model_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "verify_provider_route_update_admin_routing_provider_route_verifications__model_route_path__post",
+      "path": "/admin/routing/provider-route-verifications/{model_route_path}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_all_provider_routes_admin_routing_provider_routes_get",
+      "path": "/admin/routing/provider-routes",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_provider_routes_admin_routing_provider_routes__model_id__get",
+      "path": "/admin/routing/provider-routes/{model_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "delete_provider_route_override_admin_routing_provider_routes__model_route_path__delete",
+      "path": "/admin/routing/provider-routes/{model_route_path}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "put",
+      "operation_id": "update_provider_route_admin_routing_provider_routes__model_route_path__put",
+      "path": "/admin/routing/provider-routes/{model_route_path}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_all_route_weights_admin_routing_weights_get",
+      "path": "/admin/routing/weights",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "clear_route_weight_admin_routing_weights__model_endpoint_path__delete",
+      "path": "/admin/routing/weights/{model_endpoint_path}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "put",
+      "operation_id": "set_route_weight_admin_routing_weights__model_endpoint_path__put",
+      "path": "/admin/routing/weights/{model_endpoint_path}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_route_weights_admin_routing_weights__model_id__get",
+      "path": "/admin/routing/weights/{model_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_runtime_settings_endpoint_admin_settings_get",
+      "path": "/admin/settings",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_runtime_setting_endpoint_admin_settings__key__patch",
+      "path": "/admin/settings/{key}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_signup_allowed_domains_endpoint_admin_signup_domains_get",
+      "path": "/admin/signup-domains",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "add_signup_allowed_domain_endpoint_admin_signup_domains_post",
+      "path": "/admin/signup-domains",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "remove_signup_allowed_domain_endpoint_admin_signup_domains__domain__delete",
+      "path": "/admin/signup-domains/{domain}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_site_updates_admin_site_updates_get",
+      "path": "/admin/site-updates",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "create_site_update_admin_site_updates_post",
+      "path": "/admin/site-updates",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "delete_site_update_admin_site_updates__update_id__delete",
+      "path": "/admin/site-updates/{update_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_site_update_admin_site_updates__update_id__patch",
+      "path": "/admin/site-updates/{update_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_stats_admin_stats_get",
+      "path": "/admin/stats",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_ttft_scatter_admin_ttft_scatter_get",
+      "path": "/admin/ttft-scatter",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "admin_analyze_usage_admin_usage_insights_analyze_post",
+      "path": "/admin/usage-insights/analyze",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_usage_insights_settings_admin_usage_insights_settings_get",
+      "path": "/admin/usage-insights/settings",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "put",
+      "operation_id": "update_usage_insights_settings_admin_usage_insights_settings_put",
+      "path": "/admin/usage-insights/settings",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_users_admin_users_get",
+      "path": "/admin/users",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_bulk_user_ask_question_fractions_admin_users_ask_question_fractions_get",
+      "path": "/admin/users/ask-question-fractions",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_bulk_user_automation_scores_admin_users_automation_scores_get",
+      "path": "/admin/users/automation-scores",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_bulk_user_cost_history_admin_users_cost_history_get",
+      "path": "/admin/users/cost-history",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_users_summary_admin_users_summary_get",
+      "path": "/admin/users/summary",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_bulk_user_turn_averages_admin_users_turn_averages_get",
+      "path": "/admin/users/turn-averages",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_user_admin_users__user_id__patch",
+      "path": "/admin/users/{user_id}",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "approve_user_admin_users__user_id__approve_post",
+      "path": "/admin/users/{user_id}/approve",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_user_automation_score_admin_users__user_id__automation_score_get",
+      "path": "/admin/users/{user_id}/automation-score",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "admin_get_user_cost_history_admin_users__user_id__cost_history_get",
+      "path": "/admin/users/{user_id}/cost-history",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "delete_user_admin_users__user_id__delete_post",
+      "path": "/admin/users/{user_id}/delete",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_user_detail_admin_users__user_id__detail_get",
+      "path": "/admin/users/{user_id}/detail",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "hard_delete_user_admin_users__user_id__hard_delete_post",
+      "path": "/admin/users/{user_id}/hard-delete",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "reject_user_admin_users__user_id__reject_post",
+      "path": "/admin/users/{user_id}/reject",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "resume_user_admin_users__user_id__resume_post",
+      "path": "/admin/users/{user_id}/resume",
+      "rewrite_source": "/admin/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "get",
+      "path": "/anthropic/user/balance",
+      "rewrite_source": "/anthropic/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/anthropic/v1/messages",
+      "rewrite_source": "/anthropic/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/anthropic/v1/messages/count_tokens",
+      "rewrite_source": "/anthropic/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "get",
+      "path": "/anthropic/v1/models",
+      "rewrite_source": "/anthropic/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "forgot_password_auth_forgot_password_post",
+      "path": "/auth/forgot-password",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "login_auth_login_post",
+      "path": "/auth/login",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "logout_auth_logout_post",
+      "path": "/auth/logout",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "refresh_auth_refresh_post",
+      "path": "/auth/refresh",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "resend_verification_auth_resend_verification_post",
+      "path": "/auth/resend-verification",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "reset_password_auth_reset_password_post",
+      "path": "/auth/reset-password",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "signup_auth_signup_post",
+      "path": "/auth/signup",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "verify_email_auth_verify_email_get",
+      "path": "/auth/verify-email",
+      "rewrite_source": "/auth/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "getCapabilities",
+      "path": "/capabilities",
+      "rewrite_source": "/capabilities"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "streamPlaygroundChat",
+      "path": "/control/v1/playground/chat",
+      "rewrite_source": "/control/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "listPlaygroundModels",
+      "path": "/control/v1/playground/models",
+      "rewrite_source": "/control/:path*"
+    },
+    {
+      "classification": "ops-only",
+      "deprecated": false,
+      "method": "get",
+      "path": "/health",
+      "rewrite_source": "/health"
+    },
+    {
+      "classification": "compatibility",
+      "deprecated": true,
+      "method": "post",
+      "path": "/internal/playground/chat",
+      "rewrite_source": "/internal/playground/:path*"
+    },
+    {
+      "classification": "compatibility",
+      "deprecated": true,
+      "method": "get",
+      "path": "/internal/playground/models",
+      "rewrite_source": "/internal/playground/:path*"
+    },
+    {
+      "classification": "ops-only",
+      "deprecated": false,
+      "method": "get",
+      "path": "/internal/verify-admin",
+      "rewrite_source": "/internal/verify-admin"
+    },
+    {
+      "classification": "compatibility",
+      "deprecated": false,
+      "method": "get",
+      "path": "/site-config",
+      "rewrite_source": "/site-config"
+    },
+    {
+      "classification": "distribution-private",
+      "deprecated": false,
+      "method": "get",
+      "path": "/site-updates",
+      "rewrite_source": "/site-updates"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_api_key_info_user_api_keys_get",
+      "path": "/user/api-keys",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "create_api_key_user_api_keys_post",
+      "path": "/user/api-keys",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "list_api_keys_user_api_keys_all_get",
+      "path": "/user/api-keys/all",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "regenerate_api_key_user_api_keys_regenerate_post",
+      "path": "/user/api-keys/regenerate",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "delete_api_key_user_api_keys__key_prefix__delete",
+      "path": "/user/api-keys/{key_prefix}",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "post",
+      "operation_id": "change_password_user_change_password_post",
+      "path": "/user/change-password",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_current_user_info_user_me_get",
+      "path": "/user/me",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_user_models_user_models_get",
+      "path": "/user/models",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "delete",
+      "operation_id": "reset_llm_prober_layout_user_preferences_llm_prober_layout_delete",
+      "path": "/user/preferences/llm-prober-layout",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_llm_prober_layout_user_preferences_llm_prober_layout_get",
+      "path": "/user/preferences/llm-prober-layout",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "put",
+      "operation_id": "update_llm_prober_layout_user_preferences_llm_prober_layout_put",
+      "path": "/user/preferences/llm-prober-layout",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "patch",
+      "operation_id": "update_profile_user_profile_patch",
+      "path": "/user/profile",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_recent_requests_user_recent_requests_get",
+      "path": "/user/recent-requests",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "stable-control",
+      "deprecated": false,
+      "method": "get",
+      "operation_id": "get_usage_user_usage_get",
+      "path": "/user/usage",
+      "rewrite_source": "/user/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/chat/completions",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/completions",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/embeddings",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/messages",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/messages/count_tokens",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "get",
+      "path": "/v1/models",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "delete",
+      "path": "/v1/qdrant/{path}",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "get",
+      "path": "/v1/qdrant/{path}",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "patch",
+      "path": "/v1/qdrant/{path}",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/qdrant/{path}",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "put",
+      "path": "/v1/qdrant/{path}",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/rag/chat",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "get",
+      "path": "/v1/rag/status",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "post",
+      "path": "/v1/responses",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "delete",
+      "path": "/v1/responses/{response_id}",
+      "rewrite_source": "/v1/:path*"
+    },
+    {
+      "classification": "inference-protocol",
+      "deprecated": false,
+      "method": "get",
+      "path": "/v1/responses/{response_id}",
+      "rewrite_source": "/v1/:path*"
+    }
+  ],
+  "schema_version": 1,
+  "source_files": [
+    "apps/frontend/next.config.js",
+    "contracts/frontend-backend-routes.v1.json",
+    "FastAPI openapi.json"
+  ]
+}

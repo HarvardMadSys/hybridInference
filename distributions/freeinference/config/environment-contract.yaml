@@ -1,0 +1,10 @@
+# Names and consumption rules only. Never put environment values in this file.
+
+environment_schema_version: 1
+
+variables:
+  - name: HYBRIDINFERENCE_BACKEND_IMAGE
+    classification: config
+    consumer: deploy
+    required: true
+    default: false

@@ -176,9 +176,9 @@ class QuotaInfo(BaseModel):
     max_concurrency: int | None = None
     reset_at: datetime | None = None
     reset_timezone: str = "UTC"
-    contact_email: str = "admin@freeinference.org"
+    contact_email: str = ""
     increase_request_message: str = (
-        "Need more quota? Email admin@freeinference.org and explain your use case."
+        "Need more quota? Contact your deployment administrator and explain your use case."
     )
 
 

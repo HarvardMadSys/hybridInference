@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HybridInference contract fixture</title>
+  </head>
+  <body>
+    <main>
+      <h1>Independent frontend contract fixture</h1>
+      <label>API base <input id="base-url" value="" /></label>
+      <form id="login-form">
+        <label>Email <input id="email" type="email" required /></label>
+        <label>Password <input id="password" type="password" required /></label>
+        <button type="submit">Login and check contracts</button>
+      </form>
+      <pre id="output" aria-live="polite"></pre>
+    </main>
+    <script type="module" src="./main.mjs"></script>
+  </body>
+</html>

@@ -26,7 +26,11 @@ from routing.model_router_registry import ModelRouterRegistry
 from routing.routewise.envelope import EnvelopeNotCalibratedError
 from routing.routewise.router import RouteWiseRouter
 from serving.config.disabled_providers import DisabledProviderResolver
-from serving.config.distribution import resolve_config_path
+from serving.config.distribution import (
+    preflight_distribution_config,
+    raise_if_distribution_resource_required,
+    resolve_config_path,
+)
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
 from serving.config.routewise_model_settings import (
@@ -471,6 +475,7 @@ async def _init_router_and_models(
                     f"{list(embedding_adapters.keys())}"
                 )
     except Exception as exc:
+        raise_if_distribution_resource_required("models", exc)
         logger.warning(f"Failed to load models.yaml: {exc}")
 
     return embedding_adapters, model_infos
@@ -504,6 +509,7 @@ def _apply_routing_manager(router: RouteExecutor) -> RoutingManager | None:
         else:
             logger.info("No routing config found; using default routes")
     except Exception as exc:
+        raise_if_distribution_resource_required("routing", exc)
         logger.warning(f"RoutingManager failed to initialize: {exc}")
     return None
 
@@ -521,6 +527,7 @@ async def initialize() -> AppServices:
     # Load environment first so logging picks up LOG_FORMAT/LOG_LEVEL.
     load_dotenv()
     setup_logging()
+    preflight_distribution_config()
 
     if os.environ.get("EXPERIMENT_MODE"):
         logger.warning(
@@ -681,6 +688,7 @@ async def initialize() -> AppServices:
             routing_cfg = load_routing_config(routing_cfg_path)
             default_router_name = routing_cfg.default_router
     except Exception as exc:
+        raise_if_distribution_resource_required("routing", exc)
         logger.warning(f"Failed to read default_router from routing.yaml: {exc}; using 'fixed'.")
 
     # ENABLE_ROUTEWISE legacy: opts every model into routewise as the default.
@@ -794,7 +802,8 @@ async def initialize() -> AppServices:
             )
             await alert_engine.start()
             logger.info("alert engine started")
-        except Exception:
+        except Exception as exc:
+            raise_if_distribution_resource_required("alerts", exc)
             logger.exception("Alert engine startup failed")
             alert_engine = None
     else:

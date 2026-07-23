@@ -34,10 +34,16 @@ async def get_site_config() -> dict[str, Any]:
     no distribution manifest is configured, so clients never need to
     special-case its absence.
     """
-    if get_settings().distribution_config_mode.strip().lower() != "active":
-        return _NEUTRAL
     config = get_distribution_config()
     if config is None:
+        return _NEUTRAL
+    # Runtime v1 keeps the Phase 1 global dark/active switch. Runtime v2 is
+    # selected per resource and deliberately rejects that global switch, so
+    # its public identity is active whenever the strict manifest is selected.
+    if (
+        config.schema_version == 1
+        and get_settings().distribution_config_mode.strip().lower() != "active"
+    ):
         return _NEUTRAL
     return {
         "distribution": config.distribution.model_dump(),

@@ -15,7 +15,8 @@ from routing.protocols import RoutingRequestOptions
 from serving.servers.deps import get_router, require_role
 from serving.stream import make_role_chunk
 
-router = APIRouter(prefix="/internal/playground", tags=["Playground"])
+router = APIRouter(tags=["Playground"])
+_require_internal = require_role("internal")
 
 # Keys that should never be sent to the client (internal routing metadata).
 _INTERNAL_KEYS = frozenset({"_routing"})
@@ -34,7 +35,13 @@ class PlaygroundModelItem(BaseModel):
     id: str
     name: str
     provider: str
-    providers: list[PlaygroundProviderItem] = []
+    providers: list[PlaygroundProviderItem] = Field(default_factory=list)
+
+
+class PlaygroundModelsResponse(BaseModel):
+    """Stable response body for the playground model selector."""
+
+    models: list[PlaygroundModelItem]
 
 
 # Human-friendly display names for provider kinds.
@@ -77,9 +84,18 @@ def _provider_display_name(endpoint_id: str, base_url: str = "") -> str:
     return _PROVIDER_DISPLAY_NAMES.get(endpoint_id, endpoint_id)
 
 
-@router.get("/models")
+@router.get(
+    "/control/v1/playground/models",
+    operation_id="listPlaygroundModels",
+    response_model=PlaygroundModelsResponse,
+)
+@router.get(
+    "/internal/playground/models",
+    deprecated=True,
+    response_model=PlaygroundModelsResponse,
+)
 async def list_models(
-    _admin: dict[str, Any] = Depends(require_role("internal")),
+    _admin: dict[str, Any] = Depends(_require_internal),
     router_exec=Depends(get_router),
 ) -> dict[str, Any]:
     """Return canonical model metadata for the playground selector."""
@@ -154,10 +170,31 @@ def _sanitize_chunk(chunk: str) -> str:
     return chunk
 
 
-@router.post("/chat")
+@router.post(
+    "/control/v1/playground/chat",
+    operation_id="streamPlaygroundChat",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "SSE stream terminated by a data: [DONE] frame.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
+@router.post(
+    "/internal/playground/chat",
+    deprecated=True,
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "SSE stream terminated by a data: [DONE] frame.",
+            "content": {"text/event-stream": {"schema": {"type": "string"}}},
+        }
+    },
+)
 async def playground_chat(
     body: PlaygroundChatRequest,
-    _admin: dict[str, Any] = Depends(require_role("internal")),
+    _admin: dict[str, Any] = Depends(_require_internal),
     router_exec=Depends(get_router),
 ) -> StreamingResponse:
     """Stream a chat completion for admin testing."""

@@ -45,6 +45,34 @@ async def test_health_both_stores_ok_returns_healthy(test_client, app_services) 
     assert body["database_connected"] is True
 
 
+async def test_metrics_exposes_value_free_distribution_mismatch_state(
+    test_client,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "serving.servers.routers.health.get_distribution_config_comparison_state",
+        lambda: {
+            "models": {
+                "resource": "models",
+                "selector": "shadow",
+                "source": "default",
+                "status": "effective_missing",
+                "mismatch": 1,
+            }
+        },
+    )
+
+    response = await test_client.get("/metrics")
+
+    assert response.status_code == 200
+    assert (
+        'hybridinference_distribution_config_mismatch{resource="models",'
+        'selector="shadow",source="default",status="effective_missing"} 1' in response.text
+    )
+    assert "sha256" not in response.text
+    assert "DISTRIBUTION_CONFIG_PATH" not in response.text
+
+
 async def test_health_op_only_up_returns_200_degraded(test_client, app_services) -> None:
     """log_store down, op_store up → 200 with degraded body.
 
@@ -134,6 +162,54 @@ async def test_health_ready_both_down_returns_503(test_client, app_services) -> 
     assert resp.status_code == 503
     body = resp.json()
     assert body["status"] == "not_ready"
+
+
+async def test_health_ready_fails_when_required_capability_is_unavailable(
+    test_client,
+    app_services,
+    monkeypatch,
+) -> None:
+    await _set_store_health(app_services.operational_store, True)
+    await _set_store_health(app_services.log_store, True)
+    monkeypatch.setattr(
+        "serving.servers.routers.health.distribution_capability_mismatches",
+        AsyncMock(return_value={"rag.chat": (True, False)}),
+    )
+    monkeypatch.setattr(
+        "serving.servers.routers.health.get_settings",
+        lambda: SimpleNamespace(distribution_config_required=True),
+    )
+
+    resp = await test_client.get("/health/ready")
+
+    assert resp.status_code == 503
+    assert resp.json()["reason"] == "required_distribution_capability_unavailable"
+    assert resp.json()["unavailable_capabilities"] == ["rag.chat"]
+    assert resp.json()["unexpectedly_enabled_capabilities"] == []
+
+
+async def test_health_ready_fails_when_required_policy_disables_effective_capability(
+    test_client,
+    app_services,
+    monkeypatch,
+) -> None:
+    await _set_store_health(app_services.operational_store, True)
+    await _set_store_health(app_services.log_store, True)
+    monkeypatch.setattr(
+        "serving.servers.routers.health.distribution_capability_mismatches",
+        AsyncMock(return_value={"auth.public_signup": (False, True)}),
+    )
+    monkeypatch.setattr(
+        "serving.servers.routers.health.get_settings",
+        lambda: SimpleNamespace(distribution_config_required=True),
+    )
+
+    response = await test_client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert response.json()["reason"] == "distribution_capability_expectation_mismatch"
+    assert response.json()["unavailable_capabilities"] == []
+    assert response.json()["unexpectedly_enabled_capabilities"] == ["auth.public_signup"]
 
 
 async def test_discovery_and_health_counts_hide_unpublished_routes(

@@ -20,6 +20,7 @@ from .routers import (
     admin,
     anthropic_messages,
     auth_routes,
+    capabilities,
     compat,
     completions,
     embeddings,
@@ -103,6 +104,7 @@ def create_app() -> FastAPI:
     app.include_router(responses.router)
     app.include_router(anthropic_messages.router)
     app.include_router(qdrant_proxy.router)
+    app.include_router(capabilities.router)
     app.include_router(site_config.router)
     app.include_router(site_updates.router)
     app.include_router(compat.router)

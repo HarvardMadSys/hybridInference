@@ -131,7 +131,7 @@ export default function PlaygroundPage() {
 
   useEffect(() => {
     if (!hasRole(state.user?.role, 'internal')) return;
-    fetchWithAuth(API_BASE, '/internal/playground/models')
+    fetchWithAuth(API_BASE, '/control/v1/playground/models')
       .then((r) => jsonOrThrow<{ models: PlaygroundModel[] }>(r))
       .then((d) => {
         setModels(d.models);
@@ -298,7 +298,7 @@ export default function PlaygroundPage() {
     abortRef.current = ctrl;
 
     try {
-      const resp = await fetchWithAuth(API_BASE, '/internal/playground/chat', {
+      const resp = await fetchWithAuth(API_BASE, '/control/v1/playground/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

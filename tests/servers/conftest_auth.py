@@ -217,10 +217,12 @@ async def auth_test_app(auth_app_services):
     app = FastAPI(title="Auth Test API", version="1.0.0", lifespan=lifespan)
     app.state.services = auth_app_services
 
+    from serving.servers.middleware.exception_handler import install_exception_handlers
     from serving.servers.routers import auth_routes, user_routes
 
     app.include_router(auth_routes.router)
     app.include_router(user_routes.router)
+    install_exception_handlers(app)
 
     return app
 

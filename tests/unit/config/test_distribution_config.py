@@ -80,7 +80,7 @@ def test_loader_resolves_relative_paths_against_manifest_dir(tmp_path):
 
 
 def test_loader_rejects_unsupported_schema_version(tmp_path):
-    manifest = _write_manifest(tmp_path, "schema_version: 2\ndistribution:\n  id: x\n")
+    manifest = _write_manifest(tmp_path, "schema_version: 3\ndistribution:\n  id: x\n")
     with pytest.raises(DistributionConfigError):
         load_distribution_config(manifest)
 

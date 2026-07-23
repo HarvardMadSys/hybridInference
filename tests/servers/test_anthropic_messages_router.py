@@ -272,6 +272,9 @@ async def test_v1_messages_native_streaming_passthrough(anthropic_test_client, m
         "POST", "/v1/messages", json=body, headers=_auth()
     ) as r:
         assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        assert r.headers["cache-control"] == "no-cache, no-transform"
+        assert r.headers["x-accel-buffering"] == "no"
         collected = b""
         async for chunk in r.aiter_bytes():
             collected += chunk
@@ -330,6 +333,9 @@ async def test_v1_messages_translated_streaming(anthropic_test_client, monkeypat
         "POST", "/v1/messages", json=body, headers=_auth()
     ) as r:
         assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        assert r.headers["cache-control"] == "no-cache, no-transform"
+        assert r.headers["x-accel-buffering"] == "no"
         collected = b""
         async for chunk in r.aiter_bytes():
             collected += chunk
@@ -1883,6 +1889,45 @@ async def test_dict_detail_error_wrapped_in_anthropic_envelope():
     assert payload["type"] == "error"
     assert payload["error"]["type"] == "rate_limit_error"
     assert payload["error"]["message"] == "Too many"
+
+
+@pytest.mark.asyncio
+async def test_control_path_http_error_uses_stable_string_code_and_details():
+    """Control paths use their versioned envelope, not the inference shape."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from serving.servers.routers.anthropic_messages import (
+        anthropic_aware_http_exception_handler,
+    )
+
+    request = SimpleNamespace(
+        url=SimpleNamespace(path="/user/api-keys"),
+        method="POST",
+        state=SimpleNamespace(request_id="req-control"),
+    )
+    exc = HTTPException(
+        status_code=429,
+        detail={
+            "error": {
+                "code": "QUOTA_EXCEEDED",
+                "message": "Quota exceeded",
+                "limit": 5,
+            }
+        },
+    )
+
+    response = await anthropic_aware_http_exception_handler(request, exc)
+    import json as _json
+
+    payload = _json.loads(bytes(response.body))
+    assert payload["error"] == {
+        "code": "QUOTA_EXCEEDED",
+        "message": "Quota exceeded",
+        "details": {"limit": 5},
+    }
+    assert payload["request_id"] == "req-control"
 
 
 @pytest.mark.asyncio

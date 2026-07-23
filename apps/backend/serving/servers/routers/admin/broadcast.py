@@ -15,9 +15,11 @@ from serving.schemas_admin import (
     BroadcastPreviewRequest,
     BroadcastPreviewResponse,
     BroadcastRecipientItem,
+    CancelBroadcastResponse,
     CreateBroadcastRequest,
     CreateBroadcastResponse,
     ListBroadcastsResponse,
+    TestBroadcastEmailResponse,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_db_logger, verify_admin_access
@@ -107,12 +109,12 @@ async def preview_broadcast(
     )
 
 
-@router.post("/broadcast-email/test")
+@router.post("/broadcast-email/test", response_model=TestBroadcastEmailResponse)
 async def test_broadcast_email(
     req: BroadcastPreviewRequest,
     admin: str = Depends(verify_admin_access),
     db=Depends(get_db_logger),
-):
+) -> TestBroadcastEmailResponse:
     """Send a test email to the requesting admin's address only."""
     if not db or not db.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -140,7 +142,7 @@ async def test_broadcast_email(
     )
     if not ok:
         raise HTTPException(status_code=502, detail="Failed to send test email (SMTP error)")
-    return {"message": f"Test email sent to {admin_email}"}
+    return TestBroadcastEmailResponse(message=f"Test email sent to {admin_email}")
 
 
 @router.post("/broadcast-email", response_model=CreateBroadcastResponse)
@@ -357,12 +359,12 @@ async def get_broadcast_detail(
     )
 
 
-@router.delete("/broadcast-email/{broadcast_id}")
+@router.delete("/broadcast-email/{broadcast_id}", response_model=CancelBroadcastResponse)
 async def cancel_broadcast(
     broadcast_id: str,
     admin: str = Depends(verify_admin_access),
     db=Depends(get_db_logger),
-):
+) -> CancelBroadcastResponse:
     """Cancel a scheduled broadcast. Returns 409 if not in 'scheduled' status."""
     if not db or not db.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -384,4 +386,4 @@ async def cancel_broadcast(
     await log_admin_action(
         db, admin, "broadcast_email_cancel", None, {"broadcast_id": broadcast_id}
     )
-    return {"message": "Broadcast cancelled"}
+    return CancelBroadcastResponse(message="Broadcast cancelled")

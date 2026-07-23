@@ -1,0 +1,316 @@
+{
+  "api_contracts": {
+    "control_allowlist": {
+      "control_api_version": "1.0",
+      "operation_count": 130,
+      "sha256": "sha256:dbb360f3f08013810484a92a1451252963fc32d0e4e107618a0c9154933fd2aa"
+    },
+    "control_openapi": {
+      "operation_count": 130,
+      "path_count": 109,
+      "sha256": "sha256:14b157aa138f32da3c374b4f85f255a90d2e09d23460aa9a17a1d74922be50c3",
+      "version": "1.0"
+    },
+    "frontend_operation_inventory": {
+      "by_classification": {
+        "compatibility": 3,
+        "distribution-private": 1,
+        "inference-protocol": 20,
+        "ops-only": 2,
+        "stable-control": 130
+      },
+      "deprecated_count": 2,
+      "operation_count": 156,
+      "sha256": "sha256:40aa59554cc78938750f8afb548e69e0a5b297408aedcc15e09a660004751661"
+    },
+    "frontend_rewrites": {
+      "by_classification": {
+        "compatibility": 2,
+        "distribution-private": 1,
+        "inference-protocol": 2,
+        "ops-only": 3,
+        "stable-control": 5
+      },
+      "rewrite_count": 13,
+      "sha256": "sha256:8e715000c9c95df48dceb978473907e520e8d504761922fc75a0ee6482fed9e3"
+    }
+  },
+  "configuration": {
+    "artifacts": {
+      "alerts": {
+        "canonical_sha256": "sha256:f3dbaa1337324542376cefca4279f03253cd71576e1e323ab36a8b36934c4df6",
+        "env_reference_count": 0,
+        "source": "config/alerts.yaml"
+      },
+      "models": {
+        "canonical_sha256": "sha256:738077bc956eaf8a445b678d6fc4151e83c68f622d0355f6f2ac8697baf67727",
+        "env_reference_count": 91,
+        "source": "config/models.yaml"
+      },
+      "routing": {
+        "canonical_sha256": "sha256:ec3a1e5e152e70fa865f8098d2ab2e2cb623e6454e082134e71e7f026b72c171",
+        "env_reference_count": 7,
+        "source": "config/routing.yaml"
+      }
+    },
+    "hash_mode": "yaml-to-canonical-json-with-environment-references-unexpanded"
+  },
+  "database_ddl": {
+    "repo_ddl_source_fingerprint": "sha256:1d1bdb7b78f25cdc3400398bc034f37c95675097fc892cba658a7bafe87e6bb9",
+    "scan_roots": [
+      "apps/backend",
+      "services",
+      "ops/db",
+      "deploy"
+    ],
+    "source_count": 11,
+    "sources": [
+      {
+        "path": "apps/backend/serving/admin/geo_demand_rollup.py",
+        "sha256": "sha256:21e38491bc615f4ee417827afbb773abbf3a3b31f60cbfdd9f073d7efaec642c",
+        "statement_count": 2
+      },
+      {
+        "path": "apps/backend/serving/oncall/store.py",
+        "sha256": "sha256:6d23b3674eaac0485605467bcbe22d6aa4e2e86707569b322a37680de9b7a50d",
+        "statement_count": 3
+      },
+      {
+        "path": "apps/backend/serving/storage/database.py",
+        "sha256": "sha256:c2ad4c60e1c62ab3f47630e32364293b71109dc17fc4100874d7b2bdaab68515",
+        "statement_count": 62
+      },
+      {
+        "path": "apps/backend/serving/storage/log_schema.py",
+        "sha256": "sha256:b685ae0baa4f830374659fd4860d9fc9921f14ac05b2ed3a8b7615b2ed9fb191",
+        "statement_count": 35
+      },
+      {
+        "path": "apps/backend/serving/storage/postgres_operational.py",
+        "sha256": "sha256:3421839780a14e936858f6ca2f3e8d5d6c3be00712df86eba94a64023f52ac36",
+        "statement_count": 79
+      },
+      {
+        "path": "apps/backend/serving/storage/responses_store.py",
+        "sha256": "sha256:59a817bc960e60c57da41f9c5702bf5bab991333f5453e177b7aa7a520e73dd9",
+        "statement_count": 2
+      },
+      {
+        "path": "services/alert-control-plane-worker/src/quota.ts",
+        "sha256": "sha256:8908fe26eb417bf3c3cd126ecf2a15ec25ac52cb6c71e097c67c60ad92715401",
+        "statement_count": 2
+      },
+      {
+        "path": "services/alert-control-plane-worker/src/registry.ts",
+        "sha256": "sha256:7cf6704c22ff9e45fd14ceebec3c480f6ae648569a120d64f0e5c148272085b5",
+        "statement_count": 3
+      },
+      {
+        "path": "services/alert-control-plane-worker/src/store.ts",
+        "sha256": "sha256:51a74942b74e0618c26a40a1a744cc81b7f466ec857840ffdb9d94ae75fe2144",
+        "statement_count": 6
+      },
+      {
+        "path": "services/status-monitor-worker/migrations/0001_init.sql",
+        "sha256": "sha256:739212322a3bb0cb77e52cdd90eba7a4d14096faeb757f6faacc243e3a677475",
+        "statement_count": 3
+      },
+      {
+        "path": "services/status-monitor-worker/migrations/0002_meta.sql",
+        "sha256": "sha256:1035817d52b799d9398ab963de3d48d2a6fc328b324155ea1b485de1993fd40d",
+        "statement_count": 1
+      }
+    ]
+  },
+  "evidence_scope": "repository-only-not-deployment-evidence",
+  "frontend_html_smoke": {
+    "by_access": {
+      "protected": 18,
+      "public": 8
+    },
+    "evidence_status": "specification-only",
+    "route_count": 26,
+    "sha256": "sha256:ffb1e1e3cbd198badab1a975fee0eb1fb63c87ba8bd6695e04c07ef495fc07ae"
+  },
+  "frontend_pages": {
+    "fingerprint": "sha256:4b21f6934e7243f0c439bda9afdccf4e2abcb10aaf42cce7caa08268dd31abcf",
+    "page_count": 26,
+    "routes": [
+      {
+        "route": "/",
+        "source": "apps/frontend/src/app/page.tsx"
+      },
+      {
+        "route": "/chat",
+        "source": "apps/frontend/src/app/chat/page.tsx"
+      },
+      {
+        "route": "/dashboard",
+        "source": "apps/frontend/src/app/dashboard/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin",
+        "source": "apps/frontend/src/app/dashboard/admin/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/analytics",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/analytics/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/analytics/geo",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/analytics/geo/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/announcements",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/announcements/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/audit",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/audit/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/broadcast",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/broadcast/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/log",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/log/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/providers",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/providers/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/requests",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/requests/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/routing",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/routing/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/settings",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/settings/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/token-usage",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/token-usage/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/updates",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/updates/page.tsx"
+      },
+      {
+        "route": "/dashboard/admin/users",
+        "source": "apps/frontend/src/app/dashboard/admin/(tabs)/users/page.tsx"
+      },
+      {
+        "route": "/dashboard/playground",
+        "source": "apps/frontend/src/app/dashboard/playground/page.tsx"
+      },
+      {
+        "route": "/dashboard/settings",
+        "source": "apps/frontend/src/app/dashboard/settings/page.tsx"
+      },
+      {
+        "route": "/forgot-password",
+        "source": "apps/frontend/src/app/forgot-password/page.tsx"
+      },
+      {
+        "route": "/login",
+        "source": "apps/frontend/src/app/login/page.tsx"
+      },
+      {
+        "route": "/reset-password",
+        "source": "apps/frontend/src/app/reset-password/page.tsx"
+      },
+      {
+        "route": "/signup",
+        "source": "apps/frontend/src/app/signup/page.tsx"
+      },
+      {
+        "route": "/team",
+        "source": "apps/frontend/src/app/team/page.tsx"
+      },
+      {
+        "route": "/terms",
+        "source": "apps/frontend/src/app/terms/page.tsx"
+      },
+      {
+        "route": "/verify-email",
+        "source": "apps/frontend/src/app/verify-email/page.tsx"
+      }
+    ]
+  },
+  "protocol_contracts": {
+    "auth_session_v1": {
+      "sha256": "sha256:11823ae6c5a0056716745c749b6468cb464ee75d671b502c35fefdf92de63e63",
+      "source": "contracts/auth-session-v1.md"
+    },
+    "control_errors_v1": {
+      "sha256": "sha256:e0a43b39476a1173c698172e7a1709d7778e6012cd4e512e107e04a9047bd827",
+      "source": "contracts/control-errors-v1.md"
+    },
+    "sse_v1": {
+      "sha256": "sha256:e39b74600275f5efc59c9f5d7c0cd24e46c423dded731c59d066ab1ceea72478",
+      "source": "contracts/sse-v1.md"
+    }
+  },
+  "rollback_controls": {
+    "command_templates": {
+      "database_backup": {
+        "sha256": "sha256:b31a882cea466afacb51eaaca367e080e3c2a56f62516fed153f5143f04c6f41"
+      },
+      "database_restore": {
+        "sha256": "sha256:62067d525529df5fa8218badd5eeafb6e2170ddf4de368ce8734dce91b182db9"
+      },
+      "release_redeploy": {
+        "sha256": "sha256:e974985f90ed6fdc643af50d106fd4d81c6a9a413e8532d373b191c4a5840a91"
+      }
+    },
+    "sources": {
+      "database_backup_script": {
+        "sha256": "sha256:cec98e363d94128947c74192c74fd705d8be78b8d67e4c45e2f53a2c534417b5",
+        "source": "ops/db/backup.sh"
+      },
+      "database_restore_script": {
+        "sha256": "sha256:449ba7610bb3b3bffb571418310bda9568bfce5ac9b5f604a141155d8893617b",
+        "source": "ops/db/restore.sh"
+      },
+      "production_deploy_script": {
+        "sha256": "sha256:ea9629c564594d19b327a7b60c96aaab40b898087450df84bc48f701b7719f57",
+        "source": "ops/deploy/deploy_production.sh"
+      },
+      "production_rollback_workflow": {
+        "sha256": "sha256:dc24b4bd9e7384efd8e70833711ba19171ec0bbf06f9302326876a0ca06e317d",
+        "source": ".github/workflows/deploy-rollback.yml"
+      }
+    }
+  },
+  "runtime_distribution_artifacts": {
+    "artifacts": {
+      "bundle_lock_v1": {
+        "file": "bundle.lock.json",
+        "sha256": "sha256:3ca4bfaf851eeb29e8bbcff93e825e791de14fc41a098e3bbd20a1f46aa4eb16"
+      },
+      "bundle_manifest_v1": {
+        "file": "bundle.yaml",
+        "sha256": "sha256:74440619b332be70b578a9bf7af77569cdd0454849d70b80ecb94f4730e75e06"
+      },
+      "environment_contract": {
+        "file": "config/environment-contract.yaml",
+        "sha256": "sha256:99416b087a8d5b71d95c34db67eef7831d6644ff02bd66a905e19224c85c30d8"
+      },
+      "runtime_manifest_v1": {
+        "file": "distribution.yaml",
+        "sha256": "sha256:b5e3c16093f8835d7bdb378eb5c4b9cdb92dd9a6d95383dad7dc6c7d40451f0b"
+      },
+      "runtime_manifest_v2": {
+        "file": "distribution.v2.yaml",
+        "sha256": "sha256:b717cf0a81f86e1fece8dc0c1d976891c1d9ab8b69390c271aa18dfa14621ede"
+      }
+    },
+    "hash_mode": "raw-file-bytes"
+  },
+  "schema_version": 1
+}

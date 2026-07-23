@@ -147,6 +147,13 @@ async def anthropic_aware_http_exception_handler(request: Request, exc: HTTPExce
     """
     path = request.url.path
     is_anthropic = any(path.startswith(p) for p in _ANTHROPIC_PATHS)
+    from serving.servers.middleware.exception_handler import (
+        is_stable_control_path,
+        stable_control_http_exception_response,
+    )
+
+    if not is_anthropic and is_stable_control_path(path):
+        return stable_control_http_exception_response(request, exc)
 
     if isinstance(exc.detail, dict) and "error" in exc.detail:
         # On the Anthropic surfaces these dict bodies (e.g. the concurrency

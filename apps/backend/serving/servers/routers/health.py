@@ -4,14 +4,47 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import PlainTextResponse
 
-from serving.config.settings import has_role
+from serving.config.distribution import get_distribution_config_comparison_state
+from serving.config.settings import get_settings, has_role
 from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import get_log_store, get_operational_store, get_router, get_services
+from serving.servers.routers.capabilities import distribution_capability_mismatches
 
 router = APIRouter()
+
+
+def _prometheus_label(value: str) -> str:
+    """Escape one bounded metric-label value."""
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+async def metrics() -> PlainTextResponse:
+    """Expose value-free distribution comparison gauges for scraping."""
+    lines = [
+        "# HELP hybridinference_distribution_config_mismatch "
+        "Whether a distribution candidate differs or cannot be compared.",
+        "# TYPE hybridinference_distribution_config_mismatch gauge",
+    ]
+    for resource, state in get_distribution_config_comparison_state().items():
+        labels = {
+            "resource": resource,
+            "selector": str(state["selector"]),
+            "source": str(state["source"]),
+            "status": str(state["status"]),
+        }
+        rendered_labels = ",".join(
+            f'{name}="{_prometheus_label(value)}"' for name, value in labels.items()
+        )
+        lines.append(
+            "hybridinference_distribution_config_mismatch"
+            f"{{{rendered_labels}}} {int(state['mismatch'])}"
+        )
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 def _route_is_published(route: Any) -> bool:
@@ -201,6 +234,7 @@ async def health(
 
 @router.get("/health/ready")
 async def health_ready(
+    request: Request,
     response: Response,
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
@@ -215,8 +249,22 @@ async def health_ready(
     "degraded"`` to avoid container restart loops.
     """
     store_health = await _test_store_health(op_store, log_store)
+    capability_mismatches = await distribution_capability_mismatches(request)
+    required_capabilities_unavailable = sorted(
+        capability_id
+        for capability_id, (expected, effective) in capability_mismatches.items()
+        if expected and not effective
+    )
+    unexpectedly_enabled_capabilities = sorted(
+        capability_id
+        for capability_id, (expected, effective) in capability_mismatches.items()
+        if not expected and effective
+    )
+    fail_required_capabilities = bool(
+        get_settings().distribution_config_required and capability_mismatches
+    )
 
-    if store_health["all_healthy"]:
+    if store_health["all_healthy"] and not fail_required_capabilities:
         return {
             "status": "ready",
             "database_configured": store_health["database_configured"],
@@ -227,10 +275,24 @@ async def health_ready(
         }
 
     response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    if required_capabilities_unavailable and not unexpectedly_enabled_capabilities:
+        reason = "required_distribution_capability_unavailable"
+    elif fail_required_capabilities:
+        reason = "distribution_capability_expectation_mismatch"
+    else:
+        reason = "store_degraded"
     return {
         "status": "not_ready",
-        "reason": "store_degraded",
+        "reason": reason,
         "database_configured": store_health["database_configured"],
+        **(
+            {
+                "unavailable_capabilities": required_capabilities_unavailable,
+                "unexpectedly_enabled_capabilities": unexpectedly_enabled_capabilities,
+            }
+            if fail_required_capabilities
+            else {}
+        ),
         "stores": {
             "operational_store": store_health["operational_store"],
             "log_store": store_health["log_store"],

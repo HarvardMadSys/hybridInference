@@ -326,6 +326,10 @@ async def get_current_user(
     }
 
 
+get_current_user.__control_auth__ = "bearer-jwt"
+get_current_user.__control_permission__ = "active-user"
+
+
 async def require_admin(
     current_user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -353,6 +357,10 @@ def require_role(min_role: str):
             raise HTTPException(status_code=403, detail=f"Requires role '{min_role}' or higher.")
         return current_user
 
+    _check.__control_auth__ = "bearer-jwt"
+    _check.__control_permission__ = (
+        "internal-or-admin" if min_role == "internal" else f"{min_role}-or-higher"
+    )
     return _check
 
 
@@ -437,3 +445,7 @@ async def verify_admin_access(
 
     client_ip = get_client_ip(request)
     return client_ip if client_ip != "unknown" else "admin-token"
+
+
+verify_admin_access.__control_auth__ = "bearer-jwt-or-admin-token"
+verify_admin_access.__control_permission__ = "admin"

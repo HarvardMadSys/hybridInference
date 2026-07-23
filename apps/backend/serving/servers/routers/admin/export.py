@@ -33,7 +33,23 @@ def _decode_jsonish(value: Any) -> Any:
         return value
 
 
-@router.get("/export/requests")
+@router.get(
+    "/export/requests",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "UTF-8 newline-delimited JSON request records.",
+            "content": {
+                "application/x-ndjson": {
+                    "schema": {
+                        "type": "string",
+                        "description": "One JSON object per line.",
+                    }
+                }
+            },
+        }
+    },
+)
 async def admin_export_requests(
     start_time: datetime,
     end_time: datetime | None = None,
