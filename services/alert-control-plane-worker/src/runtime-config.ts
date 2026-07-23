@@ -95,11 +95,11 @@ export function parseRuntimeConfig(
   }
   if (env === undefined) return { mode: "dormant" };
 
-  const routeKey = env.ROUTE_KEY_V1;
-  if (!present(routeKey)) {
+  const routeMaterial = env.ROUTE_KEY_V1;
+  if (!present(routeMaterial)) {
     return { mode: "invalid", errorCode: "route_key_missing" };
   }
-  const routeKeyBytes = new TextEncoder().encode(routeKey).byteLength;
+  const routeKeyBytes = new TextEncoder().encode(routeMaterial).byteLength;
   if (
     routeKeyBytes < MINIMUM_ROUTE_KEY_BYTES ||
     routeKeyBytes > MAXIMUM_ROUTE_KEY_BYTES
@@ -172,7 +172,7 @@ export function parseRuntimeConfig(
 
   return {
     mode: "staging-runtime",
-    routeKey,
+    routeKey: routeMaterial,
     slack: { botToken, channelId, sinkId },
     quota: {
       activeLimit,
