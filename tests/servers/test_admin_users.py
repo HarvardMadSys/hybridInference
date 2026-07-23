@@ -623,6 +623,33 @@ async def test_get_user_detail_returns_ask_question_fraction(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_get_user_detail_gates_activity_stats(admin_client):
+    """Activity stats (turn averages, ask-question share) are computed only when
+    ``include_activity_stats=true`` so the default row-expand stays fast."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.get_active_key_by_account.return_value = None
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={
+            "avg_turns": None,
+            "avg_user_turns": None,
+            "ask_question_fraction": None,
+        }
+    )
+
+    # Default: the expensive full-history scan is skipped.
+    response = await client.get("/admin/users/u1/detail", headers=AUTH)
+    assert response.status_code == 200
+    log_store.get_user_detail_usage.assert_awaited_once_with("u1", include_activity_stats=False)
+
+    # Opt-in via query param forwards the flag to the store.
+    log_store.get_user_detail_usage.reset_mock()
+    response = await client.get("/admin/users/u1/detail?include_activity_stats=true", headers=AUTH)
+    assert response.status_code == 200
+    log_store.get_user_detail_usage.assert_awaited_once_with("u1", include_activity_stats=True)
+
+
+@pytest.mark.asyncio
 async def test_patch_user_updates_disabled_models(admin_client):
     """PATCH /admin/users/{id} stores normalized disabled_models in preferences."""
     client, op_store, _log_store, mock_log = admin_client

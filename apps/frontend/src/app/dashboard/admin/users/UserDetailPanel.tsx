@@ -1,6 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { hasRole } from '@/components/providers/AuthProvider';
+import { getUserDetail } from '@/lib/api/admin';
 import type { AdminModelVisibilityItem, AdminUser, UserDetail } from '@/lib/api/admin';
 import { UserAutomationPanel } from './UserAutomationPanel';
 import { UserRecentRequests } from './UserRecentRequests';
@@ -17,6 +19,100 @@ export function relTime(s: string | null): string {
   const d = Math.floor(h / 24);
   if (d < 30) return `${d}d ago`;
   return new Date(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+interface ActivityStatsData {
+  avg_turns: number | null;
+  avg_user_turns: number | null;
+  ask_question_fraction: number | null;
+}
+
+function hasActivityStats(d: ActivityStatsData): boolean {
+  return d.avg_turns != null || d.avg_user_turns != null || d.ask_question_fraction != null;
+}
+
+/**
+ * All-time turn averages and ask-question share for a user. Computing them
+ * scans the user's entire api_logs history, so this stays collapsed behind a
+ * button by default and fetches on demand (mirroring the automation-score and
+ * usage-insights panels). If the parent's detail already carries the values
+ * (e.g. a prior opt-in fetch), they render immediately.
+ */
+function ActivityStats({ userId, initial }: { userId: string; initial: ActivityStatsData }) {
+  const [data, setData] = useState<ActivityStatsData | null>(
+    hasActivityStats(initial) ? initial : null,
+  );
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  const compute = async () => {
+    setLoading(true);
+    setError(false);
+    try {
+      const d = await getUserDetail(userId, { includeActivityStats: true });
+      setData({
+        avg_turns: d.avg_turns,
+        avg_user_turns: d.avg_user_turns,
+        ask_question_fraction: d.ask_question_fraction,
+      });
+    } catch {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (!data) {
+    return (
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-dashed border-gray-300 bg-white/60 px-3 py-2.5">
+        <div>
+          <div className="text-[11px] font-medium text-gray-500">Activity stats</div>
+          <p className="text-[11px] text-gray-400">
+            All-time avg turns &amp; ask-question share — computed on demand.
+          </p>
+          {error && <p className="text-[11px] text-red-500">Failed to compute. Try again.</p>}
+        </div>
+        <button
+          onClick={compute}
+          disabled={loading}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white transition hover:bg-gray-800 disabled:opacity-50"
+        >
+          {loading && (
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-gray-300 border-t-white" />
+          )}
+          {loading ? 'Computing…' : 'Compute activity stats'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-4 gap-3 text-[13px]">
+      <div>
+        <div className="text-[11px] font-medium text-gray-500">Avg turns</div>
+        <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+          {data.avg_turns != null ? data.avg_turns.toFixed(1) : '—'}
+        </div>
+        <div className="text-[11px] text-gray-400">per request</div>
+      </div>
+      <div>
+        <div className="text-[11px] font-medium text-gray-500">Avg user turns</div>
+        <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+          {data.avg_user_turns != null ? data.avg_user_turns.toFixed(1) : '—'}
+        </div>
+        <div className="text-[11px] text-gray-400">per request</div>
+      </div>
+      <div>
+        <div className="text-[11px] font-medium text-gray-500">Ask-question</div>
+        <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
+          {data.ask_question_fraction != null
+            ? `${(data.ask_question_fraction * 100).toFixed(0)}%`
+            : '—'}
+        </div>
+        <div className="text-[11px] text-gray-400">of requests</div>
+      </div>
+    </div>
+  );
 }
 
 export interface UserDetailPanelProps {
@@ -160,30 +256,13 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             {detail.quota_daily_usd ? `$${detail.quota_daily_usd}/d` : '-'}
           </div>
         </div>
-        <div>
-          <div className="text-[11px] font-medium text-gray-500">Avg turns</div>
-          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
-            {detail.avg_turns != null ? detail.avg_turns.toFixed(1) : '—'}
-          </div>
-          <div className="text-[11px] text-gray-400">per request</div>
-        </div>
-        <div>
-          <div className="text-[11px] font-medium text-gray-500">Avg user turns</div>
-          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
-            {detail.avg_user_turns != null ? detail.avg_user_turns.toFixed(1) : '—'}
-          </div>
-          <div className="text-[11px] text-gray-400">per request</div>
-        </div>
-        <div>
-          <div className="text-[11px] font-medium text-gray-500">Ask-question</div>
-          <div className="mt-0.5 text-[16px] font-bold tabular-nums text-gray-900">
-            {detail.ask_question_fraction != null
-              ? `${(detail.ask_question_fraction * 100).toFixed(0)}%`
-              : '—'}
-          </div>
-          <div className="text-[11px] text-gray-400">of requests</div>
-        </div>
       </div>
+
+      {/* All-time activity stats (avg turns, ask-question share) require
+          full-history log scans, so they are gated behind a button to keep
+          expanding a row fast. The same figures also appear per-row in the
+          table above (from the bulk endpoints), so nothing is lost by default. */}
+      <ActivityStats userId={u.id} initial={detail} />
 
       {/* Models */}
       {detail.models_used.length > 0 && (

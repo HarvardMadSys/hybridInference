@@ -558,6 +558,15 @@ async def admin_get_user_automation_score(
 @router.get("/users/{user_id}/detail", response_model=UserDetailResponse)
 async def get_user_detail(
     user_id: str,
+    include_activity_stats: bool = Query(
+        False,
+        description=(
+            "Compute all-time activity stats (avg turns, avg user turns, "
+            "ask-question share). These require full-history scans of the "
+            "user's logs, so they are skipped by default to keep the detail "
+            "panel fast; the admin UI requests them on demand behind a button."
+        ),
+    ),
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
@@ -565,6 +574,10 @@ async def get_user_detail(
     """Get detailed user info including usage analytics.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
+
+    The all-time activity stats are gated behind ``include_activity_stats`` (see
+    that parameter); by default ``avg_turns``, ``avg_user_turns`` and
+    ``ask_question_fraction`` are ``None``.
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
@@ -592,7 +605,9 @@ async def get_user_detail(
     # existing detail-panel behavior; the turn averages are always surfaced so
     # they stay consistent with the bulk list endpoint.
     if log_store:
-        detail = await log_store.get_user_detail_usage(user_id)
+        detail = await log_store.get_user_detail_usage(
+            user_id, include_activity_stats=include_activity_stats
+        )
         avg_turns = detail.get("avg_turns")
         avg_user_turns = detail.get("avg_user_turns")
         ask_question_fraction = detail.get("ask_question_fraction")

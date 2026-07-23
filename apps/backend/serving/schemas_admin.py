@@ -394,10 +394,14 @@ class UserDetailResponse(BaseModel):
     # Mean conversation depth across this user's chat requests (all-time).
     # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
     # user-message count; both None when the user has no chat-style requests.
+    # These three activity stats require full-history log scans, so they are
+    # computed only when the request opts in via ``include_activity_stats``;
+    # otherwise they are None (the admin UI loads them on demand behind a button).
     avg_turns: float | None = None
     avg_user_turns: float | None = None
     # All-time share of this user's requests whose available ``tools`` offer an
-    # ask-the-user clarifying tool; None when the user has no requests.
+    # ask-the-user clarifying tool; None when the user has no requests (or when
+    # activity stats were not requested — see ``avg_turns`` above).
     ask_question_fraction: float | None = None
 
 

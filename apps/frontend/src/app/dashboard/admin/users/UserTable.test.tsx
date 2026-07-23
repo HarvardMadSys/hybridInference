@@ -493,3 +493,47 @@ describe('UserTable ask-question column', () => {
     expect(cell).toHaveTextContent('50%');
   });
 });
+
+describe('UserDetailPanel activity stats gating', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('defers the expensive activity stats to an on-demand button', async () => {
+    vi.mocked(getUserDetail)
+      // Initial expand: detail comes back without the gated stats.
+      .mockResolvedValueOnce(detailFixture())
+      // Button click: the opt-in fetch returns the computed stats.
+      .mockResolvedValueOnce(
+        detailFixture({ avg_turns: 2, avg_user_turns: 1.5, ask_question_fraction: 0.5 }),
+      );
+
+    renderTable(baseUser);
+    fireEvent.click(screen.getByText('user@example.com'));
+
+    // The panel opens with a button instead of paying for the stats up front.
+    const button = await screen.findByRole('button', { name: 'Compute activity stats' });
+    // Expand fetched the detail without opting into the expensive stats.
+    expect(getUserDetail).toHaveBeenCalledTimes(1);
+    expect(getUserDetail).toHaveBeenLastCalledWith('user-1');
+    // No computed tile yet — only the table header carries these labels.
+    expect(screen.getAllByText('Avg turns')).toHaveLength(1);
+
+    fireEvent.click(button);
+
+    // Clicking opts in, and the computed tiles render.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Compute activity stats' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(getUserDetail).toHaveBeenLastCalledWith('user-1', { includeActivityStats: true });
+    expect(screen.getAllByText('Avg turns')).toHaveLength(2); // header + computed tile
+    expect(screen.getByText('50%')).toBeInTheDocument();
+  });
+});
