@@ -121,10 +121,10 @@ async def _seed_user_with_key(
         user_id=user_id,
         account_id=user_id,
         quota_daily_cost_usd=quota,
-        status=status,
     )
 
-    # If the key needs to be revoked, update it after creation.
+    # create_key has no status param (rows default to 'active' via the schema);
+    # apply a non-active status with a follow-up update_key instead.
     if status != "active":
         await store.update_key(user_id, status=status)
 
