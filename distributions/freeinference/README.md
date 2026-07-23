@@ -5,10 +5,12 @@ the freeinference.org deployment — the FreeInference *distribution* in the
 sense of the
 [neutral-upstream split design](../../docs/agents/specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
 ([#946](https://github.com/HarvardMadSys/hybridInference/pull/946)).
+Phase 2's detailed closed-root and independent-frontend target is defined in
+the
+[self-contained distribution design](../../docs/agents/specs/2026-07-22-phase2-self-contained-distribution-design.zh.md).
 What belongs here vs. upstream is ruled per directory by the
-[ownership classification](../../docs/agents/specs/2026-07-17-repo-ownership-classification.zh.md)
-([#953](https://github.com/HarvardMadSys/hybridInference/pull/953)).
-Both relative links resolve once those PRs merge; until then use the PR links.
+[ownership-classification PR #953](https://github.com/HarvardMadSys/hybridInference/pull/953).
+Its document still needs to land on `dev` before Phase 2 Wave 0 can close.
 
 ## Current state
 
@@ -39,25 +41,29 @@ defaults) and exits non-zero if the overlay is unconfigured, the path points
 elsewhere, the mode is not explicitly `dark`, the manifest is not visible
 from the container, or any comparison is not `identical`.
 
-Note on CI: local `make test` collects `distributions/*/tests/` via pytest
-`testpaths`, but the PR CI sharder currently only walks `tests/` — the
-neutral manifest gate that runs in CI lives at
+Note on CI: both local pytest discovery and the PR CI partitioner scan
+`tests/` and `distributions/`. The neutral manifest gate lives at
 `tests/unit/config/test_distribution_manifests_discovery.py`; it also carries
 the temporary Phase 1 assertion that this overlay aliases the legacy truth.
-The tests here remain local/deploy verification until the future CI/CD stage
-wires the distribution suite in.
+Phase 2 adds the stricter runtime/bundle and detached-copy gates described in
+the detailed design.
 
 ## Target layout (grows in Phase 2, one category per PR)
 
 ```text
 distributions/freeinference/
-  distribution.yaml   # this manifest
-  config/             # real models/routing/alerts yaml (Tier A move, last)
-  branding/           # logos, colors, site metadata
+  distribution.yaml   # backend runtime manifest
+  bundle.yaml         # distribution-owned source inventory
+  bundle.lock.json    # deterministic declared-resource digests
+  frontend/            # complete FreeInference Next.js product frontend
+  config/             # real models/routing/alerts + environment contract
+  branding/           # site/status identity and assets
   content/            # terms, privacy, email templates
   docs/               # user docs + RAG corpus
+  rag/                # site RAG settings and generated index
   deploy/             # site compose/systemd overlays (workflows stay put)
   ops/                # machine-specific scripts (spark/h200/backup)
+  monitoring/         # status/alert site configuration
   targets/            # harness/e2e site targets
 ```
 
@@ -76,6 +82,11 @@ Two temporary states to be aware of:
 ## Rules
 
 - Upstream code must never import from this directory (design principle 2).
+- The distribution frontend consumes upstream through HTTP/OpenAPI/SSE/Auth
+  contracts; it must not import upstream React/Next source.
+- Every manifest/build/data/deploy path must remain within this directory;
+  upstream is injected only as an explicit image/package reference. Phase 2's
+  detached-copy gate is the final proof of that boundary.
 - No secrets in any file here — credentials stay in env / Secret Manager.
 - Content moves in are Tier B (revert = rollback); switching a config file's
   production truth into `config/` here is Tier A and follows the design

@@ -24,6 +24,10 @@ protection 迁移延后到 Phase 2：必须先移除顶层 `paths-ignore` 并定
 **相关文档：**
 
 - [HybridInference 中立上游与发行版拆分 — 设计](2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)：本文对应其「CI/CD 演进路径」所描述的未来独立阶段，不改变当前发行版边界。
+- [D-P2 自包含发行版与独立前端 — 设计](2026-07-22-phase2-self-contained-distribution-design.zh.md)：
+  该文修订 frontend ownership。D-P2 relocation 后，本文的 `frontend` lane/image 指
+  FreeInference distribution frontend；中立 upstream 不要求该 image。D-P2 只更新路径引用，
+  OCI publish、digest promotion 与 release manifest 仍从本文 CI-P3 开始。
 - [部署说明](../../developer/deployment.md)：现有 production/staging 运行拓扑。
 
 ## 摘要（Executive Summary）
@@ -305,7 +309,7 @@ flowchart LR
 
 | 分类 | 明确命中路径 | 触发内容 |
 |---|---|---|
-| frontend | `apps/frontend/**` | frontend quality、frontend image |
+| frontend | 迁移前 `apps/frontend/**`；D-P2 迁移后 `distributions/*/frontend/**`；迁移 PR 同时识别两者 | frontend quality、frontend image、对应 distribution gate |
 | backend | `apps/backend/**`、`tests/**` | backend quality、pytest、相关镜像 |
 | oncall | `apps/backend/serving/oncall/**`、`Dockerfile.oncall` | oncall image；Python 测试仍归 backend |
 | status_monitor | `services/status-monitor-worker/**` | 现有 Worker workflow；主 CI 仅保留 security/gate |
@@ -315,6 +319,8 @@ flowchart LR
 
 规则刻意偏保守。例如 `pyproject.toml` 同时影响 backend 与 oncall Docker 依赖，即使
 不影响 frontend，也先归入 `full`；积累变更分布数据后再细化。
+D-P2 完成后，classifier 先匹配已知 `distributions/*/frontend/**` 规则，再将其余
+`distributions/**` 变更归为 `full`；否则所有前端小改动都会被宽泛 `full` 规则吞掉。
 
 目标 workflow 不再依靠顶层 `paths-ignore` 跳过 required workflow；它应在所有 PR 上
 创建稳定的 `CI Gate`，再在 job 内根据 classifier 跳过应用检查。这样 docs-only PR 不会
@@ -412,7 +418,7 @@ concurrency cancellation 和最终 `CI Gate` 只有一套真值。
 | Image | 至少在以下路径变化时构建 |
 |---|---|
 | backend | `apps/backend/serving/**`、`apps/backend/routing/**`、`config/**`、`pyproject.toml`、`uv.lock`、`README.md`、`Dockerfile.backend` |
-| frontend | `apps/frontend/**`、`Dockerfile.frontend`、影响其 build args 的 Compose/发行版配置 |
+| frontend | 迁移前 `apps/frontend/**`；D-P2 迁移后 `distributions/*/frontend/**`；`Dockerfile.frontend`或 distribution 内 Dockerfile；影响其 build args 的 Compose/发行版配置 |
 | oncall | `apps/backend/serving/**`、`pyproject.toml`、`uv.lock`、`README.md`、`Dockerfile.oncall` |
 
 `.dockerignore`、Buildx 配置或通用 Compose 结构变化时保守构建全部镜像。PR 只验证受
@@ -742,7 +748,7 @@ push→staging healthy 数据；平台矩阵已有书面结论。Phase 1/2 的�
 
 | 改动 | 必须运行 | 必须跳过 |
 |---|---|---|
-| 纯 `apps/frontend/src/**` | frontend quality、security、frontend image、CI Gate | backend quality、pytest、backend/oncall image |
+| 纯 frontend source（迁移前 `apps/frontend/src/**`；迁移后 `distributions/*/frontend/src/**`） | frontend quality、security、frontend image、对应 distribution gate、CI Gate | backend quality、pytest、backend/oncall image |
 | 纯 backend routing | backend quality、pytest、security、backend image、CI Gate | frontend quality/frontend image |
 | serving 通用代码 | backend quality、pytest、security、backend + oncall images | frontend quality（若无前端改动） |
 | `pyproject.toml` | full | 无 |
@@ -882,7 +888,8 @@ Phase 3/4 硬阻塞；第 3 项是判断制品流水线是否真正提速的基�
    retention 和只读部署 credential 如何实现？
 2. production manifest 持久化在 GitHub Release、registry artifact，还是两者同时使用？
 3. production 是否已通过 GitHub Environment 配置 required reviewers？
-4. frontend 哪些 `NEXT_PUBLIC_*` 必须 build-time，哪些可以迁移到现有 `/site-config`？
+4. FreeInference frontend 迁入 distribution 后，哪些 `NEXT_PUBLIC_*` 仍必须 build-time，哪些
+   改为 distribution-owned runtime config？`/site-config` 只保留最小 identity 兼容面，不扩张为 CMS。
 5. branch protection 当前 require 的具体 check names 是什么，迁移窗口由谁操作？
 6. oncall profile 是否要求随每次 serving 改动部署，还是只需保证镜像可构建？
 

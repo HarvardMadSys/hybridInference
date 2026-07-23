@@ -27,6 +27,13 @@
 > `routewise.core` in several modules, so the real effort is M/L — it has been
 > promoted to the main doc's Phase 3 entry gate.
 
+> **Phase 2 boundary update (2026-07-22):** the branding work below remains a
+> Phase 1 compatibility seam. The final frontend ownership decision is now
+> defined by the
+> [D-P2 self-contained distribution design](2026-07-22-phase2-self-contained-distribution-design.zh.md):
+> the complete current Next.js product frontend moves with FreeInference;
+> future distributions share HTTP/OpenAPI/SSE/Auth contracts, not React pages.
+
 ---
 
 ## Motivation

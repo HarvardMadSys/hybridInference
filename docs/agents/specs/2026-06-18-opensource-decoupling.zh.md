@@ -19,6 +19,12 @@
 > 且现状下 `strategies/__init__.py` 启动硬 import、`routing/routewise/` 多处 import
 > `routewise.core`,实际工作量 M/L——已上移为主文档 Phase 3 的入口门槛。
 
+> **Phase 2 边界更新(2026-07-22):** 下文的 branding 配置仍是 Phase 1 兼容接缝;
+> 最终前端归属由
+> [D-P2 自包含发行版设计](2026-07-22-phase2-self-contained-distribution-design.zh.md)
+> 定义:当前完整 Next.js 产品前端随 FreeInference 发行版移动,未来发行版共享
+> HTTP/OpenAPI/SSE/Auth 契约,不共享 React 页面源码。
+
 ---
 
 ## 动机(为什么做这件事)

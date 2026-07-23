@@ -14,6 +14,12 @@ Phase 1「配置与品牌中性化」的文件级实施清单；其 P3–P4（�
 auth/quota、外部 IdP）不阻塞本文任何 Phase，排在 Phase 3 之后按真实需求执行；
 其「安全关键」章节的处方以本文「公开与可见性策略」一节为准（不做 git 历史重写）。
 
+[2026-07-22-phase2-self-contained-distribution-design.zh.md](2026-07-22-phase2-self-contained-distribution-design.zh.md)
+是本文 Distribution roadmap Phase 2（简称 `D-P2`）的详细设计，并修订本文早期的前端
+边界：当前完整 Next.js 产品前端归 FreeInference 发行版；上游以 headless API/SSE/Auth
+契约为强边界，可选 neutral reference console 不是运行依赖。该文同时区分 `D-P2`、
+Issue #738 的 `I738-P2` 和 CI/CD 设计的 `CI-P2`，避免 phase 编号混用。
+
 ## 摘要（Executive Summary）
 
 当前目标是：
@@ -28,7 +34,8 @@ auth/quota、外部 IdP）不阻塞本文任何 Phase，排在 Phase 3 之后按
 4. 独立 `freeinference-deployment` 仓库是边界稳定后的可选动作，不是当前 Phase 1 的强制终态。
 5. 当前不创建职责模糊的 operations repo。
 6. 未来其他组织如何消费或 fork 发行版，等边界和发布物稳定后再决定；当前不强制一种下游模型。
-7. FreeInference 已有大量真实用户和流量，任何拆分必须保持现网行为不变，并支持 staging、canary 和快速回滚。
+7. FreeInference 已有大量真实用户和流量，任何拆分必须保持现网行为不变，并支持
+   staging、production probe（已有设施时可加流量 canary）和快速回滚。
 
 ## 背景（Context）
 
@@ -68,7 +75,7 @@ FreeInference 是有真实用户、真实 API key 和持续请求流量的生产
 6. 每次生产发布保留 known-good image digest、配置 revision 和回滚入口。
 7. 新配置或发行版 loader 故障时可以退回现有路径。
 8. 站点拆分、Router 行为变更、数据库真值切换和模型目录变更不得同窗进行。
-9. 拆分时间表服从稳定性；未满足门禁时可以长期停留在 staging 或 canary。
+9. 拆分时间表服从稳定性；未满足门禁时可以长期停留在 staging 或 production probe。
 
 ## 目标（Goals）
 
@@ -79,7 +86,7 @@ FreeInference 是有真实用户、真实 API key 和持续请求流量的生产
 5. 建立不包含 FreeInference 私有假设的中立构建和自部署示例。
 6. 让发行版通过配置、内容和少量稳定扩展点组合上游。
 7. 让 FreeInference 运营内容未来具备整体迁移到独立仓库的条件。
-8. 使用兼容测试、staging、canary 和回滚保护现网。
+8. 使用兼容测试、staging、production probe/可选 canary 和回滚保护现网。
 
 ## 非目标（Non-goals）
 
@@ -176,7 +183,7 @@ flowchart TB
     Client["用户 / Agent"]
 
     subgraph Distribution["FreeInference 发行版"]
-        Brand["品牌、域名、Terms、站点内容"]
+        Brand["完整产品前端、品牌、域名、Terms"]
         Catalog["真实模型目录与运营策略"]
         Ops["部署、监控、备份、特定运维"]
     end
@@ -187,7 +194,7 @@ flowchart TB
         Runtime["Routing Runtime 与执行"]
         Algorithms["Fixed / RouteWise / Nimbus"]
         Adapters["Provider Adapters"]
-        Console["通用 Console Shell"]
+        Contract["OpenAPI / SSE / Auth / Capabilities"]
         Seams["稳定扩展点"]
     end
 
@@ -197,7 +204,8 @@ flowchart TB
     end
 
     Client --> Brand
-    Brand --> Gateway
+    Brand --> Contract
+    Contract --> Gateway
     Catalog --> Gateway
     Gateway --> Control
     Gateway --> Runtime
@@ -221,16 +229,20 @@ flowchart TB
 - health、fallback、circuit breaker 和 routing observability；
 - 通用用户、API key、JWT、角色、额度和模型可见性机制；
 - 通用 Postgres storage 和 migration；
-- 通用 Admin API 和 Console shell；
+- 通用 Admin API、versioned OpenAPI、SSE/Auth/capability contract；
 - 通用 Docker 镜像、自部署示例和开发文档；
 - black-box API conformance testkit；
 - Distribution、Adapter、Identity/Policy 和 Provider 注册等小型扩展接口。
+
+上游未来可以提供可选 neutral reference console，但它不是 backend 的运行依赖，也不是
+发行版必须复用或 fork 的页面框架。
 
 ### FreeInference 发行版
 
 应逐步集中：
 
 - `freeinference.org` 及 staging/status/docs 域名；
+- 当前完整 Next.js 产品前端（landing、auth、Dashboard、Playground、Admin、Terms）；
 - Harvard/FreeInference Logo、颜色、团队、Sponsor 和 landing page；
 - Terms、Privacy、联系邮箱、signup 文案和邮件模板；
 - 真实 `models.yaml`、Provider 目录和线上 routing/alert 参数；
@@ -257,6 +269,7 @@ flowchart TB
 当前只定义边界，不要求实现。未来启动时应优先通过：
 
 - 自己的 Distribution Config；
+- 自己的完整前端 source/image；
 - 品牌和内容；
 - 模型与 Provider 配置；
 - 身份和政策扩展；
@@ -274,7 +287,6 @@ hybridInference/
     backend/
       serving/                 # 通用 Gateway / Control Plane
       routing/                 # Fixed / RouteWise / Nimbus
-    frontend/                  # 通用 Console shell
 
   config/
     examples/                  # 中立自部署示例
@@ -282,6 +294,7 @@ hybridInference/
   distributions/
     freeinference/
       distribution.yaml
+      frontend/                # 完整 FreeInference Next.js 产品前端
       config/
         models.yaml
         routing.yaml
@@ -399,16 +412,15 @@ overlay 存续期间本仓保持 private。
 | `apps/backend/routing/**` | 上游 | 保持位置和行为 |
 | `apps/backend/serving/adapters/**` | 上游 | 后续减少 registry 硬编码 |
 | API/SSE/auth/quota/storage | 上游 | 保持能力与数据库兼容 |
-| RouteWise Admin/Console | 上游官方算法功能 | 保留，不降级成外部插件 |
+| RouteWise/Admin backend API | 上游官方平台能力 | 保留，不降级成外部插件 |
 | `config/models.yaml` | FreeInference 发行版 | 先支持可配置路径，再迁移 |
 | `config/routing.yaml`、`alerts.yaml` | 示例上游、真实值发行版 | 区分 example 与 production |
-| landing/team/sponsors/terms | FreeInference 发行版 | 改成 site config/content |
-| Dashboard/Admin shell | 上游 | 消除品牌硬编码 |
+| `apps/frontend/**` | FreeInference 发行版 | 完整应用迁入 overlay；上游共享网络契约而非页面源码 |
 | `docs/free_inference` | FreeInference 发行版 | 与开发文档分开 |
 | FreeInference RAG index | FreeInference 发行版 | 构建跟随发行版内容 |
 | `ops/local_deployment_proxy` | Mixed | 通用逻辑保留；具体主机配置移出 |
 | 特定主机/tunnel/systemd | FreeInference 发行版 | 集中到 distribution ops |
-| production/staging workflows | FreeInference 发行版 | 当前保持原位、零改动（仅注释级归属标注）；下沉与迁移属未来 CI/CD 独立阶段与 Phase 4（见 CI/CD 演进路径） |
+| production/staging workflows | FreeInference 发行版 | D-P2 保持原位和 source-build 语义，但允许修改移动后的路径与本地 image 注入；下沉/迁仓属 Phase 4 |
 | Dockerfile/Compose | Mixed | 通用镜像上游，站点 overlay 进发行版 |
 | status monitor | Mixed | 通用 worker 可留，站点配置移出 |
 | `ops/db/analysis` | FreeInference 受控环境 | 不进入通用发行物 |
@@ -416,6 +428,12 @@ overlay 存续期间本仓保持 private。
 | `freeinference-harness` | 上游 testkit + 发行版 targets | 分开 scenarios 和站点 target |
 
 ## Distribution Config
+
+以下 v1 是 Phase 1 兼容形态。D-P2 的最终 backend runtime manifest v2、独立
+bundle manifest v1、strict validation、environment contract 与 required/fail-closed 语义由
+[D-P2 详细设计](2026-07-22-phase2-self-contained-distribution-design.zh.md)定义；
+staging/production 在 D-P2 退出前升级到 runtime v2。frontend/legal/ops/deploy 等 source
+inventory 不进入 backend runtime schema。
 
 ~~~yaml
 schema_version: 1
@@ -457,19 +475,23 @@ deployment:
 
 ## 前端拆分
 
-当前前端包含：
+Phase 1 已用 build-time branding 与 `/site-config` 建立兼容接缝；它解决安全引入 overlay 的
+问题，但不能成为多发行版的最终 UI 架构。
 
-1. 通用 Console：登录、Dashboard、API key、用量、模型、Playground、Admin。
-2. FreeInference Site：landing、Harvard 链接、Sponsor、Terms、联系信息和统计脚本。
+D-P2 采用“共享协议，不共享页面”：
 
-近期不创建微前端。建议：
+- HybridInference 是 headless Gateway / Control Plane；
+- 当前完整 Next.js 应用（包括 landing、auth、Dashboard、Playground、Admin、Terms、assets）
+  归 FreeInference distribution；
+- FreeInference、腾讯和未来发行版各自拥有 frontend source、lockfile、CI、image 和发布节奏；
+- 共享面仅限 versioned OpenAPI、stable error、SSE、Auth/session、capabilities 和可选的
+  framework-neutral TypeScript client；
+- `/site-config` 保留为 legacy compatibility endpoint，但不扩张为页面 CMS；
+- 当前不创建微前端，也不抽取所有发行版必须使用的 React/Next Console package；
+- 可选 neutral reference console 以后可以基于同一网络契约独立创建，不是 backend 依赖。
 
-- 增加只读 `/site-config`；
-- `env.ts` 只保留 bootstrap API base；
-- Header、Footer、metadata、landing 和 Terms 从 site config/content 加载；
-- 通用 Console 根据 capability 显示功能；
-- FreeInference 内容位于 distribution overlay；
-- 保留编译期 fallback，避免 site config 故障影响 Dashboard。
+完整目录、迁移波次和验收见
+[D-P2 自包含发行版与独立前端设计](2026-07-22-phase2-self-contained-distribution-design.zh.md)。
 
 ## 后端拆分
 
@@ -513,6 +535,10 @@ flowchart LR
 
 激活 manifest 路径必须显式 `DISTRIBUTION_CONFIG_MODE=active`；非法 / 缺失的 mode
 一律降级为 dark——任何失误只可能压住激活，永远不可能触发激活。
+
+上述优先级和全局 mode 是 Phase 1/v1 兼容语义。D-P2 runtime v2 在 staging/production
+使用 models/routing/alerts 分资源 selector；`required` 时不允许旧环境变量覆盖已激活
+资源，也不允许 fail-open 回 legacy。具体语义以 D-P2 详细设计为准。
 
 ### Adapter、Router 与供应接入
 
@@ -620,13 +646,14 @@ percentage bucket
 
 当前 CD 的真实依赖不是"workflow 住在哪个仓库"，而是"部署单位是本仓源码 SHA"：
 deploy workflow ssh 到主机后 `git reset --hard` 并在主机上现场构建镜像，回滚也按
-旧 release tag 重新构建。演进分三个阶段，**其中只有第一条属于当前工作，且内容是
-"零改动"**：
+旧 release tag 重新构建。演进分三个阶段：
 
-1. **当前阶段（Phase 0–2）：对现有 CI/CD 零改动。** workflow 文件与
-   `ops/deploy/*.sh` 全部保持原位；允许的动作仅限注释级归属标注，新增 Secret
-   一律进 GitHub Environment。overlay 的建立不搬部署脚本、不改 workflow 路径、
-   不改部署行为。
+1. **当前阶段（Phase 0–2）：不改部署单位与语义。** workflow 文件保持原位，
+   继续 checkout 同一 source SHA 并现场构建；D-P2 允许修改因 frontend/config/ops 移动而
+   失效的 working directory、Docker COPY、Compose include 和脚本引用。为满足 closed-root，
+   orchestration 先用 upstream-only context 构建本地 backend image，再将 image ref 注入
+   distribution Compose；不推 registry、不改 promotion/rollback 单位。workflow/脚本的物理
+   归属和迁仓仍保留到 Phase 4。
 2. **未来独立阶段（时点待定，单独立项）：部署单位换成 image digest。** 与
    Phase 3 的中立 artifact 配套但独立启动，不并入当前重构：`docker-build.yml`
    从 `push: false` 改为推送 registry；deploy 脚本从"源码同步 + 现场构建"改为
@@ -663,9 +690,11 @@ flowchart LR
     class P4 opt
 ~~~
 
-状态（截至 2026-07-18）：Phase 0–1 的 7 个实现 PR 已打开，但仍待评审、合并与
-staging 验收，因此图中标为进行中而非完成；Phase 2 在上述验收后启动。Phase 3
-被 RouteWise 依赖发布方式的决策门控；Phase 4 非成功条件。
+状态（截至 2026-07-22）：Phase 1 的 config path、Distribution loader、`/site-config`、
+branding config、contract tests 与 overlay skeleton 已合入 `dev`；ownership classification
+仍需落入 `dev`，staging/production dark-load、baseline 与回滚验收也没有仓库内完成证据，
+因此 Phase 0–1 尚不能标为完成。D-P2 已进入设计评审，但任何 production 真值切换仍受上述
+验收门控。Phase 3 被 RouteWise 依赖发布方式的决策门控；Phase 4 非成功条件。
 
 ### Phase 0：建立归属清单与稳定基线
 
@@ -702,12 +731,11 @@ staging 验收，因此图中标为进行中而非完成；Phase 2 在上述验�
 
 按低风险到高风险迁移：
 
-1. branding/content；
+1. 完整 FreeInference frontend、branding/content；
 2. docs 和 RAG；
 3. test targets；
-4. status monitor 站点配置（GitHub workflow 与 `ops/deploy/*.sh` 除外——
-   它们保持原位，见 CI/CD 演进路径）；
-5. machine-specific ops；
+4. status monitor 站点配置（GitHub workflow 保持原位，但可更新输入路径）；
+5. machine-specific ops 与站点专属 deploy 脚本；workflow 继续在原位调用新路径；
 6. 真实 model/routing/alert config。
 
 每一类独立 PR，并保留路径回退。首先在同一仓库移动。
@@ -715,6 +743,8 @@ staging 验收，因此图中标为进行中而非完成；Phase 2 在上述验�
 验收：
 
 - 上游目录不含生产域名、具体主机、备份位置和官方 Terms；
+- 上游不依赖 distribution，也不拥有 FreeInference React/Next 页面；
+- overlay 通过 runtime v2 + bundle v1 strict/closed-root 与 detached-copy validation；
 - staging 完整部署和回滚成功；
 - 生产 API、SSE、auth、quota、routing、usage 无回归；
 - 旧路径在观察窗口内可用。
@@ -803,9 +833,9 @@ agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定
 
 ### FreeInference 发行版 CI
 
-- manifest validation；
+- runtime v2 + bundle v1 strict/closed-root 与 detached-copy validation；
 - 真实模型目录静态检查；
-- frontend branding/content build；
+- 完整 FreeInference frontend build；
 - staging deployment；
 - black-box API/streaming；
 - DB N/N-1；
@@ -819,7 +849,7 @@ agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定
 - 上游可用中立默认值独立启动；
 - FreeInference 专属内容集中在 overlay；
 - 上游不含生产域名、具体主机、备份位置或官方 Terms；
-- 未来发行版可以复用上游而不修改其私有实现；
+- 未来发行版可以用独立 frontend 复用上游网络契约，而不修改 FreeInference 或上游页面源码；
 - 没有新增仓库也能完成近期目标。
 
 ## 风险与缓解
@@ -830,7 +860,8 @@ agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定
 
 ### 风险 2：移动真实配置破坏启动
 
-**缓解：** 可配置路径、legacy fallback、双读、dark load、staging 后 canary。
+**缓解：** 可配置路径、legacy fallback、双读、dark load、staging 后 production probe；
+已有流量切分设施时再加 canary。
 
 ### 风险 3：前端 site config 影响 Dashboard
 
@@ -846,7 +877,8 @@ agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定
 
 ### 风险 6：真实流量放大迁移错误
 
-**缓解：** 现网作为 reference；兼容测试、shadow、canary、kill switch、SSE drain 和 N/N-1 DB。
+**缓解：** 现网作为 reference；兼容测试、shadow、production probe/可选 canary、
+kill switch、SSE drain 和 N/N-1 DB。
 
 ### 风险 7：混合文件难以一次归类
 
@@ -878,12 +910,12 @@ agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定
 
 1. 中立上游长期使用 HybridInference 还是 FreeInference 品牌。
 2. Overlay 稳定多久后才评估独立仓库。
-3. 通用 Console 保留哪些 landing 能力。
+3. public beta 是否需要独立 neutral reference console；若需要，其最小功能范围。
 4. `ops/local_deployment_proxy` 的通用与站点边界。
 5. RouteWise Git dependency 是 workspace 还是正式 Wheel（**阻塞 Phase 3 中立
    artifact**；两个选项都意味着 RouteWise 代码公开，需结合在审论文情况决定）。
 6. 是否采用 DCO，以及中立 Organization 的治理时间。
-7. 各模型/客户端 canary soak window 和 rollback RTO。
+7. 各模型/客户端 production probe/active soak window、可选 canary 比例和 rollback RTO。
 8. 未来下游更适合 fork、独立发行版仓库还是纯 artifact consumer。
 9. 独立 `freeinference-deployment` 的公开范围与可选私有 infra 边界。
 10. 上游公开机制(推荐方向:过滤导出公共仓;硬约束:不重写本仓历史)、创建
@@ -896,11 +928,14 @@ agent 只能改 workflow 文件本身；neutral image 被 RouteWise 依赖决定
 3. FreeInference 是当前唯一需要保护的生产发行版。
 4. 先在同一仓库建立 Distribution Config 和 `distributions/freeinference/`。
 5. 上游不得依赖发行版；发行版通过配置、内容和稳定扩展缝组合上游。
-6. 当前不强制建立 standalone FreeInference repo，也不强制下游 fork 模型。
-7. 未来是否抽出 `freeinference-deployment`，由 overlay、artifact、staging 和回滚成熟度决定。
-8. 所有迁移以现网兼容、渐进 canary、快速回滚和 N/N-1 数据库兼容为前提。
-9. 近期不修改 RouteWise/Nimbus 算法，不改变线上路由真值。
-10. “运营内容可整体移动且不污染上游”是当前成功标准，物理拆仓不是。
+6. 当前完整产品前端归 FreeInference；未来发行版通过网络契约拥有自己的独立前端，不共享
+   React/Next 页面源码。
+7. 当前不强制建立 standalone FreeInference repo，也不强制下游 fork 模型。
+8. 未来是否抽出 `freeinference-deployment`，由 overlay、artifact、staging 和回滚成熟度决定。
+9. 所有迁移以现网兼容、staging/production probe（已有设施时可加流量
+   canary）、快速回滚和 N/N-1 数据库兼容为前提。
+10. 近期不修改 RouteWise/Nimbus 算法，不改变线上路由真值。
+11. “运营内容可整体移动且不污染上游”是当前成功标准，物理拆仓不是。
 
 推荐统一表述：
 
