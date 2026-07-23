@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   deriveIncidentRouteName,
+  derivePrincipalQuotaRouteName,
   encodeIncidentRouteMaterial,
   routeNameForEnvelope,
 } from "../src/routing";
@@ -85,6 +86,26 @@ describe("incident route HMAC", () => {
         fingerprint: "provider",
       }),
     ).rejects.toThrow(/at least 32 bytes/);
+  });
+
+  it("uses a separate opaque domain for principal quota objects", async () => {
+    const identity = {
+      environment: "staging" as const,
+      principal: "staging-gateway",
+    };
+    const quota = await derivePrincipalQuotaRouteName(ROUTE_KEY, identity);
+    const incident = await deriveIncidentRouteName(ROUTE_KEY, {
+      ...identity,
+      fingerprint: "principal-quota",
+    });
+
+    expect(quota).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(quota).not.toContain(identity.environment);
+    expect(quota).not.toContain(identity.principal);
+    expect(quota).not.toBe(incident);
+    await expect(
+      derivePrincipalQuotaRouteName(ROUTE_KEY, identity),
+    ).resolves.toBe(quota);
   });
 
   it("derives the route only from trusted environment/principal plus event fingerprint", async () => {

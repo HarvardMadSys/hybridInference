@@ -1,6 +1,7 @@
 import type { AlertEvent, TrustedAlertMetadata } from "./types";
 
 const ROUTE_DOMAIN = "alert-control-plane:route-key:v1";
+const QUOTA_ROUTE_DOMAIN = "alert-control-plane:principal-quota:v1";
 const MINIMUM_ROUTE_KEY_BYTES = 32;
 const encoder = new TextEncoder();
 
@@ -53,10 +54,10 @@ function base64Url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }
 
-/** Produce the opaque, stable name passed to DurableObjectNamespace.idFromName. */
-export async function deriveIncidentRouteName(
+async function deriveRouteName(
   routeKey: string | Uint8Array,
-  identity: IncidentRouteIdentity,
+  domain: string,
+  material: Uint8Array,
 ): Promise<string> {
   const keyBytes = typeof routeKey === "string" ? encoder.encode(routeKey) : routeKey;
   if (keyBytes.length < MINIMUM_ROUTE_KEY_BYTES) {
@@ -69,14 +70,38 @@ export async function deriveIncidentRouteName(
     false,
     ["sign"],
   );
-  const signedMaterial = concatenate([
-    lengthPrefixed(ROUTE_DOMAIN),
-    encodeIncidentRouteMaterial(identity),
-  ]);
+  const signedMaterial = concatenate([lengthPrefixed(domain), material]);
   const signature = new Uint8Array(
     await crypto.subtle.sign("HMAC", key, ownedBuffer(signedMaterial)),
   );
   return base64Url(signature);
+}
+
+/** Produce the opaque, stable name passed to DurableObjectNamespace.idFromName. */
+export async function deriveIncidentRouteName(
+  routeKey: string | Uint8Array,
+  identity: IncidentRouteIdentity,
+): Promise<string> {
+  return deriveRouteName(
+    routeKey,
+    ROUTE_DOMAIN,
+    encodeIncidentRouteMaterial(identity),
+  );
+}
+
+/** Derive one opaque quota-object name for a trusted environment + principal. */
+export async function derivePrincipalQuotaRouteName(
+  routeKey: string | Uint8Array,
+  identity: { readonly environment: string; readonly principal: string },
+): Promise<string> {
+  return deriveRouteName(
+    routeKey,
+    QUOTA_ROUTE_DOMAIN,
+    concatenate([
+      lengthPrefixed(identity.environment),
+      lengthPrefixed(identity.principal),
+    ]),
+  );
 }
 
 export async function routeNameForEnvelope(

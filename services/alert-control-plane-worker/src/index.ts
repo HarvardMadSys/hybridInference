@@ -1,3 +1,4 @@
+import { createRuntimeActionExecutor } from "./action-executor";
 import { EventIdConflictError, IncidentStateMachine } from "./incident";
 import {
   type IncidentAcknowledgement,
@@ -11,6 +12,11 @@ import {
   type ActionExecutor,
   OutboxRunner,
 } from "./outbox";
+import { PrincipalQuotaDurableObject } from "./quota-runtime";
+import {
+  parseRuntimeConfig,
+  type RuntimeEnvironment,
+} from "./runtime-config";
 import { DurableObjectSqlStore, type SchedulerState } from "./store";
 import type { CanonicalAlertEnvelope } from "./types";
 import {
@@ -26,7 +32,7 @@ type AlarmScheduleSnapshot = Pick<
   "desiredAlarmAtMs" | "schedulerEpoch"
 >;
 
-export interface ControlPlaneEnv {
+export interface ControlPlaneEnv extends RuntimeEnvironment {
   readonly INCIDENTS: DurableObjectNamespace;
 }
 
@@ -101,10 +107,7 @@ function acknowledgement(value: unknown): IncidentAcknowledgement {
   return input as unknown as IncidentAcknowledgement;
 }
 
-/**
- * Phase 1 Durable Object runtime. It persists and schedules actions, while the
- * external executor remains deliberately disabled until the adapter PR.
- */
+/** Per-incident state machine and outbox runtime. */
 export class IncidentDurableObject {
   private readonly store: DurableObjectSqlStore;
   private readonly machine: IncidentStateMachine;
@@ -113,11 +116,16 @@ export class IncidentDurableObject {
 
   constructor(
     private readonly state: DurableObjectState,
-    _env: ControlPlaneEnv,
+    env: ControlPlaneEnv,
   ) {
     this.store = new DurableObjectSqlStore(state.storage);
     this.machine = new IncidentStateMachine(this.store);
-    this.outbox = new OutboxRunner(this.store, new DormantActionExecutor(), {
+    const config = parseRuntimeConfig(env);
+    const executor =
+      config.mode === "staging-runtime"
+        ? createRuntimeActionExecutor(this.store, config)
+        : new DormantActionExecutor();
+    this.outbox = new OutboxRunner(this.store, executor, {
       hooks: this.machine,
     });
     this.ready = state.blockConcurrencyWhile(async () => {
@@ -202,6 +210,8 @@ export class IncidentDurableObject {
   }
 }
 
+export { PrincipalQuotaDurableObject };
+
 /** Submit an already authenticated envelope to its opaque incident object. */
 export async function submitToIncident(
   namespace: DurableObjectNamespace,
@@ -223,9 +233,32 @@ export async function submitToIncident(
 }
 
 const worker = {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(
+    request: Request,
+    env?: ControlPlaneEnv,
+  ): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/healthz") {
+      const config = parseRuntimeConfig(env);
+      if (config.mode === "invalid") {
+        return jsonResponse({
+          status: "configuration_error",
+          ready: false,
+          phase: "c1",
+          accepts_events: false,
+          external_actions_enabled: false,
+          configuration_error: config.errorCode,
+        }, 503);
+      }
+      if (config.mode === "staging-runtime") {
+        return jsonResponse({
+          status: "staging_runtime_configured",
+          ready: false,
+          phase: "c1",
+          accepts_events: false,
+          external_actions_enabled: true,
+        });
+      }
       return jsonResponse({
         status: "dormant",
         ready: false,

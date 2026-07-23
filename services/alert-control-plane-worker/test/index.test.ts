@@ -42,6 +42,24 @@ function namespace(response: Response): DurableObjectNamespace {
   } as unknown as DurableObjectNamespace;
 }
 
+function configuredEnv(
+  overrides: Partial<Parameters<typeof worker.fetch>[1]> = {},
+): NonNullable<Parameters<typeof worker.fetch>[1]> {
+  const binding = namespace(new Response(null, { status: 500 }));
+  return {
+    INCIDENTS: binding,
+    PRINCIPAL_QUOTAS: binding,
+    CONTROL_PLANE_MODE: "staging-runtime",
+    ROUTE_KEY_V1: "index-test-route-key-material-32-bytes-minimum",
+    SLACK_BOT_TOKEN: "xoxb-unit-test-token-123456",
+    SLACK_CHANNEL_ID: "C123",
+    SLACK_SINK_ID: "slack-staging",
+    PRINCIPAL_ACTIVE_LIMIT: "10",
+    QUOTA_PENDING_LEASE_MS: "120000",
+    ...overrides,
+  };
+}
+
 function schedulerState(
   desiredAlarmAtMs: number | null,
   schedulerEpoch: number,
@@ -79,6 +97,52 @@ describe("Phase 1 runtime", () => {
     await expect(response.json()).resolves.toEqual({
       error: "control_plane_dormant",
     });
+  });
+
+  it("reports a configured C1 runtime without opening public ingress", async () => {
+    const env = configuredEnv();
+    const health = await worker.fetch(
+      new Request("https://alerts.example.test/healthz"),
+      env,
+    );
+    await expect(health.json()).resolves.toEqual({
+      status: "staging_runtime_configured",
+      ready: false,
+      phase: "c1",
+      accepts_events: false,
+      external_actions_enabled: true,
+    });
+
+    const event = await worker.fetch(
+      new Request("https://alerts.example.test/v1/events", { method: "POST" }),
+      env,
+    );
+    expect(event.status).toBe(503);
+    await expect(event.json()).resolves.toEqual({
+      error: "control_plane_dormant",
+    });
+  });
+
+  it("fails closed with a stable health error and no credential reflection", async () => {
+    const token = "xoxb-sensitive-token-value-123456";
+    const response = await worker.fetch(
+      new Request("https://alerts.example.test/healthz"),
+      configuredEnv({
+        SLACK_BOT_TOKEN: token,
+        SLACK_CHANNEL_ID: "invalid channel",
+      }),
+    );
+    expect(response.status).toBe(503);
+    const body = await response.text();
+    expect(JSON.parse(body)).toEqual({
+      status: "configuration_error",
+      ready: false,
+      phase: "c1",
+      accepts_events: false,
+      external_actions_enabled: false,
+      configuration_error: "slack_channel_id_invalid",
+    });
+    expect(body).not.toContain(token);
   });
 
   it("submits an internal canonical envelope and validates its acknowledgement", async () => {

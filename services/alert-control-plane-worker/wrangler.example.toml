@@ -2,23 +2,32 @@ name = "freeinference-alert-control-plane"
 main = "src/index.ts"
 compatibility_date = "2026-07-20"
 
-# This package is intentionally dormant in Phase 1. Copy this file to
-# wrangler.toml only after the deployment registry and environment-specific
-# producer identities have been reviewed.
+# This example remains dormant because CONTROL_PLANE_MODE is not set. Phase C1
+# can compose the staging Slack/quota runtime, but the public producer ingress
+# still returns 503 until the separately reviewed identity-wiring phase.
 
 [[durable_objects.bindings]]
 name = "INCIDENTS"
 class_name = "IncidentDurableObject"
 
+[[durable_objects.bindings]]
+name = "PRINCIPAL_QUOTAS"
+class_name = "PrincipalQuotaDurableObject"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["IncidentDurableObject"]
 
-# ROUTE_KEY_V1 and producer credentials are Worker secrets. They must not be
-# stored in this file. Phase B includes a SlackSink implementation but does not
-# register it here or in src/index.ts; the Worker remains dormant.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["PrincipalQuotaDurableObject"]
+
+# CONTROL_PLANE_MODE must be explicitly set to "staging-runtime" in the staging
+# environment before the runtime will construct any external executor.
 #
-# A future, separately reviewed environment config will need the secret
-# SLACK_BOT_TOKEN and non-secret SLACK_CHANNEL_ID / SLACK_SINK_ID bindings.
-# Their values must not be committed. The Slack app also needs chat:write and
-# the target conversation's matching *:history scope for reconciliation.
+# ROUTE_KEY_V1 and SLACK_BOT_TOKEN are secrets and must never be stored here.
+# Staging also requires non-secret SLACK_CHANNEL_ID, SLACK_SINK_ID,
+# PRINCIPAL_ACTIVE_LIMIT (1..1000), and QUOTA_PENDING_LEASE_MS
+# (30000..900000). Their real values belong in environment configuration, not
+# this example. The Slack app needs chat:write and the target conversation's
+# matching *:history scope for reconciliation.

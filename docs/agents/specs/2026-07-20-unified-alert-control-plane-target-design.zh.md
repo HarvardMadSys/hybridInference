@@ -600,6 +600,11 @@ Control Plane 至少暴露：
 
 ### Phase 3：Staging 单路切换
 
+- C1：先接线 staging Slack runtime 与 `PrincipalQuota` Durable Object；配置严格
+  fail-closed，公共 `/v1/events` 继续返回 503，`dispatch_analysis` 明确标记
+  `analysis_not_enabled`，不迁移 producer
+- C2：接入 staging deployment identity、认证 ingress，并完成 synthetic lifecycle
+- C3：迁移真实 staging producer；确认旧 writer drain 后再关闭 V1 Relay 与 direct webhook
 - Provision staging principal 与 Control Plane secrets
 - staging producer 只配置一个 `ALERT_SINK_URL` 与 credential
 - 禁用 staging 的 V1 Relay 和 direct Slack webhook
@@ -695,8 +700,9 @@ Control Plane 必须提供只针对 active incident 的 operator reconciliation 
 4. Producer credential 使用随机 bearer token 还是 Cloudflare Access service token
 5. DeploymentRegistry attestation 使用 GitHub OIDC 还是现有受控 CI identity，以及滚动部署
    active set 的最大重叠窗口
-6. Slack API 在目标 workspace 是否能按 message metadata 可靠 reconciliation；否则采用哪个
-   官方幂等能力，或明确接受人工处理下的 liveness 边界
+6. Slack API 在目标 workspace 是否能按 message metadata 可靠 reconciliation；staging 的
+   目标 bot/channel 已于 2026-07-23 通过 parent/update/recovery/analysis 真实 readback
+   门禁，若 token、app installation 或 channel 变化必须重跑；production 仍需独立验证
 7. GitHub OIDC allowlist 的 owner、JWKS cache/rotation 策略与 staging/production environment
    claim 约束
 8. Operator reconciliation API 的认证方式、审计字段与最小权限
