@@ -35,7 +35,7 @@ function config(
 ): StagingIngressConfig {
   return {
     mode: "staging-ingress",
-    routeKey: "route-key-material-with-at-least-32-bytes",
+    routeKey: "a".repeat(32),
     slack: {
       botToken: "xoxb-unit-test-token-123456",
       channelId: "C123",
@@ -48,8 +48,7 @@ function config(
     },
     identity: {
       registryNamespace: namespace(),
-      producerTokenSigningKey:
-        "producer-signing-key-material-with-at-least-32-bytes",
+      producerTokenSigningKey: "b".repeat(32),
       producerTokenTtlSeconds: 60,
       githubOidc: {
         audience: "alert-control-plane-deployment-attestation",
