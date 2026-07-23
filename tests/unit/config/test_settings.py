@@ -92,11 +92,13 @@ def test_env_overrides_ignored_env_file(make_settings) -> None:
     env = {
         "JWT_ACCESS_TOKEN_EXPIRE_MINUTES": "30",
         "SIGNUP_ENABLED": "0",
+        "COOKIE_SECURE": "0",
         "DB_PORT": "5433",
     }
     settings = make_settings(env=env, env_file=None)
     assert settings.jwt_access_token_expire_minutes == 30
     assert settings.signup_enabled is False
+    assert settings.cookie_secure is False
     assert settings.db_port == 5433
 
 

@@ -28,6 +28,10 @@ async def auth_session_contract(
     )
     monkeypatch.setattr(auth_routes, "is_admin_email", lambda _email: False)
     monkeypatch.setattr(auth_routes.settings, "signup_require_email_verification", False)
+    # The browser contract describes the production-safe default. CI explicitly
+    # disables Secure cookies for its HTTP test environment, so isolate this
+    # characterization from that runner-level override.
+    monkeypatch.setattr(auth_routes.settings, "cookie_secure", True)
 
     def _no_runtime_settings():
         raise RuntimeError("runtime settings intentionally absent in contract fixture")

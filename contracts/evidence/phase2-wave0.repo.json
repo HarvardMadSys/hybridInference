@@ -244,7 +244,7 @@
   },
   "protocol_contracts": {
     "auth_session_v1": {
-      "sha256": "sha256:11823ae6c5a0056716745c749b6468cb464ee75d671b502c35fefdf92de63e63",
+      "sha256": "sha256:ab2c5b5ef0eb1dabf5f0fd28a9568ae354c4281d567288b3cdc4d79d83047f73",
       "source": "contracts/auth-session-v1.md"
     },
     "control_errors_v1": {
