@@ -76,6 +76,27 @@ def test_both_queries_exclude_quota_and_concurrency_rejections():
         assert "error <> 'concurrency_limit_exceeded'" in sql
 
 
+def test_both_queries_exclude_client_disconnects():
+    """Client disconnects (status 499) must never page Slack.
+
+    ``completions_stream._finalize_cancelled`` logs a dropped streaming
+    connection as status 499 ("client closed request") with a non-null
+    ``error`` ("Client disconnected before the stream completed"). That is
+    client behavior, not a service fault, so both predicates must exclude it on
+    the error branch. The guard is status-based (499 is assigned nowhere else)
+    so it survives any rewording of the error text, and uses ``IS DISTINCT
+    FROM`` so NULL-status error rows keep counting. Genuine 5xx still counts via
+    ``status_code >= 500``; gateway timeouts (504) are intentionally not excluded.
+    """
+    from serving.admin.failed_request_alerter import (
+        FAILED_REQUEST_BREAKDOWN_SQL,
+        FAILED_REQUEST_COUNT_SQL,
+    )
+
+    for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL):
+        assert "status_code IS DISTINCT FROM 499" in sql
+
+
 @pytest.mark.asyncio
 async def test_count_recent_failures_rejects_nonpositive_window():
     """window_minutes <= 0 must raise ValueError before touching the pool."""

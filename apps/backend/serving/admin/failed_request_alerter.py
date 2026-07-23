@@ -56,8 +56,21 @@ logger = get_logger(__name__)
 # 429s with a non-null ``error``) are expected user-facing rate limiting, not a
 # service fault, so they are excluded here and never page Slack. The exclusions
 # live on the error branch, so a genuine 5xx still counts via ``status_code >= 500``.
+#
+# Client disconnects (status 499, error "Client disconnected before the stream
+# completed") are excluded for the same reason. When a caller drops a streaming
+# connection, completions_stream._finalize_cancelled deliberately logs status 499
+# — nginx's "client closed request" convention — precisely so the abort is NOT
+# treated as a service fault (it inflates no 5xx metric and records no routing
+# failure). But the row carries a non-null ``error``, so without this guard the
+# ``error IS NOT NULL`` branch re-admits it and a spike in benign client
+# disconnects pages Slack. 499 is assigned nowhere else, so excluding the whole
+# status is exact and survives any rewording of the error text. Gateway timeouts
+# use 504 (a real service concern) and still count via ``status_code >= 500``.
+# ``IS DISTINCT FROM`` (not ``<>``) keeps NULL-status error rows counting.
 FAILURE_PREDICATE_SQL = (
     "(status_code >= 500 OR (error IS NOT NULL "
+    "AND status_code IS DISTINCT FROM 499 "
     "AND error NOT ILIKE 'Model ''%'' not found' "
     "AND error NOT ILIKE 'Embedding model ''%'' not found' "
     "AND error <> 'model_not_found' "
