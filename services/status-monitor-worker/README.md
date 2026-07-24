@@ -39,6 +39,15 @@ Every page is committed to the alert state only **after** either the relay or
 fallback Slack POST is confirmed delivered, so a transient failure is retried
 on the next cron cycle rather than being silently dropped.
 
+The Worker also declares the future unified alert Control Plane as an internal
+named Service Binding and exposes its immutable Cloudflare version ID through
+`CF_VERSION_METADATA`. This is **caller preparation only**:
+`ALERT_DEFAULT_OWNER=legacy`, and `runAlerts` / `runCycleAlert` still use only
+the existing relay/webhook path. The canonical helper has no fallback and
+retains the exact persisted body and `event_id` when an RPC attempt is rejected,
+ambiguous, or unavailable. A later, separately reviewed owner-switch PR will
+connect that helper to model alert evaluation and drain legacy incidents.
+
 Two whole-deployment cases are also covered:
 
 - **Gateway-level outage.** If the gateway is unreachable (model discovery
@@ -81,7 +90,12 @@ working without JavaScript).
 3 free/pro, 10 internal/admin), `PROBE_HEADER`, `RETENTION_DAYS`,
 `ALERT_FAILURE_THRESHOLD` (consecutive failed probes before a model pages Slack),
 `ALERT_STORM_THRESHOLD` (models changing state in one cycle before pages collapse
-into a summary).
+into a summary), and `ALERT_DEFAULT_OWNER` (pinned to `legacy` during C3b caller
+preparation).
+
+`CF_VERSION_METADATA` and `ALERT_CONTROL_PLANE` are non-secret platform
+bindings. The latter targets the Control Plane's
+`StatusMonitorProducerEntrypoint`; it does not add a public URL or bearer token.
 
 `PROBER_API_KEY` is a **secret**, not a var. `CODEX_ONCALL_RELAY_URL`,
 `CODEX_ONCALL_RELAY_TOKEN`, and `SLACK_WEBHOOK_URL` are optional secrets. Both
@@ -95,9 +109,25 @@ runs `npm test` and `wrangler deploy` whenever a change under
 `services/status-monitor-worker/**` lands on `dev` (or via manual
 **workflow_dispatch**). It needs a single repository secret,
 `CLOUDFLARE_API_TOKEN` (a Cloudflare API token with Workers Scripts edit +
-D1 access); the account is pinned via `account_id` in `wrangler.toml`. The
-workflow does not run D1 migrations — apply schema changes once, manually
-(step 2 below), before they ship.
+D1 access), the staging environment variable
+`ALERT_CONTROL_PLANE_STAGING_URL`, and GitHub's job-scoped OIDC token. After
+deployment it reads the exact Wrangler `version_id`, registers that immutable
+version as `service=status-monitor`, `source=status-monitor`,
+`principal=staging-monitor`, then runs a firing/resolved RPC through a
+runner-local Service Binding gate. The gate listens only on `127.0.0.1`; only
+its binding is proxied to the deployed staging Control Plane, and neither the
+gate nor a public route is deployed.
+
+Wrangler is pinned to a reviewed 4.x release (remote bindings became stable in
+4.37.0) so gate code stays local while its Service Binding reaches staging.
+Do not replace the gate with legacy `wrangler dev --remote`, which uploads the
+disposable gate Worker to a preview environment. The workflow does not run D1
+migrations — apply schema changes once, manually (step 2 below), before they
+ship.
+
+An out-of-band manual deployment is safe while the owner remains `legacy`, but
+its version is not trusted to submit Control Plane events until the reviewed CI
+workflow attests that exact version.
 
 To deploy by hand (first-time setup or out-of-band):
 

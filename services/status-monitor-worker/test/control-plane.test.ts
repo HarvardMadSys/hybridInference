@@ -13,6 +13,8 @@ import {
 } from "../src/control-plane";
 import type { ProbeResult } from "../src/probe";
 
+const VERSION_ID = "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908";
+
 class FakeStmt {
   private args: unknown[] = [];
 
@@ -218,17 +220,102 @@ describe("durable pending canonical event", () => {
     vi.stubGlobal("fetch", legacyFetch);
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const service: StatusMonitorControlPlaneService = {
-      submitStatusMonitorEvent: vi.fn(async () => {
+      submitStatusMonitorEvent: vi.fn(async (_bodyJson, _deploymentId) => {
         throw new Error("ambiguous response");
       }),
     };
 
-    expect(await submitPendingCanonicalEvent(service, pending)).toBe(false);
+    expect(
+      await submitPendingCanonicalEvent(
+        service,
+        pending,
+        { id: VERSION_ID } as WorkerVersionMetadata,
+      ),
+    ).toBe(false);
     expect(legacyFetch).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("alert control plane service binding submission failed");
     const retry = await getOrCreatePendingCanonicalEvent(
       db(fake),
       modelUnavailableEvent(result(), "firing", 2, "different"),
+    );
+    expect(retry.bodyJson).toBe(pending.bodyJson);
+  });
+
+  it("passes the exact persisted body and immutable Worker version ID", async () => {
+    const fake = new FakeD1();
+    const pending = await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "event-submit-exact"),
+    );
+    const submitStatusMonitorEvent = vi.fn(async () => ({
+      accepted: true as const,
+      acknowledgement: {
+        accepted: true as const,
+        incident_id: "incident-1",
+        generation: 1,
+        lifecycle_state: "opening",
+        action: "opened",
+        occurrence_count: 1,
+        state_version: 1,
+      },
+    }));
+
+    await expect(
+      submitPendingCanonicalEvent(
+        { submitStatusMonitorEvent },
+        pending,
+        { id: VERSION_ID } as WorkerVersionMetadata,
+      ),
+    ).resolves.toBe(true);
+    expect(submitStatusMonitorEvent).toHaveBeenCalledOnce();
+    expect(submitStatusMonitorEvent).toHaveBeenCalledWith(pending.bodyJson, VERSION_ID);
+  });
+
+  it.each([
+    undefined,
+    { id: "" } as WorkerVersionMetadata,
+    { id: "not-a-cloudflare-version" } as WorkerVersionMetadata,
+  ])("fails closed before RPC for invalid version metadata %#", async (versionMetadata) => {
+    const fake = new FakeD1();
+    const pending = await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "event-invalid-version"),
+    );
+    const submitStatusMonitorEvent = vi.fn();
+
+    await expect(
+      submitPendingCanonicalEvent(
+        { submitStatusMonitorEvent },
+        pending,
+        versionMetadata,
+      ),
+    ).resolves.toBe(false);
+    expect(submitStatusMonitorEvent).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed RPC success without logging or clearing the pending event", async () => {
+    const fake = new FakeD1();
+    const pending = await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "event-malformed-result"),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const submitStatusMonitorEvent = vi.fn(async () => ({
+      accepted: true,
+      acknowledgement: { accepted: true, secret: "must-not-be-trusted" },
+    })) as unknown as StatusMonitorControlPlaneService["submitStatusMonitorEvent"];
+
+    await expect(
+      submitPendingCanonicalEvent(
+        { submitStatusMonitorEvent },
+        pending,
+        { id: VERSION_ID } as WorkerVersionMetadata,
+      ),
+    ).resolves.toBe(false);
+    expect(log).not.toHaveBeenCalled();
+    const retry = await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "replacement-event"),
     );
     expect(retry.bodyJson).toBe(pending.bodyJson);
   });

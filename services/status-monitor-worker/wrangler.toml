@@ -36,6 +36,19 @@ ALERT_FAILURE_THRESHOLD = "2"
 # Above this many models changing state in one cycle, the per-model pages collapse
 # into a single summary message so a provider-wide blip doesn't flood the channel.
 ALERT_STORM_THRESHOLD = "5"
+# C3b caller preparation only. Existing alert paths remain the sole writer
+# until a later reviewed PR switches this default and wires canonical delivery.
+ALERT_DEFAULT_OWNER = "legacy"
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+# Internal RPC capability. The target named entrypoint is deployed before this
+# caller binding; no public Control Plane URL or bearer credential is involved.
+[[services]]
+binding = "ALERT_CONTROL_PLANE"
+service = "freeinference-alert-control-plane-staging"
+entrypoint = "StatusMonitorProducerEntrypoint"
 
 # D1 database binding. `database_id` is filled in after the database is created
 # (see README); the binding name `DB` is what the Worker code uses.

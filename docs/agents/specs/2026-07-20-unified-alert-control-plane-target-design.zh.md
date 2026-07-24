@@ -615,7 +615,12 @@ Control Plane 至少暴露：
   `StatusMonitorProducerEntrypoint` 与固定角色的 registry lookup/attestation policy，
   再在独立评审的 caller PR 中加入 Version Metadata 和指向该 named entrypoint 的
   Service Binding。目标 entrypoint 未上线前不得先部署 binding。准备阶段
-  `ALERT_DEFAULT_OWNER` 保持 `legacy`，不触发真实 Control Plane 写入
+  `ALERT_DEFAULT_OWNER` 保持 `legacy`，不触发真实探测流量的 Control Plane 写入。
+  caller deploy workflow 必须从 Wrangler 结构化输出读取确切 Worker `version_id`，用
+  GitHub OIDC 将其登记为固定的 `status-monitor` / `staging-monitor` 身份，再通过仅监听
+  runner loopback、只把 named Service Binding 远程连接到 staging target 的临时 gate
+  运行 synthetic firing/resolved RPC；不得增加公共 status-monitor gate 路由，也不得用
+  会上传临时 Worker 的 legacy `wrangler dev --remote`
 - Provision staging principal 与 Control Plane secrets
 - staging producer 只配置一个 `ALERT_SINK_URL` 与 credential
 - 禁用 staging 的 V1 Relay 和 direct Slack webhook

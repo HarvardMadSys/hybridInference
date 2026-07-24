@@ -5,6 +5,8 @@ export interface Env {
   DB: D1Database;
   PROBER_API_KEY: string;
   GATEWAY_BASE_URL: string;
+  CF_VERSION_METADATA: WorkerVersionMetadata;
+  ALERT_CONTROL_PLANE: StatusMonitorControlPlaneService;
   PROBE_PROMPT?: string;
   PROBE_MAX_TOKENS?: string;
   MAX_CONCURRENCY?: string;
@@ -22,9 +24,8 @@ export interface Env {
   // More than this many models changing state in one cycle collapses into a
   // single summary Slack message instead of one per model. Defaults to 5.
   ALERT_STORM_THRESHOLD?: string;
-  // C3a preparation only. The deployed Worker does not declare this binding or
-  // select this owner yet; C3b will add both in one reviewed cutover.
-  ALERT_CONTROL_PLANE?: StatusMonitorControlPlaneService;
+  // Keep legacy as the only writer until the later owner-switch PR wires the
+  // canonical producer into runAlerts.
   ALERT_DEFAULT_OWNER?: string;
 }
 

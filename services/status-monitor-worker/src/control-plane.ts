@@ -9,6 +9,33 @@ export type ModelUnavailabilityReason =
   | "timeout"
   | "unknown"
   | "upstream_error";
+export type StatusMonitorRpcErrorCode =
+  | "control_plane_dormant"
+  | "control_plane_unavailable"
+  | "deployment_mismatch"
+  | "event_id_conflict"
+  | "invalid_event"
+  | "invalid_producer_identity"
+  | "retired_deployment"
+  | "unknown_deployment";
+
+export type StatusMonitorRpcResult =
+  | {
+      readonly accepted: true;
+      readonly acknowledgement: {
+        readonly accepted: true;
+        readonly incident_id: string | null;
+        readonly generation: number | null;
+        readonly lifecycle_state: string | null;
+        readonly action: string;
+        readonly occurrence_count: number;
+        readonly state_version: number | null;
+      };
+    }
+  | {
+      readonly accepted: false;
+      readonly errorCode: StatusMonitorRpcErrorCode;
+    };
 
 export interface ModelUnavailableAlertEvent {
   readonly schema_version: 1;
@@ -31,12 +58,10 @@ export interface ModelUnavailableAlertEvent {
 }
 
 export interface StatusMonitorControlPlaneService {
-  /**
-   * C3b will implement this as a role-specific Service Binding entrypoint.
-   * Passing the persisted JSON string preserves the exact producer body across
-   * an ambiguous response and its idempotent retry.
-   */
-  submitStatusMonitorEvent(bodyJson: string): Promise<{ readonly accepted: boolean }>;
+  submitStatusMonitorEvent(
+    bodyJson: string,
+    deploymentId: string,
+  ): Promise<StatusMonitorRpcResult>;
 }
 
 export interface PendingCanonicalEvent {
@@ -56,6 +81,18 @@ export class ControlPlanePreparationError extends Error {
 const OWNER_KEY_PREFIX = "alert_delivery_owner:v1:";
 const PENDING_KEY_PREFIX = "alert_delivery_pending:v1:";
 const EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+const CLOUDFLARE_VERSION_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const RPC_ERROR_CODES = new Set<StatusMonitorRpcErrorCode>([
+  "control_plane_dormant",
+  "control_plane_unavailable",
+  "deployment_mismatch",
+  "event_id_conflict",
+  "invalid_event",
+  "invalid_producer_identity",
+  "retired_deployment",
+  "unknown_deployment",
+]);
 const EVENT_KEYS = new Set([
   "schema_version",
   "event_id",
@@ -203,6 +240,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function nullableInteger(value: unknown): boolean {
+  return value === null || Number.isSafeInteger(value);
+}
+
+export function isStatusMonitorRpcResult(value: unknown): value is StatusMonitorRpcResult {
+  if (!isRecord(value) || typeof value.accepted !== "boolean") return false;
+  if (value.accepted === false) {
+    return (
+      Object.keys(value).length === 2 &&
+      typeof value.errorCode === "string" &&
+      RPC_ERROR_CODES.has(value.errorCode as StatusMonitorRpcErrorCode)
+    );
+  }
+  if (Object.keys(value).length !== 2 || !isRecord(value.acknowledgement)) return false;
+  const acknowledgement = value.acknowledgement;
+  return (
+    Object.keys(acknowledgement).length === 7 &&
+    acknowledgement.accepted === true &&
+    (acknowledgement.incident_id === null ||
+      validBoundedString(acknowledgement.incident_id, 256)) &&
+    nullableInteger(acknowledgement.generation) &&
+    (acknowledgement.lifecycle_state === null ||
+      validBoundedString(acknowledgement.lifecycle_state, 64)) &&
+    validBoundedString(acknowledgement.action, 64) &&
+    Number.isSafeInteger(acknowledgement.occurrence_count) &&
+    (acknowledgement.occurrence_count as number) >= 0 &&
+    nullableInteger(acknowledgement.state_version)
+  );
+}
+
 function hasExactKeys(value: Record<string, unknown>, allowed: Set<string>): boolean {
   return Object.keys(value).every((key) => allowed.has(key));
 }
@@ -326,11 +393,22 @@ export async function getOrCreatePendingCanonicalEvent(
 export async function submitPendingCanonicalEvent(
   service: StatusMonitorControlPlaneService | undefined,
   pending: PendingCanonicalEvent,
+  versionMetadata: WorkerVersionMetadata | undefined,
 ): Promise<boolean> {
-  if (service === undefined) return false;
+  const deploymentId = versionMetadata?.id;
+  if (
+    service === undefined ||
+    typeof deploymentId !== "string" ||
+    !CLOUDFLARE_VERSION_ID_RE.test(deploymentId)
+  ) {
+    return false;
+  }
   try {
-    const result = await service.submitStatusMonitorEvent(pending.bodyJson);
-    return result.accepted === true;
+    const result: unknown = await service.submitStatusMonitorEvent(
+      pending.bodyJson,
+      deploymentId,
+    );
+    return isStatusMonitorRpcResult(result) && result.accepted;
   } catch {
     console.error("alert control plane service binding submission failed");
     return false;
