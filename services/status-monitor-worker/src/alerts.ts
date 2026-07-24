@@ -7,8 +7,11 @@ import {
   writeCycleAlertState,
 } from "./db";
 import {
+  ControlPlanePreparationError,
   configuredDefaultOwner,
   getOrCreatePendingCanonicalEvent,
+  hasControlPlaneDrainOwner,
+  listPendingCanonicalEvents,
   modelUnavailableEvent,
   prepareDrainOwnerRelease,
   preparePendingCanonicalEventCompletion,
@@ -416,7 +419,9 @@ export function decideAlerts(
  * Evaluates probe results and sends alerts for models that failed
  * `config.alertFailureThreshold` consecutive probes (and recovery notices for
  * those that come back). Codex on-call is attempted first when configured, with
- * the Slack webhook as a fallback. No-op when neither destination is configured.
+ * the Slack webhook as a fallback. A legacy-only configuration is a no-op without
+ * either destination; Control Plane transitions remain durable while its binding
+ * is unavailable.
  *
  * Runs inside the probe cycle while it holds the cycle lock, so the
  * read-modify-write of the alert state is never raced by an overlapping cron.
@@ -425,24 +430,71 @@ export function decideAlerts(
  * destination outage causes a retry on the next cycle rather than a lost alert.
  */
 export async function runAlerts(env: Env, config: Config, results: ProbeResult[]): Promise<void> {
-  if (
-    results.length === 0 ||
-    (!hasAlertDestination(env) && env.ALERT_CONTROL_PLANE === undefined)
-  ) {
-    return;
-  }
+  if (results.length === 0) return;
 
   const threshold = config.alertFailureThreshold;
   const defaultOwner = configuredDefaultOwner(env.ALERT_DEFAULT_OWNER);
+  const pendingEvents = await listPendingCanonicalEvents(env.DB);
+  if (
+    !hasAlertDestination(env) &&
+    env.ALERT_CONTROL_PLANE === undefined &&
+    defaultOwner === "legacy" &&
+    pendingEvents.length === 0 &&
+    !(await hasControlPlaneDrainOwner(env.DB))
+  ) {
+    return;
+  }
   // Only a model that failed *this* cycle can newly cross the threshold; limiting
   // the streak lookup to those keeps D1 rows_read at threshold × (failed models).
   const failedNow = results.filter((r) => !r.ok).map((r) => r.modelId);
   const failing = await modelsFailingStreak(env.DB, failedNow, threshold);
   const prevState = await readAlertState(env.DB);
-  const { down, recovered, baseState } = decideAlerts(results, failing, prevState);
+  const { down: candidateDown, recovered: candidateRecovered, baseState } = decideAlerts(
+    results,
+    failing,
+    prevState,
+  );
 
   const nextState: Record<string, string> = Object.assign(Object.create(null), baseState);
   const completionStatements: D1PreparedStatement[] = [];
+  const pendingModelIds = new Set<string>();
+  for (const pending of pendingEvents) {
+    const expectedStatus = Object.hasOwn(prevState, pending.modelId) ? "resolved" : "firing";
+    if (pendingModelIds.has(pending.modelId) || pending.status !== expectedStatus) {
+      throw new ControlPlanePreparationError("pending_state_conflict");
+    }
+    pendingModelIds.add(pending.modelId);
+    if (pending.status === "resolved") {
+      nextState[pending.modelId] = prevState[pending.modelId];
+    }
+  }
+
+  const replayed = await Promise.all(
+    pendingEvents.map(async (pending) => ({
+      pending,
+      delivered: await submitPendingCanonicalEvent(
+        env.ALERT_CONTROL_PLANE,
+        pending,
+        env.CF_VERSION_METADATA,
+      ),
+    })),
+  );
+  for (const { pending, delivered } of replayed) {
+    if (!delivered) continue;
+    if (pending.status === "firing") {
+      nextState[pending.modelId] = pending.fingerprint;
+    } else {
+      delete nextState[pending.modelId];
+    }
+    completionStatements.push(...preparePendingCanonicalEventCompletion(env.DB, pending));
+  }
+
+  // A pending transition owns this cycle even if the latest probe reversed. It
+  // must converge before an opposite edge or a legacy storm summary can run.
+  const down = candidateDown.filter((result) => !pendingModelIds.has(result.modelId));
+  const recovered = candidateRecovered.filter(
+    (result) => !pendingModelIds.has(result.modelId),
+  );
   const storm = config.alertStormThreshold;
 
   // A provider-wide blip can take down many models at once. Past `storm`, collapse

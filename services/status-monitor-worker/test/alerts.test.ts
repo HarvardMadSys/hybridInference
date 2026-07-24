@@ -162,6 +162,14 @@ class FakeStmt {
       const v = this.db.meta.get(this.args[0] as string);
       return v == null ? null : ({ value: v } as T);
     }
+    if (/SELECT 1 AS present FROM meta WHERE key GLOB \? AND value = \? LIMIT 1/.test(this.sql)) {
+      const prefix = (this.args[0] as string).slice(0, -1);
+      const value = this.args[1] as string;
+      const found = [...this.db.meta].some(
+        ([key, stored]) => key.startsWith(prefix) && stored === value,
+      );
+      return found ? ({ present: 1 } as T) : null;
+    }
     throw new Error(`unhandled first(): ${this.sql}`);
   }
   async run(): Promise<{ meta: { changes: number } }> {
@@ -184,6 +192,14 @@ class FakeStmt {
         .sort((a, b) => b.id - a.id)
         .slice(0, limit)
         .map((r) => ({ ok: r.ok }));
+      return { results: rows as T[] };
+    }
+    if (/SELECT key, value FROM meta WHERE key GLOB \? ORDER BY key/.test(this.sql)) {
+      const prefix = (this.args[0] as string).slice(0, -1);
+      const rows = [...this.db.meta]
+        .filter(([key]) => key.startsWith(prefix))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => ({ key, value }));
       return { results: rows as T[] };
     }
     throw new Error(`unhandled all(): ${this.sql}`);
@@ -442,6 +458,98 @@ describe("runAlerts", () => {
     expect(legacyFetch).not.toHaveBeenCalled();
   });
 
+  it("retries a pending firing before recording a later recovery", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      if (bodies.length === 1) throw new Error("response lost");
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, { a: true }, cfg(1));
+
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toBe(bodies[0]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty(
+      "a",
+      "status-monitor:model:a",
+    );
+    expect(
+      db.meta.has("alert_delivery_pending:v1:firing:status-monitor:model:a"),
+    ).toBe(false);
+
+    await cycle(db, env, { a: true }, cfg(1));
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "firing",
+      "resolved",
+    ]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+  });
+
+  it("retries a pending resolution before opening a later outage", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      if (bodies.length === 2) throw new Error("response lost");
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, { a: true }, cfg(1));
+    await cycle(db, env, { a: false }, cfg(1));
+
+    expect(bodies).toHaveLength(3);
+    expect(bodies[2]).toBe(bodies[1]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+    expect(
+      db.meta.has("alert_delivery_pending:v1:resolved:status-monitor:model:a"),
+    ).toBe(false);
+
+    await cycle(db, env, { a: false }, cfg(1));
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "resolved",
+      "resolved",
+      "firing",
+    ]);
+    expect(JSON.parse(bodies[3]).event_id).not.toBe(JSON.parse(bodies[0]).event_id);
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty(
+      "a",
+      "status-monitor:model:a",
+    );
+  });
+
+  it("keeps a pending control-plane event out of a later legacy storm summary", async () => {
+    const db = new FakeD1();
+    const submit = vi.fn(async () => {
+      throw new Error("response lost");
+    });
+    const env = controlPlaneEnv(db, submit, "control-plane", "https://hook.test/x");
+    const posts = stubFetch();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await cycle(db, env, { a: false }, cfg(1, 2));
+    await cycle(db, env, { a: false, b: false, c: false, d: false }, cfg(1, 2));
+
+    expect(submit).toHaveBeenCalledTimes(2);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).not.toContain("`a`");
+    expect(posts[0].text).toContain("`b`");
+    expect(posts[0].text).toContain("`c`");
+    expect(posts[0].text).toContain("`d`");
+    expect(
+      db.meta.has("alert_delivery_pending:v1:firing:status-monitor:model:a"),
+    ).toBe(true);
+  });
+
   it("drains a pre-cutover recovery with no owner through the legacy writer", async () => {
     const db = new FakeD1();
     db.meta.set("alert_state", JSON.stringify({ a: "2026-06-25T00:00:00Z" }));
@@ -474,7 +582,7 @@ describe("runAlerts", () => {
 
   it("fails closed without fallback when control-plane ownership is configured but its binding is absent", async () => {
     const db = new FakeD1();
-    const env = envWith(db, "https://hook.test/x");
+    const env = envWith(db, undefined);
     env.ALERT_DEFAULT_OWNER = "control-plane";
     const legacyFetch = vi.fn();
     vi.stubGlobal("fetch", legacyFetch);
@@ -485,6 +593,28 @@ describe("runAlerts", () => {
     expect(db.meta.has("alert_state")).toBe(false);
     expect(
       db.meta.has("alert_delivery_pending:v1:firing:status-monitor:model:a"),
+    ).toBe(true);
+    expect(db.meta.get("alert_delivery_owner:v1:status-monitor:model:a")).toBe(
+      "control-plane",
+    );
+  });
+
+  it("preserves a control-plane recovery after rollback when its binding is absent", async () => {
+    const db = new FakeD1();
+    const submit = vi.fn(async () => acceptedRpcResult());
+    await cycle(db, controlPlaneEnv(db, submit), { a: false }, cfg(1));
+
+    const rolledBack = envWith(db, undefined);
+    rolledBack.ALERT_DEFAULT_OWNER = "legacy";
+    const legacyFetch = vi.fn();
+    vi.stubGlobal("fetch", legacyFetch);
+
+    await cycle(db, rolledBack, { a: true }, cfg(1));
+
+    expect(legacyFetch).not.toHaveBeenCalled();
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty("a");
+    expect(
+      db.meta.has("alert_delivery_pending:v1:resolved:status-monitor:model:a"),
     ).toBe(true);
     expect(db.meta.get("alert_delivery_owner:v1:status-monitor:model:a")).toBe(
       "control-plane",

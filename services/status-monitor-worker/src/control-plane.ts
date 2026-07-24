@@ -67,12 +67,18 @@ export interface StatusMonitorControlPlaneService {
 export interface PendingCanonicalEvent {
   readonly eventId: string;
   readonly fingerprint: string;
+  readonly modelId: string;
   readonly status: ModelUnavailableStatus;
   readonly bodyJson: string;
 }
 
 export class ControlPlanePreparationError extends Error {
-  constructor(code: "drain_ownership_corrupt" | "pending_event_corrupt") {
+  constructor(
+    code:
+      | "drain_ownership_corrupt"
+      | "pending_event_corrupt"
+      | "pending_state_conflict",
+  ) {
     super(code);
     this.name = "ControlPlanePreparationError";
   }
@@ -176,6 +182,16 @@ export async function resolveDrainOwner(
 
 export async function releaseDrainOwner(db: D1Database, fingerprint: string): Promise<void> {
   await deleteMeta(db, metaKey(OWNER_KEY_PREFIX, fingerprint));
+}
+
+export async function hasControlPlaneDrainOwner(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS present FROM meta WHERE key GLOB ? AND value = ? LIMIT 1`,
+    )
+    .bind(`${OWNER_KEY_PREFIX}*`, "control-plane")
+    .first<{ present: number }>();
+  return row !== null;
 }
 
 export function prepareDrainOwnerRelease(
@@ -365,6 +381,7 @@ function parsePending(
     return {
       eventId: body.event_id,
       fingerprint,
+      modelId: body.context.model_id,
       status,
       bodyJson: stored.body_json,
     };
@@ -391,6 +408,42 @@ export async function getOrCreatePendingCanonicalEvent(
   const pending = parsePending(wrapper, candidate.fingerprint, candidate.status);
   await writeMeta(db, key, wrapper);
   return pending;
+}
+
+function parseListedPending(key: string, raw: string): PendingCanonicalEvent {
+  try {
+    const stored = JSON.parse(raw) as unknown;
+    if (!isRecord(stored) || typeof stored.body_json !== "string") {
+      throw new Error("invalid wrapper");
+    }
+    const body = JSON.parse(stored.body_json) as unknown;
+    if (
+      !isRecord(body) ||
+      typeof body.fingerprint !== "string" ||
+      (body.status !== "firing" && body.status !== "resolved")
+    ) {
+      throw new Error("invalid event identity");
+    }
+    const pending = parsePending(raw, body.fingerprint, body.status);
+    if (key !== metaKey(PENDING_KEY_PREFIX, pending.fingerprint, pending.status)) {
+      throw new Error("pending key mismatch");
+    }
+    return pending;
+  } catch (error) {
+    if (error instanceof ControlPlanePreparationError) throw error;
+    throw new ControlPlanePreparationError("pending_event_corrupt");
+  }
+}
+
+/** Returns every durable transition that must be retried before new edges. */
+export async function listPendingCanonicalEvents(
+  db: D1Database,
+): Promise<PendingCanonicalEvent[]> {
+  const result = await db
+    .prepare(`SELECT key, value FROM meta WHERE key GLOB ? ORDER BY key`)
+    .bind(`${PENDING_KEY_PREFIX}*`)
+    .all<{ key: string; value: string }>();
+  return result.results.map((row) => parseListedPending(row.key, row.value));
 }
 
 /**
