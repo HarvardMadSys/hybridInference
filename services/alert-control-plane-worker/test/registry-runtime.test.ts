@@ -59,6 +59,8 @@ function config(
         repositoryOwnerId: "456",
         workflowRef:
           "HarvardMadSys/hybridInference/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev",
+        statusMonitorWorkflowRef:
+          "HarvardMadSys/hybridInference/.github/workflows/deploy-status-monitor.yml@refs/heads/dev",
         ref: "refs/heads/dev",
         environment: "staging",
         eventName: "workflow_dispatch",
@@ -169,6 +171,76 @@ describe("deployment registry runtime", () => {
 
     expect(response.status).toBe(401);
     expect(registryNamespace.get).not.toHaveBeenCalled();
+  });
+
+  it("registers the fixed status-monitor role without minting a bearer capability", async () => {
+    const statusDeployment: TrustedDeploymentMetadata = {
+      ...deployment,
+      service: "status-monitor",
+      deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+    };
+    const registryNamespace = namespace(async () =>
+      new Response(JSON.stringify(statusDeployment), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const response = await handleDeploymentAttestationRequest(
+      new Request("https://alerts.example.test/v1/deployments/attest", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer github.oidc.token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          action: "activate",
+          deployment: {
+            environment: "staging",
+            service: "status-monitor",
+            deployment_id: statusDeployment.deploymentId,
+            artifact_digest: statusDeployment.artifactDigest,
+          },
+          deployment_sha: statusDeployment.deploymentSha,
+          activated_at: statusDeployment.activatedAt,
+          source: "status-monitor",
+          principal: "staging-monitor",
+        }),
+      }),
+      config(registryNamespace),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      deployment: statusDeployment,
+    });
+  });
+
+  it("looks up a version ID inside the status-monitor registry shard", async () => {
+    const registryNamespace = namespace(async (request) => {
+      expect(new URL(request.url).pathname).toBe(
+        "/internal/lookup-by-deployment-id",
+      );
+      await expect(request.json()).resolves.toEqual({
+        identity: {
+          environment: "staging",
+          service: "status-monitor",
+          deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+        },
+      });
+      return new Response(JSON.stringify({
+        ...deployment,
+        service: "status-monitor",
+        deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+      }));
+    });
+    const client = new BoundDeploymentRegistryClient(
+      config(registryNamespace),
+    );
+
+    await expect(client.lookupByDeploymentId({
+      environment: "staging",
+      service: "status-monitor",
+      deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+    })).resolves.toMatchObject({ service: "status-monitor" });
   });
 
   it("maps stable registry lookup failures without exposing response bodies", async () => {

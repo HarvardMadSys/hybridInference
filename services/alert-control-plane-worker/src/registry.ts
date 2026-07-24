@@ -12,6 +12,11 @@ export interface DeploymentKey {
   readonly artifactDigest: string;
 }
 
+export type DeploymentIdentity = Pick<
+  DeploymentKey,
+  "environment" | "service" | "deploymentId"
+>;
+
 export interface TrustedDeploymentMetadata extends DeploymentKey {
   readonly deploymentSha: string;
   readonly activatedAt: number;
@@ -75,6 +80,7 @@ interface RegistryRepository {
   findByDeploymentId(
     deploymentId: string,
   ): TrustedDeploymentMetadata | undefined;
+  countByDeploymentId(deploymentId: string): number;
   insert(record: TrustedDeploymentMetadata): void;
   retire(key: DeploymentKey, retiredAt: number, registryVersion: number): void;
   nextVersion(): number;
@@ -151,6 +157,20 @@ class SqlRegistryRepository implements RegistryRepository {
       )
       .toArray();
     return rows[0] === undefined ? undefined : deploymentFromRow(rows[0]);
+  }
+
+  countByDeploymentId(deploymentId: string): number {
+    return numberColumn(
+      this.storage.sql
+        .exec<Record<string, SqlValue>>(
+          `SELECT COUNT(*) AS count
+           FROM deployment_registry
+           WHERE deployment_id = ?`,
+          deploymentId,
+        )
+        .one(),
+      "count",
+    );
   }
 
   insert(record: TrustedDeploymentMetadata): void {
@@ -241,6 +261,14 @@ class MemoryRegistryRepository implements RegistryRepository {
     return match;
   }
 
+  countByDeploymentId(deploymentId: string): number {
+    let count = 0;
+    for (const record of this.records.values()) {
+      if (record.deploymentId === deploymentId) count += 1;
+    }
+    return count;
+  }
+
   insert(record: TrustedDeploymentMetadata): void {
     this.records.set(deploymentKey(record), record);
   }
@@ -303,6 +331,44 @@ class DeploymentRegistryCore<Attestation> {
         throw new DeploymentLookupError("deployment_mismatch");
       }
       throw new DeploymentLookupError("unknown_deployment");
+    });
+  }
+
+  /**
+   * Resolve an active immutable deployment when the platform supplies only its
+   * version ID. The environment and service remain mandatory so an ID cannot
+   * cross a role boundary even if a registry shard is called incorrectly.
+   */
+  lookupByDeploymentId(
+    identity: DeploymentIdentity,
+  ): TrustedDeploymentMetadata {
+    validateDeploymentIdentity(identity);
+
+    return this.repository.transaction(() => {
+      const deployment = this.repository.findByDeploymentId(
+        identity.deploymentId,
+      );
+      if (deployment === undefined) {
+        throw new DeploymentLookupError("unknown_deployment");
+      }
+      // A platform version ID must resolve to exactly one attested artifact.
+      // The legacy exact-key lookup still supports rolling records that share
+      // an ID, but this reduced-key RPC must never select one ambiguously.
+      if (
+        this.repository.countByDeploymentId(identity.deploymentId) !== 1
+      ) {
+        throw new DeploymentLookupError("deployment_mismatch");
+      }
+      if (
+        deployment.environment !== identity.environment ||
+        deployment.service !== identity.service
+      ) {
+        throw new DeploymentLookupError("deployment_mismatch");
+      }
+      if (deployment.retiredAt !== null) {
+        throw new DeploymentLookupError("retired_deployment");
+      }
+      return deployment;
     });
   }
 
@@ -404,12 +470,16 @@ function validateCommand(command: VerifiedDeploymentCommand): void {
 }
 
 function validateDeploymentKey(key: DeploymentKey): void {
-  validateName(key.environment, 64);
-  validateName(key.service, 128);
-  validateOpaqueIdentifier(key.deploymentId, 256);
+  validateDeploymentIdentity(key);
   if (!/^[a-z0-9][a-z0-9._+-]{0,31}:[a-f0-9]{32,256}$/.test(key.artifactDigest)) {
     throw new DeploymentRegistryWriteError("invalid_attestation");
   }
+}
+
+function validateDeploymentIdentity(identity: DeploymentIdentity): void {
+  validateName(identity.environment, 64);
+  validateName(identity.service, 128);
+  validateOpaqueIdentifier(identity.deploymentId, 256);
 }
 
 function validateName(value: string, maximumLength: number): void {

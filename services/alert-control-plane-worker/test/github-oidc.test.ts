@@ -16,6 +16,8 @@ const oidc: StagingIngressConfig["identity"]["githubOidc"] = {
   repositoryOwnerId: "67890",
   workflowRef:
     "HarvardMadSys/hybridInference/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev",
+  statusMonitorWorkflowRef:
+    "HarvardMadSys/hybridInference/.github/workflows/deploy-status-monitor.yml@refs/heads/dev",
   ref: "refs/heads/dev",
   environment: "staging",
   eventName: "workflow_dispatch",
@@ -83,6 +85,59 @@ describe("GitHubOidcDeploymentVerifier", () => {
       "signed.github.oidc",
       "alert-control-plane-deployment-attestation",
     );
+  });
+
+  it("accepts the exact self-hosted status-monitor deploy workflow for a Worker version", async () => {
+    const statusCommand = command({
+      service: "status-monitor",
+      deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+    });
+    const verifyToken = vi.fn().mockResolvedValue(claims({
+      workflow_ref: oidc.statusMonitorWorkflowRef,
+      event_name: "push",
+      runner_environment: "self-hosted",
+    }));
+    const verifier = new GitHubOidcDeploymentVerifier(
+      oidc,
+      verifyToken,
+      () => NOW,
+    );
+
+    await expect(
+      verifier.verify({
+        authorization: "Bearer signed.github.oidc",
+        command: statusCommand,
+      }),
+    ).resolves.toEqual(statusCommand);
+  });
+
+  it("does not let another workflow or runner attest a status-monitor version", async () => {
+    const statusCommand = command({
+      service: "status-monitor",
+      deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+    });
+    for (const override of [
+      { workflow_ref: oidc.workflowRef },
+      { runner_environment: "github-hosted" },
+      { event_name: "pull_request" },
+    ]) {
+      const verifier = new GitHubOidcDeploymentVerifier(
+        oidc,
+        vi.fn().mockResolvedValue(claims({
+          workflow_ref: oidc.statusMonitorWorkflowRef,
+          event_name: "workflow_dispatch",
+          runner_environment: "self-hosted",
+          ...override,
+        })),
+        () => NOW,
+      );
+      await expect(
+        verifier.verify({
+          authorization: "Bearer signed.github.oidc",
+          command: statusCommand,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_attestation" });
+    }
   });
 
   it.each([

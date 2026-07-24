@@ -28,6 +28,7 @@ export interface RuntimeEnvironment {
   readonly GITHUB_OIDC_REPOSITORY_ID?: string;
   readonly GITHUB_OIDC_REPOSITORY_OWNER_ID?: string;
   readonly GITHUB_OIDC_WORKFLOW_REF?: string;
+  readonly GITHUB_OIDC_STATUS_MONITOR_WORKFLOW_REF?: string;
   readonly GITHUB_OIDC_REF?: string;
   readonly GITHUB_OIDC_ENVIRONMENT?: string;
   readonly GITHUB_OIDC_EVENT_NAME?: string;
@@ -64,6 +65,7 @@ export interface StagingIngressConfig extends StagingRuntimeConfigBase {
       readonly repositoryId: string;
       readonly repositoryOwnerId: string;
       readonly workflowRef: string;
+      readonly statusMonitorWorkflowRef: string;
       readonly ref: "refs/heads/dev";
       readonly environment: "staging";
       readonly eventName: "workflow_dispatch";
@@ -110,6 +112,8 @@ export type RuntimeConfigErrorCode =
   | "github_oidc_repository_owner_id_invalid"
   | "github_oidc_workflow_ref_missing"
   | "github_oidc_workflow_ref_invalid"
+  | "github_oidc_status_monitor_workflow_ref_missing"
+  | "github_oidc_status_monitor_workflow_ref_invalid"
   | "github_oidc_ref_missing"
   | "github_oidc_ref_invalid"
   | "github_oidc_environment_missing"
@@ -360,6 +364,26 @@ export function parseRuntimeConfig(
     };
   }
 
+  const statusMonitorWorkflowRef =
+    env.GITHUB_OIDC_STATUS_MONITOR_WORKFLOW_REF;
+  if (!present(statusMonitorWorkflowRef)) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_status_monitor_workflow_ref_missing",
+    };
+  }
+  if (
+    !WORKFLOW_REF_RE.test(statusMonitorWorkflowRef) ||
+    !statusMonitorWorkflowRef.startsWith(
+      `${repository}/.github/workflows/`,
+    )
+  ) {
+    return {
+      mode: "invalid",
+      errorCode: "github_oidc_status_monitor_workflow_ref_invalid",
+    };
+  }
+
   if (env.GITHUB_OIDC_REF === undefined) {
     return { mode: "invalid", errorCode: "github_oidc_ref_missing" };
   }
@@ -407,6 +431,7 @@ export function parseRuntimeConfig(
         repositoryId,
         repositoryOwnerId,
         workflowRef,
+        statusMonitorWorkflowRef,
         ref: "refs/heads/dev",
         environment: "staging",
         eventName: "workflow_dispatch",

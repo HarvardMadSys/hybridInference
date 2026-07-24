@@ -14,7 +14,7 @@ runtime, identity, and registry binding validates. The checked-in example has
 no mode or credential, so it remains dormant. No real producer has been
 migrated and the existing alert path is unchanged.
 
-## Current Phase C2 boundaries
+## Current Phase C2/C3b target boundaries
 
 - Producers submit one canonical `AlertEvent`; trusted environment, source,
   principal, and deployment fields are injected outside the producer body.
@@ -56,6 +56,27 @@ migrated and the existing alert path is unchanged.
   activates a synthetic deployment, runs firing → repeat → resolved → re-fire,
   verifies the resulting Slack parent/update/recovery/new-generation effects,
   and retires the deployment in an `always()` cleanup step.
+- C3b adds a named `StatusMonitorProducerEntrypoint` for a future internal
+  Service Binding. It accepts only the persisted canonical JSON body and the
+  caller's immutable Cloudflare Worker version ID. The target fixes
+  `environment=staging`, `service=status-monitor`,
+  `source=status-monitor`, and `principal=staging-monitor`, then loads
+  SHA, artifact digest, and registry version from the active registry record.
+  It never accepts producer-supplied trusted metadata and does not add a public
+  HTTP route.
+- The status-monitor binding is intentionally not active in this target-first
+  change. Deploy this control-plane version first; only a later reviewed caller
+  change may add `entrypoint = "StatusMonitorProducerEntrypoint"` plus Version
+  Metadata. This ordering avoids breaking status-monitor's automatic deploy
+  while the old target version lacks the named export.
+- The deployment registry accepts status-monitor activation only from the
+  exact `deploy-status-monitor.yml@refs/heads/dev` OIDC workflow, staging
+  environment, dev ref, push/workflow-dispatch event, and self-hosted runner.
+  That role receives no bearer producer capability; the Service Binding itself
+  is the call capability, and each call still rechecks its version ID. The
+  caller rollout must attest the exact `version_id` emitted by Wrangler and
+  pass the same runtime value from `CF_VERSION_METADATA.id`; superseded
+  versions must be retired before enabling real ownership.
 - `dispatch_analysis` terminates with `analysis_not_enabled`; C1 never pretends
   that a Codex/GitHub analysis was dispatched.
 - Unknown alert types and unknown context fields are rejected. New producer
@@ -196,6 +217,11 @@ separate approval.
 - C3 inventories writers by call path. Today that includes status-monitor's
   relay/webhook fallback and the backend `alert_slack` helper used by endpoint
   health, alert rules, the failed-request alerter, and health routes.
+- C3b rollout is target-first: merge and run the control-plane lifecycle so
+  the named entrypoint and status-monitor attestation policy are live, then
+  separately add the caller's Version Metadata + Service Binding and run its
+  synthetic gate. `ALERT_DEFAULT_OWNER` remains `legacy` throughout those
+  preparation steps; a later PR performs the single-writer cutover.
 - A migrated producer retries the same canonical `event_id` when the control
   plane is unavailable. It must not fall back through V1 relay or a direct
   Slack webhook, and old/new writers must never shadow by both posting.

@@ -58,6 +58,8 @@ function config(
         repositoryOwnerId: "456",
         workflowRef:
           "HarvardMadSys/hybridInference/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev",
+        statusMonitorWorkflowRef:
+          "HarvardMadSys/hybridInference/.github/workflows/deploy-status-monitor.yml@refs/heads/dev",
         ref: "refs/heads/dev",
         environment: "staging",
         eventName: "workflow_dispatch",

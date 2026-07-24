@@ -160,6 +160,84 @@ describe("DeploymentRegistry", () => {
     }));
   });
 
+  it("resolves a platform version ID only inside its fixed role", async () => {
+    const registry = new InMemoryDeploymentRegistry(verifier([]));
+    await registry.apply(activation({
+      service: "status-monitor",
+      deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+    }));
+
+    expect(
+      registry.lookupByDeploymentId({
+        environment: "staging",
+        service: "status-monitor",
+        deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+      }),
+    ).toMatchObject({
+      service: "status-monitor",
+      artifactDigest: DIGEST,
+      retiredAt: null,
+    });
+    expect(() =>
+      registry.lookupByDeploymentId({
+        environment: "staging",
+        service: "gateway",
+        deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+      }),
+    ).toThrowError(expect.objectContaining<Partial<DeploymentLookupError>>({
+      code: "deployment_mismatch",
+    }));
+
+    await registry.apply({
+      issuer: "trusted-ci",
+      command: {
+        action: "retire",
+        deployment: {
+          environment: "staging",
+          service: "status-monitor",
+          deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+          artifactDigest: DIGEST,
+        },
+        retiredAt: 2_000,
+      },
+    });
+    expect(() =>
+      registry.lookupByDeploymentId({
+        environment: "staging",
+        service: "status-monitor",
+        deploymentId: "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908",
+      }),
+    ).toThrowError(expect.objectContaining<Partial<DeploymentLookupError>>({
+      code: "retired_deployment",
+    }));
+  });
+
+  it("rejects an ambiguous reduced-key deployment lookup", async () => {
+    const registry = new InMemoryDeploymentRegistry(verifier([]));
+    const deploymentId = "0198a3d0-4c2f-7db4-8c55-1f6bc62ee908";
+    await registry.apply(activation({
+      service: "status-monitor",
+      deploymentId,
+    }));
+    await registry.apply(activation({
+      service: "status-monitor",
+      deploymentId,
+      artifactDigest: `sha256:${"c".repeat(64)}`,
+      deploymentSha: "d".repeat(40),
+      activatedAt: 1_001,
+    }));
+
+    expect(() =>
+      registry.lookupByDeploymentId({
+        environment: "staging",
+        service: "status-monitor",
+        deploymentId,
+      }),
+    ).toThrowError(expect.objectContaining<Partial<DeploymentLookupError>>({
+      code: "deployment_mismatch",
+    }));
+  });
+
   it("retires idempotently and never reactivates the retired identity", async () => {
     const registry = new InMemoryDeploymentRegistry(verifier([]));
     await registry.apply(activation());

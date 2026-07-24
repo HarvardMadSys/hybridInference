@@ -43,5 +43,17 @@ new_sqlite_classes = ["DeploymentRegistryDurableObject"]
 #
 # C2 also requires PRODUCER_TOKEN_SIGNING_KEY_V1 as a secret and non-secret
 # PRODUCER_TOKEN_TTL_SECONDS plus exact GitHub OIDC repository/workflow/ref/
-# environment allowlists. The manual staging lifecycle workflow supplies those
-# values; this example deliberately contains no active configuration.
+# environment allowlists. C3b additionally requires the exact
+# GITHUB_OIDC_STATUS_MONITOR_WORKFLOW_REF. The manual staging lifecycle
+# workflow supplies those values; this example deliberately contains no active
+# configuration.
+#
+# C3b exports the named `StatusMonitorProducerEntrypoint`. After this target
+# version is deployed and its status-monitor registry policy is configured, the
+# caller can add the following binding. Do not enable it before the target is
+# live or the caller deployment will fail:
+#
+# [[services]]
+# binding = "ALERT_CONTROL_PLANE"
+# service = "freeinference-alert-control-plane-staging"
+# entrypoint = "StatusMonitorProducerEntrypoint"

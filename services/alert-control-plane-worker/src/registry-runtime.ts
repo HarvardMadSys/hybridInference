@@ -1,4 +1,5 @@
 import {
+  type DeploymentIdentity,
   DeploymentLookupError,
   type DeploymentKey,
   DeploymentRegistry,
@@ -31,12 +32,16 @@ const FULL_SHA_RE = /^[a-f0-9]{40}$/;
 const STAGING_SYNTHETIC_SERVICE = "synthetic-alert-producer";
 const STAGING_SYNTHETIC_SOURCE: TrustedSource = "gateway";
 const STAGING_SYNTHETIC_PRINCIPAL = "staging-synthetic";
+const STATUS_MONITOR_SERVICE = "status-monitor";
+const STATUS_MONITOR_SOURCE: TrustedSource = "status-monitor";
+const STATUS_MONITOR_PRINCIPAL = "staging-monitor";
 
 interface PublicActivateRequest {
   readonly action: "activate";
   readonly command: VerifiedDeploymentCommand & { readonly action: "activate" };
   readonly source: TrustedSource;
   readonly principal: string;
+  readonly issueProducerCapability: boolean;
 }
 
 interface PublicRetireRequest {
@@ -115,11 +120,15 @@ function parsePublicAttestation(value: unknown): PublicAttestationRequest {
       "principal",
     ]);
     const key = deploymentKey(input.deployment);
-    if (
-      key.service !== STAGING_SYNTHETIC_SERVICE ||
-      input.source !== STAGING_SYNTHETIC_SOURCE ||
-      input.principal !== STAGING_SYNTHETIC_PRINCIPAL
-    ) {
+    const synthetic =
+      key.service === STAGING_SYNTHETIC_SERVICE &&
+      input.source === STAGING_SYNTHETIC_SOURCE &&
+      input.principal === STAGING_SYNTHETIC_PRINCIPAL;
+    const statusMonitor =
+      key.service === STATUS_MONITOR_SERVICE &&
+      input.source === STATUS_MONITOR_SOURCE &&
+      input.principal === STATUS_MONITOR_PRINCIPAL;
+    if (!synthetic && !statusMonitor) {
       throw new DeploymentRegistryWriteError("invalid_attestation");
     }
     return {
@@ -132,8 +141,13 @@ function parsePublicAttestation(value: unknown): PublicAttestationRequest {
           activatedAt: timestamp(input.activated_at),
         },
       },
-      source: STAGING_SYNTHETIC_SOURCE,
-      principal: STAGING_SYNTHETIC_PRINCIPAL,
+      source: synthetic
+        ? STAGING_SYNTHETIC_SOURCE
+        : STATUS_MONITOR_SOURCE,
+      principal: synthetic
+        ? STAGING_SYNTHETIC_PRINCIPAL
+        : STATUS_MONITOR_PRINCIPAL,
+      issueProducerCapability: synthetic,
     };
   }
   if (input.action === "retire") {
@@ -269,6 +283,16 @@ export class BoundDeploymentRegistryClient
     return this.request(key, "/internal/lookup", { key });
   }
 
+  async lookupByDeploymentId(
+    identity: DeploymentIdentity,
+  ): Promise<TrustedDeploymentMetadata> {
+    return this.request(
+      identity,
+      "/internal/lookup-by-deployment-id",
+      { identity },
+    );
+  }
+
   async attest(
     authorization: string | null,
     command: VerifiedDeploymentCommand,
@@ -340,6 +364,9 @@ export async function handleDeploymentAttestationRequest(
     if (input.action === "retire") {
       return jsonResponse({ deployment });
     }
+    if (!input.issueProducerCapability) {
+      return jsonResponse({ deployment });
+    }
     const producerToken = await mintProducerCapability(config, {
       deployment,
       source: input.source,
@@ -399,6 +426,18 @@ export class DeploymentRegistryDurableObject {
         exactKeys(input, ["key"]);
         return jsonResponse(
           this.registry.lookup(input.key as DeploymentKey),
+        );
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/internal/lookup-by-deployment-id"
+      ) {
+        const input = record(await jsonBody(request));
+        exactKeys(input, ["identity"]);
+        return jsonResponse(
+          this.registry.lookupByDeploymentId(
+            input.identity as DeploymentIdentity,
+          ),
         );
       }
       return jsonResponse({ error: "not_found" }, 404);

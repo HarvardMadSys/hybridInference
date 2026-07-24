@@ -138,6 +138,7 @@ jobs:
             --var GITHUB_OIDC_REPOSITORY_ID:"${REPOSITORY_ID}" \
             --var GITHUB_OIDC_REPOSITORY_OWNER_ID:"${REPOSITORY_OWNER_ID}" \
             --var GITHUB_OIDC_WORKFLOW_REF:"${GITHUB_REPOSITORY}/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev" \
+            --var GITHUB_OIDC_STATUS_MONITOR_WORKFLOW_REF:"${GITHUB_REPOSITORY}/.github/workflows/deploy-status-monitor.yml@refs/heads/dev" \
             --var GITHUB_OIDC_REF:refs/heads/dev \
             --var GITHUB_OIDC_ENVIRONMENT:staging \
             --var GITHUB_OIDC_EVENT_NAME:workflow_dispatch

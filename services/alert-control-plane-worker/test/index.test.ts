@@ -84,6 +84,8 @@ function configuredIngressEnv(
     GITHUB_OIDC_REPOSITORY_OWNER_ID: "456",
     GITHUB_OIDC_WORKFLOW_REF:
       "HarvardMadSys/hybridInference/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev",
+    GITHUB_OIDC_STATUS_MONITOR_WORKFLOW_REF:
+      "HarvardMadSys/hybridInference/.github/workflows/deploy-status-monitor.yml@refs/heads/dev",
     GITHUB_OIDC_REF: "refs/heads/dev",
     GITHUB_OIDC_ENVIRONMENT: "staging",
     GITHUB_OIDC_EVENT_NAME: "workflow_dispatch",

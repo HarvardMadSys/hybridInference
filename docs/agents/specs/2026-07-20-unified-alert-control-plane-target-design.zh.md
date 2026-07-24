@@ -610,7 +610,12 @@ Control Plane 至少暴露：
   hosted runner；未知 `kid` 立即刷新 JWKS，网络/轮换失败 fail closed。普通 producer
   capability 不能写 registry
 - C3：按 alert type 逐个迁移真实 staging producer；每种类型都必须先进入 canonical
-  contract，再确认其旧 writer drain，最后移除对应的 V1 Relay 与 direct webhook
+  contract，再确认其旧 writer drain，最后移除对应的 V1 Relay 与 direct webhook。
+  status-monitor 的 C3b 使用 target-first 顺序：先部署 Control Plane 的
+  `StatusMonitorProducerEntrypoint` 与固定角色的 registry lookup/attestation policy，
+  再在独立评审的 caller PR 中加入 Version Metadata 和指向该 named entrypoint 的
+  Service Binding。目标 entrypoint 未上线前不得先部署 binding。准备阶段
+  `ALERT_DEFAULT_OWNER` 保持 `legacy`，不触发真实 Control Plane 写入
 - Provision staging principal 与 Control Plane secrets
 - staging producer 只配置一个 `ALERT_SINK_URL` 与 credential
 - 禁用 staging 的 V1 Relay 和 direct Slack webhook

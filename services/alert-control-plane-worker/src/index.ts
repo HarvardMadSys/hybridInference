@@ -1,3 +1,5 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
+
 import { createRuntimeActionExecutor } from "./action-executor";
 import { EventIdConflictError, IncidentStateMachine } from "./incident";
 import {
@@ -26,6 +28,10 @@ import {
   type RuntimeEnvironment,
 } from "./runtime-config";
 import { DurableObjectSqlStore, type SchedulerState } from "./store";
+import {
+  submitStatusMonitorRpcEvent,
+  type StatusMonitorRpcResult,
+} from "./status-monitor-rpc";
 import type { CanonicalAlertEnvelope } from "./types";
 import {
   canonicalEventDigest,
@@ -238,6 +244,24 @@ export async function submitToIncident(
   if (response.status === 409) throw new IngressConflictError();
   if (!response.ok) throw new IngressUnavailableError();
   return acknowledgement(await response.json());
+}
+
+/**
+ * Role-specific internal API for the future status-monitor Service Binding.
+ * It is a named entrypoint, so it does not add a public HTTP route.
+ */
+export class StatusMonitorProducerEntrypoint extends WorkerEntrypoint<ControlPlaneEnv> {
+  async submitStatusMonitorEvent(
+    bodyJson: string,
+    deploymentId: string,
+  ): Promise<StatusMonitorRpcResult> {
+    return submitStatusMonitorRpcEvent(
+      this.env,
+      bodyJson,
+      deploymentId,
+      submitToIncident,
+    );
+  }
 }
 
 const worker = {

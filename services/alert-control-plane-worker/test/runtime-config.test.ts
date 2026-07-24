@@ -49,6 +49,8 @@ function validIngressEnvironment(
     GITHUB_OIDC_REPOSITORY_OWNER_ID: "456",
     GITHUB_OIDC_WORKFLOW_REF:
       "HarvardMadSys/hybridInference/.github/workflows/alert-control-plane-staging-lifecycle.yml@refs/heads/dev",
+    GITHUB_OIDC_STATUS_MONITOR_WORKFLOW_REF:
+      "HarvardMadSys/hybridInference/.github/workflows/deploy-status-monitor.yml@refs/heads/dev",
     GITHUB_OIDC_REF: "refs/heads/dev",
     GITHUB_OIDC_ENVIRONMENT: "staging",
     GITHUB_OIDC_EVENT_NAME: "workflow_dispatch",
@@ -90,6 +92,8 @@ describe("Phase C1/C2 runtime configuration", () => {
         githubOidc: {
           audience: "alert-control-plane-deployment-attestation",
           repository: "HarvardMadSys/hybridInference",
+          statusMonitorWorkflowRef:
+            "HarvardMadSys/hybridInference/.github/workflows/deploy-status-monitor.yml@refs/heads/dev",
           ref: "refs/heads/dev",
           environment: "staging",
           eventName: "workflow_dispatch",
@@ -135,6 +139,10 @@ describe("Phase C1/C2 runtime configuration", () => {
     [{ GITHUB_OIDC_REPOSITORY_ID: "repo" }, "github_oidc_repository_id_invalid"],
     [{ GITHUB_OIDC_REPOSITORY_OWNER_ID: "owner" }, "github_oidc_repository_owner_id_invalid"],
     [{ GITHUB_OIDC_WORKFLOW_REF: "invalid" }, "github_oidc_workflow_ref_invalid"],
+    [
+      { GITHUB_OIDC_STATUS_MONITOR_WORKFLOW_REF: "invalid" },
+      "github_oidc_status_monitor_workflow_ref_invalid",
+    ],
     [{ GITHUB_OIDC_REF: "refs/heads/main" }, "github_oidc_ref_invalid"],
     [{ GITHUB_OIDC_ENVIRONMENT: "production" }, "github_oidc_environment_invalid"],
     [{ GITHUB_OIDC_EVENT_NAME: "pull_request" }, "github_oidc_event_name_invalid"],
