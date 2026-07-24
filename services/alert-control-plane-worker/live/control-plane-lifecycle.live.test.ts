@@ -356,12 +356,12 @@ describe.sequential("authenticated staging control-plane lifecycle", () => {
     );
 
     const refired = await postEvent(live, 4, "firing");
-    expect(refired.incident_id).toBe(firing.incident_id);
+    expect(refired.incident_id).not.toBe(firing.incident_id);
     expect(refired.generation).toBe(2);
     const secondParent = await waitForParent(
       live,
       oldest,
-      firing.incident_id,
+      refired.incident_id,
       2,
       1,
     );
@@ -370,10 +370,18 @@ describe.sequential("authenticated staging control-plane lifecycle", () => {
     const finalParents = (await history(live, oldest)).filter(
       (message) =>
         belongsTo(message, firing.incident_id, 1) ||
-        belongsTo(message, firing.incident_id, 2),
+        belongsTo(message, refired.incident_id, 2),
     );
-    expect(finalParents.filter((message) => belongsTo(message, firing.incident_id, 1))).toHaveLength(1);
-    expect(finalParents.filter((message) => belongsTo(message, firing.incident_id, 2))).toHaveLength(1);
+    expect(
+      finalParents.filter((message) =>
+        belongsTo(message, firing.incident_id, 1),
+      ),
+    ).toHaveLength(1);
+    expect(
+      finalParents.filter((message) =>
+        belongsTo(message, refired.incident_id, 2),
+      ),
+    ).toHaveLength(1);
 
     console.log(
       JSON.stringify({
@@ -381,6 +389,7 @@ describe.sequential("authenticated staging control-plane lifecycle", () => {
         run_id: live.runId,
         channel_id: live.channelId,
         incident_id: firing.incident_id,
+        generation_2_incident_id: refired.incident_id,
         generation_1_parent: firstParent.ts,
         generation_1_recovery: recovery.ts,
         generation_2_parent: secondParent.ts,

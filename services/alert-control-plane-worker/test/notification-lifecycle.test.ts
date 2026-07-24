@@ -225,6 +225,7 @@ describe.each(sinkCases)("incident lifecycle with the $label sink", ({ label, ma
     expect(actionOf(store, "post_parent", 2).status).toBe("completed");
     const gen2 = store.getGeneration(2);
     expect(gen2?.state).toBe("firing");
+    expect(gen2?.incidentId).not.toBe(gen1?.incidentId);
     expect(gen2?.deliveryRef).not.toBeNull();
 
     // Exactly one parent per generation and no cross-generation reference reuse.
