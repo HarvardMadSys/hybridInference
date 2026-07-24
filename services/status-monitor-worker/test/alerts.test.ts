@@ -491,6 +491,107 @@ describe("runAlerts", () => {
     expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
   });
 
+  it("closes a replayed firing when the model left the catalog", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      if (bodies.length === 1) throw new Error("response lost");
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, {}, cfg(1));
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "firing",
+    ]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty(
+      "a",
+      "status-monitor:model:a",
+    );
+    expect(
+      db.meta.has("alert_delivery_pending:v1:firing:status-monitor:model:a"),
+    ).toBe(false);
+
+    await cycle(db, env, {}, cfg(1));
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "firing",
+      "resolved",
+    ]);
+    const alertState = db.meta.has("alert_state")
+      ? JSON.parse(db.meta.get("alert_state")!)
+      : {};
+    expect(alertState).not.toHaveProperty("a");
+    expect(db.meta.has("alert_delivery_owner:v1:status-monitor:model:a")).toBe(false);
+    expect(
+      db.meta.has("alert_delivery_pending:v1:firing:status-monitor:model:a"),
+    ).toBe(false);
+    expect(
+      db.meta.has("alert_delivery_pending:v1:resolved:status-monitor:model:a"),
+    ).toBe(false);
+  });
+
+  it("closes an active control-plane incident when the model left the catalog", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit);
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, {}, cfg(1));
+
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "resolved",
+    ]);
+    expect(JSON.parse(bodies[1])).toMatchObject({
+      title: "Model monitoring ended: a",
+      context: { model_id: "a" },
+    });
+    expect(db.meta.has("alert_delivery_owner:v1:status-monitor:model:a")).toBe(false);
+  });
+
+  it("retries the exact departure resolution after an ambiguous response", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      if (bodies.length === 2) throw new Error("response lost");
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, {}, cfg(1));
+
+    expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty(
+      "a",
+      "status-monitor:model:a",
+    );
+    expect(
+      db.meta.has("alert_delivery_pending:v1:resolved:status-monitor:model:a"),
+    ).toBe(true);
+
+    await cycle(db, env, {}, cfg(1));
+
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "resolved",
+      "resolved",
+    ]);
+    expect(bodies[2]).toBe(bodies[1]);
+    expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+    expect(db.meta.has("alert_delivery_owner:v1:status-monitor:model:a")).toBe(false);
+  });
+
   it("retries a pending resolution before opening a later outage", async () => {
     const db = new FakeD1();
     const bodies: string[] = [];
@@ -619,6 +720,26 @@ describe("runAlerts", () => {
     expect(db.meta.get("alert_delivery_owner:v1:status-monitor:model:a")).toBe(
       "control-plane",
     );
+  });
+
+  it("does not pin unrelated legacy incidents when no legacy destination exists", async () => {
+    const db = new FakeD1();
+    db.meta.set("alert_state", JSON.stringify({ active: "status-monitor:model:active" }));
+    db.meta.set(
+      "alert_delivery_owner:v1:status-monitor:model:active",
+      "control-plane",
+    );
+    const env = envWith(db, undefined);
+    env.ALERT_DEFAULT_OWNER = "legacy";
+
+    await cycle(db, env, { active: false, new_model: false }, cfg(1));
+
+    expect(JSON.parse(db.meta.get("alert_state")!)).toEqual({
+      active: "status-monitor:model:active",
+    });
+    expect(
+      db.meta.has("alert_delivery_owner:v1:status-monitor:model:new_model"),
+    ).toBe(false);
   });
 
   it("fails closed without fallback when a bound control-plane deployment identity is invalid", async () => {
@@ -958,6 +1079,7 @@ describe("runAlerts", () => {
     await cycle(db, env, { b: true }); // a absent from the catalog this cycle
     expect(posts).toHaveLength(1); // no recovery page for the departed model
     expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
+    expect(db.meta.has("alert_delivery_owner:v1:status-monitor:model:a")).toBe(false);
 
     // a returns and fails once: its history was reconciled away, so it's not yet
     // a confirmed streak and must not page until it fails twice anew.

@@ -12,12 +12,15 @@ import {
   getOrCreatePendingCanonicalEvent,
   hasControlPlaneDrainOwner,
   listPendingCanonicalEvents,
+  modelUnavailableDepartureEvent,
   modelUnavailableEvent,
   prepareDrainOwnerRelease,
   preparePendingCanonicalEventCompletion,
+  readDrainOwner,
   resolveDrainOwner,
   submitPendingCanonicalEvent,
   type AlertDeliveryOwner,
+  type ModelUnavailableAlertEvent,
   type ModelUnavailableStatus,
 } from "./control-plane";
 import type { Config, Env } from "./env";
@@ -322,6 +325,7 @@ async function deliverModelAlert(
   threshold: number,
   defaultOwner: AlertDeliveryOwner,
   legacyEvent: CodexAlertEvent,
+  canonicalEvent?: ModelUnavailableAlertEvent,
 ): Promise<ModelDeliveryResult> {
   const fingerprint = modelAlertFingerprint(result.modelId);
   const owner = await resolveDrainOwner(env.DB, fingerprint, status, defaultOwner);
@@ -338,7 +342,7 @@ async function deliverModelAlert(
 
   const pending = await getOrCreatePendingCanonicalEvent(
     env.DB,
-    modelUnavailableEvent(result, status, threshold),
+    canonicalEvent ?? modelUnavailableEvent(result, status, threshold),
   );
   const delivered = await submitPendingCanonicalEvent(
     env.ALERT_CONTROL_PLANE,
@@ -430,13 +434,12 @@ export function decideAlerts(
  * destination outage causes a retry on the next cycle rather than a lost alert.
  */
 export async function runAlerts(env: Env, config: Config, results: ProbeResult[]): Promise<void> {
-  if (results.length === 0) return;
-
   const threshold = config.alertFailureThreshold;
   const defaultOwner = configuredDefaultOwner(env.ALERT_DEFAULT_OWNER);
+  const hasLegacyDestination = hasAlertDestination(env);
   const pendingEvents = await listPendingCanonicalEvents(env.DB);
   if (
-    !hasAlertDestination(env) &&
+    !hasLegacyDestination &&
     env.ALERT_CONTROL_PLANE === undefined &&
     defaultOwner === "legacy" &&
     pendingEvents.length === 0 &&
@@ -489,9 +492,60 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
     completionStatements.push(...preparePendingCanonicalEventCompletion(env.DB, pending));
   }
 
+  const presentModelIds = new Set(results.map((result) => result.modelId));
+  const departedControlPlaneModels = new Map<string, string>();
+  for (const [modelId, stateValue] of Object.entries(prevState)) {
+    if (presentModelIds.has(modelId) || pendingModelIds.has(modelId)) continue;
+    const fingerprint = incidentFingerprint(modelId, stateValue);
+    const owner = await readDrainOwner(env.DB, fingerprint);
+    if (owner === "control-plane") {
+      departedControlPlaneModels.set(modelId, fingerprint);
+    } else if (owner === "legacy") {
+      completionStatements.push(prepareDrainOwnerRelease(env.DB, fingerprint));
+    }
+  }
+
+  const departedResults = await Promise.all(
+    [...departedControlPlaneModels].map(async ([modelId, fingerprint]) => {
+      const result: ProbeResult = {
+        modelId,
+        ok: true,
+        checkedAt: results[0]?.checkedAt ?? new Date().toISOString(),
+        latencyMs: null,
+        ttftMs: null,
+        completionTokens: null,
+        throughputTps: null,
+        error: null,
+      };
+      const delivery = await deliverModelAlert(
+        env,
+        result,
+        "resolved",
+        threshold,
+        defaultOwner,
+        modelRecoveredEvent(config, result, fingerprint),
+        modelUnavailableDepartureEvent(modelId, result.checkedAt),
+      );
+      return { modelId, fingerprint, ...delivery };
+    }),
+  );
+  for (const departed of departedResults) {
+    if (departed.delivered) {
+      delete nextState[departed.modelId];
+      completionStatements.push(...departed.completionStatements);
+    } else {
+      nextState[departed.modelId] = departed.fingerprint;
+    }
+  }
+
   // A pending transition owns this cycle even if the latest probe reversed. It
   // must converge before an opposite edge or a legacy storm summary can run.
-  const down = candidateDown.filter((result) => !pendingModelIds.has(result.modelId));
+  const canOpenNewIndividualIncident =
+    defaultOwner === "control-plane" || hasLegacyDestination;
+  const down = candidateDown.filter(
+    (result) =>
+      !pendingModelIds.has(result.modelId) && canOpenNewIndividualIncident,
+  );
   const recovered = candidateRecovered.filter(
     (result) => !pendingModelIds.has(result.modelId),
   );

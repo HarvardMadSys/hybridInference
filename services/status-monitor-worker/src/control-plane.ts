@@ -157,6 +157,17 @@ export function configuredDefaultOwner(value: string | undefined): AlertDelivery
   return value?.trim() === "control-plane" ? "control-plane" : "legacy";
 }
 
+export async function readDrainOwner(
+  db: D1Database,
+  fingerprint: string,
+): Promise<AlertDeliveryOwner | null> {
+  const stored = await readMeta(db, metaKey(OWNER_KEY_PREFIX, fingerprint));
+  if (stored === null || stored === "legacy" || stored === "control-plane") {
+    return stored;
+  }
+  throw new ControlPlanePreparationError("drain_ownership_corrupt");
+}
+
 /**
  * Pin an outage fingerprint to one writer.
  *
@@ -170,10 +181,9 @@ export async function resolveDrainOwner(
   defaultOwner: AlertDeliveryOwner,
 ): Promise<AlertDeliveryOwner> {
   const key = metaKey(OWNER_KEY_PREFIX, fingerprint);
-  const stored = await readMeta(db, key);
+  const stored = await readDrainOwner(db, fingerprint);
   if (stored !== null) {
-    if (stored === "legacy" || stored === "control-plane") return stored;
-    throw new ControlPlanePreparationError("drain_ownership_corrupt");
+    return stored;
   }
   const owner = status === "resolved" ? "legacy" : defaultOwner;
   await writeMeta(db, key, owner);
@@ -255,6 +265,28 @@ export function modelUnavailableEvent(
       ? `${result.modelId} failed ${threshold} consecutive synthetic probes.`
       : `${result.modelId} accepted a successful synthetic probe.`,
     context,
+    evidence_refs: [],
+  };
+}
+
+export function modelUnavailableDepartureEvent(
+  modelId: string,
+  checkedAt: string,
+  eventId: string = crypto.randomUUID(),
+): ModelUnavailableAlertEvent {
+  return {
+    schema_version: 1,
+    event_id: eventId,
+    alert_type: "model_unavailable",
+    fingerprint: modelAlertFingerprint(modelId),
+    status: "resolved",
+    severity: "info",
+    title: `Model monitoring ended: ${modelId}`,
+    occurred_at: occurredAt(checkedAt),
+    summary: `${modelId} is no longer present in the monitored model catalog.`,
+    context: {
+      model_id: modelId,
+    },
     evidence_refs: [],
   };
 }

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { modelUnavailableEvent } from "../../status-monitor-worker/src/control-plane";
+import {
+  modelUnavailableDepartureEvent,
+  modelUnavailableEvent,
+} from "../../status-monitor-worker/src/control-plane";
 import type { ProbeResult } from "../../status-monitor-worker/src/probe";
 import { parseAlertEvent } from "../src/validation";
 
@@ -34,9 +37,17 @@ describe("status-monitor to control-plane contract", () => {
       2,
       "contract-resolved-1",
     );
+    const departedBody = modelUnavailableDepartureEvent(
+      "deepseek-v3",
+      "2026-07-24T01:30:00Z",
+      "contract-departed-1",
+    );
 
     const firing = parseAlertEvent(JSON.parse(JSON.stringify(firingBody)), { now: TEST_NOW });
     const resolved = parseAlertEvent(JSON.parse(JSON.stringify(resolvedBody)), { now: TEST_NOW });
+    const departed = parseAlertEvent(JSON.parse(JSON.stringify(departedBody)), {
+      now: TEST_NOW,
+    });
 
     expect(firing).toMatchObject({
       event_id: "contract-firing-1",
@@ -58,6 +69,15 @@ describe("status-monitor to control-plane contract", () => {
       context: {
         model_id: "deepseek-v3",
         latency_ms: 842,
+      },
+    });
+    expect(departed).toMatchObject({
+      event_id: "contract-departed-1",
+      alert_type: "model_unavailable",
+      status: "resolved",
+      occurred_at: "2026-07-24T01:30:00.000Z",
+      context: {
+        model_id: "deepseek-v3",
       },
     });
   });
