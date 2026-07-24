@@ -621,6 +621,11 @@ Control Plane 至少暴露：
   runner loopback、只把 named Service Binding 远程连接到 staging target 的临时 gate
   运行 synthetic firing/resolved RPC；不得增加公共 status-monitor gate 路由，也不得用
   会上传临时 Worker 的 legacy `wrangler dev --remote`
+- status-monitor 的 C3c 仅切换 individual `model_unavailable`：新 incident 默认 owner 为
+  `control-plane`，存量无 owner 的 recovery 继续由 legacy drain，已有 owner 必须由原
+  writer 完成。storm 与 cycle alert 仍走 legacy。Control Plane 成功后的 `alert_state`
+  更新、pending 删除及 resolved owner 释放必须在同一个 D1 batch 事务提交；RPC 歧义或
+  事务失败时保留原始 canonical bytes 与 `event_id` 重试，不得 fallback
 - Provision staging principal 与 Control Plane secrets
 - staging producer 只配置一个 `ALERT_SINK_URL` 与 credential
 - 禁用 staging 的 V1 Relay 和 direct Slack webhook
