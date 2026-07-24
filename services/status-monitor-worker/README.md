@@ -19,34 +19,35 @@ what the prober key can actually call.
 
 ## Slack alerts and Codex on-call analysis
 
-When `CODEX_ONCALL_RELAY_URL` and `CODEX_ONCALL_RELAY_TOKEN` are set, each alert
-is sent to the on-call relay first. The relay posts the original Slack message,
-runs a read-only Codex investigation asynchronously, and replies in the same
-thread. If relay delivery fails, the Worker falls back to `SLACK_WEBHOOK_URL`.
+When `CODEX_ONCALL_RELAY_URL` and `CODEX_ONCALL_RELAY_TOKEN` are set, legacy-owned
+alerts are sent to the on-call relay first. The relay posts the original Slack
+message, runs a read-only Codex investigation asynchronously, and replies in the
+same thread. If relay delivery fails, the Worker falls back to
+`SLACK_WEBHOOK_URL`.
 
-With only the optional `SLACK_WEBHOOK_URL` secret set, each cron cycle pages the
-Slack incoming webhook directly for any model that has failed `ALERT_FAILURE_THRESHOLD`
-**consecutive** probes (default **2**, i.e. ~two 20-minute cycles — enough to
-distinguish a sustained outage from a single transient blip). Alerts are
-**edge-triggered**: a model pages once when it crosses the threshold and again
-only after it recovers and fails anew, so a multi-hour outage doesn't repeat the
-page every 20 minutes. A short recovery notice is posted when the model's next
-probe succeeds. The per-model alert state lives in the D1 `meta` table, so it
-survives Worker restarts and is never raced (alert evaluation runs while the
-cycle holds its lock). Leave both delivery paths unset to disable alerting.
+An individual model is considered unavailable after
+`ALERT_FAILURE_THRESHOLD` **consecutive** failed probes (default **2**, i.e.
+~two 20-minute cycles — enough to distinguish a sustained outage from a single
+transient blip). Alerts are **edge-triggered**: a model pages once when it
+crosses the threshold and again only after it recovers and fails anew, so a
+multi-hour outage doesn't repeat the page every 20 minutes. A short recovery
+notice is posted when the model's next probe succeeds. The per-model alert state
+lives in the D1 `meta` table, so it survives Worker restarts and is never raced
+(alert evaluation runs while the cycle holds its lock).
 
-Every page is committed to the alert state only **after** either the relay or
-fallback Slack POST is confirmed delivered, so a transient failure is retried
-on the next cron cycle rather than being silently dropped.
+Every transition is committed to alert state only after its selected writer
+confirms delivery, so a transient failure is retried on the next cron cycle
+rather than being silently dropped.
 
-The Worker also declares the future unified alert Control Plane as an internal
-named Service Binding and exposes its immutable Cloudflare version ID through
-`CF_VERSION_METADATA`. This is **caller preparation only**:
-`ALERT_DEFAULT_OWNER=legacy`, and `runAlerts` / `runCycleAlert` still use only
-the existing relay/webhook path. The canonical helper has no fallback and
-retains the exact persisted body and `event_id` when an RPC attempt is rejected,
-ambiguous, or unavailable. A later, separately reviewed owner-switch PR will
-connect that helper to model alert evaluation and drain legacy incidents.
+Individual model down/recovery transitions use the unified alert Control Plane
+through an internal named Service Binding. `ALERT_DEFAULT_OWNER=control-plane`
+applies only to new individual incidents: incidents opened by the legacy
+relay/webhook remain pinned there until recovery, while existing Control Plane
+incidents also finish through the Control Plane after rollback. Rejected,
+ambiguous, or unavailable RPC attempts retain the exact persisted body and
+`event_id` for retry and never fall back to the relay or incoming webhook.
+Alert-state changes, successful pending cleanup, and resolved owner release
+commit in one D1 batch transaction.
 
 Two whole-deployment cases are also covered:
 
@@ -90,8 +91,8 @@ working without JavaScript).
 3 free/pro, 10 internal/admin), `PROBE_HEADER`, `RETENTION_DAYS`,
 `ALERT_FAILURE_THRESHOLD` (consecutive failed probes before a model pages Slack),
 `ALERT_STORM_THRESHOLD` (models changing state in one cycle before pages collapse
-into a summary), and `ALERT_DEFAULT_OWNER` (pinned to `legacy` during C3b caller
-preparation).
+into a summary), and `ALERT_DEFAULT_OWNER` (`control-plane` for new individual
+model incidents; set to `legacy` to roll back new ownership).
 
 `CF_VERSION_METADATA` and `ALERT_CONTROL_PLANE` are non-secret platform
 bindings. The latter targets the Control Plane's

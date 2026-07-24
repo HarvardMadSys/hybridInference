@@ -67,9 +67,9 @@ def test_status_monitor_service_binding_gate_is_local_and_non_public():
     assert "SLACK_" not in str(live)
 
 
-def test_status_monitor_caller_bindings_stay_legacy_owned():
+def test_status_monitor_caller_bindings_cut_over_individual_model_alerts():
     config = tomllib.loads((MONITOR / "wrangler.toml").read_text())
-    assert config["vars"]["ALERT_DEFAULT_OWNER"] == "legacy"
+    assert config["vars"]["ALERT_DEFAULT_OWNER"] == "control-plane"
     assert config["version_metadata"] == {"binding": "CF_VERSION_METADATA"}
     assert config["services"] == [
         {
@@ -82,6 +82,11 @@ def test_status_monitor_caller_bindings_stay_legacy_owned():
     index_source = (MONITOR / "src/index.ts").read_text()
     assert "await runAlerts(env, config, results)" in index_source
     assert "submitPendingCanonicalEvent" not in index_source
+
+    alerts_source = (MONITOR / "src/alerts.ts").read_text()
+    assert "submitPendingCanonicalEvent" in alerts_source
+    assert 'fingerprint.startsWith("status-monitor:storm:")' in alerts_source
+    assert "runCycleAlert" in alerts_source
 
 
 def test_status_monitor_pins_remote_binding_capable_wrangler():

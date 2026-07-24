@@ -55,6 +55,17 @@ class FakeD1 {
   prepare(sql: string): FakeStmt {
     return new FakeStmt(this, sql);
   }
+
+  async batch(stmts: FakeStmt[]): Promise<Array<{ meta: { changes: number } }>> {
+    const snapshot = new Map(this.meta);
+    try {
+      return await Promise.all(stmts.map((stmt) => stmt.run()));
+    } catch (error) {
+      this.meta.clear();
+      for (const [key, value] of snapshot) this.meta.set(key, value);
+      throw error;
+    }
+  }
 }
 
 function result(overrides: Partial<ProbeResult> = {}): ProbeResult {

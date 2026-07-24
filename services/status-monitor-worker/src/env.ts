@@ -24,8 +24,8 @@ export interface Env {
   // More than this many models changing state in one cycle collapses into a
   // single summary Slack message instead of one per model. Defaults to 5.
   ALERT_STORM_THRESHOLD?: string;
-  // Keep legacy as the only writer until the later owner-switch PR wires the
-  // canonical producer into runAlerts.
+  // New individual model incidents use this writer. Existing incidents remain
+  // pinned to the writer that opened them until their recovery is confirmed.
   ALERT_DEFAULT_OWNER?: string;
 }
 

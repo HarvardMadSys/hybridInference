@@ -1,11 +1,22 @@
 import {
   type CycleStatus,
   modelsFailingStreak,
+  prepareAlertStateWrite,
   readAlertState,
   readCycleAlertState,
-  writeAlertState,
   writeCycleAlertState,
 } from "./db";
+import {
+  configuredDefaultOwner,
+  getOrCreatePendingCanonicalEvent,
+  modelUnavailableEvent,
+  prepareDrainOwnerRelease,
+  preparePendingCanonicalEventCompletion,
+  resolveDrainOwner,
+  submitPendingCanonicalEvent,
+  type AlertDeliveryOwner,
+  type ModelUnavailableStatus,
+} from "./control-plane";
 import type { Config, Env } from "./env";
 import type { ProbeResult } from "./probe";
 import {
@@ -296,6 +307,49 @@ async function deliverAlert(env: Env, event: CodexAlertEvent): Promise<boolean> 
   return webhookUrl ? postSlack(webhookUrl, event.slack_text) : false;
 }
 
+interface ModelDeliveryResult {
+  delivered: boolean;
+  completionStatements: D1PreparedStatement[];
+}
+
+async function deliverModelAlert(
+  env: Env,
+  result: ProbeResult,
+  status: ModelUnavailableStatus,
+  threshold: number,
+  defaultOwner: AlertDeliveryOwner,
+  legacyEvent: CodexAlertEvent,
+): Promise<ModelDeliveryResult> {
+  const fingerprint = modelAlertFingerprint(result.modelId);
+  const owner = await resolveDrainOwner(env.DB, fingerprint, status, defaultOwner);
+  if (owner === "legacy") {
+    const delivered = await deliverAlert(env, legacyEvent);
+    return {
+      delivered,
+      completionStatements:
+        delivered && status === "resolved"
+          ? [prepareDrainOwnerRelease(env.DB, fingerprint)]
+          : [],
+    };
+  }
+
+  const pending = await getOrCreatePendingCanonicalEvent(
+    env.DB,
+    modelUnavailableEvent(result, status, threshold),
+  );
+  const delivered = await submitPendingCanonicalEvent(
+    env.ALERT_CONTROL_PLANE,
+    pending,
+    env.CF_VERSION_METADATA,
+  );
+  return {
+    delivered,
+    completionStatements: delivered
+      ? preparePendingCanonicalEventCompletion(env.DB, pending)
+      : [],
+  };
+}
+
 function incidentFingerprint(modelId: string, stateValue: string): string {
   return stateValue.startsWith("status-monitor:")
     ? stateValue
@@ -371,9 +425,15 @@ export function decideAlerts(
  * destination outage causes a retry on the next cycle rather than a lost alert.
  */
 export async function runAlerts(env: Env, config: Config, results: ProbeResult[]): Promise<void> {
-  if (!hasAlertDestination(env) || results.length === 0) return;
+  if (
+    results.length === 0 ||
+    (!hasAlertDestination(env) && env.ALERT_CONTROL_PLANE === undefined)
+  ) {
+    return;
+  }
 
   const threshold = config.alertFailureThreshold;
+  const defaultOwner = configuredDefaultOwner(env.ALERT_DEFAULT_OWNER);
   // Only a model that failed *this* cycle can newly cross the threshold; limiting
   // the streak lookup to those keeps D1 rows_read at threshold × (failed models).
   const failedNow = results.filter((r) => !r.ok).map((r) => r.modelId);
@@ -382,6 +442,7 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   const { down, recovered, baseState } = decideAlerts(results, failing, prevState);
 
   const nextState: Record<string, string> = Object.assign(Object.create(null), baseState);
+  const completionStatements: D1PreparedStatement[] = [];
   const storm = config.alertStormThreshold;
 
   // A provider-wide blip can take down many models at once. Past `storm`, collapse
@@ -399,14 +460,26 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
     const sent = await Promise.all(
       down.map(async (r) => {
         const event = modelDownEvent(config, r, threshold);
+        const delivery = await deliverModelAlert(
+          env,
+          r,
+          "firing",
+          threshold,
+          defaultOwner,
+          event,
+        );
         return {
           modelId: r.modelId,
           fingerprint: event.fingerprint,
-          ok: await deliverAlert(env, event),
+          ...delivery,
         };
       }),
     );
-    for (const r of sent) if (r.ok) nextState[r.modelId] = r.fingerprint;
+    for (const r of sent) {
+      if (!r.delivered) continue;
+      nextState[r.modelId] = r.fingerprint;
+      completionStatements.push(...r.completionStatements);
+    }
   }
 
   const activeModelsByFingerprint = new Map<string, string[]>();
@@ -430,22 +503,48 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
       const activeModelIds = activeModelsByFingerprint.get(fingerprint) ?? [];
       const stormIncident = fingerprint.startsWith("status-monitor:storm:");
       if (stormIncident && grouped.length !== activeModelIds.length) {
-        return [];
+        return {
+          modelIds: [],
+          completionStatements: [] as D1PreparedStatement[],
+        };
       }
-      const event = stormIncident
-        ? modelsRecoveredEvent(config, grouped, fingerprint)
-        : modelRecoveredEvent(config, grouped[0], fingerprint);
-      return (await deliverAlert(env, event)) ? activeModelIds : [];
+      if (stormIncident) {
+        const event = modelsRecoveredEvent(config, grouped, fingerprint);
+        return {
+          modelIds: (await deliverAlert(env, event)) ? activeModelIds : [],
+          completionStatements: [] as D1PreparedStatement[],
+        };
+      }
+      const result = grouped[0];
+      const delivery = await deliverModelAlert(
+        env,
+        result,
+        "resolved",
+        threshold,
+        defaultOwner,
+        modelRecoveredEvent(config, result, fingerprint),
+      );
+      return {
+        modelIds: delivery.delivered ? activeModelIds : [],
+        completionStatements: delivery.completionStatements,
+      };
     }),
   );
-  for (const modelIds of resolvedModelIds) {
-    for (const modelId of modelIds) {
+  for (const resolved of resolvedModelIds) {
+    for (const modelId of resolved.modelIds) {
       delete nextState[modelId];
     }
+    completionStatements.push(...resolved.completionStatements);
   }
 
-  if (JSON.stringify(nextState) !== JSON.stringify(prevState)) {
-    await writeAlertState(env.DB, nextState);
+  const stateChanged = JSON.stringify(nextState) !== JSON.stringify(prevState);
+  if (stateChanged || completionStatements.length > 0) {
+    // D1 executes a batch transactionally. Keep the retry record and owner until
+    // the corresponding alert-state transition is durable.
+    await env.DB.batch([
+      ...(stateChanged ? [prepareAlertStateWrite(env.DB, nextState)] : []),
+      ...completionStatements,
+    ]);
   }
 }
 

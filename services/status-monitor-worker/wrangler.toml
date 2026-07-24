@@ -36,9 +36,9 @@ ALERT_FAILURE_THRESHOLD = "2"
 # Above this many models changing state in one cycle, the per-model pages collapse
 # into a single summary message so a provider-wide blip doesn't flood the channel.
 ALERT_STORM_THRESHOLD = "5"
-# C3b caller preparation only. Existing alert paths remain the sole writer
-# until a later reviewed PR switches this default and wires canonical delivery.
-ALERT_DEFAULT_OWNER = "legacy"
+# New individual model incidents use the unified Control Plane. Incidents opened
+# before this switch stay pinned to their legacy writer until they recover.
+ALERT_DEFAULT_OWNER = "control-plane"
 
 [version_metadata]
 binding = "CF_VERSION_METADATA"

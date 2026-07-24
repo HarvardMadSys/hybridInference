@@ -178,6 +178,13 @@ export async function releaseDrainOwner(db: D1Database, fingerprint: string): Pr
   await deleteMeta(db, metaKey(OWNER_KEY_PREFIX, fingerprint));
 }
 
+export function prepareDrainOwnerRelease(
+  db: D1Database,
+  fingerprint: string,
+): D1PreparedStatement {
+  return db.prepare(`DELETE FROM meta WHERE key = ?`).bind(metaKey(OWNER_KEY_PREFIX, fingerprint));
+}
+
 function failureReason(error: string | null): ModelUnavailabilityReason {
   if (error === null) return "unknown";
   if (/\b(?:401|403|auth|unauthori[sz]ed|forbidden)\b/i.test(error)) return "authentication";
@@ -419,6 +426,20 @@ export async function completePendingCanonicalEvent(
   db: D1Database,
   pending: PendingCanonicalEvent,
 ): Promise<void> {
-  await deleteMeta(db, metaKey(PENDING_KEY_PREFIX, pending.fingerprint, pending.status));
-  if (pending.status === "resolved") await releaseDrainOwner(db, pending.fingerprint);
+  await db.batch(preparePendingCanonicalEventCompletion(db, pending));
+}
+
+export function preparePendingCanonicalEventCompletion(
+  db: D1Database,
+  pending: PendingCanonicalEvent,
+): D1PreparedStatement[] {
+  const statements = [
+    db
+      .prepare(`DELETE FROM meta WHERE key = ?`)
+      .bind(metaKey(PENDING_KEY_PREFIX, pending.fingerprint, pending.status)),
+  ];
+  if (pending.status === "resolved") {
+    statements.push(prepareDrainOwnerRelease(db, pending.fingerprint));
+  }
+  return statements;
 }

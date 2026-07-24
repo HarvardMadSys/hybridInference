@@ -127,12 +127,19 @@ export async function readAlertState(db: D1Database): Promise<Record<string, str
   return {};
 }
 
+/** Builds the alert-state write used in the atomic delivery completion batch. */
+export function prepareAlertStateWrite(
+  db: D1Database,
+  state: Record<string, string>,
+): D1PreparedStatement {
+  return db
+    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .bind(ALERT_STATE_KEY, JSON.stringify(state));
+}
+
 /** Persists the per-model down-alert state. */
 export async function writeAlertState(db: D1Database, state: Record<string, string>): Promise<void> {
-  await db
-    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
-    .bind(ALERT_STATE_KEY, JSON.stringify(state))
-    .run();
+  await prepareAlertStateWrite(db, state).run();
 }
 
 const CYCLE_ALERT_KEY = "cycle_alert";
