@@ -10,6 +10,8 @@ import invalidAlertTypeFixture from "./fixtures/invalid-unsupported-alert-type.j
 import invalidContextFixture from "./fixtures/invalid-unknown-context-key.json";
 import validFiringFixture from "./fixtures/valid-provider-circuit-firing.json";
 import validResolvedFixture from "./fixtures/valid-provider-circuit-resolved.json";
+import validModelFiringFixture from "./fixtures/valid-model-unavailable-firing.json";
+import validModelResolvedFixture from "./fixtures/valid-model-unavailable-resolved.json";
 
 import {
   canonicalEventDigest,
@@ -61,6 +63,23 @@ describe("canonical AlertEvent validation", () => {
       status: "resolved",
       context: { final_failure_count: 8, outage_duration_ms: 252_000 },
     });
+  });
+
+  it("accepts platform-neutral model unavailability and recovery fixtures", () => {
+    const firing = parseAlertEvent(validModelFiringFixture, { now: TEST_NOW });
+    const resolved = parseAlertEvent(validModelResolvedFixture, { now: TEST_NOW });
+
+    expect(firing).toEqual({
+      ...validModelFiringFixture,
+      occurred_at: "2026-07-19T06:00:00.000Z",
+    });
+    expect(resolved).toEqual({
+      ...validModelResolvedFixture,
+      occurred_at: "2026-07-19T06:20:00.000Z",
+    });
+    expect(firing).not.toHaveProperty("slack_text");
+    expect(firing).not.toHaveProperty("environment");
+    expect(firing).not.toHaveProperty("source");
   });
 
   it.each([
@@ -133,6 +152,30 @@ describe("canonical AlertEvent validation", () => {
         message,
       );
     }
+  });
+
+  it("enforces a separate model-unavailable context allowlist", () => {
+    const base = copyFixture(validModelFiringFixture);
+    const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ model_id: "deepseek-v3", provider: "openai" }, /unsupported field: provider/],
+      [{ failure_threshold: 2 }, /context.model_id/],
+      [{ model_id: "deepseek-v3", failure_threshold: 0 }, /between 1/],
+      [{ model_id: "deepseek-v3", consecutive_failures: 1.5 }, /integer/],
+      [{ model_id: "deepseek-v3", reason: "connection_refused" }, /reason is invalid/],
+      [{ model_id: "deepseek-v3" }, /requires consecutive_failures/],
+    ];
+    for (const [context, message] of cases) {
+      expect(() => parseAlertEvent({ ...base, context }, { now: TEST_NOW })).toThrow(message);
+    }
+    expect(() =>
+      parseAlertEvent(
+        {
+          ...copyFixture(validModelResolvedFixture),
+          context: { model_id: "deepseek-v3", failure_threshold: 2 },
+        },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(/must not contain firing-only fields/);
   });
 
   it.each([
@@ -220,6 +263,10 @@ describe("canonical AlertEvent validation", () => {
       { now: TEST_NOW },
     );
     expect(decomposed.fingerprint).toBe("provider:é");
+    expect(decomposed.alert_type).toBe("provider_circuit_open");
+    if (decomposed.alert_type !== "provider_circuit_open") {
+      throw new Error("expected provider circuit fixture");
+    }
     expect(decomposed.context.provider).toBe("é");
     expect(
       parseAlertEvent({ ...validEvent(), fingerprint: "界".repeat(512) }, { now: TEST_NOW })

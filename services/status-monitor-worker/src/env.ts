@@ -1,3 +1,5 @@
+import type { StatusMonitorControlPlaneService } from "./control-plane";
+
 /** Bindings and configuration provided by the Workers runtime. */
 export interface Env {
   DB: D1Database;
@@ -20,6 +22,10 @@ export interface Env {
   // More than this many models changing state in one cycle collapses into a
   // single summary Slack message instead of one per model. Defaults to 5.
   ALERT_STORM_THRESHOLD?: string;
+  // C3a preparation only. The deployed Worker does not declare this binding or
+  // select this owner yet; C3b will add both in one reviewed cutover.
+  ALERT_CONTROL_PLANE?: StatusMonitorControlPlaneService;
+  ALERT_DEFAULT_OWNER?: string;
 }
 
 /** Normalized configuration derived from {@link Env}. */

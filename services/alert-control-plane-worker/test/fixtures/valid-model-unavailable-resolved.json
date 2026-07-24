@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "event_id": "status-monitor-model-resolved-1",
+  "alert_type": "model_unavailable",
+  "fingerprint": "status-monitor:model:deepseek-v3",
+  "status": "resolved",
+  "severity": "info",
+  "title": "Model recovered: deepseek-v3",
+  "occurred_at": "2026-07-19T06:20:00Z",
+  "summary": "deepseek-v3 accepted a successful synthetic probe.",
+  "context": {
+    "model_id": "deepseek-v3",
+    "latency_ms": 842
+  },
+  "evidence_refs": []
+}

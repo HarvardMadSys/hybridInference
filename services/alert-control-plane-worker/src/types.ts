@@ -1,6 +1,6 @@
 export type AlertStatus = "firing" | "resolved";
 export type AlertSeverity = "critical" | "error" | "warn" | "info";
-export type SupportedAlertType = "provider_circuit_open";
+export type SupportedAlertType = "provider_circuit_open" | "model_unavailable";
 
 export type ProviderFailureReason =
   | "authentication"
@@ -23,6 +23,22 @@ export interface ProviderCircuitContext {
   readonly reason?: ProviderFailureReason;
 }
 
+export type ModelUnavailabilityReason =
+  | "authentication"
+  | "rate_limited"
+  | "timeout"
+  | "unknown"
+  | "upstream_error";
+
+/** Platform-neutral context emitted by the status monitor for one model. */
+export interface ModelUnavailableContext {
+  readonly model_id: string;
+  readonly consecutive_failures?: number;
+  readonly failure_threshold?: number;
+  readonly latency_ms?: number;
+  readonly reason?: ModelUnavailabilityReason;
+}
+
 interface AlertEventBase {
   readonly schema_version: 1;
   readonly event_id: string;
@@ -40,7 +56,12 @@ export interface ProviderCircuitAlertEvent extends AlertEventBase {
   readonly context: ProviderCircuitContext;
 }
 
-export type AlertEvent = ProviderCircuitAlertEvent;
+export interface ModelUnavailableAlertEvent extends AlertEventBase {
+  readonly alert_type: "model_unavailable";
+  readonly context: ModelUnavailableContext;
+}
+
+export type AlertEvent = ProviderCircuitAlertEvent | ModelUnavailableAlertEvent;
 
 export type TrustedEnvironment = "staging" | "production";
 export type TrustedSource = "gateway" | "status-monitor";

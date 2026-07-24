@@ -1,5 +1,6 @@
 import type {
   CanonicalAlertEnvelope,
+  ModelUnavailableContext,
   ProviderCircuitContext,
   SlackBlock,
   SlackMessage,
@@ -89,11 +90,38 @@ function providerContextFields(context: ProviderCircuitContext): readonly SlackT
   return fields.slice(0, 10);
 }
 
+function modelUnavailableContextFields(
+  context: ModelUnavailableContext,
+): readonly SlackTextObject[] {
+  const fields: SlackTextObject[] = [
+    field("Model", escapeSlackMrkdwn(context.model_id, 500)),
+  ];
+  optionalField(fields, "Reason", context.reason);
+  optionalField(fields, "Consecutive failures", context.consecutive_failures);
+  optionalField(fields, "Failure threshold", context.failure_threshold);
+  if (context.latency_ms !== undefined) {
+    optionalField(fields, "Last latency", `${Math.round(context.latency_ms)}ms`);
+  }
+  return fields;
+}
+
 function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObject[] {
   switch (envelope.event.alert_type) {
     case "provider_circuit_open":
       return providerContextFields(envelope.event.context);
+    case "model_unavailable":
+      return modelUnavailableContextFields(envelope.event.context);
   }
+}
+
+function recoveryContextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObject[] {
+  if (envelope.event.alert_type !== "provider_circuit_open") return [];
+  const fields: SlackTextObject[] = [];
+  optionalField(fields, "Final failure count", envelope.event.context.final_failure_count);
+  if (envelope.event.context.outage_duration_ms !== undefined) {
+    optionalField(fields, "Outage duration", formatDuration(envelope.event.context.outage_duration_ms));
+  }
+  return fields;
 }
 
 function formatDuration(milliseconds: number): string {
@@ -192,16 +220,12 @@ export function renderRecoveryReply(
     throw new Error("recovery replies require a resolved event");
   }
   const environment = environmentLabel(envelope);
-  const context = envelope.event.context;
   const recoveryFields: SlackTextObject[] = [
     field("Incident", escapeSlackMrkdwn(state.incident_id, 128)),
     field("Generation", String(state.generation)),
     field("Resolved", escapeSlackMrkdwn(state.last_seen, 64)),
+    ...recoveryContextFields(envelope),
   ];
-  optionalField(recoveryFields, "Final failure count", context.final_failure_count);
-  if (context.outage_duration_ms !== undefined) {
-    optionalField(recoveryFields, "Outage duration", formatDuration(context.outage_duration_ms));
-  }
   return {
     text: truncate(
       `[${environment}] RESOLVED · ${escapeSlackMrkdwn(envelope.event.title, 300)} · ` +

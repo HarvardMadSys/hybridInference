@@ -62,6 +62,40 @@ function envelope(status: "firing" | "resolved" = "firing"): CanonicalAlertEnvel
   return createCanonicalEnvelope(event(status), trusted(), { now: TEST_NOW });
 }
 
+function modelEnvelope(status: "firing" | "resolved" = "firing"): CanonicalAlertEnvelope {
+  return createCanonicalEnvelope(
+    {
+      schema_version: 1,
+      event_id: `model-${status}-1`,
+      alert_type: "model_unavailable",
+      fingerprint: "status-monitor:model:deepseek-v3",
+      status,
+      severity: status === "firing" ? "error" : "info",
+      title:
+        status === "firing"
+          ? "Model unavailable: deepseek-v3"
+          : "Model recovered: deepseek-v3",
+      occurred_at: status === "firing" ? "2026-07-19T06:00:00Z" : "2026-07-19T06:20:00Z",
+      summary:
+        status === "firing"
+          ? "deepseek-v3 failed two consecutive probes."
+          : "deepseek-v3 accepted a successful probe.",
+      context:
+        status === "firing"
+          ? {
+              model_id: "deepseek-v3",
+              consecutive_failures: 2,
+              failure_threshold: 2,
+              reason: "timeout",
+            }
+          : { model_id: "deepseek-v3", latency_ms: 842 },
+      evidence_refs: [],
+    },
+    { ...trusted(), source: "status-monitor", principal: "staging-status-monitor" },
+    { now: TEST_NOW },
+  );
+}
+
 function renderState(actionId = "action-parent-1"): IncidentRenderState {
   return {
     action_id: actionId,
@@ -101,6 +135,21 @@ describe("Slack renderer", () => {
     expect(text).toContain("openai");
     expect(text).toContain("Availability");
     expect(text).toContain("0.0%");
+  });
+
+  it("renders model-unavailable context without treating it as a provider circuit", () => {
+    const firing = renderedText(renderParent(modelEnvelope(), renderState()));
+    const recovery = renderedText(
+      renderRecoveryReply(modelEnvelope("resolved"), renderState("model-recovery")),
+    );
+
+    expect(firing).toContain("Source: status-monitor");
+    expect(firing).toContain("Model");
+    expect(firing).toContain("deepseek-v3");
+    expect(firing).toContain("Failure threshold");
+    expect(firing).toContain("timeout");
+    expect(firing).not.toContain("*Provider*");
+    expect(recovery).toContain("Recovery confirmed");
   });
 
   it("escapes every producer-controlled mrkdwn value and blocks mention injection", () => {

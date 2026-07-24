@@ -3,6 +3,8 @@ import type {
   AlertSeverity,
   AlertStatus,
   CanonicalAlertEnvelope,
+  ModelUnavailableContext,
+  ModelUnavailabilityReason,
   ProviderCircuitContext,
   ProviderFailureReason,
   TrustedAlertMetadata,
@@ -60,6 +62,14 @@ const PROVIDER_CONTEXT_KEYS = new Set([
   "consecutive_failures",
   "final_failure_count",
   "outage_duration_ms",
+  "reason",
+]);
+
+const MODEL_UNAVAILABLE_CONTEXT_KEYS = new Set([
+  "model_id",
+  "consecutive_failures",
+  "failure_threshold",
+  "latency_ms",
   "reason",
 ]);
 
@@ -274,6 +284,44 @@ function parseProviderCircuitContext(value: unknown): ProviderCircuitContext {
   return context;
 }
 
+function parseModelUnavailableContext(value: unknown): ModelUnavailableContext {
+  const input = record(value, "context");
+  strictKeys(input, MODEL_UNAVAILABLE_CONTEXT_KEYS, "context");
+
+  const context: {
+    model_id: string;
+    consecutive_failures?: number;
+    failure_threshold?: number;
+    latency_ms?: number;
+    reason?: ModelUnavailabilityReason;
+  } = {
+    model_id: untrustedString(input.model_id, "context.model_id", 256),
+  };
+  context.consecutive_failures = optional(input, "consecutive_failures", (item) =>
+    boundedInteger(item, "context.consecutive_failures", 0, 1_000_000_000),
+  );
+  context.failure_threshold = optional(input, "failure_threshold", (item) =>
+    boundedInteger(item, "context.failure_threshold", 1, 1_000_000_000),
+  );
+  context.latency_ms = optional(input, "latency_ms", (item) =>
+    boundedNumber(item, "context.latency_ms", 0, 24 * 60 * 60 * 1_000),
+  );
+  context.reason = optional(input, "reason", (item) =>
+    enumValue<ModelUnavailabilityReason>(item, "context.reason", [
+      "authentication",
+      "rate_limited",
+      "timeout",
+      "unknown",
+      "upstream_error",
+    ]),
+  );
+
+  for (const key of Object.keys(context) as Array<keyof typeof context>) {
+    if (context[key] === undefined) delete context[key];
+  }
+  return context;
+}
+
 function validateCalendarTimestamp(match: RegExpMatchArray): void {
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -383,14 +431,13 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
   if (input.schema_version !== 1) {
     throw new ValidationError("schema_version must be 1");
   }
-  if (input.alert_type !== "provider_circuit_open") {
+  if (input.alert_type !== "provider_circuit_open" && input.alert_type !== "model_unavailable") {
     throw new ValidationError("alert_type is unsupported");
   }
 
-  return {
-    schema_version: 1,
+  const base = {
+    schema_version: 1 as const,
     event_id: stringValue(input.event_id, "event_id", 128, IDENTIFIER_RE),
-    alert_type: "provider_circuit_open",
     fingerprint: untrustedString(input.fingerprint, "fingerprint", 512),
     status: enumValue<AlertStatus>(input.status, "status", ["firing", "resolved"]),
     severity: enumValue<AlertSeverity>(input.severity, "severity", [
@@ -402,8 +449,40 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
     title: untrustedString(input.title, "title", 500),
     occurred_at: occurredAt(input.occurred_at, options),
     summary: untrustedString(input.summary, "summary", 4_000),
-    context: parseProviderCircuitContext(input.context),
     evidence_refs: evidenceReferences(input.evidence_refs),
+  };
+  if (input.alert_type === "model_unavailable") {
+    const context = parseModelUnavailableContext(input.context);
+    if (
+      base.status === "firing" &&
+      (context.consecutive_failures === undefined ||
+        context.failure_threshold === undefined ||
+        context.reason === undefined)
+    ) {
+      throw new ValidationError(
+        "firing model_unavailable context requires consecutive_failures, failure_threshold, and reason",
+      );
+    }
+    if (
+      base.status === "resolved" &&
+      (context.consecutive_failures !== undefined ||
+        context.failure_threshold !== undefined ||
+        context.reason !== undefined)
+    ) {
+      throw new ValidationError(
+        "resolved model_unavailable context must not contain firing-only fields",
+      );
+    }
+    return {
+      ...base,
+      alert_type: "model_unavailable",
+      context,
+    };
+  }
+  return {
+    ...base,
+    alert_type: "provider_circuit_open",
+    context: parseProviderCircuitContext(input.context),
   };
 }
 

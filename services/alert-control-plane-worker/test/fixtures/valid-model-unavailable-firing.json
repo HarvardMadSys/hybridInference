@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "event_id": "status-monitor-model-firing-1",
+  "alert_type": "model_unavailable",
+  "fingerprint": "status-monitor:model:deepseek-v3",
+  "status": "firing",
+  "severity": "error",
+  "title": "Model unavailable: deepseek-v3",
+  "occurred_at": "2026-07-19T06:00:00Z",
+  "summary": "deepseek-v3 failed two consecutive synthetic probes.",
+  "context": {
+    "model_id": "deepseek-v3",
+    "consecutive_failures": 2,
+    "failure_threshold": 2,
+    "reason": "timeout"
+  },
+  "evidence_refs": []
+}
