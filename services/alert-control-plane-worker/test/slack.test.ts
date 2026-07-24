@@ -184,6 +184,30 @@ describe("SlackSink execute", () => {
     }
   });
 
+  it("invokes the transport without a SlackSink receiver", async () => {
+    let receiver: unknown = null;
+    const receiverSensitiveFetch = async function (
+      this: unknown,
+      _input: RequestInfo | URL,
+      _init?: RequestInit,
+    ): Promise<Response> {
+      receiver = this;
+      if (this !== undefined) throw new TypeError("Illegal invocation");
+      return apiResponse({
+        ok: true,
+        channel: "C123",
+        ts: slackTs(START_MS + 1_000),
+      });
+    };
+
+    const result = await sinkWith(
+      receiverSensitiveFetch as typeof fetch,
+    ).execute(action("post_parent"), "execute");
+
+    expectSuccess(result);
+    expect(receiver).toBeUndefined();
+  });
+
   it("classifies rate limits, ambiguous failures, and explicit rejection conservatively", async () => {
     const cases: readonly [Response | Error, NotificationActionResult["outcome"], string][] = [
       [apiResponse({ ok: false, error: "ratelimited" }, 429, { "retry-after": "3" }), "retry", "slack_rate_limited"],

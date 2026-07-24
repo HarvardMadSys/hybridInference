@@ -232,7 +232,9 @@ function belongsTo(
     message.metadata.event_payload?.incident_id === incidentId &&
     message.metadata.event_payload.generation === generation &&
     typeof message.metadata.event_payload.payload_digest === "string" &&
-    /^[a-f0-9]{64}$/u.test(message.metadata.event_payload.payload_digest)
+    /^sha256:[a-f0-9]{64}$/u.test(
+      message.metadata.event_payload.payload_digest,
+    )
   );
 }
 

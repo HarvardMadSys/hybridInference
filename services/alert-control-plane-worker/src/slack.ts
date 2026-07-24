@@ -750,7 +750,11 @@ export class SlackSink implements NotificationSink {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     try {
-      const response = await this.fetchImpl(url, { ...init, signal: controller.signal });
+      // Workerd's global fetch rejects a class-instance receiver with
+      // "Illegal invocation". Copy it to a local before calling so the
+      // platform function is invoked without SlackSink as `this`.
+      const fetchImpl = this.fetchImpl;
+      const response = await fetchImpl(url, { ...init, signal: controller.signal });
       if (response.status === 429 || response.status >= 500) {
         return { outcome: "response", response };
       }
