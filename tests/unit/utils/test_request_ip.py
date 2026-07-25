@@ -138,6 +138,78 @@ def test_cf_trust_requires_generic_proxy_trust(monkeypatch):
     assert info.source == "socket"
 
 
+def test_cf_connecting_ipv6_wins_under_pseudo_ipv4(monkeypatch):
+    """Pseudo IPv4 "Overwrite headers" replaces CF-Connecting-IP with a synthetic.
+
+    Cloudflare puts a Class E address derived from the visitor in
+    CF-Connecting-IP and the real address in CF-Connecting-IPv6. Taking the
+    synthetic would route the client down the IPv4 bucketing path and undo the
+    /64 grouping this module exists to provide.
+    """
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+
+    request = _request(
+        {
+            "cf-connecting-ip": "240.1.2.3",
+            "cf-connecting-ipv6": "2001:db8:abcd:1234::5",
+        },
+        peer_ip="127.0.0.1",
+    )
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "2001:db8:abcd:1234::5"
+    assert info.source == "cf-connecting-ipv6"
+    # Both are retained so the synthetic remains visible in logs.
+    assert info.cf_connecting_ip == "240.1.2.3"
+    assert info.cf_connecting_ipv6 == "2001:db8:abcd:1234::5"
+    assert get_client_ip_bucket(request) == "2001:db8:abcd:1234::/64"
+
+
+def test_pseudo_ipv4_rotation_stays_in_one_bucket(monkeypatch):
+    """Rotation within the /64 must not escape limits just because Pseudo IPv4 is on.
+
+    Each rotated address yields a different synthetic Class E value, so
+    bucketing on CF-Connecting-IP would hand out a fresh bucket every time.
+    """
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+
+    buckets = {
+        get_client_ip_bucket(
+            _request(
+                {"cf-connecting-ip": synthetic, "cf-connecting-ipv6": real},
+                peer_ip="127.0.0.1",
+            )
+        )
+        for synthetic, real in (
+            ("240.1.2.3", "2001:db8:abcd:1234::1"),
+            ("240.9.8.7", "2001:db8:abcd:1234:9c2b:1f4e:aa01:7d3f"),
+            ("240.4.5.6", "2001:db8:abcd:1234:4411:beef:0:2"),
+        )
+    }
+    assert buckets == {"2001:db8:abcd:1234::/64"}
+
+
+def test_cf_connecting_ipv6_ignored_without_cloudflare_trust(monkeypatch):
+    """The IPv6 variant is gated by the same flag as CF-Connecting-IP."""
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.delenv("TRUST_CLOUDFLARE_HEADERS", raising=False)
+
+    request = _request(
+        {
+            "x-forwarded-for": "203.0.113.9",
+            "cf-connecting-ipv6": "2001:db8:abcd:1234::5",
+        },
+        peer_ip="127.0.0.1",
+    )
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "203.0.113.9"
+    assert info.source == "x-forwarded-for"
+    assert info.cf_connecting_ipv6 == "2001:db8:abcd:1234::5"
+
+
 def test_cf_connecting_ip_preserves_ipv6_client(monkeypatch):
     """An IPv6 client reaching an IPv4-only origin through Cloudflare logs in full."""
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")

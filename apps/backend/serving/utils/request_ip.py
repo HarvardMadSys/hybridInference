@@ -36,6 +36,7 @@ class ClientIpInfo:
     x_forwarded_for: str | None = None
     x_real_ip: str | None = None
     cf_connecting_ip: str | None = None
+    cf_connecting_ipv6: str | None = None
 
 
 def normalize_ip_bucket(ip: str) -> str:
@@ -76,6 +77,11 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     When Cloudflare is trusted its header wins, because Cloudflare always
     overwrites ``CF-Connecting-IP`` but only *appends* to a client-supplied
     ``X-Forwarded-For``, leaving the leftmost entry attacker-controlled.
+
+    ``CF-Connecting-IPv6`` outranks ``CF-Connecting-IP``. Cloudflare sends it
+    only when Pseudo IPv4 is set to "Overwrite headers", in which case
+    ``CF-Connecting-IP`` holds a synthetic Class E address derived from the
+    visitor rather than the visitor's real address.
     """
     peer_ip = request.client.host if request.client else "unknown"
     trusted = os.getenv("TRUST_PROXY_HEADERS", "0") == "1"
@@ -83,17 +89,20 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     x_forwarded_for = _header_value(request.headers.get("x-forwarded-for"))
     x_real_ip = _header_value(request.headers.get("x-real-ip"))
     cf_connecting_ip = _header_value(request.headers.get("cf-connecting-ip"))
+    cf_connecting_ipv6 = _header_value(request.headers.get("cf-connecting-ipv6"))
 
     if trusted:
-        if trust_cloudflare and cf_connecting_ip:
+        if trust_cloudflare and (cf_connecting_ipv6 or cf_connecting_ip):
+            using_ipv6 = cf_connecting_ipv6 is not None
             return ClientIpInfo(
-                client_ip=cf_connecting_ip,
+                client_ip=cf_connecting_ipv6 if using_ipv6 else cf_connecting_ip,
                 peer_ip=peer_ip,
-                source="cf-connecting-ip",
+                source="cf-connecting-ipv6" if using_ipv6 else "cf-connecting-ip",
                 trusted_proxy_headers=True,
                 x_forwarded_for=x_forwarded_for,
                 x_real_ip=x_real_ip,
                 cf_connecting_ip=cf_connecting_ip,
+                cf_connecting_ipv6=cf_connecting_ipv6,
             )
 
         if x_forwarded_for:
@@ -107,6 +116,7 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
                     x_forwarded_for=x_forwarded_for,
                     x_real_ip=x_real_ip,
                     cf_connecting_ip=cf_connecting_ip,
+                    cf_connecting_ipv6=cf_connecting_ipv6,
                 )
 
         if x_real_ip:
@@ -118,6 +128,7 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
                 x_forwarded_for=x_forwarded_for,
                 x_real_ip=x_real_ip,
                 cf_connecting_ip=cf_connecting_ip,
+                cf_connecting_ipv6=cf_connecting_ipv6,
             )
 
     return ClientIpInfo(
@@ -128,6 +139,7 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
         x_forwarded_for=x_forwarded_for,
         x_real_ip=x_real_ip,
         cf_connecting_ip=cf_connecting_ip,
+        cf_connecting_ipv6=cf_connecting_ipv6,
     )
 
 

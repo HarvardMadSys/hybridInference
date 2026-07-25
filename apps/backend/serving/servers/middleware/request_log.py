@@ -75,6 +75,7 @@ class RequestLogMiddleware:
             "x_forwarded_for": ip_info.x_forwarded_for,
             "x_real_ip": ip_info.x_real_ip,
             "cf_connecting_ip": ip_info.cf_connecting_ip,
+            "cf_connecting_ipv6": ip_info.cf_connecting_ipv6,
             "user_agent": user_agent,
             "host": host,
             "origin": origin,

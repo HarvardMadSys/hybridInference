@@ -49,8 +49,17 @@ independent flags:
 | `TRUST_PROXY_HEADERS` | Some trusted proxy rewrites `X-Forwarded-For` / `X-Real-IP` | `0`, but `1` in `deploy/docker/docker-compose.yml` |
 | `TRUST_CLOUDFLARE_HEADERS` | The **immediate** proxy is Cloudflare, so `CF-Connecting-IP` is authoritative | `0` everywhere — explicit opt-in |
 
-With both set, resolution order is `CF-Connecting-IP` → `X-Forwarded-For`
-(leftmost) → `X-Real-IP` → socket peer.
+With both set, resolution order is `CF-Connecting-IPv6` → `CF-Connecting-IP` →
+`X-Forwarded-For` (leftmost) → `X-Real-IP` → socket peer.
+
+`CF-Connecting-IPv6` outranks `CF-Connecting-IP` because Cloudflare sends it
+only when [Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/)
+is set to "Overwrite headers" — in which case `CF-Connecting-IP` holds a
+synthetic Class E (`240.0.0.0/4`) address derived from the visitor, not the
+visitor's real address. Preferring the synthetic would send an IPv6 client down
+the IPv4 bucketing path, handing every rotated privacy address its own
+rate-limit bucket and defeating the `/64` grouping below. Both headers are
+logged, so the synthetic stays visible.
 
 > **Before setting `TRUST_CLOUDFLARE_HEADERS=1`, restrict the origin.** Every
 > one of these headers is attacker-controlled on any request that reaches the
