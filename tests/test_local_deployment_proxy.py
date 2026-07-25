@@ -968,6 +968,42 @@ def test_sglang_mtp_algorithm_override(monkeypatch: Any, tmp_path: Path) -> None
     assert cmd[cmd.index("--speculative-algorithm") + 1] == "EAGLE"
 
 
+def test_sglang_mamba_mtp_uses_extra_buffer_and_spec_v2(monkeypatch: Any, tmp_path: Path) -> None:
+    # Hybrid Mamba MoE models (Qwen3.5/3.6) must keep the radix (prefix) cache while
+    # running MTP spec decoding. sglang disables the radix cache for these unless the
+    # Mamba scheduler reserves the extra ping-pong buffer and the v2 speculative path
+    # is enabled — so "mtp" + "mamba" together must emit --mamba-scheduler-strategy
+    # extra_buffer and export SGLANG_ENABLE_SPEC_V2=1. This pins the Qwen3.6-35B
+    # rtx6000/default-profile config so a regression cannot silently drop prefix
+    # caching back to zero (the vLLM hybrid-Mamba failure this config replaced).
+    proxy = _load_proxy(monkeypatch, tmp_path)
+    backend = proxy.BackendManager(
+        MODEL_NAME,
+        {
+            "container": "qwen36-sglang",
+            "engine": "sglang",
+            "gpu_index": "0",
+            "backend_port": 18001,
+            "model_dir": "/tmp/qwen",
+            "served_name": MODEL_NAME,
+            "max_model_len": 4096,
+            "mem_fraction": "0.80",
+            "mtp": True,
+            "mamba": True,
+        },
+    )
+
+    cmd = backend._sglang_run_cmd("0")
+
+    # Prefix-cache hits still surface to clients as cached_tokens.
+    assert "--enable-cache-report" in cmd
+    # MTP spec decoding coexists with the radix cache via the extra_buffer strategy.
+    assert cmd[cmd.index("--speculative-algorithm") + 1] == "NEXTN"
+    assert cmd[cmd.index("--mamba-scheduler-strategy") + 1] == "extra_buffer"
+    # The v2 speculative path is passed to the container as an env var.
+    assert backend._docker_env_args() == ["-e", "SGLANG_ENABLE_SPEC_V2=1"]
+
+
 def test_single_gpu_backend_omits_ipc_host(monkeypatch: Any, tmp_path: Path) -> None:
     # The default TP=1 path must not add --ipc=host (single-GPU, no NCCL).
     proxy = _load_proxy(monkeypatch, tmp_path)

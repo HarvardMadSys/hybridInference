@@ -1,7 +1,7 @@
 {
     "Qwen/Qwen3.6-35B-A3B-FP8": {
-        "container": "qwen36-vllm",
-        "engine": "vllm",
+        "container": "qwen36-sglang",
+        "engine": "sglang",
         "backend_port": 18001,
         "model_dir": "/scratch/juncheng/models/Qwen3.6-35B-A3B-FP8",
         "served_name": "Qwen/Qwen3.6-35B-A3B-FP8",
@@ -9,6 +9,8 @@
         "mem_fraction": "0.80",
         "tool_call_parser": "qwen3_coder",
         "reasoning_parser": "qwen3",
+        "mtp": true,
+        "mamba": true,
         "colocate_group": "primary"
     },
     "BAAI/bge-m3": {
