@@ -646,6 +646,7 @@ async def get_user_detail(
         last_request_at=last_request_at,
         max_concurrent_requests=user_row.get("max_concurrent_requests"),
         admin_note=user_row.get("admin_note"),
+        suspension_message=user_row.get("suspension_message"),
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
         ask_question_fraction=ask_question_fraction,
@@ -727,6 +728,15 @@ async def update_user(
         user_table_updates["admin_note"] = note
         payload_dict["admin_note"] = note
         updated.append("admin_note")
+    if "suspension_message" in payload_dict:
+        msg = payload_dict["suspension_message"]
+        # Normalize blank/whitespace-only messages to NULL so "clear the
+        # message" works whether the client sends "" or null.
+        if isinstance(msg, str):
+            msg = msg.strip() or None
+        user_table_updates["suspension_message"] = msg
+        payload_dict["suspension_message"] = msg
+        updated.append("suspension_message")
     if user_table_updates:
         await op_store.update_user_fields(user_id, **user_table_updates)
 

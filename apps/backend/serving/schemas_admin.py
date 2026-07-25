@@ -392,6 +392,8 @@ class UserDetailResponse(BaseModel):
     max_concurrent_requests: int | None = None
     # Free-text admin-only annotation about the user (any status).
     admin_note: str | None = None
+    # Admin-authored message shown to the user on login while suspended.
+    suspension_message: str | None = None
     # Mean conversation depth across this user's chat requests (all-time).
     # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
     # user-message count; both None when the user has no chat-style requests.
@@ -422,6 +424,9 @@ class UpdateUserRequest(BaseModel):
     max_concurrent_requests: int | None = Field(None, ge=1)
     # Free-text admin-only note. Send "" or null to clear it.
     admin_note: str | None = Field(None, max_length=2000)
+    # Admin-authored message shown to the user on login while suspended.
+    # Send "" or null to clear it.
+    suspension_message: str | None = Field(None, max_length=2000)
 
 
 class UpdateUserResponse(BaseModel):

@@ -159,6 +159,7 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
   // or { detail: "..." } (FastAPI validation errors)
   let errorCode = 'UNKNOWN_ERROR';
   let errorMessage = '';
+  let errorDetails: Record<string, unknown> | undefined;
 
   if (errorData && typeof errorData === 'object') {
     const data = errorData as Record<string, unknown>;
@@ -247,8 +248,13 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
       // Legacy format
       errorCode = data.error_code;
       errorMessage = (data.message as string) || errorMessage;
+      // Carry the admin-authored suspension message (ACCOUNT_SUSPENDED) so the
+      // login page can show it in place of the generic suspended text.
+      if (typeof data.suspension_message === 'string' && data.suspension_message) {
+        errorDetails = { suspension_message: data.suspension_message };
+      }
     }
   }
 
-  throw new APIError(errorCode, errorMessage, resp.status);
+  throw new APIError(errorCode, errorMessage, resp.status, errorDetails);
 }

@@ -123,17 +123,21 @@ export interface UserDetailPanelProps {
   editDisabledModels: string[];
   editMaxConcurrent: string;
   editNote: string;
+  editSuspensionMsg: string;
   availableModels: AdminModelVisibilityItem[];
   saving: boolean;
   savingNote: boolean;
+  savingSuspensionMsg: boolean;
   busy: string | null;
   onChangeRole: (role: string) => void;
   onChangeQuota: (quota: string) => void;
   onChangeDisabledModels: (modelIds: string[]) => void;
   onChangeMaxConcurrent: (val: string) => void;
   onChangeNote: (val: string) => void;
+  onChangeSuspensionMsg: (val: string) => void;
   onSave: () => void;
   onSaveNote: () => void;
+  onSaveSuspensionMsg: () => void;
   onSuspend: (userId: string) => void;
   onReactivate: (userId: string) => void;
   onResume: (user: AdminUser) => void;
@@ -150,17 +154,21 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     editDisabledModels,
     editMaxConcurrent,
     editNote,
+    editSuspensionMsg,
     availableModels,
     saving,
     savingNote,
+    savingSuspensionMsg,
     busy,
     onChangeRole,
     onChangeQuota,
     onChangeDisabledModels,
     onChangeMaxConcurrent,
     onChangeNote,
+    onChangeSuspensionMsg,
     onSave,
     onSaveNote,
+    onSaveSuspensionMsg,
     onSuspend,
     onReactivate,
     onResume,
@@ -412,21 +420,53 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
 
       {/* Suspended users */}
       {u.status === 'suspended' && (
-        <div className="flex items-center justify-between border-t border-gray-200 pt-4">
-          <span className="text-[13px] text-gray-500">This user is suspended.</span>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => onRequestDelete(u)}
-              className="text-[12px] text-red-400 hover:text-red-600 transition"
-            >
-              Delete
-            </button>
-            <button
-              onClick={() => onReactivate(u.id)}
-              className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-gray-800 transition"
-            >
-              Reactivate
-            </button>
+        <div className="space-y-4 border-t border-gray-200 pt-4">
+          {/* Suspension message — shown to the user on the login page. */}
+          <div className="space-y-2 rounded-lg border border-red-200 bg-red-50/60 p-3">
+            <div className="flex items-center justify-between">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                Suspension message
+              </div>
+              <span className="text-[10px] text-gray-400">Shown to the user at login</span>
+            </div>
+            <textarea
+              value={editSuspensionMsg}
+              onChange={(e) => onChangeSuspensionMsg(e.target.value)}
+              rows={2}
+              maxLength={2000}
+              placeholder="Explain why the account is suspended and what the user can do…"
+              aria-label="Suspension message"
+              className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+            />
+            <div className="flex justify-end">
+              <button
+                onClick={onSaveSuspensionMsg}
+                disabled={
+                  savingSuspensionMsg ||
+                  editSuspensionMsg.trim() === (detail.suspension_message ?? '')
+                }
+                className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-gray-800 transition disabled:opacity-50"
+              >
+                {savingSuspensionMsg ? 'Saving…' : 'Save message'}
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[13px] text-gray-500">This user is suspended.</span>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => onRequestDelete(u)}
+                className="text-[12px] text-red-400 hover:text-red-600 transition"
+              >
+                Delete
+              </button>
+              <button
+                onClick={() => onReactivate(u.id)}
+                className="rounded-md bg-gray-900 px-3 py-1.5 text-[12px] font-semibold text-white hover:bg-gray-800 transition"
+              >
+                Reactivate
+              </button>
+            </div>
           </div>
         </div>
       )}

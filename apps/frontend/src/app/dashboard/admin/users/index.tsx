@@ -232,9 +232,14 @@ export default function UsersTab() {
         toast.error(getErrorMessage(e));
       }
     },
-    onSuspend: async (id: string) => {
+    onSuspend: async (id: string, suspensionMessage?: string | null) => {
       try {
-        await updateUser(id, { status: 'suspended' });
+        // Always send suspension_message (null when blank) so re-suspending
+        // clears any stale message from a prior suspension.
+        await updateUser(id, {
+          status: 'suspended',
+          suspension_message: suspensionMessage ?? null,
+        });
         toast.success('Suspended');
         refreshUsers();
       } catch (e) {

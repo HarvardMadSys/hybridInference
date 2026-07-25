@@ -367,7 +367,9 @@ async def login(
         # Typed exception → install_exception_handlers returns a 403 carrying
         # error_code "ACCOUNT_SUSPENDED", so the client can show a dedicated
         # "account suspended" message rather than a generic/unknown error.
-        raise AccountSuspendedError(user_row["status"])
+        # Pass the admin-authored suspension_message (if any) through so the
+        # login page can show it in place of the generic text.
+        raise AccountSuspendedError(user_row["status"], user_row.get("suspension_message"))
 
     if user_row["status"] != "active":
         # Any other non-active state (e.g. "deleted"): keep a generic message.

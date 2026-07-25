@@ -103,7 +103,8 @@ class PostgresOperationalStore(OperationalStore):
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 last_login_at TIMESTAMPTZ,
                 max_concurrent_requests INT DEFAULT NULL,
-                admin_note TEXT
+                admin_note TEXT,
+                suspension_message TEXT
             )
         """)
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
@@ -134,6 +135,9 @@ class PostgresOperationalStore(OperationalStore):
         )
         # Free-text admin-only annotation about a user (any status).
         await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS admin_note TEXT")
+        # Admin-authored message shown to the user on the login page when their
+        # account is suspended (user-facing, unlike admin_note).
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS suspension_message TEXT")
 
         # Status constraint rebuild
         try:
@@ -688,7 +692,7 @@ class PostgresOperationalStore(OperationalStore):
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
                 "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
-                "signup_reason, admin_note "
+                "signup_reason, admin_note, suspension_message "
                 "FROM users WHERE id = $1",
                 user_id,
             )
@@ -700,7 +704,7 @@ class PostgresOperationalStore(OperationalStore):
             row = await conn.fetchrow(
                 "SELECT id, email, user_name, role, status, email_verified, "
                 "created_at, last_login_at, password_hash, preferences, max_concurrent_requests, "
-                "signup_reason, admin_note "
+                "signup_reason, admin_note, suspension_message "
                 "FROM users WHERE email = $1",
                 email.lower(),
             )

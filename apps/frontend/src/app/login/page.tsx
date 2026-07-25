@@ -49,7 +49,13 @@ export default function LoginPage() {
       toast.success('Login successful!');
       router.push('/dashboard');
     } catch (err) {
-      const errorMsg = getErrorMessage(err);
+      // For a suspended account, prefer the admin-authored message (when set)
+      // over the generic "account suspended" text.
+      const suspensionMessage =
+        err instanceof APIError && err.code === 'ACCOUNT_SUSPENDED'
+          ? (err.details?.suspension_message as string | undefined)
+          : undefined;
+      const errorMsg = suspensionMessage || getErrorMessage(err);
       setError(errorMsg);
       toast.error(errorMsg);
       if (err instanceof APIError && err.code === 'EMAIL_NOT_VERIFIED') {
