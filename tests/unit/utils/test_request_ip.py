@@ -69,6 +69,7 @@ def test_cf_connecting_ip_wins_over_forwarded_for(monkeypatch):
     attacker-controlled, so the Cloudflare header must take precedence.
     """
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
 
     request = _request(
         {
@@ -90,6 +91,7 @@ def test_cf_connecting_ip_wins_over_forwarded_for(monkeypatch):
 def test_cf_connecting_ip_ignored_when_untrusted(monkeypatch):
     """The Cloudflare header is as spoofable as the others without proxy trust."""
     monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+    monkeypatch.delenv("TRUST_CLOUDFLARE_HEADERS", raising=False)
 
     request = _request({"cf-connecting-ip": "203.0.113.9"}, peer_ip="172.19.0.8")
 
@@ -100,9 +102,46 @@ def test_cf_connecting_ip_ignored_when_untrusted(monkeypatch):
     assert info.cf_connecting_ip == "203.0.113.9"
 
 
+def test_cf_connecting_ip_ignored_behind_non_cloudflare_proxy(monkeypatch):
+    """Generic proxy trust must not imply the Cloudflare header is trustworthy.
+
+    A non-Cloudflare proxy may rewrite X-Forwarded-For correctly while passing
+    a client-supplied CF-Connecting-IP straight through.
+    """
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.delenv("TRUST_CLOUDFLARE_HEADERS", raising=False)
+
+    request = _request(
+        {
+            "x-forwarded-for": "203.0.113.9",
+            "cf-connecting-ip": "1.2.3.4",
+        },
+        peer_ip="127.0.0.1",
+    )
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "203.0.113.9"
+    assert info.source == "x-forwarded-for"
+    # Still logged, so a spoof attempt remains visible after the fact.
+    assert info.cf_connecting_ip == "1.2.3.4"
+
+
+def test_cf_trust_requires_generic_proxy_trust(monkeypatch):
+    """TRUST_CLOUDFLARE_HEADERS alone does not enable header trust."""
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+
+    request = _request({"cf-connecting-ip": "203.0.113.9"}, peer_ip="172.19.0.8")
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "172.19.0.8"
+    assert info.source == "socket"
+
+
 def test_cf_connecting_ip_preserves_ipv6_client(monkeypatch):
     """An IPv6 client reaching an IPv4-only origin through Cloudflare logs in full."""
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
 
     request = _request(
         {"cf-connecting-ip": "2001:db8:abcd:1234::5"},
@@ -124,6 +163,10 @@ def test_cf_connecting_ip_preserves_ipv6_client(monkeypatch):
         ("2001:db8:abcd:1234:ffff:ffff:ffff:ffff", "2001:db8:abcd:1234::/64"),
         # A different /64 is a different bucket.
         ("2001:db8:abcd:9999::1", "2001:db8:abcd:9999::/64"),
+        # IPv4-mapped literals keep their embedded IPv4 identity — folding them
+        # by prefix would collapse every IPv4 client into a single ::/64.
+        ("::ffff:192.0.2.1", "192.0.2.1"),
+        ("::ffff:203.0.113.9", "203.0.113.9"),
         # Unparseable values pass through untouched.
         ("unknown", "unknown"),
         ("", ""),
@@ -144,9 +187,28 @@ def test_rotating_ipv6_privacy_addresses_share_a_bucket():
     assert len({normalize_ip_bucket(ip) for ip in rotated}) == 1
 
 
+def test_ipv4_mapped_clients_keep_distinct_buckets():
+    """Dual-stack listeners report IPv4 peers as ::ffff:… — they must not merge.
+
+    Collapsing them would put every IPv4 client into one rate-limit bucket,
+    locking out unrelated users once any single client hit the limit.
+    """
+    buckets = {
+        normalize_ip_bucket(ip)
+        for ip in ("::ffff:192.0.2.1", "::ffff:203.0.113.9", "::ffff:8.8.8.8")
+    }
+    assert len(buckets) == 3
+
+
+def test_ipv4_mapped_bucket_matches_plain_ipv4():
+    """The same client reaches one bucket whether or not the peer is mapped."""
+    assert normalize_ip_bucket("::ffff:192.0.2.1") == normalize_ip_bucket("192.0.2.1")
+
+
 def test_get_client_ip_bucket_normalizes_resolved_ip(monkeypatch):
     """The bucket helper applies /64 folding to the resolved client IP."""
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
 
     request = _request(
         {"cf-connecting-ip": "2001:db8:abcd:1234::5"},

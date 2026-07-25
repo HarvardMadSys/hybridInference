@@ -41,16 +41,29 @@ Nginx runs on the host (not containerized) for SSL termination. See
 
 ### Client IP resolution
 
-`apps/backend/serving/utils/request_ip.py` resolves the client IP. With
-`TRUST_PROXY_HEADERS=1` (the default in `deploy/docker/docker-compose.yml`) it
-prefers `CF-Connecting-IP`, then `X-Forwarded-For`, then `X-Real-IP`, and
-otherwise falls back to the socket peer.
+`apps/backend/serving/utils/request_ip.py` resolves the client IP, gated by two
+independent flags:
+
+| Flag | Asserts | Default |
+|---|---|---|
+| `TRUST_PROXY_HEADERS` | Some trusted proxy rewrites `X-Forwarded-For` / `X-Real-IP` | `0`, but `1` in `deploy/docker/docker-compose.yml` |
+| `TRUST_CLOUDFLARE_HEADERS` | The **immediate** proxy is Cloudflare, so `CF-Connecting-IP` is authoritative | `0`, but `1` in `deploy/docker/docker-compose.yml` |
+
+With both set, resolution order is `CF-Connecting-IP` → `X-Forwarded-For`
+(leftmost) → `X-Real-IP` → socket peer.
 
 `CF-Connecting-IP` comes first deliberately. Cloudflare always overwrites that
 header, but it **appends** to a client-supplied `X-Forwarded-For` — so reading
 the leftmost `X-Forwarded-For` entry would let any caller dictate the IP the
 gateway logs and rate-limits on, unless the host Nginx config also rewrites the
 header.
+
+The two flags are separate because they are separate facts. A non-Cloudflare
+proxy may rewrite `X-Forwarded-For` perfectly well while forwarding a
+client-supplied `CF-Connecting-IP` untouched — trusting the Cloudflare header on
+the strength of generic proxy trust would hand that caller the spoof it was
+denied via `X-Forwarded-For`. **If you front this service with anything other
+than Cloudflare, leave `TRUST_CLOUDFLARE_HEADERS=0`.**
 
 Each request log line carries `remote_ip` (the resolved client), `peer_ip` (the
 socket peer — Nginx on loopback in this topology), `ip_source`, and the raw
@@ -67,7 +80,9 @@ Because a client typically holds an entire IPv6 prefix (a `/64` at minimum) and
 RFC 4941 privacy addresses rotate within it, full IPv6 addresses make poor
 identity keys. Logs and analytics keep the full address, but rate-limit and
 routing-affinity buckets fold IPv6 to its `/64` via `normalize_ip_bucket()`.
-IPv4 continues to bucket per address.
+IPv4 continues to bucket per address, and IPv4-mapped literals
+(`::ffff:192.0.2.1`, which a dual-stack listener reports for IPv4 peers) bucket
+on the embedded IPv4 rather than being folded by prefix.
 
 ### Runtime Operations
 

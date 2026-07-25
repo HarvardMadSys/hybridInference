@@ -34,6 +34,10 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"     # always use container-internal port; DB_PORT in .env controls host mapping only
       TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-1}
+      # This compose file deploys the Cloudflare-fronted topology, so the edge
+      # is known to overwrite CF-Connecting-IP. Override to 0 if you put a
+      # different proxy in front — see docs/developer/freeinference.md.
+      TRUST_CLOUDFLARE_HEADERS: ${TRUST_CLOUDFLARE_HEADERS:-1}
       GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
       GEOIP_COUNTRY_PROVIDER: dbip-lite
     extra_hosts:

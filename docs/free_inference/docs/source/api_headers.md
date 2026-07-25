@@ -105,7 +105,7 @@ Resolution order (first match wins):
 
 | Header | Description |
 |--------|-------------|
-| `CF-Connecting-IP` | Client IP as set by Cloudflare. Preferred — Cloudflare always overwrites this header, while it only *appends* to `X-Forwarded-For` |
+| `CF-Connecting-IP` | Client IP as set by Cloudflare. Preferred — Cloudflare always overwrites this header, while it only *appends* to `X-Forwarded-For`. Requires `TRUST_CLOUDFLARE_HEADERS=1`, which must be enabled only when Cloudflare is the immediate proxy |
 | `X-Forwarded-For` | Fallback for non-Cloudflare proxies (first entry is used) |
 | `X-Real-IP` | Fallback client IP header |
 
@@ -113,7 +113,8 @@ If none match — or `TRUST_PROXY_HEADERS` is not `1` — the socket peer addres
 
 IPv6 client addresses are logged in full. For per-client rate limits and sticky
 routing they are grouped by `/64`, since a single client is typically delegated
-an entire prefix and its addresses may rotate.
+an entire prefix and its addresses may rotate. IPv4 addresses — including
+IPv4-mapped literals such as `::ffff:192.0.2.1` — are grouped per address.
 
 ## Standard Headers
 

@@ -45,6 +45,10 @@ def normalize_ip_bucket(ip: str) -> str:
     scoped literal) bucket on the value itself. IPv6 addresses bucket on
     their ``/64`` network so a client cannot escape a limit by rotating
     through the prefix it was delegated.
+
+    IPv4-mapped literals (``::ffff:192.0.2.1``, which a dual-stack listener
+    reports for IPv4 peers) bucket on the embedded IPv4 address. Folding them
+    by prefix would collapse every IPv4 client into a single ``::/64``.
     """
     try:
         parsed = ipaddress.ip_address(ip)
@@ -52,6 +56,9 @@ def normalize_ip_bucket(ip: str) -> str:
         return ip
     if parsed.version == 4:
         return str(parsed)
+    mapped_v4 = parsed.ipv4_mapped
+    if mapped_v4 is not None:
+        return str(mapped_v4)
     network = ipaddress.ip_network(f"{parsed}/{IPV6_BUCKET_PREFIXLEN}", strict=False)
     return str(network)
 
@@ -59,19 +66,26 @@ def normalize_ip_bucket(ip: str) -> str:
 def get_client_ip_info(request: Request) -> ClientIpInfo:
     """Return the originating client IP and the socket/proxy peer that supplied it.
 
-    When proxy headers are trusted, ``CF-Connecting-IP`` wins: Cloudflare always
-    overwrites it, whereas it *appends* to any client-supplied
-    ``X-Forwarded-For``, leaving the leftmost entry attacker-controlled unless
-    an intermediate proxy rewrites the header.
+    ``TRUST_PROXY_HEADERS`` asserts only that *some* trusted proxy rewrites the
+    forwarding headers. Trusting ``CF-Connecting-IP`` additionally requires
+    ``TRUST_CLOUDFLARE_HEADERS=1``, which asserts that the immediate proxy is
+    Cloudflare and therefore overwrites that header. A non-Cloudflare proxy may
+    rewrite ``X-Forwarded-For`` correctly while passing a client-supplied
+    ``CF-Connecting-IP`` straight through, so the two facts are gated apart.
+
+    When Cloudflare is trusted its header wins, because Cloudflare always
+    overwrites ``CF-Connecting-IP`` but only *appends* to a client-supplied
+    ``X-Forwarded-For``, leaving the leftmost entry attacker-controlled.
     """
     peer_ip = request.client.host if request.client else "unknown"
     trusted = os.getenv("TRUST_PROXY_HEADERS", "0") == "1"
+    trust_cloudflare = trusted and os.getenv("TRUST_CLOUDFLARE_HEADERS", "0") == "1"
     x_forwarded_for = _header_value(request.headers.get("x-forwarded-for"))
     x_real_ip = _header_value(request.headers.get("x-real-ip"))
     cf_connecting_ip = _header_value(request.headers.get("cf-connecting-ip"))
 
     if trusted:
-        if cf_connecting_ip:
+        if trust_cloudflare and cf_connecting_ip:
             return ClientIpInfo(
                 client_ip=cf_connecting_ip,
                 peer_ip=peer_ip,
