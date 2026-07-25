@@ -12,7 +12,7 @@ Client ──▶ Cloudflare ──▶ Nginx (:443) ──▶ FastAPI  (:8080)
 
 | Layer | Role |
 |-------|------|
-| **Cloudflare** | CDN, DDoS protection, edge SSL termination. SSL/TLS mode set to **Full (strict)** so Cloudflare verifies the origin certificate. `CF-Connecting-IP` header carries the real client IP. |
+| **Cloudflare** | CDN, DDoS protection, edge SSL termination. SSL/TLS mode set to **Full (strict)** so Cloudflare verifies the origin certificate. `CF-Connecting-IP` header carries the real client IP, and is what the gateway reads first (see [Client IP resolution](#client-ip-resolution)). |
 | **Nginx** | TLS termination (Let's Encrypt cert), path-based routing (see below), per-location body size limits (`/v1/` is bumped to 50 MB to accommodate large completion payloads and Qdrant vector upserts via the `/v1/qdrant` proxy; everything else uses the Nginx 1 MB default), WebSocket upgrade. |
 | **FastAPI** | API logic — request authentication, model routing, backpressure, Qdrant proxy, and observability. Listens on `127.0.0.1:8080`. |
 
@@ -38,6 +38,36 @@ make ps                # Verify health
 
 Nginx runs on the host (not containerized) for SSL termination. See
 [Deployment](deployment.md) for the full guide.
+
+### Client IP resolution
+
+`apps/backend/serving/utils/request_ip.py` resolves the client IP. With
+`TRUST_PROXY_HEADERS=1` (the default in `deploy/docker/docker-compose.yml`) it
+prefers `CF-Connecting-IP`, then `X-Forwarded-For`, then `X-Real-IP`, and
+otherwise falls back to the socket peer.
+
+`CF-Connecting-IP` comes first deliberately. Cloudflare always overwrites that
+header, but it **appends** to a client-supplied `X-Forwarded-For` — so reading
+the leftmost `X-Forwarded-For` entry would let any caller dictate the IP the
+gateway logs and rate-limits on, unless the host Nginx config also rewrites the
+header.
+
+Each request log line carries `remote_ip` (the resolved client), `peer_ip` (the
+socket peer — Nginx on loopback in this topology), `ip_source`, and the raw
+header values, so the provenance of any address is visible after the fact.
+
+**IPv6 addresses in the logs are expected even though the origin is
+IPv4-only.** Cloudflare publishes an AAAA record regardless of origin support:
+a client connects to the edge over IPv6, and Cloudflare opens a separate IPv4
+connection to the origin carrying the original address in `CF-Connecting-IP`.
+The client's address family is decoupled from ours. `peer_ip` should always be
+IPv4 here — an IPv6 `peer_ip` would be a genuine surprise.
+
+Because a client typically holds an entire IPv6 prefix (a `/64` at minimum) and
+RFC 4941 privacy addresses rotate within it, full IPv6 addresses make poor
+identity keys. Logs and analytics keep the full address, but rate-limit and
+routing-affinity buckets fold IPv6 to its `/64` via `normalize_ip_bucket()`.
+IPv4 continues to bucket per address.
 
 ### Runtime Operations
 

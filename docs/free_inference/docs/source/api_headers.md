@@ -101,10 +101,19 @@ api-key: your-qdrant-key
 
 The following headers are used for client IP resolution when the server is behind a reverse proxy (requires `TRUST_PROXY_HEADERS=1`):
 
+Resolution order (first match wins):
+
 | Header | Description |
 |--------|-------------|
-| `X-Forwarded-For` | Client IP as set by the proxy (first entry is used) |
+| `CF-Connecting-IP` | Client IP as set by Cloudflare. Preferred — Cloudflare always overwrites this header, while it only *appends* to `X-Forwarded-For` |
+| `X-Forwarded-For` | Fallback for non-Cloudflare proxies (first entry is used) |
 | `X-Real-IP` | Fallback client IP header |
+
+If none match — or `TRUST_PROXY_HEADERS` is not `1` — the socket peer address is used.
+
+IPv6 client addresses are logged in full. For per-client rate limits and sticky
+routing they are grouped by `/64`, since a single client is typically delegated
+an entire prefix and its addresses may rotate.
 
 ## Standard Headers
 
