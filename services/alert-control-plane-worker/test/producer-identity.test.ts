@@ -23,6 +23,22 @@ const deployment: TrustedDeploymentMetadata = {
   registryVersion: 7,
 };
 
+/**
+ * Corrupt a JWT's signature in a way that always changes the decoded bytes.
+ *
+ * Mutating the final base64url character is not enough: an HS256 signature is
+ * 32 bytes, so its last character carries only 4 significant bits plus 2
+ * padding bits, and decoders discard those padding bits. Replacing a trailing
+ * "w" with "x" therefore decodes to the identical signature and the "tampered"
+ * token still verifies. The first signature character carries 6 significant
+ * bits, so flipping it always yields a genuinely different signature.
+ */
+function tamperSignature(token: string): string {
+  const [header, payload, signature] = token.split(".");
+  const flipped = (signature[0] === "A" ? "B" : "A") + signature.slice(1);
+  return `${header}.${payload}.${flipped}`;
+}
+
 function namespace(): DurableObjectNamespace {
   return {
     idFromName: vi.fn(),
@@ -133,11 +149,7 @@ describe("producer deployment capability", () => {
       authenticateProducer(null, runtime, registry()),
     ).resolves.toBeNull();
     await expect(
-      authenticateProducer(
-        `Bearer ${token.slice(0, -1)}x`,
-        runtime,
-        registry(),
-      ),
+      authenticateProducer(`Bearer ${tamperSignature(token)}`, runtime, registry()),
     ).resolves.toBeNull();
     await expect(
       authenticateProducer(`Bearer ${expired}`, runtime, registry()),

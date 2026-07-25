@@ -20,6 +20,7 @@ _STRUCTURED_LOG_KEYS = (
     "ip_source",
     "x_forwarded_for",
     "x_real_ip",
+    "cf_connecting_ip",
     "user_agent",
     "host",
     "origin",
