@@ -54,7 +54,7 @@ from serving.storage.utils import billable_output_tokens, json_safe
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip, normalize_ip_bucket
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
@@ -468,10 +468,14 @@ async def _streaming_response_with_keepalive(
 
 
 def derive_affinity_key(auth_key_hash: str | None, client_ip: str) -> str:
-    """Compute the affinity key used for sticky multi-key routing."""
+    """Compute the affinity key used for sticky multi-key routing.
+
+    Anonymous IPv6 clients key on their ``/64`` so rotating privacy addresses
+    within the delegated prefix keeps landing on the same backend.
+    """
     if auth_key_hash:
         return auth_key_hash
-    return f"ip:{client_ip}"
+    return f"ip:{normalize_ip_bucket(client_ip)}"
 
 
 def _fallback_error_summary(routing: RoutingInfo) -> str | None:

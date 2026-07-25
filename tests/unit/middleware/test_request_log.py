@@ -144,6 +144,46 @@ class TestRequestLogMiddleware:
         assert record.origin == "https://freeinference.org"
 
     @pytest.mark.asyncio
+    async def test_request_log_json_output_carries_cf_connecting_ip(
+        self, app_with_middleware, caplog, monkeypatch
+    ):
+        """The Cloudflare header survives JSON serialization, not just the record.
+
+        Both formatters emit only keys in ``_STRUCTURED_LOG_KEYS``, so a field
+        set on the record is still dropped from production logs unless it is
+        whitelisted there.
+        """
+        import json
+
+        from serving.utils.logging import JsonFormatter
+
+        monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+        monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+
+        with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):
+            await _get(
+                app_with_middleware,
+                "/v1/chat/completions",
+                headers={
+                    "cf-connecting-ip": "2001:db8:abcd:1234::5",
+                    "x-forwarded-for": "1.2.3.4, 2001:db8:abcd:1234::5",
+                },
+            )
+
+        records = [r for r in caplog.records if r.getMessage() == "http_request"]
+        assert records
+        record = records[-1]
+        assert record.remote_ip == "2001:db8:abcd:1234::5"
+        assert record.ip_source == "cf-connecting-ip"
+
+        payload = json.loads(JsonFormatter().format(record))
+        assert payload["cf_connecting_ip"] == "2001:db8:abcd:1234::5"
+        assert payload["remote_ip"] == "2001:db8:abcd:1234::5"
+        assert payload["ip_source"] == "cf-connecting-ip"
+        # The spoofable header is retained so an attempt stays visible.
+        assert payload["x_forwarded_for"] == "1.2.3.4, 2001:db8:abcd:1234::5"
+
+    @pytest.mark.asyncio
     async def test_unauthorized_path_is_silent_at_info(self, app_with_middleware, caplog):
         """401 auth challenges do not emit INFO request logs."""
         with caplog.at_level(logging.INFO, logger="serving.servers.middleware.request_log"):

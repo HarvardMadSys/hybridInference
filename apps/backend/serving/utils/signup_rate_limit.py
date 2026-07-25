@@ -13,6 +13,7 @@ import time
 from collections import deque
 
 from serving.config.settings import settings
+from serving.utils.request_ip import normalize_ip_bucket
 
 _HOUR_SECONDS = 3600
 _DAY_SECONDS = 86400
@@ -49,6 +50,9 @@ async def check_and_record_signup(ip: str) -> tuple[bool, str | None]:
     hour_cutoff = now - _HOUR_SECONDS
     per_hour = settings.signup_rate_limit_per_hour
     per_day = settings.signup_rate_limit_per_day
+    # Normalize IPv6 to its /64 so rotating within a delegated prefix cannot
+    # reset the window.
+    ip_key = normalize_ip_bucket(ip)
 
     async with _lock:
         _sweep_counter += 1
@@ -56,10 +60,10 @@ async def check_and_record_signup(ip: str) -> tuple[bool, str | None]:
             _sweep_counter = 0
             _sweep_inactive(day_cutoff)
 
-        bucket = _attempts.get(ip)
+        bucket = _attempts.get(ip_key)
         if bucket is None:
             bucket = deque()
-            _attempts[ip] = bucket
+            _attempts[ip_key] = bucket
 
         while bucket and bucket[0] < day_cutoff:
             bucket.popleft()

@@ -20,6 +20,7 @@ import time
 from collections import deque
 
 from serving.config.settings import settings
+from serving.utils.request_ip import normalize_ip_bucket
 
 _FIFTEEN_MIN_SECONDS = 15 * 60
 _HOUR_SECONDS = 3600
@@ -62,6 +63,9 @@ async def check_and_record_login(email: str, ip: str) -> tuple[bool, str | None]
 
     # Normalize email so case variants share the same bucket.
     email_key = email.strip().lower()
+    # Normalize IPv6 to its /64 so rotating within a delegated prefix cannot
+    # reset the per-IP window.
+    ip_key = normalize_ip_bucket(ip)
 
     async with _lock:
         _sweep_counter += 1
@@ -79,10 +83,10 @@ async def check_and_record_login(email: str, ip: str) -> tuple[bool, str | None]
         while email_bucket and email_bucket[0] < email_cutoff:
             email_bucket.popleft()
 
-        ip_bucket = _ip_attempts.get(ip)
+        ip_bucket = _ip_attempts.get(ip_key)
         if ip_bucket is None:
             ip_bucket = deque()
-            _ip_attempts[ip] = ip_bucket
+            _ip_attempts[ip_key] = ip_bucket
         while ip_bucket and ip_bucket[0] < ip_cutoff:
             ip_bucket.popleft()
 
