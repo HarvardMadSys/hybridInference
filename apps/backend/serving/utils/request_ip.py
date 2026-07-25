@@ -1,4 +1,18 @@
-"""Helpers for extracting a stable client IP from proxied requests."""
+"""Helpers for extracting a stable client IP from proxied requests.
+
+We prefer Cloudflare's edge-set ``CF-Connecting-IP``, then take the first
+*routable* ``X-Forwarded-For`` hop — skipping any private / loopback / ULA hop an
+intermediary inserted (e.g. an internal overlay) rather than reporting it as the
+client. Skipping those hops is what stops internal-overlay addresses from being
+logged as clients. When no forwarded hop is routable we fall back to the socket
+peer, as before.
+
+Note: a spoofed *public* leftmost ``X-Forwarded-For`` entry is still taken at face
+value. Stripping it correctly requires a configured trusted-proxy CIDR set (so we
+can tell our own proxies from client-supplied hops); taking the rightmost public
+hop instead would misattribute every client behind a shared public intermediary,
+so that hardening is left as a follow-up (see issue #1036).
+"""
 
 from __future__ import annotations
 
@@ -21,6 +35,19 @@ IPV6_BUCKET_PREFIXLEN = 64
 # what distinguishes a genuine Pseudo IPv4 rewrite from a forged pairing.
 PSEUDO_IPV4_NETWORK = ipaddress.ip_network("240.0.0.0/4")
 
+# Non-routable ranges that can never identify a remote client. This is an
+# explicit list rather than ``ipaddress.is_private`` / ``is_global`` on purpose:
+# those reclassified the documentation and benchmark ranges across CPython
+# 3.12.4 / 3.13, so relying on them would make IP resolution depend on the
+# interpreter version. RFC 1918, CGNAT (RFC 6598) and IPv6 ULA are stable.
+_NON_ROUTABLE_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("fc00::/7"),
+)
+
 
 def _header_value(value: object) -> str | None:
     """Return a stripped header value when the request provides a real string."""
@@ -28,6 +55,27 @@ def _header_value(value: object) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _is_reportable_ip(value: str | None) -> bool:
+    """True when *value* could plausibly identify a real remote client.
+
+    Rejects anything unparseable plus loopback, link-local, multicast,
+    unspecified, RFC 1918 / CGNAT and IPv6 ULA addresses. IPv4-mapped IPv6
+    literals are judged by their embedded IPv4 address so a mapped private peer
+    is still rejected.
+    """
+    if not value:
+        return False
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+        return False
+    return not any(ip in net for net in _NON_ROUTABLE_NETWORKS)
 
 
 @dataclass(frozen=True)
@@ -107,15 +155,18 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     rewrite ``X-Forwarded-For`` correctly while passing a client-supplied
     ``CF-Connecting-IP`` straight through, so the two facts are gated apart.
 
-    When Cloudflare is trusted its header wins, because Cloudflare always
-    overwrites ``CF-Connecting-IP`` but only *appends* to a client-supplied
-    ``X-Forwarded-For``, leaving the leftmost entry attacker-controlled.
+    Resolution order, first match wins (proxy headers only when trusted):
 
-    ``CF-Connecting-IPv6`` outranks ``CF-Connecting-IP``, but only when the two
-    corroborate each other as a Pseudo IPv4 pair — see
-    :func:`_pseudo_ipv4_origin`. Cloudflare omits rather than clears the IPv6
-    header when that setting is off, so an unconditional preference would be
-    caller-controlled.
+    1. ``CF-Connecting-IP`` — Cloudflare's single, edge-set client address
+       (``CF-Connecting-IPv6`` outranks it only for a corroborated Pseudo IPv4
+       pair; see :func:`_pseudo_ipv4_origin`).
+    2. The first *routable* ``X-Forwarded-For`` hop (left-to-right). Private /
+       loopback / ULA hops an intermediary inserted are skipped rather than
+       reported as the client; a spoofed public leftmost hop is still trusted
+       (see the module docstring on why stripping it needs a trusted-proxy list).
+    3. ``X-Real-IP`` when it is routable.
+    4. The socket peer — a direct connection, or the last resort when no
+       forwarded hop is routable.
     """
     peer_ip = request.client.host if request.client else "unknown"
     trusted = os.getenv("TRUST_PROXY_HEADERS", "0") == "1"
@@ -125,56 +176,45 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     cf_connecting_ip = _header_value(request.headers.get("cf-connecting-ip"))
     cf_connecting_ipv6 = _header_value(request.headers.get("cf-connecting-ipv6"))
 
+    def _info(client_ip: str, source: str) -> ClientIpInfo:
+        return ClientIpInfo(
+            client_ip=client_ip,
+            peer_ip=peer_ip,
+            source=source,
+            trusted_proxy_headers=trusted,
+            x_forwarded_for=x_forwarded_for,
+            x_real_ip=x_real_ip,
+            cf_connecting_ip=cf_connecting_ip,
+            cf_connecting_ipv6=cf_connecting_ipv6,
+        )
+
     if trusted:
+        # Cloudflare's edge-set header is authoritative and un-spoofable behind CF.
         if trust_cloudflare and cf_connecting_ip:
             pseudo_origin = _pseudo_ipv4_origin(cf_connecting_ip, cf_connecting_ipv6)
-            return ClientIpInfo(
-                client_ip=pseudo_origin or cf_connecting_ip,
-                peer_ip=peer_ip,
-                source="cf-connecting-ipv6" if pseudo_origin else "cf-connecting-ip",
-                trusted_proxy_headers=True,
-                x_forwarded_for=x_forwarded_for,
-                x_real_ip=x_real_ip,
-                cf_connecting_ip=cf_connecting_ip,
-                cf_connecting_ipv6=cf_connecting_ipv6,
+            return _info(
+                pseudo_origin or cf_connecting_ip,
+                "cf-connecting-ipv6" if pseudo_origin else "cf-connecting-ip",
             )
 
+        # First routable hop (left-to-right): skip private/loopback/ULA hops an
+        # upstream inserted — reporting one is what leaked internal-overlay
+        # addresses as clients. A spoofed *public* leftmost hop is still trusted;
+        # discarding it needs a trusted-proxy list (see the module docstring).
         if x_forwarded_for:
-            first_ip = x_forwarded_for.split(",", 1)[0].strip()
-            if first_ip:
-                return ClientIpInfo(
-                    client_ip=first_ip,
-                    peer_ip=peer_ip,
-                    source="x-forwarded-for",
-                    trusted_proxy_headers=True,
-                    x_forwarded_for=x_forwarded_for,
-                    x_real_ip=x_real_ip,
-                    cf_connecting_ip=cf_connecting_ip,
-                    cf_connecting_ipv6=cf_connecting_ipv6,
-                )
+            for hop in x_forwarded_for.split(","):
+                hop = hop.strip()
+                if _is_reportable_ip(hop):
+                    return _info(hop, "x-forwarded-for")
 
-        if x_real_ip:
-            return ClientIpInfo(
-                client_ip=x_real_ip,
-                peer_ip=peer_ip,
-                source="x-real-ip",
-                trusted_proxy_headers=True,
-                x_forwarded_for=x_forwarded_for,
-                x_real_ip=x_real_ip,
-                cf_connecting_ip=cf_connecting_ip,
-                cf_connecting_ipv6=cf_connecting_ipv6,
-            )
+        if _is_reportable_ip(x_real_ip):
+            return _info(x_real_ip, "x-real-ip")  # type: ignore[arg-type]
 
-    return ClientIpInfo(
-        client_ip=peer_ip,
-        peer_ip=peer_ip,
-        source="socket",
-        trusted_proxy_headers=trusted,
-        x_forwarded_for=x_forwarded_for,
-        x_real_ip=x_real_ip,
-        cf_connecting_ip=cf_connecting_ip,
-        cf_connecting_ipv6=cf_connecting_ipv6,
-    )
+    # No trustworthy forwarded hop: fall back to the socket peer, as before. A
+    # direct public connection is a real client; an internal peer (docker bridge,
+    # etc.) is a separate, pre-existing pollution class left untouched so this
+    # change stays scoped to the spoofable-leftmost-X-Forwarded-For leak.
+    return _info(peer_ip, "socket")
 
 
 def get_client_ip(request: Request) -> str:

@@ -32,8 +32,8 @@ def test_client_ip_ignores_forwarded_headers_by_default(monkeypatch):
     assert info.x_forwarded_for == "203.0.113.9"
 
 
-def test_client_ip_uses_first_forwarded_for_when_trusted(monkeypatch):
-    """Use the leftmost X-Forwarded-For address from trusted proxies."""
+def test_client_ip_uses_first_routable_forwarded_for_when_trusted(monkeypatch):
+    """Take the first routable X-Forwarded-For hop (leftmost that is a real IP)."""
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
 
     request = _request(
@@ -50,8 +50,39 @@ def test_client_ip_uses_first_forwarded_for_when_trusted(monkeypatch):
     assert info.x_real_ip == "198.51.100.7"
 
 
+def test_forwarded_for_skips_leading_private_and_ula_hops(monkeypatch):
+    """Leading private/ULA hops an upstream inserted are skipped, not reported."""
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+
+    request = _request(
+        {"x-forwarded-for": "fdbd:dc02:19:383::153, 172.19.0.1, 8.8.8.8"},
+        peer_ip="172.19.0.8",
+    )
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "8.8.8.8"
+    assert info.source == "x-forwarded-for"
+
+
+def test_forwarded_for_ula_is_not_reported_as_client(monkeypatch):
+    """An upstream forwarding only its internal ULA overlay must not leak it.
+
+    Regression: the gateway used to record the leftmost X-Forwarded-For entry
+    verbatim, logging an operator's private ULA (fdbd:dc0x::) as the client IP.
+    The ULA hop is skipped and the real socket peer is reported instead.
+    """
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+
+    request = _request({"x-forwarded-for": "fdbd:dc02:19:383::153"}, peer_ip="8.8.8.8")
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "8.8.8.8"
+    assert info.source == "socket"
+    assert info.client_ip != "fdbd:dc02:19:383::153"
+
+
 def test_client_ip_falls_back_to_x_real_ip_when_trusted(monkeypatch):
-    """Use X-Real-IP when trusted and X-Forwarded-For is absent."""
+    """Use X-Real-IP when trusted and X-Forwarded-For has no routable hop."""
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
 
     request = _request({"x-real-ip": "198.51.100.7"}, peer_ip="172.19.0.8")
@@ -60,6 +91,15 @@ def test_client_ip_falls_back_to_x_real_ip_when_trusted(monkeypatch):
     assert info.client_ip == "198.51.100.7"
     assert info.peer_ip == "172.19.0.8"
     assert info.source == "x-real-ip"
+
+
+def test_public_socket_peer_is_used_when_untrusted(monkeypatch):
+    """A direct connection from a routable peer is a legitimate client IP."""
+    monkeypatch.delenv("TRUST_PROXY_HEADERS", raising=False)
+
+    info = get_client_ip_info(_request({}, peer_ip="8.8.8.8"))
+    assert info.client_ip == "8.8.8.8"
+    assert info.source == "socket"
 
 
 def test_cf_connecting_ip_wins_over_forwarded_for(monkeypatch):

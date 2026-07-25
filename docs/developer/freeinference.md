@@ -50,7 +50,8 @@ independent flags:
 | `TRUST_CLOUDFLARE_HEADERS` | The **immediate** proxy is Cloudflare, so `CF-Connecting-IP` is authoritative | `0` everywhere — explicit opt-in |
 
 With both set, resolution order is `CF-Connecting-IPv6` → `CF-Connecting-IP` →
-`X-Forwarded-For` (leftmost) → `X-Real-IP` → socket peer.
+`X-Forwarded-For` (first **routable** entry — leading private/loopback/ULA hops an
+intermediary inserted are skipped) → `X-Real-IP` → socket peer.
 
 `CF-Connecting-IPv6` outranks `CF-Connecting-IP`, but **only when the two
 corroborate each other**. Cloudflare sends the IPv6 header solely when
