@@ -52,14 +52,23 @@ independent flags:
 With both set, resolution order is `CF-Connecting-IPv6` → `CF-Connecting-IP` →
 `X-Forwarded-For` (leftmost) → `X-Real-IP` → socket peer.
 
-`CF-Connecting-IPv6` outranks `CF-Connecting-IP` because Cloudflare sends it
-only when [Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/)
-is set to "Overwrite headers" — in which case `CF-Connecting-IP` holds a
-synthetic Class E (`240.0.0.0/4`) address derived from the visitor, not the
-visitor's real address. Preferring the synthetic would send an IPv6 client down
-the IPv4 bucketing path, handing every rotated privacy address its own
-rate-limit bucket and defeating the `/64` grouping below. Both headers are
-logged, so the synthetic stays visible.
+`CF-Connecting-IPv6` outranks `CF-Connecting-IP`, but **only when the two
+corroborate each other**. Cloudflare sends the IPv6 header solely when
+[Pseudo IPv4](https://developers.cloudflare.com/network/pseudo-ipv4/) is set to
+"Overwrite headers" — in which case `CF-Connecting-IP` holds a synthetic Class E
+(`240.0.0.0/4`) address derived from the visitor rather than the visitor's real
+address. Preferring the synthetic would send an IPv6 client down the IPv4
+bucketing path, handing every rotated privacy address its own rate-limit bucket
+and defeating the `/64` grouping below.
+
+The corroboration matters because Cloudflare *omits* `CF-Connecting-IPv6` when
+Pseudo IPv4 is off rather than clearing it — so any caller can supply one.
+Only `CF-Connecting-IP` is overwritten on every request. The gateway therefore
+honors the IPv6 header only when it parses as IPv6 *and* `CF-Connecting-IP`
+holds the accompanying Class E synthetic; a real client address is never drawn
+from that reserved range, so the pairing cannot be forged from outside.
+Otherwise `CF-Connecting-IP` remains authoritative. Both headers are logged, so
+a synthetic — or a forgery attempt — stays visible.
 
 > **Before setting `TRUST_CLOUDFLARE_HEADERS=1`, restrict the origin.** Every
 > one of these headers is attacker-controlled on any request that reaches the

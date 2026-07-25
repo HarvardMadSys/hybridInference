@@ -191,6 +191,76 @@ def test_pseudo_ipv4_rotation_stays_in_one_bucket(monkeypatch):
     assert buckets == {"2001:db8:abcd:1234::/64"}
 
 
+def test_forged_cf_connecting_ipv6_loses_to_authoritative_cf_ip(monkeypatch):
+    """A caller-supplied CF-Connecting-IPv6 must not displace the real client IP.
+
+    With Pseudo IPv4 off, Cloudflare omits CF-Connecting-IPv6 rather than
+    clearing it, so anyone can send one. Only CF-Connecting-IP is overwritten
+    on every request, so it stays authoritative unless the pair corroborates.
+    """
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+
+    request = _request(
+        {
+            "cf-connecting-ip": "203.0.113.9",
+            "cf-connecting-ipv6": "2001:db8:dead:beef::1",
+        },
+        peer_ip="127.0.0.1",
+    )
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "203.0.113.9"
+    assert info.source == "cf-connecting-ip"
+    # Retained for forensics — the forgery attempt stays in the log.
+    assert info.cf_connecting_ipv6 == "2001:db8:dead:beef::1"
+
+
+def test_cf_connecting_ipv6_alone_does_not_establish_identity(monkeypatch):
+    """Without the authoritative Cloudflare header, the IPv6 variant is worthless."""
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+
+    request = _request(
+        {
+            "x-forwarded-for": "198.51.100.4",
+            "cf-connecting-ipv6": "2001:db8:dead:beef::1",
+        },
+        peer_ip="127.0.0.1",
+    )
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == "198.51.100.4"
+    assert info.source == "x-forwarded-for"
+
+
+@pytest.mark.parametrize(
+    ("cf_ip", "cf_ipv6"),
+    [
+        # CF-Connecting-IP is a normal address, not a Class E synthetic.
+        ("203.0.113.9", "2001:db8:abcd:1234::5"),
+        # Synthetic present but the paired value is not IPv6.
+        ("240.1.2.3", "198.51.100.4"),
+        # Neither header parses.
+        ("240.1.2.3", "not-an-address"),
+        ("garbage", "2001:db8:abcd:1234::5"),
+    ],
+)
+def test_pseudo_ipv4_pair_must_corroborate(monkeypatch, cf_ip, cf_ipv6):
+    """The IPv6 header is honored only when both halves confirm a real rewrite."""
+    monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")
+    monkeypatch.setenv("TRUST_CLOUDFLARE_HEADERS", "1")
+
+    request = _request(
+        {"cf-connecting-ip": cf_ip, "cf-connecting-ipv6": cf_ipv6},
+        peer_ip="127.0.0.1",
+    )
+
+    info = get_client_ip_info(request)
+    assert info.client_ip == cf_ip
+    assert info.source == "cf-connecting-ip"
+
+
 def test_cf_connecting_ipv6_ignored_without_cloudflare_trust(monkeypatch):
     """The IPv6 variant is gated by the same flag as CF-Connecting-IP."""
     monkeypatch.setenv("TRUST_PROXY_HEADERS", "1")

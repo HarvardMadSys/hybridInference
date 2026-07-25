@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 # therefore collapse IPv6 to its /64 network. IPv4 keeps full-address buckets.
 IPV6_BUCKET_PREFIXLEN = 64
 
+# Cloudflare's Pseudo IPv4 synthetics live in the reserved Class E space. A real
+# client address is never drawn from it, so its presence in CF-Connecting-IP is
+# what distinguishes a genuine Pseudo IPv4 rewrite from a forged pairing.
+PSEUDO_IPV4_NETWORK = ipaddress.ip_network("240.0.0.0/4")
+
 
 def _header_value(value: object) -> str | None:
     """Return a stripped header value when the request provides a real string."""
@@ -37,6 +42,34 @@ class ClientIpInfo:
     x_real_ip: str | None = None
     cf_connecting_ip: str | None = None
     cf_connecting_ipv6: str | None = None
+
+
+def _pseudo_ipv4_origin(cf_connecting_ip: str | None, cf_connecting_ipv6: str | None) -> str | None:
+    """Return the visitor's real IPv6 only for a genuine Pseudo IPv4 rewrite.
+
+    Cloudflare overwrites ``CF-Connecting-IP`` on every request, but it emits
+    ``CF-Connecting-IPv6`` *only* under Pseudo IPv4 "Overwrite headers" — when
+    that setting is off the header is absent rather than cleared, so a caller
+    can supply their own. Preferring it unconditionally would therefore hand an
+    attacker the client identity on any ordinary Cloudflare request.
+
+    Both halves of the pair must corroborate each other: the IPv6 header must
+    parse as IPv6, and ``CF-Connecting-IP`` must hold the accompanying Class E
+    synthetic. Cloudflare controls that second value and a real client address
+    is never in ``240.0.0.0/4``, so the pairing cannot be forged from outside.
+    """
+    if not cf_connecting_ip or not cf_connecting_ipv6:
+        return None
+    try:
+        synthetic = ipaddress.ip_address(cf_connecting_ip)
+        original = ipaddress.ip_address(cf_connecting_ipv6)
+    except ValueError:
+        return None
+    if original.version != 6 or synthetic.version != 4:
+        return None
+    if synthetic not in PSEUDO_IPV4_NETWORK:
+        return None
+    return str(original)
 
 
 def normalize_ip_bucket(ip: str) -> str:
@@ -78,10 +111,11 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     overwrites ``CF-Connecting-IP`` but only *appends* to a client-supplied
     ``X-Forwarded-For``, leaving the leftmost entry attacker-controlled.
 
-    ``CF-Connecting-IPv6`` outranks ``CF-Connecting-IP``. Cloudflare sends it
-    only when Pseudo IPv4 is set to "Overwrite headers", in which case
-    ``CF-Connecting-IP`` holds a synthetic Class E address derived from the
-    visitor rather than the visitor's real address.
+    ``CF-Connecting-IPv6`` outranks ``CF-Connecting-IP``, but only when the two
+    corroborate each other as a Pseudo IPv4 pair — see
+    :func:`_pseudo_ipv4_origin`. Cloudflare omits rather than clears the IPv6
+    header when that setting is off, so an unconditional preference would be
+    caller-controlled.
     """
     peer_ip = request.client.host if request.client else "unknown"
     trusted = os.getenv("TRUST_PROXY_HEADERS", "0") == "1"
@@ -92,12 +126,12 @@ def get_client_ip_info(request: Request) -> ClientIpInfo:
     cf_connecting_ipv6 = _header_value(request.headers.get("cf-connecting-ipv6"))
 
     if trusted:
-        if trust_cloudflare and (cf_connecting_ipv6 or cf_connecting_ip):
-            using_ipv6 = cf_connecting_ipv6 is not None
+        if trust_cloudflare and cf_connecting_ip:
+            pseudo_origin = _pseudo_ipv4_origin(cf_connecting_ip, cf_connecting_ipv6)
             return ClientIpInfo(
-                client_ip=cf_connecting_ipv6 if using_ipv6 else cf_connecting_ip,
+                client_ip=pseudo_origin or cf_connecting_ip,
                 peer_ip=peer_ip,
-                source="cf-connecting-ipv6" if using_ipv6 else "cf-connecting-ip",
+                source="cf-connecting-ipv6" if pseudo_origin else "cf-connecting-ip",
                 trusted_proxy_headers=True,
                 x_forwarded_for=x_forwarded_for,
                 x_real_ip=x_real_ip,
