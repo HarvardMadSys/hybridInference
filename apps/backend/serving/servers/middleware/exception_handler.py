@@ -93,6 +93,8 @@ def install_exception_handlers(app: FastAPI) -> None:
                 "error_code": "ACCOUNT_SUSPENDED",
                 "message": str(exc),
                 "status": exc.status,
+                # Optional admin-authored message shown to the user; null when unset.
+                "suspension_message": exc.suspension_message,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )

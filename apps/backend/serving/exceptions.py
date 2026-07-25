@@ -63,10 +63,15 @@ class EmailNotVerifiedError(AuthenticationError):
 
 
 class AccountSuspendedError(AuthenticationError):
-    """Account is suspended."""
+    """Account is suspended.
 
-    def __init__(self, status: str):
+    ``suspension_message`` is an optional admin-authored note explaining the
+    suspension; it is surfaced to the user (e.g. on the login page) when set.
+    """
+
+    def __init__(self, status: str, suspension_message: str | None = None):
         self.status = status
+        self.suspension_message = suspension_message
         super().__init__(f"Account is {status}")
 
 

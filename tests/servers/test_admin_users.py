@@ -582,6 +582,76 @@ async def test_get_user_detail_returns_admin_note(admin_client):
 
 
 @pytest.mark.asyncio
+async def test_patch_user_sets_suspension_message(admin_client):
+    """PATCH /admin/users/{id} persists a trimmed user-facing suspension message."""
+    client, op_store, _log_store, mock_log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"suspension_message": "  Contact support to appeal.  "},
+    )
+
+    assert response.status_code == 200
+    op_store.update_user_fields.assert_awaited_once_with(
+        "u1", suspension_message="Contact support to appeal."
+    )
+    assert response.json()["updated_fields"] == ["suspension_message"]
+    audit_payload = mock_log.await_args.args[4]
+    assert audit_payload["values"]["suspension_message"] == "Contact support to appeal."
+
+
+@pytest.mark.asyncio
+async def test_patch_user_clears_suspension_message_with_blank(admin_client):
+    """A blank/whitespace suspension_message clears it (stored as NULL)."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"suspension_message": "   "},
+    )
+
+    assert response.status_code == 200
+    op_store.update_user_fields.assert_awaited_once_with("u1", suspension_message=None)
+
+
+@pytest.mark.asyncio
+async def test_patch_user_rejects_overlong_suspension_message(admin_client):
+    """suspension_message longer than the schema limit is rejected (422)."""
+    client, _op_store, _log_store, _log = admin_client
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"suspension_message": "x" * 2001},
+    )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_user_detail_returns_suspension_message(admin_client):
+    """GET /admin/users/{id}/detail surfaces the stored suspension message."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = {
+        **_user_row(),
+        "suspension_message": "Suspended for review.",
+    }
+    op_store.get_active_key_by_account.return_value = None
+    log_store.get_user_detail_usage = AsyncMock(
+        return_value={"avg_turns": None, "avg_user_turns": None}
+    )
+
+    response = await client.get("/admin/users/u1/detail", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["suspension_message"] == "Suspended for review."
+
+
+@pytest.mark.asyncio
 async def test_get_user_detail_returns_disabled_models(admin_client):
     """GET /admin/users/{id}/detail exposes normalized disabled_models."""
     client, op_store, log_store, _log = admin_client

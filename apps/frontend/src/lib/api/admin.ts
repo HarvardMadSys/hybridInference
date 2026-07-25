@@ -188,6 +188,7 @@ export interface UserDetail {
   last_request_at: string | null;
   max_concurrent_requests: number | null;
   admin_note: string | null;
+  suspension_message: string | null;
   avg_turns: number | null;
   avg_user_turns: number | null;
   ask_question_fraction: number | null;
@@ -305,6 +306,7 @@ export interface UpdateUserData {
   disabled_models?: string[];
   max_concurrent_requests?: number | null;
   admin_note?: string | null;
+  suspension_message?: string | null;
 }
 
 export async function updateUser(

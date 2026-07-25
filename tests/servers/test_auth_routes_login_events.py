@@ -242,6 +242,49 @@ async def test_login_suspended_takes_precedence_over_unverified(app, fake_op_sto
 
 
 @pytest.mark.asyncio
+async def test_login_suspended_returns_admin_message(app, fake_op_store, monkeypatch):
+    """A suspended login surfaces the admin-authored suspension_message.
+
+    When set, the ACCOUNT_SUSPENDED 403 carries the admin's message so the login
+    page can show it in place of the generic text; when unset it is null.
+    """
+    base_row = {
+        "id": "u1",
+        "email": "a@b.com",
+        "user_name": "A",
+        "password_hash": "$2b$12$NOTUSED",
+        "role": "free",
+        "status": "suspended",
+        "email_verified": True,
+        "created_at": datetime(2025, 1, 1, tzinfo=timezone.utc),
+        "last_login_at": None,
+    }
+    monkeypatch.setattr("serving.utils.password.verify_password", lambda a, b: True)
+    monkeypatch.setattr(
+        "serving.config.settings.settings.signup_require_email_verification",
+        False,
+        raising=False,
+    )
+
+    # With a message set, it is echoed back verbatim.
+    fake_op_store.get_user_by_email.return_value = {
+        **base_row,
+        "suspension_message": "Contact support@example.com to appeal.",
+    }
+    resp = await _post_login(app, email="a@b.com")
+    assert resp.status_code == 403
+    data = resp.json()
+    assert data["error_code"] == "ACCOUNT_SUSPENDED"
+    assert data["suspension_message"] == "Contact support@example.com to appeal."
+
+    # With no message, the field is present and null (generic client fallback).
+    fake_op_store.get_user_by_email.return_value = dict(base_row)
+    resp = await _post_login(app, email="a@b.com")
+    assert resp.status_code == 403
+    assert resp.json()["suspension_message"] is None
+
+
+@pytest.mark.asyncio
 async def test_login_records_rate_limited(app, fake_op_store, monkeypatch):
     async def _deny(email, ip):
         return False, "ip"

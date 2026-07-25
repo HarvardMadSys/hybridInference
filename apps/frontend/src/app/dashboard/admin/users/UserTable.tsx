@@ -30,7 +30,7 @@ interface UserTableProps {
   onApprove: (userId: string) => Promise<void>;
   onReject: (userId: string, reason: string) => Promise<void>;
   onUpdate: (userId: string, patch: Record<string, unknown>) => Promise<void>;
-  onSuspend: (userId: string) => Promise<void>;
+  onSuspend: (userId: string, suspensionMessage?: string | null) => Promise<void>;
   onResume: (userId: string) => Promise<void>;
   onDelete: (userId: string, reason: string) => Promise<void>;
   onHardDelete: (userId: string, reason: string) => Promise<void>;
@@ -41,7 +41,10 @@ interface ConfirmAction {
   body: string;
   confirmLabel: string;
   confirmTone: 'danger' | 'neutral';
-  onConfirm: () => void | Promise<void>;
+  // When set, the modal renders a labeled textarea and passes its value to
+  // onConfirm (used to capture the suspension message at suspend time).
+  messageField?: { label: string; placeholder?: string };
+  onConfirm: (message?: string) => void | Promise<void>;
 }
 
 function median(nums: number[]): number {
@@ -73,9 +76,11 @@ export function UserTable(props: UserTableProps) {
   const [editDisabledModels, setEditDisabledModels] = useState<string[]>([]);
   const [editMaxConcurrent, setEditMaxConcurrent] = useState('');
   const [editNote, setEditNote] = useState('');
+  const [editSuspensionMsg, setEditSuspensionMsg] = useState('');
   const [availableModels, setAvailableModels] = useState<AdminModelVisibilityItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
+  const [savingSuspensionMsg, setSavingSuspensionMsg] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
 
   const pageMedianToday = useMemo(
@@ -116,6 +121,7 @@ export function UserTable(props: UserTableProps) {
       setEditDisabledModels(d.disabled_models ?? []);
       setEditMaxConcurrent(d.max_concurrent_requests?.toString() ?? '');
       setEditNote(d.admin_note ?? '');
+      setEditSuspensionMsg(d.suspension_message ?? '');
       setAvailableModels(visibility.models);
     } catch {
       setExpandedId(null);
@@ -170,16 +176,39 @@ export function UserTable(props: UserTableProps) {
     }
   };
 
+  // Suspension message has its own save so an admin can edit the user-facing
+  // message after suspension, without re-suspending.
+  const doSaveSuspensionMsg = async () => {
+    if (!expandedId || !detail) return;
+    const next = editSuspensionMsg.trim() ? editSuspensionMsg.trim() : null;
+    if (next === (detail.suspension_message ?? null)) return;
+    setSavingSuspensionMsg(true);
+    try {
+      await props.onUpdate(expandedId, { suspension_message: next });
+      const refreshed = await getUserDetail(expandedId);
+      setDetail(refreshed);
+      setEditSuspensionMsg(refreshed.suspension_message ?? '');
+    } finally {
+      setSavingSuspensionMsg(false);
+    }
+  };
+
   const doSuspend = (userId: string) => {
+    setConfirmMessage('');
     setConfirmAction({
       title: 'Suspend user?',
       body: 'The user will be unable to authenticate or use their API key while suspended.',
       confirmLabel: 'Suspend',
       confirmTone: 'danger',
-      onConfirm: async () => {
+      messageField: {
+        label: 'Message shown to the user at login (optional)',
+        placeholder:
+          'e.g. Your account was suspended for a policy violation. Contact support to appeal.',
+      },
+      onConfirm: async (message) => {
         setBusy(userId);
         try {
-          await props.onSuspend(userId);
+          await props.onSuspend(userId, message?.trim() ? message.trim() : null);
           setExpandedId(null);
           setDetail(null);
         } finally {
@@ -222,6 +251,8 @@ export function UserTable(props: UserTableProps) {
   // Generic confirm modal — replaces window.confirm for suspend
   // so the same custom-modal pattern is used everywhere in this table.
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+  // Value of the optional message textarea in the confirm modal (suspend flow).
+  const [confirmMessage, setConfirmMessage] = useState('');
 
   // Close delete/hard-delete/reject modals if their target row leaves the
   // visible list (filter change, pagination). Without this, the modal stays
@@ -443,17 +474,21 @@ export function UserTable(props: UserTableProps) {
                             editDisabledModels={editDisabledModels}
                             editMaxConcurrent={editMaxConcurrent}
                             editNote={editNote}
+                            editSuspensionMsg={editSuspensionMsg}
                             availableModels={availableModels}
                             saving={saving}
                             savingNote={savingNote}
+                            savingSuspensionMsg={savingSuspensionMsg}
                             busy={busy}
                             onChangeRole={setEditRole}
                             onChangeQuota={setEditQuota}
                             onChangeDisabledModels={setEditDisabledModels}
                             onChangeMaxConcurrent={setEditMaxConcurrent}
                             onChangeNote={setEditNote}
+                            onChangeSuspensionMsg={setEditSuspensionMsg}
                             onSave={doSave}
                             onSaveNote={doSaveNote}
+                            onSaveSuspensionMsg={doSaveSuspensionMsg}
                             onSuspend={doSuspend}
                             onReactivate={doReactivate}
                             onResume={doResume}
@@ -578,6 +613,22 @@ export function UserTable(props: UserTableProps) {
           <div className="relative mx-4 w-full max-w-sm rounded-xl border border-gray-200 bg-white p-5 shadow-2xl">
             <h3 className="text-[15px] font-semibold text-gray-900">{confirmAction.title}</h3>
             <p className="mt-2 text-[13px] text-gray-600">{confirmAction.body}</p>
+            {confirmAction.messageField && (
+              <div className="mt-3">
+                <label className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                  {confirmAction.messageField.label}
+                </label>
+                <textarea
+                  value={confirmMessage}
+                  onChange={(e) => setConfirmMessage(e.target.value)}
+                  rows={3}
+                  maxLength={2000}
+                  placeholder={confirmAction.messageField.placeholder}
+                  aria-label={confirmAction.messageField.label}
+                  className="w-full rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] placeholder:text-gray-400 focus:border-gray-400 focus:outline-none"
+                />
+              </div>
+            )}
             <div className="mt-4 flex justify-end gap-2">
               <button
                 onClick={() => setConfirmAction(null)}
@@ -588,8 +639,9 @@ export function UserTable(props: UserTableProps) {
               <button
                 onClick={async () => {
                   const action = confirmAction;
+                  const message = confirmMessage;
                   setConfirmAction(null);
-                  await action.onConfirm();
+                  await action.onConfirm(message);
                 }}
                 className={`rounded-md px-3 py-1.5 text-[12px] font-semibold text-white transition ${
                   confirmAction.confirmTone === 'danger'
