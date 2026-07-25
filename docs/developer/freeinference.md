@@ -47,10 +47,21 @@ independent flags:
 | Flag | Asserts | Default |
 |---|---|---|
 | `TRUST_PROXY_HEADERS` | Some trusted proxy rewrites `X-Forwarded-For` / `X-Real-IP` | `0`, but `1` in `deploy/docker/docker-compose.yml` |
-| `TRUST_CLOUDFLARE_HEADERS` | The **immediate** proxy is Cloudflare, so `CF-Connecting-IP` is authoritative | `0`, but `1` in `deploy/docker/docker-compose.yml` |
+| `TRUST_CLOUDFLARE_HEADERS` | The **immediate** proxy is Cloudflare, so `CF-Connecting-IP` is authoritative | `0` everywhere — explicit opt-in |
 
 With both set, resolution order is `CF-Connecting-IP` → `X-Forwarded-For`
 (leftmost) → `X-Real-IP` → socket peer.
+
+> **Before setting `TRUST_CLOUDFLARE_HEADERS=1`, restrict the origin.** Every
+> one of these headers is attacker-controlled on any request that reaches the
+> origin without passing through the edge, and Cloudflare's "Full (strict)" TLS
+> mode does **not** prevent that — it authenticates the origin to Cloudflare,
+> not Cloudflare to the origin. Until Nginx enforces
+> [Authenticated Origin Pulls](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/)
+> or a Cloudflare IP allowlist, anyone who learns the origin address can send a
+> forged `CF-Connecting-IP` directly. This caveat is not new to the Cloudflare
+> header — it applies equally to `TRUST_PROXY_HEADERS` and `X-Forwarded-For` —
+> but neither flag should be enabled on the assumption alone.
 
 `CF-Connecting-IP` comes first deliberately. Cloudflare always overwrites that
 header, but it **appends** to a client-supplied `X-Forwarded-For` — so reading
