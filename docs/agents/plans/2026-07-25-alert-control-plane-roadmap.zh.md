@@ -39,7 +39,7 @@
 | staging 单模型上下线告警 | ✅ 已迁移（**仅当同时故障 ≤ `ALERT_STORM_THRESHOLD`=5**） |
 | **P0 收口修复** | 🟡 已提 PR：#1042（3 项 P0 + Codex 两条）与 closeout PR（P1-B/P2-G/health/README），待合并 |
 | status-monitor storm 告警 | 🟡 D1 已决（b，2026-07-27）：per-model 迁移已提 draft PR，待步骤 2 真实验证后合并 |
-| status-monitor cycle 告警 | ❌ 未迁移，需要新 alert type（约 1–2 人周，独立于 D1） |
+| status-monitor cycle 告警 | 🟡 代码已完成（`monitoring_cycle_failure` 类型 + producer 双侧，draft PR）：`ALERT_CYCLE_OWNER` 默认 legacy，**须先手动重部署 control plane 再翻 flag**（status-monitor 自动部署，control plane 手动部署，共用 flag 会打开"发出即被拒"的窗口） |
 | 后端全部 `alert_slack` 告警（11 个调用点） | ❌ 未迁移，但已有 dormant Python 契约 |
 | 全局 snooze（管理员暂停告警） | ⚠️ 新链路无对应能力 —— 迁移即功能回归 |
 | 旧 Codex 自动分析回复 | ❌ 新链路未实现（`dispatch_analysis` 返回 `analysis_not_enabled`） |
