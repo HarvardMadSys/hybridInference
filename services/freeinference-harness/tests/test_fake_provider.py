@@ -6,12 +6,18 @@ import json
 
 import httpx
 
-from freeinference_harness.agent_scripts import DS4_MALFORMED_ARGUMENTS, marker
+from freeinference_harness.agent_scripts import DS4_MALFORMED_ARGUMENTS, marker, run_marker
 
 
-def _chat_payload(script_id: str, *, stream: bool, assistant_turns: int = 0) -> dict:
+def _chat_payload(
+    script_id: str,
+    *,
+    stream: bool,
+    assistant_turns: int = 0,
+    run_id: str = "test-run",
+) -> dict:
     """Builds a chat request selecting a script at a given turn index."""
-    messages = [{"role": "user", "content": f"{marker(script_id)} run"}]
+    messages = [{"role": "user", "content": f"{marker(script_id)} {run_marker(run_id)} run"}]
     for index in range(assistant_turns):
         messages.append({"role": "assistant", "content": f"turn {index}"})
         messages.append({"role": "user", "content": "continue"})
@@ -76,8 +82,8 @@ def test_streaming_tool_call_fragments_are_replayed_exactly(fake_base_url):
         for choice in event.get("choices") or []:
             for tc in (choice.get("delta") or {}).get("tool_calls") or []:
                 fragments.append((tc.get("function") or {}).get("arguments") or "")
-    assert fragments == ['{"comm', 'and": "up', 'time"}']
-    assert "".join(fragments) == '{"command": "uptime"}'
+    assert fragments == ['{"c', 'md": "up', 'time"}']
+    assert "".join(fragments) == '{"cmd": "uptime"}'
 
 
 def test_ds4_bytes_are_replayed_exactly(fake_base_url):
@@ -125,6 +131,21 @@ def test_reset_rearms_first_attempt_errors(fake_base_url):
     assert httpx.post(f"{fake_base_url}/v1/chat/completions", json=payload).status_code == 200
     assert httpx.post(f"{fake_base_url}/__fake__/reset").status_code == 200
     assert httpx.post(f"{fake_base_url}/v1/chat/completions", json=payload).status_code == 429
+
+
+def test_scripted_faults_rearm_per_run(fake_base_url):
+    """A new run nonce re-arms the 429 without an out-of-band reset.
+
+    Regression: a process-global counter let the first run consume the fault
+    and handed every later run an immediate success, so the rate-limit
+    scenario could report green while never exercising a 429.
+    """
+    first = _chat_payload("rate_limited_then_ok", stream=False, run_id="run-a")
+    assert httpx.post(f"{fake_base_url}/v1/chat/completions", json=first).status_code == 429
+    assert httpx.post(f"{fake_base_url}/v1/chat/completions", json=first).status_code == 200
+
+    second = _chat_payload("rate_limited_then_ok", stream=False, run_id="run-b")
+    assert httpx.post(f"{fake_base_url}/v1/chat/completions", json=second).status_code == 429
 
 
 def test_midstream_disconnect_has_partial_content_and_no_done(fake_base_url):
@@ -176,5 +197,5 @@ def test_non_stream_tool_call_shape(fake_base_url):
     assert choice["finish_reason"] == "tool_calls"
     call = choice["message"]["tool_calls"][0]
     assert call["function"]["name"] == "bash"
-    assert json.loads(call["function"]["arguments"]) == {"command": "pwd"}
+    assert json.loads(call["function"]["arguments"]) == {"cmd": "pwd"}
     assert body["usage"]["total_tokens"] > 0

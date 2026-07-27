@@ -81,6 +81,57 @@ def test_429_retry_is_recorded(fake_base_url):
     assert result["observed"]["retried_after_429"] is True
 
 
+def test_429_scenario_runs_back_to_back_without_reset(fake_base_url):
+    """Two consecutive runs each exercise a real 429.
+
+    Regression: the fault used to be armed once per fake-provider process, so
+    the second run passed without one. The per-run nonce re-arms it.
+    """
+    target = _target(fake_base_url)
+    for _ in range(2):
+        result = run_agent_loop_openai(_client(target), target, _scenario("rate_limited_then_ok"))
+        assert result["status"] == "pass", result["detail"]
+        assert result["observed"]["saw_429"] is True
+
+
+def test_missing_429_fails_instead_of_silently_passing(fake_base_url):
+    """If the upstream never rate-limits, the scenario fails loudly.
+
+    A retry scenario that passes without ever seeing a 429 is worse than a
+    failure: it reports the retry path as covered when it was never taken.
+    """
+    target = _target(fake_base_url)
+    scenario = _scenario("rate_limited_then_ok")
+
+    # Consume the scripted 429 out-of-band so the driver's own run sees only
+    # a success, simulating an upstream that simply did not rate-limit.
+    import httpx
+
+    from freeinference_harness.agent_loop import _task_prompt
+    from freeinference_harness.agent_scripts import get_script
+
+    script = get_script("rate_limited_then_ok")
+    prompt = _task_prompt(script, run_id="fixed-run")
+    payload = {
+        "model": target.model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+    }
+    assert httpx.post(f"{fake_base_url}/v1/chat/completions", json=payload).status_code == 429
+
+    import freeinference_harness.agent_loop as agent_loop
+
+    original = agent_loop._task_prompt
+    try:
+        agent_loop._task_prompt = lambda s, run_id=None: original(s, run_id="fixed-run")
+        result = run_agent_loop_openai(_client(target), target, scenario)
+    finally:
+        agent_loop._task_prompt = original
+
+    assert result["status"] == "fail"
+    assert "no 429 was observed" in result["detail"]
+
+
 def test_unknown_script_fails_cleanly(fake_base_url):
     """Unknown script ids produce a classified failure, not an exception."""
     target = _target(fake_base_url)

@@ -9,6 +9,13 @@ Marker protocol: the driver embeds ``[[agent-script:<id>]]`` inside a user
 message. The fake provider selects the script from that marker and picks the
 scripted turn by counting assistant messages in the incoming request, which
 keeps the server fully stateless across turns of one conversation.
+
+The driver also embeds ``[[agent-run:<nonce>]]``. Scripted first-attempt
+faults (e.g. the 429 in ``rate_limited_then_ok``) are keyed on that nonce, so
+a fault fires once per *run* rather than once per fake-provider process. Without
+it a long-lived fake would serve the 429 to whichever run happened to arrive
+first and hand every later run an immediate success — the scenario would pass
+green while never exercising the regression it exists to catch.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from typing import Any
 
 MARKER_PREFIX = "[[agent-script:"
 MARKER_SUFFIX = "]]"
+RUN_MARKER_PREFIX = "[[agent-run:"
 
 # Exact malformed fragment from the DeepSeek-V4/SGLang incident: one stream
 # emitted these bytes as tool-call arguments and the client echoed them into
@@ -31,38 +39,62 @@ def marker(script_id: str) -> str:
     return f"{MARKER_PREFIX}{script_id}{MARKER_SUFFIX}"
 
 
-def extract_script_id(text: str) -> str | None:
-    """Extracts a script id from marker text, or returns None."""
-    start = text.find(MARKER_PREFIX)
+def run_marker(run_id: str) -> str:
+    """Returns the user-message marker that scopes scripted faults to one run."""
+    return f"{RUN_MARKER_PREFIX}{run_id}{MARKER_SUFFIX}"
+
+
+def _extract(text: str, prefix: str) -> str | None:
+    """Extracts a ``prefix<value>]]`` marker value from text, or returns None."""
+    start = text.find(prefix)
     if start < 0:
         return None
-    end = text.find(MARKER_SUFFIX, start + len(MARKER_PREFIX))
+    end = text.find(MARKER_SUFFIX, start + len(prefix))
     if end < 0:
         return None
-    return text[start + len(MARKER_PREFIX) : end].strip() or None
+    return text[start + len(prefix) : end].strip() or None
 
 
-def find_script_id(messages: list[dict[str, Any]]) -> str | None:
-    """Finds the script marker in the most recent user message that has one.
+def extract_script_id(text: str) -> str | None:
+    """Extracts a script id from marker text, or returns None."""
+    return _extract(text, MARKER_PREFIX)
 
-    Handles both string content and content-part lists so the marker survives
+
+def _user_texts(messages: list[dict[str, Any]]) -> list[str]:
+    """Yields user-message text, newest first, flattening content-part lists.
+
+    Handles both string content and content-part lists so markers survive
     every gateway surface translation.
     """
+    texts: list[str] = []
     for message in reversed(messages):
         if message.get("role") != "user":
             continue
         content = message.get("content")
-        texts: list[str] = []
         if isinstance(content, str):
             texts.append(content)
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict) and isinstance(part.get("text"), str):
                     texts.append(part["text"])
-        for text in texts:
-            script_id = extract_script_id(text)
-            if script_id:
-                return script_id
+    return texts
+
+
+def find_script_id(messages: list[dict[str, Any]]) -> str | None:
+    """Finds the script marker in the most recent user message that has one."""
+    for text in _user_texts(messages):
+        script_id = extract_script_id(text)
+        if script_id:
+            return script_id
+    return None
+
+
+def find_run_id(messages: list[dict[str, Any]]) -> str | None:
+    """Finds the run marker that scopes scripted first-attempt faults."""
+    for text in _user_texts(messages):
+        run_id = _extract(text, RUN_MARKER_PREFIX)
+        if run_id:
+            return run_id
     return None
 
 
@@ -136,15 +168,15 @@ SCRIPTS: dict[str, AgentScript] = {
             ScriptTurn(
                 kind="tool_call",
                 tool_name=_BASH,
-                argument_fragments=('{"command": "pwd"}',),
+                argument_fragments=('{"cmd": "pwd"}',),
             ),
             ScriptTurn(kind="text", text="PWD_OK: agent loop round trip complete."),
         ),
         expected=Expected(
             final_text_contains="PWD_OK",
             tool_name=_BASH,
-            tool_arguments_raw='{"command": "pwd"}',
-            tool_input_object={"command": "pwd"},
+            tool_arguments_raw='{"cmd": "pwd"}',
+            tool_input_object={"cmd": "pwd"},
         ),
     ),
     "fragmented_args": AgentScript(
@@ -153,15 +185,15 @@ SCRIPTS: dict[str, AgentScript] = {
             ScriptTurn(
                 kind="tool_call",
                 tool_name=_BASH,
-                argument_fragments=('{"comm', 'and": "up', 'time"}'),
+                argument_fragments=('{"c', 'md": "up', 'time"}'),
             ),
             ScriptTurn(kind="text", text="UPTIME_OK: fragments spliced correctly."),
         ),
         expected=Expected(
             final_text_contains="UPTIME_OK",
             tool_name=_BASH,
-            tool_arguments_raw='{"command": "uptime"}',
-            tool_input_object={"command": "uptime"},
+            tool_arguments_raw='{"cmd": "uptime"}',
+            tool_input_object={"cmd": "uptime"},
         ),
     ),
     "ds4_malformed_args": AgentScript(

@@ -81,6 +81,7 @@ class OpenAICompatClient:
             "finish_reasons": [],
             "usage": None,
             "tool_calls": [],
+            "stream_errors": [],
         }
         # Accumulator for incremental tool call fragments keyed by index.
         tc_acc: dict[int, dict[str, Any]] = {}
@@ -136,6 +137,23 @@ class OpenAICompatClient:
                     continue
 
                 stats["events"] += 1
+
+                # An upstream failure that happens after the response has
+                # started is delivered as an in-stream error frame rather than
+                # an HTTP status. A driver that only watches HTTP status codes
+                # reports "no error seen" for a stream that plainly failed, so
+                # record these explicitly.
+                error = chunk.get("error")
+                if isinstance(error, dict):
+                    stats["stream_errors"].append(
+                        {
+                            "code": error.get("code"),
+                            "type": error.get("type"),
+                            "message": (error.get("message") or "")[:300],
+                        }
+                    )
+                    continue
+
                 if chunk.get("usage"):
                     stats["saw_usage"] = True
                     stats["usage"] = chunk["usage"]

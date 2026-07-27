@@ -11,6 +11,7 @@ truncation) are isolated from model-capability failures by construction.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -20,6 +21,7 @@ from freeinference_harness.agent_scripts import (
     AgentScript,
     get_script,
     marker,
+    run_marker,
 )
 from freeinference_harness.clients.anthropic import AnthropicMessagesClient
 from freeinference_harness.config import load_tools_fixture
@@ -52,9 +54,15 @@ def _unknown_script_result(scenario: ScenarioConfig) -> dict[str, Any]:
     }
 
 
-def _task_prompt(script: AgentScript) -> str:
-    """Returns the marker-bearing user prompt for one script."""
-    return f"{marker(script.script_id)} Execute the scripted agent task."
+def _task_prompt(script: AgentScript, run_id: str | None = None) -> str:
+    """Returns the marker-bearing user prompt for one script.
+
+    The run marker scopes scripted first-attempt faults to this execution, so
+    a long-lived fake provider re-arms them for every run instead of serving
+    the fault once per process.
+    """
+    run = run_id or uuid.uuid4().hex
+    return f"{marker(script.script_id)} {run_marker(run)} Execute the scripted agent task."
 
 
 def _openai_tools(scenario: ScenarioConfig) -> list[dict[str, Any]]:
@@ -149,13 +157,28 @@ def run_agent_loop_openai(
         observed["steps"].append(
             {
                 "done": stats["done"],
+                "events": stats["events"],
                 "truncated": stats.get("truncated", False),
                 "saw_content": stats["saw_content"],
                 "tool_calls": stats["tool_calls"],
                 "content_preview": stats["full_content"][:160],
                 "finish_reasons": stats["finish_reasons"],
+                "stream_errors": stats.get("stream_errors") or [],
             }
         )
+
+        # A gateway that has already flushed bytes cannot answer with an HTTP
+        # 429, so it reports the rate limit as an in-stream error frame. Treat
+        # that as the same signal, otherwise the retry path is never taken and
+        # the scenario fails for the wrong reason.
+        rate_limited = any(
+            str(error.get("code")) == "429" for error in stats.get("stream_errors") or []
+        )
+        if rate_limited and expected.retry_on_429 and not observed["retried_after_429"]:
+            observed["saw_429"] = True
+            observed["saw_429_in_stream"] = True
+            observed["retried_after_429"] = True
+            continue
 
         if expected.expect_truncated_stream:
             return _check_truncated_openai(stats, observed)
@@ -210,7 +233,7 @@ def run_agent_loop_openai(
             "(e.g. 429) may have been swallowed into an empty 200 stream.",
             observed,
         )
-    errors = _check_final_openai(script, first_tool, final_stats)
+    errors = _check_final_openai(script, first_tool, final_stats, observed)
     if errors:
         return _result(
             "fail",
@@ -248,6 +271,7 @@ def _check_final_openai(
     script: AgentScript,
     first_tool: dict[str, Any] | None,
     final_stats: dict[str, Any],
+    observed: dict[str, Any],
 ) -> list[str]:
     """Returns conformance errors for the completed OpenAI-surface loop."""
     expected = script.expected
@@ -259,6 +283,11 @@ def _check_final_openai(
         if final_stats["saw_content"] or final_stats["tool_calls"]:
             errors.append("expected an empty final turn but saw visible output")
         return errors
+
+    if expected.retry_on_429 and not observed.get("saw_429"):
+        # Without this the scenario passes whenever the upstream simply never
+        # rate-limits, so the retry path it exists to cover goes untested.
+        errors.append("expected a 429 followed by a successful retry, but no 429 was observed")
 
     if not final_stats["done"]:
         errors.append("final stream did not terminate with [DONE]")

@@ -80,15 +80,21 @@ Code headless via `claude -p`, `codex exec`) against the target — missing
 binaries skip cleanly. Against a gateway with the fake registered this is the
 full deterministic `runtime -> gateway -> fake` chain, token-free.
 
-First gateway-local baseline (2026-07-27, local dev gateway @ origin/dev):
-11/13 core scenarios pass plus the Claude Code runtime smoke. The two
-intentionally-red scenarios are real gateway findings, tracked for backend
-fixes:
+Gateway-local baseline (2026-07-27, local dev gateway @ origin/dev): 12/13
+core scenarios pass, plus the Claude Code runtime smoke.
 
-- `openai_rate_limit_retry`: upstream 429 with no fallback is swallowed into
-  an empty 200 stream (zero events, no `[DONE]`).
-- `openai_midstream_disconnect`: an upstream mid-stream disconnect is masked
-  with a synthesized `finish_reason: stop` + `[DONE]`, hiding truncation.
+The one intentionally-red scenario is a real gateway finding:
+`openai_midstream_disconnect` — an upstream mid-stream disconnect is masked
+with a synthesized `finish_reason: stop` + `[DONE]`, so a client cannot
+detect truncation. For agent workloads that is a poisoning vector: truncated
+tool-call arguments look complete.
+
+An earlier note here claimed the gateway also swallowed upstream 429s into an
+empty 200 stream. **That was wrong** — the gateway surfaces them as in-stream
+SSE `error` frames; the harness simply did not parse those frames. It does
+now (`stream_errors` in the stream observation), and the scenario passes. Two
+narrower gateway nits remain, tracked separately: the frame types a 429 as
+`server_error`, and no `[DONE]` follows it.
 
 Unit tests for the fake and the executors live in `tests/`:
 

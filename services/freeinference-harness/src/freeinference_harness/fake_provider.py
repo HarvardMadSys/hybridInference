@@ -24,6 +24,7 @@ from freeinference_harness.agent_scripts import (
     AgentScript,
     ScriptTurn,
     count_assistant_turns,
+    find_run_id,
     find_script_id,
     get_script,
 )
@@ -32,15 +33,20 @@ _USAGE = {"prompt_tokens": 17, "completion_tokens": 5, "total_tokens": 22}
 
 
 class _ServeState:
-    """Thread-safe per-(script, turn) serve counters for first-attempt errors."""
+    """Thread-safe per-(run, script, turn) serve counters for first-attempt errors.
+
+    Keyed on the driver's run nonce so a scripted fault fires once per run.
+    A process-global counter would let the first run consume the fault and
+    every later run pass without ever seeing it.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._serves: dict[tuple[str, int], int] = {}
+        self._serves: dict[tuple[str, str, int], int] = {}
 
-    def bump(self, script_id: str, turn_index: int) -> int:
+    def bump(self, run_id: str, script_id: str, turn_index: int) -> int:
         """Increments and returns the serve count for one scripted turn."""
-        key = (script_id, turn_index)
+        key = (run_id, script_id, turn_index)
         with self._lock:
             self._serves[key] = self._serves.get(key, 0) + 1
             return self._serves[key]
@@ -129,7 +135,10 @@ class FakeProviderHandler(BaseHTTPRequestHandler):
 
         turn_index = count_assistant_turns(messages)
         turn = script.turn_for(turn_index)
-        attempt = self.server.state.bump(script.script_id, turn_index)
+        # No run marker: fall back to a process-wide bucket. Drivers in this
+        # repo always send one; the fallback keeps ad-hoc curl usable.
+        run_id = find_run_id(messages) or "_norun"
+        attempt = self.server.state.bump(run_id, script.script_id, turn_index)
 
         if turn.status_first_attempt is not None and attempt == 1:
             self._send_json(
