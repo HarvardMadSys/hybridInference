@@ -467,6 +467,25 @@ function parseListedPending(key: string, raw: string): PendingCanonicalEvent {
   }
 }
 
+/**
+ * Count durable transitions still awaiting Control Plane acceptance.
+ *
+ * Deliberately a raw count with no parsing: the health endpoint must be able to
+ * observe a stuck pipeline even when a stored row is corrupt (where
+ * {@link listPendingCanonicalEvents} would throw). A row is created before each
+ * submission and deleted in the post-delivery batch, so a count that stays
+ * above zero across cycles (~20 minutes apart) means the Control Plane keeps
+ * rejecting or is unreachable — the log-only rejection reports otherwise
+ * require `wrangler tail` to see.
+ */
+export async function countPendingCanonicalEvents(db: D1Database): Promise<number> {
+  const row = await db
+    .prepare(`SELECT COUNT(*) AS n FROM meta WHERE key GLOB ?`)
+    .bind(`${PENDING_KEY_PREFIX}*`)
+    .first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
 /** Returns every durable transition that must be retried before new edges. */
 export async function listPendingCanonicalEvents(
   db: D1Database,

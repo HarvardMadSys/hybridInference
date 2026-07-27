@@ -1,7 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { isAccountLevelFailure } from "../src/index";
+import worker, { isAccountLevelFailure } from "../src/index";
 import type { ProbeResult } from "../src/probe";
+
+vi.mock("../src/db", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getSnapshot: vi.fn(async () => ({
+    models: [],
+    total: 2,
+    healthy: 2,
+    unhealthy: 0,
+    cycle: { ok: true, checkedAt: "2026-07-25T00:00:00Z", error: null },
+  })),
+}));
+vi.mock("../src/control-plane", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  countPendingCanonicalEvents: vi.fn(async () => 2),
+}));
 
 function result(ok: boolean, error: string | null): ProbeResult {
   return {
@@ -46,5 +61,24 @@ describe("isAccountLevelFailure", () => {
 
   it("is false for an empty result set", () => {
     expect(isAccountLevelFailure([])).toBe(false);
+  });
+});
+
+describe("GET /api/health", () => {
+  it("exposes stalled control-plane transitions without flipping health", async () => {
+    const response = await worker.fetch(
+      new Request("https://monitor.test/api/health"),
+      {} as never,
+    );
+
+    // Rejection reports only reach `wrangler tail`; this field is the way a
+    // stalled pipeline (a count that persists across ~20min cycles) becomes
+    // visible to an uptime check. It reports, but never flips `ok`, because a
+    // cycle in flight can transiently hold a pending row.
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "ok",
+      pendingControlPlaneTransitions: 2,
+    });
   });
 });

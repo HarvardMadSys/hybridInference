@@ -4,7 +4,9 @@ import {
   completePendingCanonicalEvent,
   configuredDefaultOwner,
   ControlPlanePreparationError,
+  countPendingCanonicalEvents,
   getOrCreatePendingCanonicalEvent,
+  listPendingCanonicalEvents,
   modelUnavailableEvent,
   releaseDrainOwner,
   resolveDrainOwner,
@@ -29,11 +31,31 @@ class FakeStmt {
   }
 
   async first<T>(): Promise<T | null> {
-    if (!/SELECT value FROM meta WHERE key = \?/.test(this.sql)) {
-      throw new Error(`unhandled first: ${this.sql}`);
+    if (/SELECT value FROM meta WHERE key = \?/.test(this.sql)) {
+      const value = this.db.meta.get(this.args[0] as string);
+      return value === undefined ? null : ({ value } as T);
     }
-    const value = this.db.meta.get(this.args[0] as string);
-    return value === undefined ? null : ({ value } as T);
+    if (/SELECT COUNT\(\*\) AS n FROM meta WHERE key GLOB \?/.test(this.sql)) {
+      const prefix = (this.args[0] as string).slice(0, -1);
+      let n = 0;
+      for (const key of this.db.meta.keys()) {
+        if (key.startsWith(prefix)) n += 1;
+      }
+      return { n } as T;
+    }
+    throw new Error(`unhandled first: ${this.sql}`);
+  }
+
+  async all<T>(): Promise<{ results: T[] }> {
+    if (/SELECT key, value FROM meta WHERE key GLOB \? ORDER BY key/.test(this.sql)) {
+      const prefix = (this.args[0] as string).slice(0, -1);
+      const rows = [...this.db.meta]
+        .filter(([key]) => key.startsWith(prefix))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => ({ key, value }));
+      return { results: rows as T[] };
+    }
+    throw new Error(`unhandled all: ${this.sql}`);
   }
 
   async run(): Promise<{ meta: { changes: number } }> {
@@ -219,6 +241,30 @@ describe("durable pending canonical event", () => {
       ),
     ).rejects.toThrow(new ControlPlanePreparationError("pending_event_corrupt"));
     expect(log).not.toHaveBeenCalled();
+  });
+
+  it("counts pending transitions without parsing, so corrupt rows stay observable", async () => {
+    const fake = new FakeD1();
+    await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "count-a"),
+    );
+    await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result({ modelId: "qwen3-max" }), "firing", 2, "count-b"),
+    );
+    // A corrupt row must still be counted: the health endpoint has to keep
+    // reporting a stuck pipeline in exactly the state where parsing would throw.
+    fake.meta.set(
+      "alert_delivery_pending:v1:resolved:status-monitor:model:corrupt",
+      "not json at all",
+    );
+    fake.meta.set("alert_delivery_owner:v1:status-monitor:model:deepseek-v3", "control-plane");
+
+    await expect(countPendingCanonicalEvents(db(fake))).resolves.toBe(3);
+    await expect(listPendingCanonicalEvents(db(fake))).rejects.toThrow(
+      new ControlPlanePreparationError("pending_event_corrupt"),
+    );
   });
 
   it("submits only to the service binding and never invokes a fallback", async () => {
