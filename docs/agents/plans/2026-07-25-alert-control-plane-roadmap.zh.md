@@ -102,7 +102,7 @@
 | P1-B | storm 无 legacy destination 时完全静默 | ✅ closeout PR（undeliverable 日志，每周期重复直到可投递；storm 归属本身仍等 D1） |
 | P2-G | `postSlack` 原始异常可能把 webhook URL 写进日志 | ✅ closeout PR（redact，镜像 `postCodexAlert`） |
 | 文档漂移 | README 4 处失实声明 | ✅ closeout PR |
-| 真实验证 | 一次真实模型故障 firing → resolved 走 binding，截图入 `docs/reviews/` | ❌ **未做 —— 步骤 2 的收尾项与 C3c 签收前置** |
+| 真实验证 | 一次真实探测故障 firing → resolved 走 binding（专用验证目录条目即可 —— 判据是"真实部署的完整链路"，非条目的商业用途），仓库内留存消息全文 + permalink（证据力 ≥ 截图，可实时复核） | ✅ **2026-07-27 完成** —— `docs/reviews/2026-07-27-c3c-staging-validation.md`（incident_4a6fc4e5，12:41Z fire → 14:01Z 同 thread 恢复）。等价性裁决见该文档 Adjudication 节；下一次自然发生的真实模型故障应链接至该文档作为补强证据（不重新阻塞） |
 
 已知边界（刻意不在本批）：目录**部分塌缩**（网关只返回大目录一小部分）仍读作大量 departure，需收缩阈值（调参决策）；P2-F（pending 表不变量违例杀掉全部 per-model 告警且不自愈，当前推演不出可达路径）；P3-I（`event_receipts` 无清理 + O(n) snapshot）。
 
@@ -144,7 +144,7 @@
 - [ ] 任何一次告警未发出都有可见信号（health 字段 + 日志），不静默
 - [ ] 全局 snooze 已在新链路对齐
 - [ ] 回滚是"退回旧路"而非"卡死"，经演练验证（P3-H）
-- [ ] `docs/reviews/` 有端到端验证档案：真实故障 → 帖子截图 → 恢复截图，staging + prod 各一份
+- [ ] `docs/reviews/` 有端到端验证档案：故障 → 帖子 → 恢复的仓库内消息全文 + permalink（或截图），staging（✅ 2026-07-27）+ prod 各一份
 
 ### 🏁 远端：「好用的告警产品」（新需求面）
 
@@ -239,7 +239,7 @@ npx wrangler secret list --name freeinference-monitor
 ```
 `SLACK_WEBHOOK_URL` 必须仍在 —— storm 与 cycle 目前只走它。
 
-**最直接**：翻 staging Slack 频道，有真实模型名（非 `synthetic-control-plane-gate-*`）的 incident 帖子 = 真实链路已通。
+**最直接**：翻 staging Slack 频道，有真实目录模型（非 runner 本地伪造的 `synthetic-control-plane-gate-*` id）的 incident 帖子 = 真实链路已通。该判据区分的是"runner 本地合成 RPC"与"部署链路真实穿越"，与条目的商业用途无关 —— 2026-07-27 的 `staging-alert-validation` incident 属于后者。
 
 ---
 

@@ -132,6 +132,42 @@ What this proves:
   itself plus `pendingControlPlaneTransitions: 0` being the steady state on
   `/api/health` (field shipped in #1049).
 
+## Adjudication — does a purpose-built entry satisfy the "real model failure" gate?
+
+Raised by automated review on the archiving PR ("do not close the gate with
+synthetic evidence"). Adjudicated as follows, with the roadmap wording
+reconciled in the same commit.
+
+**What was real in this run:** the deployed status-monitor Worker, its cron,
+catalog discovery over the real staging gateway, the D1 durable-pending
+machinery, the Service Binding RPC, the deployment-registry identity check
+against the attested Worker version, the incident Durable Object, the outbox,
+the SlackSink, and the Slack workspace. Every component the migration changed
+was exercised in production-shaped conditions.
+
+**What was synthetic:** the catalog entry's business purpose, and the failure
+cause (a dead port rather than an organic provider outage). The pipeline is
+agnostic to *why* probes fail; failure-cause realism affects only the
+producer's cosmetic `reason` classifier (observed `unknown`, noted above).
+
+**What this run does not prove:** organic failure-mode `reason` classification
+richness, and behavior for role-gated models (the entry deliberately carried no
+`required_role` — the prober is not internal-tier).
+
+**Why this differs from the synthetic RPC gate:** the roadmap's "real model
+name (not `synthetic-control-plane-gate-*`)" criterion distinguishes the
+runner-local gate — which fabricates the RPC call and never touches probes, D1
+state, cron, or Slack — from a real traversal of the deployed chain. This run
+is unambiguously the latter.
+
+**Evidence form:** the repository hosts the full message transcripts (this
+document) plus permalinks to the live thread. A permalink is independently
+re-verifiable at any time, which a screenshot is not; the roadmap now accepts
+either form.
+
+**Standing follow-up:** the next organically occurring model incident on
+staging should be linked here as corroboration. It does not re-block the gate.
+
 ## Sign-off
 
 Evidence ①–③ are complete: one real staging incident ran the entire pipeline
