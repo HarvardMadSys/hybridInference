@@ -71,6 +71,7 @@ class AppServices:
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
     agent_job_store: AgentJobStore | None = None
+    agent_reaper_task: Any | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None

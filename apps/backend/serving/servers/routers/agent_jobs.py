@@ -53,7 +53,7 @@ from serving.schemas_agent_jobs import (
     WorkerPublishRequest,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_agent_job_store
+from serving.servers.deps import get_agent_job_store, require_role
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
@@ -318,19 +318,30 @@ async def stream_agent_job_events(
                 if job is None:
                     return
                 if job["state"] in TERMINAL_STATES:
-                    # Drain anything appended between the last page and the
-                    # terminal transition, then close cleanly.
-                    tail = await job_store.list_events_after(
-                        job_id=job_id, after_id=cursor, limit=_EVENT_PAGE_SIZE
-                    )
-                    for event in tail:
-                        cursor = event["id"]
-                        data = json.dumps(
-                            _event_response(event).model_dump(), separators=(",", ":")
+                    # Drain to exhaustion before announcing the end. A single
+                    # extra page is not enough: a client attaching to a
+                    # finished job with more than two pages of backlog would
+                    # see job_finished, close, and lose the rest forever.
+                    while True:
+                        tail = await job_store.list_events_after(
+                            job_id=job_id, after_id=cursor, limit=_EVENT_PAGE_SIZE
                         )
-                        yield f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
+                        if not tail:
+                            break
+                        for event in tail:
+                            cursor = event["id"]
+                            data = json.dumps(
+                                _event_response(event).model_dump(), separators=(",", ":")
+                            )
+                            yield (
+                                f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
+                            )
                     final = json.dumps(
-                        {"state": job["state"], "published_pr_url": job["published_pr_url"]},
+                        {
+                            "state": job["state"],
+                            "published_pr_url": job["published_pr_url"],
+                            "last_event_id": cursor,
+                        },
                         separators=(",", ":"),
                     )
                     yield f"event: job_finished\ndata: {final}\n\n"
@@ -393,15 +404,20 @@ def _match_job(claims: dict[str, Any], job_id: str) -> None:
 @router.post("/worker/claim", response_model=WorkerClaimResponse | None)
 async def worker_claim(
     body: WorkerClaimRequest,
-    _admin: dict[str, Any] = Depends(verify_api_key),
+    _dispatcher: dict[str, Any] = Depends(require_role("internal")),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> WorkerClaimResponse | None:
     """Claim the next queued job and mint this attempt's capability token.
 
-    Returns ``null`` (HTTP 200) when the queue is empty. The claim endpoint
-    itself is authenticated with a normal API key — that key belongs to the
-    dispatcher, not to the sandbox; only the returned per-attempt token ever
-    reaches the agent environment.
+    Returns ``null`` (HTTP 200) when the queue is empty.
+
+    **Dispatcher-only.** ``claim_job`` takes the oldest queued job across all
+    tenants, and the response carries that job's repo, prompt, and metadata
+    plus a working capability token for it. Ordinary API-key authentication
+    would therefore let any customer dequeue and read another customer's job,
+    so this requires the ``internal`` role. The credential proving that role
+    belongs to the dispatcher and never enters a sandbox; only the returned
+    per-attempt token does.
     """
     job_store = _require_store(store)
     claim = await job_store.claim_job(

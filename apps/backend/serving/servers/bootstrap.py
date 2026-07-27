@@ -152,6 +152,32 @@ def _collect_routewise_runtime_routers(
     return routewise_routers, model_ids_by_router
 
 
+async def _reap_expired_agent_attempts(
+    store: AgentJobStore,
+    *,
+    interval_seconds: float = 30.0,
+    max_attempts: int = 3,
+) -> None:
+    """Periodically close agent attempts whose lease expired.
+
+    This is what makes a vanished sandbox recoverable: the attempt is
+    superseded (append-only control event) and the job is requeued, failed, or
+    cancelled per the store's policy. The loop never dies on an error — a
+    transient database blip must not permanently stop reaping.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            actions = await store.reap_expired(max_attempts=max_attempts)
+            if actions:
+                logger.info(
+                    "agent_attempts_reaped",
+                    extra={"event": "agent_attempts_reaped", "count": len(actions)},
+                )
+        except Exception:
+            logger.warning("Agent attempt reaper pass failed", exc_info=True)
+
+
 async def _refresh_weight_override_snapshots(
     resolver: WeightOverrideResolver,
     model_router_registry: ModelRouterRegistry | None = None,
@@ -731,6 +757,7 @@ async def initialize() -> AppServices:
     log_store = None
     responses_store = None
     agent_job_store = None
+    agent_reaper_task = None
 
     if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
@@ -762,7 +789,10 @@ async def initialize() -> AppServices:
         # incidental request logging.
         agent_job_store = AgentJobStore(db_logger.pool)
         await agent_job_store.initialize()
-        logger.info("Agent job store initialized (Postgres)")
+        agent_reaper_task = asyncio.create_task(_reap_expired_agent_attempts(agent_job_store))
+        _BACKGROUND_TASKS.add(agent_reaper_task)
+        agent_reaper_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        logger.info("Agent job store initialized (Postgres); attempt reaper started")
 
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
@@ -1145,6 +1175,7 @@ async def initialize() -> AppServices:
         cost_tracker=cost_tracker,
         responses_store=responses_store,
         agent_job_store=agent_job_store,
+        agent_reaper_task=agent_reaper_task,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
@@ -1161,6 +1192,12 @@ async def shutdown(services: AppServices) -> None:
         services.routewise_settings_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.routewise_settings_refresh_task
+
+    # Agent attempt reaper: stop before the stores it writes to are torn down.
+    if getattr(services, "agent_reaper_task", None) is not None:
+        services.agent_reaper_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.agent_reaper_task
 
     # Alert engine — stop drain task and remove scheduled jobs first so they
     # don't fire while we're tearing down stores below.

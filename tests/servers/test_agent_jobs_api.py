@@ -194,19 +194,29 @@ def store() -> FakeAgentJobStore:
     return FakeAgentJobStore()
 
 
-@pytest_asyncio.fixture()
-async def client(store: FakeAgentJobStore):
-    """Mount only the agent-jobs router with auth stubbed to a fixed owner."""
+def _build_app(store, *, role: str = "internal"):
+    """Build an app with the router mounted and auth stubbed to one identity.
+
+    ``require_role`` is a dependency factory whose inner check resolves the
+    caller through ``get_current_user``, so overriding that one dependency
+    drives the role gate without reaching into route internals.
+    """
     from serving.servers.auth import verify_api_key
+    from serving.servers.deps import get_current_user
 
     app = FastAPI()
     app.include_router(agent_jobs_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
-    app.dependency_overrides[verify_api_key] = lambda: {
-        "user_id": _OWNER,
-        "role": "pro",
-        "authenticated": True,
-    }
+    identity = {"user_id": _OWNER, "role": role, "authenticated": True}
+    app.dependency_overrides[verify_api_key] = lambda: identity
+    app.dependency_overrides[get_current_user] = lambda: identity
+    return app
+
+
+@pytest_asyncio.fixture()
+async def client(store: FakeAgentJobStore):
+    """Mount only the agent-jobs router with auth stubbed to a fixed owner."""
+    app = _build_app(store)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as async_client:
         yield async_client
@@ -454,13 +464,74 @@ async def test_sse_resumes_from_last_event_id(client: AsyncClient, store: FakeAg
 
 async def test_missing_store_returns_503(store: FakeAgentJobStore):
     """Without a database the agent API reports 503 rather than crashing."""
-    from serving.servers.auth import verify_api_key
-
-    app = FastAPI()
-    app.include_router(agent_jobs_router.router)
-    app.dependency_overrides[get_agent_job_store] = lambda: None
-    app.dependency_overrides[verify_api_key] = lambda: {"user_id": _OWNER, "role": "pro"}
+    app = _build_app(None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/v1/agent/jobs")
     assert response.status_code == 503
+
+
+async def test_claim_requires_the_internal_dispatcher_role(store: FakeAgentJobStore):
+    """An ordinary customer cannot dequeue and read another tenant's job.
+
+    Regression: claim_job takes the oldest queued job across all tenants and
+    the response carries that job's repo, prompt, metadata, and a working
+    capability token — so plain API-key auth here was a cross-tenant leak.
+    """
+    await store.create_job(
+        user_id="somebody-else",
+        repo="private/repo",
+        task_prompt="confidential task",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+
+    app = _build_app(store, role="pro")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        denied = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    assert denied.status_code == 403
+    assert store.jobs[next(iter(store.jobs))]["state"] == "queued"
+
+    app = _build_app(store, role="internal")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        allowed = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    assert allowed.status_code == 200
+    assert allowed.json()["repo"] == "private/repo"
+
+
+async def test_terminal_stream_drains_beyond_one_page(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """A finished job with multiple pages of backlog delivers every event.
+
+    Regression: the terminal path drained exactly one extra page before
+    emitting job_finished, so a client attaching to a finished job with a
+    large backlog silently lost everything past the second page.
+    """
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+    # More than two pages (page size is 500).
+    total = 1100
+    for index in range(total):
+        await store.append_event(
+            attempt_id=100,
+            lease_generation=1,
+            event_type="message",
+            payload={"index": index},
+        )
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish", json={"state": "succeeded"}, headers=auth
+    )
+
+    async with client.stream("GET", f"/v1/agent/jobs/{job_id}/stream") as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+
+    assert body.count("event: message\n") == total
+    assert f'"index":{total - 1}' in body
+    assert "event: job_finished" in body
+    tail = json.loads(body.split("event: job_finished\ndata: ")[1].split("\n")[0])
+    assert tail["last_event_id"] == total

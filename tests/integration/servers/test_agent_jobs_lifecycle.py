@@ -63,11 +63,16 @@ async def api(monkeypatch):
             await conn.execute(f"DELETE FROM {table}")
 
     from serving.servers.auth import verify_api_key
+    from serving.servers.deps import get_current_user
 
     app = FastAPI()
     app.include_router(agent_jobs_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
-    app.dependency_overrides[verify_api_key] = lambda: {"user_id": _OWNER, "role": "pro"}
+    # The owner identity for the job endpoints; the same identity carries the
+    # internal role so it can also act as the dispatcher calling /worker/claim.
+    identity = {"user_id": _OWNER, "role": "internal"}
+    app.dependency_overrides[verify_api_key] = lambda: identity
+    app.dependency_overrides[get_current_user] = lambda: identity
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
