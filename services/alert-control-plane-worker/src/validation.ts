@@ -5,6 +5,8 @@ import type {
   CanonicalAlertEnvelope,
   ModelUnavailableContext,
   ModelUnavailabilityReason,
+  MonitoringCycleContext,
+  MonitoringCycleReason,
   ProviderCircuitContext,
   ProviderFailureReason,
   TrustedAlertMetadata,
@@ -72,6 +74,8 @@ const MODEL_UNAVAILABLE_CONTEXT_KEYS = new Set([
   "latency_ms",
   "reason",
 ]);
+
+const MONITORING_CYCLE_CONTEXT_KEYS = new Set(["reason"]);
 
 const UNSAFE_CONTROL_RE =
   /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
@@ -322,6 +326,21 @@ function parseModelUnavailableContext(value: unknown): ModelUnavailableContext {
   return context;
 }
 
+function parseMonitoringCycleContext(value: unknown): MonitoringCycleContext {
+  const input = record(value, "context");
+  strictKeys(input, MONITORING_CYCLE_CONTEXT_KEYS, "context");
+
+  const reason = optional(input, "reason", (item) =>
+    enumValue<MonitoringCycleReason>(item, "context.reason", [
+      "account_rejected",
+      "discovery_failed",
+      "not_configured",
+      "unknown",
+    ]),
+  );
+  return reason === undefined ? {} : { reason };
+}
+
 function validateCalendarTimestamp(match: RegExpMatchArray): void {
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -431,7 +450,11 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
   if (input.schema_version !== 1) {
     throw new ValidationError("schema_version must be 1");
   }
-  if (input.alert_type !== "provider_circuit_open" && input.alert_type !== "model_unavailable") {
+  if (
+    input.alert_type !== "provider_circuit_open" &&
+    input.alert_type !== "model_unavailable" &&
+    input.alert_type !== "monitoring_cycle_failure"
+  ) {
     throw new ValidationError("alert_type is unsupported");
   }
 
@@ -476,6 +499,24 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
     return {
       ...base,
       alert_type: "model_unavailable",
+      context,
+    };
+  }
+  if (input.alert_type === "monitoring_cycle_failure") {
+    const context = parseMonitoringCycleContext(input.context);
+    if (base.status === "firing" && context.reason === undefined) {
+      throw new ValidationError(
+        "firing monitoring_cycle_failure context requires reason",
+      );
+    }
+    if (base.status === "resolved" && context.reason !== undefined) {
+      throw new ValidationError(
+        "resolved monitoring_cycle_failure context must not contain firing-only fields",
+      );
+    }
+    return {
+      ...base,
+      alert_type: "monitoring_cycle_failure",
       context,
     };
   }

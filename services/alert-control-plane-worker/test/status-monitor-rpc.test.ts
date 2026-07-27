@@ -214,6 +214,28 @@ describe("status-monitor role RPC", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it("accepts the role's monitoring_cycle_failure type", async () => {
+    const submit = vi.fn().mockResolvedValue(acknowledgement);
+    const cycleBody = JSON.stringify({
+      schema_version: 1,
+      event_id: "status-monitor-event-cycle-1",
+      alert_type: "monitoring_cycle_failure",
+      fingerprint: "status-monitor:cycle",
+      status: "firing",
+      severity: "critical",
+      title: "Monitoring cycle failing",
+      occurred_at: new Date().toISOString(),
+      summary: "The monitoring cycle failed; no models could be probed.",
+      context: { reason: "discovery_failed" },
+      evidence_refs: [],
+    });
+
+    await expect(
+      submitStatusMonitorRpcEvent(env(), cycleBody, VERSION_ID, submit),
+    ).resolves.toEqual({ accepted: true, acknowledgement });
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
   // The shared producer validator accepts provider_circuit_open too, and routing
   // keys on fingerprint rather than alert type — so without a role-specific guard
   // this body would drive the very same incident object as the model alerts and

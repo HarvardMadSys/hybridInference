@@ -1,6 +1,7 @@
 import type {
   CanonicalAlertEnvelope,
   ModelUnavailableContext,
+  MonitoringCycleContext,
   ProviderCircuitContext,
   SlackBlock,
   SlackMessage,
@@ -105,12 +106,22 @@ function modelUnavailableContextFields(
   return fields;
 }
 
+function monitoringCycleContextFields(
+  context: MonitoringCycleContext,
+): readonly SlackTextObject[] {
+  const fields: SlackTextObject[] = [];
+  optionalField(fields, "Reason", context.reason);
+  return fields;
+}
+
 function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObject[] {
   switch (envelope.event.alert_type) {
     case "provider_circuit_open":
       return providerContextFields(envelope.event.context);
     case "model_unavailable":
       return modelUnavailableContextFields(envelope.event.context);
+    case "monitoring_cycle_failure":
+      return monitoringCycleContextFields(envelope.event.context);
   }
 }
 

@@ -25,8 +25,11 @@ const STATUS_MONITOR_ENVIRONMENT = "staging";
 const STATUS_MONITOR_SERVICE = "status-monitor";
 const STATUS_MONITOR_SOURCE = "status-monitor";
 const STATUS_MONITOR_PRINCIPAL = "staging-monitor";
-/** The only alert type this role may open an incident for. */
-const STATUS_MONITOR_ALERT_TYPE = "model_unavailable";
+/** The only alert types this role may open incidents for. */
+const STATUS_MONITOR_ALERT_TYPES: ReadonlySet<string> = new Set([
+  "model_unavailable",
+  "monitoring_cycle_failure",
+]);
 const CLOUDFLARE_VERSION_ID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -166,13 +169,14 @@ export async function submitStatusMonitorRpcEvent(
       trustedMetadata(deployment),
     );
     // The shared producer validator accepts every supported alert type, but this
-    // entrypoint is role-specific: status-monitor may only open model incidents.
-    // Without this check a `provider_circuit_open` body would reach the same
-    // incident object (routing keys on fingerprint, not alert type) and carry
-    // free-text fields the model contract deliberately excludes.
-    if (envelope.event.alert_type !== STATUS_MONITOR_ALERT_TYPE) {
+    // entrypoint is role-specific: status-monitor may only open the incident
+    // classes it owns (individual models and its own cycle failures). Without
+    // this check a `provider_circuit_open` body would reach the same incident
+    // object (routing keys on fingerprint, not alert type) and carry free-text
+    // fields the status-monitor contracts deliberately exclude.
+    if (!STATUS_MONITOR_ALERT_TYPES.has(envelope.event.alert_type)) {
       throw new ValidationError(
-        "status-monitor may only submit model_unavailable events",
+        "status-monitor may only submit model_unavailable or monitoring_cycle_failure events",
       );
     }
     const bodyDigest = await canonicalEventDigest(envelope.event);

@@ -158,16 +158,24 @@ export async function readCycleAlertState(db: D1Database): Promise<string | null
   return row?.value || null;
 }
 
+/**
+ * Builds the cycle-marker write (set on non-empty `value`, clear on `null`) for
+ * use inside an atomic batch alongside pending-transition completion.
+ */
+export function prepareCycleAlertStateWrite(
+  db: D1Database,
+  value: string | null,
+): D1PreparedStatement {
+  return value
+    ? db
+        .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+        .bind(CYCLE_ALERT_KEY, value)
+    : db.prepare(`DELETE FROM meta WHERE key = ?`).bind(CYCLE_ALERT_KEY);
+}
+
 /** Sets (non-empty `value`) or clears (`null`) the cycle-level alert marker. */
 export async function writeCycleAlertState(db: D1Database, value: string | null): Promise<void> {
-  if (value) {
-    await db
-      .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
-      .bind(CYCLE_ALERT_KEY, value)
-      .run();
-  } else {
-    await db.prepare(`DELETE FROM meta WHERE key = ?`).bind(CYCLE_ALERT_KEY).run();
-  }
+  await prepareCycleAlertStateWrite(db, value).run();
 }
 
 /** Deletes probe rows older than `retentionDays`. */

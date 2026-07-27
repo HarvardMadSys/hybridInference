@@ -2,18 +2,20 @@ import {
   type CycleStatus,
   modelsFailingStreak,
   prepareAlertStateWrite,
+  prepareCycleAlertStateWrite,
   readAlertState,
   readCycleAlertState,
-  writeCycleAlertState,
 } from "./db";
 import {
   ControlPlanePreparationError,
+  CYCLE_FINGERPRINT,
   configuredDefaultOwner,
   getOrCreatePendingCanonicalEvent,
   hasControlPlaneDrainOwner,
   listPendingCanonicalEvents,
   modelUnavailableDepartureEvent,
   modelUnavailableEvent,
+  monitoringCycleEvent,
   prepareDrainOwnerRelease,
   preparePendingCanonicalEventCompletion,
   readDrainOwner,
@@ -449,7 +451,11 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   const threshold = config.alertFailureThreshold;
   const defaultOwner = configuredDefaultOwner(env.ALERT_DEFAULT_OWNER);
   const hasLegacyDestination = hasAlertDestination(env);
-  const pendingEvents = await listPendingCanonicalEvents(env.DB);
+  // Cycle transitions share the durable store but belong to runCycleAlert;
+  // this pipeline replays and reasons about per-model transitions only.
+  const pendingEvents = (await listPendingCanonicalEvents(env.DB)).filter(
+    (pending) => pending.kind === "model",
+  );
   if (
     !hasLegacyDestination &&
     env.ALERT_CONTROL_PLANE === undefined &&
@@ -693,14 +699,85 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
  * configured destination the down edge reaches deliverAlert's undeliverable
  * report and retries next cycle — never a silent no-op at the door, since a
  * cycle-level outage is the most severe alert class this worker emits.
+ *
+ * Ownership mirrors the per-model split, keyed by ALERT_CYCLE_OWNER (its own
+ * flag: status-monitor auto-deploys from dev while the control plane deploys
+ * manually, so a shared flag would open a window where cycle events are
+ * emitted before the deployed control plane accepts the type). The incident
+ * stays pinned to the writer that opened it until its recovery is confirmed.
  */
 export async function runCycleAlert(env: Env, config: Config, status: CycleStatus): Promise<void> {
-  const alerted = (await readCycleAlertState(env.DB)) != null;
-  if (!status.ok) {
-    if (!alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
-      await writeCycleAlertState(env.DB, status.checkedAt || "alerted");
+  // A durable cycle transition owns this run outright (the per-model rule):
+  // replay the exact stored bytes until the control plane accepts them, and
+  // only then let a fresh edge open or close the incident.
+  const pendings = (await listPendingCanonicalEvents(env.DB)).filter(
+    (pending) => pending.kind === "cycle",
+  );
+  if (pendings.length > 0) {
+    for (const pending of pendings) {
+      const delivered = await submitPendingCanonicalEvent(
+        env.ALERT_CONTROL_PLANE,
+        pending,
+        env.CF_VERSION_METADATA,
+      );
+      if (!delivered) continue;
+      await env.DB.batch([
+        prepareCycleAlertStateWrite(
+          env.DB,
+          pending.status === "firing" ? "alerted" : null,
+        ),
+        ...preparePendingCanonicalEventCompletion(env.DB, pending),
+      ]);
     }
-  } else if (alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
-    await writeCycleAlertState(env.DB, null);
+    return;
   }
+
+  const alerted = (await readCycleAlertState(env.DB)) != null;
+  if (!status.ok && !alerted) {
+    await deliverCycleTransition(env, config, status, "firing");
+  } else if (status.ok && alerted) {
+    await deliverCycleTransition(env, config, status, "resolved");
+  }
+}
+
+/** Deliver one cycle edge through its owner, committing state only on success. */
+async function deliverCycleTransition(
+  env: Env,
+  config: Config,
+  status: CycleStatus,
+  transition: ModelUnavailableStatus,
+): Promise<void> {
+  const owner = await resolveDrainOwner(
+    env.DB,
+    CYCLE_FINGERPRINT,
+    transition,
+    configuredDefaultOwner(env.ALERT_CYCLE_OWNER),
+  );
+  const marker = transition === "firing" ? status.checkedAt || "alerted" : null;
+  if (owner === "legacy") {
+    if (!(await deliverAlert(env, cycleEvent(config, status)))) return;
+    await env.DB.batch([
+      prepareCycleAlertStateWrite(env.DB, marker),
+      ...(transition === "resolved"
+        ? [prepareDrainOwnerRelease(env.DB, CYCLE_FINGERPRINT)]
+        : []),
+    ]);
+    return;
+  }
+
+  const pending = await getOrCreatePendingCanonicalEvent(
+    env.DB,
+    monitoringCycleEvent(status, transition),
+  );
+  const delivered = await submitPendingCanonicalEvent(
+    env.ALERT_CONTROL_PLANE,
+    pending,
+    env.CF_VERSION_METADATA,
+  );
+  // Not delivered: the durable pending replays on the next cycle-status write.
+  if (!delivered) return;
+  await env.DB.batch([
+    prepareCycleAlertStateWrite(env.DB, marker),
+    ...preparePendingCanonicalEventCompletion(env.DB, pending),
+  ]);
 }

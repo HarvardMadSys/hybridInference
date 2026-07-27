@@ -1,6 +1,9 @@
 export type AlertStatus = "firing" | "resolved";
 export type AlertSeverity = "critical" | "error" | "warn" | "info";
-export type SupportedAlertType = "provider_circuit_open" | "model_unavailable";
+export type SupportedAlertType =
+  | "provider_circuit_open"
+  | "model_unavailable"
+  | "monitoring_cycle_failure";
 
 export type ProviderFailureReason =
   | "authentication"
@@ -39,6 +42,23 @@ export interface ModelUnavailableContext {
   readonly reason?: ModelUnavailabilityReason;
 }
 
+export type MonitoringCycleReason =
+  | "account_rejected"
+  | "discovery_failed"
+  | "not_configured"
+  | "unknown";
+
+/**
+ * Context for a whole-cycle monitoring failure (gateway unreachable, prober key
+ * rejected account-wide, or the monitor unable to run at all). Deliberately a
+ * closed reason enum with no free-text error: cycle errors embed upstream
+ * response fragments, so the raw message stays on the monitor's own
+ * dashboard/health surfaces instead of crossing the trust boundary.
+ */
+export interface MonitoringCycleContext {
+  readonly reason?: MonitoringCycleReason;
+}
+
 interface AlertEventBase {
   readonly schema_version: 1;
   readonly event_id: string;
@@ -61,7 +81,15 @@ export interface ModelUnavailableAlertEvent extends AlertEventBase {
   readonly context: ModelUnavailableContext;
 }
 
-export type AlertEvent = ProviderCircuitAlertEvent | ModelUnavailableAlertEvent;
+export interface MonitoringCycleAlertEvent extends AlertEventBase {
+  readonly alert_type: "monitoring_cycle_failure";
+  readonly context: MonitoringCycleContext;
+}
+
+export type AlertEvent =
+  | ProviderCircuitAlertEvent
+  | ModelUnavailableAlertEvent
+  | MonitoringCycleAlertEvent;
 
 export type TrustedEnvironment = "staging" | "production";
 export type TrustedSource = "gateway" | "status-monitor";
