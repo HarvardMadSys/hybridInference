@@ -125,6 +125,9 @@ def parse_classification(payload: str) -> ClassificationOutputs:
         if matrix != list(DOCKER_IMAGES):
             raise ValueError("full/docker_shared classification must build all images")
     else:
+        # ``backend`` intentionally is not required here: tests/** belongs to
+        # the backend CI category but is not a backend image COPY input. The
+        # classifier's source-vs-test matrix behavior has dedicated fixtures.
         required_images = {
             "frontend": booleans["frontend"],
             "oncall": booleans["oncall"],
@@ -216,7 +219,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             classification = parse_classification(args.classification_json)
             _write_github_outputs(classification.github_outputs(), args.github_output)
             print("classification outputs are valid")
-        else:
+        elif args.command == "verify-gate":
             verify_gate(args.event_name, args.classification_json, args.job_results_json)
             print("CI Gate accepted all required job results")
     except (OSError, ValueError) as exc:

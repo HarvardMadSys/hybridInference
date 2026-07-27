@@ -170,6 +170,7 @@ def classify(files: Sequence[str] | None) -> Classification:
         recognized = False
         if path.startswith(FRONTEND_PREFIX):
             result.frontend = True
+            result.docker_images.add("frontend")
             hit("frontend", path)
             recognized = True
         if path.startswith(BACKEND_SOURCE_PREFIX) or path.startswith(BACKEND_TEST_PREFIX):
@@ -187,6 +188,9 @@ def classify(files: Sequence[str] | None) -> Classification:
             result.docker_images.add("oncall")
         if path.startswith(STATUS_MONITOR_PREFIX):
             result.status_monitor = True
+            # The alert-control-plane TypeScript contract tests import status
+            # monitor emitters directly, so monitor changes affect both jobs.
+            result.alert_control_plane = True
             result.python_tests = True
             hit("status_monitor", path)
             recognized = True
@@ -200,8 +204,6 @@ def classify(files: Sequence[str] | None) -> Classification:
             result.python_tests = True
             hit("docker_shared", path)
             recognized = True
-        if path.startswith(FRONTEND_PREFIX):
-            result.docker_images.add("frontend")
         if image := DOCKER_IMAGE_FILES.get(path):
             result.docker_images.add(image)
             result.python_tests = True

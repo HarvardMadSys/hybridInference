@@ -87,8 +87,12 @@ def test_pr_alert_only_runs_alert_checks_without_app_images() -> None:
 def test_pr_status_monitor_runs_python_contract_tests_without_app_images() -> None:
     verify_gate(
         "pull_request",
-        _classification(status_monitor=True, python_tests=True),
-        _results(test="success"),
+        _classification(
+            status_monitor=True,
+            alert_control_plane=True,
+            python_tests=True,
+        ),
+        _results(**{"alert-control-plane-check": "success", "test": "success"}),
     )
 
 

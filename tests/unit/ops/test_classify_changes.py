@@ -61,7 +61,11 @@ def test_shared_serving_change_triggers_oncall_and_backend() -> None:
 
 def test_status_monitor_change() -> None:
     result = classify(["services/status-monitor-worker/main.py"])
-    assert _true_categories(result) == {"status_monitor", "python_tests"}
+    assert _true_categories(result) == {
+        "status_monitor",
+        "alert_control_plane",
+        "python_tests",
+    }
     assert result.docker_matrix() == []
 
 
