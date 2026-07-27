@@ -23,19 +23,19 @@ from routing.endpoint_health import EndpointHealthRegistry
 from routing.executor import RouteExecutor
 from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
-from routing.routewise.envelope import EnvelopeNotCalibratedError
-from routing.routewise.router import RouteWiseRouter
 from serving.config.disabled_providers import DisabledProviderResolver
 from serving.config.distribution import resolve_config_path
 from serving.config.model_concurrency import ModelConcurrencyResolver
 from serving.config.model_visibility import ModelVisibilityResolver
-from serving.config.routewise_model_settings import (
-    RouteWiseSettingsResolver,
-    apply_routewise_settings_to_router,
-)
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
+from serving.servers.routewise_compat import (
+    EnvelopeNotCalibratedError,
+    RouteWiseRouter,
+    RouteWiseSettingsResolver,
+    apply_routewise_settings_to_router,
+)
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore

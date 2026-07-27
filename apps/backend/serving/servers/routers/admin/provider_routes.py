@@ -22,13 +22,7 @@ from routing.endpoints import endpoint_id_for_adapter
 from routing.model_router_registry import StaleRouterStrategyChangeError
 from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
-from routing.routewise.envelope import EnvelopeNotCalibratedError
-from routing.routewise.router import RouteWiseRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
-from serving.config.routewise_model_settings import (
-    apply_routewise_settings_to_router,
-    model_routewise_setting_keys,
-)
 from serving.config.settings import VALID_ROLES
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
@@ -54,6 +48,12 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.servers.registry import _make_adapter, _make_provider_id, parse_openrouter_kind
+from serving.servers.routewise_compat import (
+    EnvelopeNotCalibratedError,
+    RouteWiseRouter,
+    apply_routewise_settings_to_router,
+    model_routewise_setting_keys,
+)
 from serving.servers.routewise_rebuild import (
     rebuild_routewise_routers as _rebuild_routewise_routers,
 )
