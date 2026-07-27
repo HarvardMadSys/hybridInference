@@ -12,6 +12,7 @@ on:
     # always reported for branch protection.
     paths-ignore:
       - 'docs/**'
+      - 'distributions/freeinference/content/docs/**'
       - '**/*.md'
       - 'LICENSE'
       - '.gitignore'
@@ -491,6 +492,9 @@ jobs:
           # blob object"), which has been failing random jobs at checkout.
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
+
+      - name: Verify transitional public documentation parity
+        run: python3 ops/ci/check_public_docs_parity.py
 
       - name: Install gitleaks
         run: |

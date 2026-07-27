@@ -48,10 +48,10 @@ print(response.choices[0].message.content)
 
 FreeInference works with clients that support OpenAI-compatible APIs. The public docs include setup guides for Kilo Code, Cursor, Claude Code, Roo Code, Cline, Continue, Aider, and other tools.
 
-- Quick start: [docs/free_inference/docs/source/quickstart.md](docs/free_inference/docs/source/quickstart.md)
-- Integration guides: [docs/free_inference/docs/source/integrations.md](docs/free_inference/docs/source/integrations.md)
-- Available models: [docs/free_inference/docs/source/models.md](docs/free_inference/docs/source/models.md)
-- API headers: [docs/free_inference/docs/source/api_headers.md](docs/free_inference/docs/source/api_headers.md)
+- Quick start: [distributions/freeinference/content/docs/docs/source/quickstart.md](distributions/freeinference/content/docs/docs/source/quickstart.md)
+- Integration guides: [distributions/freeinference/content/docs/docs/source/integrations.md](distributions/freeinference/content/docs/docs/source/integrations.md)
+- Available models: [distributions/freeinference/content/docs/docs/source/models.md](distributions/freeinference/content/docs/docs/source/models.md)
+- API headers: [distributions/freeinference/content/docs/docs/source/api_headers.md](distributions/freeinference/content/docs/docs/source/api_headers.md)
 
 ## Self-Hosting Quick Start
 

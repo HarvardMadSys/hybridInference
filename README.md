@@ -38,7 +38,7 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 
 - [README.user.md](README.user.md) explains how to use FreeInference, connect OpenAI-compatible clients, choose models, and run a self-hosted gateway.
 - [README.developer.md](README.developer.md) explains local setup, project structure, testing, formatting, architecture, configuration, and contribution workflow.
-- `docs/free_inference/` contains the hosted user documentation source.
+- `distributions/freeinference/content/docs/` contains the hosted user documentation source.
 - `docs/developer/` contains deeper architecture, deployment, routing, configuration, and extension guides.
 
 ## License

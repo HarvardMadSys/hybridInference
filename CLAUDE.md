@@ -33,11 +33,13 @@ tests/
   external/       # Hits live servers. Marker: external.
 ops/              # Operational tooling (deploy, setup, runtime, admin, perf, db, cloudflare)
 deploy/           # Systemd units, Docker, observability manifests
+distributions/
+  freeinference/  # FreeInference distribution overlay: manifest + site content
+    content/docs/ # Public doc site source (Sphinx → doc.freeinference.org)
 docs/
   developer/      # Developer guide (built into the internal doc site)
   agents/         # Agent-facing artifacts: specs/ and plans/
   superpowers/    # Additional design specs/ and plans/
-  free_inference/ # Public doc site source (Sphinx → doc.freeinference.org)
   reviews/        # Code review records
 ```
 

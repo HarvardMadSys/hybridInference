@@ -29,7 +29,9 @@ def _repo_root_for(path: Path) -> Path:
 
 _REPO_ROOT = _repo_root_for(Path(__file__).resolve())
 
-DEFAULT_CORPUS_DIR = _REPO_ROOT / "docs" / "free_inference" / "docs" / "source"
+DEFAULT_CORPUS_DIR = (
+    _REPO_ROOT / "distributions" / "freeinference" / "content" / "docs" / "docs" / "source"
+)
 # Package-relative so the prebuilt index ships inside the Docker image (which
 # COPYs apps/backend/serving/) and resolves identically in dev and container.
 DEFAULT_INDEX_PATH = Path(__file__).resolve().parent / "prebuilt" / "docs_index.json"

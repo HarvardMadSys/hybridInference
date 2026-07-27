@@ -21,7 +21,7 @@ on:
   push:
     branches: [dev]
     paths:
-      - 'docs/free_inference/docs/source/**'
+      - 'distributions/freeinference/content/docs/docs/source/**'
       - 'apps/backend/serving/rag/chunker.py'
       - 'apps/backend/serving/rag/ingest.py'
       - '.github/workflows/rag-index.yml'
