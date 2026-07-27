@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Classify which CI checks a change set touches.
-
-Phase 2 lands this in *shadow mode*: the ``changes`` job publishes the
-classification to outputs and the job summary, but no other job is skipped and
-no image build is changed. The output is advisory only until the rules are
-validated against real PRs.
+"""Classify which CI checks and application images a change set touches.
 
 The classifier is deliberately conservative. Any file that does not match a
 known narrow rule -- and any failure to compute the diff -- forces ``full`` so
@@ -25,16 +20,21 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-# The seven boolean outputs the design doc requires, in a stable order.
+# Boolean workflow outputs, in a stable order.
 CATEGORIES = (
     "backend",
     "frontend",
     "oncall",
     "status_monitor",
+    "alert_control_plane",
     "docker_shared",
+    "python_tests",
     "security_only",
     "full",
 )
+
+# Docker images are emitted in this order so the matrix is deterministic.
+DOCKER_IMAGES = ("frontend", "backend", "oncall")
 
 # Files whose blast radius is broad enough to force a full run. The repo-root
 # README is included because it is a COPY input to the backend/oncall images.
@@ -53,19 +53,28 @@ FULL_PREFIXES = (
 )
 
 FRONTEND_PREFIX = "apps/frontend/"
-BACKEND_PREFIXES = ("apps/backend/", "tests/")
+BACKEND_SOURCE_PREFIX = "apps/backend/"
+BACKEND_TEST_PREFIX = "tests/"
 # Dockerfile.oncall COPYs the entire apps/backend/serving tree, so any serving
 # change -- not just serving/oncall -- is baked into the on-call image and must
 # rebuild it. Keep this in sync with that Dockerfile's COPY scope.
 ONCALL_PREFIX = "apps/backend/serving/"
-ONCALL_FILES = frozenset({"deploy/docker/Dockerfile.oncall"})
 STATUS_MONITOR_PREFIX = "services/status-monitor-worker/"
+ALERT_CONTROL_PLANE_PREFIX = "services/alert-control-plane-worker/"
 DOCKER_SHARED_FILES = frozenset(
     {
         ".dockerignore",
         "deploy/docker/docker-compose.yml",
     }
 )
+DOCKER_IMAGE_FILES = {
+    "deploy/docker/Dockerfile.frontend": "frontend",
+    "deploy/docker/Dockerfile.frontend.dockerignore": "frontend",
+    "deploy/docker/Dockerfile.backend": "backend",
+    "deploy/docker/Dockerfile.backend.dockerignore": "backend",
+    "deploy/docker/Dockerfile.oncall": "oncall",
+    "deploy/docker/Dockerfile.oncall.dockerignore": "oncall",
+}
 
 # Documentation never triggers application checks. Any markdown outside the
 # repo-root README counts as docs regardless of directory.
@@ -81,15 +90,31 @@ class Classification:
     frontend: bool = False
     oncall: bool = False
     status_monitor: bool = False
+    alert_control_plane: bool = False
     docker_shared: bool = False
+    python_tests: bool = False
     security_only: bool = False
     full: bool = False
     reason: str = ""
     matched: dict[str, list[str]] = field(default_factory=dict)
+    docker_images: set[str] = field(default_factory=set)
 
     def as_outputs(self) -> dict[str, str]:
         """Return the GitHub-Actions string outputs for each category."""
         return {name: ("true" if getattr(self, name) else "false") for name in CATEGORIES}
+
+    def docker_matrix(self) -> list[str]:
+        """Return affected application images in stable matrix order."""
+        if self.full or self.docker_shared:
+            return list(DOCKER_IMAGES)
+        return [image for image in DOCKER_IMAGES if image in self.docker_images]
+
+    def as_workflow_outputs(self) -> dict[str, str]:
+        """Return all GitHub Actions outputs, including the Docker matrix."""
+        return {
+            **self.as_outputs(),
+            "docker_matrix": json.dumps(self.docker_matrix(), separators=(",", ":")),
+        }
 
 
 def _normalize(path: str) -> str:
@@ -113,11 +138,15 @@ def _is_docs(path: str) -> bool:
 def classify(files: Sequence[str] | None) -> Classification:
     """Classify a diff into trigger booleans; ``None`` forces a full run."""
     if files is None:
-        return Classification(full=True, reason="diff unavailable; forcing full run")
+        return Classification(
+            full=True,
+            python_tests=True,
+            reason="diff unavailable; forcing full run",
+        )
 
     normalized = sorted({_normalize(path) for path in files if path.strip()})
     if not normalized:
-        return Classification(full=True, reason="empty diff; forcing full run")
+        return Classification(full=True, python_tests=True, reason="empty diff; forcing full run")
 
     result = Classification()
     matched: dict[str, list[str]] = {}
@@ -130,6 +159,7 @@ def classify(files: Sequence[str] | None) -> Classification:
         # 1. Full triggers win outright (broadest blast radius / build inputs).
         if _is_full(path):
             result.full = True
+            result.python_tests = True
             hit("full", path)
             continue
         # 2. Documentation never triggers application checks.
@@ -140,27 +170,55 @@ def classify(files: Sequence[str] | None) -> Classification:
         recognized = False
         if path.startswith(FRONTEND_PREFIX):
             result.frontend = True
+            result.docker_images.add("frontend")
             hit("frontend", path)
             recognized = True
-        if any(path.startswith(prefix) for prefix in BACKEND_PREFIXES):
+        if path.startswith(BACKEND_SOURCE_PREFIX) or path.startswith(BACKEND_TEST_PREFIX):
             result.backend = True
+            result.python_tests = True
             hit("backend", path)
             recognized = True
-        if path.startswith(ONCALL_PREFIX) or path in ONCALL_FILES:
+            # Tests exercise backend code but are not COPY inputs to an image.
+            if path.startswith(BACKEND_SOURCE_PREFIX):
+                result.docker_images.add("backend")
+        if path.startswith(ONCALL_PREFIX):
             result.oncall = True
             hit("oncall", path)
             recognized = True
+            result.docker_images.add("oncall")
         if path.startswith(STATUS_MONITOR_PREFIX):
             result.status_monitor = True
+            # The alert-control-plane TypeScript contract tests import status
+            # monitor emitters directly, so monitor changes affect both jobs.
+            result.alert_control_plane = True
+            result.python_tests = True
             hit("status_monitor", path)
+            recognized = True
+        if path.startswith(ALERT_CONTROL_PLANE_PREFIX):
+            result.alert_control_plane = True
+            result.python_tests = True
+            hit("alert_control_plane", path)
             recognized = True
         if path in DOCKER_SHARED_FILES:
             result.docker_shared = True
+            result.python_tests = True
             hit("docker_shared", path)
             recognized = True
+        if image := DOCKER_IMAGE_FILES.get(path):
+            result.docker_images.add(image)
+            result.python_tests = True
+            hit(image, path)
+            recognized = True
+            if image == "frontend":
+                result.frontend = True
+            elif image == "backend":
+                result.backend = True
+            else:
+                result.oncall = True
         # 4. Unknown path -> conservative full run.
         if not recognized:
             result.full = True
+            result.python_tests = True
             unknown.append(path)
             hit("full", path)
 
@@ -169,7 +227,9 @@ def classify(files: Sequence[str] | None) -> Classification:
         or result.backend
         or result.oncall
         or result.status_monitor
+        or result.alert_control_plane
         or result.docker_shared
+        or result.python_tests
     )
     if not result.full and not narrow:
         # Everything was documentation: only security scan + gate are needed.
@@ -249,7 +309,7 @@ def compute_changed_files(
 def _write_outputs(result: Classification, output_path: str | None) -> None:
     if not output_path:
         return
-    lines = [f"{name}={value}" for name, value in result.as_outputs().items()]
+    lines = [f"{name}={value}" for name, value in result.as_workflow_outputs().items()]
     with open(output_path, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
 
@@ -260,10 +320,7 @@ def _write_summary(
     if not summary_path:
         return
     lines = [
-        "## Change classification (shadow mode -- advisory only)",
-        "",
-        "Nothing is skipped yet; this run only records what a future path filter "
-        "*would* do so the rules can be validated first.",
+        "## Active change classification",
         "",
         f"- **reason:** {result.reason}",
         f"- **changed files:** {file_count if file_count is not None else 'unavailable'}",
@@ -272,6 +329,7 @@ def _write_summary(
         "|---|---|",
     ]
     lines += [f"| `{name}` | {value} |" for name, value in result.as_outputs().items()]
+    lines.append(f"| `docker_matrix` | `{json.dumps(result.docker_matrix())}` |")
     narrow_matches = {k: v for k, v in result.matched.items() if k != "docs"}
     if narrow_matches:
         lines += ["", "<details><summary>matched files</summary>", ""]
@@ -310,7 +368,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the classifier. Always exits 0; failures classify as ``full``."""
+    """Run the classifier. Diff failures conservatively classify as ``full``."""
     args = _build_parser().parse_args(argv)
 
     files: list[str] | None
@@ -330,7 +388,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.push_before,
                 args.push_sha,
             )
-        except Exception as exc:  # never fail CI in shadow mode
+        except Exception as exc:  # an unavailable diff must never cause an unsafe skip
             print(f"warning: change classification failed ({exc}); forcing full", file=sys.stderr)
             files = None
 
@@ -338,7 +396,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _write_outputs(result, args.github_output)
     _write_summary(result, args.summary, None if files is None else len(files))
 
-    payload = {**result.as_outputs(), "reason": result.reason}
+    payload = {**result.as_workflow_outputs(), "reason": result.reason}
     if args.print_json:
         print(json.dumps(payload))
     else:
