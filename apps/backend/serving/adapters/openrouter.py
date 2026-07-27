@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from serving.config.site_identity import get_site_identity
+
 from .openai_compat import OpenAICompatAdapter
 
-# Attribution headers required for OpenRouter leaderboard / free-tier limits.
-# Hardcoded — single deployment, no per-route override needed.
-_HTTP_REFERER = "https://freeinference.org"
-_X_TITLE = "FreeInference"
+# Attribution headers required for OpenRouter leaderboard / free-tier limits;
+# sourced from the site identity so a distribution attributes as itself.
 
 
 class OpenRouterAdapter(OpenAICompatAdapter):
@@ -39,8 +39,9 @@ class OpenRouterAdapter(OpenAICompatAdapter):
 
     def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
         headers = super()._build_headers(api_key_override=api_key_override)
-        headers["HTTP-Referer"] = _HTTP_REFERER
-        headers["X-Title"] = _X_TITLE
+        site = get_site_identity()
+        headers["HTTP-Referer"] = site.public_base_url
+        headers["X-Title"] = site.name
         return headers
 
     def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:

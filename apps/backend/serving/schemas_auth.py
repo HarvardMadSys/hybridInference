@@ -5,6 +5,8 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints
 
+from serving.config.site_identity import get_site_identity
+
 UserName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=50)]
 
 
@@ -176,9 +178,11 @@ class QuotaInfo(BaseModel):
     max_concurrency: int | None = None
     reset_at: datetime | None = None
     reset_timezone: str = "UTC"
-    contact_email: str = "admin@freeinference.org"
-    increase_request_message: str = (
-        "Need more quota? Email admin@freeinference.org and explain your use case."
+    contact_email: str = Field(default_factory=lambda: get_site_identity().support_email)
+    increase_request_message: str = Field(
+        default_factory=lambda: (
+            f"Need more quota? Email {get_site_identity().support_email} and explain your use case."
+        )
     )
 
 
