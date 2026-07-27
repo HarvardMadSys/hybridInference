@@ -1395,13 +1395,26 @@ describe("runCycleAlert", () => {
     expect(posts).toHaveLength(0);
   });
 
-  it("is disabled without a webhook", async () => {
+  // Cycle-level failures are the most severe class this worker emits; with no
+  // destination they must reach deliverAlert's undeliverable report rather
+  // than no-op at the door. The edge stays unrecorded, so it retries (and the
+  // report repeats) every cycle until a destination exists.
+  it("reports an undeliverable cycle alert instead of silently no-oping", async () => {
     const db = new FakeD1();
     const env = envWith(db, undefined);
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     await runCycleAlert(env, config, failing);
     expect(fetchMock).not.toHaveBeenCalled();
+    const undeliverable =
+      "legacy alert undeliverable (no relay or webhook configured): Monitoring cycle failing";
+    expect(log).toHaveBeenCalledWith(undeliverable);
+    expect(db.meta.has("cycle_alert")).toBe(false);
+
+    await runCycleAlert(env, config, failing);
+    expect(log.mock.calls.filter(([message]) => message === undeliverable)).toHaveLength(2);
+    log.mockRestore();
   });
 });
