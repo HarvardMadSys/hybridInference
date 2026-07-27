@@ -1026,3 +1026,36 @@ models:
   #       api_keys:
   #         - ${GEMINI_API_KEY}
   #       provider_model_id: "gemini-2.5-flash"
+
+  # --- TEMPORARY: C3c staging validation (remove after docs/reviews evidence lands) ---
+  # Synthetic model whose only route points at a dead local port, so every probe
+  # fails with an isolated endpoint_id (vllm:127.0.0.1:59999) and no real
+  # provider's circuit-breaker health is touched. Probes are synthetic-tagged, so
+  # no cost/metrics noise. Plan: fires after 2 probe cycles -> validate the Slack
+  # incident parent; a follow-up PR swaps the route to the working local sglang
+  # endpoint -> validate the genuine recovery reply; a final PR deletes the block.
+  - id: staging-alert-validation
+    name: "Alert Validation (synthetic — do not use)"
+    provider: vllm
+    quantization: "bf16"
+    context_length: 8192
+    max_output_length: 1024
+    supports_tools: false
+    supports_structured_output: false
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+      input_cache_reads: "0"
+      input_cache_writes: "0"
+    route:
+      - kind: vllm
+        weight: 1.0
+        base_url: http://127.0.0.1:59999/v1
+        provider_model_id: "validation/does-not-exist"
+        api_keys:
+          - "synthetic-validation-key"
