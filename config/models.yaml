@@ -1031,17 +1031,20 @@ models:
   # Synthetic model whose only route points at a dead local port. The endpoint_id
   # is unique, so no real provider's circuit-breaker ROUTING health is touched —
   # but the gateway's legacy "Provider circuit opened" alert still fires for this
-  # endpoint (X-Probe exempts logging/cost only, not breaker accounting). The
-  # dedicated provider label below keeps that alert self-describing and its
-  # dedupe key isolated from real providers; expect roughly one clearly-labeled
-  # legacy alert per probe cycle while broken, or snooze legacy alerts for the
-  # window via the admin alerts endpoint. Plan: fires after 2 probe cycles ->
-  # validate the Slack incident parent; a follow-up PR swaps the route to the
-  # working local sglang endpoint -> validate the genuine recovery reply; a
-  # final PR deletes the block.
+  # endpoint (X-Probe exempts logging/cost only, not breaker accounting), and the
+  # route loader derives the EFFECTIVE provider label from the route kind, not
+  # from the model-level field (registry.py register_from_models_yaml). The kind
+  # is therefore openai_compat: no real staging model uses it, so the legacy
+  # alert's dedupe key (circuit_open:openai_compat) cannot collide with — or
+  # suppress — a real provider's alert. (kind: vllm would collide with the real
+  # vllm-served model.) Expect roughly one legacy alert per probe cycle while
+  # broken, or snooze legacy alerts for the window via the admin alerts
+  # endpoint. Plan: fires after 2 probe cycles -> validate the Slack incident
+  # parent; a follow-up PR swaps the route to the working local sglang endpoint
+  # -> validate the genuine recovery reply; a final PR deletes the block.
   - id: staging-alert-validation
     name: "Alert Validation (synthetic — do not use)"
-    provider: synthetic-validation
+    provider: openai_compat
     quantization: "bf16"
     context_length: 8192
     max_output_length: 1024
@@ -1058,7 +1061,7 @@ models:
       input_cache_reads: "0"
       input_cache_writes: "0"
     route:
-      - kind: vllm
+      - kind: openai_compat
         weight: 1.0
         base_url: http://127.0.0.1:59999/v1
         provider_model_id: "validation/does-not-exist"
