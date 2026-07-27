@@ -123,6 +123,11 @@ def test_full_triggers(path: str) -> None:
         "apps/frontend/README.md",  # non-root markdown is documentation
         "LICENSE",
         "some/deep/NOTES.md",
+        # Overlay doc-site source: exempt from the distributions/ full trigger,
+        # markdown and non-markdown alike.
+        "distributions/freeinference/content/docs/docs/source/quickstart.md",
+        "distributions/freeinference/content/docs/docs/Makefile",
+        "distributions/freeinference/content/docs/docs/source/_static/custom.css",
     ],
 )
 def test_docs_only_changes_are_security_only(path: str) -> None:

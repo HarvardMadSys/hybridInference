@@ -29,7 +29,13 @@ def test_cd_accepts_only_manual_or_successful_push_ci(name: str) -> None:
 
 def test_docs_only_filters_apply_to_push_but_not_pull_requests() -> None:
     triggers = _triggers(_workflow("ci.yml"))
-    ignored = ["docs/**", "**/*.md", "LICENSE", ".gitignore"]
+    ignored = [
+        "docs/**",
+        "distributions/freeinference/content/docs/**",
+        "**/*.md",
+        "LICENSE",
+        ".gitignore",
+    ]
 
     assert triggers["push"]["paths-ignore"] == ignored
     assert "paths-ignore" not in triggers["pull_request"]

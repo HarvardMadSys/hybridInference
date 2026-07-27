@@ -51,6 +51,10 @@ FULL_PREFIXES = (
     "config/",
     "distributions/",
 )
+# The one distributions/ subtree that must NOT force a full run: the overlay's
+# doc-site corpus is site content (moved from docs/free_inference/), read only
+# by the offline ingest CLI, never by the running application.
+FULL_PREFIX_EXCEPTIONS = ("distributions/freeinference/content/docs/",)
 
 FRONTEND_PREFIX = "apps/frontend/"
 BACKEND_SOURCE_PREFIX = "apps/backend/"
@@ -79,7 +83,13 @@ DOCKER_IMAGE_FILES = {
 # Documentation never triggers application checks. Any markdown outside the
 # repo-root README counts as docs regardless of directory.
 DOCS_FILES = frozenset({"LICENSE"})
-DOCS_PREFIXES = ("docs/",)
+DOCS_PREFIXES = (
+    "docs/",
+    # Public doc-site source lives in the FreeInference overlay (moved from
+    # docs/free_inference/); its non-markdown files (Makefile, css, conf.py)
+    # are still documentation, not application inputs.
+    "distributions/freeinference/content/docs/",
+)
 
 
 @dataclass
@@ -125,6 +135,8 @@ def _normalize(path: str) -> str:
 
 
 def _is_full(path: str) -> bool:
+    if any(path.startswith(prefix) for prefix in FULL_PREFIX_EXCEPTIONS):
+        return False
     return path in FULL_FILES or any(path.startswith(prefix) for prefix in FULL_PREFIXES)
 
 

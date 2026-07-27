@@ -132,7 +132,7 @@ YAML files support `${VAR}` and `${VAR:-default}` environment variable interpola
 
 ## Documentation
 
-- User-facing docs source: `docs/free_inference/`.
+- User-facing docs source: `distributions/freeinference/content/docs/`.
 - Developer docs source: `docs/developer/`.
 - Public docs site: [doc.freeinference.org](https://doc.freeinference.org/).
 - Developer docs site: [internaldoc.freeinference.org](https://internaldoc.freeinference.org/).

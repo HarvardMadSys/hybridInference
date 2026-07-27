@@ -12,6 +12,7 @@ on:
     # always reported for branch protection.
     paths-ignore:
       - 'docs/**'
+      - 'distributions/freeinference/content/docs/**'
       - '**/*.md'
       - 'LICENSE'
       - '.gitignore'
