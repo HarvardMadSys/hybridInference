@@ -427,6 +427,102 @@ def _check_final_anthropic(
     return errors
 
 
+def run_agent_loop_cancel(
+    target: TargetConfig,
+    scenario: ScenarioConfig,
+) -> dict[str, Any]:
+    """Aborts a stream client-side, then proves the target is not wedged.
+
+    Black-box check for the client-abort path: reading a few deltas and
+    closing the connection must not poison later requests on the same
+    conversation (compare the gateway stream-abort incident history).
+    """
+    script = _resolve_script(scenario)
+    if script is None:
+        return _unknown_script_result(scenario)
+    root = target.base_url.rstrip("/").removesuffix("/v1")
+    headers = {
+        "Authorization": f"Bearer {target.api_key}",
+        "Content-Type": "application/json",
+        **(target.extra_headers or {}),
+    }
+    task_prompt = _task_prompt(script)
+    observed: dict[str, Any] = {"script_id": script.script_id, "aborted_after_events": 0}
+
+    payload = {
+        "model": target.model,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": task_prompt},
+        ],
+        "max_tokens": scenario.max_tokens or 512,
+        "stream": True,
+    }
+    timeout = httpx.Timeout(connect=20.0, read=target.timeout_seconds, write=20.0, pool=20.0)
+    with (
+        httpx.Client(timeout=timeout) as client,
+        client.stream(
+            "POST", f"{root}/v1/chat/completions", headers=headers, json=payload
+        ) as response,
+    ):
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if line.startswith("data: ") and line[6:].strip() != "[DONE]":
+                observed["aborted_after_events"] += 1
+                if observed["aborted_after_events"] >= 2:
+                    break
+        # Exiting the context closes the connection mid-stream: the abort.
+
+    if observed["aborted_after_events"] < 2:
+        return _result(
+            "fail",
+            "cancel_setup_failed",
+            "Stream ended before the driver could abort it mid-stream.",
+            observed,
+        )
+
+    # Follow-up turn on the same conversation must still work.
+    from freeinference_harness.clients.openai_compat import OpenAICompatClient
+
+    follow_client = OpenAICompatClient(
+        base_url=target.base_url,
+        api_key=target.api_key,
+        timeout_seconds=target.timeout_seconds,
+        extra_headers=target.extra_headers or None,
+    )
+    follow = follow_client.collect_stream(
+        {
+            "model": target.model,
+            "messages": [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": task_prompt},
+                {"role": "assistant", "content": "[aborted client-side]"},
+                {"role": "user", "content": "continue"},
+            ],
+            "max_tokens": scenario.max_tokens or 512,
+            "stream": True,
+        }
+    )
+    observed["follow_up"] = {
+        "done": follow["done"],
+        "content_preview": follow["full_content"][:160],
+    }
+    expected_text = script.expected.final_text_contains
+    if not follow["done"] or expected_text not in follow["full_content"]:
+        return _result(
+            "fail",
+            "post_cancel_wedged",
+            "Follow-up request after a client abort did not complete cleanly.",
+            observed,
+        )
+    return _result(
+        "pass",
+        None,
+        "Client abort mid-stream did not wedge the target; follow-up turn completed.",
+        observed,
+    )
+
+
 def run_anthropic_poisoned_history(
     target: TargetConfig,
     scenario: ScenarioConfig,

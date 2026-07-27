@@ -213,6 +213,27 @@ SCRIPTS: dict[str, AgentScript] = {
         ),
         expected=Expected(max_steps=1, expect_truncated_stream=True),
     ),
+    "cancel_mid_stream": AgentScript(
+        script_id="cancel_mid_stream",
+        turns=(
+            ScriptTurn(
+                kind="text",
+                text_fragments=("CANCEL_", "CHUNK_1_", "CHUNK_2_", "CHUNK_3_", "CHUNK_4_"),
+            ),
+            ScriptTurn(kind="text", text="AFTER_CANCEL_OK: server survived a client abort."),
+        ),
+        expected=Expected(final_text_contains="AFTER_CANCEL_OK", max_steps=2),
+    ),
+    "runtime_smoke": AgentScript(
+        script_id="runtime_smoke",
+        turns=(
+            ScriptTurn(
+                kind="text",
+                text="RUNTIME_SMOKE_OK: the runtime-to-gateway-to-fake chain works.",
+            ),
+        ),
+        expected=Expected(final_text_contains="RUNTIME_SMOKE_OK", max_steps=1),
+    ),
     "poisoned_history": AgentScript(
         script_id="poisoned_history",
         turns=(

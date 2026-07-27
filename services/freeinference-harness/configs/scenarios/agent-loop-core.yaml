@@ -55,6 +55,14 @@ scenarios:
     required_capabilities: [chat, streaming]
     repetitions: 1
 
+  # Client aborts mid-stream, then the same conversation must keep working
+  # (black-box coverage of the gateway's client-abort path).
+  - id: openai_cancel_midstream
+    type: agent_loop_cancel
+    agent_script: cancel_mid_stream
+    required_capabilities: [chat, streaming]
+    repetitions: 1
+
   # ── Anthropic Messages surface (gateway translation layer) ───────────
 
   - id: anthropic_tool_roundtrip

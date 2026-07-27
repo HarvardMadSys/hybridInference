@@ -207,7 +207,8 @@ class FakeProviderHandler(BaseHTTPRequestHandler):
         self._sse(chunk({"role": "assistant"}))
 
         if turn.kind == "text":
-            self._sse(chunk({"content": turn.text}))
+            for fragment in turn.text_fragments or (turn.text,):
+                self._sse(chunk({"content": fragment}))
             self._sse(chunk({}, finish_reason="stop"))
         elif turn.kind == "tool_call":
             for index, fragment in enumerate(turn.argument_fragments):

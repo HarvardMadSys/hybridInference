@@ -8,6 +8,7 @@ dev gateway (gateway-local target) additionally pins the translation layer.
 from __future__ import annotations
 
 import pytest
+
 from freeinference_harness.agent_loop import run_agent_loop_openai
 from freeinference_harness.agent_scripts import DS4_MALFORMED_ARGUMENTS
 from freeinference_harness.clients.openai_compat import OpenAICompatClient
@@ -86,3 +87,35 @@ def test_unknown_script_fails_cleanly(fake_base_url):
     result = run_agent_loop_openai(_client(target), target, _scenario("no-such-script"))
     assert result["status"] == "fail"
     assert result["failure_type"] == "unknown_agent_script"
+
+
+def test_cancel_mid_stream_does_not_wedge_the_fake(fake_base_url):
+    """Client abort mid-stream leaves the conversation usable."""
+    from freeinference_harness.agent_loop import run_agent_loop_cancel
+
+    target = _target(fake_base_url)
+    scenario = ScenarioConfig(
+        scenario_id="openai_cancel_midstream",
+        scenario_type="agent_loop_cancel",
+        agent_script="cancel_mid_stream",
+    )
+    result = run_agent_loop_cancel(target, scenario)
+    assert result["status"] == "pass", result["detail"]
+    assert result["observed"]["aborted_after_events"] >= 2
+    assert "AFTER_CANCEL_OK" in result["observed"]["follow_up"]["content_preview"]
+
+
+def test_missing_runtime_binary_skips_cleanly(fake_base_url, monkeypatch):
+    """Runtime scenarios skip (not fail) when the CLI is not installed."""
+    import freeinference_harness.runtime_drivers as drivers
+
+    monkeypatch.setattr(drivers.shutil, "which", lambda _name: None)
+    target = _target(fake_base_url)
+    scenario = ScenarioConfig(
+        scenario_id="runtime_codex_smoke",
+        scenario_type="runtime_codex_smoke",
+        agent_script="runtime_smoke",
+    )
+    result = drivers.run_runtime_codex_smoke(target, scenario)
+    assert result["status"] == "skip"
+    assert result["failure_type"] == "runtime_missing"

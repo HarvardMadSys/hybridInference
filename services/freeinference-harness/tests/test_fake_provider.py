@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 import httpx
+
 from freeinference_harness.agent_scripts import DS4_MALFORMED_ARGUMENTS, marker
 
 
@@ -144,6 +145,24 @@ def test_midstream_disconnect_has_partial_content_and_no_done(fake_base_url):
                 finish_reasons.append(choice["finish_reason"])
     assert content == "PARTIAL_STREAM_"
     assert finish_reasons == []
+
+
+def test_text_fragments_stream_as_individual_deltas(fake_base_url):
+    """cancel_mid_stream's first turn streams one delta per text fragment."""
+    with httpx.Client() as client:
+        response = client.post(
+            f"{fake_base_url}/v1/chat/completions",
+            json=_chat_payload("cancel_mid_stream", stream=True),
+        )
+    events, done = _collect_sse(response)
+    assert done
+    fragments = [
+        (choice.get("delta") or {}).get("content")
+        for event in events
+        for choice in event.get("choices") or []
+        if (choice.get("delta") or {}).get("content")
+    ]
+    assert fragments == ["CANCEL_", "CHUNK_1_", "CHUNK_2_", "CHUNK_3_", "CHUNK_4_"]
 
 
 def test_non_stream_tool_call_shape(fake_base_url):
