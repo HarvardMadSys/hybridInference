@@ -479,6 +479,21 @@ export async function listPendingCanonicalEvents(
 }
 
 /**
+ * Log why a submission did not land.
+ *
+ * Because there is no relay/webhook fallback, an unreported rejection is a
+ * silent alerting outage: the pending body is retried forever while nothing
+ * reaches Slack. Only the fingerprint and a closed-set reason code are emitted —
+ * the fingerprint is a bounded, control-character-free model identifier, and the
+ * canonical body is never logged.
+ */
+function reportUndelivered(pending: PendingCanonicalEvent, reason: string): void {
+  console.error(
+    `alert control plane did not accept ${pending.status} ${pending.fingerprint}: ${reason}`,
+  );
+}
+
+/**
  * Submit only to the control plane. Failure keeps the pending body for an
  * idempotent retry and deliberately has no relay/webhook fallback.
  */
@@ -488,11 +503,12 @@ export async function submitPendingCanonicalEvent(
   versionMetadata: WorkerVersionMetadata | undefined,
 ): Promise<boolean> {
   const deploymentId = versionMetadata?.id;
-  if (
-    service === undefined ||
-    typeof deploymentId !== "string" ||
-    !CLOUDFLARE_VERSION_ID_RE.test(deploymentId)
-  ) {
+  if (service === undefined) {
+    reportUndelivered(pending, "service_binding_missing");
+    return false;
+  }
+  if (typeof deploymentId !== "string" || !CLOUDFLARE_VERSION_ID_RE.test(deploymentId)) {
+    reportUndelivered(pending, "deployment_identity_invalid");
     return false;
   }
   try {
@@ -500,9 +516,19 @@ export async function submitPendingCanonicalEvent(
       pending.bodyJson,
       deploymentId,
     );
-    return isStatusMonitorRpcResult(result) && result.accepted;
+    if (!isStatusMonitorRpcResult(result)) {
+      reportUndelivered(pending, "malformed_rpc_result");
+      return false;
+    }
+    if (!result.accepted) {
+      // `errorCode` is a closed enum of stable codes (RPC_ERROR_CODES), so it
+      // carries no producer data and is safe to log verbatim.
+      reportUndelivered(pending, result.errorCode);
+      return false;
+    }
+    return true;
   } catch {
-    console.error("alert control plane service binding submission failed");
+    reportUndelivered(pending, "service_binding_threw");
     return false;
   }
 }

@@ -502,8 +502,10 @@ describe("runAlerts", () => {
     const env = controlPlaneEnv(db, submit);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
+    // A departure is only inferable from a catalog the cycle actually observed,
+    // so `a` leaves a still-populated catalog rather than an empty one.
     await cycle(db, env, { a: false }, cfg(1));
-    await cycle(db, env, {}, cfg(1));
+    await cycle(db, env, { b: true }, cfg(1));
     expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
       "firing",
       "firing",
@@ -516,7 +518,7 @@ describe("runAlerts", () => {
       db.meta.has("alert_delivery_pending:v1:firing:status-monitor:model:a"),
     ).toBe(false);
 
-    await cycle(db, env, {}, cfg(1));
+    await cycle(db, env, { b: true }, cfg(1));
     expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
       "firing",
       "firing",
@@ -545,7 +547,7 @@ describe("runAlerts", () => {
     const env = controlPlaneEnv(db, submit);
 
     await cycle(db, env, { a: false }, cfg(1));
-    await cycle(db, env, {}, cfg(1));
+    await cycle(db, env, { b: true }, cfg(1));
 
     expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
       "firing",
@@ -570,7 +572,7 @@ describe("runAlerts", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     await cycle(db, env, { a: false }, cfg(1));
-    await cycle(db, env, {}, cfg(1));
+    await cycle(db, env, { b: true }, cfg(1));
 
     expect(JSON.parse(db.meta.get("alert_state")!)).toHaveProperty(
       "a",
@@ -580,7 +582,7 @@ describe("runAlerts", () => {
       db.meta.has("alert_delivery_pending:v1:resolved:status-monitor:model:a"),
     ).toBe(true);
 
-    await cycle(db, env, {}, cfg(1));
+    await cycle(db, env, { b: true }, cfg(1));
 
     expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
       "firing",
@@ -1098,6 +1100,38 @@ describe("runAlerts", () => {
     await runAlerts(env, config, []);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(db.meta.has("alert_state")).toBe(false);
+  });
+
+  it("never resolves open incidents when the cycle observed no catalog at all", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit);
+
+    await cycle(db, env, { a: false }, cfg(1));
+    await cycle(db, env, { b: false }, cfg(1));
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "resolved", // a genuinely left a catalog that was still observed
+      "firing",
+    ]);
+
+    // An empty result set is evidence about nothing. `discoverModels` fails the
+    // cycle before this point, so reaching here means something upstream broke —
+    // resolving every open incident would be a mass false recovery.
+    await runAlerts(env, cfg(1), []);
+
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "resolved",
+      "firing",
+    ]);
+    expect(db.meta.get("alert_delivery_owner:v1:status-monitor:model:b")).toBe(
+      "control-plane",
+    );
   });
 
   it("collapses a mass outage into a single summary page above the storm threshold", async () => {

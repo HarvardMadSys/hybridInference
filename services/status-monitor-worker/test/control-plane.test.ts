@@ -244,7 +244,9 @@ describe("durable pending canonical event", () => {
       ),
     ).toBe(false);
     expect(legacyFetch).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith("alert control plane service binding submission failed");
+    expect(log).toHaveBeenCalledWith(
+      "alert control plane did not accept firing status-monitor:model:deepseek-v3: service_binding_threw",
+    );
     const retry = await getOrCreatePendingCanonicalEvent(
       db(fake),
       modelUnavailableEvent(result(), "firing", 2, "different"),
@@ -293,6 +295,7 @@ describe("durable pending canonical event", () => {
       modelUnavailableEvent(result(), "firing", 2, "event-invalid-version"),
     );
     const submitStatusMonitorEvent = vi.fn();
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
     await expect(
       submitPendingCanonicalEvent(
@@ -302,9 +305,63 @@ describe("durable pending canonical event", () => {
       ),
     ).resolves.toBe(false);
     expect(submitStatusMonitorEvent).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      "alert control plane did not accept firing status-monitor:model:deepseek-v3: deployment_identity_invalid",
+    );
   });
 
-  it("rejects malformed RPC success without logging or clearing the pending event", async () => {
+  it("reports an absent service binding instead of dropping the alert silently", async () => {
+    const fake = new FakeD1();
+    const pending = await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "event-no-binding"),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      submitPendingCanonicalEvent(
+        undefined,
+        pending,
+        { id: VERSION_ID } as WorkerVersionMetadata,
+      ),
+    ).resolves.toBe(false);
+    expect(log).toHaveBeenCalledWith(
+      "alert control plane did not accept firing status-monitor:model:deepseek-v3: service_binding_missing",
+    );
+  });
+
+  it("reports a rejected submission with its stable error code", async () => {
+    const fake = new FakeD1();
+    const pending = await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "event-rejected"),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const submitStatusMonitorEvent = vi.fn(async () => ({
+      accepted: false as const,
+      errorCode: "unknown_deployment" as const,
+    }));
+
+    await expect(
+      submitPendingCanonicalEvent(
+        { submitStatusMonitorEvent },
+        pending,
+        { id: VERSION_ID } as WorkerVersionMetadata,
+      ),
+    ).resolves.toBe(false);
+    // Without this line a persistent rejection is an invisible alerting outage:
+    // there is no relay/webhook fallback to reveal it.
+    expect(log).toHaveBeenCalledWith(
+      "alert control plane did not accept firing status-monitor:model:deepseek-v3: unknown_deployment",
+    );
+    const retry = await getOrCreatePendingCanonicalEvent(
+      db(fake),
+      modelUnavailableEvent(result(), "firing", 2, "replacement-after-reject"),
+    );
+    expect(retry.bodyJson).toBe(pending.bodyJson);
+  });
+
+  it("reports malformed RPC success without echoing it or clearing the pending event", async () => {
     const fake = new FakeD1();
     const pending = await getOrCreatePendingCanonicalEvent(
       db(fake),
@@ -323,7 +380,13 @@ describe("durable pending canonical event", () => {
         { id: VERSION_ID } as WorkerVersionMetadata,
       ),
     ).resolves.toBe(false);
-    expect(log).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      "alert control plane did not accept firing status-monitor:model:deepseek-v3: malformed_rpc_result",
+    );
+    // The reason code is fixed; the untrusted response is never echoed.
+    for (const call of log.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain("must-not-be-trusted");
+    }
     const retry = await getOrCreatePendingCanonicalEvent(
       db(fake),
       modelUnavailableEvent(result(), "firing", 2, "replacement-event"),

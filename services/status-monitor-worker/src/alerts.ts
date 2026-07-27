@@ -492,16 +492,24 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
     completionStatements.push(...preparePendingCanonicalEventCompletion(env.DB, pending));
   }
 
-  const presentModelIds = new Set(results.map((result) => result.modelId));
+  // "Absent from this cycle" only means "left the catalog" when this cycle
+  // actually observed one. An empty result set is evidence about nothing, so
+  // treating it as a departure would resolve every open incident at once — a
+  // mass false recovery during what is almost certainly a total outage.
+  // `discoverModels` already fails the cycle before the alerter runs; this keeps
+  // the inference sound should runAlerts ever be reached another way.
   const departedControlPlaneModels = new Map<string, string>();
-  for (const [modelId, stateValue] of Object.entries(prevState)) {
-    if (presentModelIds.has(modelId) || pendingModelIds.has(modelId)) continue;
-    const fingerprint = incidentFingerprint(modelId, stateValue);
-    const owner = await readDrainOwner(env.DB, fingerprint);
-    if (owner === "control-plane") {
-      departedControlPlaneModels.set(modelId, fingerprint);
-    } else if (owner === "legacy") {
-      completionStatements.push(prepareDrainOwnerRelease(env.DB, fingerprint));
+  if (results.length > 0) {
+    const presentModelIds = new Set(results.map((result) => result.modelId));
+    for (const [modelId, stateValue] of Object.entries(prevState)) {
+      if (presentModelIds.has(modelId) || pendingModelIds.has(modelId)) continue;
+      const fingerprint = incidentFingerprint(modelId, stateValue);
+      const owner = await readDrainOwner(env.DB, fingerprint);
+      if (owner === "control-plane") {
+        departedControlPlaneModels.set(modelId, fingerprint);
+      } else if (owner === "legacy") {
+        completionStatements.push(prepareDrainOwnerRelease(env.DB, fingerprint));
+      }
     }
   }
 

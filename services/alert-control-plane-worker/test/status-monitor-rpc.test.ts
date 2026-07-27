@@ -213,4 +213,33 @@ describe("status-monitor role RPC", () => {
     });
     expect(submit).not.toHaveBeenCalled();
   });
+
+  // The shared producer validator accepts provider_circuit_open too, and routing
+  // keys on fingerprint rather than alert type — so without a role-specific guard
+  // this body would drive the very same incident object as the model alerts and
+  // carry free-text fields the model contract deliberately excludes.
+  it("refuses an otherwise valid alert type this role may not submit", async () => {
+    const submit = vi.fn();
+    const providerCircuitBody = JSON.stringify({
+      schema_version: 1,
+      event_id: "status-monitor-event-provider-circuit",
+      alert_type: "provider_circuit_open",
+      fingerprint: "status-monitor:model:deepseek-v3",
+      status: "firing",
+      severity: "error",
+      title: "Provider circuit opened",
+      occurred_at: new Date().toISOString(),
+      summary: "zhipu circuit opened after repeated upstream failures.",
+      context: { provider: "zhipu", reason: "upstream_error" },
+      evidence_refs: [],
+    });
+
+    await expect(
+      submitStatusMonitorRpcEvent(env(), providerCircuitBody, VERSION_ID, submit),
+    ).resolves.toEqual({
+      accepted: false,
+      errorCode: "invalid_event",
+    });
+    expect(submit).not.toHaveBeenCalled();
+  });
 });

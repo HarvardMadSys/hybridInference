@@ -39,9 +39,22 @@ describe("discoverModels", () => {
     ]);
   });
 
-  it("accepts a legitimately empty catalog", async () => {
+  // Previously this returned [] as a "legitimately empty catalog". That was safe
+  // while a departed model only had its state dropped, but once the alerter began
+  // resolving departed control-plane incidents an empty catalog would recover
+  // every open incident at once and wipe the history behind each failure streak.
+  it("throws on an empty catalog instead of reporting a successful zero-model cycle", async () => {
     stubFetch(new Response(JSON.stringify({ data: [] }), { status: 200 }));
-    expect(await discoverModels(config, "k")).toEqual([]);
+    await expect(discoverModels(config, "k")).rejects.toThrow(/no usable probe targets/);
+  });
+
+  it("throws when no catalog entry yields a usable target", async () => {
+    stubFetch(
+      new Response(JSON.stringify({ data: [{ name: "no-id" }, { id: 42 }] }), {
+        status: 200,
+      }),
+    );
+    await expect(discoverModels(config, "k")).rejects.toThrow(/no usable probe targets/);
   });
 
   it("throws on a malformed catalog (non-array data) instead of returning empty", async () => {
