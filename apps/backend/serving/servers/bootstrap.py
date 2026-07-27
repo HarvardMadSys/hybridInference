@@ -36,6 +36,7 @@ from serving.config.routewise_model_settings import (
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
+from serving.storage.agent_job_store import AgentJobStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
@@ -729,6 +730,7 @@ async def initialize() -> AppServices:
     operational_store = None
     log_store = None
     responses_store = None
+    agent_job_store = None
 
     if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
@@ -754,6 +756,13 @@ async def initialize() -> AppServices:
             "Responses store initialized (Postgres; persist_enabled=%s)",
             settings.db_store_full_content,
         )
+        # Agent-sandbox jobs (issue #1041). Unlike the Responses store this is
+        # not gated on the prompt-logging privacy switch: a job's task prompt
+        # and event log *are* the product surface the user reads back, not
+        # incidental request logging.
+        agent_job_store = AgentJobStore(db_logger.pool)
+        await agent_job_store.initialize()
+        logger.info("Agent job store initialized (Postgres)")
 
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
@@ -1135,6 +1144,7 @@ async def initialize() -> AppServices:
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
         responses_store=responses_store,
+        agent_job_store=agent_job_store,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,

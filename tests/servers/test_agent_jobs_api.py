@@ -1,0 +1,466 @@
+"""API-surface tests for the agent-sandbox job router.
+
+Runs against a minimal in-memory stand-in for ``AgentJobStore`` so the default
+(no-database) suite covers the HTTP contract: owner scoping, capability-token
+authentication, the fenced-write → 409 mapping, and SSE framing. The store's
+own concurrency semantics are pinned separately by the ``dbtest`` suite.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import pytest
+import pytest_asyncio
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+
+from serving.agent_jobs.tokens import mint_worker_token
+from serving.servers.deps import get_agent_job_store
+from serving.servers.routers import agent_jobs as agent_jobs_router
+
+pytestmark = pytest.mark.asyncio
+
+_OWNER = "user-owner"
+_OTHER = "user-other"
+
+
+class FakeAgentJobStore:
+    """In-memory stand-in exposing the AgentJobStore surface the router uses."""
+
+    def __init__(self) -> None:
+        self.jobs: dict[str, dict[str, Any]] = {}
+        self.events: list[dict[str, Any]] = []
+        self.artifacts: dict[tuple[str, str], dict[str, Any]] = {}
+        self.live_fence: tuple[int, int] | None = None
+        self._next_event_id = 1
+        self._next_job = 1
+
+    # -- owner surface --
+    async def create_job(self, **kwargs: Any) -> dict[str, Any]:
+        job_id = f"ajob_{self._next_job:04d}"
+        self._next_job += 1
+        job = {
+            "id": job_id,
+            "state": "queued",
+            "cancel_requested": False,
+            "current_attempt_id": None,
+            "published_pr_url": None,
+            "detail": None,
+            "created_at": None,
+            "updated_at": None,
+            **kwargs,
+        }
+        job.setdefault("base_sha", None)
+        job.setdefault("metadata", None)
+        self.jobs[job_id] = job
+        return job
+
+    async def get_job(self, job_id: str) -> dict[str, Any] | None:
+        return self.jobs.get(job_id)
+
+    async def list_jobs(self, *, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        return [job for job in self.jobs.values() if job["user_id"] == user_id][:limit]
+
+    async def request_cancel(self, *, job_id: str, user_id: str | None = None) -> str | None:
+        job = self.jobs.get(job_id)
+        if job is None or (user_id is not None and job["user_id"] != user_id):
+            return None
+        job["cancel_requested"] = True
+        if job["state"] == "queued":
+            job["state"] = "cancelled"
+        return job["state"]
+
+    async def list_events_after(
+        self, *, job_id: str, after_id: int = 0, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        return [
+            event for event in self.events if event["job_id"] == job_id and event["id"] > after_id
+        ][:limit]
+
+    async def get_artifact(self, *, job_id: str, kind: str) -> dict[str, Any] | None:
+        return self.artifacts.get((job_id, kind))
+
+    # -- worker surface (fenced) --
+    def _fenced(self, attempt_id: int, lease_generation: int) -> bool:
+        return self.live_fence == (attempt_id, lease_generation)
+
+    async def claim_job(self, *, worker_id: str, lease_ttl_seconds: float) -> dict[str, Any] | None:
+        queued = [job for job in self.jobs.values() if job["state"] == "queued"]
+        if not queued:
+            return None
+        job = queued[0]
+        job["state"] = "running"
+        job["current_attempt_id"] = 100
+        self.live_fence = (100, 1)
+        return {**job, "attempt_id": 100, "attempt_no": 1, "lease_generation": 1}
+
+    async def heartbeat(
+        self, *, attempt_id: int, lease_generation: int, lease_ttl_seconds: float
+    ) -> dict[str, Any]:
+        if not self._fenced(attempt_id, lease_generation):
+            return {"ok": False}
+        job = next(job for job in self.jobs.values() if job["current_attempt_id"] == attempt_id)
+        return {
+            "ok": True,
+            "job_id": job["id"],
+            "state": job["state"],
+            "cancel_requested": job["cancel_requested"],
+        }
+
+    async def append_event(
+        self,
+        *,
+        attempt_id: int,
+        lease_generation: int,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> int | None:
+        if not self._fenced(attempt_id, lease_generation):
+            return None
+        job = next(job for job in self.jobs.values() if job["current_attempt_id"] == attempt_id)
+        event = {
+            "id": self._next_event_id,
+            "job_id": job["id"],
+            "attempt_id": attempt_id,
+            "seq": len(self.events) + 1,
+            "event_type": event_type,
+            "payload": payload,
+            "created_at": None,
+        }
+        self._next_event_id += 1
+        self.events.append(event)
+        return event["id"]
+
+    async def save_artifact(
+        self, *, attempt_id: int, lease_generation: int, kind: str, content: str
+    ) -> int | None:
+        if not self._fenced(attempt_id, lease_generation):
+            return None
+        job = next(job for job in self.jobs.values() if job["current_attempt_id"] == attempt_id)
+        self.artifacts[(job["id"], kind)] = {
+            "job_id": job["id"],
+            "attempt_id": attempt_id,
+            "kind": kind,
+            "content": content,
+            "created_at": None,
+        }
+        return 1
+
+    async def transition(
+        self,
+        *,
+        job_id: str,
+        attempt_id: int,
+        lease_generation: int,
+        from_states: tuple[str, ...],
+        to_state: str,
+        detail: str | None = None,
+    ) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or not self._fenced(attempt_id, lease_generation):
+            return False
+        if job["state"] not in from_states:
+            return False
+        job["state"] = to_state
+        job["detail"] = detail
+        return True
+
+    async def begin_publish(self, **kwargs: Any) -> bool:
+        return await self.transition(from_states=("running",), to_state="publishing", **kwargs)
+
+    async def complete_publish(self, *, pr_url: str, **kwargs: Any) -> bool:
+        ok = await self.transition(from_states=("publishing",), to_state="succeeded", **kwargs)
+        if ok:
+            self.jobs[kwargs["job_id"]]["published_pr_url"] = pr_url
+        return ok
+
+
+@pytest.fixture(autouse=True)
+def _api_key_secret(monkeypatch):
+    """Provide the signing secret for worker tokens."""
+    monkeypatch.setenv("API_KEY_SECRET", "api-test-secret")
+    from serving.config.settings import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture()
+def store() -> FakeAgentJobStore:
+    """Provide a fresh in-memory store."""
+    return FakeAgentJobStore()
+
+
+@pytest_asyncio.fixture()
+async def client(store: FakeAgentJobStore):
+    """Mount only the agent-jobs router with auth stubbed to a fixed owner."""
+    from serving.servers.auth import verify_api_key
+
+    app = FastAPI()
+    app.include_router(agent_jobs_router.router)
+    app.dependency_overrides[get_agent_job_store] = lambda: store
+    app.dependency_overrides[verify_api_key] = lambda: {
+        "user_id": _OWNER,
+        "role": "pro",
+        "authenticated": True,
+    }
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as async_client:
+        yield async_client
+
+
+async def _create_job(client: AsyncClient) -> str:
+    """Create a job through the API and return its id."""
+    response = await client.post(
+        "/v1/agent/jobs",
+        json={"repo": "owner/name", "task_prompt": "fix it", "model": "glm-5.1"},
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+async def test_create_get_list_round_trip(client: AsyncClient):
+    """A created job is retrievable and listed for its owner."""
+    job_id = await _create_job(client)
+
+    got = await client.get(f"/v1/agent/jobs/{job_id}")
+    assert got.status_code == 200
+    assert got.json()["state"] == "queued"
+    assert got.json()["runtime"] == "claude-code"
+
+    listed = await client.get("/v1/agent/jobs")
+    assert [job["id"] for job in listed.json()["jobs"]] == [job_id]
+
+
+async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: FakeAgentJobStore):
+    """Someone else's job is indistinguishable from a missing one."""
+    foreign = await store.create_job(
+        user_id=_OTHER,
+        repo="owner/other",
+        task_prompt="not yours",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+    for path in (
+        f"/v1/agent/jobs/{foreign['id']}",
+        f"/v1/agent/jobs/{foreign['id']}/events",
+        f"/v1/agent/jobs/{foreign['id']}/artifacts/patch",
+    ):
+        response = await client.get(path)
+        assert response.status_code == 404, path
+    cancel = await client.post(f"/v1/agent/jobs/{foreign['id']}/cancel")
+    assert cancel.status_code == 404
+
+
+async def test_cancel_queued_job(client: AsyncClient):
+    """Cancelling a queued job reports the terminal state immediately."""
+    job_id = await _create_job(client)
+    response = await client.post(f"/v1/agent/jobs/{job_id}/cancel")
+    assert response.status_code == 200
+    assert response.json()["state"] == "cancelled"
+    assert response.json()["cancel_requested"] is True
+
+
+async def test_worker_flow_claim_event_artifact_finish(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """The worker path: claim → token → event → artifact → finish."""
+    job_id = await _create_job(client)
+
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    assert claim.status_code == 200
+    body = claim.json()
+    assert body["job_id"] == job_id
+    token = body["worker_token"]
+    auth = {"Authorization": f"Bearer {token}"}
+
+    beat = await client.post(f"/v1/agent/worker/jobs/{job_id}/heartbeat", json={}, headers=auth)
+    assert beat.status_code == 200
+    assert beat.json()["cancel_requested"] is False
+
+    event = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json={"event_type": "message", "payload": {"text": "hello"}},
+        headers=auth,
+    )
+    assert event.status_code == 201
+    assert event.json()["event_id"] == 1
+
+    artifact = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/artifacts",
+        json={"kind": "patch", "content": "diff --git a b"},
+        headers=auth,
+    )
+    assert artifact.status_code == 201
+
+    # The owner can read the events and the artifact back.
+    events = await client.get(f"/v1/agent/jobs/{job_id}/events")
+    assert [event["event_type"] for event in events.json()["events"]] == ["message"]
+    assert events.json()["next_cursor"] == 1
+    patch = await client.get(f"/v1/agent/jobs/{job_id}/artifacts/patch")
+    assert patch.json()["content"] == "diff --git a b"
+
+    finish = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish",
+        json={"state": "succeeded"},
+        headers=auth,
+    )
+    assert finish.status_code == 200
+    assert store.jobs[job_id]["state"] == "succeeded"
+
+
+async def test_empty_queue_claim_returns_null(client: AsyncClient):
+    """Claiming with nothing queued is a 200 with a null body, not an error."""
+    response = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    assert response.status_code == 200
+    assert response.json() is None
+
+
+async def test_lost_lease_maps_to_409_on_every_write_path(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """Once the fence moves on, every worker write returns 409."""
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+    # The reaper hands ownership to a new attempt/generation.
+    store.live_fence = (101, 2)
+
+    calls = [
+        ("post", f"/v1/agent/worker/jobs/{job_id}/heartbeat", {}),
+        ("post", f"/v1/agent/worker/jobs/{job_id}/events", {"event_type": "message"}),
+        ("post", f"/v1/agent/worker/jobs/{job_id}/artifacts", {"kind": "p", "content": "c"}),
+        ("post", f"/v1/agent/worker/jobs/{job_id}/finish", {"state": "succeeded"}),
+        ("post", f"/v1/agent/worker/jobs/{job_id}/publish/begin", None),
+        ("post", f"/v1/agent/worker/jobs/{job_id}/publish/complete", {"pr_url": "http://x"}),
+    ]
+    for method, path, payload in calls:
+        response = await getattr(client, method)(
+            path, json=payload if payload is not None else {}, headers=auth
+        )
+        assert response.status_code == 409, path
+        assert response.json()["detail"]["error"]["type"] == "lease_lost"
+
+
+async def test_worker_token_is_required_and_scoped(client: AsyncClient):
+    """Missing, malformed, and cross-job tokens are all rejected."""
+    job_id = await _create_job(client)
+    body = {"event_type": "message"}
+
+    missing = await client.post(f"/v1/agent/worker/jobs/{job_id}/events", json=body)
+    assert missing.status_code == 401
+
+    bad = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json=body,
+        headers={"Authorization": "Bearer not-a-token"},
+    )
+    assert bad.status_code == 401
+
+    # A valid token minted for another job must not work here.
+    foreign_token = mint_worker_token(job_id="ajob_other", attempt_id=1, lease_generation=1)
+    wrong_job = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json=body,
+        headers={"Authorization": f"Bearer {foreign_token}"},
+    )
+    assert wrong_job.status_code == 409
+
+
+async def test_publish_two_phase(client: AsyncClient, store: FakeAgentJobStore):
+    """begin → complete records the PR URL and finishes the job."""
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+    begin = await client.post(f"/v1/agent/worker/jobs/{job_id}/publish/begin", headers=auth)
+    assert begin.status_code == 200
+    complete = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/publish/complete",
+        json={"pr_url": "https://github.com/o/n/pull/1"},
+        headers=auth,
+    )
+    assert complete.status_code == 200
+    assert store.jobs[job_id]["state"] == "succeeded"
+    assert store.jobs[job_id]["published_pr_url"] == "https://github.com/o/n/pull/1"
+
+
+async def test_finish_rejects_non_terminal_state(client: AsyncClient):
+    """A worker cannot 'finish' into a non-terminal state."""
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+    response = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish", json={"state": "running"}, headers=auth
+    )
+    assert response.status_code == 400
+
+
+async def test_sse_stream_replays_and_closes_on_terminal_state(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """The SSE stream emits id-tagged frames and ends with job_finished."""
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json={"event_type": "message", "payload": {"text": "one"}},
+        headers=auth,
+    )
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish", json={"state": "succeeded"}, headers=auth
+    )
+
+    async with client.stream("GET", f"/v1/agent/jobs/{job_id}/stream") as response:
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        body = "".join([chunk async for chunk in response.aiter_text()])
+
+    assert "id: 1" in body
+    assert "event: message" in body
+    assert "event: job_finished" in body
+    payload = json.loads(body.split("event: job_finished\ndata: ")[1].split("\n")[0])
+    assert payload["state"] == "succeeded"
+
+
+async def test_sse_resumes_from_last_event_id(client: AsyncClient, store: FakeAgentJobStore):
+    """Last-Event-ID skips already-delivered events."""
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+    for text in ("one", "two"):
+        await client.post(
+            f"/v1/agent/worker/jobs/{job_id}/events",
+            json={"event_type": "message", "payload": {"text": text}},
+            headers=auth,
+        )
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish", json={"state": "succeeded"}, headers=auth
+    )
+
+    async with client.stream(
+        "GET", f"/v1/agent/jobs/{job_id}/stream", headers={"Last-Event-ID": "1"}
+    ) as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+
+    assert '"text":"one"' not in body
+    assert '"text":"two"' in body
+
+
+async def test_missing_store_returns_503(store: FakeAgentJobStore):
+    """Without a database the agent API reports 503 rather than crashing."""
+    from serving.servers.auth import verify_api_key
+
+    app = FastAPI()
+    app.include_router(agent_jobs_router.router)
+    app.dependency_overrides[get_agent_job_store] = lambda: None
+    app.dependency_overrides[verify_api_key] = lambda: {"user_id": _OWNER, "role": "pro"}
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/agent/jobs")
+    assert response.status_code == 503
