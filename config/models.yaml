@@ -1027,25 +1027,18 @@ models:
   #         - ${GEMINI_API_KEY}
   #       provider_model_id: "gemini-2.5-flash"
 
-  # --- TEMPORARY: C3c staging validation (remove after docs/reviews evidence lands) ---
-  # Synthetic model whose only route points at a dead local port. The endpoint_id
-  # is unique, so no real provider's circuit-breaker ROUTING health is touched —
-  # but the gateway's legacy "Provider circuit opened" alert still fires for this
-  # endpoint (X-Probe exempts logging/cost only, not breaker accounting), and the
-  # route loader derives the EFFECTIVE provider label from the route kind, not
-  # from the model-level field (registry.py register_from_models_yaml). The kind
-  # is therefore openai_compat: no real staging model uses it, so the legacy
-  # alert's dedupe key (circuit_open:openai_compat) cannot collide with — or
-  # suppress — a real provider's alert. (kind: vllm would collide with the real
-  # vllm-served model.) Expect roughly one legacy alert per probe cycle while
-  # broken, or snooze legacy alerts for the window via the admin alerts
-  # endpoint. Plan: fires after 2 probe cycles -> validate the Slack incident
-  # parent; a follow-up PR swaps the route to the working local sglang endpoint
-  # -> validate the genuine recovery reply; a final PR deletes the block.
+  # --- TEMPORARY: C3c staging validation, phase 2 of 3 (remove after docs/reviews evidence lands) ---
+  # Phase 1 (dead local port) produced the first real Control Plane incident:
+  # incident_4a6fc4e5-2d9d-407b-9c92-79e5724ad179 fired 2026-07-27T12:41Z after
+  # exactly 2 failed probe cycles, with no duplicate parent and no legacy noise.
+  # This phase swaps the route to the working local sglang endpoint so the next
+  # probe succeeds and the SAME incident resolves via a genuine recovery reply
+  # (not the departure path — the model must stay in the catalog until after
+  # recovery). A final PR deletes the whole block once the evidence is archived.
   - id: staging-alert-validation
     name: "Alert Validation (synthetic — do not use)"
-    provider: openai_compat
-    quantization: "bf16"
+    provider: sglang
+    quantization: "fp8"
     context_length: 8192
     max_output_length: 1024
     supports_tools: false
@@ -1061,9 +1054,12 @@ models:
       input_cache_reads: "0"
       input_cache_writes: "0"
     route:
-      - kind: openai_compat
+      - kind: sglang
         weight: 1.0
-        base_url: http://127.0.0.1:59999/v1
-        provider_model_id: "validation/does-not-exist"
+        base_url: ${LOCAL_DEPLOYMENT_URL}
+        provider_model_id: "Qwen/Qwen3.6-35B-A3B-FP8"
         api_keys:
-          - "synthetic-validation-key"
+          - ${LOCAL_API_KEY}
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
