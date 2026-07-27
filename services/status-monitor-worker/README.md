@@ -56,10 +56,13 @@ Two whole-deployment cases are also covered:
   over quota), no model can be probed — so a single **"Monitoring cycle
   failing"** page is sent (edge-triggered, with a matching recovery notice)
   instead of nothing.
-- **Mass outage (storm cap).** When more than `ALERT_STORM_THRESHOLD` models
-  (default **5**) change state in the same cycle — e.g. a provider-wide blip —
-  the individual pages collapse into one **"N models down"** / **"N models
-  recovered"** summary so the channel isn't flooded.
+- **Mass outage.** Control-plane-owned incidents always open **one incident
+  per model**, whatever the batch size, so each model keeps its own thread and
+  recovers independently (D1 decision, 2026-07-27). Only in the
+  `ALERT_DEFAULT_OWNER=legacy` rollback mode does a cycle with more than
+  `ALERT_STORM_THRESHOLD` models (default **5**) still collapse into one
+  **"N models down"** / **"N models recovered"** webhook summary, because one
+  text per model would flood the channel there.
 
 ## Endpoints
 

@@ -33,8 +33,9 @@ PROBE_DEADLINE_MS = "60000"
 # (~20 min apart) confirms a sustained outage and suppresses a single transient
 # blip. Only fires when the SLACK_WEBHOOK_URL secret is set.
 ALERT_FAILURE_THRESHOLD = "2"
-# Above this many models changing state in one cycle, the per-model pages collapse
-# into a single summary message so a provider-wide blip doesn't flood the channel.
+# Legacy rollback mode only (ALERT_DEFAULT_OWNER=legacy): above this many models
+# changing state in one cycle, legacy-owned pages collapse into a single summary
+# message. Control-plane incidents always open one per model (D1, 2026-07-27).
 ALERT_STORM_THRESHOLD = "5"
 # New individual model incidents use the unified Control Plane. Incidents opened
 # before this switch stay pinned to their legacy writer until they recover.

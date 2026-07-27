@@ -578,13 +578,15 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   );
   const storm = config.alertStormThreshold;
 
-  // A provider-wide blip can take down many models at once. Past `storm`, collapse
-  // them into one summary message so the channel isn't flooded with one page per
-  // model; below it, page individually (concurrently, so a batch doesn't hold the
-  // cycle lock for count × per-request timeout). Either way a model's state
-  // transition is committed only once its page is confirmed delivered, so a failed
-  // POST retries next cycle instead of dropping the alert.
-  if (down.length > storm) {
+  // D1 decision (2026-07-27): a mass outage opens one Control Plane incident
+  // per model, so every model keeps the same thread, occurrence updates, and
+  // independent recovery regardless of batch size — the all-or-nothing group
+  // recovery below applies only to incidents opened as legacy storms. The
+  // legacy summary survives solely for the ALERT_DEFAULT_OWNER=legacy rollback
+  // mode, where one webhook text per model would flood the channel. Either way
+  // a model's state transition is committed only once its page is confirmed
+  // delivered, so a failed delivery retries next cycle instead of dropping.
+  if (defaultOwner === "legacy" && down.length > storm) {
     const event = modelsDownEvent(config, down, threshold);
     if (await deliverAlert(env, event)) {
       for (const r of down) nextState[r.modelId] = event.fingerprint;

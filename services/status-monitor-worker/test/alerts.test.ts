@@ -657,11 +657,16 @@ describe("runAlerts", () => {
     const submit = vi.fn(async () => {
       throw new Error("response lost");
     });
-    const env = controlPlaneEnv(db, submit, "control-plane", "https://hook.test/x");
+    // `a` opens under the control-plane default and its transition sticks as
+    // durable pending. After a rollback to the legacy default, the storm
+    // summary of the new legacy incidents must not double-write `a`, whose
+    // transition still belongs to the control plane.
+    const envControlPlane = controlPlaneEnv(db, submit, "control-plane", "https://hook.test/x");
+    const env = controlPlaneEnv(db, submit, "legacy", "https://hook.test/x");
     const posts = stubFetch();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    await cycle(db, env, { a: false }, cfg(1, 2));
+    await cycle(db, envControlPlane, { a: false }, cfg(1, 2));
     await cycle(db, env, { a: false, b: false, c: false, d: false }, cfg(1, 2));
 
     expect(submit).toHaveBeenCalledTimes(2);
@@ -810,33 +815,66 @@ describe("runAlerts", () => {
     expect(db.meta.has("alert_delivery_owner:v1:status-monitor:model:a")).toBe(false);
   });
 
-  it("reports an undeliverable storm summary instead of dropping it silently", async () => {
+  // D1 decision (2026-07-27): control-plane-owned mass outages open one
+  // incident per model instead of collapsing into a legacy summary. This also
+  // closes the old storm black hole — with no legacy destination configured, a
+  // mass outage now delivers through the Control Plane instead of logging
+  // "undeliverable" every cycle.
+  it("opens one control-plane incident per model in a mass outage", async () => {
     const db = new FakeD1();
-    const submit = vi.fn(async () => acceptedRpcResult());
-    // Control-plane owner configured, but neither legacy destination exists —
-    // the exact deployment shape where a mass outage previously went nowhere
-    // with no post attempted and no log line.
-    const env = controlPlaneEnv(db, submit);
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit); // no relay, no webhook
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const conf = cfg(1, 2); // collapse into a summary above 2 models
+    const conf = cfg(1, 2); // 3 models > storm threshold of 2
 
     await cycle(db, env, { a: false, b: false, c: false }, conf);
 
-    expect(submit).not.toHaveBeenCalled(); // storm stays legacy-owned
-    const undeliverable = "legacy alert undeliverable (no relay or webhook configured): 3 models down";
-    expect(log).toHaveBeenCalledWith(undeliverable);
-    expect(db.meta.has("alert_state")).toBe(false); // nothing committed, so it retries
-
-    // The failed edge re-fires every cycle, so the signal repeats instead of
-    // being a single line lost in old logs.
-    await cycle(db, env, { a: false, b: false, c: false }, conf);
-    expect(log.mock.calls.filter(([message]) => message === undeliverable)).toHaveLength(2);
+    expect(submit).toHaveBeenCalledTimes(3);
+    expect(
+      bodies.map((body) => JSON.parse(body).context.model_id).sort(),
+    ).toEqual(["a", "b", "c"]);
+    expect(log).not.toHaveBeenCalled(); // delivered — nothing is undeliverable
+    const state = JSON.parse(db.meta.get("alert_state")!);
+    expect(Object.keys(state).sort()).toEqual(["a", "b", "c"]);
+    expect(state.a).toBe("status-monitor:model:a"); // individual, not storm, fingerprints
   });
 
-  it("keeps storm incidents on the legacy writer after the individual cutover", async () => {
+  it("recovers mass-outage models independently instead of all-or-nothing", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      return acceptedRpcResult();
+    });
+    const env = controlPlaneEnv(db, submit);
+    const conf = cfg(1, 2);
+
+    await cycle(db, env, { a: false, b: false, c: false }, conf);
+    // Only `a` recovers. Under the legacy storm grouping this resolved nothing
+    // until the whole group came back; per-model incidents resolve one by one.
+    await cycle(db, env, { a: true, b: false, c: false }, conf);
+
+    const transitions = bodies.map((body) => {
+      const parsed = JSON.parse(body);
+      return `${parsed.status}:${parsed.context.model_id}`;
+    });
+    expect(transitions.slice(3).sort()).toEqual(["resolved:a"]);
+    const state = JSON.parse(db.meta.get("alert_state")!);
+    expect(Object.keys(state).sort()).toEqual(["b", "c"]);
+    expect(db.meta.has("alert_delivery_owner:v1:status-monitor:model:a")).toBe(false);
+    expect(db.meta.get("alert_delivery_owner:v1:status-monitor:model:b")).toBe("control-plane");
+  });
+
+  it("keeps the storm summary for the legacy rollback mode", async () => {
     const db = new FakeD1();
     const submit = vi.fn(async () => acceptedRpcResult());
-    const env = controlPlaneEnv(db, submit, "control-plane", "https://hook.test/x");
+    // ALERT_DEFAULT_OWNER rolled back to legacy: one webhook text per model
+    // would flood the channel, so the collapse must survive there.
+    const env = controlPlaneEnv(db, submit, "legacy", "https://hook.test/x");
     const posts = stubFetch();
     const conf = cfg(1, 2);
 
@@ -850,6 +888,33 @@ describe("runAlerts", () => {
     expect(
       [...db.meta.keys()].some((key) => key.startsWith("alert_delivery_owner:v1:")),
     ).toBe(false);
+  });
+
+  it("drains a pre-switch storm through the legacy summary after the cutover", async () => {
+    const db = new FakeD1();
+    const submit = vi.fn(async () => acceptedRpcResult());
+    const env = controlPlaneEnv(db, submit, "control-plane", "https://hook.test/x");
+    const posts = stubFetch();
+    const conf = cfg(1, 2);
+    // A storm opened before the per-model switch left storm-fingerprint state;
+    // its incident belongs to the legacy writer until it fully recovers.
+    db.meta.set(
+      "alert_state",
+      JSON.stringify({
+        a: "status-monitor:storm:cafe1234",
+        b: "status-monitor:storm:cafe1234",
+      }),
+    );
+
+    await cycle(db, env, { a: true, b: true }, conf);
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(posts).toHaveLength(1);
+    expect(posts[0].text).toContain("2 models recovered");
+    const state = db.meta.has("alert_state")
+      ? JSON.parse(db.meta.get("alert_state")!)
+      : {};
+    expect(Object.keys(state)).toEqual([]);
   });
 
   it("atomically retains state, pending event, and owner when completion commit fails", async () => {
