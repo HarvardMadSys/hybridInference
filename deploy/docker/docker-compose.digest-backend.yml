@@ -1,0 +1,15 @@
+# Digest-deploy override (staging artifact-consumer, slice 1).
+#
+# Adds an image reference to the backend service so `docker compose up
+# --no-build` runs a pulled candidate instead of building from the host
+# checkout. Everything else is unchanged: the checkout keeps supplying
+# config/, distributions/, var/data and .env as mounts.
+#
+# Usage (driven by the "Deploy Staging by Digest" workflow):
+#   BACKEND_IMAGE=ghcr.io/<owner>/hybridinference-backend@sha256:... \
+#     docker compose -f deploy/docker/docker-compose.yml \
+#                    -f deploy/docker/docker-compose.digest-backend.yml \
+#                    --env-file .env up -d --no-build backend
+services:
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be a full image@sha256 reference}
