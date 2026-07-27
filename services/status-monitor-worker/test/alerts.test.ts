@@ -1132,6 +1132,21 @@ describe("runAlerts", () => {
     expect(db.meta.get("alert_delivery_owner:v1:status-monitor:model:b")).toBe(
       "control-plane",
     );
+    // The mapping must survive too. Dropping it would strand b's open incident:
+    // a later healthy probe would no longer count as a recovery, so nothing
+    // could ever resolve it.
+    expect(JSON.parse(db.meta.get("alert_state")!)).toEqual({
+      b: "status-monitor:model:b",
+    });
+
+    // Proof it is not stranded: b recovers normally on the next observed cycle.
+    await cycle(db, env, { b: true }, cfg(1));
+    expect(bodies.map((body) => JSON.parse(body).status)).toEqual([
+      "firing",
+      "resolved",
+      "firing",
+      "resolved",
+    ]);
   });
 
   it("collapses a mass outage into a single summary page above the storm threshold", async () => {

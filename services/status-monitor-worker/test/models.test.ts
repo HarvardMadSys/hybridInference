@@ -57,6 +57,27 @@ describe("discoverModels", () => {
     await expect(discoverModels(config, "k")).rejects.toThrow(/no usable probe targets/);
   });
 
+  // A blank id would otherwise be probed as a real model and count as a present
+  // one, making a degenerate catalog look usable while every genuine model reads
+  // as departed.
+  it("throws on a catalog of blank ids rather than treating them as targets", async () => {
+    stubFetch(
+      new Response(JSON.stringify({ data: [{ id: "" }, { id: "   " }] }), {
+        status: 200,
+      }),
+    );
+    await expect(discoverModels(config, "k")).rejects.toThrow(/no usable probe targets/);
+  });
+
+  it("skips blank ids but keeps the usable rest of the catalog", async () => {
+    stubFetch(
+      new Response(JSON.stringify({ data: [{ id: " " }, { id: "glm-4.7" }] }), {
+        status: 200,
+      }),
+    );
+    expect(await discoverModels(config, "k")).toEqual([{ id: "glm-4.7", kind: "chat" }]);
+  });
+
   it("throws on a malformed catalog (non-array data) instead of returning empty", async () => {
     stubFetch(new Response(JSON.stringify({ models: "oops" }), { status: 200 }));
     await expect(discoverModels(config, "k")).rejects.toThrow(/malformed/);

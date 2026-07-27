@@ -49,7 +49,11 @@ export async function discoverModels(config: Config, apiKey: string): Promise<Ta
   const targets: TargetModel[] = [];
   const seen = new Set<string>();
   for (const model of data) {
-    if (typeof model.id !== "string" || seen.has(model.id)) {
+    // A blank id is not a probe target. Kept, it would be requested as if it were
+    // a real model, fail, and still count as a *present* model — enough to make
+    // the guard below see a usable catalog while every genuine model reads as
+    // departed, which is the exact mass resolution that guard exists to prevent.
+    if (typeof model.id !== "string" || model.id.trim() === "" || seen.has(model.id)) {
       continue;
     }
     seen.add(model.id);
