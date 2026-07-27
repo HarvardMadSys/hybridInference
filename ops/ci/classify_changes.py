@@ -28,6 +28,7 @@ CATEGORIES = (
     "status_monitor",
     "alert_control_plane",
     "docker_shared",
+    "python_tests",
     "security_only",
     "full",
 )
@@ -91,6 +92,7 @@ class Classification:
     status_monitor: bool = False
     alert_control_plane: bool = False
     docker_shared: bool = False
+    python_tests: bool = False
     security_only: bool = False
     full: bool = False
     reason: str = ""
@@ -136,11 +138,15 @@ def _is_docs(path: str) -> bool:
 def classify(files: Sequence[str] | None) -> Classification:
     """Classify a diff into trigger booleans; ``None`` forces a full run."""
     if files is None:
-        return Classification(full=True, reason="diff unavailable; forcing full run")
+        return Classification(
+            full=True,
+            python_tests=True,
+            reason="diff unavailable; forcing full run",
+        )
 
     normalized = sorted({_normalize(path) for path in files if path.strip()})
     if not normalized:
-        return Classification(full=True, reason="empty diff; forcing full run")
+        return Classification(full=True, python_tests=True, reason="empty diff; forcing full run")
 
     result = Classification()
     matched: dict[str, list[str]] = {}
@@ -153,6 +159,7 @@ def classify(files: Sequence[str] | None) -> Classification:
         # 1. Full triggers win outright (broadest blast radius / build inputs).
         if _is_full(path):
             result.full = True
+            result.python_tests = True
             hit("full", path)
             continue
         # 2. Documentation never triggers application checks.
@@ -167,6 +174,7 @@ def classify(files: Sequence[str] | None) -> Classification:
             recognized = True
         if path.startswith(BACKEND_SOURCE_PREFIX) or path.startswith(BACKEND_TEST_PREFIX):
             result.backend = True
+            result.python_tests = True
             hit("backend", path)
             recognized = True
             # Tests exercise backend code but are not COPY inputs to an image.
@@ -179,20 +187,24 @@ def classify(files: Sequence[str] | None) -> Classification:
             result.docker_images.add("oncall")
         if path.startswith(STATUS_MONITOR_PREFIX):
             result.status_monitor = True
+            result.python_tests = True
             hit("status_monitor", path)
             recognized = True
         if path.startswith(ALERT_CONTROL_PLANE_PREFIX):
             result.alert_control_plane = True
+            result.python_tests = True
             hit("alert_control_plane", path)
             recognized = True
         if path in DOCKER_SHARED_FILES:
             result.docker_shared = True
+            result.python_tests = True
             hit("docker_shared", path)
             recognized = True
         if path.startswith(FRONTEND_PREFIX):
             result.docker_images.add("frontend")
         if image := DOCKER_IMAGE_FILES.get(path):
             result.docker_images.add(image)
+            result.python_tests = True
             hit(image, path)
             recognized = True
             if image == "frontend":
@@ -204,6 +216,7 @@ def classify(files: Sequence[str] | None) -> Classification:
         # 4. Unknown path -> conservative full run.
         if not recognized:
             result.full = True
+            result.python_tests = True
             unknown.append(path)
             hit("full", path)
 
@@ -214,6 +227,7 @@ def classify(files: Sequence[str] | None) -> Classification:
         or result.status_monitor
         or result.alert_control_plane
         or result.docker_shared
+        or result.python_tests
     )
     if not result.full and not narrow:
         # Everything was documentation: only security scan + gate are needed.

@@ -7,6 +7,14 @@ on:
     - cron: '23 18 * * *'
   push:
     branches: [main, dev, "murphy/dev/*"]
+    # Keep docs-only branch pushes from triggering deployment workflows.
+    # Pull requests intentionally do not use these filters so CI Gate is
+    # always reported for branch protection.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches: [main, dev]
 
@@ -33,6 +41,7 @@ jobs:
       status_monitor: ${{ steps.validate.outputs.status_monitor }}
       alert_control_plane: ${{ steps.validate.outputs.alert_control_plane }}
       docker_shared: ${{ steps.validate.outputs.docker_shared }}
+      python_tests: ${{ steps.validate.outputs.python_tests }}
       security_only: ${{ steps.validate.outputs.security_only }}
       full: ${{ steps.validate.outputs.full }}
       docker_matrix: ${{ steps.validate.outputs.docker_matrix }}
@@ -71,6 +80,7 @@ jobs:
             "status_monitor":${{ toJSON(steps.classify.outputs.status_monitor) }},
             "alert_control_plane":${{ toJSON(steps.classify.outputs.alert_control_plane) }},
             "docker_shared":${{ toJSON(steps.classify.outputs.docker_shared) }},
+            "python_tests":${{ toJSON(steps.classify.outputs.python_tests) }},
             "security_only":${{ toJSON(steps.classify.outputs.security_only) }},
             "full":${{ toJSON(steps.classify.outputs.full) }},
             "docker_matrix":${{ toJSON(steps.classify.outputs.docker_matrix) }}}
@@ -250,7 +260,7 @@ jobs:
       (github.event_name != 'pull_request' ||
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
-      needs.changes.outputs.backend == 'true')
+      needs.changes.outputs.python_tests == 'true')
     # Service containers need Docker socket access; keep these jobs off the
     # generic pool that includes gpu1, which lacks that access.
     runs-on: [self-hosted, Linux, ci-general]
@@ -613,6 +623,7 @@ jobs:
             "status_monitor":${{ toJSON(needs.changes.outputs.status_monitor) }},
             "alert_control_plane":${{ toJSON(needs.changes.outputs.alert_control_plane) }},
             "docker_shared":${{ toJSON(needs.changes.outputs.docker_shared) }},
+            "python_tests":${{ toJSON(needs.changes.outputs.python_tests) }},
             "security_only":${{ toJSON(needs.changes.outputs.security_only) }},
             "full":${{ toJSON(needs.changes.outputs.full) }},
             "docker_matrix":${{ toJSON(needs.changes.outputs.docker_matrix) }}}

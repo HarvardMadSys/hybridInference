@@ -20,6 +20,7 @@ BOOLEAN_OUTPUTS = (
     "status_monitor",
     "alert_control_plane",
     "docker_shared",
+    "python_tests",
     "security_only",
     "full",
 )
@@ -28,7 +29,7 @@ APP_JOB_CATEGORIES = {
     "backend-quality": "backend",
     "frontend-quality": "frontend",
     "alert-control-plane-check": "alert_control_plane",
-    "test": "backend",
+    "test": "python_tests",
 }
 REQUIRED_JOBS = (
     "changes",
@@ -99,13 +100,26 @@ def parse_classification(payload: str) -> ClassificationOutputs:
         raise ValueError(f"docker_matrix must use stable order {list(DOCKER_IMAGES)}")
 
     narrow = [name for name in BOOLEAN_OUTPUTS if name not in {"security_only", "full"}]
+    primary = [name for name in narrow if name != "python_tests"]
     if booleans["security_only"]:
         if booleans["full"] or any(booleans[name] for name in narrow):
             raise ValueError("security_only must be exclusive")
         if matrix:
             raise ValueError("security_only must not build application images")
-    elif not booleans["full"] and not any(booleans[name] for name in narrow):
+    elif not booleans["full"] and not any(booleans[name] for name in primary):
         raise ValueError("classification must select full, security_only, or a narrow category")
+
+    python_inputs = (
+        "backend",
+        "oncall",
+        "status_monitor",
+        "alert_control_plane",
+        "docker_shared",
+    )
+    if (booleans["full"] or any(booleans[name] for name in python_inputs)) and not booleans[
+        "python_tests"
+    ]:
+        raise ValueError("Python-consumed inputs must enable python_tests")
 
     if booleans["full"] or booleans["docker_shared"]:
         if matrix != list(DOCKER_IMAGES):

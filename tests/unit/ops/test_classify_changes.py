@@ -33,21 +33,21 @@ def test_backend_sources_and_tests_map_to_backend() -> None:
     source = classify(["apps/backend/routing/routers.py"])
     tests = classify(["tests/unit/test_router.py"])
 
-    assert _true_categories(source) == {"backend"}
+    assert _true_categories(source) == {"backend", "python_tests"}
     assert source.docker_matrix() == ["backend"]
-    assert _true_categories(tests) == {"backend"}
+    assert _true_categories(tests) == {"backend", "python_tests"}
     assert tests.docker_matrix() == []
 
 
 def test_oncall_source_also_triggers_backend_tests() -> None:
     result = classify(["apps/backend/serving/oncall/app.py"])
-    assert _true_categories(result) == {"oncall", "backend"}
+    assert _true_categories(result) == {"oncall", "backend", "python_tests"}
     assert result.docker_matrix() == ["backend", "oncall"]
 
 
 def test_oncall_dockerfile_is_oncall_only() -> None:
     result = classify(["deploy/docker/Dockerfile.oncall"])
-    assert _true_categories(result) == {"oncall"}
+    assert _true_categories(result) == {"oncall", "python_tests"}
     assert result.docker_matrix() == ["oncall"]
 
 
@@ -55,26 +55,26 @@ def test_shared_serving_change_triggers_oncall_and_backend() -> None:
     # Dockerfile.oncall COPYs the whole apps/backend/serving tree, so shared
     # serving code (not just serving/oncall) is baked into the on-call image.
     result = classify(["apps/backend/serving/config/settings.py"])
-    assert _true_categories(result) == {"oncall", "backend"}
+    assert _true_categories(result) == {"oncall", "backend", "python_tests"}
     assert result.docker_matrix() == ["backend", "oncall"]
 
 
 def test_status_monitor_change() -> None:
     result = classify(["services/status-monitor-worker/main.py"])
-    assert _true_categories(result) == {"status_monitor"}
+    assert _true_categories(result) == {"status_monitor", "python_tests"}
     assert result.docker_matrix() == []
 
 
 def test_alert_control_plane_change() -> None:
     result = classify(["services/alert-control-plane-worker/src/index.ts"])
-    assert _true_categories(result) == {"alert_control_plane"}
+    assert _true_categories(result) == {"alert_control_plane", "python_tests"}
     assert result.docker_matrix() == []
 
 
 def test_docker_shared_change() -> None:
     for path in (".dockerignore", "deploy/docker/docker-compose.yml"):
         result = classify([path])
-        assert _true_categories(result) == {"docker_shared"}
+        assert _true_categories(result) == {"docker_shared", "python_tests"}
         assert result.docker_matrix() == ["frontend", "backend", "oncall"]
 
 
@@ -88,7 +88,7 @@ def test_docker_shared_change() -> None:
 )
 def test_image_specific_dockerfile_change(path: str, category: str, matrix: list[str]) -> None:
     result = classify([path])
-    assert _true_categories(result) == {category}
+    assert _true_categories(result) == {category, "python_tests"}
     assert result.docker_matrix() == matrix
 
 
@@ -107,6 +107,7 @@ def test_image_specific_dockerfile_change(path: str, category: str, matrix: list
 def test_full_triggers(path: str) -> None:
     result = classify([path])
     assert result.full is True
+    assert result.python_tests is True
     assert "full" in _true_categories(result)
     assert result.docker_matrix() == ["frontend", "backend", "oncall"]
 
@@ -143,12 +144,14 @@ def test_unknown_path_still_reports_recognized_narrow_categories() -> None:
 def test_none_diff_forces_full() -> None:
     result = classify(None)
     assert result.full is True
+    assert result.python_tests is True
     assert "diff unavailable" in result.reason
 
 
 def test_empty_diff_forces_full() -> None:
     result = classify([])
     assert result.full is True
+    assert result.python_tests is True
     assert "empty diff" in result.reason
 
 

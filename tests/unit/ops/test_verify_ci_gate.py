@@ -63,7 +63,7 @@ def test_pr_docs_only_requires_only_changes_and_security() -> None:
 def test_pr_backend_source_requires_backend_tests_and_affected_docker() -> None:
     verify_gate(
         "pull_request",
-        _classification(backend=True, matrix=("backend",)),
+        _classification(backend=True, python_tests=True, matrix=("backend",)),
         _results(**{"backend-quality": "success", "test": "success", "docker-build": "success"}),
     )
 
@@ -71,7 +71,7 @@ def test_pr_backend_source_requires_backend_tests_and_affected_docker() -> None:
 def test_pr_tests_only_runs_backend_without_docker() -> None:
     verify_gate(
         "pull_request",
-        _classification(backend=True),
+        _classification(backend=True, python_tests=True),
         _results(**{"backend-quality": "success", "test": "success"}),
     )
 
@@ -79,15 +79,43 @@ def test_pr_tests_only_runs_backend_without_docker() -> None:
 def test_pr_alert_only_runs_alert_checks_without_app_images() -> None:
     verify_gate(
         "pull_request",
-        _classification(alert_control_plane=True),
-        _results(**{"alert-control-plane-check": "success"}),
+        _classification(alert_control_plane=True, python_tests=True),
+        _results(**{"alert-control-plane-check": "success", "test": "success"}),
+    )
+
+
+def test_pr_status_monitor_runs_python_contract_tests_without_app_images() -> None:
+    verify_gate(
+        "pull_request",
+        _classification(status_monitor=True, python_tests=True),
+        _results(test="success"),
+    )
+
+
+def test_pr_frontend_dockerfile_runs_frontend_python_tests_and_image() -> None:
+    verify_gate(
+        "pull_request",
+        _classification(frontend=True, python_tests=True, matrix=("frontend",)),
+        _results(**{"frontend-quality": "success", "test": "success", "docker-build": "success"}),
+    )
+
+
+def test_pr_docker_shared_runs_python_tests_and_all_images() -> None:
+    verify_gate(
+        "pull_request",
+        _classification(
+            docker_shared=True,
+            python_tests=True,
+            matrix=("frontend", "backend", "oncall"),
+        ),
+        _results(test="success", **{"docker-build": "success"}),
     )
 
 
 def test_pr_full_requires_all_application_jobs_and_images() -> None:
     verify_gate(
         "pull_request",
-        _classification(full=True, matrix=("frontend", "backend", "oncall")),
+        _classification(full=True, python_tests=True, matrix=("frontend", "backend", "oncall")),
         _results(
             **{
                 "backend-quality": "success",
@@ -119,7 +147,7 @@ def test_push_requires_all_app_jobs_and_skips_docker() -> None:
 def test_schedule_and_manual_require_all_app_jobs_and_docker(event_name: str) -> None:
     verify_gate(
         event_name,
-        _classification(full=True, matrix=("frontend", "backend", "oncall")),
+        _classification(full=True, python_tests=True, matrix=("frontend", "backend", "oncall")),
         _results(
             **{
                 "backend-quality": "success",
@@ -163,7 +191,7 @@ def test_should_skip_rejects_unexpected_success() -> None:
     with pytest.raises(ValueError, match="frontend-quality"):
         verify_gate(
             "pull_request",
-            _classification(backend=True),
+            _classification(backend=True, python_tests=True),
             _results(
                 **{
                     "backend-quality": "success",
@@ -178,7 +206,7 @@ def test_should_run_rejects_skipped() -> None:
     with pytest.raises(ValueError, match="backend-quality"):
         verify_gate(
             "pull_request",
-            _classification(backend=True),
+            _classification(backend=True, python_tests=True),
             _results(test="success"),
         )
 
@@ -227,7 +255,7 @@ def test_validate_cli_writes_canonical_github_outputs(tmp_path: Path) -> None:
             str(VERIFIER),
             "validate-classification",
             "--classification-json",
-            _classification(backend=True, matrix=("backend",)),
+            _classification(backend=True, python_tests=True, matrix=("backend",)),
             "--github-output",
             str(output),
         ],
