@@ -1028,15 +1028,20 @@ models:
   #       provider_model_id: "gemini-2.5-flash"
 
   # --- TEMPORARY: C3c staging validation (remove after docs/reviews evidence lands) ---
-  # Synthetic model whose only route points at a dead local port, so every probe
-  # fails with an isolated endpoint_id (vllm:127.0.0.1:59999) and no real
-  # provider's circuit-breaker health is touched. Probes are synthetic-tagged, so
-  # no cost/metrics noise. Plan: fires after 2 probe cycles -> validate the Slack
-  # incident parent; a follow-up PR swaps the route to the working local sglang
-  # endpoint -> validate the genuine recovery reply; a final PR deletes the block.
+  # Synthetic model whose only route points at a dead local port. The endpoint_id
+  # is unique, so no real provider's circuit-breaker ROUTING health is touched —
+  # but the gateway's legacy "Provider circuit opened" alert still fires for this
+  # endpoint (X-Probe exempts logging/cost only, not breaker accounting). The
+  # dedicated provider label below keeps that alert self-describing and its
+  # dedupe key isolated from real providers; expect roughly one clearly-labeled
+  # legacy alert per probe cycle while broken, or snooze legacy alerts for the
+  # window via the admin alerts endpoint. Plan: fires after 2 probe cycles ->
+  # validate the Slack incident parent; a follow-up PR swaps the route to the
+  # working local sglang endpoint -> validate the genuine recovery reply; a
+  # final PR deletes the block.
   - id: staging-alert-validation
     name: "Alert Validation (synthetic — do not use)"
-    provider: vllm
+    provider: synthetic-validation
     quantization: "bf16"
     context_length: 8192
     max_output_length: 1024
