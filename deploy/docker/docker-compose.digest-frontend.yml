@@ -1,0 +1,9 @@
+# Digest-deploy override for the frontend (staging artifact-consumer,
+# slice 1). Only include this file when actually deploying a frontend
+# candidate; a CI-built frontend bakes the compose-file NEXT_PUBLIC_*
+# defaults unless the staging build-arg values were supplied at build
+# time, so it is NOT parity-safe by default — see the "Build Candidate
+# Images" workflow header.
+services:
+  frontend:
+    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE must be a full image@sha256 reference}

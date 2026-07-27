@@ -1,0 +1,116 @@
+name: Build Candidate Images
+
+# Staging artifact-consumer chain, slice 1 (route (b)-minimal):
+# build backend (and optionally frontend) images from the current source
+# and push them to GHCR so staging can deploy by immutable digest instead
+# of building from a source checkout.
+#
+# Manual-only: nothing builds or publishes automatically. This slice
+# deliberately does NOT add a release manifest, signing, or attestation —
+# the digest printed in the run summary is the whole deliverable.
+#
+# First run: dispatch this at the exact SHA staging currently runs, so the
+# digest deploy that follows is provably a packaging-only change.
+#
+# Frontend parity caveat: the frontend Dockerfile takes ~25 NEXT_PUBLIC_*
+# build args whose staging values live in the staging host's .env and are
+# injected by compose at build time. A CI build cannot see them, so a
+# frontend candidate bakes the compose-file defaults and is NOT
+# parity-safe for staging until that is settled. It is therefore behind
+# an input flag and off by default; slice 1 is the backend chain.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Image platform; must match the staging host (the digest deploy logs its uname -m)"
+        type: string
+        default: linux/amd64
+      build_frontend:
+        description: "Also build a frontend candidate (bakes default NEXT_PUBLIC_* values; see header)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-candidates
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and push candidates
+    # GitHub-hosted (amd64) on purpose: candidate publishing should not
+    # depend on FreeInference self-hosted runners. Cross-arch builds go
+    # through QEMU via the platform input.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute image names
+        id: names
+        run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "backend=ghcr.io/${owner}/hybridinference-backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=ghcr.io/${owner}/hybridinference-frontend" >> "$GITHUB_OUTPUT"
+          echo "shortsha=${GITHUB_SHA:0:8}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend
+        id: backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.backend
+          platforms: ${{ inputs.platform }}
+          push: true
+          tags: ${{ steps.names.outputs.backend }}:dev-${{ steps.names.outputs.shortsha }}
+          # Same private-dependency token the staging deploy forwards to the
+          # compose build (routewise git dependency).
+          secrets: |
+            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
+
+      - name: Build and push frontend
+        if: ${{ inputs.build_frontend }}
+        id: frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.frontend
+          platforms: ${{ inputs.platform }}
+          push: true
+          tags: ${{ steps.names.outputs.frontend }}:dev-${{ steps.names.outputs.shortsha }}
+
+      - name: Candidate summary
+        env:
+          BACKEND_DIGEST: ${{ steps.backend.outputs.digest }}
+          FRONTEND_DIGEST: ${{ steps.frontend.outputs.digest }}
+        run: |
+          {
+            echo "## Candidate images"
+            echo ""
+            echo "- source SHA: \`${GITHUB_SHA}\`"
+            echo "- platform: \`${{ inputs.platform }}\`"
+            echo "- backend: \`${{ steps.names.outputs.backend }}@${BACKEND_DIGEST}\`"
+            if [ -n "${FRONTEND_DIGEST}" ]; then
+              echo "- frontend: \`${{ steps.names.outputs.frontend }}@${FRONTEND_DIGEST}\`"
+            fi
+            echo ""
+            echo "Deploy: Actions -> Deploy Staging by Digest -> paste the full image@sha256 reference."
+            echo "Record kept on the staging host in var/deploy-digest.log."
+          } >> "$GITHUB_STEP_SUMMARY"
