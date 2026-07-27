@@ -38,7 +38,8 @@
 | SlackSink | ✅ 已完成 |
 | staging 单模型上下线告警 | ✅ 已迁移（**仅当同时故障 ≤ `ALERT_STORM_THRESHOLD`=5**） |
 | **P0 收口修复** | 🟡 已提 PR：#1042（3 项 P0 + Codex 两条）与 closeout PR（P1-B/P2-G/health/README），待合并 |
-| status-monitor storm / cycle 告警 | ❌ 未迁移，**且契约里没有对应类型 —— 卡 D1 决策** |
+| status-monitor storm 告警 | 🟡 D1 已决（b，2026-07-27）：per-model 迁移已提 draft PR，待步骤 2 真实验证后合并 |
+| status-monitor cycle 告警 | ❌ 未迁移，需要新 alert type（约 1–2 人周，独立于 D1） |
 | 后端全部 `alert_slack` 告警（11 个调用点） | ❌ 未迁移，但已有 dormant Python 契约 |
 | 全局 snooze（管理员暂停告警） | ⚠️ 新链路无对应能力 —— 迁移即功能回归 |
 | 旧 Codex 自动分析回复 | ❌ 新链路未实现（`dispatch_analysis` 返回 `analysis_not_enabled`） |
@@ -82,7 +83,7 @@
 |---|---|---|---|
 | 1 | 暂停 production rollout | ✅ 已执行 | — |
 | 2 | 🔴 收口 P0 + 补真实 staging 验证 | 🟡 代码已提 PR（见 §2.1）；**真实 staging 验证仍缺** | 1–2 人周 |
-| 3 | staging 迁移 storm / cycle | 🔴 **卡 D1 决策** | 1–4 人周（取决于 D1） |
+| 3 | staging 迁移 storm / cycle | 🟡 D1 已决 = b；storm draft PR 已提（合并 gate：步骤 2 真实验证）；cycle 仍需新类型 | storm 已完成；cycle 1–2 人周 |
 | 4 | staging 迁移后端 `alert_slack`（单点适配） | 前置：步骤 2 | 2–3 人周 |
 | 5 | 补齐 snooze 等能力对齐 | 前置：步骤 4 | 0.5–1 人周 |
 | 6 | 决定并实现新链路 Codex 分析 | 前置：D6 决策 | 2–4 人周 |
@@ -126,7 +127,7 @@
 
 | ID | 决策 | 选项与价签 | 影响 |
 |---|---|---|---|
-| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | (a) 1 个聚合帖 + 展开列表：**2–4 人周**（新 alert type + 新状态机段）<br>(b) 20 个独立 thread：**~1 人周**（契约已支持，停止折叠即可；代价是大故障刷屏）<br>(c) 按 provider 聚合：**3–4 人周** | 🔴 **阻塞步骤 3**。cycle 告警无论选哪个都要新类型（+1–2 人周） |
+| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | ✅ **已决（2026-07-27）：(b) 每模型独立 thread**。storm 汇总仅保留在 legacy 回滚模式（`ALERT_DEFAULT_OWNER=legacy`）防 webhook 刷屏；以后如需聚合帖可在此之上叠加 | cycle 告警仍需新类型（+1–2 人周，独立工作） |
 | **D2** | "原地更新、不重复响铃"，on-call 真的想要吗？ | 当前设计不响 | 影响 `update_parent` 策略 |
 | **D6** | Codex 分析在后端迁移之前还是之后？ | (a) 之前：无回归窗口，推迟迁移 2–4 周<br>(b) 之后：接受"最有价值的告警恰好没分析"窗口<br>(c) 之后，但依赖分析的 producer 排最后迁 | 决定步骤 4/6 顺序 |
 | D3 | 生产上线时间窗口与审批路径 | — | 步骤 7 排期 |

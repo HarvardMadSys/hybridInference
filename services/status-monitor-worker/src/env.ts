@@ -21,8 +21,10 @@ export interface Env {
   CODEX_ONCALL_RELAY_TOKEN?: string;
   // Consecutive failed probes before a model pages Slack. Defaults to 2.
   ALERT_FAILURE_THRESHOLD?: string;
-  // More than this many models changing state in one cycle collapses into a
-  // single summary Slack message instead of one per model. Defaults to 5.
+  // Legacy rollback mode only (ALERT_DEFAULT_OWNER=legacy): more than this
+  // many models changing state in one cycle collapses into a single summary
+  // Slack message. Control-plane-owned incidents always open one per model
+  // (D1 decision, 2026-07-27). Defaults to 5.
   ALERT_STORM_THRESHOLD?: string;
   // New individual model incidents use this writer. Existing incidents remain
   // pinned to the writer that opened them until their recovery is confirmed.
@@ -65,8 +67,10 @@ export function loadConfig(env: Env): Config {
     // Consecutive failed probes that page Slack. Two suppresses a single
     // transient blip from alerting; intOr floors invalid/≤0 values at the default.
     alertFailureThreshold: intOr(env.ALERT_FAILURE_THRESHOLD, 2),
-    // Above this many models changing state in one cycle, pages collapse into a
-    // single summary message so a provider-wide blip doesn't flood the channel.
+    // Legacy rollback mode only: above this many models changing state in one
+    // cycle, legacy-owned pages collapse into a single summary message so a
+    // provider-wide blip doesn't flood the webhook channel. Control-plane
+    // incidents always open per model.
     alertStormThreshold: intOr(env.ALERT_STORM_THRESHOLD, 5),
   };
 }
