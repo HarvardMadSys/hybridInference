@@ -1449,6 +1449,44 @@ describe("runCycleAlert", () => {
     expect(db.meta.has("cycle_alert")).toBe(false);
   });
 
+  it("does not pin the cycle writer on an undeliverable attempt", async () => {
+    const db = new FakeD1();
+    const bodies: string[] = [];
+    const submit = vi.fn(async (bodyJson: string) => {
+      bodies.push(bodyJson);
+      return acceptedRpcResult();
+    });
+    // Feature off (flag unset → legacy) and no legacy destination: the firing
+    // edge is undeliverable, and must NOT claim the incident for legacy.
+    const off = {
+      ...(cycleControlPlaneEnv(db, submit) as unknown as Record<string, unknown>),
+      ALERT_CYCLE_OWNER: undefined,
+    } as unknown as Env;
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await runCycleAlert(off, config, failing);
+    expect(log).toHaveBeenCalledWith(
+      "legacy alert undeliverable (no relay or webhook configured): Monitoring cycle failing",
+    );
+    expect(submit).not.toHaveBeenCalled();
+    // Pinning happens on commit, not attempt — otherwise this row would read
+    // "legacy" forever and the later flag flip below would be a no-op, wedging
+    // the cycle alert on a writer that can never deliver it.
+    expect(db.meta.has("alert_delivery_owner:v1:status-monitor:cycle")).toBe(false);
+
+    // Ops flips ALERT_CYCLE_OWNER: the still-open outage must go control-plane.
+    await runCycleAlert(cycleControlPlaneEnv(db, submit), config, failing);
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(bodies[0])).toMatchObject({
+      alert_type: "monitoring_cycle_failure",
+      status: "firing",
+    });
+    expect(db.meta.get("alert_delivery_owner:v1:status-monitor:cycle")).toBe(
+      "control-plane",
+    );
+    expect(db.meta.get("cycle_alert")).toBe("2026-06-25T00:00:00Z");
+  });
+
   it("keeps a control-plane cycle incident on its writer after rollback", async () => {
     const db = new FakeD1();
     const bodies: string[] = [];

@@ -17,6 +17,7 @@ import {
   modelUnavailableEvent,
   monitoringCycleEvent,
   prepareDrainOwnerRelease,
+  prepareDrainOwnerWrite,
   preparePendingCanonicalEventCompletion,
   readDrainOwner,
   resolveDrainOwner,
@@ -726,6 +727,12 @@ export async function runCycleAlert(env: Env, config: Config, status: CycleStatu
           env.DB,
           pending.status === "firing" ? "alerted" : null,
         ),
+        // A replayed firing pins the writer here — pending rows only exist on
+        // the control-plane path, and the pin must land with the marker so a
+        // later flag flip cannot fork the recovery onto the legacy path.
+        ...(pending.status === "firing"
+          ? [prepareDrainOwnerWrite(env.DB, CYCLE_FINGERPRINT, "control-plane")]
+          : []),
         ...preparePendingCanonicalEventCompletion(env.DB, pending),
       ]);
     }
@@ -747,20 +754,28 @@ async function deliverCycleTransition(
   status: CycleStatus,
   transition: ModelUnavailableStatus,
 ): Promise<void> {
-  const owner = await resolveDrainOwner(
-    env.DB,
-    CYCLE_FINGERPRINT,
-    transition,
-    configuredDefaultOwner(env.ALERT_CYCLE_OWNER),
-  );
+  // The writer is pinned only when a transition actually commits, unlike the
+  // per-model path (resolveDrainOwner pins on attempt, but its no-destination
+  // guard keeps it from ever attempting an undeliverable legacy edge). The
+  // cycle path deliberately attempts without a destination so the failure is
+  // reported — pinning that attempt would let an edge no writer can deliver
+  // permanently claim the incident for the legacy path, turning a later
+  // ALERT_CYCLE_OWNER flip into a no-op.
+  const owner =
+    (await readDrainOwner(env.DB, CYCLE_FINGERPRINT)) ??
+    (transition === "resolved"
+      ? "legacy" // a recovery with no pinned writer predates ownership: drain via legacy
+      : configuredDefaultOwner(env.ALERT_CYCLE_OWNER));
   const marker = transition === "firing" ? status.checkedAt || "alerted" : null;
+  const ownerCommit =
+    transition === "firing"
+      ? [prepareDrainOwnerWrite(env.DB, CYCLE_FINGERPRINT, owner)]
+      : [prepareDrainOwnerRelease(env.DB, CYCLE_FINGERPRINT)];
   if (owner === "legacy") {
     if (!(await deliverAlert(env, cycleEvent(config, status)))) return;
     await env.DB.batch([
       prepareCycleAlertStateWrite(env.DB, marker),
-      ...(transition === "resolved"
-        ? [prepareDrainOwnerRelease(env.DB, CYCLE_FINGERPRINT)]
-        : []),
+      ...ownerCommit,
     ]);
     return;
   }
@@ -778,6 +793,10 @@ async function deliverCycleTransition(
   if (!delivered) return;
   await env.DB.batch([
     prepareCycleAlertStateWrite(env.DB, marker),
+    // Completion already releases the owner on resolved; pin only on firing.
+    ...(transition === "firing"
+      ? [prepareDrainOwnerWrite(env.DB, CYCLE_FINGERPRINT, "control-plane")]
+      : []),
     ...preparePendingCanonicalEventCompletion(env.DB, pending),
   ]);
 }
