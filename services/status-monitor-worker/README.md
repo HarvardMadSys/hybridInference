@@ -67,7 +67,7 @@ Two whole-deployment cases are also covered:
 |---|---|
 | `/` | Auto-refreshing HTML dashboard |
 | `/api/status` | Full snapshot (latest + history per model) as JSON |
-| `/api/health` | `total` / `healthy` / `unhealthy` summary |
+| `/api/health` | `total` / `healthy` / `unhealthy` summary, plus `pendingControlPlaneTransitions` — a count that stays above zero across cycles (~20 min) means Control Plane submissions are being rejected and individual model alerting is stalled |
 
 ### Dashboard zoom-in
 

@@ -118,7 +118,29 @@ describe("decideAlerts", () => {
 });
 
 describe("postSlack", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("never logs the webhook URL when the request throws", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const webhook = "https://hooks.slack.com/services/T000/B000/secret-part";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        // Workers fetch failures embed the request URL like this — the webhook
+        // URL is the credential, so it must never reach the log call.
+        throw new Error(`Fetch API cannot load: ${webhook}`);
+      }),
+    );
+
+    expect(await postSlack(webhook, "hi")).toBe(false);
+    expect(log).toHaveBeenCalledWith("slack webhook post failed");
+    for (const call of log.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain("hooks.slack.com");
+    }
+  });
 
   it("returns true on a 2xx and posts the text payload", async () => {
     const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
@@ -786,6 +808,29 @@ describe("runAlerts", () => {
     expect(legacyFetch).not.toHaveBeenCalled();
     expect(JSON.parse(db.meta.get("alert_state")!)).not.toHaveProperty("a");
     expect(db.meta.has("alert_delivery_owner:v1:status-monitor:model:a")).toBe(false);
+  });
+
+  it("reports an undeliverable storm summary instead of dropping it silently", async () => {
+    const db = new FakeD1();
+    const submit = vi.fn(async () => acceptedRpcResult());
+    // Control-plane owner configured, but neither legacy destination exists —
+    // the exact deployment shape where a mass outage previously went nowhere
+    // with no post attempted and no log line.
+    const env = controlPlaneEnv(db, submit);
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const conf = cfg(1, 2); // collapse into a summary above 2 models
+
+    await cycle(db, env, { a: false, b: false, c: false }, conf);
+
+    expect(submit).not.toHaveBeenCalled(); // storm stays legacy-owned
+    const undeliverable = "legacy alert undeliverable (no relay or webhook configured): 3 models down";
+    expect(log).toHaveBeenCalledWith(undeliverable);
+    expect(db.meta.has("alert_state")).toBe(false); // nothing committed, so it retries
+
+    // The failed edge re-fires every cycle, so the signal repeats instead of
+    // being a single line lost in old logs.
+    await cycle(db, env, { a: false, b: false, c: false }, conf);
+    expect(log.mock.calls.filter(([message]) => message === undeliverable)).toHaveLength(2);
   });
 
   it("keeps storm incidents on the legacy writer after the individual cutover", async () => {
