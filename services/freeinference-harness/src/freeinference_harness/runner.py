@@ -8,6 +8,12 @@ from typing import Any
 
 import httpx
 
+from freeinference_harness.agent_loop import (
+    run_agent_loop_anthropic,
+    run_agent_loop_openai,
+    run_anthropic_count_tokens,
+    run_anthropic_poisoned_history,
+)
 from freeinference_harness.clients.openai_compat import OpenAICompatClient
 from freeinference_harness.config import load_tools_fixture
 from freeinference_harness.models import (
@@ -159,6 +165,14 @@ class HarnessRunner:
                 result = self._run_multi_turn_tool(client, target, scenario)
             elif scenario.scenario_type == "embedding_basic":
                 result = self._run_embedding_basic(client, target)
+            elif scenario.scenario_type == "agent_loop_openai":
+                result = run_agent_loop_openai(client, target, scenario)
+            elif scenario.scenario_type == "agent_loop_anthropic":
+                result = run_agent_loop_anthropic(target, scenario)
+            elif scenario.scenario_type == "anthropic_poisoned_history":
+                result = run_anthropic_poisoned_history(target, scenario)
+            elif scenario.scenario_type == "anthropic_count_tokens":
+                result = run_anthropic_count_tokens(target, scenario)
             else:
                 return self._attempt(
                     target=target,

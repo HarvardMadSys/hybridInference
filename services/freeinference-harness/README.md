@@ -16,6 +16,7 @@ Its job is to exercise the public contract exactly as external clients see it.
 
 - `chat-core`
 - `embedding-core`
+- `agent-loop-core` (deterministic conformance, see below)
 
 ## Quick Start
 
@@ -45,5 +46,39 @@ python -m freeinference_harness.cli run \
 ```
 
 Artifacts are written under `outputs/<run_id>/`.
+
+## Agent-Loop Conformance (P-1 layer 1)
+
+`agent-loop-core` is the deterministic protocol layer of the agent
+compatibility probe (hybridInference issue #1041). A stdlib-only fake
+provider replays shared scripts from
+`src/freeinference_harness/agent_scripts.py`; the scenario executors assert
+against the same definitions, isolating protocol failures (fragment
+splicing, malformed-argument normalization, retry, truncation) from model
+capability. Known production incidents are encoded as regressions: the
+DeepSeek-V4/SGLang `{}""` tool-argument poison and the deepseek-v4-flash
+empty-content stream (PR #935).
+
+Run against the fake directly (no gateway needed):
+
+```bash
+python -m freeinference_harness fake-provider --port 8351 &
+python -m freeinference_harness run \
+  --targets configs/targets/agent-loop-local.yaml \
+  --scenarios configs/scenarios/agent-loop-core.yaml \
+  --target fake-direct
+```
+
+To also pin the gateway translation layer (including the Anthropic-surface
+scenarios: ds4 normalization, poisoned-history echo, `count_tokens`),
+register the fake in a dev gateway using
+`configs/gateway/agent-loop-models.snippet.yaml` and run the
+`gateway-local` target instead.
+
+Unit tests for the fake and the executors live in `tests/`:
+
+```bash
+python -m pytest tests -q
+```
 
 See `PLAN.md` for the phased rollout.
