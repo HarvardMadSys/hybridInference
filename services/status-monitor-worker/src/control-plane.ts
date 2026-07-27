@@ -251,6 +251,23 @@ export function prepareDrainOwnerRelease(
   return db.prepare(`DELETE FROM meta WHERE key = ?`).bind(metaKey(OWNER_KEY_PREFIX, fingerprint));
 }
 
+/**
+ * Builds an owner-pin write for an atomic delivery-commit batch. Pinning
+ * inside the commit (rather than on attempt, as {@link resolveDrainOwner}
+ * does) is for paths that may attempt an edge no destination can deliver:
+ * pinning those on attempt would permanently claim the incident for a writer
+ * that can never complete it.
+ */
+export function prepareDrainOwnerWrite(
+  db: D1Database,
+  fingerprint: string,
+  owner: AlertDeliveryOwner,
+): D1PreparedStatement {
+  return db
+    .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+    .bind(metaKey(OWNER_KEY_PREFIX, fingerprint), owner);
+}
+
 function failureReason(error: string | null): ModelUnavailabilityReason {
   if (error === null) return "unknown";
   if (/\b(?:401|403|auth|unauthori[sz]ed|forbidden)\b/i.test(error)) return "authentication";
