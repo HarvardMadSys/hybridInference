@@ -48,7 +48,7 @@ ALLOWLIST: dict[str, str] = {
     "README.developer.md": "neutral README task",
     "CLAUDE.md": "mixed agent guide — site lines move with the neutral wave",
     "AGENTS.md": "mixed agent guide — site lines move with the neutral wave",
-    "pyproject.toml": "harness excludes + private RouteWise git dep — step 2 / RouteWise decision",
+    "pyproject.toml": "harness excludes + RouteWise git dep URL (public repo; org name matches markers)",
     ".github/workflows/": "FreeInference CD workflows — step-2 move",
     ".env.oncall.example": "on-call site config example — step-2 move",
     ".env.example": "example env carries FreeInference defaults — neutral-defaults flip wave",
@@ -59,7 +59,7 @@ ALLOWLIST: dict[str, str] = {
     "benchmark/": "paper artifacts — step-2 per ownership inventory",
     "config/": "production config truth — moves to the overlay in the config-migration PR",
     "docs/openrouter.md": "developer note — neutral wave",
-    "uv.lock": "private RouteWise git dependency — gated on the RouteWise delivery decision",
+    "uv.lock": "RouteWise git dep URL (public repo; org name matches markers) — fine to ship",
 }
 
 
