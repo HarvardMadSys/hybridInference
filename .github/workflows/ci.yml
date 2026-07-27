@@ -2,23 +2,17 @@ name: CI
 
 on:
   workflow_dispatch:
+  schedule:
+    # Daily full run is a backstop for mistakes in PR path classification.
+    - cron: '23 18 * * *'
   push:
     branches: [main, dev, "murphy/dev/*"]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'LICENSE'
-      - '.gitignore'
   pull_request:
     branches: [main, dev]
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'LICENSE'
-      - '.gitignore'
 
 concurrency:
-  group: ci-v2-${{ github.ref }}
+  # Keep daily/manual backstops from cancelling a deployment-triggering push.
+  group: ci-v2-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -29,22 +23,19 @@ env:
   GITLEAKS_VERSION: "8.30.1"
 
 jobs:
-  # Phase 2 (shadow mode): compute which checks a change *would* trigger and
-  # publish it to outputs + the job summary. Nothing consumes these outputs yet
-  # and no job is skipped -- this only validates the rules against real PRs.
-  # `continue-on-error` keeps this advisory classifier from ever reddening CI.
   changes:
     name: Classify Changes
     runs-on: [self-hosted, Linux, ci-general]
-    continue-on-error: true
     outputs:
-      backend: ${{ steps.classify.outputs.backend }}
-      frontend: ${{ steps.classify.outputs.frontend }}
-      oncall: ${{ steps.classify.outputs.oncall }}
-      status_monitor: ${{ steps.classify.outputs.status_monitor }}
-      docker_shared: ${{ steps.classify.outputs.docker_shared }}
-      security_only: ${{ steps.classify.outputs.security_only }}
-      full: ${{ steps.classify.outputs.full }}
+      backend: ${{ steps.validate.outputs.backend }}
+      frontend: ${{ steps.validate.outputs.frontend }}
+      oncall: ${{ steps.validate.outputs.oncall }}
+      status_monitor: ${{ steps.validate.outputs.status_monitor }}
+      alert_control_plane: ${{ steps.validate.outputs.alert_control_plane }}
+      docker_shared: ${{ steps.validate.outputs.docker_shared }}
+      security_only: ${{ steps.validate.outputs.security_only }}
+      full: ${{ steps.validate.outputs.full }}
+      docker_matrix: ${{ steps.validate.outputs.docker_matrix }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -52,7 +43,7 @@ jobs:
           # the shallow-clone workaround used by every other job here.
           fetch-depth: 0
 
-      - name: Classify changed paths (shadow mode)
+      - name: Classify changed paths
         id: classify
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -70,8 +61,33 @@ jobs:
             --github-output "${GITHUB_OUTPUT}" \
             --summary "${GITHUB_STEP_SUMMARY}"
 
+      - name: Validate classifier outputs
+        id: validate
+        env:
+          CLASSIFICATION_JSON: >-
+            {"backend":${{ toJSON(steps.classify.outputs.backend) }},
+            "frontend":${{ toJSON(steps.classify.outputs.frontend) }},
+            "oncall":${{ toJSON(steps.classify.outputs.oncall) }},
+            "status_monitor":${{ toJSON(steps.classify.outputs.status_monitor) }},
+            "alert_control_plane":${{ toJSON(steps.classify.outputs.alert_control_plane) }},
+            "docker_shared":${{ toJSON(steps.classify.outputs.docker_shared) }},
+            "security_only":${{ toJSON(steps.classify.outputs.security_only) }},
+            "full":${{ toJSON(steps.classify.outputs.full) }},
+            "docker_matrix":${{ toJSON(steps.classify.outputs.docker_matrix) }}}
+        run: |
+          python3 ops/ci/verify_ci_gate.py validate-classification \
+            --classification-json "${CLASSIFICATION_JSON}" \
+            --github-output "${GITHUB_OUTPUT}"
+
   backend-quality:
     name: Backend Quality
+    needs: changes
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.full == 'true' ||
+      needs.changes.outputs.backend == 'true')
     runs-on: [self-hosted, Linux, ci-general]
     steps:
       - uses: actions/checkout@v6
@@ -138,6 +154,13 @@ jobs:
 
   frontend-quality:
     name: Frontend Quality
+    needs: changes
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.full == 'true' ||
+      needs.changes.outputs.frontend == 'true')
     runs-on: [self-hosted, Linux, ci-general]
     defaults:
       run:
@@ -180,6 +203,13 @@ jobs:
 
   alert-control-plane-check:
     name: Alert Control Plane ${{ matrix.check.name }}
+    needs: changes
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.full == 'true' ||
+      needs.changes.outputs.alert_control_plane == 'true')
     runs-on: [self-hosted, Linux, ci-general]
     defaults:
       run:
@@ -214,6 +244,13 @@ jobs:
 
   test:
     name: Test (shard ${{ matrix.shard }}/4)
+    needs: changes
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.full == 'true' ||
+      needs.changes.outputs.backend == 'true')
     # Service containers need Docker socket access; keep these jobs off the
     # generic pool that includes gpu1, which lacks that access.
     runs-on: [self-hosted, Linux, ci-general]
@@ -487,41 +524,108 @@ jobs:
           uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
           uvx --python ${{ env.PYTHON_VERSION }} pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
 
-  # Do not configure this check as required while the workflow still has
-  # top-level paths-ignore rules: docs-only PRs would never report the check.
-  # Phase 2 must remove those rules before the required-check migration.
+  docker-build:
+    name: Docker Build (${{ matrix.image }})
+    needs: changes
+    # PRs build only affected images. Scheduled/manual runs build all images,
+    # while branch pushes leave image publishing to the deployment pipeline.
+    # A classifier failure fails open to all images; CI Gate still fails closed.
+    if: >-
+      always() &&
+      github.event_name != 'push' &&
+      (github.event_name != 'pull_request' ||
+      needs.changes.result != 'success' ||
+      needs.changes.outputs.docker_matrix != '[]')
+    # Buildx needs Docker daemon access; pin image verification to ARM64.
+    runs-on: [self-hosted, Linux, ARM64, image-verify-arm64]
+    strategy:
+      fail-fast: false
+      matrix:
+        # The fallback keeps the matrix non-empty even when the PR job-level
+        # condition skips it. It also safely builds all images if outputs are
+        # unavailable or malformed.
+        image: ${{ fromJSON(needs.changes.outputs.docker_matrix != '' && needs.changes.outputs.docker_matrix != '[]' && needs.changes.outputs.docker_matrix || '["frontend","backend","oncall"]') }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full fetch avoids the intermittent unresolved-delta failures seen
+          # with shallow clones on the self-hosted runner pool.
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.image }} image
+        id: build
+        # A transient buildkit/runner recycle can surface as graceful_stop.
+        # Recreate the builder and retry once before failing the matrix cell.
+        continue-on-error: true
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.${{ matrix.image }}
+          push: false
+          secrets: |
+            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.image }}
+
+      - name: Set up Docker Buildx (retry)
+        if: steps.build.outcome == 'failure'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.image }} image (retry)
+        if: steps.build.outcome == 'failure'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.${{ matrix.image }}
+          push: false
+          secrets: |
+            github_token=${{ secrets.ROUTEWISE_GITHUB_TOKEN || github.token }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=min,scope=${{ matrix.image }}
+
   ci-gate:
     name: CI Gate
     if: always()
     runs-on: [self-hosted, Linux, ci-general]
     needs:
+      - changes
       - backend-quality
       - frontend-quality
+      - alert-control-plane-check
       - test
       - security
+      - docker-build
     steps:
-      - name: Verify required CI jobs
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify exact required CI job results
         env:
-          BACKEND_QUALITY_RESULT: ${{ needs.backend-quality.result }}
-          FRONTEND_QUALITY_RESULT: ${{ needs.frontend-quality.result }}
-          TEST_RESULT: ${{ needs.test.result }}
-          SECURITY_RESULT: ${{ needs.security.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          CLASSIFICATION_JSON: >-
+            {"backend":${{ toJSON(needs.changes.outputs.backend) }},
+            "frontend":${{ toJSON(needs.changes.outputs.frontend) }},
+            "oncall":${{ toJSON(needs.changes.outputs.oncall) }},
+            "status_monitor":${{ toJSON(needs.changes.outputs.status_monitor) }},
+            "alert_control_plane":${{ toJSON(needs.changes.outputs.alert_control_plane) }},
+            "docker_shared":${{ toJSON(needs.changes.outputs.docker_shared) }},
+            "security_only":${{ toJSON(needs.changes.outputs.security_only) }},
+            "full":${{ toJSON(needs.changes.outputs.full) }},
+            "docker_matrix":${{ toJSON(needs.changes.outputs.docker_matrix) }}}
+          JOB_RESULTS_JSON: >-
+            {"changes":${{ toJSON(needs.changes.result) }},
+            "backend-quality":${{ toJSON(needs.backend-quality.result) }},
+            "frontend-quality":${{ toJSON(needs.frontend-quality.result) }},
+            "alert-control-plane-check":${{ toJSON(needs.alert-control-plane-check.result) }},
+            "test":${{ toJSON(needs.test.result) }},
+            "security":${{ toJSON(needs.security.result) }},
+            "docker-build":${{ toJSON(needs.docker-build.result) }}}
         run: |
-          set -euo pipefail
-          failed=0
-          # Phase 1 jobs always run, so any non-success result is an error.
-          # Phase 2 must define the allowed skipped results when it adds job
-          # conditions. Every new required job must also be added to needs and
-          # this result list.
-          for result_name in \
-            BACKEND_QUALITY_RESULT \
-            FRONTEND_QUALITY_RESULT \
-            TEST_RESULT \
-            SECURITY_RESULT; do
-            result="${!result_name}"
-            echo "${result_name}=${result}"
-            if [ "${result}" != "success" ]; then
-              failed=1
-            fi
-          done
-          exit "${failed}"
+          python3 ops/ci/verify_ci_gate.py verify-gate \
+            --event-name "${EVENT_NAME}" \
+            --classification-json "${CLASSIFICATION_JSON}" \
+            --job-results-json "${JOB_RESULTS_JSON}"

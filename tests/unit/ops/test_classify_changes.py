@@ -26,21 +26,29 @@ def _true_categories(result: Classification) -> set[str]:
 def test_frontend_only_change() -> None:
     result = classify(["apps/frontend/src/app/page.tsx"])
     assert _true_categories(result) == {"frontend"}
+    assert result.docker_matrix() == ["frontend"]
 
 
 def test_backend_sources_and_tests_map_to_backend() -> None:
-    assert _true_categories(classify(["apps/backend/routing/routers.py"])) == {"backend"}
-    assert _true_categories(classify(["tests/unit/test_router.py"])) == {"backend"}
+    source = classify(["apps/backend/routing/routers.py"])
+    tests = classify(["tests/unit/test_router.py"])
+
+    assert _true_categories(source) == {"backend"}
+    assert source.docker_matrix() == ["backend"]
+    assert _true_categories(tests) == {"backend"}
+    assert tests.docker_matrix() == []
 
 
 def test_oncall_source_also_triggers_backend_tests() -> None:
     result = classify(["apps/backend/serving/oncall/app.py"])
     assert _true_categories(result) == {"oncall", "backend"}
+    assert result.docker_matrix() == ["backend", "oncall"]
 
 
 def test_oncall_dockerfile_is_oncall_only() -> None:
     result = classify(["deploy/docker/Dockerfile.oncall"])
     assert _true_categories(result) == {"oncall"}
+    assert result.docker_matrix() == ["oncall"]
 
 
 def test_shared_serving_change_triggers_oncall_and_backend() -> None:
@@ -48,16 +56,40 @@ def test_shared_serving_change_triggers_oncall_and_backend() -> None:
     # serving code (not just serving/oncall) is baked into the on-call image.
     result = classify(["apps/backend/serving/config/settings.py"])
     assert _true_categories(result) == {"oncall", "backend"}
+    assert result.docker_matrix() == ["backend", "oncall"]
 
 
 def test_status_monitor_change() -> None:
     result = classify(["services/status-monitor-worker/main.py"])
     assert _true_categories(result) == {"status_monitor"}
+    assert result.docker_matrix() == []
+
+
+def test_alert_control_plane_change() -> None:
+    result = classify(["services/alert-control-plane-worker/src/index.ts"])
+    assert _true_categories(result) == {"alert_control_plane"}
+    assert result.docker_matrix() == []
 
 
 def test_docker_shared_change() -> None:
-    assert _true_categories(classify([".dockerignore"])) == {"docker_shared"}
-    assert _true_categories(classify(["deploy/docker/docker-compose.yml"])) == {"docker_shared"}
+    for path in (".dockerignore", "deploy/docker/docker-compose.yml"):
+        result = classify([path])
+        assert _true_categories(result) == {"docker_shared"}
+        assert result.docker_matrix() == ["frontend", "backend", "oncall"]
+
+
+@pytest.mark.parametrize(
+    ("path", "category", "matrix"),
+    [
+        ("deploy/docker/Dockerfile.frontend", "frontend", ["frontend"]),
+        ("deploy/docker/Dockerfile.backend", "backend", ["backend"]),
+        ("deploy/docker/Dockerfile.oncall", "oncall", ["oncall"]),
+    ],
+)
+def test_image_specific_dockerfile_change(path: str, category: str, matrix: list[str]) -> None:
+    result = classify([path])
+    assert _true_categories(result) == {category}
+    assert result.docker_matrix() == matrix
 
 
 @pytest.mark.parametrize(
@@ -76,6 +108,7 @@ def test_full_triggers(path: str) -> None:
     result = classify([path])
     assert result.full is True
     assert "full" in _true_categories(result)
+    assert result.docker_matrix() == ["frontend", "backend", "oncall"]
 
 
 @pytest.mark.parametrize(
@@ -91,6 +124,7 @@ def test_docs_only_changes_are_security_only(path: str) -> None:
     result = classify([path])
     assert _true_categories(result) == {"security_only"}
     assert result.full is False
+    assert result.docker_matrix() == []
 
 
 def test_unknown_path_forces_full() -> None:
@@ -126,6 +160,11 @@ def test_rename_considers_both_old_and_new_paths() -> None:
     assert result.backend is True
 
 
+def test_mixed_images_use_stable_matrix_order() -> None:
+    result = classify(["apps/backend/serving/config/settings.py", "apps/frontend/src/app/page.tsx"])
+    assert result.docker_matrix() == ["frontend", "backend", "oncall"]
+
+
 def test_path_normalization_strips_leading_dot_slash() -> None:
     assert _true_categories(classify(["./apps/frontend/src/x.ts"])) == {"frontend"}
 
@@ -154,12 +193,14 @@ def test_cli_writes_outputs_and_json(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["frontend"] == "true"
     assert payload["full"] == "false"
+    assert json.loads(payload["docker_matrix"]) == ["frontend"]
 
     written = dict(
         line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines() if line
     )
     assert written["frontend"] == "true"
     assert written["security_only"] == "false"
+    assert written["docker_matrix"] == '["frontend"]'
 
 
 def _git(repo: Path, *args: str) -> None:
