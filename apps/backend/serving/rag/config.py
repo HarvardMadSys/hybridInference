@@ -19,8 +19,8 @@ def _repo_root_for(path: Path) -> Path:
     repo root is ``parents[4]``. Inside the Docker image the tree is flattened to
     ``/app/serving/rag/config.py`` (only 4 parents), where ``parents[4]`` raises
     ``IndexError`` and crashes the whole app at import. Fall back to the package
-    dir there: serving never reads the corpus default — it uses the
-    package-relative prebuilt index below — so the fallback never affects
+    dir there: in the container the index default resolves via the app root
+    instead (see :func:`_default_index_path`), so the fallback never affects
     requests, and the offline ingest CLI always runs from the repo tree.
     """
     parents = path.parents
@@ -32,9 +32,33 @@ _REPO_ROOT = _repo_root_for(Path(__file__).resolve())
 DEFAULT_CORPUS_DIR = (
     _REPO_ROOT / "distributions" / "freeinference" / "content" / "docs" / "docs" / "source"
 )
-# Package-relative so the prebuilt index ships inside the Docker image (which
-# COPYs apps/backend/serving/) and resolves identically in dev and container.
-DEFAULT_INDEX_PATH = Path(__file__).resolve().parent / "prebuilt" / "docs_index.json"
+# The FreeInference prebuilt index is distribution content: it lives in the
+# overlay, not in the neutral serving package (and is no longer baked into the
+# backend image).
+_OVERLAY_INDEX = Path("distributions") / "freeinference" / "content" / "rag" / "docs_index.json"
+
+
+def _default_index_path() -> Path:
+    """Resolve the overlay index for both the repo tree and the container.
+
+    In a repository checkout the overlay sits at the repo root. In the Docker
+    image the code tree is flattened to ``/app`` and the overlay is
+    bind-mounted at ``/app/distributions`` (deploy/docker/docker-compose.yml),
+    so the app root — two levels above this package — is the base there.
+    Prefer whichever candidate exists; fall back to the repo-root candidate so
+    error messages point at the canonical location. A missing index is not
+    fatal: the ``/v1/rag/chat`` handler degrades to 503 until one is supplied.
+    ``RAG_INDEX_PATH`` overrides this default entirely.
+    """
+    app_root = Path(__file__).resolve().parents[2]
+    candidates = (_REPO_ROOT / _OVERLAY_INDEX, app_root / _OVERLAY_INDEX)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+DEFAULT_INDEX_PATH = _default_index_path()
 
 # Valid embedder modes. "gateway" routes through the OpenAI-compatible gateway;
 # "hash" is a deterministic offline fallback for dev/CI (poor retrieval quality).

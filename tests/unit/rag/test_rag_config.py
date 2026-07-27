@@ -29,11 +29,17 @@ def test_repo_root_uses_parents4_in_repo_layout():
     assert _repo_root_for(repo_path) == Path("/home/dev/hybridInference")
 
 
-def test_index_path_is_package_relative():
-    # Serving resolves retrieval from the prebuilt index shipped in the package,
-    # never from the repo root — so it works identically in dev and container.
-    assert DEFAULT_INDEX_PATH.parent.name == "prebuilt"
-    assert DEFAULT_INDEX_PATH.parent.parent.name == "rag"
+def test_index_path_resolves_to_overlay():
+    # The FreeInference index is distribution content: in a repo checkout the
+    # default must resolve into the overlay, never into the serving package.
+    assert DEFAULT_INDEX_PATH.parts[-5:] == (
+        "distributions",
+        "freeinference",
+        "content",
+        "rag",
+        "docs_index.json",
+    )
+    assert "serving" not in DEFAULT_INDEX_PATH.parts
 
 
 def test_load_rag_settings_does_not_raise():

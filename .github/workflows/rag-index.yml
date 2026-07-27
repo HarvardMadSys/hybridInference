@@ -2,10 +2,12 @@ name: RAG Index
 
 # Keep the docs-assistant RAG index in sync with the public docs.
 #
-# The index (apps/backend/serving/rag/prebuilt/docs_index.json) is a committed
-# artifact baked into the backend image, so editing the docs corpus does NOT
-# update what the assistant retrieves until the index is rebuilt. CI ignores
-# docs/** entirely, so docs-only pushes also never reach the staging deploy.
+# The index (distributions/freeinference/content/rag/docs_index.json) is a
+# committed artifact in the FreeInference overlay, bind-mounted into the
+# backend container (no longer baked into the image), so editing the docs
+# corpus does NOT update what the assistant retrieves until the index is
+# rebuilt. CI ignores the docs trees entirely, so docs-only pushes also never
+# reach the staging deploy.
 #
 # This workflow closes both gaps: when the corpus (or the chunking/ingest
 # code) changes on dev, it re-embeds via the production gateway (bge-m3),
@@ -13,7 +15,7 @@ name: RAG Index
 # so the running assistant picks it up. Production receives it through the
 # normal sync-main flow.
 #
-# Loop safety: the auto-commit only touches prebuilt/docs_index.json, which is
+# Loop safety: the auto-commit only touches content/rag/docs_index.json, which is
 # not in the trigger paths — and pushes made with GITHUB_TOKEN do not trigger
 # workflows anyway.
 
@@ -83,7 +85,7 @@ jobs:
         id: commit
         run: |
           set -euo pipefail
-          INDEX=apps/backend/serving/rag/prebuilt/docs_index.json
+          INDEX=distributions/freeinference/content/rag/docs_index.json
           if git diff --quiet -- "${INDEX}"; then
             echo "Index unchanged; nothing to commit."
             echo "pushed=false" >> "${GITHUB_OUTPUT}"

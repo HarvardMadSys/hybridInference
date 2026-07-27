@@ -25,7 +25,7 @@ gateway's **own** public API **as a user** for the model work.
 - **Corpus:** `distributions/freeinference/content/docs/docs/source/*.md` — the same markdown that
   builds the public doc site.
 - **Vector store:** a plain JSON file
-  (`apps/backend/serving/rag/prebuilt/docs_index.json`) scanned with pure-Python
+  (`distributions/freeinference/content/rag/docs_index.json`) scanned with pure-Python
   cosine similarity. The corpus is tiny, so no numpy / ANN index is needed. The
   index is **committed** (embeddings rounded to 6 decimals, ~0.9 MB) and lives
   inside the `serving` package so it ships in the Docker image — a fresh
@@ -128,7 +128,7 @@ All optional; sensible defaults resolve relative to the repo root.
 |---|---|---|
 | `RAG_API_KEY` | _(unset)_ | User API key the handler calls the gateway with (**required** at serving time) |
 | `RAG_API_BASE_URL` | `http://localhost:8080/v1` | Gateway the handler calls (self-call for logging/quota) |
-| `RAG_INDEX_PATH` | `serving/rag/prebuilt/docs_index.json` | Vector index location |
+| `RAG_INDEX_PATH` | `distributions/freeinference/content/rag/docs_index.json` | Vector index location |
 | `RAG_CORPUS_DIR` | `distributions/freeinference/content/docs/docs/source` | Markdown corpus |
 | `RAG_EMBEDDER` | `gateway` | `gateway` (real bge-m3) or `hash` (offline) |
 | `RAG_GATEWAY_BASE_URL` | `https://freeinference.org/v1` | Gateway used by **ingest** (gateway mode) |
