@@ -198,6 +198,18 @@ def run_agent_loop_openai(
         )
 
     observed["first_tool"] = first_tool
+    if (
+        not expected.expect_truncated_stream
+        and not final_stats["done"]
+        and final_stats["events"] == 0
+    ):
+        return _result(
+            "fail",
+            "empty_stream_no_done",
+            "Stream closed with zero events and no [DONE]; an upstream error "
+            "(e.g. 429) may have been swallowed into an empty 200 stream.",
+            observed,
+        )
     errors = _check_final_openai(script, first_tool, final_stats)
     if errors:
         return _result(
@@ -401,7 +413,9 @@ def _check_final_anthropic(
     if not final_stats["done"]:
         errors.append("final stream did not reach message_stop")
 
-    if expected.tool_input_object is not None and expected.tool_name:
+    if (
+        expected.tool_input_object is not None or expected.anthropic_input_raw is not None
+    ) and expected.tool_name:
         if first_tool is None:
             errors.append("expected a tool_use block but none was observed")
         else:
@@ -410,7 +424,14 @@ def _check_final_anthropic(
                     f"tool name mismatch: expected {expected.tool_name!r}, "
                     f"got {first_tool.get('name')!r}"
                 )
-            if first_tool.get("input") != expected.tool_input_object:
+            if expected.anthropic_input_raw is not None:
+                if first_tool.get("input_raw") != expected.anthropic_input_raw:
+                    errors.append(
+                        "raw partial_json mismatch: expected "
+                        f"{expected.anthropic_input_raw!r}, "
+                        f"got {first_tool.get('input_raw')!r}"
+                    )
+            elif first_tool.get("input") != expected.tool_input_object:
                 errors.append(
                     "normalized tool input mismatch: expected "
                     f"{expected.tool_input_object!r}, got {first_tool.get('input')!r} "

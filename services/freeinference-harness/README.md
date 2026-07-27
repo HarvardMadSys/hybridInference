@@ -75,6 +75,21 @@ register the fake in a dev gateway using
 `configs/gateway/agent-loop-models.snippet.yaml` and run the
 `gateway-local` target instead.
 
+The `agent-loop-runtime` suite additionally spawns real agent CLIs (Claude
+Code headless via `claude -p`, `codex exec`) against the target — missing
+binaries skip cleanly. Against a gateway with the fake registered this is the
+full deterministic `runtime -> gateway -> fake` chain, token-free.
+
+First gateway-local baseline (2026-07-27, local dev gateway @ origin/dev):
+11/13 core scenarios pass plus the Claude Code runtime smoke. The two
+intentionally-red scenarios are real gateway findings, tracked for backend
+fixes:
+
+- `openai_rate_limit_retry`: upstream 429 with no fallback is swallowed into
+  an empty 200 stream (zero events, no `[DONE]`).
+- `openai_midstream_disconnect`: an upstream mid-stream disconnect is masked
+  with a synthesized `finish_reason: stop` + `[DONE]`, hiding truncation.
+
 Unit tests for the fake and the executors live in `tests/`:
 
 ```bash

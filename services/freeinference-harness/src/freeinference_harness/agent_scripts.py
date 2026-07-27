@@ -106,6 +106,7 @@ class Expected:
     tool_name: str = ""
     tool_arguments_raw: str | None = None
     tool_input_object: dict[str, Any] | None = field(default=None)
+    anthropic_input_raw: str | None = None
     max_steps: int = 4
     retry_on_429: bool = False
     expect_truncated_stream: bool = False
@@ -177,10 +178,13 @@ SCRIPTS: dict[str, AgentScript] = {
         expected=Expected(
             final_text_contains="RECOVERED_OK",
             tool_name=_BASH,
-            # OpenAI surface passes the malformed string through verbatim ...
+            # OpenAI surface passes the malformed string through verbatim.
             tool_arguments_raw=DS4_MALFORMED_ARGUMENTS,
-            # ... while the Anthropic surface must normalize it to an object.
-            tool_input_object={},
+            # Anthropic STREAMING passes partial_json through verbatim too
+            # (deltas already sent cannot be retro-normalized); what must hold
+            # is that the session still completes. Request-side normalization
+            # of the echo is pinned separately by poisoned_history.
+            anthropic_input_raw=DS4_MALFORMED_ARGUMENTS,
         ),
     ),
     "empty_content": AgentScript(
