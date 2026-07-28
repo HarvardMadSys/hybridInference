@@ -55,7 +55,7 @@ ALLOWLIST: dict[str, str] = {
     ".codex/": "agent skill guides — mixed, neutral wave",
     ".kilo/": "agent skill guides — mixed, neutral wave",
     ".gitleaks.toml": "site-specific scan allowances — neutral wave",
-    "LICENSE": "copyright/licensing — pending license decision (owner: Murphy)",
+    "LICENSE": "MIT, (c) Harvard SEAS — the copyright holder is required attribution, not residue",
     "benchmark/": "paper artifacts — step-2 per ownership inventory",
     "config/": "production config truth — moves to the overlay in the config-migration PR",
     "docs/openrouter.md": "developer note — neutral wave",
