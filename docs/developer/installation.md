@@ -100,8 +100,9 @@ make check         # Run all checks
 This repository hosts both documentation sites used by the project:
 
 - **Developer documentation** (deployment, architecture, internals) lives at
-  `docs/developer/` and is published by whichever distribution hosts it
-  (FreeInference: <https://internaldoc.freeinference.org/>).
+  `docs/developer/` and is published by whichever distribution hosts it —
+  often on an internal network, so read the sources here if you cannot reach
+  one.
 - **User-facing documentation** (API quickstart, models, IDE integrations)
   lives in the active distribution's overlay, under
   `<overlay>/content/docs/docs/source/`, and each deployment publishes its own.

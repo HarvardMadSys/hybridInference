@@ -1,7 +1,7 @@
 # Docs RAG Assistant
 
 A retrieval-augmented-generation (RAG) chat feature that answers user questions
-about FreeInference using the **public user docs** as its knowledge base. Both
+about a deployment using its own **public user docs** as the knowledge base. Both
 retrieval and generation route through the gateway itself.
 
 ## Architecture
@@ -119,7 +119,7 @@ quota, and per-user concurrency — attributed to the **`RAG_API_KEY` account**
 `503`. An upstream `429` (quota/rate) is passed through to the caller.
 
 ```bash
-curl -sN https://staging.freeinference.org/v1/rag/chat \
+curl -sN https://<your-gateway>/v1/rag/chat \
   -H "Authorization: Bearer <jwt>" -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"How do I get an API key?"}]}'
 ```
