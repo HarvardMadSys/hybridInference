@@ -322,7 +322,7 @@ async def _call_analysis_model(api_key: str, model: str, content: str) -> str:
         # synthetic probe keeps it out of api_logs (so a later report can't
         # re-sample it) and off the admin's quota.
         "X-Probe": "synthetic",
-        "User-Agent": "freeinference-usage-insights/1.0",
+        "User-Agent": "hybridinference-usage-insights/1.0",
     }
     try:
         data = await AsyncHTTPClient.shared().json_post(
@@ -447,7 +447,8 @@ async def admin_analyze_usage(
     if not api_key:
         raise HTTPException(
             400,
-            "No analysis API key configured. Add a freeinference.org API key in "
+            "No analysis API key configured. The analysis runs through this "
+            "gateway, so add one of its own API keys in "
             "Admin → Settings → Usage Insights.",
         )
 

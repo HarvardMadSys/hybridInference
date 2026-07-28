@@ -151,3 +151,30 @@ def test_usage_insights_targets_the_configured_gateway(monkeypatch):
 
     monkeypatch.setenv("SITE_PUBLIC_BASE_URL", "https://acme.example")
     assert _analysis_base_url() == "https://acme.example/v1"
+
+
+def test_no_module_hardcodes_openrouter_attribution():
+    """Every OpenRouter call must attribute to whoever is running the gateway.
+
+    The adapter learned this first; an admin-side endpoint probe kept its own
+    literal headers and so reported a third party's traffic into this site's
+    OpenRouter account. The rule is easier to keep as a rule than to remember
+    at each new call site, so it is asserted over the source.
+    """
+    import re
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[3] / "apps" / "backend"
+    helper = backend / "serving" / "adapters" / "openrouter.py"
+
+    literal = re.compile(r'["\'](?:HTTP-Referer|X-Title)["\']\s*:\s*["\'][^"\']+["\']')
+    offenders = [
+        f"{path.relative_to(backend)}:{i}"
+        for path in backend.rglob("*.py")
+        for i, line in enumerate(path.read_text().splitlines(), start=1)
+        if literal.search(line) and path != helper
+    ]
+    assert not offenders, (
+        "these send a fixed OpenRouter attribution instead of the deployment's "
+        f"own; call openrouter_attribution_headers() instead: {offenders}"
+    )

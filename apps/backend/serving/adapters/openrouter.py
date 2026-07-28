@@ -8,8 +8,24 @@ from serving.config.site_identity import get_site_identity
 
 from .openai_compat import OpenAICompatAdapter
 
-# Attribution headers required for OpenRouter leaderboard / free-tier limits;
-# sourced from the site identity so a distribution attributes as itself.
+
+def openrouter_attribution_headers() -> dict[str, str]:
+    """Return this deployment's OpenRouter attribution, if it has one.
+
+    OpenRouter reads these for leaderboard placement and free-tier limits, and
+    attributes the traffic to whoever the headers name. Sourcing them from the
+    site identity is what keeps one operator's usage from landing under
+    another's account. A deployment that has declared no public URL or name has
+    nothing to attribute, and an empty header is not a value, so the key is
+    omitted rather than sent blank.
+    """
+    site = get_site_identity()
+    headers: dict[str, str] = {}
+    if site.public_base_url:
+        headers["HTTP-Referer"] = site.public_base_url
+    if site.name:
+        headers["X-Title"] = site.name
+    return headers
 
 
 class OpenRouterAdapter(OpenAICompatAdapter):
@@ -39,13 +55,7 @@ class OpenRouterAdapter(OpenAICompatAdapter):
 
     def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
         headers = super()._build_headers(api_key_override=api_key_override)
-        site = get_site_identity()
-        # Omit rather than send empty: a deployment that has declared no public
-        # URL has nothing to attribute, and an empty header is not a value.
-        if site.public_base_url:
-            headers["HTTP-Referer"] = site.public_base_url
-        if site.name:
-            headers["X-Title"] = site.name
+        headers.update(openrouter_attribution_headers())
         return headers
 
     def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
