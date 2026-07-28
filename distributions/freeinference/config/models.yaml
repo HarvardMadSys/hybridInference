@@ -237,8 +237,10 @@ models:
     supports_tools: true
     supports_structured_output: true
     supported_params: [temperature, top_p, max_tokens, stop, stream, thinking]
-    # claude-opus-4-8 (dash) is the ID Anthropic clients actually send;
-    # the dot form is kept for anyone who copied it while it was live config.
+    # MiniMax-M3 streams reasoning as <mm:think>...</mm:think> tags inside the
+    # content field rather than a structured reasoning_content delta. Lift the
+    # tagged text into the reasoning channel (applies to every route below).
+    processor: reasoning_extract
     aliases: ["MiniMax-M3"]
     # MiniMax PAYG https://platform.minimax.io/docs/guides/pricing-paygo
     pricing:

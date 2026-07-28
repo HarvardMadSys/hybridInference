@@ -327,6 +327,7 @@ def register_from_models_yaml(
                     "pricing",
                     "route_metadata",
                     "extra_body",
+                    "processor",
                 )
                 if k in m
             }
