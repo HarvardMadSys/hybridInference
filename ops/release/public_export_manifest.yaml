@@ -71,6 +71,20 @@ exclude:
       Asserts that this deployment's manifest resolves its config inside the
       overlay — a claim about distributions/, which the export removes. The
       overlay keeps its own copy of the same check.
+  - path: tests/unit/observability/test_control_plane_producer.py
+    reason: Asserts the alert control plane producer, which lives in services/.
+  - path: tests/unit/ops/test_ci_workflow_policy.py
+    reason: >-
+      Asserts policy about .github/workflows/, which the export replaces with a
+      workflow written for GitHub-hosted runners.
+  - path: tests/unit/rag/test_rag_config.py
+    reason: >-
+      Resolves the RAG corpus and index through a distribution overlay; the
+      export ships none, so there is nothing for it to find.
+  - path: tests/unit/repo/test_no_dangling_repo_paths.py
+    reason: >-
+      Asserts that the scan reaches this deployment's deploy scripts. They do
+      not travel, so in the export the assertion is about an absence.
 
 # Flagged by the public-surface audit (2026-07-28). Each entry cites what was
 # found, so a future reader can re-judge rather than inherit a bare rule.
