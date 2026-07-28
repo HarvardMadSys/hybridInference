@@ -53,6 +53,11 @@ services:
       # endpoint map and every health-check setting, and the gateway starts
       # anyway — verified by booting with the file absent. Pinned by a test.
       ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-config/routing.yaml}
+      # The last of the three, and the only one that fails loudly: without a
+      # registry there are no models, /v1/models is empty, and every request
+      # is a 404. A deployment names its own; a clone starts from
+      # config/examples/.
+      MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-config/models.yaml}
       # Which environment alerts are labelled with. Left unset upstream so
       # the existing inference from the base URL still applies; a
       # deployment states it outright, because inferring it makes the

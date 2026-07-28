@@ -32,13 +32,10 @@ def test_manifest_paths_point_at_legacy_truth():
     # daily, so it moves when the drift window costs least. The other two are
     # in the overlay, with nothing left at the old path: two copies of a
     # deployment's config is how they drift apart.
-    models = Path(config.paths.models)
-    assert models == (REPO_ROOT / "config" / "models.yaml").resolve(), (
-        "models.yaml no longer aliases legacy truth"
-    )
-
+    # All three now live in the overlay; config/ holds none of them, which is
+    # the point — a second copy at the legacy path is how the two drift apart.
     overlay_config = REPO_ROOT / "distributions" / "freeinference" / "config"
-    for kind in ("alerts", "routing"):
+    for kind in ("models", "alerts", "routing"):
         resolved = Path(getattr(config.paths, kind))
         assert resolved == (overlay_config / f"{kind}.yaml").resolve(), (
             f"{kind}.yaml moved into the overlay; the manifest must follow"
