@@ -15,8 +15,9 @@
 #   moves; verify at https://openrouter.ai/models and edit freely.
 # - Pricing is approximate (used for local usage accounting only); update
 #   from the same page when it matters to you.
-# - This file is scheduled to become the upstream default catalog when the
-#   FreeInference production registry moves into its distribution overlay.
+# - This is the upstream default catalog: a checkout with no distribution
+#   overlay serves these models, and a deployment points MODELS_CONFIG_PATH at
+#   its own registry instead.
 
 models:
   - id: llama-3.3-70b
