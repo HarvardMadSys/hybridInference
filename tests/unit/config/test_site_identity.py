@@ -135,3 +135,11 @@ def test_openrouter_attribution_follows_a_configured_identity(monkeypatch):
 
     assert headers["HTTP-Referer"] == "https://acme.example"
     assert headers["X-Title"] == "Acme Inference"
+
+
+def test_quota_contact_follows_a_configured_identity(monkeypatch):
+    """A configured deployment names its own support address in quota errors."""
+    from serving.servers.auth import _quota_contact
+
+    monkeypatch.setenv("SITE_SUPPORT_EMAIL", "help@acme.example")
+    assert _quota_contact() == "help@acme.example"

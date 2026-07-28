@@ -243,7 +243,10 @@ async def test_auth_quota_exceeded_returns_429(monkeypatch, mock_request, mock_o
     assert exc.value.headers["X-RateLimit-Reset"]
     assert exc.value.detail["remaining_usd"] == 0
     assert exc.value.detail["reset_at"]
-    assert exc.value.detail["contact_email"] == "admin@freeinference.org"
+    # The support address follows the site identity; unconfigured means none,
+    # and the message says who to ask instead of naming a stranger's inbox.
+    assert exc.value.detail["contact_email"] == ""
+    assert "operator of this deployment" in exc.value.detail["message"]
 
 
 @pytest.mark.asyncio
