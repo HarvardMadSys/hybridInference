@@ -96,9 +96,16 @@ const METRIC_THRESHOLD_CONTEXT_KEYS = new Set([
 ]);
 
 const MAX_SOURCE_ADDRESSES = 5;
+/**
+ * Metrics for which listing addresses is meaningful and blocking them is the
+ * response. The typed-IP field is an exception to the no-network-identifier
+ * rule, so it is scoped rather than available to every metric.
+ */
+const ADDRESS_BEARING_METRICS: ReadonlySet<string> = new Set(["auth_failure_count"]);
 const IPV4_STRICT_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 
 const DEPENDENCY_CONTEXT_KEYS = new Set(["dependency", "backend"]);
+const DEPENDENCY_BACKEND_RE = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const UNSAFE_CONTROL_RE =
   /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
@@ -464,6 +471,15 @@ function parseMetricThresholdContext(value: unknown): MetricThresholdContext {
     boundedInteger(item, "context.sample_count", 0, 1_000_000_000),
   );
 
+  if (
+    context.source_addresses !== undefined &&
+    !ADDRESS_BEARING_METRICS.has(context.metric)
+  ) {
+    throw new ValidationError(
+      `context.source_addresses is not allowed for metric ${context.metric}`,
+    );
+  }
+
   for (const key of Object.keys(context) as Array<keyof typeof context>) {
     if (context[key] === undefined) delete context[key];
   }
@@ -486,10 +502,11 @@ function parseDependencyUnavailableContext(
       ["log_store", "operational_store"],
     ),
   };
-  // An implementation label only ("postgres"), never a connection string —
-  // untrustedString additionally rejects hosts, credentials, and IPs.
+  // A bare implementation label only. untrustedString is not enough here: a
+  // credential-free DSN like "postgres://localhost/app" passes all of its
+  // checks, so the shape itself is constrained to a lowercase name.
   context.backend = optional(input, "backend", (item) =>
-    untrustedString(item, "context.backend", 64),
+    stringValue(item, "context.backend", 64, DEPENDENCY_BACKEND_RE),
   );
   if (context.backend === undefined) delete context.backend;
   return context;
@@ -677,10 +694,19 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
     };
   }
   if (input.alert_type === "metric_threshold_breach") {
+    const context = parseMetricThresholdContext(input.context);
+    // Every metric in this type breaches upward, so a firing event whose
+    // observed value sits under its own threshold is incoherent — it would
+    // open an incident whose Slack card argues against itself.
+    if (base.status === "firing" && context.observed < context.threshold) {
+      throw new ValidationError(
+        "firing metric_threshold_breach requires observed to be at or above threshold",
+      );
+    }
     return {
       ...base,
       alert_type: "metric_threshold_breach",
-      context: parseMetricThresholdContext(input.context),
+      context,
     };
   }
   if (input.alert_type === "dependency_unavailable") {

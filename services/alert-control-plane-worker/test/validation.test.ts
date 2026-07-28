@@ -484,6 +484,43 @@ describe("gateway alert types (metric_threshold_breach, dependency_unavailable)"
     ).toThrow(ValidationError);
   });
 
+  it("scopes the typed-IP exception to metrics where blocking is the response", () => {
+    // Otherwise any producer could attach addresses to any alert and the
+    // renderer would publish them — the exception has to be narrow.
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({
+          metric: "user_daily_cost",
+          observed: 42.5,
+          threshold: 25,
+          source_addresses: ["203.0.113.7"],
+        }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+  });
+
+  it("rejects a firing breach whose observed value is under its threshold", () => {
+    // Such a card would argue against itself in Slack.
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({ metric: "http_5xx_rate", observed: 0.01, threshold: 0.05 }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+    // The same numbers are legitimate once the incident is resolving.
+    expect(
+      parseAlertEvent(
+        {
+          ...metricEvent({ metric: "http_5xx_rate", observed: 0.01, threshold: 0.05 }),
+          status: "resolved",
+          severity: "info",
+        },
+        { now: TEST_NOW },
+      ),
+    ).toMatchObject({ status: "resolved" });
+  });
+
   it("accepts a dependency outage and rejects a connection string as backend", () => {
     const base = {
       schema_version: 1,
@@ -514,7 +551,9 @@ describe("gateway alert types (metric_threshold_breach, dependency_unavailable)"
           ...base,
           context: {
             dependency: "operational_store",
-            backend: "postgres://user:password=hunter2@10.0.0.5:5432/app",
+            // A credential-free DSN passes every untrustedString check, so
+            // the field's shape has to be constrained, not just scanned.
+            backend: "postgres://localhost/app",
           },
         },
         { now: TEST_NOW },
