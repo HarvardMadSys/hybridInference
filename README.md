@@ -38,10 +38,12 @@ fallback.
 
 ## Start Here
 
-- **Use the API or self-host the gateway:** [User README](README.user.md)
+- **Run and use a gateway:** [User README](README.user.md)
 - **Develop, operate, or contribute:** [Developer README](README.developer.md)
-- **Hosted service docs:** [doc.freeinference.org](https://doc.freeinference.org/)
-- **Developer docs:** [internaldoc.freeinference.org](https://internaldoc.freeinference.org/)
+- **See one in production:** [FreeInference](https://freeinference.org/) is a
+  public HybridInference gateway run at Harvard SEAS; its
+  [user documentation](https://doc.freeinference.org/) is a worked example of
+  what a deployment publishes.
 
 ## What It Does
 
@@ -72,10 +74,10 @@ docs/             # Developer docs, agent specs/plans, reviews
 
 ## Documentation
 
-- [README.user.md](README.user.md) explains how to use FreeInference, connect OpenAI-compatible clients, choose models, and run a self-hosted gateway.
+- [README.user.md](README.user.md) explains how to run your own gateway, connect OpenAI-compatible clients, choose models, and call a hosted one.
 - [README.developer.md](README.developer.md) explains local setup, project structure, testing, formatting, architecture, configuration, and contribution workflow.
-- `distributions/freeinference/content/docs/` contains the hosted user documentation source.
 - `docs/developer/` contains deeper architecture, deployment, routing, configuration, and extension guides.
+- `distributions/` holds per-deployment overlays. A deployment's identity, content and documentation live in its own overlay rather than in the code, which is why a fresh clone comes up as nobody's gateway but your own.
 
 ## License
 

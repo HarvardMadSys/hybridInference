@@ -132,10 +132,15 @@ YAML files support `${VAR}` and `${VAR:-default}` environment variable interpola
 
 ## Documentation
 
-- User-facing docs source: `distributions/freeinference/content/docs/`.
-- Developer docs source: `docs/developer/`.
-- Public docs site: [doc.freeinference.org](https://doc.freeinference.org/).
-- Developer docs site: [internaldoc.freeinference.org](https://internaldoc.freeinference.org/).
+- Developer docs source: `docs/developer/` — the canonical copy, and the one to
+  edit.
+- User-facing docs belong to a deployment rather than to the project: each
+  keeps its own under `distributions/<name>/content/docs/`.
+
+The FreeInference deployment publishes both: its user docs at
+[doc.freeinference.org](https://doc.freeinference.org/), and a build of
+`docs/developer/` at internaldoc.freeinference.org, which is reachable from
+Harvard SEAS infrastructure only — read the sources in this repository instead.
 
 ## Contribution Workflow
 
