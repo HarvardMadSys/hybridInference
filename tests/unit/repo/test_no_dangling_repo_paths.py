@@ -12,6 +12,14 @@ This closes that gap ahead of the move: every repo-relative path written into
 something that executes is resolved, and a miss fails here. It is deliberately
 scoped to executable surfaces — prose in documentation can describe a layout
 that no longer exists without breaking anything, while a shell script cannot.
+
+"Executes" is broader than it first looks, and the first version of this test
+got it wrong in the way that mattered most: it scanned workflows, shell scripts
+and the Makefile, and skipped the systemd units — the one place that actually
+spells out `__REPO_ROOT__/ops/...`, and the reason the ops/ move needs a guard
+at all. Dockerfiles COPY repo paths and fail the build when one moves. And a
+reference written as `${REPO_DIR}/deploy/systemd/...` was invisible to the
+pattern, which is how installers name things.
 """
 
 from __future__ import annotations
@@ -47,8 +55,35 @@ def _executable_surfaces() -> list[str]:
     return [
         n
         for n in names
-        if n.startswith(".github/workflows/") or n.endswith(".sh") or n == "Makefile"
+        if n.startswith(".github/workflows/")
+        or n.endswith((".sh", ".service"))
+        or (n.startswith("deploy/docker/Dockerfile") and not n.endswith(".dockerignore"))
+        or (n.startswith("deploy/docker/") and n.endswith((".yml", ".yaml")))
+        or n == "Makefile"
     ]
+
+
+# `${REPO_DIR}/deploy/...` and `__REPO_ROOT__/ops/...` are repo paths wearing a
+# prefix. Dropping the prefix and the slash after it makes them visible; leaving
+# them in place is how the first version of this test missed every systemd unit
+# and every installer.
+_ROOT_PREFIX = re.compile(r"(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|__[A-Z][A-Z0-9_]*__)/")
+
+
+def _strip_root_prefixes(line: str) -> str:
+    return _ROOT_PREFIX.sub("", line)
+
+
+def _is_dockerfile(name: str) -> bool:
+    return name.startswith("deploy/docker/Dockerfile")
+
+
+def _is_repo_relative_docker_line(line: str) -> bool:
+    """Only COPY/ADD read from the build context, and not across stages."""
+    head = line.strip().upper()
+    if not head.startswith(("COPY ", "ADD ")):
+        return False
+    return "--FROM=" not in head
 
 
 def _is_templated(line: str, match: re.Match[str]) -> bool:
@@ -66,12 +101,27 @@ def test_no_executable_file_names_a_path_that_is_gone() -> None:
             text = (REPO / name).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        for number, line in enumerate(text.splitlines(), start=1):
-            if line.strip().startswith("#"):
+        for number, raw_line in enumerate(text.splitlines(), start=1):
+            if raw_line.strip().startswith("#"):
+                continue
+            line = _strip_root_prefixes(raw_line)
+            if _is_dockerfile(name) and not _is_repo_relative_docker_line(line):
+                # RUN operates inside the image: `pip install -e tests/x` after
+                # `cd /vllm-workspace` names a container path, not this tree.
+                # Only COPY/ADD sources come from the build context.
                 continue
             for match in PATH_RE.finditer(line):
                 path = match.group(1).rstrip(".,;:)\"'")
-                if "*" in path or _is_templated(line, match):
+                if "*" in path:
+                    continue
+                if _is_templated(line, match):
+                    # `${REPO_DIR}/deploy/systemd/${SERVICE_NAME}.service` names
+                    # a file only at run time, but the directory it names is
+                    # fixed — and moving that directory is exactly what breaks
+                    # the installer. Check as much as is literal.
+                    directory = path.rsplit("/", 1)[0] if "/" in path else path
+                    if directory and not (REPO / directory).exists():
+                        findings.append(f"{name}:{number} -> {directory}/ (from {path})")
                     continue
                 if not (REPO / path).exists():
                     findings.append(f"{name}:{number} -> {path}")
@@ -89,4 +139,10 @@ def test_the_scan_actually_reaches_the_deploy_scripts() -> None:
     assert any(s.startswith(".github/workflows/") for s in surfaces)
     assert any("deploy" in s and s.endswith(".sh") for s in surfaces), (
         "the deploy scripts are the reason this test exists"
+    )
+    assert any(s.endswith(".service") for s in surfaces), (
+        "the systemd units name __REPO_ROOT__/ops/... — the very paths the move has to update"
+    )
+    assert any(s.startswith("deploy/docker/Dockerfile") for s in surfaces), (
+        "a Dockerfile COPY of a path that moved breaks the build"
     )
