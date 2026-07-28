@@ -1,0 +1,137 @@
+# What the public export leaves behind.
+#
+# The split design settles the publication route as "new public repository +
+# filtered export" and forbids rewriting this repository's history, so the
+# export carries a tree, not a past. Which tree is the question this file
+# answers — and until now it was answered only by a parenthetical in the design
+# doc ("排除 distributions/、ops/db/analysis 及公开面审计标记的内容"), where the
+# last clause names an audit whose results had never been written down.
+#
+# Two rules keep this honest, both enforced by
+# tests/unit/release/test_public_export_manifest.py:
+#
+#   1. Every path here exists. A stale entry is worse than no entry — it reads
+#      as protection that is no longer protecting anything.
+#   2. What survives the exclusions passes the public-surface audit. If a
+#      credential, a personal mailbox, or a cluster path appears in the exported
+#      tree, the test fails and names it.
+#
+# Run `python ops/release/public_export.py` to see what today's export would
+# carry, and what it would leak.
+
+schema_version: 1
+
+# Settled by the split design.
+exclude:
+  - path: distributions/
+    reason: >-
+      Distribution overlays are the visibility boundary by construction: real
+      model directories, alert thresholds, machine scripts, RAG corpora, site
+      identity. The whole point of the overlay is that it does not travel.
+
+  - path: ops/db/analysis/
+    reason: >-
+      Ad-hoc queries against the production database, written against real user
+      accounts. Named in the design doc's exclusion list for that reason.
+
+# Flagged by the public-surface audit (2026-07-28). Each entry cites what was
+# found, so a future reader can re-judge rather than inherit a bare rule.
+  - path: ops/
+    reason: >-
+      This deployment's operations, not the project's — deploy scripts pinned to
+      its hosts, database tooling, Cloudflare and on-call automation. The audit
+      found internal hostnames and machine names throughout.
+
+  - path: services/
+    reason: >-
+      Workers belonging to this deployment. Their wrangler configs carry the
+      Cloudflare account id and D1 database id that the pre-publication
+      checklist flags; excluding the tree is what makes parameterising them
+      optional rather than blocking.
+
+  - path: deploy/systemd/
+    reason: >-
+      Unit files named after this deployment, with reverse-tunnel targets
+      naming internal.freeinference.org and the H200/Spark machines. The rest
+      of deploy/ is generic and does travel.
+
+  - path: docs/agents/
+    reason: >-
+      Design records and plans. They describe how this deployment reached its
+      decisions, cite internal hosts and past incidents, and are the one place
+      a live API key was found. Nothing downstream needs them.
+
+  - path: docs/superpowers/
+    reason: Same category as docs/agents/ — historical design records.
+
+  - path: docs/reviews/
+    reason: Review records naming reviewers and internal context.
+
+  - path: docs/collaboration/
+    optional: true   # untracked by design — absent from a fresh clone
+    reason: >-
+      Business correspondence naming people outside this project. Never
+      committed (see .gitignore); listed so a directory-copy export excludes it
+      too.
+
+  - path: .workbuddy/
+    optional: true   # untracked by design — absent from a fresh clone
+    reason: >-
+      Agent scratch memory. Never committed; listed for the same reason as
+      docs/collaboration/.
+
+  - path: tests/fixtures/data/
+    reason: >-
+      Third-party research datasets with their own terms and no attribution
+      here. Being removed outright in #1075; excluded regardless so the export
+      does not republish someone else's data under this project's licence.
+
+# Decisions this file cannot make. The export tool refuses to run while any
+# remain, so the list is short on purpose.
+undecided:
+  - path: docs/developer/
+    question: >-
+      Mixed by design. The how-tos are the project's and should travel; four
+      pages (freeinference.md, staging.md, fasrc.md, codex-oncall.md) describe
+      this deployment's machines. Split them, or exclude the four by name?
+
+  - path: .github/workflows/
+    question: >-
+      The CI workflow is the project's, but every job targets self-hosted
+      runners this deployment owns, and the deploy workflows are its own. An
+      exported repository whose CI cannot run is worse than one with no CI.
+
+# What the exported tree still leaks today, with the reason each is pending.
+# The test treats this as a ceiling: anything new fails, and an entry that stops
+# being found must be deleted, so the list can only shrink.
+known_findings:
+  - where: config/routing.yaml
+    what: cluster path
+    pending: >-
+      Production config truth still lives upstream; it moves into the overlay in
+      the config-migration PR. Copying it early would go stale within a day.
+
+  - where: docs/developer/fasrc.md
+    what: cluster path
+    pending: This deployment's cluster how-to; covered by the docs/developer decision above.
+
+  - where: tests/fixtures/e2e_config.yaml
+    what: cluster path
+    pending: >-
+      Describes one deployment's e2e machines; expected_model_id has to match
+      what that server reports, so it moves rather than being reworded.
+
+  - where: tests/fixtures/test_models.yaml
+    what: cluster path
+    pending: Fixed in #1082 — delete this entry once that merges.
+
+  - where: apps/backend/serving/config/settings.py
+    what: internal hostname
+    pending: >-
+      The CORS default still carries this site's origins on dev. Fixed in
+      #1060, which moves them into the distribution overlay — delete this entry
+      once that merges.
+
+  - where: tests/unit/config/test_contract_settings_defaults.py
+    what: internal hostname
+    pending: Frozen contract for the CORS default above; flips with #1060.
