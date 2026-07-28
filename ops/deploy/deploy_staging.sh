@@ -20,6 +20,15 @@ for env_file in "$APP_DIR"/distributions/freeinference/deploy/*.env; do
     COMPOSE+=(--env-file "$env_file")
   fi
 done
+# The files above are the site's, and their values are production's. Anything
+# that has to differ on staging belongs in deploy/staging/, which is read after
+# them and before `.env` — so it can be reviewed in the repository rather than
+# living only on the host. Nothing there yet; the loop is a no-op until there is.
+for env_file in "$APP_DIR"/distributions/freeinference/deploy/staging/*.env; do
+  if [[ -f "$env_file" ]]; then
+    COMPOSE+=(--env-file "$env_file")
+  fi
+done
 COMPOSE+=(--env-file .env)
 
 log() {

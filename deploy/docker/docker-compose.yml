@@ -114,7 +114,11 @@ services:
         # in through an env file (distributions/*/deploy/frontend.env, fed to
         # `docker compose --env-file` by ops/deploy/*.sh); the server's .env
         # still overrides any of them.
-        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE-}
+        # Explicitly local rather than empty: the console resolves an empty
+        # value through `||`, and with DEPLOY_TARGET defaulting to production
+        # that lands on the upstream author's own gateway. Where requests go
+        # is the one value that must not depend on a fallback elsewhere.
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE-http://localhost:8080}
         NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
         NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
         NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}

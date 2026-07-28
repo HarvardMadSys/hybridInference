@@ -239,6 +239,33 @@ def test_overlay_carries_no_secrets() -> None:
     assert not suspicious, f"secrets must live in the server's .env, not here: {suspicious}"
 
 
+def test_the_makefile_feeds_the_overlay_too() -> None:
+    """`make build` rebuilds the console, and its identity is a build arg.
+
+    The deploy scripts assemble their own compose command, but then call
+    `make build` to rebuild images — and the Makefile builds a second command
+    of its own. Missing the overlay there ships a frontend with none of the
+    deployment's identity compiled in, which no test of the scripts would
+    catch, and which only shows up as an unbranded production console.
+    """
+    makefile = (REPO / "Makefile").read_text()
+    compose_line = next(
+        (line for line in makefile.splitlines() if line.startswith("COMPOSE :=")), ""
+    )
+    assert compose_line, "Makefile no longer defines COMPOSE"
+    assert "$(DISTRIBUTION_ENV_FILES)" in compose_line, (
+        "make build/up must pass the distribution overlay, or a rebuild drops "
+        f"the deployment's console identity: {compose_line}"
+    )
+    assert "--env-file .env" in compose_line
+    assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
+        "--env-file .env"
+    ), "the server's .env must come last so per-host overrides still win"
+    assert "distributions/*/deploy/*.env" in makefile, (
+        "DISTRIBUTION_ENV_FILES should discover overlays rather than name one"
+    )
+
+
 @pytest.mark.parametrize("script", DEPLOY_SCRIPTS, ids=lambda p: p.name)
 def test_deploy_script_feeds_the_overlay_before_the_server_env(script: Path) -> None:
     """Without this wiring the site would deploy itself unbranded."""

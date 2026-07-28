@@ -135,7 +135,14 @@ check-all: lint test frontend-check  ## Run all checks (backend + frontend)
 all-with-frontend: format check-all  ## Format and check everything (backend + frontend)
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
-COMPOSE := docker compose -f deploy/docker/docker-compose.yml --env-file .env
+# A deployment's public identity — site name, links, CORS, and the console's
+# build-time values — lives in its distribution overlay, because the upstream
+# compose defaults name no deployment. These have to reach `make build` too,
+# not just the deploy scripts: the console's identity is baked in as build
+# args, so a rebuild without them ships an unbranded frontend. `.env` stays
+# last so per-host overrides still win, and secrets stay only in `.env`.
+DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard distributions/*/deploy/*.env))
+COMPOSE := docker compose -f deploy/docker/docker-compose.yml $(DISTRIBUTION_ENV_FILES) --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose
