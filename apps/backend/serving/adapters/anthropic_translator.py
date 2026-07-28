@@ -62,6 +62,56 @@ def anthropic_request_to_openai(
     return messages, params
 
 
+def normalize_inline_system(body: dict[str, Any]) -> dict[str, Any]:
+    """Fold any ``role: "system"`` message into the top-level ``system`` field.
+
+    Applied on the shared inbound path, before the request is dispatched,
+    because the destination decides how badly this breaks and *every*
+    destination breaks:
+
+    - a native Anthropic upstream is forwarded the body unchanged, and rejects
+      an inline system message outright — the role is not in its schema;
+    - an OpenAI-style upstream gets a translated body whose system message
+      sits after a user message, which strict providers refuse with
+      "System message must be at the beginning".
+
+    Normalizing once here means neither route has to know about it. Returns the
+    body unchanged (same object) when there is nothing to fold, so the common
+    case costs one scan and no copy.
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not any(
+        isinstance(m, dict) and m.get("role") == "system" for m in messages
+    ):
+        return body
+
+    blocks: list[dict[str, Any]] = []
+    existing = body.get("system")
+    if isinstance(existing, str):
+        blocks.append({"type": "text", "text": existing})
+    elif isinstance(existing, list):
+        blocks.extend(existing)
+
+    kept: list[Any] = []
+    for message in messages:
+        if not (isinstance(message, dict) and message.get("role") == "system"):
+            kept.append(message)
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            blocks.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            # Only text survives: an image in a system message has nowhere to
+            # go in either destination's system field.
+            blocks.extend(b for b in content if isinstance(b, dict) and b.get("type") == "text")
+
+    normalized = dict(body)
+    normalized["messages"] = kept
+    if blocks:
+        normalized["system"] = blocks
+    return normalized
+
+
 def _flatten_system(system: Any) -> str | None:
     if not system:
         return None
