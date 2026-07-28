@@ -236,8 +236,14 @@ class ContainerBackend(SandboxBackend):
         """Whether each job gets its own kernel."""
         return self.runtime is not None
 
-    def preflight(self) -> None:
-        """Verify the container runtime is usable before accepting jobs."""
+    def preflight(self, workdir_root: str | None = None) -> None:
+        """Verify the container runtime is usable before accepting jobs.
+
+        ``workdir_root``, when given, is test-mounted: a path the daemon cannot
+        bind (a macOS temp dir under colima, a directory outside the VM's
+        shared mounts) otherwise fails every single job with an opaque exit 125
+        instead of failing once at startup.
+        """
         try:
             result = subprocess.run(
                 [self.docker_binary, "version", "--format", "{{.Server.Version}}"],
@@ -250,6 +256,8 @@ class ContainerBackend(SandboxBackend):
             raise SandboxError(f"{self.docker_binary} is not usable: {exc}") from exc
         if result.returncode != 0:
             raise SandboxError(f"{self.docker_binary} is not usable: {result.stderr.strip()[:200]}")
+        if workdir_root is not None:
+            self._check_bind_mountable(workdir_root)
         if not self.is_vm_isolated:
             logger.warning(
                 "agent_sandbox_shared_kernel",
@@ -260,6 +268,32 @@ class ContainerBackend(SandboxBackend):
                         "trusted repositories, not for untrusted multi-tenant code"
                     ),
                 },
+            )
+
+    def _check_bind_mountable(self, workdir_root: str) -> None:
+        """Fail startup if the daemon cannot bind-mount the job workdir root."""
+        probe = subprocess.run(
+            [
+                self.docker_binary,
+                "run",
+                "--rm",
+                "--mount",
+                f"type=bind,source={workdir_root},target=/probe",
+                "--entrypoint",
+                "true",
+                self.image,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise SandboxError(
+                f"the container runtime cannot bind-mount {workdir_root!r}: "
+                f"{probe.stderr.strip()[:200]}. Job worktrees must live on a path "
+                "the daemon can see (inside the VM for colima/Lima, or a shared "
+                "mount) — otherwise every job fails at spawn."
             )
 
     def build_command(self, spec: SandboxSpec) -> list[str]:

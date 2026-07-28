@@ -433,7 +433,14 @@ def run_forever(
     bad job turns one broken repository into an outage for every queued job.
     """
     backend = backend or build_backend_from_env()
-    backend.preflight()
+    root = pathlib.Path(workdir_root)
+    root.mkdir(parents=True, exist_ok=True)
+    # Pass the workdir root so a backend that bind-mounts it can prove the
+    # mount works now, rather than failing every job with an opaque error.
+    try:
+        backend.preflight(workdir_root=str(root))  # type: ignore[call-arg]
+    except TypeError:
+        backend.preflight()
 
     root = pathlib.Path(workdir_root)
     root.mkdir(parents=True, exist_ok=True)
