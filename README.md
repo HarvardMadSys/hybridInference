@@ -14,6 +14,7 @@ export OPENROUTER_API_KEY=sk-or-...
 
 PYTHONPATH=apps/backend \
   MODELS_CONFIG_PATH=config/examples/models.openrouter.yaml \
+  ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
   DB_ENABLED=false USER_AUTH_ENABLED=false \
   uv run uvicorn serving.servers.app:app --port 8080
 ```
@@ -30,6 +31,10 @@ curl localhost:8080/v1/chat/completions \
 Postgres, and every request is treated as an anonymous admin. A real
 deployment drops both and gets user accounts, API keys, quotas and request
 history — see the [Developer README](README.developer.md).
+
+Both config paths matter. Point only `MODELS_CONFIG_PATH` at the example and
+the gateway still reads `config/routing.yaml`, an operator's own deployment
+map, then warns about every machine in it that you do not have.
 
 To route to a local model instead, point the first route of
 `llama-3.1-8b-hybrid` at your own OpenAI-compatible server (Ollama, vLLM or

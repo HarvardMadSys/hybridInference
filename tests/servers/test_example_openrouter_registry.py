@@ -46,3 +46,55 @@ def test_example_registry_registers_with_one_key(monkeypatch):
     # silently turn the hybrid demo into a remote-only one.
     local_adapter, _weight = hybrid.adapters[0]
     assert "localhost" in local_adapter.config.base_url
+
+
+def test_empty_catalog_names_the_variable_that_would_fix_it(monkeypatch, caplog):
+    """Silence here is what makes the quickstart look broken rather than unset.
+
+    Every model is skipped when its credential is missing, one warning apiece.
+    What the person following the quickstart actually sees is an empty
+    ``/v1/models`` and then "Model not found" — which reads as a wrong model
+    id, so they go looking for a typo instead of an export they skipped.
+    """
+    import logging
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    exe = RouteExecutor()
+    with caplog.at_level(logging.ERROR, logger="serving.servers.registry"):
+        count, _infos = registry.register_from_models_yaml(
+            exe, EXAMPLE_YAML, continue_on_missing_env=True
+        )
+
+    assert count == 0
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors, "an empty catalog must say so at error level, not only per-model"
+    assert "OPENROUTER_API_KEY" in errors[0], (
+        "the message has to name the variable to set; without it the reader "
+        "still has to guess which credential was missing"
+    )
+
+
+def test_quickstart_routing_example_declares_no_endpoint():
+    """The quickstart's routing file must not send a clone at anyone's machines.
+
+    Pointing only MODELS_CONFIG_PATH at the example leaves config/routing.yaml
+    — the operator's own deployment map — in play, which greets a newcomer with
+    warnings about hosts they do not have, and prints those hosts. The example
+    pairs with a routing file that names none.
+    """
+    import yaml
+
+    example = REPO_ROOT / "config" / "examples" / "routing.minimal.yaml"
+    assert example.exists(), "README.md#quickstart points ROUTING_CONFIG_PATH here"
+
+    config = yaml.safe_load(example.read_text())
+    assert config["local_deployment"] == []
+    assert config["remote_deployment"] == []
+    # Deprecated spellings would make the example emit the migration warning it
+    # is meant to keep a newcomer from seeing.
+    assert "routing_strategy" not in config
+    assert "routing_parameter" not in config
+
+    readme = (REPO_ROOT / "README.md").read_text()
+    assert "ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml" in readme
