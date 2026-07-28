@@ -401,7 +401,9 @@ class TestCallAnalysisModel:
         text = await usage_insights._call_analysis_model("sk-x", "glm-5.1", "the content")
 
         assert text == "report"
-        assert captured["url"] == "https://freeinference.org/v1/chat/completions"
+        # The target is this deployment's own gateway; unconfigured, that is the
+        # local one. Sampled user prompts must never leave for a hardcoded host.
+        assert captured["url"] == "http://localhost:8080/v1/chat/completions"
         assert captured["headers"]["X-Probe"] == "synthetic"
         assert captured["headers"]["Authorization"] == "Bearer sk-x"
         assert captured["json"]["model"] == "glm-5.1"

@@ -143,3 +143,11 @@ def test_quota_contact_follows_a_configured_identity(monkeypatch):
 
     monkeypatch.setenv("SITE_SUPPORT_EMAIL", "help@acme.example")
     assert _quota_contact() == "help@acme.example"
+
+
+def test_usage_insights_targets_the_configured_gateway(monkeypatch):
+    """Analysis calls follow the operator's own public base URL."""
+    from serving.servers.routers.admin.usage_insights import _analysis_base_url
+
+    monkeypatch.setenv("SITE_PUBLIC_BASE_URL", "https://acme.example")
+    assert _analysis_base_url() == "https://acme.example/v1"

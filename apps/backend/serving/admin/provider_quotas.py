@@ -634,7 +634,7 @@ async def _fetch_minimax_for_key(cookie: str) -> ProviderQuotaResult:
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://platform.minimax.io/console/usage",
-        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
+        "User-Agent": "Mozilla/5.0 (compatible; hybridinference-admin/1.0)",
     }
     group_id = settings.minimax_group_id or _extract_cookie_value(cookie, "minimax_group_id_v2")
     if group_id:
@@ -1121,7 +1121,7 @@ async def _fetch_ollama_for_key(cookie: str) -> ProviderQuotaResult:
     url = "https://ollama.com/settings"
     headers = {
         "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0 (compatible; freeinference-admin/1.0)",
+        "User-Agent": "Mozilla/5.0 (compatible; hybridinference-admin/1.0)",
         "Accept": "text/html,application/xhtml+xml",
     }
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS)

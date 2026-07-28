@@ -8,8 +8,7 @@ they work on, and any notable usage patterns. Sampling at random (rather than
 taking the latest N) keeps the report from being dominated by whatever a user
 happened to be doing in their most recent session.
 
-The analysis provider is an OpenAI-compatible API — freeinference.org itself by
-default. The API key and model are configured once in Admin → Settings (stored
+The analysis provider is this gateway's own OpenAI-compatible API. The API key and model are configured once in Admin → Settings (stored
 in ``site_settings`` and read server-side), not supplied per request. The
 analyze action runs site-wide from the Usage Insights tab or scoped to one user
 from that user's admin detail panel.
@@ -24,6 +23,7 @@ from datetime import datetime, timezone
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.config.site_identity import get_site_identity
 from serving.http import AsyncHTTPClient
 from serving.schemas_admin import (
     UsageInsightsRequest,
@@ -55,15 +55,26 @@ router = APIRouter(prefix="/admin")
 _SETTING_API_KEY = "usage_insights_api_key"
 _SETTING_MODEL = "usage_insights_model"
 
-# Default analysis model. Must be a chat model that freeinference.org actually
-# serves (see GET https://freeinference.org/v1/models) — an unserved id makes the
-# upstream return "model not found" and the analysis fails.
+# Default analysis model. Must be a chat model this deployment actually serves
+# (see GET /v1/models) — an unserved id makes the upstream return "model not
+# found" and the analysis fails. Deployments set their own in
+# Admin -> Settings; this default matches the FreeInference catalog.
 _DEFAULT_MODEL = "glm-5.1"
 
-# The analysis call always targets the gateway's own OpenAI-compatible API. It is
-# a fixed, trusted host (not user-supplied) so the admin's stored key and the
-# sampled prompt content can't be redirected to an arbitrary/internal endpoint.
-_BASE_URL = "https://freeinference.org/v1"
+
+def _analysis_base_url() -> str:
+    """Return this gateway's own OpenAI-compatible API base.
+
+    The analysis call sends sampled user prompts, so the target must be the
+    deployment's own gateway: a hardcoded host would have shipped every
+    operator's user content to whoever that host belongs to. Resolved from
+    operator configuration (site identity, else the local gateway), never from
+    request input, so the "fixed, trusted host" property that protects the
+    admin's stored key and the sampled content still holds.
+    """
+    base = get_site_identity().public_base_url.rstrip("/")
+    return f"{base}/v1" if base else "http://localhost:8080/v1"
+
 
 _SYSTEM_PROMPT = (
     "You are a product analyst for an LLM inference gateway. You are given a "
@@ -293,7 +304,7 @@ def _message_text(message: dict) -> str:
 
 async def _call_analysis_model(api_key: str, model: str, content: str) -> str:
     """Call the OpenAI-compatible chat-completions endpoint and return the text."""
-    url = _BASE_URL.rstrip("/") + "/chat/completions"
+    url = _analysis_base_url().rstrip("/") + "/chat/completions"
     body = {
         "model": model,
         "messages": [
