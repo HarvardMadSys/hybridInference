@@ -39,16 +39,19 @@ Against real components on a developer machine:
 | Per-job credential: auto-revoke, budget 429 | live gateway |
 | Runner + runtime adapter | real Claude Code CLI, end to end |
 | Publish: patch → branch → draft PR | real `git push` to a local bare repo |
+| **A real job on a real model** | live Claude Code CLI × `deepseek-v4-flash` through the production gateway: docstring landed on disk, patch produced, 3 calls / 74,523 tokens / $0.0075 attributed to the job in `api_logs` |
 | Sandbox isolation | real Docker: non-root, `CapEff: 0000000000000000`, cap-drop enforced, `--network none`, `--rm` leaves nothing |
 
 ## Not verified
 
 Be precise about these when reporting status:
 
-- **Real models.** Every run so far used a deterministic fake provider. The
-  chain is proven; model *behaviour* compatibility is not. Run the layer-2
-  matrix (below) to close this.
+- **The full model matrix.** One real job on one real model is verified (see
+  above); the 2-runtime × 3-model matrix has not been run, so cross-model
+  behaviour differences are still unknown.
 - **The Actions workflow has never executed on GitHub.** See the blockers.
+- **Nothing is deployed.** `/v1/agent/*` returns 404 on both staging and
+  production — the merged code has not reached either environment.
 - **Kata.** Isolation was verified on a shared-kernel container. The Kata path
   is wired correctly — the daemon accepts `--runtime io.containerd.kata.v2` and
   proceeds to start the shim, failing only because this host has no shim
@@ -90,20 +93,19 @@ Self-hosted runners have no such constraint: they poll `/v1/agent/worker/claim`
 and can run as soon as the gateway is deployed. That is the shorter path to a
 first real job.
 
-### 2. Two credentials
+### 2. Credentials
 
-Neither exists yet. Both must be created by a person.
-
-**Dispatcher credential** — a gateway API key whose user has the `internal`
-role:
+**Dispatcher credential** — the gate on `/v1/agent/worker/claim` is
+`verify_admin_access`, which already accepts the deployment's `ADMIN_TOKEN`.
+Nothing new needs minting; point the runner at that value.
 
 ```bash
-gh secret set AGENT_DISPATCHER_TOKEN --repo HarvardMadSys/hybridInference
+AGENT_DISPATCHER_TOKEN=$ADMIN_TOKEN
 ```
 
-It cannot be an ordinary key: `/v1/agent/worker/claim` takes the oldest queued
-job **across all tenants** and returns its repo, prompt, and a working
-capability token, so an ordinary key there is a cross-tenant read.
+It must not be an ordinary user key: that endpoint takes the oldest queued job
+**across all tenants** and returns its repo, prompt, and a working capability
+token, so an ordinary key there would be a cross-tenant read.
 
 **GitHub credential** — install a GitHub App and give the *gateway* its private
 key. Nothing needs to be minted or rotated by hand: the platform signs a
@@ -180,3 +182,16 @@ Surfaced by the conformance suite, tracked separately from this feature:
   look complete.
 - An in-stream 429 error frame is typed `server_error`, so a client branching
   on `type` to decide whether to back off misclassifies a rate limit.
+
+## Model behaviour observed on the first real run
+
+`deepseek-v4-flash` replied *"I've added a docstring to the `greet` function.
+It now reads: ..."* immediately after receiving a tool result with
+`is_error: true` saying the write had been denied. Nothing had changed on
+disk.
+
+This is why the runner reports what the tools did rather than what the agent
+says about them: it collects errored `tool_result` entries, emits them into
+the owner's stream, and refuses to record a run as successful when it produced
+no patch *and* a tool failed. A model's own account of its work is not
+evidence.
