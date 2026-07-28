@@ -5,9 +5,25 @@ import json
 import logging
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+import serving.observability.alert_rules as alert_rules_module
 from serving.observability.alert_config import AlertConfig
-from serving.observability.alert_rules import AlertEngine
+from serving.observability.alert_rules import AlertEngine, reset_transition_state
 from serving.observability.log_handler import AlertingLogHandler
+
+
+@pytest.fixture(autouse=True)
+def _clean_transition_state():
+    """Rules share one breach tracker, so an open breach would leak between tests.
+
+    Without this a test that fires a key leaves it firing, and the next test
+    using the same key sees a sustained breach rather than a new one and sends
+    nothing — which is correct behaviour in production and a false failure here.
+    """
+    reset_transition_state()
+    yield
+    reset_transition_state()
 
 
 async def test_engine_starts_and_stops_cleanly():
@@ -113,11 +129,15 @@ async def test_failed_request_rate_fires_on_threshold(monkeypatch):
                     _fake_record(500, provider="anthropic", path="/v1/messages")
                 )
             await _drain_until(handler, mock_alert)
-            assert mock_alert.await_count >= 1
+            # One message per breach, not one per record above the threshold:
+            # the rule now sends on the crossing edge and stays quiet while the
+            # breach persists, which is what lets the incident close later.
+            assert mock_alert.await_count == 1
             ctx = mock_alert.await_args.args[2]
-            assert ctx["top_status_codes"] == "500 (2)"
-            assert ctx["top_paths"] == "/v1/messages (2)"
-            assert ctx["top_providers"] == "anthropic (2)"
+            # Counters therefore describe the moment the threshold was crossed.
+            assert ctx["top_status_codes"] == "500 (1)"
+            assert ctx["top_paths"] == "/v1/messages (1)"
+            assert ctx["top_providers"] == "anthropic (1)"
         finally:
             await engine.stop()
 
@@ -931,3 +951,65 @@ def test_alerts_yaml_loads_with_tracked_task_failure_rate() -> None:
     assert rule_cfg.threshold_pct == 5.0
     assert rule_cfg.min_samples == 50
     assert rule_cfg.cooldown_sec == 1800
+
+
+@pytest.mark.asyncio
+async def test_rate_rule_reports_recovery_once_the_breach_clears(monkeypatch):
+    """The point of the wiring: a breach that ends must close its incident.
+
+    Before this, the rule returned silently the moment the rate dropped back —
+    the recovery was observable and discarded, which is why every gateway alert
+    was fire-only and why feeding them to the control plane would have left
+    incidents open forever.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    # Production waits out a settling period before closing so a metric sitting
+    # on its threshold cannot flap; here it would just make the test sleep.
+    monkeypatch.setattr(alert_rules_module._TRANSITIONS, "clear_after_sec", 0.0)
+
+    cfg = AlertConfig()
+    cfg.rules.failed_request_rate.enabled = True
+    cfg.rules.failed_request_rate.min_samples = 4
+    cfg.rules.failed_request_rate.threshold_pct = 40.0
+    cfg.rules.failed_request_rate.cooldown_sec = 0
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            # Breach: 3 of 4 failed.
+            handler.queue.put_nowait(_fake_record(200))
+            for _ in range(3):
+                handler.queue.put_nowait(_fake_record(500, provider="anthropic"))
+            await _drain_until(handler, mock_alert)
+            assert mock_alert.await_count == 1
+            assert mock_alert.await_args.kwargs.get("status", "firing") == "firing"
+
+            # Healthy traffic pushes the window back under the threshold.
+            for _ in range(20):
+                handler.queue.put_nowait(_fake_record(200))
+            for _ in range(100):
+                if mock_alert.await_count > 1:
+                    break
+                await asyncio.sleep(0.02)
+
+            assert mock_alert.await_count == 2
+            assert mock_alert.await_args.kwargs["status"] == "resolved"
+            # Same dedupe key, or the control plane would open a second
+            # incident instead of closing the first.
+            assert mock_alert.await_args.kwargs["dedupe_key"] == "failed_request_rate"
+        finally:
+            await engine.stop()

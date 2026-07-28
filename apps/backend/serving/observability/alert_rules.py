@@ -13,10 +13,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 
+from serving.observability.alert_transitions import ThresholdTransitionTracker
 from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.utils.context import MODEL_NOT_FOUND
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     from serving.observability.alert_config import (
@@ -75,6 +78,62 @@ class _Rule(Protocol):
     async def on_record(self, record: logging.LogRecord) -> None: ...
 
 
+#: Shared across every rule so one sweep closes incidents for all of them, and
+#: so a rule reloaded with new config does not lose which breaches are open.
+_TRANSITIONS = ThresholdTransitionTracker()
+
+
+def reset_transition_state() -> None:
+    """Drop all open-breach state. For tests and for a clean engine restart."""
+    _TRANSITIONS._firing.clear()
+
+
+async def _emit_transition(
+    *,
+    key: str,
+    breached: bool,
+    severity: AlertSeverity,
+    title: str,
+    context: Callable[[], dict[str, Any]],
+    cooldown_sec: int,
+    now: float | None = None,
+) -> None:
+    """Send only when the breach state changes, so incidents open and close once.
+
+    Rules previously returned silently while healthy, which is why every alert
+    was fire-only: the moment a breach ended was observable and thrown away.
+    Routing that same decision through the tracker turns it into the resolution
+    the control plane needs to close the incident, while a sustained breach
+    still notifies exactly once.
+
+    ``context`` is a callable so the breach detail — counters, top-N summaries —
+    is only built on the firing edge, which is rare; every other evaluation
+    would otherwise pay for a message it is not going to send. A resolution
+    carries just the metric identity, since breach numbers describe a healthy
+    system by then and would only mislead on the recovery card.
+    """
+    transition = _TRANSITIONS.observe(key, breached=breached, now=now or time.time())
+    if transition is None:
+        return
+    if transition == "firing":
+        await alert_slack(
+            severity,
+            title,
+            context(),
+            dedupe_key=key,
+            cooldown_sec=cooldown_sec,
+        )
+        return
+    await alert_slack(
+        AlertSeverity.INFO,
+        f"Recovered: {title}",
+        {"alert": key},
+        dedupe_key=key,
+        cooldown_sec=cooldown_sec,
+        status="resolved",
+    )
+
+
 class _SlidingWindow:
     """Simple time-bucketed sliding window holding (ts, value) tuples."""
 
@@ -129,34 +188,38 @@ class FailedRequestRateRule:
             return
         failed = sum(1 for it in items if _is_failed_request(it))
         pct = (failed / len(items)) * 100.0
-        if pct < self._cfg.threshold_pct:
-            return
-        failed_items = [it for it in items if _is_failed_request(it)]
-        status_counts: collections.Counter[int] = collections.Counter(
-            it["status"] for it in failed_items
-        )
-        path_counts: collections.Counter[str] = collections.Counter(
-            it["path"] for it in failed_items if it["path"]
-        )
-        prov_counts: collections.Counter[str] = collections.Counter(
-            it["provider"] for it in failed_items if it["provider"]
-        )
-        top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
-        top_paths = ", ".join(f"{p} ({c})" for p, c in path_counts.most_common(3))
-        top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
-        await alert_slack(
-            AlertSeverity.ERROR,
-            "Failed-request rate exceeded",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            failed_items = [it for it in items if _is_failed_request(it)]
+            status_counts: collections.Counter[int] = collections.Counter(
+                it["status"] for it in failed_items
+            )
+            path_counts: collections.Counter[str] = collections.Counter(
+                it["path"] for it in failed_items if it["path"]
+            )
+            prov_counts: collections.Counter[str] = collections.Counter(
+                it["provider"] for it in failed_items if it["provider"]
+            )
+            top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
+            top_paths = ", ".join(f"{p} ({c})" for p, c in path_counts.most_common(3))
+            top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
+            return {
                 "rate": (
                     f"{pct:.1f}% ({failed} of {len(items)} requests, last {self._cfg.window_sec}s)"
                 ),
                 "top_status_codes": top_s or "n/a",
                 "top_paths": top_paths or "n/a",
                 "top_providers": top_p or "n/a",
-            },
-            dedupe_key="failed_request_rate",
+            }
+
+        await _emit_transition(
+            key=self.name,
+            breached=pct >= self._cfg.threshold_pct,
+            severity=AlertSeverity.ERROR,
+            title="Failed-request rate exceeded",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            now=now,
         )
 
 
@@ -188,28 +251,32 @@ class FivexxRateRule:
             return
         failed = sum(1 for it in items if it["status"] >= 500)
         pct = (failed / len(items)) * 100.0
-        if pct < self._cfg.threshold_pct:
-            return
-        prov_counts: collections.Counter[str] = collections.Counter(
-            it["provider"] for it in items if it["status"] >= 500 and it["provider"]
-        )
-        status_counts: collections.Counter[int] = collections.Counter(
-            it["status"] for it in items if it["status"] >= 500
-        )
-        top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
-        top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
-        await alert_slack(
-            AlertSeverity.ERROR,
-            "5xx rate exceeded",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            prov_counts: collections.Counter[str] = collections.Counter(
+                it["provider"] for it in items if it["status"] >= 500 and it["provider"]
+            )
+            status_counts: collections.Counter[int] = collections.Counter(
+                it["status"] for it in items if it["status"] >= 500
+            )
+            top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
+            top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
+            return {
                 "rate": (
                     f"{pct:.1f}% ({failed} of {len(items)} requests, last {self._cfg.window_sec}s)"
                 ),
                 "top_providers": top_p or "n/a",
                 "top_status_codes": top_s or "n/a",
-            },
-            dedupe_key="fivexx_rate",
+            }
+
+        await _emit_transition(
+            key=self.name,
+            breached=pct >= self._cfg.threshold_pct,
+            severity=AlertSeverity.ERROR,
+            title="5xx rate exceeded",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            now=now,
         )
 
 
