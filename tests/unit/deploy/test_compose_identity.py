@@ -111,7 +111,9 @@ def test_no_compose_default_names_a_deployment() -> None:
         ("FRONTEND_URL", "http://localhost:3001"),
     ],
 )
-def test_compose_neutral_default_matches_the_code_default(var: str, expected: str) -> None:
+def test_compose_neutral_default_matches_the_code_default(
+    var: str, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Compose and the code must agree, or the two neutral defaults drift.
 
     Compose has to name each variable to pass it into the container, so the
@@ -120,6 +122,10 @@ def test_compose_neutral_default_matches_the_code_default(var: str, expected: st
     from serving.config.settings import Settings
     from serving.config.site_identity import NEUTRAL_DEFAULT
 
+    # The subject is the *default*, so the ambient environment must not
+    # answer for it -- another test setting BASE_URL would otherwise decide
+    # this one's verdict.
+    monkeypatch.delenv(var, raising=False)
     settings = Settings()
     code_default = {
         "SITE_NAME": NEUTRAL_DEFAULT.name,
@@ -136,10 +142,13 @@ def test_compose_neutral_default_matches_the_code_default(var: str, expected: st
     assert code_default == expected
 
 
-def test_compose_cors_default_admits_only_local_development() -> None:
+def test_compose_cors_default_admits_only_local_development(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The site's public origins belong to the site, not to every clone."""
     from serving.config.settings import Settings
 
+    monkeypatch.delenv("CORS_ALLOWED_ORIGINS", raising=False)
     origins = _compose_defaults()["CORS_ALLOWED_ORIGINS"].split(",")
     assert origins == Settings().cors_allowed_origins
     assert all("localhost" in o or "127.0.0.1" in o for o in origins)
