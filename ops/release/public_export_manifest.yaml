@@ -169,6 +169,14 @@ exclude:
       here. Being removed outright in #1075; excluded regardless so the export
       does not republish someone else's data under this project's licence.
 
+  - path: apps/frontend/public/sponsors/
+    reason: >-
+      Two sponsors' logos, which are their trademarks and not this project's to
+      relicense — publishing them under the repository's MIT LICENSE would say
+      otherwise. They are also unreachable in a neutral console: sponsors comes
+      from NEXT_PUBLIC_SPONSORS_JSON and defaults to empty, so the component
+      renders nothing and never asks for the files. A deployment ships its own.
+
 # Decisions this file cannot make. The export tool refuses to run while any
 # remain, so the list is short on purpose.
   # docs/developer/ is mixed, so it is split by name rather than dropped. The

@@ -19,9 +19,9 @@ vi.mock('@/config/branding', () => ({
         height: 180,
       },
       {
-        name: 'Harvard SEAS',
-        alt: 'Harvard SEAS logo',
-        src: '/sponsors/harvard-seas.svg',
+        name: 'Example Institute',
+        alt: 'Example Institute logo',
+        src: '/sponsors/example-institute.svg',
         className: 'h-12 sm:h-14',
         width: 307,
         height: 86,
@@ -40,13 +40,13 @@ describe('Sponsors', () => {
 
     expect(screen.getByText('Sponsors')).toBeInTheDocument();
     expect(screen.getByAltText('NVIDIA logo')).toBeInTheDocument();
-    expect(screen.getByAltText('Harvard SEAS logo')).toBeInTheDocument();
+    expect(screen.getByAltText('Example Institute logo')).toBeInTheDocument();
   });
 
   it('shows sponsor logos in full color', () => {
     render(<Sponsors />);
 
-    [screen.getByAltText('NVIDIA logo'), screen.getByAltText('Harvard SEAS logo')].forEach(
+    [screen.getByAltText('NVIDIA logo'), screen.getByAltText('Example Institute logo')].forEach(
       (logo) => {
         expect(logo).not.toHaveClass('grayscale');
         expect(logo).not.toHaveClass('opacity-70');
