@@ -214,3 +214,70 @@ def test_preflight_accepts_the_workdir_root_on_every_backend():
     which would also have swallowed a genuine TypeError from inside preflight.
     """
     ProcessBackend(acknowledged_unsafe=True).preflight(workdir_root="/tmp")
+
+
+def test_the_world_writable_fallback_reaches_the_whole_tree(tmp_path, monkeypatch):
+    """Opening up only the root leaves every checked-out file unwritable.
+
+    The agent could create new files and edit none of them — which is most of
+    what an agent does. The fallback then reads as working and is not.
+    """
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("not root")
+
+    monkeypatch.setattr("os.chown", refuse)
+    monkeypatch.setattr("os.lchown", refuse)
+    nested = tmp_path / "apps" / "backend"
+    nested.mkdir(parents=True)
+    source = nested / "main.py"
+    source.write_text("x")
+    source.chmod(0o644)
+    nested.chmod(0o755)
+
+    ContainerBackend(image="img").adopt_workdir(str(tmp_path))
+
+    assert source.stat().st_mode & 0o002, "an existing file must become writable"
+    assert nested.stat().st_mode & 0o002, "a nested directory must become writable"
+    assert nested.stat().st_mode & 0o001, "a directory must stay traversable"
+
+
+def test_the_fallback_does_not_widen_permissions_outside_the_worktree(tmp_path, monkeypatch):
+    """chmod follows symlinks and Linux has no lchmod, so links must be skipped."""
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("not root")
+
+    monkeypatch.setattr("os.chown", refuse)
+    monkeypatch.setattr("os.lchown", refuse)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    outside.chmod(0o600)
+    worktree = tmp_path / "job"
+    worktree.mkdir()
+    (worktree / "link").symlink_to(outside)
+
+    ContainerBackend(image="img").adopt_workdir(str(worktree))
+
+    assert outside.stat().st_mode & 0o777 == 0o600, "a symlink target must be untouched"
+
+
+def test_the_fallback_does_not_make_data_files_executable(tmp_path, monkeypatch):
+    """`a+rwX`, not `a+rwx`: the execute bit only where it already meant something."""
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("not root")
+
+    monkeypatch.setattr("os.chown", refuse)
+    monkeypatch.setattr("os.lchown", refuse)
+    data = tmp_path / "data.json"
+    data.write_text("{}")
+    data.chmod(0o644)
+    script = tmp_path / "run.sh"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+
+    ContainerBackend(image="img").adopt_workdir(str(tmp_path))
+
+    assert not data.stat().st_mode & 0o111
+    assert script.stat().st_mode & 0o111

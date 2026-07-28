@@ -303,3 +303,39 @@ async def test_a_narrowed_token_is_not_served_from_the_full_token_cache(config):
     assert (write, read) == ("ghs_rw", "ghs_ro")
     assert read_again == "ghs_ro"
     assert len(minted) == 2, "the second read should have come from cache"
+
+
+async def test_an_uninstalled_repository_is_distinguishable_from_an_outage(config):
+    """404 is a settled answer; 503 is GitHub having a bad minute.
+
+    Collapsing the two is what lets a momentary outage be handled as "no
+    credential needed" and terminally fail a private repository's job.
+    """
+    from serving.agent_jobs.github_app import AppNotInstalled
+
+    def not_found(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"message": "Service Unavailable"})
+
+    original, patched = _client_returning(not_found)
+    httpx.AsyncClient = patched
+    try:
+        with pytest.raises(AppNotInstalled):
+            await GitHubAppCredentials(config).token_for("o/n")
+    finally:
+        httpx.AsyncClient = original
+
+    original, patched = _client_returning(unavailable)
+    httpx.AsyncClient = patched
+    try:
+        with pytest.raises(GitHubAppError) as excinfo:
+            await GitHubAppCredentials(config).token_for("o/n")
+    finally:
+        httpx.AsyncClient = original
+
+    assert not isinstance(excinfo.value, AppNotInstalled), (
+        "a 503 must not be reported as 'the App is not installed here'"
+    )
+    assert excinfo.value.status == 503

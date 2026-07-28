@@ -21,6 +21,7 @@ from serving.agent_jobs.runner import (
     WorktreeError,
     _assert_no_credential_on_disk,
     _auth_env,
+    align_existing_checkout,
     build_patch,
     existing_checkout_sha,
     prepare_worktree,
@@ -217,3 +218,54 @@ def test_the_wrong_repository_is_refused_not_worked_on(tmp_path: Path, remote):
 def test_an_empty_directory_is_not_mistaken_for_a_checkout(tmp_path: Path):
     """Returning a sha here would skip the clone and reinstate the bug."""
     assert existing_checkout_sha(str(tmp_path), "o/n") is None
+
+
+def test_a_pinned_commit_wins_over_a_pre_populated_checkout(tmp_path: Path, remote):
+    """The Actions runner checks out the trigger ref, not the job's commit.
+
+    Running the agent on the wrong tree is not a visible failure: the store
+    keeps the owner's pinned sha, so the publisher applies a patch generated
+    against one commit onto a different one. `--3way` makes that *usually*
+    succeed, which is worse than failing — the PR looks plausible and encodes
+    changes nobody wrote.
+    """
+    base, repo, first, head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    # Stand in for actions/checkout: the worktree is on the branch tip.
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=None, remote_base=base)
+    _git("remote", "add", "origin", "https://github.com/owner/name.git", cwd=workdir)
+    # ...with full history available, as `fetch-depth: 0` gives.
+    _git("fetch", "--quiet", "--unshallow", base + "/" + repo + ".git", cwd=workdir)
+
+    checked_out = existing_checkout_sha(str(workdir), repo)
+    assert checked_out == head
+
+    aligned = align_existing_checkout(str(workdir), checked_out=checked_out, base_sha=first)
+
+    assert aligned == first
+    assert not (workdir / "second.txt").exists(), "the worktree must be on the pinned commit"
+
+
+def test_an_unchanged_checkout_is_left_alone(tmp_path: Path, remote):
+    """No pinned commit, or already on it: do not touch the worktree."""
+    base, repo, _first, head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=None, remote_base=base)
+
+    assert align_existing_checkout(str(workdir), checked_out=head, base_sha=None) == head
+    assert align_existing_checkout(str(workdir), checked_out=head, base_sha=head) == head
+    # An abbreviated pin resolves to the same commit rather than a needless switch.
+    assert align_existing_checkout(str(workdir), checked_out=head, base_sha=head[:8]) == head
+
+
+def test_a_pinned_commit_the_worktree_lacks_stops_the_job(tmp_path: Path, remote):
+    """Better to fail than to silently produce a patch against another tree."""
+    base, repo, _first, head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=None, remote_base=base)
+
+    with pytest.raises(WorktreeError, match="does not contain"):
+        align_existing_checkout(str(workdir), checked_out=head, base_sha="0" * 40)

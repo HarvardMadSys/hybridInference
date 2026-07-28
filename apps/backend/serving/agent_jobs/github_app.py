@@ -44,6 +44,22 @@ _TOKEN_REFRESH_MARGIN_S = 300
 class GitHubAppError(Exception):
     """Raised when App credentials cannot be obtained."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        """Record the HTTP status when the failure came from GitHub."""
+        super().__init__(message)
+        self.status = status
+
+
+class AppNotInstalled(GitHubAppError):
+    """The App does not cover this repository.
+
+    Distinct from every other failure because it is a *settled* answer, not a
+    transient one: retrying will not change it, and a caller may reasonably
+    carry on without a credential (a public repository clones anonymously).
+    Collapsing this together with "GitHub returned 503" is what turns a
+    momentary outage into a permanently failed job.
+    """
+
 
 @dataclass(frozen=True)
 class AppConfig:
@@ -131,7 +147,8 @@ class GitHubAppCredentials:
             # The body can echo the repository name; the token never appears in
             # it, and it is the only useful diagnostic for a misconfigured App.
             raise GitHubAppError(
-                f"GitHub {method} {path} failed ({response.status_code}): {response.text[:200]}"
+                f"GitHub {method} {path} failed ({response.status_code}): {response.text[:200]}",
+                status=response.status_code,
             )
         return response.json()
 
@@ -147,14 +164,21 @@ class GitHubAppCredentials:
         owner, _, name = repo.partition("/")
         if not owner or not name:
             raise GitHubAppError(f"repo must be 'owner/name', got {repo!r}")
-        body = await self._request(
-            "GET",
-            f"/repos/{owner}/{name}/installation",
-            token=build_app_jwt(self._config),
-        )
+        try:
+            body = await self._request(
+                "GET",
+                f"/repos/{owner}/{name}/installation",
+                token=build_app_jwt(self._config),
+            )
+        except GitHubAppError as exc:
+            # 404 is the settled answer "not installed here"; 5xx and the rest
+            # are GitHub having a bad minute, and must stay distinguishable.
+            if exc.status == 404:
+                raise AppNotInstalled(f"no App installation covers {repo}", status=404) from exc
+            raise
         installation_id = body.get("id")
         if not isinstance(installation_id, int):
-            raise GitHubAppError(f"no App installation covers {repo}")
+            raise AppNotInstalled(f"no App installation covers {repo}")
         self._installations[repo] = installation_id
         return installation_id
 
