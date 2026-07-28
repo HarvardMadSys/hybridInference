@@ -26,9 +26,10 @@ features:
   rag: true
 
 paths:
-  # Relative paths resolve against this file's directory: these point at the
-  # legacy locations on purpose (see header note).
-  models: ../../config/models.yaml
+  # Relative paths resolve against this file's directory. All three now point
+  # inside the overlay: the legacy config/ location holds none of them, so
+  # there is no second copy to drift.
+  models: config/models.yaml
   routing: config/routing.yaml
   # Moved in — no longer an alias back to the legacy location.
   alerts: config/alerts.yaml

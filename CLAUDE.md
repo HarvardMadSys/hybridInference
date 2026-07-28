@@ -130,7 +130,7 @@ For the full diagram (network layer, observability, storage), see
 
 | File | Owns |
 |---|---|
-| `config/models.yaml` | Model registry (required); per-model `router:` / `router_params:` (incl. RouteWise tuning) |
+| `distributions/<name>/config/models.yaml` | Model registry — a deployment's; per-model `router:` / `router_params:` (incl. RouteWise tuning). `config/examples/` has one to start from |
 | `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
 | `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
 

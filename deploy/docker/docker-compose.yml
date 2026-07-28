@@ -53,6 +53,11 @@ services:
       # endpoint map and every health-check setting, and the gateway starts
       # anyway — verified by booting with the file absent. Pinned by a test.
       ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-config/routing.yaml}
+      # The last of the three, and the one with no quiet failure: without a
+      # registry there are no models, /v1/models is empty, and every request
+      # is a 404 — loud enough that it cannot ship unnoticed. A deployment
+      # names its own; a clone starts from config/examples/.
+      MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-config/models.yaml}
       # Identity rendered into emails, links, CORS, the docs-assistant prompt
       # and OpenRouter attribution. The defaults below name no deployment, so
       # `docker compose up` on a fresh clone brings up *your* gateway, not

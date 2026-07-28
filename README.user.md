@@ -75,7 +75,7 @@ For local development without the full production stack, see [README.developer.m
 The gateway is configured primarily through environment variables and YAML files.
 
 - `.env`: secrets, database settings, provider API keys, auth settings, and runtime options.
-- `config/models.yaml`: model registry and endpoint definitions.
+- `distributions/<name>/config/models.yaml`: model registry and endpoint definitions. Upstream ships none; `config/examples/` has one to start from.
 - `distributions/<name>/config/routing.yaml`: local/remote split, routing strategy, health checks. Upstream ships none; the gateway starts without one.
 - `distributions/<name>/config/alerts.yaml`: alert rules. Upstream ships none; without one the built-in thresholds apply.
 
@@ -94,7 +94,7 @@ For model setup, see [docs/developer/adding-models.md](docs/developer/adding-mod
 ## Troubleshooting
 
 - **Hosted API key rejected:** confirm the key is active in the dashboard and sent as `Authorization: Bearer <key>`.
-- **Model not found:** check the model list in the public docs or your self-hosted `config/models.yaml`.
+- **Model not found:** call `GET /v1/models` on the gateway, or check your own registry.
 - **Self-hosted database errors:** verify `.env` database values and start the database service before the backend.
 - **Local GPU endpoint unreachable:** verify the model server is running and that Docker networking points to the correct host.
 

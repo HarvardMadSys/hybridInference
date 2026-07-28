@@ -122,11 +122,11 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 
 ## Configuration Files
 
-- `config/models.yaml`: required model registry.
+- `distributions/<name>/config/models.yaml`: the model registry. Upstream ships none; `config/examples/` has one to start from.
 - `distributions/<name>/config/routing.yaml`: local/remote split, routing strategy, health checks. Upstream ships none; the gateway starts without one.
 - `distributions/<name>/config/alerts.yaml`: alert rules. Upstream ships none; without one the built-in thresholds apply.
 
-Per-model RouteWise tuning lives under each model's `router_params:` in `config/models.yaml`.
+Per-model RouteWise tuning lives under each model's `router_params:` in the registry.
 
 YAML files support `${VAR}` and `${VAR:-default}` environment variable interpolation.
 
