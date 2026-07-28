@@ -217,6 +217,12 @@ def main() -> int:
         for rule in undecided:
             print(f"  {rule['path']}\n      {' '.join(rule['question'].split())}")
 
+    stale_requires = [r for r in overlay if r.get("requires") and (REPO / r["source"]).exists()]
+    if stale_requires:
+        print("\nOverlay sources have arrived; drop their `requires` markers:")
+        for r in stale_requires:
+            print(f"  {r['path']}  (was waiting on {r['requires']})")
+
     if args.materialize:
         target = Path(args.materialize)
         if target.exists() and any(target.iterdir()):
@@ -224,15 +230,13 @@ def main() -> int:
             return 2
         materialize(kept, overlay, target)
         print(f"\nExport tree written to {target}")
+        # Audit what was built, not the source minus its exclusions — the whole
+        # point of materialising. Re-running the source audit here silently
+        # replaced the result, which is how "the export tree is clean" came to
+        # be measured against the wrong tree.
         findings = audit(kept, root=target, overlay=overlay)
     else:
-        stale_requires = [r for r in overlay if r.get("requires") and (REPO / r["source"]).exists()]
-    if stale_requires:
-        print("\nOverlay sources have arrived; drop their `requires` markers:")
-        for r in stale_requires:
-            print(f"  {r['path']}  (was waiting on {r['requires']})")
-
-    findings = audit(kept)
+        findings = audit(kept)
     print()
     if not findings:
         print("Public-surface audit of the exported tree: clean.")
