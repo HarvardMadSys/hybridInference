@@ -31,7 +31,10 @@ if TYPE_CHECKING:
 
     from pydantic import JsonValue
 
-from serving.observability.alert_transitions import ThresholdTransitionTracker
+from serving.observability.alert_transitions import (
+    DEFAULT_STALE_AFTER_SEC,
+    ThresholdTransitionTracker,
+)
 
 log = logging.getLogger(__name__)
 
@@ -405,9 +408,22 @@ async def alert_slack(
                 _LAST_FIRED[key] = _monotonic()
 
 
-#: Shared across every rule so one sweep closes incidents for all of them, and
-#: so a rule reloaded with new config does not lose which breaches are open.
+#: Metric alerts: a quantity recomputed from a rolling window of request
+#: records. Shared across every rule so one sweep closes incidents for all of
+#: them, and so a rule reloaded with new config does not lose which breaches are
+#: open. ``stale_after_sec`` is raised at engine start to exceed the longest
+#: configured rule window — see ``alert_rules``.
 _TRANSITIONS = ThresholdTransitionTracker()
+
+#: State alerts: a condition the process already tracks (an open circuit, a
+#: disconnected store). These report exactly one healthy edge ever, so a
+#: settling period would mean the incident never closes; and silence is not
+#: recovery, so sweeping one would announce the outage as over while it is
+#: still happening.
+_STATE_TRANSITIONS = ThresholdTransitionTracker(
+    clear_after_sec=0.0,
+    stale_after_sec=None,
+)
 
 #: How often to look for breaches nothing is evaluating any more. Well under
 #: the tracker's own staleness threshold so a stale incident closes promptly
@@ -415,9 +431,23 @@ _TRANSITIONS = ThresholdTransitionTracker()
 _STALE_SWEEP_INTERVAL_SEC = 60
 
 
+def set_stale_after(seconds: float) -> None:
+    """Raise how long a metric breach may go unobserved before it is swept.
+
+    The default is a guess; the engine knows the real answer once its rules are
+    built, and closing an incident before its rule's own window has aged out
+    would report a recovery the metric does not agree with. Only ever raises —
+    a second engine with narrower rules must not shorten it for the first.
+    """
+    if seconds > (_TRANSITIONS.stale_after_sec or 0.0):
+        _TRANSITIONS.stale_after_sec = seconds
+
+
 def reset_transition_state() -> None:
     """Drop all open-breach state. For tests and for a clean engine restart."""
     _TRANSITIONS._firing.clear()
+    _STATE_TRANSITIONS._firing.clear()
+    _TRANSITIONS.stale_after_sec = DEFAULT_STALE_AFTER_SEC
 
 
 async def alert_on_transition(
@@ -428,6 +458,7 @@ async def alert_on_transition(
     title: str,
     context: Callable[[], dict[str, Any]],
     cooldown_sec: int,
+    kind: Literal["metric", "state"] = "metric",
     now: float | None = None,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
@@ -449,7 +480,9 @@ async def alert_on_transition(
     carries just the metric identity, since breach numbers describe a healthy
     system by then and would only mislead on the recovery card.
     """
-    transition = _TRANSITIONS.observe(key, breached=breached, now=now or time.time())
+    tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
+    moment = now or time.time()
+    transition = tracker.observe(key, breached=breached, now=moment)
     if breached:
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
@@ -465,7 +498,7 @@ async def alert_on_transition(
         )
     if transition != "resolved":
         return False
-    return await alert_slack(
+    sent = await alert_slack(
         AlertSeverity.INFO,
         f"Recovered: {title}",
         {"alert": key},
@@ -473,6 +506,12 @@ async def alert_on_transition(
         cooldown_sec=cooldown_sec,
         status="resolved",
     )
+    if not sent:
+        # ``observe`` already cleared the key, so without this the only
+        # resolution it will ever produce is gone and the incident stays open
+        # with nothing able to close it.
+        tracker.rearm(key, moment)
+    return sent
 
 
 async def sweep_stale_breaches() -> None:
@@ -482,10 +521,16 @@ async def sweep_stale_breaches() -> None:
     entirely, and periodic budget checks whose incident key embeds the day or
     hour, so the previous period is never observed again. Without this both
     would hold their incident — and its principal quota — forever.
+
+    Only metric alerts are swept. For a state alert silence means nothing was
+    observed, not that the condition cleared, so sweeping one would report an
+    ongoing outage as recovered.
     """
-    for key in _TRANSITIONS.sweep(time.time()):
+    now = time.time()
+    for key in _TRANSITIONS.sweep(now):
+        sent = False
         try:
-            await alert_slack(
+            sent = await alert_slack(
                 AlertSeverity.INFO,
                 f"Recovered: {key}",
                 {"alert": key, "reason": "no longer reported"},
@@ -496,3 +541,7 @@ async def sweep_stale_breaches() -> None:
         except Exception:
             # One stuck resolution must not strand every other open incident.
             log.exception("stale breach resolution failed for %s", key)
+        if not sent:
+            # The sweep already dropped the key, so leaving it dropped would
+            # lose the resolution outright. Re-armed, the next sweep retries.
+            _TRANSITIONS.rearm(key, now)

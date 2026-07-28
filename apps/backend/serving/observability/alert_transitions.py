@@ -23,6 +23,14 @@ stopping altogether is never re-evaluated and the incident would stay open
 forever. :meth:`sweep` closes incidents whose last observation is older than
 ``stale_after_sec``, which the caller runs on a timer.
 
+Both behaviours suit a *metric* — a quantity recomputed from a rolling window of
+traffic. They are wrong for a *state* alert such as an open circuit breaker or a
+disconnected store, which reports a condition the process already tracks: there
+is exactly one healthy edge ever, so waiting for a settling period means the
+incident never closes, and silence is not evidence of recovery — sweeping one
+would report the outage as over while it is still happening. Construct those
+with ``clear_after_sec=0`` and ``stale_after_sec=None``.
+
 The tracker is deliberately in-process, matching where the existing cooldown
 state lives. Cross-process convergence is the control plane's job: it dedupes by
 fingerprint, so two workers observing the same edge produce one incident.
@@ -135,6 +143,18 @@ class ThresholdTransitionTracker:
         for key in stale:
             del self._firing[key]
         return sorted(stale)
+
+    def rearm(self, key: str, now: float) -> None:
+        """Put a resolved key back into firing after its resolution was not sent.
+
+        ``observe`` and ``sweep`` clear the key before the caller has a delivery
+        result, so a transient sink failure would otherwise lose the only
+        resolution that key will ever produce and leave its incident open with
+        nothing able to close it. Re-arming makes the next healthy observation
+        try again; a discrete state alert with no further observations stays
+        open, which is where it was before this module existed.
+        """
+        self._firing[key] = _KeyState(last_observed_at=now, clear_started_at=None)
 
     def forget(self, key: str) -> None:
         """Drop state without emitting a transition (for shutdown or reload)."""

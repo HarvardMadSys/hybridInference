@@ -137,3 +137,64 @@ def test_forget_drops_state_without_emitting() -> None:
 def test_rejects_incoherent_configuration(kwargs: dict[str, float]) -> None:
     with pytest.raises(ValueError):
         tracker(**kwargs)
+
+
+class TestStateAlerts:
+    """An open circuit or a disconnected store is not a metric.
+
+    It reports a condition the process already tracks, so there is exactly one
+    healthy edge ever — a settling period would mean the incident never closes
+    — and silence means nothing was observed, not that the condition cleared.
+    """
+
+    def state(self) -> ThresholdTransitionTracker:
+        return ThresholdTransitionTracker(clear_after_sec=0.0, stale_after_sec=None)
+
+    def test_the_single_healthy_edge_resolves(self) -> None:
+        t = self.state()
+        t.observe("circuit_open:zhipu", breached=True, now=0.0)
+        # The breaker closes once and never reports again. Waiting for a second
+        # healthy sample would leave the incident open forever.
+        assert t.observe("circuit_open:zhipu", breached=False, now=1.0) == "resolved"
+
+    def test_silence_never_resolves_an_open_circuit(self) -> None:
+        t = self.state()
+        t.observe("circuit_open:zhipu", breached=True, now=0.0)
+        # Sweeping this would announce the outage as over while it is ongoing.
+        assert t.sweep(now=100_000.0) == []
+        assert t.is_firing("circuit_open:zhipu")
+
+
+class TestUndeliveredResolutions:
+    """observe/sweep clear the key before the caller knows if it was sent."""
+
+    def test_rearm_restores_a_resolution_that_was_not_delivered(self) -> None:
+        t = tracker()
+        t.observe("k", breached=True, now=0.0)
+        assert t.observe("k", breached=False, now=1.0) == "resolved"
+
+        t.rearm("k", now=1.0)
+
+        assert t.is_firing("k")
+        # The next healthy observation retries rather than losing it outright.
+        assert t.observe("k", breached=False, now=2.0) == "resolved"
+
+    def test_rearm_after_a_sweep_lets_the_next_sweep_retry(self) -> None:
+        t = tracker(stale_after_sec=900.0)
+        t.observe("k", breached=True, now=0.0)
+        assert t.sweep(now=900.0) == ["k"]
+
+        t.rearm("k", now=900.0)
+
+        assert t.sweep(now=1_000.0) == []
+        assert t.sweep(now=1_800.0) == ["k"]
+
+    def test_rearm_does_not_re_emit_a_firing_edge(self) -> None:
+        # The incident was never closed, so re-announcing it would post a
+        # duplicate outage message for an outage already reported.
+        t = tracker()
+        t.observe("k", breached=True, now=0.0)
+        t.observe("k", breached=False, now=1.0)
+        t.rearm("k", now=1.0)
+
+        assert t.observe("k", breached=True, now=2.0) is None

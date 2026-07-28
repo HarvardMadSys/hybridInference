@@ -96,6 +96,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
                 "error": (op_error or "health_check returned False")[:500],
             },
             cooldown_sec=300,
+            kind="state",
         )
     if log_store:
         await alert_on_transition(
@@ -109,6 +110,7 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
                 "error": (log_error or "health_check returned False")[:500],
             },
             cooldown_sec=300,
+            kind="state",
         )
 
     return result

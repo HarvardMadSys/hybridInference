@@ -208,11 +208,13 @@ class _CircuitBreaker:
                             title="Provider circuit opened",
                             context=dict,
                             cooldown_sec=300,
+                            kind="state",
                         )
                     )
                 except RuntimeError:
-                    # No running loop (sync teardown); the stale-breach sweep
-                    # still closes it.
+                    # No running loop (sync teardown). Nothing else will close
+                    # this incident: a circuit has one healthy edge and state
+                    # alerts are never swept, because silence is not recovery.
                     pass
                 else:
                     _ALERT_TASKS.add(task)
@@ -276,6 +278,7 @@ class _CircuitBreaker:
                         title="Provider circuit opened",
                         context=lambda: context,
                         cooldown_sec=300,
+                        kind="state",
                     )
                 )
             except RuntimeError:

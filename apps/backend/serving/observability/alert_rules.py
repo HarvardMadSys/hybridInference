@@ -482,16 +482,21 @@ class UserCostOverrunJob:
             return
         today = dt.date.today().isoformat()
         for user_id, role, daily_cost in rows:
-            await _alerts.alert_slack(
-                AlertSeverity.WARN,
-                "User cost overrun",
-                {
+            # Through the tracker, not straight to the sink: the key embeds the
+            # day, so once it rolls over nothing observes this one again and the
+            # stale sweep is the only thing that can close its incident. Calling
+            # alert_slack directly would leave it open forever.
+            await _alerts.alert_on_transition(
+                key=f"cost_overrun:{user_id}:{today}",
+                breached=True,
+                severity=AlertSeverity.WARN,
+                title="User cost overrun",
+                context=lambda user_id=user_id, role=role, daily_cost=daily_cost: {
                     "user_id": user_id,
                     "role": role,
                     "daily_cost": f"${daily_cost:.2f}",
                     "threshold": f"${self._cfg.thresholds_per_role.get(role, 0):.2f}",
                 },
-                dedupe_key=f"cost_overrun:{user_id}:{today}",
                 cooldown_sec=self._cfg.cooldown_sec,
             )
 
@@ -520,16 +525,20 @@ class ProviderHourlySpendJob:
             budget = self._cfg.budgets.get(provider)
             if budget is None or spend < budget:
                 continue
-            await _alerts.alert_slack(
-                AlertSeverity.WARN,
-                f"Provider hourly spend exceeded budget for {provider}",
-                {
+            # As with the daily cost job: the key embeds the hour, so the stale
+            # sweep is the only thing that can ever close this incident and the
+            # tracker has to know about it.
+            await _alerts.alert_on_transition(
+                key=f"provider_spend:{provider}:{hour_iso}",
+                breached=True,
+                severity=AlertSeverity.WARN,
+                title=f"Provider hourly spend exceeded budget for {provider}",
+                context=lambda provider=provider, spend=spend, budget=budget: {
                     "provider": provider,
                     "hourly_spend": f"${spend:.2f}",
                     "budget": f"${budget:.2f}",
                     "hour": hour_iso,
                 },
-                dedupe_key=f"provider_spend:{provider}:{hour_iso}",
                 cooldown_sec=self._cfg.cooldown_sec,
             )
 
@@ -552,6 +561,7 @@ class AlertEngine:
         self._op_store = op_store
         self._log_store = log_store
         self._task: asyncio.Task[None] | None = None
+        self._sweep_task: asyncio.Task[None] | None = None
         self._rules: list[_Rule] = []
         self._scheduled_jobs: list[Any] = []
 
@@ -562,6 +572,7 @@ class AlertEngine:
     async def start(self) -> None:
         """Build rules, schedule periodic jobs, and start the drain task."""
         self._build_rules()
+        self._align_stale_window()
         self._schedule_periodic_jobs()
         self._task = asyncio.create_task(self._drain(), name="AlertEngine.drain")
         log.info(
@@ -578,6 +589,11 @@ class AlertEngine:
             self._task.cancel()
             with _cl.suppress(asyncio.CancelledError):
                 await self._task
+        if self._sweep_task and not self._sweep_task.done():
+            self._sweep_task.cancel()
+            with _cl.suppress(asyncio.CancelledError):
+                await self._sweep_task
+        self._sweep_task = None
         for job in self._scheduled_jobs:
             try:
                 job.remove()
@@ -585,6 +601,35 @@ class AlertEngine:
                 log.exception("failed to remove alert job")
         self._scheduled_jobs.clear()
         self._task = None
+
+    def _align_stale_window(self) -> None:
+        """Keep the stale sweep from closing an incident its rule still holds.
+
+        A rule's breach is computed over ``window_sec`` of request records, so
+        a firing key that stops being observed is only genuinely stale once that
+        window can no longer contain a breaching sample. With the shipped
+        config ``failed_request_rate.window_sec`` is 3600 while the tracker's
+        default staleness is 900, which would report recovery 45 minutes before
+        the breached samples aged out.
+        """
+        windows = [
+            rule.window_sec
+            for rule in vars(self._config.rules).values()
+            if getattr(rule, "enabled", False) and getattr(rule, "window_sec", None)
+        ]
+        intervals = [
+            cfg.check_interval_sec
+            for cfg in (
+                self._config.cost.user_overrun,
+                self._config.cost.provider_hourly_spend,
+            )
+            if getattr(cfg, "enabled", False) and getattr(cfg, "check_interval_sec", None)
+        ]
+        longest = max([*windows, *intervals, 0])
+        if longest:
+            # One extra window of slack, so an evaluation that lands late does
+            # not race the sweep.
+            _alerts.set_stale_after(longest * 2)
 
     def _build_rules(self) -> None:
         self._rules.append(FailedRequestRateRule(self._config.rules.failed_request_rate))
@@ -599,6 +644,11 @@ class AlertEngine:
 
     def _schedule_periodic_jobs(self) -> None:
         if self._scheduler is None:
+            # The sweep is the only thing that closes an incident whose rule
+            # stopped being evaluated, and it must not depend on the optional
+            # Postgres-backed scheduler — a deployment without one would leave
+            # every such incident open forever. It runs on its own task.
+            self._sweep_task = asyncio.ensure_future(self._sweep_forever())
             return
         from apscheduler.triggers.interval import IntervalTrigger
 
@@ -642,6 +692,18 @@ class AlertEngine:
     async def _sweep_stale_breaches(self) -> None:
         """Resolve incidents whose rule or period stopped producing evaluations."""
         await sweep_stale_breaches()
+
+    async def _sweep_forever(self) -> None:
+        """Run the stale-breach sweep without an external scheduler."""
+        while True:
+            try:
+                await asyncio.sleep(_STALE_SWEEP_INTERVAL_SEC)
+                await sweep_stale_breaches()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A failing sweep must not take the alert engine down with it.
+                log.exception("stale breach sweep failed")
 
     async def _drain(self) -> None:
         try:

@@ -192,22 +192,37 @@ fire-only（`grep 'status="resolved"'` 一条都搜不到），控制面会为�
 
 | 模块 | 告警 | 严重度 | 恢复边 |
 |---|---|---|---|
-| `routing/endpoint_health.py` | Provider circuit opened | ERROR | ✅ 复用既有 `circuit_closed` 点 |
-| `serving/observability/alert_rules.py` | Failed-request rate exceeded | ERROR | ✅ 指标转清 |
-| ″ | 5xx rate exceeded | ERROR | ✅ 指标转清 |
-| ″ | p95 latency exceeded for provider `{provider}` | WARN | ✅ 指标转清 |
-| ″ | Auth failure spike | WARN | ✅ 指标转清 |
-| ″ | RouteWise pending prefix-cache entries leaking | WARN | ✅ 指标转清 |
-| ″ | Tracked-task failure rate exceeded for `{task_name}` | ERROR | ✅ 指标转清 |
-| ″ | User cost overrun | WARN | ✅ 静默清扫（周期任务无「转清」样本） |
-| ″ | Provider hourly spend exceeded budget for `{provider}` | WARN | ✅ 静默清扫 |
-| `serving/servers/routers/health.py` | Database disconnected（operational_store） | CRITICAL | ✅ 指标转清 |
-| ″ | Database disconnected（log_store） | CRITICAL | ✅ 指标转清 |
-| `serving/admin/failed_request_alerter.py` | Failed request | — | ✅ 指标转清 |
+| `routing/endpoint_health.py` | Provider circuit opened | ERROR | 状态跳变 |
+| `serving/observability/alert_rules.py` | Failed-request rate exceeded | ERROR | 指标转清 |
+| ″ | 5xx rate exceeded | ERROR | 指标转清 |
+| ″ | p95 latency exceeded for provider `{provider}` | WARN | 指标转清 |
+| ″ | Auth failure spike | WARN | 指标转清 |
+| ″ | RouteWise pending prefix-cache entries leaking | WARN | 指标转清 |
+| ″ | Tracked-task failure rate exceeded for `{task_name}` | ERROR | 指标转清 |
+| ″ | User cost overrun | WARN | 静默清扫 |
+| ″ | Provider hourly spend exceeded budget for `{provider}` | WARN | 静默清扫 |
+| `serving/servers/routers/health.py` | Database disconnected（operational_store） | CRITICAL | 状态跳变 |
+| ″ | Database disconnected（log_store） | CRITICAL | 状态跳变 |
+| `serving/admin/failed_request_alerter.py` | Failed request | — | 指标转清 |
 
-两种形状要分开处理：记录驱动的规则有流量就会重新评估，指标转清并持续
-`clear_after_sec` 后自然恢复；周期性预算任务永远看不到「转清」样本，靠
-`stale_after_sec` 静默清扫关闭。
+**三种形状，不能用同一套规则**：
+
+1. **指标**（记录驱动）—— 有流量就重新评估。指标转清并持续 `clear_after_sec`
+   后恢复；流量整体停了则由静默清扫兜底。清扫阈值在引擎启动时按最长规则窗口
+   推导（发布配置里 `failed_request_rate.window_sec` 是 3600，用默认的 900
+   会在故障样本还没老化出窗口时就报恢复）。
+2. **状态跳变**（熔断器、DB store）—— 报的是进程本来就在跟踪的状态，**一生只有
+   一条健康边**。静置期会让 incident 永不关闭；静默清扫更危险 —— 沉默只说明
+   没人观测，不说明状态清了，清扫它等于**在故障进行中宣告恢复**。这类立即在
+   那条边上恢复，且永不清扫。
+3. **周期性预算任务** —— 永远看不到「转清」样本，key 里嵌了日期/小时，周期一滚
+   就再也不会被观测。它们必须**经 tracker 发送**才能被清扫关闭；早期版本直接调
+   `alert_slack`，于是清扫永远返回不了它们的 key，这两个告警实际上没有任何恢复
+   路径。
+
+**恢复投递失败必须能重试**：`observe`/`sweep` 在调用方拿到投递结果之前就清掉了
+key，所以 sink 一次抖动就会永久丢掉这个 key 一生仅有的那条恢复。失败即重挂，让
+下一次观测/清扫再试。
 
 **边沿检测只管恢复边**：持续故障期间 `alert_slack` 仍按今天的节奏每次评估都
 发，因为这些重复正是控制面 occurrence 计数与 last-seen 的来源。把它们折叠掉

@@ -10,9 +10,12 @@ from serving.observability.alerts import (
     _base_url,
     _detect_environment,
     _format_message,
+    alert_on_transition,
     alert_slack,
     reset_dedupe_state,
+    reset_transition_state,
     server_info,
+    sweep_stale_breaches,
 )
 
 
@@ -329,3 +332,101 @@ class TestResolutionIsNeverSuppressed:
                 dedupe_key="k",
                 status="resolved",
             )
+
+
+class TestStateAlertsResolveOnTheirOnlyEdge:
+    """A circuit or store reports one healthy edge, so it must resolve on it."""
+
+    async def test_state_kind_resolves_immediately(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ):
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            sent = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+
+        # Under the metric settling period this would be False, and the only
+        # healthy edge the breaker ever reports would be spent.
+        assert sent is True
+
+    async def test_a_state_alert_is_never_swept(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            mock_post.reset_mock()
+            await sweep_stale_breaches()
+
+        # Silence is not recovery: sweeping would report the outage as over.
+        mock_post.assert_not_awaited()
+
+
+class TestUndeliveredResolutionIsRetried:
+    async def test_a_failed_resolution_stays_open_for_a_retry(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, False, True]),
+        ):
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            first = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            retry = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+
+        assert first is False
+        # Without re-arming, the transition is spent and the incident can never
+        # be closed by anything.
+        assert retry is True
