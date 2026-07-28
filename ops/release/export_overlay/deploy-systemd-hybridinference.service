@@ -1,0 +1,44 @@
+# Run the gateway under systemd, without Docker.
+#
+# A template, not a working unit: set the two placeholders and install it.
+#
+#   sudo useradd --system --home-dir /srv/hybridinference hybridinference
+#   sudo sed -e 's|__USER__|hybridinference|g' \
+#            -e 's|__ROOT__|/srv/hybridinference|g' \
+#            deploy/systemd/hybridinference.service \
+#      | sudo tee /etc/systemd/system/hybridinference.service
+#   sudo systemctl enable --now hybridinference
+#
+# The Docker Compose stack in deploy/docker/ is the other way to run this, and
+# the one the quickstart uses. Prefer it unless you have a reason not to.
+
+[Unit]
+Description=HybridInference gateway
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=__USER__
+Group=__USER__
+Type=simple
+WorkingDirectory=__ROOT__
+ExecStart=__ROOT__/.venv/bin/uvicorn serving.servers.app:app \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --no-server-header
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=65536
+
+Environment=PYTHONPATH=__ROOT__/apps/backend
+
+# Read by the gateway for database credentials and provider keys.
+EnvironmentFile=__ROOT__/.env
+
+NoNewPrivileges=true
+ProtectSystem=full
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
