@@ -116,6 +116,60 @@ Two temporary states to be aware of:
   fallback and does not alter the public UI. Local content paths remain
   server-only and are not exposed.
 
+## What still has to move, and why it has not
+
+`config/` is in. `ops/`, `services/` and `deploy/systemd/` are not, and the
+reason is not that they are large — it is that they fail differently.
+
+Each config file had exactly one indirection point: an env var. Moving one was
+a change in a single place, pinned by a test, with the old path proven empty.
+These have none. They are named directly, and measuring the coupling gives:
+
+```
+ops/db                    38 files   29 external references
+ops/setup                  4         16
+ops/ci                    19         10
+ops/deploy                 3         10
+ops/local_deployment_proxy 11         11
+ops/h200_idle_proxy        6         11
+ops/spark_idle_proxy       6          4
+ops/admin                  4          3
+```
+
+Two of those references live outside the repository. `deploy/systemd/*.service`
+is templated with the real checkout path at install time and **installed on the
+machines** — the H200 box, the DGX Spark box, and whatever hosts the local
+deployment proxy. Their installed copies say
+`WorkingDirectory=/srv/hybridInference/ops/h200_idle_proxy`. Move the source and
+those units point at nothing until someone re-runs the installer, so a merge
+alone buys a guaranteed outage window on local inference.
+
+That is the whole blocker. Everything else is prepared:
+
+- `tests/unit/repo/test_no_dangling_repo_paths.py` resolves every repo path
+  written into anything that executes — workflows, shell scripts, the Makefile,
+  the systemd units and the Dockerfiles — including the `${REPO_DIR}/…` and
+  `__REPO_ROOT__/…` forms these use. A reference missed during the move fails
+  on the pull request instead of on the server.
+- `ops/` is not uniformly this deployment's. `ops/admin`, `ops/ci`, `ops/db`
+  (minus `analysis/`) and the GeoIP updater are generic operator tooling and
+  belong upstream — the export manifest already keeps them, after excluding
+  them wholesale once turned out to take `create_admin.py` with it.
+
+So the move is: relocate the site-specific directories, fix `REPO_DIR` in each
+installer (it resolves `../..` from its own location, which changes), let the
+guard find what was missed, then on each machine:
+
+```bash
+cd /srv/hybridInference && git pull
+sudo ./distributions/freeinference/ops/<proxy>/install_service.sh
+```
+
+The installers are idempotent and support `--uninstall`, so the machine half is
+one command each. It has to happen in the same maintenance window as the merge,
+which is why this is a decision about timing rather than a task waiting to be
+picked up.
+
 ## Rules
 
 - Upstream code must never import from this directory (design principle 2).
