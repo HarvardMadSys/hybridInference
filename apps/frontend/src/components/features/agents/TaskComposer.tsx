@@ -141,7 +141,12 @@ export function TaskComposer() {
         />
 
         <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3.5 py-2.5">
-          <Picker label="Repository" value={repo} options={config?.repos ?? []} onChange={setRepo} />
+          <Picker
+            label="Repository"
+            value={repo}
+            options={config?.repos ?? []}
+            onChange={setRepo}
+          />
           <Picker label="Branch" value={branch} options={branches} onChange={setBranch} />
           <span className="h-4 w-px bg-gray-200" />
           <Picker
@@ -185,9 +190,8 @@ export function TaskComposer() {
           choice made on this screen, so it belongs on the job instead. */}
       {config?.agent_egress_tier ? (
         <p className="mt-3 text-center text-[12px] text-gray-400">
-          Network: setup{' '}
-          {TIER_LABELS[config.setup_egress_tier ?? ''] ?? config.setup_egress_tier} · agent{' '}
-          {TIER_LABELS[config.agent_egress_tier] ?? config.agent_egress_tier}
+          Network: setup {TIER_LABELS[config.setup_egress_tier ?? ''] ?? config.setup_egress_tier} ·
+          agent {TIER_LABELS[config.agent_egress_tier] ?? config.agent_egress_tier}
         </p>
       ) : null}
     </section>

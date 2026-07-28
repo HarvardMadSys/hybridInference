@@ -110,10 +110,7 @@ export interface RepoBranchesApi {
 
 /** Branches of one entitled repository, for the composer's branch picker. */
 export async function listRepoBranches(repo: string): Promise<RepoBranchesApi> {
-  const resp = await fetchWithAuth(
-    API_BASE,
-    `/v1/agent/branches?repo=${encodeURIComponent(repo)}`,
-  );
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/branches?repo=${encodeURIComponent(repo)}`);
   return jsonOrThrow(resp);
 }
 

@@ -70,9 +70,7 @@ export function AgentsSidebar() {
           Repositories
         </div>
 
-        {loading ? (
-          <p className="mt-2 px-2 text-[13px] text-gray-400">Loading…</p>
-        ) : null}
+        {loading ? <p className="mt-2 px-2 text-[13px] text-gray-400">Loading…</p> : null}
         {error ? (
           <p className="mt-2 px-2 text-[13px] text-red-600" role="alert">
             {error}
