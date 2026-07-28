@@ -10,15 +10,13 @@ hardcoded strings:
 2. the active distribution manifest (``distribution.display_name`` plus the
    ``site:`` section) — only when ``DISTRIBUTION_CONFIG_MODE=active``,
    mirroring the gating of ``GET /site-config``;
-3. legacy FreeInference defaults, kept so output is byte-identical on
-   deployments that configure nothing.
+3. a neutral default that names no distribution.
 
-Three-step migration note: step 1 keeps the FreeInference values as code
-defaults (this module); the deliberate neutral-defaults flip replaces
-``LEGACY_DEFAULT`` and updates the frozen contract-test assertions, at which
-point FreeInference supplies its identity through the overlay/env instead.
-``docs_url`` has no manifest field yet; it joins the manifest schema with the
-config-migration wave.
+FreeInference supplies its own identity through ``SITE_*``, which
+``deploy/docker/docker-compose.yml`` pins for both staging and production (and
+``.env`` still overrides), so its rendered output is unchanged by the neutral
+default. ``docs_url`` has no manifest field yet; it joins the manifest schema
+with the config-migration wave.
 """
 
 from __future__ import annotations
@@ -37,13 +35,18 @@ class SiteIdentity:
     support_email: str
 
 
-# Three-step migration, step 1: FreeInference values remain the code default
-# until the deliberate neutral-defaults flip (branding PR).
-LEGACY_DEFAULT = SiteIdentity(
-    name="FreeInference",
-    public_base_url="https://freeinference.org",
-    docs_url="https://doc.freeinference.org",
-    support_email="admin@freeinference.org",
+# Step 3 of the migration: the upstream default names no distribution.
+# FreeInference supplies its own through SITE_* (deploy/docker/docker-compose.yml
+# pins them, and .env still overrides), so its rendered output is unchanged.
+#
+# public_base_url and support_email are empty rather than invented: a
+# deployment that has not declared them has none, and consumers phrase around
+# the gap instead of printing a placeholder address.
+NEUTRAL_DEFAULT = SiteIdentity(
+    name="HybridInference",
+    public_base_url="",
+    docs_url="",
+    support_email="",
 )
 
 
@@ -78,10 +81,10 @@ def get_site_identity() -> SiteIdentity:
             manifest_support = config.site.support_email
 
     return SiteIdentity(
-        name=_pick("SITE_NAME", manifest_name, LEGACY_DEFAULT.name),
+        name=_pick("SITE_NAME", manifest_name, NEUTRAL_DEFAULT.name),
         public_base_url=_pick(
-            "SITE_PUBLIC_BASE_URL", manifest_base_url, LEGACY_DEFAULT.public_base_url
+            "SITE_PUBLIC_BASE_URL", manifest_base_url, NEUTRAL_DEFAULT.public_base_url
         ),
-        docs_url=_pick("SITE_DOCS_URL", None, LEGACY_DEFAULT.docs_url),
-        support_email=_pick("SITE_SUPPORT_EMAIL", manifest_support, LEGACY_DEFAULT.support_email),
+        docs_url=_pick("SITE_DOCS_URL", None, NEUTRAL_DEFAULT.docs_url),
+        support_email=_pick("SITE_SUPPORT_EMAIL", manifest_support, NEUTRAL_DEFAULT.support_email),
     )

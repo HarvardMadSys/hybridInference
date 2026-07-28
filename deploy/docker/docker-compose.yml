@@ -42,6 +42,13 @@ services:
       TRUST_CLOUDFLARE_HEADERS: ${TRUST_CLOUDFLARE_HEADERS:-0}
       GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
       GEOIP_COUNTRY_PROVIDER: dbip-lite
+      # Identity rendered into emails, the docs-assistant prompt, quota help
+      # text and OpenRouter attribution. Supplied here so the upstream code
+      # defaults can stay neutral; .env still overrides each one.
+      SITE_NAME: ${SITE_NAME-FreeInference}
+      SITE_PUBLIC_BASE_URL: ${SITE_PUBLIC_BASE_URL-https://freeinference.org}
+      SITE_DOCS_URL: ${SITE_DOCS_URL-https://doc.freeinference.org}
+      SITE_SUPPORT_EMAIL: ${SITE_SUPPORT_EMAIL-admin@freeinference.org}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

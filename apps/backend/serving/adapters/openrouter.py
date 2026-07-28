@@ -40,8 +40,12 @@ class OpenRouterAdapter(OpenAICompatAdapter):
     def _build_headers(self, api_key_override: str | None = None) -> dict[str, str]:
         headers = super()._build_headers(api_key_override=api_key_override)
         site = get_site_identity()
-        headers["HTTP-Referer"] = site.public_base_url
-        headers["X-Title"] = site.name
+        # Omit rather than send empty: a deployment that has declared no public
+        # URL has nothing to attribute, and an empty header is not a value.
+        if site.public_base_url:
+            headers["HTTP-Referer"] = site.public_base_url
+        if site.name:
+            headers["X-Title"] = site.name
         return headers
 
     def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:

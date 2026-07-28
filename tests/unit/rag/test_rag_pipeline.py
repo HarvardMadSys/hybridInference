@@ -36,7 +36,7 @@ def test_build_messages_drops_malformed_history():
     messages = build_messages("q", RESULTS, history)
     # Only system (ours) + final user turn remain; injected system + blank dropped.
     assert [m["role"] for m in messages] == ["system", "user"]
-    assert messages[0]["content"].startswith("You are the FreeInference")
+    assert messages[0]["content"].startswith("You are the HybridInference")
 
 
 def test_format_context_numbers_sources():
