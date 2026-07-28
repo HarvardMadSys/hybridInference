@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   UsageInsightsSettings,
@@ -15,7 +15,7 @@ interface UsageInsightsSettingsSectionProps {
 
 /**
  * Configures the provider used by the admin Usage Insights analysis: a
- * freeinference.org API key (stored server-side, never returned in full) and the
+ * gateway API key (stored server-side, never returned in full) and the
  * model to run the report with. The Analyze action lives on each user's detail
  * panel; this section only manages credentials.
  */
@@ -29,22 +29,33 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
 
+  // A reload in flight when this section goes away — a tab switch, or a test
+  // environment tearing down — would otherwise land its setState on an
+  // unmounted tree and throw where nothing can catch it.
+  const mounted = useRef(true);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const s = await getUsageInsightsSettings();
+      if (!mounted.current) return;
       setSettings(s);
       setModel(s.model);
     } catch (e) {
+      if (!mounted.current) return;
       setError(getErrorMessage(e));
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     load();
+    return () => {
+      mounted.current = false;
+    };
   }, [load]);
 
   const onSave = async () => {
@@ -96,9 +107,10 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
       <div className="mb-3">
         <h2 className="text-[14px] font-semibold text-gray-900">Usage Insights</h2>
         <p className="mt-1 text-[12px] text-gray-500">
-          API key and model for the LLM-powered Usage Insights analysis (via freeinference.org). The
-          key is stored server-side and never shown again. Run the analysis from a user&apos;s
-          detail panel using the &ldquo;Analyze usage&rdquo; button.
+          API key and model for the LLM-powered Usage Insights analysis. The analysis runs through
+          this gateway, so the key is one of its own. It is stored server-side and never shown
+          again. Run the analysis from a user&apos;s detail panel using the &ldquo;Analyze
+          usage&rdquo; button.
         </p>
       </div>
 
@@ -136,7 +148,7 @@ export function UsageInsightsSettingsSection({ onToast }: UsageInsightsSettingsS
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="sm:col-span-2">
               <label className="mb-1 block text-[12px] font-medium text-gray-600">
-                freeinference.org API key
+                Gateway API key
               </label>
               <input
                 type="password"

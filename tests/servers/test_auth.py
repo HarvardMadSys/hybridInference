@@ -49,7 +49,7 @@ def _hashed_key(monkeypatch, plaintext: str) -> str:
 @pytest.mark.asyncio
 async def test_auth_disabled_returns_anonymous(monkeypatch, mock_request):
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
-    result = await verify_api_key(request=mock_request)
+    result = await verify_api_key(request=mock_request, authorization=None, x_api_key=None)
     assert result == {
         "user_id": "anonymous",
         "role": "admin",

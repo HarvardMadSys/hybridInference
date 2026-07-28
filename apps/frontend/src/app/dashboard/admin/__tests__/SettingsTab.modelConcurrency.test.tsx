@@ -17,6 +17,19 @@ vi.mock('@/lib/api/admin', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/admin')>('@/lib/api/admin');
   return {
     ...actual,
+    // SettingsTab also mounts AlertSnoozeSection and
+    // UsageInsightsSettingsSection, which fetch on mount. Unmocked they reach
+    // the real gateway (see vitest.setup.ts).
+    getAlertSnooze: vi.fn(async () => ({
+      snoozed: false,
+      snooze_until: null,
+      seconds_remaining: 0,
+    })),
+    getUsageInsightsSettings: vi.fn(async () => ({
+      configured: false,
+      api_key_hint: null,
+      model: 'gpt-4o-mini',
+    })),
     listRuntimeSettings: vi.fn(async () => ({ settings: [] })),
     listSignupAllowedDomains: vi.fn(async () => ({ domains: [] })),
     listModelVisibility: vi.fn(async () => ({
