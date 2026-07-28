@@ -178,6 +178,7 @@ function dependencyUnavailableContextFields(
   context: DependencyUnavailableContext,
 ): readonly SlackTextObject[] {
   const fields: SlackTextObject[] = [field("Dependency", context.dependency)];
+  optionalField(fields, "Reason", context.reason);
   optionalField(fields, "Backend", context.backend);
   return fields;
 }

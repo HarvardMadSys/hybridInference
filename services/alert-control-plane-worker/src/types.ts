@@ -150,10 +150,23 @@ export interface MetricThresholdContext {
 /** Gateway dependencies whose loss is alertable. */
 export type UnavailableDependency = "log_store" | "operational_store";
 
+/**
+ * Why the dependency is unreachable. The backend currently sends this as a
+ * free-text `error` string, which is where a DSN or host would leak; a closed
+ * enum keeps the triage signal on-call actually uses without the text.
+ */
+export type DependencyFailureReason =
+  | "authentication"
+  | "connection_refused"
+  | "health_check_failed"
+  | "timeout"
+  | "unknown";
+
 export interface DependencyUnavailableContext {
   readonly dependency: UnavailableDependency;
   /** Backend implementation label (e.g. "postgres"); never a connection string. */
   readonly backend?: string;
+  readonly reason?: DependencyFailureReason;
 }
 
 export interface MetricThresholdAlertEvent extends AlertEventBase {

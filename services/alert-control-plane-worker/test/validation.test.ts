@@ -536,13 +536,40 @@ describe("gateway alert types (metric_threshold_breach, dependency_unavailable)"
     };
     expect(
       parseAlertEvent(
-        { ...base, context: { dependency: "operational_store", backend: "postgres" } },
+        {
+          ...base,
+          context: {
+            dependency: "operational_store",
+            backend: "postgres",
+            reason: "health_check_failed",
+          },
+        },
         { now: TEST_NOW },
       ),
     ).toMatchObject({
       alert_type: "dependency_unavailable",
-      context: { dependency: "operational_store", backend: "postgres" },
+      context: {
+        dependency: "operational_store",
+        backend: "postgres",
+        // Keeps the triage signal the backend sends today as free-text `error`.
+        reason: "health_check_failed",
+      },
     });
+
+    // The failure cause is an enum, so the raw error string it replaces —
+    // which can carry a DSN or host — has nowhere to land.
+    expect(() =>
+      parseAlertEvent(
+        {
+          ...base,
+          context: {
+            dependency: "operational_store",
+            reason: "could not connect to postgres://db.internal:5432",
+          },
+        },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
 
     // A DSN carries a host and credentials — untrustedString must refuse it.
     expect(() =>

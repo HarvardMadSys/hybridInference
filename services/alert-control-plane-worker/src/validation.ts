@@ -5,6 +5,7 @@ import type {
   BreachedMetric,
   BreachScope,
   CanonicalAlertEnvelope,
+  DependencyFailureReason,
   DependencyUnavailableContext,
   MetricThresholdContext,
   ModelUnavailableContext,
@@ -104,7 +105,7 @@ const MAX_SOURCE_ADDRESSES = 5;
 const ADDRESS_BEARING_METRICS: ReadonlySet<string> = new Set(["auth_failure_count"]);
 const IPV4_STRICT_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 
-const DEPENDENCY_CONTEXT_KEYS = new Set(["dependency", "backend"]);
+const DEPENDENCY_CONTEXT_KEYS = new Set(["dependency", "backend", "reason"]);
 const DEPENDENCY_BACKEND_RE = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const UNSAFE_CONTROL_RE =
@@ -495,6 +496,7 @@ function parseDependencyUnavailableContext(
   const context: {
     dependency: UnavailableDependency;
     backend?: string;
+    reason?: DependencyFailureReason;
   } = {
     dependency: enumValue<UnavailableDependency>(
       input.dependency,
@@ -508,7 +510,19 @@ function parseDependencyUnavailableContext(
   context.backend = optional(input, "backend", (item) =>
     stringValue(item, "context.backend", 64, DEPENDENCY_BACKEND_RE),
   );
+  // Replaces the backend's free-text `error`, which is where a DSN or host
+  // would otherwise reach Slack, while keeping the triage signal.
+  context.reason = optional(input, "reason", (item) =>
+    enumValue<DependencyFailureReason>(item, "context.reason", [
+      "authentication",
+      "connection_refused",
+      "health_check_failed",
+      "timeout",
+      "unknown",
+    ]),
+  );
   if (context.backend === undefined) delete context.backend;
+  if (context.reason === undefined) delete context.reason;
   return context;
 }
 
