@@ -147,6 +147,28 @@ def load_distribution_config(path: Path) -> DistributionConfig:
     return config.model_copy(update={"paths": DistributionPaths(**resolved)})
 
 
+def _refuse_or_fall_back(configured: str, exc: Exception, *, unexpected: bool = False) -> None:
+    """Log a manifest load failure, and refuse to continue when it is the truth.
+
+    #952 made failing open a property of this module, and it was the right one
+    while the manifest was dark-only: a file that will not load costs a
+    comparison and nothing else, because the environment still supplies every
+    effective path. Active mode changes that arithmetic. There the manifest
+    *is* where the paths come from, so falling back to legacy resolution means
+    quietly serving a different registry than the deployment named — which is
+    what a lost ``distributions/`` mount would produce, and what nobody would
+    notice. A deployment that asked for the manifest should stop instead.
+    """
+    kind = "Unexpected error loading" if unexpected else "Distribution manifest failed to load:"
+    if _effective_mode() == "active":
+        logger.critical(f"{kind} {configured!r} — refusing to start in active mode")
+        raise DistributionConfigError(
+            f"distribution manifest {configured!r} is the configured source of "
+            f"config paths (DISTRIBUTION_CONFIG_MODE=active) and did not load: {exc}"
+        ) from exc
+    logger.exception(f"{kind} {configured!r}; using legacy config resolution")
+
+
 @lru_cache(maxsize=1)
 def get_distribution_config() -> DistributionConfig | None:
     """Cached manifest for this process; None when unset or failed to load."""
@@ -155,13 +177,11 @@ def get_distribution_config() -> DistributionConfig | None:
         return None
     try:
         config = load_distribution_config(Path(configured))
-    except DistributionConfigError:
-        logger.exception("Distribution manifest failed to load; using legacy config resolution")
+    except DistributionConfigError as exc:
+        _refuse_or_fall_back(configured, exc)
         return None
-    except Exception:
-        logger.exception(
-            "Unexpected error loading distribution manifest; using legacy config resolution"
-        )
+    except Exception as exc:
+        _refuse_or_fall_back(configured, exc, unexpected=True)
         return None
     logger.info(
         f"Distribution manifest loaded: id={config.distribution.id!r} "
