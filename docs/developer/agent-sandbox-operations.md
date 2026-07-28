@@ -50,6 +50,7 @@ Against real components on a developer machine:
 | Checkout → edit → patch | real git against a real repository: pinned commit materializes the right tree, an agent edit and a new file both appear in the patch, no remote is left behind |
 | Worktree handover to the sandbox user | real Docker: root creates a `0700` worktree, chowns it to 10001, and a `--user 10001` container writes to it and produces a diff. Without the chown the same container gets `Permission denied` and `fatal: not a git repository` |
 | The gateway on staging | `/v1/agent/*` live: job create/get/list/cancel, SSE stream, and a non-dispatcher key refused at `/worker/claim` with 401 |
+| **A self-hosted runner completing a real job** | `ajob_04de5d509a25ded2` against staging: claimed → cloned `psf/requests` at `414f0513` (verified equal to that repo's HEAD) → Claude Code 2.1.220 in a Docker sandbox as uid 10001 → `Read` + `Edit` with `is_error: false` → 518-byte patch stored → `succeeded`. The patch was read back and matches the file the agent left on disk |
 
 ## Not verified
 
@@ -59,12 +60,17 @@ Be precise about these when reporting status:
   above); the 2-runtime × 3-model matrix has not been run, so cross-model
   behaviour differences are still unknown.
 - **The Actions workflow has never executed on GitHub.** See the blockers.
-- **No self-hosted runner has completed a job.** Every link in that chain is
-  now wired and the individual mechanisms above are verified, but the assembled
-  `docker compose … agent-runner` stack has not claimed and finished a real job.
-  Say "wired and unit-verified", not "working".
+- **Compose has not been run as a unit.** A self-hosted runner has completed a
+  real job (see above), but it was launched by hand against staging rather than
+  by `docker compose … agent-runner`, so the overlay itself is verified only
+  statically.
 - **Production.** `/v1/agent/*` is live on staging; production has not been
-  deployed from it.
+  deployed from it — production returns 404 on those routes today.
+- **Staging's model surface is thin.** Of the 15 models `/v1/models` lists,
+  only `glm-5.1` and `qwen3.6-35b` actually resolve for an agent-job token, and
+  both land on `qwen3.6-35b`. Everything else answers `404 Model not found`, so
+  a job that names one fails at its first turn. Pick a model that resolves
+  before concluding anything about the chain.
 - **Kata.** Isolation was verified on a shared-kernel container. The Kata path
   is wired correctly — the daemon accepts `--runtime io.containerd.kata.v2` and
   proceeds to start the shim, failing only because this host has no shim
