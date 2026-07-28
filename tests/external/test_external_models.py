@@ -9,7 +9,7 @@ import httpx
 
 
 class ModelTester:
-    def __init__(self, base_url: str = "http://gateway.example.com"):
+    def __init__(self, base_url: str):
         self.base_url = base_url
         self.client = httpx.AsyncClient(timeout=30.0)
 
@@ -176,8 +176,12 @@ async def main():
     """Main function to run the model tests"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Test model inference on gateway.example.com")
-    parser.add_argument("--url", default="http://gateway.example.com", help="Base URL for the API")
+    parser = argparse.ArgumentParser(description="Test model inference against a gateway")
+    # Required. The default used to be one deployment's public URL, so this
+    # ran against it by accident; a placeholder default is worse, because
+    # get_models() swallows the connection error, returns nothing, and the
+    # run reports success having tested zero models.
+    parser.add_argument("--url", required=True, help="Base URL of the gateway to test")
     parser.add_argument("--message", help="Custom test message (optional)")
     parser.add_argument("--model", help="Test a specific model only")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
@@ -197,6 +201,9 @@ async def main():
         else:
             # Test all models
             results = await tester.test_all_models(args.message)
+            if not results:
+                print(f"No models reachable at {args.url} — nothing was tested.")
+                raise SystemExit(1)
             if args.json:
                 print(json.dumps(results, indent=2))
             else:
