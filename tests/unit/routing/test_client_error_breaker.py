@@ -128,7 +128,7 @@ async def test_5xx_still_opens_circuit(monkeypatch):
     registry = EndpointHealthRegistry()
     endpoint_id = "qwen3.6-35b:local-8001"
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         for _ in range(5):
             registry.record_failure(endpoint_id, reason="stream_exception", exc=_StatusError(502))
         await asyncio.sleep(0)

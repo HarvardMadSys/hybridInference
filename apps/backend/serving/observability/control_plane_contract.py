@@ -7,9 +7,16 @@ import ipaddress
 import re
 import unicodedata
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 _RFC3339_RE = re.compile(
@@ -58,6 +65,34 @@ ProviderFailureReason = Literal[
     "unknown",
     "upstream_error",
 ]
+BreachedMetric = Literal[
+    "auth_failure_count",
+    "failed_request_rate",
+    "http_5xx_rate",
+    "latency_p95_ms",
+    "prefix_cache_pending_evictions",
+    "provider_hourly_spend",
+    "tracked_task_failure_rate",
+    "user_daily_cost",
+]
+BreachScope = Literal["gateway", "provider", "task", "user"]
+UnavailableDependency = Literal["log_store", "operational_store"]
+DependencyFailureReason = Literal[
+    "authentication",
+    "connection_refused",
+    "health_check_failed",
+    "timeout",
+    "unknown",
+]
+
+#: Listing addresses only makes sense for a metric whose response is to block
+#: them. Mirrors ``ADDRESS_BEARING_METRICS`` in the TypeScript validator.
+_ADDRESS_BEARING_METRICS = frozenset({"auth_failure_count"})
+_MAX_SOURCE_ADDRESSES = 5
+#: A bare implementation label. The general untrusted-text rules are not enough
+#: here: a credential-free DSN like ``postgres://localhost/app`` passes all of
+#: them, so the shape itself is constrained.
+_DEPENDENCY_BACKEND_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 
 
 def _safe_untrusted_text(value: str, *, field: str, max_length: int) -> str:
@@ -145,21 +180,86 @@ class ProviderCircuitContext(BaseModel):
         return _safe_untrusted_text(value, field="context.error", max_length=2_000)
 
 
-class ControlPlaneAlertEvent(BaseModel):
-    """The sole producer wire contract introduced by control-plane Phase 1."""
+class MetricThresholdContext(BaseModel):
+    """Typed context accepted for ``metric_threshold_breach`` events.
+
+    Every field is a number or a closed enum by design. This type replaces
+    backend alerts that embedded source IPs, key prefixes, user ids, and
+    pre-formatted rate strings, so there is deliberately no free-text field for
+    those to move into.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    metric: BreachedMetric
+    observed: float = Field(ge=0, le=1e12)
+    threshold: float = Field(ge=0, le=1e12)
+    window_sec: int | None = Field(default=None, ge=1, le=31 * 24 * 60 * 60, strict=True)
+    scope: BreachScope | None = None
+    subject: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=_IDENTIFIER_RE.pattern,
+    )
+    source_addresses: list[str] | None = None
+    distinct_sources: int | None = Field(default=None, ge=0, le=1_000_000_000, strict=True)
+    top_source_share: float | None = Field(default=None, ge=0, le=1)
+    sample_count: int | None = Field(default=None, ge=0, le=1_000_000_000, strict=True)
+
+    @field_validator("source_addresses")
+    @classmethod
+    def validate_source_addresses(cls, values: list[str] | None) -> list[str] | None:
+        """Require real, unique IP addresses — the one typed exception to the rule."""
+        if values is None:
+            return None
+        if not 1 <= len(values) <= _MAX_SOURCE_ADDRESSES:
+            raise ValueError(
+                f"context.source_addresses must contain 1 to {_MAX_SOURCE_ADDRESSES} addresses"
+            )
+        normalized = [str(ipaddress.ip_address(value)) for value in values]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("context.source_addresses must not contain duplicates")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_addresses_are_scoped(self) -> MetricThresholdContext:
+        """Keep addresses on the one metric whose response is to block them."""
+        if self.source_addresses is not None and self.metric not in _ADDRESS_BEARING_METRICS:
+            raise ValueError(f"context.source_addresses is not allowed for metric {self.metric}")
+        return self
+
+
+class DependencyUnavailableContext(BaseModel):
+    """Typed context accepted for ``dependency_unavailable`` events."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dependency: UnavailableDependency
+    backend: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=_DEPENDENCY_BACKEND_RE.pattern,
+    )
+    #: Replaces the backend's free-text ``error``, which is where a DSN or host
+    #: would otherwise reach Slack, while keeping the triage signal.
+    reason: DependencyFailureReason | None = None
+
+
+class _AlertEventBase(BaseModel):
+    """Fields every canonical event carries, whatever its type."""
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1]
     event_id: str = Field(min_length=1, max_length=128, pattern=_IDENTIFIER_RE.pattern)
-    alert_type: Literal["provider_circuit_open"]
     fingerprint: str
     status: Literal["firing", "resolved"]
     severity: Literal["critical", "error", "warn", "info"]
     title: str
     occurred_at: str
     summary: str
-    context: ProviderCircuitContext
     evidence_refs: list[str] = Field(max_length=20)
 
     @field_validator("event_id", mode="before")
@@ -237,14 +337,61 @@ class ControlPlaneAlertEvent(BaseModel):
         return normalized
 
 
+class ProviderCircuitAlertEvent(_AlertEventBase):
+    """A provider's circuit breaker opened or closed."""
+
+    alert_type: Literal["provider_circuit_open"]
+    context: ProviderCircuitContext
+
+
+class MetricThresholdAlertEvent(_AlertEventBase):
+    """A gateway metric crossed, or fell back below, its configured threshold."""
+
+    alert_type: Literal["metric_threshold_breach"]
+    context: MetricThresholdContext
+
+    @model_validator(mode="after")
+    def validate_breach_is_coherent(self) -> MetricThresholdAlertEvent:
+        """A firing breach whose observed value is under the threshold is a bug.
+
+        Rendering it would put "observed 3, threshold 10" on a card that claims
+        the threshold was crossed, so it is rejected at the contract rather than
+        surfaced to on-call.
+        """
+        if self.status == "firing" and self.context.observed < self.context.threshold:
+            raise ValueError(
+                "firing metric_threshold_breach requires observed to be at or above threshold"
+            )
+        return self
+
+
+class DependencyUnavailableAlertEvent(_AlertEventBase):
+    """A store the gateway depends on failed, or passed, its health check."""
+
+    alert_type: Literal["dependency_unavailable"]
+    context: DependencyUnavailableContext
+
+
+#: Discriminated on ``alert_type``, so a payload is validated against exactly
+#: one context shape rather than whichever union member happens to accept it.
+ControlPlaneAlertEvent = Annotated[
+    ProviderCircuitAlertEvent | MetricThresholdAlertEvent | DependencyUnavailableAlertEvent,
+    Field(discriminator="alert_type"),
+]
+
+_EVENT_ADAPTER: TypeAdapter[
+    ProviderCircuitAlertEvent | MetricThresholdAlertEvent | DependencyUnavailableAlertEvent
+] = TypeAdapter(ControlPlaneAlertEvent)
+
+
 def parse_control_plane_alert_event(
     payload: object,
     *,
     now: dt.datetime | None = None,
     max_future_skew: dt.timedelta = dt.timedelta(minutes=5),
-) -> ControlPlaneAlertEvent:
+) -> ProviderCircuitAlertEvent | MetricThresholdAlertEvent | DependencyUnavailableAlertEvent:
     """Parse a producer event and enforce the future-clock-skew boundary."""
-    event = ControlPlaneAlertEvent.model_validate(payload)
+    event = _EVENT_ADAPTER.validate_python(payload)
     current = now or dt.datetime.now(dt.timezone.utc)
     if current.tzinfo is None:
         raise ValueError("now must include a timezone")

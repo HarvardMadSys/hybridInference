@@ -288,7 +288,7 @@ class TestRouteWiseRouterScaffold:
         fr.add("test-model", [(blocked, 0.5), (active, 0.5)])
         router = RouteWiseRouter(route_table=fr, config=RouteWiseConfig())
 
-        with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+        with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
             router._health_registry.record_failure(
                 "test-model:blocked",
                 reason="upstream_502",

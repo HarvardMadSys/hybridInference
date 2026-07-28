@@ -7,6 +7,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from serving.observability.alerts import reset_transition_state
+
+
+@pytest.fixture(autouse=True)
+def _clean_transition_state():
+    """The breach tracker is shared, so an open breach would leak between tests.
+
+    A leaked open breach makes the next test look like a sustained outage
+    rather than a new one, so nothing is sent — correct in production, a false
+    failure here.
+    """
+    reset_transition_state()
+    yield
+    reset_transition_state()
+
+
 # ── count_recent_failures SQL shape ──────────────────────────────────────
 
 
@@ -147,7 +163,7 @@ async def test_alerter_no_fire_under_threshold():
     alerter = _make_alerter(pool, threshold=20)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_alert:
@@ -165,7 +181,7 @@ async def test_alerter_fires_over_threshold():
     alerter = _make_alerter(pool, threshold=20, window=5)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_alert:
@@ -198,7 +214,7 @@ async def test_alerter_fires_includes_breakdown():
     alerter = _make_alerter(pool, threshold=20, window=5)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_alert:
@@ -221,7 +237,7 @@ async def test_alerter_breakdown_failure_does_not_block_alert():
     alerter = _make_alerter(pool, threshold=20, window=5)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_alert:
@@ -290,7 +306,7 @@ async def test_alerter_cooldown_suppresses_repeat():
     alerter = _make_alerter(pool, threshold=20, cooldown=5, now_fn=_clock)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_alert:
@@ -318,7 +334,7 @@ async def test_alerter_cooldown_expires_then_fires():
     alerter = _make_alerter(pool, threshold=20, cooldown=5, now_fn=_clock)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_alert:
@@ -346,7 +362,7 @@ async def test_alerter_failed_post_does_not_start_cooldown():
     alerter = _make_alerter(pool, threshold=20, cooldown=5, now_fn=_clock)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=False,
     ) as mock_alert:
@@ -498,7 +514,7 @@ async def test_alerter_swallows_query_exception():
     alerter = _make_alerter(pool)
 
     with patch(
-        "serving.admin.failed_request_alerter.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_alert:

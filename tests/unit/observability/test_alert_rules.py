@@ -3,11 +3,29 @@
 import asyncio
 import json
 import logging
+import time
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+import serving.observability.alerts as alerts_module
 from serving.observability.alert_config import AlertConfig
 from serving.observability.alert_rules import AlertEngine
+from serving.observability.alerts import reset_transition_state
 from serving.observability.log_handler import AlertingLogHandler
+
+
+@pytest.fixture(autouse=True)
+def _clean_transition_state():
+    """Rules share one breach tracker, so an open breach would leak between tests.
+
+    Without this a test that fires a key leaves it firing, and the next test
+    using the same key sees a sustained breach rather than a new one and sends
+    nothing — which is correct behaviour in production and a false failure here.
+    """
+    reset_transition_state()
+    yield
+    reset_transition_state()
 
 
 async def test_engine_starts_and_stops_cleanly():
@@ -101,7 +119,7 @@ async def test_failed_request_rate_fires_on_threshold(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -146,7 +164,7 @@ async def test_failed_request_rate_ignores_401(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -188,7 +206,7 @@ async def test_failed_request_rate_ignores_model_not_found_404(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -237,7 +255,7 @@ async def test_failed_request_rate_counts_upstream_404(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -283,7 +301,7 @@ async def test_fivexx_rate_fires_on_threshold(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -326,7 +344,7 @@ async def test_p95_latency_per_provider_fires(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -367,7 +385,7 @@ async def test_p95_latency_skips_records_without_provider(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -405,7 +423,7 @@ async def test_p95_latency_per_provider_override(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -444,7 +462,7 @@ async def test_auth_failure_spike_fires(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -487,7 +505,7 @@ async def test_concurrency_rejected_never_alerts(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
@@ -539,7 +557,7 @@ async def test_user_cost_overrun_job_fires(monkeypatch):
     job = UserCostOverrunJob(cfg.cost.user_overrun, op_store)
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await job.run()
@@ -571,7 +589,7 @@ async def test_provider_hourly_spend_job_fires(monkeypatch):
     job = ProviderHourlySpendJob(cfg.cost.provider_hourly_spend, log_store)
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await job.run()
@@ -648,7 +666,7 @@ async def test_pending_prefix_cache_leak_rule_fires_above_threshold() -> None:
     rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
     ) as mock_alert:
         for i in range(20):
@@ -699,7 +717,7 @@ async def test_pending_prefix_cache_leak_rule_does_not_fire_at_threshold() -> No
     rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
     ) as mock_alert:
         for i in range(20):
@@ -722,7 +740,7 @@ async def test_pending_prefix_cache_leak_rule_ignores_retired_event() -> None:
     rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
     ) as mock_alert:
         rec = _make_eviction_record()
@@ -747,7 +765,7 @@ async def test_pending_prefix_cache_leak_rule_disabled_does_not_fire() -> None:
     rule = PendingPrefixCacheLeakRule(cfg)
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new_callable=AsyncMock,
     ) as mock_alert:
         for i in range(10):
@@ -850,9 +868,7 @@ async def test_failure_rate_rule_fires_per_task_name() -> None:
     )
     rule = TrackedTaskFailureRateRule(cfg)
 
-    with patch(
-        "serving.observability.alert_rules.alert_slack", new_callable=AsyncMock
-    ) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new_callable=AsyncMock) as mock_alert:
         # 100 records for request_log: 10 fail (10% > 5% threshold).
         for i in range(100):
             await rule.on_record(_make_tracked_record("request_log", success=(i >= 10)))
@@ -879,9 +895,7 @@ async def test_failure_rate_rule_skips_when_disabled() -> None:
     )
     rule = TrackedTaskFailureRateRule(cfg)
 
-    with patch(
-        "serving.observability.alert_rules.alert_slack", new_callable=AsyncMock
-    ) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new_callable=AsyncMock) as mock_alert:
         for _ in range(10):
             await rule.on_record(_make_tracked_record("anything", success=False))
     assert mock_alert.await_count == 0
@@ -901,9 +915,7 @@ async def test_failure_rate_rule_skips_below_min_samples() -> None:
     )
     rule = TrackedTaskFailureRateRule(cfg)
 
-    with patch(
-        "serving.observability.alert_rules.alert_slack", new_callable=AsyncMock
-    ) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new_callable=AsyncMock) as mock_alert:
         # 49 failures (below min_samples=50): no alert.
         for _ in range(49):
             await rule.on_record(_make_tracked_record("request_log", success=False))
@@ -931,3 +943,132 @@ def test_alerts_yaml_loads_with_tracked_task_failure_rate() -> None:
     assert rule_cfg.threshold_pct == 5.0
     assert rule_cfg.min_samples == 50
     assert rule_cfg.cooldown_sec == 1800
+
+
+@pytest.mark.asyncio
+async def test_rate_rule_reports_recovery_once_the_breach_clears(monkeypatch):
+    """The point of the wiring: a breach that ends must close its incident.
+
+    Before this, the rule returned silently the moment the rate dropped back —
+    the recovery was observable and discarded, which is why every gateway alert
+    was fire-only and why feeding them to the control plane would have left
+    incidents open forever.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    # Production waits out a settling period before closing so a metric sitting
+    # on its threshold cannot flap; here it would just make the test sleep.
+    monkeypatch.setattr(alerts_module._TRANSITIONS, "clear_after_sec", 0.0)
+
+    cfg = AlertConfig()
+    cfg.rules.failed_request_rate.enabled = True
+    cfg.rules.failed_request_rate.min_samples = 4
+    cfg.rules.failed_request_rate.threshold_pct = 40.0
+    cfg.rules.failed_request_rate.cooldown_sec = 0
+    cfg.rules.fivexx_rate.enabled = False
+    cfg.rules.p95_latency_per_provider.enabled = False
+    cfg.rules.auth_failure_spike.enabled = False
+
+    handler = AlertingLogHandler(maxsize=1000)
+    engine = AlertEngine(
+        handler=handler,
+        config=cfg,
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine.start()
+        try:
+            # Breach: 3 of 4 failed.
+            handler.queue.put_nowait(_fake_record(200))
+            for _ in range(3):
+                handler.queue.put_nowait(_fake_record(500, provider="anthropic"))
+            await _drain_until(handler, mock_alert)
+            first_sends = mock_alert.await_count
+            assert first_sends >= 1
+            assert mock_alert.await_args.kwargs.get("status", "firing") == "firing"
+
+            # Healthy traffic pushes the window back under the threshold.
+            for _ in range(20):
+                handler.queue.put_nowait(_fake_record(200))
+
+            def resolutions() -> list[object]:
+                return [
+                    c for c in mock_alert.await_args_list if c.kwargs.get("status") == "resolved"
+                ]
+
+            for _ in range(100):
+                if resolutions():
+                    break
+                await asyncio.sleep(0.02)
+
+            # Exactly one close, however many times the breach repeated: repeats
+            # advance the incident's occurrence count, the close ends it.
+            assert len(resolutions()) == 1
+            assert mock_alert.await_args.kwargs["status"] == "resolved"
+            # Same dedupe key, or the control plane would open a second
+            # incident instead of closing the first.
+            assert mock_alert.await_args.kwargs["dedupe_key"] == "failed_request_rate"
+        finally:
+            await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_sweep_closes_breaches_nothing_evaluates_any_more(monkeypatch):
+    """Two breach classes never re-evaluate themselves and would stay open forever.
+
+    A record-driven rule whose traffic stops entirely, and the budget jobs whose
+    incident key embeds the day or hour so the previous period is never observed
+    again. The scheduled sweep is what closes both.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setattr(alerts_module._TRANSITIONS, "stale_after_sec", 1.0)
+
+    engine = AlertEngine(
+        handler=AlertingLogHandler(maxsize=10),
+        config=AlertConfig(),
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    alerts_module._TRANSITIONS.observe(
+        "cost_overrun:4711:2026-07-27", breached=True, now=time.time() - 10
+    )
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine._sweep_stale_breaches()
+
+    assert mock_alert.await_count == 1
+    assert mock_alert.await_args.kwargs["status"] == "resolved"
+    assert mock_alert.await_args.kwargs["dedupe_key"] == "cost_overrun:4711:2026-07-27"
+    assert not alerts_module._TRANSITIONS.is_firing("cost_overrun:4711:2026-07-27")
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_closing_after_one_resolution_fails(monkeypatch):
+    """One stuck resolution must not strand every other open incident."""
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setattr(alerts_module._TRANSITIONS, "stale_after_sec", 1.0)
+    engine = AlertEngine(
+        handler=AlertingLogHandler(maxsize=10),
+        config=AlertConfig(),
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    for key in ("a", "b"):
+        alerts_module._TRANSITIONS.observe(key, breached=True, now=time.time() - 10)
+
+    with patch(
+        "serving.observability.alerts.alert_slack",
+        new=AsyncMock(side_effect=[RuntimeError("slack down"), True]),
+    ) as mock_alert:
+        await engine._sweep_stale_breaches()
+
+    assert mock_alert.await_count == 2

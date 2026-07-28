@@ -16,7 +16,7 @@ async def test_registry_circuit_lifecycle(monkeypatch):
     endpoint_id = "openai:api.example.com:443"
     registry = EndpointHealthRegistry()
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         registry.record_failure(endpoint_id, reason="upstream_502")
         assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
 
@@ -112,7 +112,7 @@ async def test_registry_instances_are_isolated(monkeypatch):
     second = EndpointHealthRegistry()
 
     second.record_success(endpoint_id)
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         first.record_failure(endpoint_id, reason="upstream_502")
         await asyncio.sleep(0)
 

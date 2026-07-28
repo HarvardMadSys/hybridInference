@@ -13,8 +13,18 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 
-from serving.observability.alerts import AlertSeverity, alert_slack
+from serving.observability import alerts as _alerts
+from serving.observability.alerts import (
+    AlertSeverity,
+    alert_on_transition,
+    sweep_stale_breaches,
+)
 from serving.utils.context import MODEL_NOT_FOUND
+
+#: A breach is only genuinely stale once its rule's window can no longer hold a
+#: breaching sample. One extra window of slack, so an evaluation that lands late
+#: does not race the sweep.
+_STALE_WINDOW_FACTOR = 2
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -36,6 +46,11 @@ log = logging.getLogger(__name__)
 
 
 _REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
+
+#: How often to look for breaches nothing is evaluating any more. Well under the
+#: tracker's own staleness threshold so a stale incident closes promptly rather
+#: than at the next multiple of a long interval.
+_STALE_SWEEP_INTERVAL_SEC = 60
 
 # 401 is normal SPA token-refresh churn (the auth_failure_spike rule covers
 # real auth attacks separately); excluding it from the failed-request rate
@@ -129,34 +144,41 @@ class FailedRequestRateRule:
             return
         failed = sum(1 for it in items if _is_failed_request(it))
         pct = (failed / len(items)) * 100.0
-        if pct < self._cfg.threshold_pct:
-            return
-        failed_items = [it for it in items if _is_failed_request(it)]
-        status_counts: collections.Counter[int] = collections.Counter(
-            it["status"] for it in failed_items
-        )
-        path_counts: collections.Counter[str] = collections.Counter(
-            it["path"] for it in failed_items if it["path"]
-        )
-        prov_counts: collections.Counter[str] = collections.Counter(
-            it["provider"] for it in failed_items if it["provider"]
-        )
-        top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
-        top_paths = ", ".join(f"{p} ({c})" for p, c in path_counts.most_common(3))
-        top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
-        await alert_slack(
-            AlertSeverity.ERROR,
-            "Failed-request rate exceeded",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            failed_items = [it for it in items if _is_failed_request(it)]
+            status_counts: collections.Counter[int] = collections.Counter(
+                it["status"] for it in failed_items
+            )
+            path_counts: collections.Counter[str] = collections.Counter(
+                it["path"] for it in failed_items if it["path"]
+            )
+            prov_counts: collections.Counter[str] = collections.Counter(
+                it["provider"] for it in failed_items if it["provider"]
+            )
+            top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
+            top_paths = ", ".join(f"{p} ({c})" for p, c in path_counts.most_common(3))
+            top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
+            return {
                 "rate": (
                     f"{pct:.1f}% ({failed} of {len(items)} requests, last {self._cfg.window_sec}s)"
                 ),
                 "top_status_codes": top_s or "n/a",
                 "top_paths": top_paths or "n/a",
                 "top_providers": top_p or "n/a",
-            },
-            dedupe_key="failed_request_rate",
+            }
+
+        await alert_on_transition(
+            key=self.name,
+            breached=pct >= self._cfg.threshold_pct,
+            severity=AlertSeverity.ERROR,
+            title="Failed-request rate exceeded",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
         )
 
 
@@ -188,28 +210,35 @@ class FivexxRateRule:
             return
         failed = sum(1 for it in items if it["status"] >= 500)
         pct = (failed / len(items)) * 100.0
-        if pct < self._cfg.threshold_pct:
-            return
-        prov_counts: collections.Counter[str] = collections.Counter(
-            it["provider"] for it in items if it["status"] >= 500 and it["provider"]
-        )
-        status_counts: collections.Counter[int] = collections.Counter(
-            it["status"] for it in items if it["status"] >= 500
-        )
-        top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
-        top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
-        await alert_slack(
-            AlertSeverity.ERROR,
-            "5xx rate exceeded",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            prov_counts: collections.Counter[str] = collections.Counter(
+                it["provider"] for it in items if it["status"] >= 500 and it["provider"]
+            )
+            status_counts: collections.Counter[int] = collections.Counter(
+                it["status"] for it in items if it["status"] >= 500
+            )
+            top_p = ", ".join(f"{p} ({c})" for p, c in prov_counts.most_common(3))
+            top_s = ", ".join(f"{s} ({c})" for s, c in status_counts.most_common(3))
+            return {
                 "rate": (
                     f"{pct:.1f}% ({failed} of {len(items)} requests, last {self._cfg.window_sec}s)"
                 ),
                 "top_providers": top_p or "n/a",
                 "top_status_codes": top_s or "n/a",
-            },
-            dedupe_key="fivexx_rate",
+            }
+
+        await alert_on_transition(
+            key=self.name,
+            breached=pct >= self._cfg.threshold_pct,
+            severity=AlertSeverity.ERROR,
+            title="5xx rate exceeded",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
         )
 
 
@@ -246,23 +275,30 @@ class P95LatencyRule:
         threshold = self._cfg.overrides.get(provider, {}).get(
             "threshold_ms", self._cfg.threshold_ms
         )
-        if p95 < threshold:
-            return
-        p99_idx = int(0.99 * (len(sorted_durations) - 1))
-        p99 = sorted_durations[p99_idx]
-        await alert_slack(
-            AlertSeverity.WARN,
-            f"p95 latency exceeded for provider {provider}",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            p99_idx = int(0.99 * (len(sorted_durations) - 1))
+            p99 = sorted_durations[p99_idx]
+            return {
                 "provider": provider,
                 "p95_ms": p95,
                 "p99_ms": p99,
                 "samples": len(items),
                 "window_sec": self._cfg.window_sec,
                 "threshold_ms": threshold,
-            },
-            dedupe_key=f"p95_latency:{provider}",
+            }
+
+        await alert_on_transition(
+            key=f"p95_latency:{provider}",
+            breached=p95 >= threshold,
+            severity=AlertSeverity.WARN,
+            title=f"p95 latency exceeded for provider {provider}",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
         )
 
 
@@ -290,18 +326,15 @@ class AuthFailureSpikeRule:
             },
         )
         items = self._window.items(now)
-        if len(items) <= self._cfg.threshold_count:
-            return
-        ip_counts: collections.Counter[str] = collections.Counter(
-            it["remote_ip"] for it in items if it["remote_ip"]
-        )
-        key_counts: collections.Counter[str] = collections.Counter(
-            it["key_prefix"] for it in items if it["key_prefix"]
-        )
-        await alert_slack(
-            AlertSeverity.WARN,
-            "Auth failure spike",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            ip_counts: collections.Counter[str] = collections.Counter(
+                it["remote_ip"] for it in items if it["remote_ip"]
+            )
+            key_counts: collections.Counter[str] = collections.Counter(
+                it["key_prefix"] for it in items if it["key_prefix"]
+            )
+            return {
                 "count": len(items),
                 "window_sec": self._cfg.window_sec,
                 "top_ips": (
@@ -310,9 +343,19 @@ class AuthFailureSpikeRule:
                 "top_key_prefixes": (
                     ", ".join(f"{p} ({c})" for p, c in key_counts.most_common(3)) or "n/a"
                 ),
-            },
-            dedupe_key="auth_failure_spike",
+            }
+
+        await alert_on_transition(
+            key="auth_failure_spike",
+            breached=len(items) > self._cfg.threshold_count,
+            severity=AlertSeverity.WARN,
+            title="Auth failure spike",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
         )
 
 
@@ -349,21 +392,18 @@ class PendingPrefixCacheLeakRule:
             },
         )
         items = self._window.items(now)
-        if len(items) <= self._cfg.threshold_count:
-            return
-        reason_counts = collections.Counter(str(item["reason"]) for item in items)
-        ages = [item["age_sec"] for item in items if isinstance(item["age_sec"], (int, float))]
-        idle_times = [
-            item["idle_sec"] for item in items if isinstance(item["idle_sec"], (int, float))
-        ]
-        pending_counts = [
-            item["pending_count"] for item in items if isinstance(item["pending_count"], int)
-        ]
-        capacities = [item["capacity"] for item in items if isinstance(item["capacity"], int)]
-        await alert_slack(
-            AlertSeverity.WARN,
-            "RouteWise pending prefix-cache entries leaking",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            reason_counts = collections.Counter(str(item["reason"]) for item in items)
+            ages = [item["age_sec"] for item in items if isinstance(item["age_sec"], (int, float))]
+            idle_times = [
+                item["idle_sec"] for item in items if isinstance(item["idle_sec"], (int, float))
+            ]
+            pending_counts = [
+                item["pending_count"] for item in items if isinstance(item["pending_count"], int)
+            ]
+            capacities = [item["capacity"] for item in items if isinstance(item["capacity"], int)]
+            return {
                 "evicted_count": len(items),
                 "window_sec": self._cfg.window_sec,
                 "ttl_count": reason_counts["ttl"],
@@ -372,9 +412,19 @@ class PendingPrefixCacheLeakRule:
                 "max_idle_sec": max(idle_times, default=0),
                 "max_pending_count": max(pending_counts, default=0),
                 "capacity": max(capacities, default=0),
-            },
-            dedupe_key="prefix_cache_pending_leak",
+            }
+
+        await alert_on_transition(
+            key="prefix_cache_pending_leak",
+            breached=len(items) > self._cfg.threshold_count,
+            severity=AlertSeverity.WARN,
+            title="RouteWise pending prefix-cache entries leaking",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
         )
 
 
@@ -410,19 +460,26 @@ class TrackedTaskFailureRateRule:
             return
         failed = sum(1 for it in items if not it["success"])
         pct = (failed / len(items)) * 100.0
-        if pct < self._cfg.threshold_pct:
-            return
-        await alert_slack(
-            AlertSeverity.ERROR,
-            f"Tracked-task failure rate exceeded for {task_name}",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            return {
                 "task_name": task_name,
                 "rate": (
                     f"{pct:.1f}% ({failed} of {len(items)} tasks, last {self._cfg.window_sec}s)"
                 ),
-            },
-            dedupe_key=f"tracked_task_failure:{task_name}",
+            }
+
+        await alert_on_transition(
+            key=f"tracked_task_failure:{task_name}",
+            breached=pct >= self._cfg.threshold_pct,
+            severity=AlertSeverity.ERROR,
+            title=f"Tracked-task failure rate exceeded for {task_name}",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
+            now=now,
         )
 
 
@@ -448,17 +505,23 @@ class UserCostOverrunJob:
             return
         today = dt.date.today().isoformat()
         for user_id, role, daily_cost in rows:
-            await alert_slack(
-                AlertSeverity.WARN,
-                "User cost overrun",
-                {
+            # Through the tracker, not straight to the sink: the key embeds the
+            # day, so once it rolls over nothing observes this one again and the
+            # stale sweep is the only thing that can close its incident. Calling
+            # alert_slack directly would leave it open forever.
+            await _alerts.alert_on_transition(
+                key=f"cost_overrun:{user_id}:{today}",
+                breached=True,
+                severity=AlertSeverity.WARN,
+                title="User cost overrun",
+                context=lambda user_id=user_id, role=role, daily_cost=daily_cost: {
                     "user_id": user_id,
                     "role": role,
                     "daily_cost": f"${daily_cost:.2f}",
                     "threshold": f"${self._cfg.thresholds_per_role.get(role, 0):.2f}",
                 },
-                dedupe_key=f"cost_overrun:{user_id}:{today}",
                 cooldown_sec=self._cfg.cooldown_sec,
+                stale_after=self._cfg.check_interval_sec * _STALE_WINDOW_FACTOR,
             )
 
 
@@ -486,17 +549,22 @@ class ProviderHourlySpendJob:
             budget = self._cfg.budgets.get(provider)
             if budget is None or spend < budget:
                 continue
-            await alert_slack(
-                AlertSeverity.WARN,
-                f"Provider hourly spend exceeded budget for {provider}",
-                {
+            # As with the daily cost job: the key embeds the hour, so the stale
+            # sweep is the only thing that can ever close this incident and the
+            # tracker has to know about it.
+            await _alerts.alert_on_transition(
+                key=f"provider_spend:{provider}:{hour_iso}",
+                breached=True,
+                severity=AlertSeverity.WARN,
+                title=f"Provider hourly spend exceeded budget for {provider}",
+                context=lambda provider=provider, spend=spend, budget=budget: {
                     "provider": provider,
                     "hourly_spend": f"${spend:.2f}",
                     "budget": f"${budget:.2f}",
                     "hour": hour_iso,
                 },
-                dedupe_key=f"provider_spend:{provider}:{hour_iso}",
                 cooldown_sec=self._cfg.cooldown_sec,
+                stale_after=self._cfg.check_interval_sec * _STALE_WINDOW_FACTOR,
             )
 
 
@@ -518,6 +586,7 @@ class AlertEngine:
         self._op_store = op_store
         self._log_store = log_store
         self._task: asyncio.Task[None] | None = None
+        self._sweep_task: asyncio.Task[None] | None = None
         self._rules: list[_Rule] = []
         self._scheduled_jobs: list[Any] = []
 
@@ -544,6 +613,11 @@ class AlertEngine:
             self._task.cancel()
             with _cl.suppress(asyncio.CancelledError):
                 await self._task
+        if self._sweep_task and not self._sweep_task.done():
+            self._sweep_task.cancel()
+            with _cl.suppress(asyncio.CancelledError):
+                await self._sweep_task
+        self._sweep_task = None
         for job in self._scheduled_jobs:
             try:
                 job.remove()
@@ -565,6 +639,11 @@ class AlertEngine:
 
     def _schedule_periodic_jobs(self) -> None:
         if self._scheduler is None:
+            # The sweep is the only thing that closes an incident whose rule
+            # stopped being evaluated, and it must not depend on the optional
+            # Postgres-backed scheduler — a deployment without one would leave
+            # every such incident open forever. It runs on its own task.
+            self._sweep_task = asyncio.ensure_future(self._sweep_forever())
             return
         from apscheduler.triggers.interval import IntervalTrigger
 
@@ -591,6 +670,35 @@ class AlertEngine:
                 replace_existing=True,
             )
             self._scheduled_jobs.append(scheduled)
+
+        # Record-driven rules resolve when the metric recovers, but two classes
+        # of breach never re-evaluate on their own: a rule whose traffic stops
+        # entirely, and the budget jobs above, whose incident key embeds the day
+        # or hour so the previous period is simply never observed again. Both
+        # would leave incidents open forever. This sweep is what closes them.
+        scheduled = self._scheduler.add_job(
+            self._sweep_stale_breaches,
+            trigger=IntervalTrigger(seconds=_STALE_SWEEP_INTERVAL_SEC),
+            id="alert_stale_breach_sweep",
+            replace_existing=True,
+        )
+        self._scheduled_jobs.append(scheduled)
+
+    async def _sweep_stale_breaches(self) -> None:
+        """Resolve incidents whose rule or period stopped producing evaluations."""
+        await sweep_stale_breaches()
+
+    async def _sweep_forever(self) -> None:
+        """Run the stale-breach sweep without an external scheduler."""
+        while True:
+            try:
+                await asyncio.sleep(_STALE_SWEEP_INTERVAL_SEC)
+                await sweep_stale_breaches()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A failing sweep must not take the alert engine down with it.
+                log.exception("stale breach sweep failed")
 
     async def _drain(self) -> None:
         try:

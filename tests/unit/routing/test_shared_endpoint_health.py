@@ -131,7 +131,7 @@ async def test_fixed_pinned_failure_excludes_endpoint_from_routewise() -> None:
     backup = _adapter("backup", endpoint_id=_BACKUP_ENDPOINT, price="100")
     fixed, routewise = _shared_router_pair(registry, primary, backup)
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         with pytest.raises(ConnectionError, match="primary unavailable"):
             await fixed.chat_completion(
                 _MODEL_ID,
@@ -162,7 +162,7 @@ async def test_routewise_failure_makes_fixed_initial_selection_skip_endpoint() -
     backup = _adapter("backup", endpoint_id=_BACKUP_ENDPOINT, price="100")
     fixed, routewise = _shared_router_pair(registry, primary, backup)
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         with pytest.raises(ConnectionError, match="routewise primary unavailable"):
             await routewise.chat_completion(_MODEL_ID, _MESSAGES)
         await asyncio.sleep(0)
@@ -197,7 +197,7 @@ async def test_fixed_chat_fallback_skips_endpoint_with_open_shared_circuit() -> 
     )
 
     with (
-        patch("routing.endpoint_health.alert_slack", new=AsyncMock()),
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()),
         patch("routing.routers.random.random", return_value=0.0),
     ):
         registry.record_failure(blocked.config.endpoint_id, reason="routewise_failure")
@@ -232,7 +232,7 @@ async def test_fixed_stream_fallback_skips_endpoint_with_open_shared_circuit() -
     )
 
     with (
-        patch("routing.endpoint_health.alert_slack", new=AsyncMock()),
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()),
         patch("routing.routers.random.random", return_value=0.0),
     ):
         registry.record_failure(blocked.config.endpoint_id, reason="routewise_failure")
@@ -258,7 +258,7 @@ async def test_fixed_pin_bypasses_open_circuit_and_updates_shared_health() -> No
     backup = _adapter("backup", endpoint_id=_BACKUP_ENDPOINT, price="100")
     fixed, routewise = _shared_router_pair(registry, primary, backup)
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         registry.record_failure(_PRIMARY_ENDPOINT, reason="preopen")
         await asyncio.sleep(0)
         availability_while_open = routewise.get_provider_status()[_PRIMARY_ENDPOINT]["availability"]
