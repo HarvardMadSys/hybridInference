@@ -832,7 +832,7 @@ class DatabaseLogger:
                     tools, upstream_cost_usd,
                     num_turns, num_user_turns, num_tool_calls,
                     last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id
+                    served_model_id, served_endpoint_id, agent_job_id
                 )
                 VALUES (
                     $1, $2, $3,
@@ -845,7 +845,7 @@ class DatabaseLogger:
                     $26::jsonb, $27,
                     $28, $29, $30,
                     $31, $32, $33,
-                    $34, $35
+                    $34, $35, $36
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -893,6 +893,8 @@ class DatabaseLogger:
                 # Served model/endpoint (queryable routing identity)
                 served_model,
                 served_endpoint,
+                # Cloud agent sandbox job attribution (issue #1041)
+                (sanitized_metadata or {}).get("agent_job_id"),
             )
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
