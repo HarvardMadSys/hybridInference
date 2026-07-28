@@ -4,7 +4,9 @@ HybridInference Developer Documentation
 Internal documentation for developing and operating the HybridInference platform.
 
 For **user-facing documentation** (API usage, IDE integration, available models),
-see the `FreeInference docs <https://doc.freeinference.org/>`_.
+see the docs published by the deployment you are using. The FreeInference
+deployment's are at `doc.freeinference.org <https://doc.freeinference.org/>`_,
+as a worked example of what that covers.
 
 .. toctree::
    :maxdepth: 2

@@ -1,7 +1,7 @@
 # Docs RAG Assistant
 
 A retrieval-augmented-generation (RAG) chat feature that answers user questions
-about FreeInference using the **public user docs** as its knowledge base. Both
+about a deployment using its own **public user docs** as the knowledge base. Both
 retrieval and generation route through the gateway itself.
 
 ## Architecture
@@ -22,10 +22,12 @@ gateway's **own** public API **as a user** for the model work.
    counted toward cost / quota / concurrency.
 ```
 
-- **Corpus:** `distributions/freeinference/content/docs/docs/source/*.md` — the same markdown that
-  builds the public doc site.
+- **Corpus:** the active distribution overlay's documentation source
+  (`<overlay>/content/docs/docs/source/*.md`) — the same markdown that builds
+  that deployment's public doc site. A checkout with no overlay has no corpus;
+  set `RAG_CORPUS_DIR` to your own documentation.
 - **Vector store:** a plain JSON file
-  (`distributions/freeinference/content/rag/docs_index.json`) scanned with pure-Python
+  (`<overlay>/content/rag/docs_index.json`) scanned with pure-Python
   cosine similarity. The corpus is tiny, so no numpy / ANN index is needed. The
   index is **committed** (embeddings rounded to 6 decimals, ~0.9 MB) and lives
   inside the `serving` package so it ships in the Docker image — a fresh
@@ -117,7 +119,7 @@ quota, and per-user concurrency — attributed to the **`RAG_API_KEY` account**
 `503`. An upstream `429` (quota/rate) is passed through to the caller.
 
 ```bash
-curl -sN https://staging.freeinference.org/v1/rag/chat \
+curl -sN https://<your-gateway>/v1/rag/chat \
   -H "Authorization: Bearer <jwt>" -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"How do I get an API key?"}]}'
 ```
@@ -130,8 +132,8 @@ All optional; sensible defaults resolve relative to the repo root.
 |---|---|---|
 | `RAG_API_KEY` | _(unset)_ | User API key the handler calls the gateway with (**required** at serving time) |
 | `RAG_API_BASE_URL` | `http://localhost:8080/v1` | Gateway the handler calls (self-call for logging/quota) |
-| `RAG_INDEX_PATH` | `distributions/freeinference/content/rag/docs_index.json` | Vector index location |
-| `RAG_CORPUS_DIR` | `distributions/freeinference/content/docs/docs/source` | Markdown corpus |
+| `RAG_INDEX_PATH` | the overlay's `content/rag/docs_index.json`, if one is present | Vector index location |
+| `RAG_CORPUS_DIR` | the overlay's `content/docs/docs/source`, if one is present | Markdown corpus |
 | `RAG_EMBEDDER` | `gateway` | `gateway` (real bge-m3) or `hash` (offline) |
 | `RAG_GATEWAY_BASE_URL` | `http://localhost:8080/v1` | Gateway used by **ingest** (gateway mode) |
 | `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (gateway mode) |

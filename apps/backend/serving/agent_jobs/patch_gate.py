@@ -49,7 +49,7 @@ _BLOCKED_PREFIXES = (".github/",)
 # recognizable prefix or structure, so ordinary code and prose do not trip it.
 # A false negative is caught by the human reviewing the draft PR; a false
 # positive blocks a legitimate job, so precision wins here.
-_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{16,}")),
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9]{20,}")),
     ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9\-_]{20,}")),
@@ -60,6 +60,11 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")),
     ("private_key_block", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----")),
 )
+
+# ops/release/public_export.py reads the tuple above by file path, so the two
+# scanners cannot drift: a shape added for the agent sandbox is a shape the
+# release audit rejects too. That module imports this file directly rather than
+# as a package, so nothing here may grow an import beyond the standard library.
 
 # ── Diff parsing ───────────────────────────────────────────────────────
 
@@ -139,7 +144,7 @@ def _scan_secrets(patch: str, paths: list[str]) -> list[str]:
         if line.startswith("+") and not line.startswith("+++")
     )
     haystack = added + "\n" + "\n".join(paths)
-    return [name for name, pattern in _SECRET_PATTERNS if pattern.search(haystack)]
+    return [name for name, pattern in SECRET_PATTERNS if pattern.search(haystack)]
 
 
 def validate_patch(
