@@ -1,0 +1,30 @@
+# Minimal routing configuration — the companion to models.openrouter.yaml.
+#
+# Pair it with the quickstart in README.md:
+#
+#   MODELS_CONFIG_PATH=config/examples/models.openrouter.yaml \
+#   ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
+#   ...
+#
+# Without this, the gateway falls back to config/routing.yaml — the operator's
+# own deployment map — and reports every endpoint in it as unset, which buries
+# the one message that matters in warnings about machines you do not have.
+#
+# Routing behaviour for the example models comes from their own `route:` lists
+# in models.openrouter.yaml. Nothing here needs to name a host.
+
+# Per-model routers (`router:` in the model registry) override this.
+# `routing_strategy:`/`routing_parameter:` are the deprecated spelling and are
+# deliberately absent here.
+default_router: fixed
+
+# Seconds to wait for an endpoint to accept a connection.
+timeout: 2
+
+# Seconds between background health probes.
+health_check: 300
+
+# Endpoint pools. Empty on purpose: a fresh gateway knows about no machines
+# until you tell it about yours.
+local_deployment: []
+remote_deployment: []
