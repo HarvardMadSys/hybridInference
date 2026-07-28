@@ -436,6 +436,7 @@ async def create_agent_job(
         runtime=body.runtime,
         model=body.model,
         base_sha=base_sha,
+        setup_script=body.setup_script,
         budget_usd=body.budget_usd,
         metadata=body.metadata,
     )
@@ -807,6 +808,7 @@ async def worker_claim(
         repo=claim["repo"],
         base_sha=claim["base_sha"],
         task_prompt=claim["task_prompt"],
+        setup_script=claim.get("setup_script"),
         runtime=claim["runtime"],
         model=claim["model"],
         worker_token=token,

@@ -46,6 +46,14 @@ class AgentJobCreate(BaseModel):
     task_prompt: str = Field(..., description="What the agent should do.")
     runtime: str = Field("claude-code", description="Agent runtime id.")
     model: str = Field(..., description="Gateway model id the runtime should use.")
+    setup_script: str | None = Field(
+        None,
+        max_length=8000,
+        description=(
+            "Shell run before the agent, under the setup egress tier. Its result is "
+            "cached per repository and script, so a retry does not reinstall."
+        ),
+    )
     base_ref: str | None = Field(
         None,
         max_length=255,
@@ -176,6 +184,7 @@ class WorkerClaimResponse(BaseModel):
     repo: str
     base_sha: str | None = None
     task_prompt: str
+    setup_script: str | None = None
     runtime: str
     model: str
     worker_token: str
@@ -243,6 +252,14 @@ class WorkerFinishRequest(BaseModel):
 
     state: str = Field(..., description="succeeded|failed|cancelled")
     detail: str | None = None
+    setup_script: str | None = Field(
+        None,
+        max_length=8000,
+        description=(
+            "Shell run before the agent, under the setup egress tier. Its result is "
+            "cached per repository and script, so a retry does not reinstall."
+        ),
+    )
     base_ref: str | None = Field(
         None,
         max_length=255,

@@ -62,6 +62,12 @@ services:
       # below for why that is not a stylistic choice.
       AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/freeinference/agent-jobs}
 
+      # Setup snapshots. Keyed on repository + setup script, so a retry or a
+      # later job with the same dependencies restores the tree instead of
+      # reinstalling. Same-path bind as the worktrees, for the same reason.
+      AGENT_SNAPSHOT_ROOT: ${AGENT_SNAPSHOT_ROOT:-/var/lib/freeinference/agent-snapshots}
+      AGENT_SNAPSHOT_TTL_S: ${AGENT_SNAPSHOT_TTL_S:-604800}
+
       AGENT_LEASE_TTL: ${AGENT_LEASE_TTL:-120}
       AGENT_TIMEOUT_S: ${AGENT_TIMEOUT_S:-3600}
     command:
@@ -85,6 +91,7 @@ services:
       # this container. A named volume looks like it works right up until every
       # job dies at spawn with exit 125.
       - ${AGENT_WORKDIR_ROOT:-/var/lib/freeinference/agent-jobs}:${AGENT_WORKDIR_ROOT:-/var/lib/freeinference/agent-jobs}
+      - ${AGENT_SNAPSHOT_ROOT:-/var/lib/freeinference/agent-snapshots}:${AGENT_SNAPSHOT_ROOT:-/var/lib/freeinference/agent-snapshots}
     networks:
       - hybridinference
     depends_on:

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import os
 import pathlib
 import queue
@@ -42,6 +43,7 @@ import httpx
 
 from serving.agent_jobs.runtimes import AgentRuntime, NormalizedEvent, get_runtime
 from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
+from serving.agent_jobs.setup import build_cache_from_env, run_setup
 
 DEFAULT_LEASE_TTL_S = 120.0
 HEARTBEAT_INTERVAL_S = 30.0
@@ -143,6 +145,9 @@ class ClaimedJob:
     worker_token: str
     # Model-scoped credential: the only one that enters the sandbox.
     sandbox_token: str
+    # Shell run before the agent, under the setup egress tier. Optional, so it
+    # carries a default rather than forcing every caller to pass one.
+    setup_script: str | None = None
     # Read-only, single-repo, short-lived: what the runner clones with. Stays
     # in the runner — it is never put in .git/config and never enters the
     # sandbox environment. ``None`` for a public repository.
@@ -158,6 +163,7 @@ class ClaimedJob:
             repo=body["repo"],
             base_sha=body.get("base_sha"),
             task_prompt=body["task_prompt"],
+            setup_script=body.get("setup_script"),
             runtime=body["runtime"],
             model=body["model"],
             worker_token=body["worker_token"],
@@ -768,6 +774,39 @@ def run_once(
             NormalizedEvent("lifecycle", {"phase": "checked_out", "base_sha": base_sha})
         )
 
+        # Setup runs before the agent and under its own egress tier: it needs
+        # a package registry, and the turn that follows — the one driven by
+        # untrusted model output — does not.
+        if job.setup_script:
+            setup = run_setup(
+                script=job.setup_script,
+                workdir=workdir,
+                repo=job.repo,
+                backend=backend,
+                cache=build_cache_from_env(),
+            )
+            control.append_event(
+                NormalizedEvent(
+                    "lifecycle",
+                    {
+                        "phase": "setup",
+                        "cached": setup.restored_from_cache,
+                        "ran": setup.ran,
+                    },
+                )
+            )
+            if setup.exit_code != 0:
+                # A job whose dependencies did not install cannot do the work,
+                # and letting the agent start anyway produces a confusing
+                # failure much later, in the model's voice rather than the
+                # installer's.
+                control.finish(
+                    "failed",
+                    f"setup failed ({setup.exit_code}): {setup.detail}",
+                    base_sha=base_sha,
+                )
+                return 1
+
         exit_code, tail, tool_errors = run_agent(
             runtime,
             job=job,
@@ -877,6 +916,13 @@ def run_forever(
             print(f"agent runner: job failed unexpectedly: {exc}", file=sys.stderr, flush=True)
         finally:
             shutil.rmtree(job_dir, ignore_errors=True)
+
+        # Housekeeping on the idle tick: a snapshot cache on the same host as
+        # every job worktree must not be the thing that fills the disk.
+        cache = build_cache_from_env()
+        if cache is not None:
+            with contextlib.suppress(Exception):
+                cache.purge_expired()
 
         # `run_once` returns 0 with nothing claimed too; sleeping only when the
         # queue was empty would need a separate signal, and a short sleep after

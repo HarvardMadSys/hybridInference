@@ -96,6 +96,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "repo": row["repo"],
         "base_sha": row["base_sha"],
         "task_prompt": row["task_prompt"],
+        "setup_script": row["setup_script"],
         "runtime": row["runtime"],
         "model": row["model"],
         "state": row["state"],
@@ -111,7 +112,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
 
 
 _JOB_COLUMNS = (
-    "id, user_id, repo, base_sha, task_prompt, runtime, model, state, "
+    "id, user_id, repo, base_sha, task_prompt, setup_script, runtime, model, state, "
     "cancel_requested, current_attempt_id, published_pr_url, detail, budget_usd, metadata, "
     "created_at, updated_at"
 )
@@ -135,6 +136,7 @@ class AgentJobStore:
                     repo TEXT NOT NULL,
                     base_sha TEXT,
                     task_prompt TEXT NOT NULL,
+                    setup_script TEXT,
                     runtime TEXT NOT NULL,
                     model TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued',
@@ -154,6 +156,7 @@ class AgentJobStore:
             await conn.execute(
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
             )
+            await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS setup_script TEXT")
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_jobs_queued "
                 "ON agent_jobs(created_at) WHERE state = 'queued'"
@@ -293,6 +296,7 @@ class AgentJobStore:
         runtime: str,
         model: str,
         base_sha: str | None = None,
+        setup_script: str | None = None,
         budget_usd: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -302,9 +306,9 @@ class AgentJobStore:
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO agent_jobs
-                    (id, user_id, repo, base_sha, task_prompt, runtime, model,
-                     budget_usd, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                    (id, user_id, repo, base_sha, task_prompt, setup_script, runtime,
+                     model, budget_usd, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -312,6 +316,7 @@ class AgentJobStore:
                 repo,
                 base_sha,
                 task_prompt,
+                setup_script,
                 runtime,
                 model,
                 Decimal(str(budget_usd)) if budget_usd is not None else None,
