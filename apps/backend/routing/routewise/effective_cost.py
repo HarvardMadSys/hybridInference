@@ -30,7 +30,7 @@ def api_request_cost_usd(
 ) -> float:
     """Return cold-cache route-time API request cost in USD.
 
-    The first FreeInference integration intentionally uses
+    The first integration here intentionally uses
     ``estimated_cached_tokens = 0`` for routing and envelope calibration.
     Actual post-completion billing remains cache-aware elsewhere.
     """

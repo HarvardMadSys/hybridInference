@@ -784,7 +784,7 @@ class AdminAnalyticsResponse(BaseModel):
 class UsageInsightsRequest(BaseModel):
     """Request body for POST /admin/usage-insights/analyze.
 
-    The analysis provider (freeinference.org API key + model) is configured once
+    The analysis provider (gateway API key + model) is configured once
     in Admin → Settings and read server-side; the request only chooses the scope
     and sample size. Optionally analyze a single user (by id or email).
     """

@@ -106,7 +106,7 @@ def _pr_body(job: dict[str, Any], changed_files: list[str]) -> str:
     if len(changed_files) > 50:
         files += f"\n- …and {len(changed_files) - 50} more"
     return (
-        f"Opened by a FreeInference cloud agent job (`{job['job_id']}`).\n\n"
+        f"Opened by a cloud agent job (`{job['job_id']}`).\n\n"
         f"**Task**\n\n> {job['task_prompt'][:1500]}\n\n"
         f"**Changed files ({len(changed_files)})**\n\n{files}\n\n"
         "---\n"

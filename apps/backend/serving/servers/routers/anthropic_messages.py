@@ -119,7 +119,7 @@ def _map_upstream_status(status: int) -> tuple[int, str]:
     """Map an upstream provider HTTP status to (client_status, anthropic error type).
 
     Upstream auth/permission/billing failures mean the operator's provider
-    account is invalid/revoked/out of credit -- never the client's freeinference
+    account is invalid/revoked/out of credit -- never the client's gateway
     key, which already authenticated. Surfacing them verbatim would make the
     Anthropic SDK raise AuthenticationError / a 402 and Claude Code blame the
     user's (valid) key or payment, so 401/402/403 are remapped to a retryable
@@ -1490,7 +1490,7 @@ async def anthropic_user_balance(
 ):
     """Return the caller's remaining daily quota as an Anthropic-surface balance check.
 
-    FreeInference has no persistent prepaid balance -- quota is a per-user
+    This gateway has no persistent prepaid balance -- quota is a per-user
     daily USD allowance that resets at UTC midnight. This endpoint exists for
     Anthropic-compatible clients that, when pointed at a custom
     ``ANTHROPIC_BASE_URL``, probe a conventional ``/user/balance`` path (as
