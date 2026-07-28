@@ -41,7 +41,7 @@ async def test_full_chain_logs_to_slack(monkeypatch):
     )
 
     with patch(
-        "serving.observability.alert_rules.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         await engine.start()
