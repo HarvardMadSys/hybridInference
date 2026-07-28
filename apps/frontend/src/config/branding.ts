@@ -115,6 +115,12 @@ export const branding = {
   fastTrackDomain: process.env.NEXT_PUBLIC_FAST_TRACK_DOMAIN ?? '',
   fastTrackOrg: process.env.NEXT_PUBLIC_FAST_TRACK_ORG ?? '',
 
+  // Data-handling notice shown on the landing page. Empty by default and
+  // hidden when empty: a deployment must state its own policy, and no
+  // upstream default can be correct for someone else's users. FreeInference
+  // supplies its text through the deployment (docker-compose).
+  dataPolicyNotice: process.env.NEXT_PUBLIC_DATA_POLICY_NOTICE || '',
+
   // Namespace for localStorage keys and DOM events. Changing it logs every
   // visitor out of dismissed-state memory; keep it stable per distribution.
   storageKeyPrefix: process.env.NEXT_PUBLIC_STORAGE_KEY_PREFIX || 'hybridinference',

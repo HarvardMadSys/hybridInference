@@ -119,6 +119,7 @@ services:
         NEXT_PUBLIC_FAST_TRACK_DOMAIN: ${NEXT_PUBLIC_FAST_TRACK_DOMAIN-harvard.edu}
         NEXT_PUBLIC_FAST_TRACK_ORG: ${NEXT_PUBLIC_FAST_TRACK_ORG-Harvard}
         NEXT_PUBLIC_STORAGE_KEY_PREFIX: ${NEXT_PUBLIC_STORAGE_KEY_PREFIX-freeinference}
+        NEXT_PUBLIC_DATA_POLICY_NOTICE: ${NEXT_PUBLIC_DATA_POLICY_NOTICE-All prompts and responses are logged for research purposes. Anonymized data derived from requests may be open-sourced to support research.}
         NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
         NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
         NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-junchengyang.com}

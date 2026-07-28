@@ -50,7 +50,7 @@ const FEATURES: Feature[] = [
   },
   {
     title: 'Frontier models',
-    body: 'GLM, Minimax, Qwen, and Kimi models — all behind a single unified API.',
+    body: 'Reach every model your deployment routes to behind a single unified API.',
     icon: (
       <svg
         className="h-6 w-6"
