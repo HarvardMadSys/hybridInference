@@ -16,7 +16,7 @@ async def test_db_disconnect_fires_critical_alert(monkeypatch):
     op_store.health_check = AsyncMock(side_effect=RuntimeError("db unreachable"))
 
     with patch(
-        "serving.servers.routers.health.alert_slack",
+        "serving.observability.alerts.alert_slack",
         new=AsyncMock(),
     ) as mock_alert:
         result = await _test_store_health(op_store, None)

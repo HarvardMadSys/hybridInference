@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from serving.config.settings import has_role
-from serving.observability.alerts import AlertSeverity, alert_slack
+from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import get_log_store, get_operational_store, get_router, get_services
 
@@ -81,30 +81,33 @@ async def _test_store_health(op_store: Any, log_store: Any) -> dict[str, Any]:
         result["all_healthy"] = bool(configured_statuses) and all(
             s == "ok" for s in configured_statuses
         )
-    # Fire DB disconnect alert when a configured store is unhealthy. dedupe_key
-    # ensures we only alert once per cooldown per store kind.
-    if op_store and op_status["status"] == "error":
-        await alert_slack(
-            AlertSeverity.CRITICAL,
-            "Database disconnected",
-            {
+    # Health is polled, so both the outage and the recovery are observable here.
+    # Reporting only the outage is what left every gateway alert fire-only, and
+    # under the control plane an unreported recovery leaves the incident open.
+    if op_store:
+        await alert_on_transition(
+            key=f"db_disconnect:{op_status.get('backend', 'operational')}",
+            breached=op_status["status"] == "error",
+            severity=AlertSeverity.CRITICAL,
+            title="Database disconnected",
+            context=lambda: {
                 "db_kind": op_status.get("backend", "operational"),
                 "store": "operational_store",
                 "error": (op_error or "health_check returned False")[:500],
             },
-            dedupe_key=f"db_disconnect:{op_status.get('backend', 'operational')}",
             cooldown_sec=300,
         )
-    if log_store and log_status["status"] == "error":
-        await alert_slack(
-            AlertSeverity.CRITICAL,
-            "Database disconnected",
-            {
+    if log_store:
+        await alert_on_transition(
+            key=f"db_disconnect:{log_status.get('backend', 'log')}_log",
+            breached=log_status["status"] == "error",
+            severity=AlertSeverity.CRITICAL,
+            title="Database disconnected",
+            context=lambda: {
                 "db_kind": log_status.get("backend", "log"),
                 "store": "log_store",
                 "error": (log_error or "health_check returned False")[:500],
             },
-            dedupe_key=f"db_disconnect:{log_status.get('backend', 'log')}_log",
             cooldown_sec=300,
         )
 

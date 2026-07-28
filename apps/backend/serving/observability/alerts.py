@@ -27,7 +27,11 @@ import httpx
 from serving.oncall.models import AlertEvent, sanitize_for_agent
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pydantic import JsonValue
+
+from serving.observability.alert_transitions import ThresholdTransitionTracker
 
 log = logging.getLogger(__name__)
 
@@ -392,3 +396,96 @@ async def alert_slack(
                 _LAST_FIRED.pop(key, None)
             elif sent:
                 _LAST_FIRED[key] = _monotonic()
+
+
+#: Shared across every rule so one sweep closes incidents for all of them, and
+#: so a rule reloaded with new config does not lose which breaches are open.
+_TRANSITIONS = ThresholdTransitionTracker()
+
+#: How often to look for breaches nothing is evaluating any more. Well under
+#: the tracker's own staleness threshold so a stale incident closes promptly
+#: once it qualifies, rather than at the next multiple of a long interval.
+_STALE_SWEEP_INTERVAL_SEC = 60
+
+
+def reset_transition_state() -> None:
+    """Drop all open-breach state. For tests and for a clean engine restart."""
+    _TRANSITIONS._firing.clear()
+
+
+async def alert_on_transition(
+    *,
+    key: str,
+    breached: bool,
+    severity: AlertSeverity,
+    title: str,
+    context: Callable[[], dict[str, Any]],
+    cooldown_sec: int,
+    now: float | None = None,
+) -> bool:
+    """Send only when the breach state changes, so incidents open and close once.
+
+    Rules previously returned silently while healthy, which is why every alert
+    was fire-only: the moment a breach ended was observable and thrown away.
+    Routing that same decision through the tracker turns it into the resolution
+    the control plane needs to close the incident, while a sustained breach
+    still notifies exactly once.
+
+    The tracker's only job here is the *resolution* edge. Breach reporting is
+    left exactly as it was — every breached evaluation reaches the sink and its
+    cooldown decides what becomes a message — because those repeats are what
+    advance the incident's occurrence count and "last seen" on the control
+    plane. What was missing was never the repeat, only the close.
+
+    ``context`` is a callable so the breach detail — counters, top-N summaries —
+    is only built when a message is actually attempted. A resolution
+    carries just the metric identity, since breach numbers describe a healthy
+    system by then and would only mislead on the recovery card.
+    """
+    transition = _TRANSITIONS.observe(key, breached=breached, now=now or time.time())
+    if breached:
+        # Every breached evaluation still goes to the sink, exactly as before.
+        # The cooldown there decides whether it becomes a message, and under the
+        # control plane each repeat is what advances the incident's occurrence
+        # count and "last seen" — suppressing them here would freeze the card at
+        # one occurrence and make a long outage look like a stale alert.
+        return await alert_slack(
+            severity,
+            title,
+            context(),
+            dedupe_key=key,
+            cooldown_sec=cooldown_sec,
+        )
+    if transition != "resolved":
+        return False
+    return await alert_slack(
+        AlertSeverity.INFO,
+        f"Recovered: {title}",
+        {"alert": key},
+        dedupe_key=key,
+        cooldown_sec=cooldown_sec,
+        status="resolved",
+    )
+
+
+async def sweep_stale_breaches() -> None:
+    """Resolve breaches that nothing is evaluating any more.
+
+    Two classes never re-evaluate themselves: a rule whose traffic stopped
+    entirely, and periodic budget checks whose incident key embeds the day or
+    hour, so the previous period is never observed again. Without this both
+    would hold their incident — and its principal quota — forever.
+    """
+    for key in _TRANSITIONS.sweep(time.time()):
+        try:
+            await alert_slack(
+                AlertSeverity.INFO,
+                f"Recovered: {key}",
+                {"alert": key, "reason": "no longer reported"},
+                dedupe_key=key,
+                cooldown_sec=0,
+                status="resolved",
+            )
+        except Exception:
+            # One stuck resolution must not strand every other open incident.
+            log.exception("stale breach resolution failed for %s", key)

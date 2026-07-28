@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import httpx  # retained for backward-compat import symbol used by tests
 
-from serving.observability.alerts import AlertSeverity, alert_slack
+from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.utils.email_scheduler import get_scheduler
 from serving.utils.logging import get_logger
 
@@ -226,6 +226,18 @@ class FailedRequestAlerter:
             return
 
         if count <= self.threshold:
+            # Healthy. The detector used to stop here, which is why its alert
+            # was fire-only; reporting the crossing back down is what closes
+            # the incident it opened.
+            await alert_on_transition(
+                key="failed_request_rate_db",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded (DB-query detector)",
+                context=dict,
+                cooldown_sec=0,
+            )
+            self._last_alert_at = None
             return
 
         now = self._now_fn()
@@ -247,11 +259,12 @@ class FailedRequestAlerter:
             "threshold": self.threshold,
         }
         context.update(breakdown)
-        ok = await alert_slack(
-            AlertSeverity.ERROR,
-            "Failed-request rate exceeded (DB-query detector)",
-            context,
-            dedupe_key="failed_request_rate_db",
+        ok = await alert_on_transition(
+            key="failed_request_rate_db",
+            breached=True,
+            severity=AlertSeverity.ERROR,
+            title="Failed-request rate exceeded (DB-query detector)",
+            context=lambda: context,
             cooldown_sec=0,
         )
         if ok:

@@ -13,13 +13,15 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Protocol
 
-from serving.observability.alert_transitions import ThresholdTransitionTracker
-from serving.observability.alerts import AlertSeverity, alert_slack
+from serving.observability import alerts as _alerts
+from serving.observability.alerts import (
+    AlertSeverity,
+    alert_on_transition,
+    sweep_stale_breaches,
+)
 from serving.utils.context import MODEL_NOT_FOUND
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
     from serving.observability.alert_config import (
@@ -39,6 +41,11 @@ log = logging.getLogger(__name__)
 
 
 _REQUEST_LOG_LOGGER = "serving.servers.middleware.request_log"
+
+#: How often to look for breaches nothing is evaluating any more. Well under the
+#: tracker's own staleness threshold so a stale incident closes promptly rather
+#: than at the next multiple of a long interval.
+_STALE_SWEEP_INTERVAL_SEC = 60
 
 # 401 is normal SPA token-refresh churn (the auth_failure_spike rule covers
 # real auth attacks separately); excluding it from the failed-request rate
@@ -76,67 +83,6 @@ class _Rule(Protocol):
     name: str
 
     async def on_record(self, record: logging.LogRecord) -> None: ...
-
-
-#: Shared across every rule so one sweep closes incidents for all of them, and
-#: so a rule reloaded with new config does not lose which breaches are open.
-_TRANSITIONS = ThresholdTransitionTracker()
-
-#: How often to look for breaches nothing is evaluating any more. Well under
-#: the tracker's own staleness threshold so a stale incident closes promptly
-#: once it qualifies, rather than at the next multiple of a long interval.
-_STALE_SWEEP_INTERVAL_SEC = 60
-
-
-def reset_transition_state() -> None:
-    """Drop all open-breach state. For tests and for a clean engine restart."""
-    _TRANSITIONS._firing.clear()
-
-
-async def _emit_transition(
-    *,
-    key: str,
-    breached: bool,
-    severity: AlertSeverity,
-    title: str,
-    context: Callable[[], dict[str, Any]],
-    cooldown_sec: int,
-    now: float | None = None,
-) -> None:
-    """Send only when the breach state changes, so incidents open and close once.
-
-    Rules previously returned silently while healthy, which is why every alert
-    was fire-only: the moment a breach ended was observable and thrown away.
-    Routing that same decision through the tracker turns it into the resolution
-    the control plane needs to close the incident, while a sustained breach
-    still notifies exactly once.
-
-    ``context`` is a callable so the breach detail — counters, top-N summaries —
-    is only built on the firing edge, which is rare; every other evaluation
-    would otherwise pay for a message it is not going to send. A resolution
-    carries just the metric identity, since breach numbers describe a healthy
-    system by then and would only mislead on the recovery card.
-    """
-    transition = _TRANSITIONS.observe(key, breached=breached, now=now or time.time())
-    if transition is None:
-        return
-    if transition == "firing":
-        await alert_slack(
-            severity,
-            title,
-            context(),
-            dedupe_key=key,
-            cooldown_sec=cooldown_sec,
-        )
-        return
-    await alert_slack(
-        AlertSeverity.INFO,
-        f"Recovered: {title}",
-        {"alert": key},
-        dedupe_key=key,
-        cooldown_sec=cooldown_sec,
-        status="resolved",
-    )
 
 
 class _SlidingWindow:
@@ -217,7 +163,7 @@ class FailedRequestRateRule:
                 "top_providers": top_p or "n/a",
             }
 
-        await _emit_transition(
+        await alert_on_transition(
             key=self.name,
             breached=pct >= self._cfg.threshold_pct,
             severity=AlertSeverity.ERROR,
@@ -274,7 +220,7 @@ class FivexxRateRule:
                 "top_status_codes": top_s or "n/a",
             }
 
-        await _emit_transition(
+        await alert_on_transition(
             key=self.name,
             breached=pct >= self._cfg.threshold_pct,
             severity=AlertSeverity.ERROR,
@@ -331,7 +277,7 @@ class P95LatencyRule:
                 "threshold_ms": threshold,
             }
 
-        await _emit_transition(
+        await alert_on_transition(
             key=f"p95_latency:{provider}",
             breached=p95 >= threshold,
             severity=AlertSeverity.WARN,
@@ -385,7 +331,7 @@ class AuthFailureSpikeRule:
                 ),
             }
 
-        await _emit_transition(
+        await alert_on_transition(
             key="auth_failure_spike",
             breached=len(items) > self._cfg.threshold_count,
             severity=AlertSeverity.WARN,
@@ -451,7 +397,7 @@ class PendingPrefixCacheLeakRule:
                 "capacity": max(capacities, default=0),
             }
 
-        await _emit_transition(
+        await alert_on_transition(
             key="prefix_cache_pending_leak",
             breached=len(items) > self._cfg.threshold_count,
             severity=AlertSeverity.WARN,
@@ -503,7 +449,7 @@ class TrackedTaskFailureRateRule:
                 ),
             }
 
-        await _emit_transition(
+        await alert_on_transition(
             key=f"tracked_task_failure:{task_name}",
             breached=pct >= self._cfg.threshold_pct,
             severity=AlertSeverity.ERROR,
@@ -536,7 +482,7 @@ class UserCostOverrunJob:
             return
         today = dt.date.today().isoformat()
         for user_id, role, daily_cost in rows:
-            await alert_slack(
+            await _alerts.alert_slack(
                 AlertSeverity.WARN,
                 "User cost overrun",
                 {
@@ -574,7 +520,7 @@ class ProviderHourlySpendJob:
             budget = self._cfg.budgets.get(provider)
             if budget is None or spend < budget:
                 continue
-            await alert_slack(
+            await _alerts.alert_slack(
                 AlertSeverity.WARN,
                 f"Provider hourly spend exceeded budget for {provider}",
                 {
@@ -695,19 +641,7 @@ class AlertEngine:
 
     async def _sweep_stale_breaches(self) -> None:
         """Resolve incidents whose rule or period stopped producing evaluations."""
-        for key in _TRANSITIONS.sweep(time.time()):
-            try:
-                await alert_slack(
-                    AlertSeverity.INFO,
-                    f"Recovered: {key}",
-                    {"alert": key, "reason": "no longer reported"},
-                    dedupe_key=key,
-                    cooldown_sec=0,
-                    status="resolved",
-                )
-            except Exception:
-                # One stuck resolution must not stop the others from closing.
-                log.exception("stale breach resolution failed for %s", key)
+        await sweep_stale_breaches()
 
     async def _drain(self) -> None:
         try:
