@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import shlex
 import subprocess
 import sys
 from collections import defaultdict
@@ -129,6 +130,42 @@ def materialize(names: list[str], overlay: list[dict], target: Path) -> None:
     subprocess.run(["git", "add", "-A"], cwd=target, check=True)
 
 
+def broken_docker_context(target: Path) -> list[tuple[str, str]]:
+    """Find COPY sources the export drops out from under a Dockerfile.
+
+    The repository's own guard against dangling paths reads the merged tree,
+    where these files still exist. The export then removes another set of them
+    by manifest, so an exclusion can leave a Dockerfile copying something that
+    is no longer in the build context. Nothing before this point would notice:
+    the audit reads content, the test suites never build an image, and the
+    failure only appears the first time someone runs `docker compose build` --
+    which, for a published repository, is a stranger.
+    """
+    broken: list[tuple[str, str]] = []
+    for dockerfile in sorted((target / "deploy" / "docker").glob("Dockerfile*")):
+        if dockerfile.suffix == ".dockerignore":
+            continue
+        for raw in dockerfile.read_text().splitlines():
+            line = raw.strip()
+            if not re.match(r"(?i)^COPY\s", line):
+                continue
+            try:
+                parts = shlex.split(line)[1:]
+            except ValueError:
+                continue
+            # `--from=` copies out of an earlier stage, not the build context.
+            if any(p.startswith("--from=") for p in parts):
+                continue
+            sources = [p for p in parts if not p.startswith("--")][:-1]
+            for src in sources:
+                if any(ch in src for ch in "*?["):
+                    if not list(target.glob(src)):
+                        broken.append((dockerfile.name, f"{src} (matches nothing)"))
+                elif not (target / src).exists():
+                    broken.append((dockerfile.name, src))
+    return broken
+
+
 def audit(
     names: list[str], root: Path | None = None, overlay: list[dict] | None = None
 ) -> dict[str, list[str]]:
@@ -235,8 +272,14 @@ def main() -> int:
         # replaced the result, which is how "the export tree is clean" came to
         # be measured against the wrong tree.
         findings = audit(kept, root=target, overlay=overlay)
+        broken = broken_docker_context(target)
+        if broken:
+            print("\nThese are COPYed from the build context but the export drops them:")
+            for where, src in broken:
+                print(f"  {where}: {src}")
     else:
         findings = audit(kept)
+        broken = []
     print()
     if not findings:
         print("Public-surface audit of the exported tree: clean.")
@@ -253,7 +296,7 @@ def main() -> int:
         for name in kept:
             print(f"  {name}")
 
-    return 1 if (findings or undecided) else 0
+    return 1 if (findings or undecided or broken) else 0
 
 
 if __name__ == "__main__":
