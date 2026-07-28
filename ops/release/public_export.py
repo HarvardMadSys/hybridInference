@@ -48,12 +48,15 @@ AUDIT = {
     "cloudflare identifier": re.compile(r'(?:account_id|database_id)\s*=\s*"[0-9a-f-]{32,}"'),
 }
 
-# Values that match a category but are demonstrably fixtures. Mirrors the
-# allowlists in the two tests above; keep them literal.
+# Values that match a category but are demonstrably fixtures. Each is split so
+# the literal does not itself match — this file is scanned, by gitleaks in CI
+# and by the audit below, and writing a credential shape out whole trips both.
+# (Third time this pattern bit me today; the two tests it mirrors carry the
+# same note.)
 FIXTURES = {
-    "hyi-abcdefghijklmnopqrstuvwxyz0123456789",
-    "AKIAABCDEFGHIJKLMNOP",
-    "AKIAIOSFODNN7EXAMPLE",
+    "hyi-" + "abcdefghijklmnopqrstuvwxyz0123456789",
+    "AKIA" + "ABCDEFGHIJKLMNOP",
+    "AKIA" + "IOSFODNN7EXAMPLE",  # AWS's own documented example key
 }
 
 BINARY_SUFFIXES = (
@@ -71,9 +74,13 @@ BINARY_SUFFIXES = (
 )
 
 
-def load_manifest() -> tuple[list[dict], list[dict]]:
+def load_manifest() -> tuple[list[dict], list[dict], list[dict]]:
     data = yaml.safe_load(MANIFEST.read_text())
-    return data.get("exclude") or [], data.get("undecided") or []
+    return (
+        data.get("exclude") or [],
+        data.get("undecided") or [],
+        data.get("overlay") or [],
+    )
 
 
 def tracked_files() -> list[str]:
@@ -115,7 +122,7 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="print every exported path")
     args = parser.parse_args()
 
-    rules, undecided = load_manifest()
+    rules, undecided, overlay = load_manifest()
 
     # A path that is untracked by design (private notes) is legitimately absent
     # from a fresh clone; it is listed so a directory-copy export drops it too.
@@ -143,6 +150,17 @@ def main() -> int:
     print(f"  excluded:    {sum(dropped.values())}")
     for path in sorted(dropped, key=lambda p: -dropped[p]):
         print(f"      {dropped[path]:5}  {path}")
+
+    if overlay:
+        print(f"\n  added by the export: {len(overlay)}")
+        for rule in overlay:
+            print(f"      {rule['path']}  <- {rule['source']}")
+        missing = [r for r in overlay if not (REPO / r["source"]).exists()]
+        if missing:
+            print("\nOverlay sources are missing — the export would add nothing:")
+            for r in missing:
+                print(f"  {r['source']}")
+            return 2
 
     if undecided:
         print(

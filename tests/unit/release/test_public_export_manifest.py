@@ -50,6 +50,49 @@ def test_every_entry_says_why(manifest: dict) -> None:
         assert rule.get("question", "").strip(), f"{rule['path']} is undecided without a question"
 
 
+def test_nothing_is_left_undecided(manifest: dict) -> None:
+    """An open question here is a question the export cannot answer at run time.
+
+    Both entries this list once held — how to split docs/developer/, and what
+    CI an exported repository gets — are now decided in the manifest itself.
+    Reopening one is allowed; leaving it open silently is not.
+    """
+    assert manifest.get("undecided") == [], (
+        "the export refuses to run while a path is undecided; settle it in the "
+        f"manifest: {[r['path'] for r in manifest['undecided']]}"
+    )
+
+
+def test_every_overlay_source_exists(manifest: dict) -> None:
+    """A missing source means the export adds nothing where it promised to."""
+    for rule in manifest.get("overlay") or []:
+        assert (REPO / rule["source"]).exists(), (
+            f"{rule['path']} is supposed to come from {rule['source']}, which is gone"
+        )
+        assert rule.get("reason", "").strip()
+
+
+def test_the_exported_ci_runs_where_anyone_can_reach_it(manifest: dict) -> None:
+    """The reason this repository's own CI cannot travel.
+
+    Every job in `.github/workflows/ci.yml` here targets self-hosted runners
+    this deployment owns. Exported as-is, a contributor's pull request would
+    queue forever — or, worse, run their code on those machines.
+    """
+    overlay = {r["path"]: r for r in (manifest.get("overlay") or [])}
+    rule = overlay.get(".github/workflows/ci.yml")
+    assert rule, "the export must supply a CI workflow, or the public repo has none"
+
+    workflow = yaml.safe_load((REPO / rule["source"]).read_text())
+    runners = {job["runs-on"] for job in workflow["jobs"].values()}
+    assert all(isinstance(r, str) and r.startswith("ubuntu-") for r in runners), (
+        f"exported CI must run on GitHub-hosted runners, got {runners}"
+    )
+    assert "secrets." not in (REPO / rule["source"]).read_text(), (
+        "exported CI must not reference secrets a fork cannot have"
+    )
+
+
 def test_the_design_doc_exclusions_are_present(manifest: dict) -> None:
     """These two are settled upstream of this file; losing them is a regression."""
     excluded = {rule["path"] for rule in manifest["exclude"]}

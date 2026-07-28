@@ -88,18 +88,41 @@ exclude:
 
 # Decisions this file cannot make. The export tool refuses to run while any
 # remain, so the list is short on purpose.
-undecided:
-  - path: docs/developer/
-    question: >-
-      Mixed by design. The how-tos are the project's and should travel; four
-      pages (freeinference.md, staging.md, fasrc.md, codex-oncall.md) describe
-      this deployment's machines. Split them, or exclude the four by name?
+  # docs/developer/ is mixed, so it is split by name rather than dropped. The
+  # four below are this deployment's own runbooks — the rest are how-tos any
+  # operator needs and they travel. Same judgment as #1060, which left these
+  # four unedited for the same reason: they move with the distribution instead
+  # of being reworded into something generic and useless.
+  - path: docs/developer/freeinference.md
+    reason: This deployment's own Cloudflare + Nginx + FastAPI topology.
+  - path: docs/developer/staging.md
+    reason: This deployment's staging environment.
+  - path: docs/developer/fasrc.md
+    reason: >-
+      A Harvard FASRC cluster runbook, down to login nodes and scratch
+      directories. The audit's densest single source of host topology.
+  - path: docs/developer/codex-oncall.md
+    reason: This deployment's on-call pipeline.
 
   - path: .github/workflows/
-    question: >-
-      The CI workflow is the project's, but every job targets self-hosted
-      runners this deployment owns, and the deploy workflows are its own. An
-      exported repository whose CI cannot run is worse than one with no CI.
+    reason: >-
+      Every job targets self-hosted runners this deployment owns, and the deploy
+      workflows are its own. An exported repository whose CI cannot run is worse
+      than one with no CI, so the export replaces the directory rather than
+      carrying it — see `overlay:` below.
+
+# Files the export adds that this repository does not have. The exported
+# repository needs a CI that runs on runners anyone can reach, which is not the
+# same file as the one this repository uses.
+overlay:
+  - path: .github/workflows/ci.yml
+    source: ops/release/export_overlay/github-workflows-ci.yml
+    reason: >-
+      Lint, backend tests and frontend tests on GitHub-hosted runners. No
+      deploy jobs, no self-hosted labels, no secrets — a fork can run it, which
+      is the whole point.
+
+undecided: []
 
 # What the exported tree still leaks today, with the reason each is pending.
 # The test treats this as a ceiling: anything new fails, and an entry that stops
@@ -110,10 +133,6 @@ known_findings:
     pending: >-
       Production config truth still lives upstream; it moves into the overlay in
       the config-migration PR. Copying it early would go stale within a day.
-
-  - where: docs/developer/fasrc.md
-    what: cluster path
-    pending: This deployment's cluster how-to; covered by the docs/developer decision above.
 
   - where: tests/fixtures/e2e_config.yaml
     what: cluster path
