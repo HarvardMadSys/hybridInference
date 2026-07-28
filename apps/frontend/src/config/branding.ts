@@ -6,12 +6,10 @@
 // identity because deploy/docker/docker-compose.yml passes an explicit value
 // for every one of these at build time, so its rendered output is unchanged.
 //
-// Still carrying FreeInference defaults, deliberately: the decorative
-// identity fields (siteHost, org*, docsUrl, statusUrl, contactEmail) whose
-// consumers render them into hrefs and copy without an empty-value guard, and
-// team/sponsors, whose compose default is empty — the arrays below are what
-// production actually renders. Both groups move once their consumers learn to
-// hide missing values.
+// Still carrying FreeInference defaults, deliberately: team and sponsors,
+// whose compose default is empty — meaning the arrays below are what
+// production actually renders today. They move once their data is supplied
+// through NEXT_PUBLIC_TEAM_JSON / NEXT_PUBLIC_SPONSORS_JSON.
 //
 // These values are the build-time fallback. SiteConfigProvider overlays the
 // safe identity and feature fields from GET /site-config at browser runtime,
@@ -80,19 +78,21 @@ export const branding = {
   appDescription:
     process.env.NEXT_PUBLIC_APP_DESCRIPTION ||
     'A gateway that routes LLM requests across local and remote inference providers.',
-  siteHost: process.env.NEXT_PUBLIC_SITE_HOST || 'freeinference.org',
+  // Reads as a name in prose ("Why X", "How did you find X?"), so it falls
+  // back to the product name rather than to an empty string.
+  siteHost: process.env.NEXT_PUBLIC_SITE_HOST || config.appName,
 
-  // Operating organization.
-  orgName: process.env.NEXT_PUBLIC_ORG_NAME || 'Harvard SEAS',
-  orgUrl: process.env.NEXT_PUBLIC_ORG_URL || 'https://madsys.seas.harvard.edu',
-  orgTagline: process.env.NEXT_PUBLIC_ORG_TAGLINE || 'Built at Harvard SEAS · MadSys Lab',
-
-  // External properties.
-  docsUrl: process.env.NEXT_PUBLIC_DOCS_URL || 'https://doc.freeinference.org/',
-  statusUrl: process.env.NEXT_PUBLIC_STATUS_URL || 'https://status.staging.freeinference.org/',
+  // Operating organization and external properties: empty means "this
+  // deployment has none", and every consumer hides the corresponding link
+  // or sentence rather than rendering an empty href.
+  orgName: process.env.NEXT_PUBLIC_ORG_NAME || '',
+  orgUrl: process.env.NEXT_PUBLIC_ORG_URL || '',
+  orgTagline: process.env.NEXT_PUBLIC_ORG_TAGLINE || '',
+  docsUrl: process.env.NEXT_PUBLIC_DOCS_URL || '',
+  statusUrl: process.env.NEXT_PUBLIC_STATUS_URL || '',
   githubUrl,
   commitUrlBase: `${githubUrl}/commit`,
-  contactEmail: process.env.NEXT_PUBLIC_CONTACT_EMAIL || 'admin@freeinference.org',
+  contactEmail: process.env.NEXT_PUBLIC_CONTACT_EMAIL || '',
 
   // Landing-page code example. The default must be copy-pasteable against the
   // reader's own deployment, never against someone else's hosted service; the
