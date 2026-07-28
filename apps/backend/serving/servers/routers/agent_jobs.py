@@ -564,7 +564,11 @@ async def worker_claim(
     try:
         require_allowed_repo(claim["repo"])
     except RepoNotAllowed as exc:
-        await job_store.release_claim(job_id=claim["id"], attempt_id=claim["attempt_id"])
+        await job_store.release_claim(
+            job_id=claim["id"],
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+        )
         logger.warning(
             "agent_job_repo_not_allowed",
             extra={"event": "agent_job_repo_not_allowed", "job_id": claim["id"]},
@@ -601,7 +605,11 @@ async def worker_claim(
             # across three claim cycles would fail every queued private-repo
             # job outright, without an agent ever having started — the very
             # outcome this branch exists to avoid, only slower.
-            await job_store.release_claim(job_id=claim["id"], attempt_id=claim["attempt_id"])
+            await job_store.release_claim(
+                job_id=claim["id"],
+                attempt_id=claim["attempt_id"],
+                lease_generation=claim["lease_generation"],
+            )
             logger.warning(
                 "agent_job_clone_token_error",
                 extra={"event": "agent_job_clone_token_error", "job_id": claim["id"]},

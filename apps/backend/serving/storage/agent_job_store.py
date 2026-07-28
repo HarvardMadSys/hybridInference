@@ -394,7 +394,9 @@ class AgentJobStore:
             ATTEMPT_ABORTED,
         )
 
-    async def release_claim(self, *, job_id: str, attempt_id: int) -> bool:
+    async def release_claim(
+        self, *, job_id: str, attempt_id: int, lease_generation: int | None = None
+    ) -> bool:
         """Hand a just-claimed job back to the queue without spending a retry.
 
         For the case where the *platform* could not go through with a claim it
@@ -416,16 +418,23 @@ class AgentJobStore:
                 UPDATE agent_attempts
                 SET status = $2, finished_at = NOW()
                 WHERE id = $1 AND status = 'running'
+                  AND ($3::bigint IS NULL OR lease_generation = $3)
+                  AND lease_expires_at > NOW()
                 RETURNING job_id
                 """,
                 attempt_id,
                 ATTEMPT_ABORTED,
+                lease_generation,
             )
             if released is None:
                 return False
+            # The store's own answer, not the caller's. `agent_job_events.job_id`
+            # has no foreign key, so a mismatched (job_id, attempt_id) pair would
+            # write a control event into a different job's stream — potentially a
+            # different tenant's.
             await self._insert_event(
                 conn,
-                job_id=job_id,
+                job_id=released,
                 attempt_id=attempt_id,
                 event_type=EVENT_ATTEMPT_ABORTED,
                 payload={"reason": "credential_unavailable"},
@@ -438,7 +447,7 @@ class AgentJobStore:
                 SET state = 'queued', current_attempt_id = NULL, updated_at = NOW()
                 WHERE id = $1 AND current_attempt_id = $2 AND state = 'running'
                 """,
-                job_id,
+                released,
                 attempt_id,
             )
         return True
@@ -799,7 +808,7 @@ class AgentJobStore:
                 """
                 UPDATE agent_jobs
                 SET state = 'succeeded', published_pr_url = $2, updated_at = NOW()
-                WHERE id = $1 AND published_pr_url IS NULL
+                WHERE id = $1 AND published_pr_url IS NULL AND state = 'publishing'
                 RETURNING id
                 """,
                 job_id,
@@ -830,8 +839,11 @@ class AgentJobStore:
         """
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
+                # `state = 'publishing'` as well as the null URL: without it a
+                # late failure report could fail a job that had already moved
+                # on — including one a later attempt published successfully.
                 "UPDATE agent_jobs SET state = 'failed', detail = $2, updated_at = NOW() "
-                "WHERE id = $1 AND published_pr_url IS NULL",
+                "WHERE id = $1 AND published_pr_url IS NULL AND state = 'publishing'",
                 job_id,
                 detail[:2000],
             )

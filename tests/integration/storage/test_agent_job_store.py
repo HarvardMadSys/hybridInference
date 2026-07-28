@@ -656,3 +656,49 @@ async def test_the_sweep_leaves_a_published_job_alone(store: AgentJobStore):
 
     assert await store.reap_stalled_publishes(stall_seconds=0) == []
     assert (await store.get_job(job["id"]))["state"] == "succeeded"
+
+
+async def test_releasing_with_the_wrong_generation_is_refused(store: AgentJobStore):
+    """The weakest fence in the store was this one; it now matches the others.
+
+    Releasing a claim returns the job to the queue, so an unfenced release is a
+    way to yank a job out from under the attempt that legitimately holds it.
+    """
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    assert (
+        await store.release_claim(
+            job_id=job["id"], attempt_id=claim["attempt_id"], lease_generation=999
+        )
+        is False
+    )
+    assert (await store.get_job(job["id"]))["state"] == "running"
+
+    assert (
+        await store.release_claim(
+            job_id=job["id"],
+            attempt_id=claim["attempt_id"],
+            lease_generation=claim["lease_generation"],
+        )
+        is True
+    )
+
+
+async def test_a_release_writes_its_event_into_the_right_job(store: AgentJobStore):
+    """agent_job_events.job_id has no foreign key, so a mismatched pair would land
+    a control event in another job's stream — possibly another tenant's."""
+    victim = await _create_job(store)
+    target = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    # Deliberately name the wrong job alongside the real attempt id.
+    wrong = victim["id"] if claim["id"] != victim["id"] else target["id"]
+    await store.release_claim(job_id=wrong, attempt_id=claim["attempt_id"])
+
+    stray = await store.list_events_after(job_id=wrong)
+    assert not [e for e in stray if e["event_type"] == "attempt_aborted"], (
+        "the event must follow the attempt's real job, not the caller's claim"
+    )
+    owned = await store.list_events_after(job_id=claim["id"])
+    assert [e for e in owned if e["event_type"] == "attempt_aborted"]

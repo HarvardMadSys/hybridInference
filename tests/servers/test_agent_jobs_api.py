@@ -173,7 +173,9 @@ class FakeAgentJobStore:
             job["base_sha"] = base_sha
         return True
 
-    async def release_claim(self, *, job_id: str, attempt_id: int) -> bool:
+    async def release_claim(
+        self, *, job_id: str, attempt_id: int, lease_generation: int | None = None
+    ) -> bool:
         job = self.jobs.get(job_id)
         if job is None or job.get("current_attempt_id") != attempt_id:
             return False
