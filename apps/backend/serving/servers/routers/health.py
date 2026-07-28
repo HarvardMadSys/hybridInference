@@ -9,7 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from serving.config.settings import has_role
 from serving.observability.alerts import AlertSeverity, alert_slack
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
-from serving.servers.deps import get_log_store, get_operational_store, get_router, get_services
+from serving.servers.deps import (
+    database_enabled,
+    get_log_store,
+    get_operational_store,
+    get_router,
+    get_services,
+)
 
 router = APIRouter()
 
@@ -163,12 +169,26 @@ async def health(
     db_connected = store_health["healthy"]
 
     if not store_health["database_configured"]:
-        # No database configured (DB_ENABLED=false, or a gateway-only
-        # deployment): healthy, but the database booleans must say so.
-        # This is checked before `db_connected` because _test_store_health
-        # reports an unconfigured database as healthy — reading `healthy`
-        # first made this branch unreachable and the response claimed a
-        # connected database that does not exist.
+        # No store was built. Two ways to arrive here and they are not the same
+        # answer: a deployment that asked for no database is healthy without
+        # one, while a deployment whose database failed to come up at startup
+        # reaches the identical state — `_test_store_health` cannot tell them
+        # apart, and reporting the second as healthy is how an outage looks
+        # fine to a load balancer.
+        #
+        # Checked before `db_connected` because _test_store_health reports an
+        # unconfigured database as healthy; reading `healthy` first made this
+        # branch unreachable and claimed a connected database that never
+        # existed.
+        if database_enabled():
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return {
+                "status": "unhealthy",
+                "reason": "database_unavailable_at_startup",
+                "routes_configured": routes_count,
+                "database_configured": True,
+                "database_connected": False,
+            }
         return {
             "status": "healthy",
             "routes_configured": routes_count,

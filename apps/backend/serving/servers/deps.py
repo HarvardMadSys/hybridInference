@@ -320,7 +320,7 @@ async def get_current_user(
     if not op_store:
         raise HTTPException(
             status_code=503,
-            detail=NO_AUTH_DATABASE_DETAIL,
+            detail=auth_database_detail(),
         )
 
     user_row = await op_store.get_user_by_id(user_id)
