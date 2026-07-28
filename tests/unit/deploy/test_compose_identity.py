@@ -257,12 +257,26 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
         "make build/up must pass the distribution overlay, or a rebuild drops "
         f"the deployment's console identity: {compose_line}"
     )
+    # ...but only when one is asked for. Discovering it would hand every clone
+    # whichever overlay is checked in, which is what the neutral defaults exist
+    # to prevent.
+    assert "distributions/$(DISTRIBUTION)/deploy/*.env" in makefile, (
+        "the overlay must be selected by name, not discovered by glob"
+    )
+    assert "DISTRIBUTION ?=" in makefile, "make must default to no distribution"
     assert "--env-file .env" in compose_line
     assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
         "--env-file .env"
     ), "the server's .env must come last so per-host overrides still win"
-    assert "distributions/*/deploy/*.env" in makefile, (
-        "DISTRIBUTION_ENV_FILES should discover overlays rather than name one"
+
+
+@pytest.mark.parametrize("script", DEPLOY_SCRIPTS, ids=lambda p: p.name)
+def test_deploy_script_selects_this_site_for_the_rebuild(script: Path) -> None:
+    """`make build` recompiles the console, so it needs the identity too."""
+    body = script.read_text()
+    assert "make build DISTRIBUTION=freeinference" in body, (
+        f"{script.name} rebuilds without naming a distribution, which now ships "
+        "an unbranded console"
     )
 
 

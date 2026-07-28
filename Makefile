@@ -141,7 +141,20 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # not just the deploy scripts: the console's identity is baked in as build
 # args, so a rebuild without them ships an unbranded frontend. `.env` stays
 # last so per-host overrides still win, and secrets stay only in `.env`.
-DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard distributions/*/deploy/*.env))
+# Selecting a distribution is explicit. Discovering one instead would mean that
+# anyone who clones this repository and runs `make up` gets whichever overlay
+# happens to be checked in — the exact outcome the neutral defaults exist to
+# prevent, reached by a different route.
+#
+#   make up                                 # your own gateway, named after nobody
+#   make up DISTRIBUTION=freeinference      # this site
+DISTRIBUTION ?=
+ifneq ($(DISTRIBUTION),)
+DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard distributions/$(DISTRIBUTION)/deploy/*.env))
+ifeq ($(DISTRIBUTION_ENV_FILES),)
+$(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION)/deploy/*.env)
+endif
+endif
 COMPOSE := docker compose -f deploy/docker/docker-compose.yml $(DISTRIBUTION_ENV_FILES) --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data
 

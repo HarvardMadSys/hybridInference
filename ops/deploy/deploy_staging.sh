@@ -109,7 +109,9 @@ main() {
   fi
 
   log "Rebuilding and restarting Docker Compose services."
-  make build
+  # The rebuild needs this site's identity too: the console's is compiled in
+  # as build args, and `make` no longer discovers an overlay on its own.
+  make build DISTRIBUTION=freeinference
 
   log "Current service state:"
   "${COMPOSE[@]}" ps
