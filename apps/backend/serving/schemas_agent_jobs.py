@@ -283,3 +283,16 @@ class AgentConfigResponse(BaseModel):
     # worse answer than one that says what is missing.
     github_connected: bool = False
     github_install_url: str | None = None
+
+
+class GitHubConnectRequest(BaseModel):
+    """The callback values GitHub hands back after the user authorizes."""
+
+    code: str = Field(..., min_length=1, max_length=512)
+
+
+class GitHubConnectionResponse(BaseModel):
+    """Which GitHub installations this user has connected."""
+
+    connections: list[dict[str, Any]] = Field(default_factory=list)
+    repos: list[str] = Field(default_factory=list)

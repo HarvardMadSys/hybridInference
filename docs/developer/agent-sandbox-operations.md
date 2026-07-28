@@ -89,6 +89,27 @@ Be precise about these when reporting status:
   silently run as a plain shared-kernel container while every log line and
   config said otherwise. That is ruled out.
 
+## Who may run a job against which repository
+
+Two independent entitlements, and a repository qualifies on either. Both fail
+closed: with neither, no job can be created at all.
+
+**A connection the user made.** They authorize the GitHub App, GitHub returns a
+code to `<frontend>/agents/connected`, and the platform exchanges it for a
+token that speaks *as that user* to ask which installations they can reach.
+Those installation ids are recorded against the user, and the repositories they
+cover are what the composer offers. Every step is GitHub's answer rather than
+the requester's — which is the point, because the requester chooses the
+repository and the *platform* mints the credential for it. Anything the
+requester could simply assert would be a confused deputy.
+
+**The deployment allowlist** (`AGENT_REPO_ALLOWLIST`), for the single-tenant
+dogfood where the repository is the operator's own and there is no user to
+connect.
+
+Disconnecting removes the platform's half. Uninstalling the App on GitHub is
+the other half, and is what actually revokes the platform's reach.
+
 ## Before a job can run for real
 
 Two things are outside the code and must be done by a human.
@@ -180,7 +201,9 @@ runners share one queue with no leader and no sharding.
 | `AGENT_EGRESS_ALLOWLIST` | — | Checked at startup: it may not contain an agent vendor's telemetry domain, which would let a "closed" sandbox report on the repository it was given |
 | `AGENT_WORKDIR_ROOT` | `/var/lib/freeinference/agent-jobs` | **A host path, bind-mounted at the same path inside the runner.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
 | `AGENT_SANDBOX_UID` / `_GID` | `10001` | Only for a custom sandbox image; must match its user |
-| `AGENT_REPO_ALLOWLIST` | — | **Required.** Comma-separated `owner/name`, or `owner/*`. Unset allows nothing, because the requester picks the repository and the platform mints the GitHub credential for it — without an allowlist that pair is a confused deputy |
+| `AGENT_REPO_ALLOWLIST` | — | Comma-separated `owner/name`, or `owner/*`, for the single-tenant dogfood. Users who connect the App themselves do not need it; unset simply means the only entitlement is a user's own connection |
+| `AGENT_GITHUB_APP_CLIENT_ID` / `_CLIENT_SECRET` | — | The App's OAuth half. Only the user-facing connect flow needs it; minting installation tokens uses the private key alone |
+| `AGENT_GITHUB_APP_INSTALL_URL` | — | Where the Connect button sends the user. Set the App's callback to `<frontend>/agents/connected` |
 | `AGENT_SANDBOX_ALLOW_OPEN_NETWORK` | — | Accepts a non-`internal` sandbox network. Preflight refuses one otherwise, so a missing setting cannot quietly mean full egress |
 | `AGENT_GITHUB_TOKEN` | — | Gateway-side; unset means the publisher idles |
 | `AGENT_PUBLISH_BASE_BRANCH` | `dev` | What draft PRs target |

@@ -952,3 +952,152 @@ async def test_a_worker_cannot_write_the_publish_record(client: AsyncClient):
     ):
         response = await client.post(path, json=body, headers=auth)
         assert response.status_code == 404, f"{path} must not exist"
+
+
+class _FakeGitHubApp:
+    """Stands in for the App: a user token maps to installations, which cover repos."""
+
+    def __init__(self, installations, repos_by_installation, *, exchange_fails=False):
+        self.installations = installations
+        self.repos = repos_by_installation
+        self.exchange_fails = exchange_fails
+        self.exchanged: list[str] = []
+
+    async def exchange_user_code(self, code: str) -> str:
+        if self.exchange_fails:
+            raise RuntimeError("GitHub refused the code exchange")
+        self.exchanged.append(code)
+        return f"user-token-for-{code}"
+
+    async def installations_for_user(self, user_token: str) -> list[dict[str, Any]]:
+        return self.installations
+
+    async def repositories_for_installation(self, installation_id: int) -> list[str]:
+        return self.repos.get(installation_id, [])
+
+    async def token_for(self, repo: str, **kwargs: Any) -> str:
+        return "ghs_x"
+
+
+def _store_with_grants(store: FakeAgentJobStore) -> FakeAgentJobStore:
+    """Give the fake store the grant surface the router uses."""
+    store.grants = {}
+
+    async def record_repo_grant(*, user_id, installation_id, account_login=None):
+        store.grants.setdefault(user_id, {})[installation_id] = account_login
+
+    async def list_repo_grants(*, user_id):
+        return [
+            {"installation_id": iid, "account_login": login}
+            for iid, login in store.grants.get(user_id, {}).items()
+        ]
+
+    async def revoke_repo_grant(*, user_id, installation_id):
+        return store.grants.get(user_id, {}).pop(installation_id, "missing") != "missing"
+
+    store.record_repo_grant = record_repo_grant
+    store.list_repo_grants = list_repo_grants
+    store.revoke_repo_grant = revoke_repo_grant
+    return store
+
+
+async def test_connecting_records_only_what_github_attests(store: FakeAgentJobStore, monkeypatch):
+    """The entitlement must come from GitHub's answer, not the browser's claim.
+
+    The browser sends a code; the platform exchanges it for a token that speaks
+    as that user and asks GitHub which installations they can reach. An
+    installation id posted directly would be exactly the confused deputy this
+    path exists to prevent.
+    """
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service", "acme/web"]},
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        connected = await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        config = await client.get("/v1/agent/config")
+
+    assert connected.status_code == 200
+    assert app_creds.exchanged == ["abc123"], "the code must be exchanged, not trusted"
+    assert connected.json()["connections"][0]["installation_id"] == 77
+    # The picker now offers what this user actually connected.
+    assert config.json()["repos"] == ["acme/service", "acme/web"]
+    assert config.json()["github_connected"] is True
+
+
+async def test_a_connected_user_may_run_only_their_own_repos(store: FakeAgentJobStore, monkeypatch):
+    """Connecting one owner must not entitle someone else's repository."""
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service"]},
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        mine = await client.post(
+            "/v1/agent/jobs",
+            json={"repo": "acme/service", "task_prompt": "fix it", "model": "m"},
+        )
+        theirs = await client.post(
+            "/v1/agent/jobs",
+            json={"repo": "someone-else/private", "task_prompt": "exfiltrate", "model": "m"},
+        )
+
+    assert mine.status_code == 201
+    assert theirs.status_code == 403
+    assert "connected" in theirs.text
+
+
+async def test_a_failed_exchange_grants_nothing(store: FakeAgentJobStore, monkeypatch):
+    """A code that does not verify must leave the user with no entitlement."""
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service"]},
+        exchange_fails=True,
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        connected = await client.post("/v1/agent/github/connect", json={"code": "stolen"})
+        config = await client.get("/v1/agent/config")
+
+    assert connected.status_code == 400
+    assert config.json()["repos"] == []
+
+
+async def test_disconnecting_removes_the_entitlement(store: FakeAgentJobStore, monkeypatch):
+    """Revoking here is half of it; uninstalling on GitHub is the other half."""
+    monkeypatch.delenv("AGENT_REPO_ALLOWLIST", raising=False)
+    from serving.servers.deps import get_agent_app_credentials
+
+    app_creds = _FakeGitHubApp(
+        installations=[{"installation_id": 77, "account_login": "acme"}],
+        repos_by_installation={77: ["acme/service"]},
+    )
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        await client.delete("/v1/agent/github/connect/77")
+        after = await client.post(
+            "/v1/agent/jobs",
+            json={"repo": "acme/service", "task_prompt": "fix it", "model": "m"},
+        )
+
+    assert after.status_code == 403

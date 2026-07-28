@@ -75,6 +75,27 @@ export async function getAgentConfig(): Promise<AgentConfigApi> {
   return jsonOrThrow(await fetchWithAuth(API_BASE, '/v1/agent/config'));
 }
 
+export interface GitHubConnectionApi {
+  connections: Array<{ installation_id: number; account_login: string | null }>;
+  repos: string[];
+}
+
+/**
+ * Complete the GitHub connection with the code GitHub handed the browser.
+ *
+ * The code is all the browser sends. The platform exchanges it for a token
+ * that speaks as this user and asks GitHub which installations they can reach,
+ * so the entitlement is GitHub's answer rather than anything asserted here.
+ */
+export async function connectGitHub(code: string): Promise<GitHubConnectionApi> {
+  const resp = await fetchWithAuth(API_BASE, '/v1/agent/github/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  return jsonOrThrow(resp);
+}
+
 /** Model ids this gateway serves — the model picker's options. */
 export async function listAgentModels(): Promise<string[]> {
   const resp = await fetchWithAuth(API_BASE, '/v1/models');

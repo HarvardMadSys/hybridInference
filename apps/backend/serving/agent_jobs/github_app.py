@@ -69,6 +69,11 @@ class AppConfig:
     private_key: str
     api_base: str = GITHUB_API
 
+    # The OAuth half of a GitHub App. Only needed for the user-facing connect
+    # flow — minting installation tokens uses the private key alone.
+    client_id: str = ""
+    client_secret: str = ""
+
     @classmethod
     def from_env(cls, env: dict[str, str]) -> AppConfig | None:
         """Build from environment, or None when the App is not configured.
@@ -89,7 +94,13 @@ class AppConfig:
         key = key.replace("\\n", "\n").strip()
         if not app_id or not key:
             return None
-        return cls(app_id=app_id, private_key=key, api_base=env.get("AGENT_GITHUB_API", GITHUB_API))
+        return cls(
+            app_id=app_id,
+            private_key=key,
+            api_base=env.get("AGENT_GITHUB_API", GITHUB_API),
+            client_id=(env.get("AGENT_GITHUB_APP_CLIENT_ID") or "").strip(),
+            client_secret=(env.get("AGENT_GITHUB_APP_CLIENT_SECRET") or "").strip(),
+        )
 
 
 def build_app_jwt(config: AppConfig, *, now: int | None = None) -> str:
@@ -240,6 +251,108 @@ class GitHubAppCredentials:
                 "permissions": sorted(permissions or ()) or "inherited",
             },
         )
+        return token
+
+    async def exchange_user_code(self, code: str) -> str:
+        """Trade the callback's code for a token that speaks *as the user*.
+
+        This is what makes the connection an entitlement rather than a claim:
+        the resulting token can only see installations the user themselves can
+        reach, so what we record afterwards is GitHub's answer, not the
+        browser's.
+        """
+        if not (self._config.client_id and self._config.client_secret):
+            raise GitHubAppError(
+                "the GitHub App's client id and secret are not configured, so the "
+                "connect flow cannot verify who is connecting"
+            )
+        async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            response = await client.post(
+                "https://github.com/login/oauth/access_token",
+                headers={"Accept": "application/json"},
+                data={
+                    "client_id": self._config.client_id,
+                    "client_secret": self._config.client_secret,
+                    "code": code,
+                },
+            )
+        if response.status_code >= 400:
+            raise GitHubAppError(f"GitHub refused the code exchange ({response.status_code})")
+        body = response.json()
+        token = body.get("access_token")
+        if not token:
+            # GitHub returns 200 with an error body for a spent or wrong code.
+            raise GitHubAppError(f"GitHub returned no user token: {body.get('error', 'unknown')}")
+        return token
+
+    async def installations_for_user(self, user_token: str) -> list[dict[str, Any]]:
+        """List the installations this user can actually reach."""
+        async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            response = await client.get(
+                f"{self._config.api_base}/user/installations",
+                headers={
+                    "Authorization": f"Bearer {user_token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+        if response.status_code >= 400:
+            raise GitHubAppError(
+                f"could not read the user's installations ({response.status_code})"
+            )
+        out = []
+        for entry in response.json().get("installations", []):
+            account = entry.get("account") or {}
+            out.append({"installation_id": entry.get("id"), "account_login": account.get("login")})
+        return [item for item in out if isinstance(item["installation_id"], int)]
+
+    async def repositories_for_installation(self, installation_id: int) -> list[str]:
+        """List ``owner/name`` for every repository one installation covers.
+
+        Read with the installation's own token, so the answer is the App's
+        actual reach rather than anything the caller supplied.
+        """
+        token = await self._installation_token(installation_id)
+        repos: list[str] = []
+        page = 1
+        async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            while page <= 10:  # bounded: 1000 repositories is plenty
+                response = await client.get(
+                    f"{self._config.api_base}/installation/repositories",
+                    params={"per_page": 100, "page": page},
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+                if response.status_code >= 400:
+                    raise GitHubAppError(
+                        f"could not list repositories for installation {installation_id} "
+                        f"({response.status_code})"
+                    )
+                body = response.json()
+                names = [
+                    item.get("full_name")
+                    for item in body.get("repositories", [])
+                    if item.get("full_name")
+                ]
+                repos.extend(names)
+                if len(names) < 100:
+                    break
+                page += 1
+        return repos
+
+    async def _installation_token(self, installation_id: int) -> str:
+        """Mint a plain installation token for a known installation id."""
+        body = await self._request(
+            "POST",
+            f"/app/installations/{installation_id}/access_tokens",
+            token=build_app_jwt(self._config),
+        )
+        token = body.get("token")
+        if not token:
+            raise GitHubAppError("GitHub returned no installation token")
         return token
 
     def forget(self, repo: str) -> None:

@@ -216,6 +216,72 @@ class AgentJobStore:
                 """
             )
 
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_repo_grants (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    installation_id BIGINT NOT NULL,
+                    account_login TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, installation_id)
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_repo_grants_user "
+                "ON agent_repo_grants(user_id)"
+            )
+
+    # ── Repository grants ──────────────────────────────────────────────
+    #
+    # Which GitHub App installations a *user* has proved they can reach. The
+    # entitlement has to come from something GitHub attests, never from the
+    # request: the requester chooses the repository and the platform mints the
+    # credential for it, so anything the requester can simply assert is a
+    # confused deputy waiting to happen.
+
+    async def record_repo_grant(
+        self, *, user_id: str, installation_id: int, account_login: str | None = None
+    ) -> None:
+        """Record that this user may use this installation."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_repo_grants (user_id, installation_id, account_login)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (user_id, installation_id)
+                DO UPDATE SET account_login = EXCLUDED.account_login
+                """,
+                user_id,
+                installation_id,
+                account_login,
+            )
+
+    async def list_repo_grants(self, *, user_id: str) -> list[dict[str, Any]]:
+        """Return the installations this user has connected."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT installation_id, account_login FROM agent_repo_grants "
+                "WHERE user_id = $1 ORDER BY id",
+                user_id,
+            )
+        return [
+            {"installation_id": row["installation_id"], "account_login": row["account_login"]}
+            for row in rows
+        ]
+
+    async def revoke_repo_grant(self, *, user_id: str, installation_id: int) -> bool:
+        """Drop one connection. Uninstalling on GitHub is the other half."""
+        async with self._pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                "DELETE FROM agent_repo_grants WHERE user_id = $1 AND installation_id = $2 "
+                "RETURNING id",
+                user_id,
+                installation_id,
+            )
+        return deleted is not None
+
     # ── Jobs ───────────────────────────────────────────────────────────
 
     async def create_job(

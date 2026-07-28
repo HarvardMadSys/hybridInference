@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import re
+from typing import Any
 
 # `owner/name`, the only shape GitHub uses and the only one the publisher and
 # runner know how to handle. Also keeps a leading `-` out of git's argv.
@@ -79,10 +80,71 @@ def require_allowed_repo(repo: str, env: dict[str, str] | None = None) -> None:
         raise RepoNotAllowed(f"This deployment will not run agent jobs against {repo!r}: {detail}.")
 
 
+async def repos_for_user(
+    user_id: str,
+    *,
+    store: Any = None,
+    app_credentials: Any = None,
+    env: dict[str, str] | None = None,
+) -> list[str]:
+    """Every repository this user may target, from both sources of entitlement.
+
+    Two independent ones, and a repository qualifies on either:
+
+    - **A connection the user made.** They authorized the App, GitHub told us
+      which installations they can reach, and the installation tells us which
+      repositories it covers. This is the design's "user authorizes the repo",
+      and it is an entitlement because every step of it is GitHub's answer
+      rather than the requester's.
+    - **The deployment allowlist.** The single-tenant dogfood, where the repo
+      is the operator's own and there is no user to connect.
+
+    Both fail closed: with no connection and no allowlist the answer is empty,
+    and an empty answer means no job can be created at all.
+    """
+    repos: set[str] = set(allowed_repos(env))
+    if store is None or app_credentials is None:
+        return sorted(repos)
+    try:
+        grants = await store.list_repo_grants(user_id=user_id)
+    except Exception:
+        return sorted(repos)
+    for grant in grants:
+        try:
+            covered = await app_credentials.repositories_for_installation(grant["installation_id"])
+        except Exception:
+            # One unreachable installation must not hide the others, and must
+            # not widen anything either — it simply contributes nothing.
+            continue
+        repos.update(name for name in covered if _REPO_RE.match(name or ""))
+    return sorted(repos)
+
+
+async def require_entitled_repo(
+    repo: str,
+    user_id: str,
+    *,
+    store: Any = None,
+    app_credentials: Any = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Raise :class:`RepoNotAllowed` unless this user may target ``repo``."""
+    if not _REPO_RE.match(repo or ""):
+        raise RepoNotAllowed(f"repo must be 'owner/name', got {repo!r}")
+    entitled = await repos_for_user(user_id, store=store, app_credentials=app_credentials, env=env)
+    if not any(entry.lower() == repo.lower() for entry in entitled):
+        raise RepoNotAllowed(
+            f"You have not connected {repo!r}. Connect the GitHub App on that "
+            "repository, or ask an operator to add it to this deployment's allowlist."
+        )
+
+
 __all__ = [
     "REPO_PATTERN",
     "RepoNotAllowed",
     "allowed_repos",
     "repo_is_allowed",
+    "repos_for_user",
     "require_allowed_repo",
+    "require_entitled_repo",
 ]

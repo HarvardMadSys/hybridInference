@@ -39,10 +39,11 @@ from serving.agent_jobs.egress import (
 )
 from serving.agent_jobs.entitlement import (
     RepoNotAllowed,
-    allowed_repos,
+    repos_for_user,
     require_allowed_repo,
+    require_entitled_repo,
 )
-from serving.agent_jobs.github_app import AppConfig, AppNotInstalled
+from serving.agent_jobs.github_app import AppNotInstalled
 from serving.agent_jobs.runtimes import registered_runtimes
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
@@ -62,6 +63,8 @@ from serving.schemas_agent_jobs import (
     AgentJobEventsResponse,
     AgentJobListResponse,
     AgentJobResponse,
+    GitHubConnectionResponse,
+    GitHubConnectRequest,
     WorkerAckResponse,
     WorkerArtifactRequest,
     WorkerArtifactResponse,
@@ -247,7 +250,9 @@ async def _owned_job(
 
 @router.get("/config", response_model=AgentConfigResponse)
 async def get_agent_config(
-    _user: dict[str, Any] = Depends(verify_api_key),
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentConfigResponse:
     """What this deployment will actually accept.
 
@@ -257,19 +262,92 @@ async def get_agent_config(
     create endpoint enforces, or it is decoration.
     """
     setup_tier, agent_tier = _egress_tiers()
-    repos = allowed_repos()
-    app_config = AppConfig.from_env(dict(os.environ))
+    # This user's repositories, not the deployment's: what the picker offers
+    # has to be what the create endpoint will accept for *them*.
+    repos = await repos_for_user(user["user_id"], store=store, app_credentials=app_credentials)
     return AgentConfigResponse(
         repos=repos,
         runtimes=registered_runtimes(),
         default_budget_usd=DEFAULT_JOB_BUDGET_USD,
         setup_egress_tier=setup_tier,
         agent_egress_tier=agent_tier,
-        # Connected means both halves: an App the platform can mint tokens
-        # from, and at least one repository this deployment may work on.
-        # Either alone leaves a composer that cannot produce a runnable job.
-        github_connected=bool(app_config and repos),
+        # Both halves, and read from what is actually wired rather than from
+        # the environment: an App the platform can mint tokens from, and at
+        # least one repository this user may work on. Either alone leaves a
+        # composer that cannot produce a runnable job.
+        github_connected=bool(app_credentials is not None and repos),
         github_install_url=os.getenv("AGENT_GITHUB_APP_INSTALL_URL") or None,
+    )
+
+
+@router.post("/github/connect", response_model=GitHubConnectionResponse)
+async def connect_github(
+    body: GitHubConnectRequest,
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> GitHubConnectionResponse:
+    """Record the installations this user proved they can reach.
+
+    The browser sends the code GitHub handed it; the platform exchanges it for
+    a token that speaks *as that user* and asks GitHub which installations they
+    can see. Nothing the browser asserts is trusted — an installation id posted
+    directly would be exactly the confused deputy this whole path exists to
+    prevent, so the id is only ever taken from GitHub's own answer.
+    """
+    job_store = _require_store(store)
+    if app_credentials is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": {
+                    "type": "unavailable",
+                    "message": "No GitHub App is configured for this deployment.",
+                }
+            },
+        )
+    try:
+        user_token = await app_credentials.exchange_user_code(body.code)
+        installations = await app_credentials.installations_for_user(user_token)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"type": "github_connect_failed", "message": str(exc)}},
+        ) from exc
+
+    for installation in installations:
+        await job_store.record_repo_grant(
+            user_id=user["user_id"],
+            installation_id=installation["installation_id"],
+            account_login=installation.get("account_login"),
+        )
+    logger.info(
+        "agent_github_connected",
+        extra={"event": "agent_github_connected", "installations": len(installations)},
+    )
+    return GitHubConnectionResponse(
+        connections=await job_store.list_repo_grants(user_id=user["user_id"]),
+        repos=await repos_for_user(
+            user["user_id"], store=job_store, app_credentials=app_credentials
+        ),
+    )
+
+
+@router.delete("/github/connect/{installation_id}", response_model=GitHubConnectionResponse)
+async def disconnect_github(
+    installation_id: int,
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> GitHubConnectionResponse:
+    """Drop one connection. Uninstalling on GitHub is the other half."""
+    job_store = _require_store(store)
+    await job_store.revoke_repo_grant(user_id=user["user_id"], installation_id=installation_id)
+    return GitHubConnectionResponse(
+        connections=await job_store.list_repo_grants(user_id=user["user_id"]),
+        repos=await repos_for_user(
+            user["user_id"], store=job_store, app_credentials=app_credentials
+        ),
     )
 
 
@@ -278,6 +356,7 @@ async def create_agent_job(
     body: AgentJobCreate,
     user: dict[str, Any] = Depends(verify_api_key),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> AgentJobResponse:
     """Queue a new agent job for the authenticated user."""
     job_store = _require_store(store)
@@ -286,7 +365,12 @@ async def create_agent_job(
     # deputy: name any repository the App reaches, and read it back through
     # your own job's events and patch.
     try:
-        require_allowed_repo(body.repo)
+        await require_entitled_repo(
+            body.repo,
+            user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
     except RepoNotAllowed as exc:
         raise HTTPException(
             status_code=403,
