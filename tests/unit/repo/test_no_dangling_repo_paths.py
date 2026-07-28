@@ -69,9 +69,37 @@ def _executable_surfaces() -> list[str]:
 # and every installer.
 _ROOT_PREFIX = re.compile(r"(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|__[A-Z][A-Z0-9_]*__)/")
 
+# `SERVICE_NAME="spark_idle_proxy"` — a literal a later line interpolates. Only
+# assignments with no substitution of their own; anything computed stays a
+# variable and the path it forms stays partly unresolvable.
+_LITERAL_ASSIGNMENT = re.compile(
+    r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=\"?([A-Za-z0-9_.\-/]+)\"?\s*(?:#.*)?$",
+    re.MULTILINE,
+)
 
-def _strip_root_prefixes(line: str) -> str:
-    return _ROOT_PREFIX.sub("", line)
+
+def _literal_variables(text: str) -> dict[str, str]:
+    return {m.group(1): m.group(2) for m in _LITERAL_ASSIGNMENT.finditer(text)}
+
+
+def _strip_root_prefixes(line: str, variables: dict[str, str] | None = None) -> str:
+    """Reduce a written path to the repo-relative form it names.
+
+    Three shapes hide a repository path from a naive match, and every one of
+    them appears in this tree: a root variable in front (`${REPO_DIR}/ops/...`,
+    `__REPO_ROOT__/ops/...`), a variable standing in for part of the path
+    (`${SERVICE_NAME}.service`), and a dot-relative prefix (`./apps/frontend`,
+    `../../config`). The first two are substituted, the third normalised.
+    """
+    for name, value in (variables or {}).items():
+        line = line.replace("${" + name + "}", value).replace("$" + name, value)
+    line = _ROOT_PREFIX.sub("", line)
+    # Dot-relative prefixes are dropped rather than resolved against the file's
+    # own directory. Every occurrence in this tree sits at the depth where the
+    # two agree (`../../config` from deploy/docker/), and erring here produces a
+    # false positive rather than a miss, which is the direction to err in.
+    line = re.sub(r"(?<![\w.])\.{1,2}/(?:\.\./)*", "", line)
+    return line
 
 
 def _is_dockerfile(name: str) -> bool:
@@ -101,10 +129,11 @@ def test_no_executable_file_names_a_path_that_is_gone() -> None:
             text = (REPO / name).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        variables = _literal_variables(text)
         for number, raw_line in enumerate(text.splitlines(), start=1):
             if raw_line.strip().startswith("#"):
                 continue
-            line = _strip_root_prefixes(raw_line)
+            line = _strip_root_prefixes(raw_line, variables)
             if _is_dockerfile(name) and not _is_repo_relative_docker_line(line):
                 # RUN operates inside the image: `pip install -e tests/x` after
                 # `cd /vllm-workspace` names a container path, not this tree.
