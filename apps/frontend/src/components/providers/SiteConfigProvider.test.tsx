@@ -54,8 +54,10 @@ describe('SiteConfigProvider', () => {
     expect(screen.getByText('runtime@example.test')).toBeInTheDocument();
     expect(screen.getByText('signup-off')).toBeInTheDocument();
     expect(screen.getByText('rag-off')).toBeInTheDocument();
+    // Derived from the build-time API base, whose unconfigured default is now
+    // a local backend rather than someone else's hosted gateway.
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://freeinference.org/site-config',
+      'http://localhost:8080/site-config',
       expect.objectContaining({ cache: 'no-store' }),
     );
   });
