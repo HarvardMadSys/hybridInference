@@ -107,3 +107,21 @@ def test_explicit_runtime_override_wins():
     assert backend.build_command(_SPEC)[backend.build_command(_SPEC).index("--runtime") + 1] == (
         "runsc"
     )
+
+
+def test_runtime_flag_is_positioned_where_docker_reads_it():
+    """`--runtime` must precede the image, or docker treats it as an argument.
+
+    A dropped or misplaced flag is the dangerous failure mode: the kata backend
+    would silently run as a plain shared-kernel container while every log line
+    and config claimed VM isolation. Verified against a real daemon separately
+    (an unknown runtime is refused rather than ignored); this pins the argv
+    position so a refactor cannot quietly break it.
+    """
+    from serving.agent_jobs.sandbox import KATA_RUNTIME
+
+    command = ContainerBackend(image="img:1", runtime=KATA_RUNTIME).build_command(_SPEC)
+    runtime_index = command.index("--runtime")
+    image_index = command.index("img:1")
+    assert command[runtime_index + 1] == KATA_RUNTIME
+    assert runtime_index < image_index, "docker only reads --runtime before the image"

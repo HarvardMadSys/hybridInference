@@ -194,22 +194,48 @@ def claim(
     return ClaimedJob.from_response(body) if body else None
 
 
-def build_patch(workdir: str) -> str:
-    """Return the agent's work as a patch, or an empty string if it changed nothing.
+def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
+    """Return the agent's work as a patch, or an empty string if nothing changed.
 
-    Uses ``git diff`` against the index plus untracked files staged with
-    ``git add -N``, so new files appear in the diff. Nothing is committed and
-    nothing is pushed: the trusted publisher owns that side.
+    Runs git **inside the sandbox**, never in the trusted runner. The agent
+    owns this worktree, including its ``.git/config`` — and git reads that
+    file. A trusted process running ``git diff`` here would execute whatever
+    the agent put in ``diff.external`` (or a textconv filter, or
+    ``core.fsmonitor``), with the runner's privileges: the dispatcher
+    credential, and in the Compose deployment the Docker socket. Generating
+    the patch in the same container the agent already ran in keeps that
+    execution inside the boundary that was built for it.
+
+    ``git add -A -N`` stages intents so new files appear in the diff. Nothing
+    is committed and nothing is pushed: the trusted publisher owns that side,
+    and it re-validates the patch before it touches a repository.
     """
-    subprocess.run(["git", "add", "-A", "-N"], cwd=workdir, check=False, capture_output=True)
-    result = subprocess.run(
-        ["git", "diff", "--binary", "HEAD"],
-        cwd=workdir,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+    script = "git add -A -N >/dev/null 2>&1; git diff --binary HEAD"
+    if backend is None:
+        # No sandbox available (unit tests, an operator running by hand). Run
+        # with config sources neutralised — this is weaker than the sandbox,
+        # because repo-local .git/config is still honoured by git, so it is
+        # only appropriate where the worktree is already trusted.
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            cwd=workdir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout
+
+    process = backend.spawn(SandboxSpec(argv=["/bin/sh", "-c", script], workdir=workdir, env={}))
+    out = "".join(process.lines())
+    process.wait()
+    return out
 
 
 def run_agent(
@@ -222,10 +248,10 @@ def run_agent(
     heart: Heartbeater,
     timeout_s: float,
     backend: SandboxBackend,
-) -> tuple[int, str]:
+) -> tuple[int, str, list[str]]:
     """Run the agent, streaming its output back as normalized events.
 
-    Returns ``(exit_code, tail)``. Raises :class:`LeaseLost` if this attempt
+    Returns ``(exit_code, tail, tool_errors)``. Raises :class:`LeaseLost` if this attempt
     stops owning the job mid-run.
     """
     argv, extra_env = runtime.prepare(
@@ -254,6 +280,11 @@ def run_agent(
 
     deadline = time.monotonic() + timeout_s
     tail: list[str] = []
+    # Tool failures the agent may or may not acknowledge. A model that says "I
+    # added the docstring" after its Edit was denied is a real behaviour we
+    # observed, so the runner reports what the tools did rather than trusting
+    # the agent's summary.
+    tool_errors: list[str] = []
 
     # Read stdout on a separate thread and poll for it here, so cancellation
     # and the deadline are honoured even when the agent goes quiet. Iterating
@@ -279,13 +310,13 @@ def run_agent(
         if heart.cancel_requested:
             process.kill()
             control.append_event(NormalizedEvent("lifecycle", {"phase": "cancelled_by_owner"}))
-            return 130, "".join(tail)
+            return 130, "".join(tail), tool_errors
         if time.monotonic() > deadline:
             process.kill()
             control.append_event(
                 NormalizedEvent("error", {"text": f"agent exceeded {timeout_s:.0f}s"})
             )
-            return 124, "".join(tail)
+            return 124, "".join(tail), tool_errors
 
         try:
             line = lines.get(timeout=_POLL_INTERVAL_S)
@@ -299,13 +330,24 @@ def run_agent(
         del tail[:-40]
         event = runtime.parse_event(line)
         if event is not None:
+            if event.event_type == "tool_result" and (event.payload or {}).get("is_error"):
+                tool_errors.append(str((event.payload or {}).get("content", ""))[:200])
             control.append_event(event)
 
     exit_code = process.wait()
     stderr = process.stderr_text()
     if stderr.strip():
         tail.append(stderr[-2000:])
-    return exit_code, "".join(tail)
+    if tool_errors:
+        # Surfaced as an event so the owner sees it in the stream, not only in
+        # the final detail string.
+        control.append_event(
+            NormalizedEvent(
+                "error",
+                {"detail": f"{len(tool_errors)} tool call(s) failed", "first": tool_errors[0]},
+            )
+        )
+    return exit_code, "".join(tail), tool_errors
 
 
 def run_once(
@@ -368,7 +410,7 @@ def run_once(
                 {"phase": "started", "runtime": job.runtime, "attempt_no": job.attempt_no},
             )
         )
-        exit_code, tail = run_agent(
+        exit_code, tail, tool_errors = run_agent(
             runtime,
             job=job,
             workdir=workdir,
@@ -383,7 +425,7 @@ def run_once(
             control.finish("cancelled", "cancelled by owner")
             return 0
 
-        patch = build_patch(workdir)
+        patch = build_patch(workdir, backend)
         if patch.strip():
             control.save_artifact("patch", patch)
             control.append_event(
@@ -400,7 +442,22 @@ def run_once(
         # runner's job ends at a validated patch. Leaving the job `running`
         # would be a lie, so report success and let the publisher take it from
         # here when a patch exists.
-        control.finish("succeeded", "agent completed" + ("" if patch.strip() else " (no changes)"))
+        if not patch.strip():
+            # No patch is only success if nothing went wrong. A denied write
+            # followed by an agent claiming it succeeded must not be recorded
+            # as a clean run — the owner would see "succeeded" on a job that
+            # did nothing and never learn why.
+            if tool_errors:
+                control.finish(
+                    "failed",
+                    f"agent produced no changes after {len(tool_errors)} failed "
+                    f"tool call(s): {tool_errors[0]}",
+                )
+                return 1
+            control.finish("succeeded", "agent completed (no changes)")
+            return 0
+
+        control.finish("succeeded", "agent completed")
         return 0
     except LeaseLost as exc:
         print(f"lease lost, stopping: {exc}", file=sys.stderr)

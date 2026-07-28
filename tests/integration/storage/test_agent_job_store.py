@@ -471,3 +471,40 @@ async def test_failed_publish_surfaces_the_reason(store: AgentJobStore):
     events = await store.list_events_after(job_id=job["id"], after_id=0)
     assert events[-1]["event_type"] == "error"
     assert events[-1]["payload"]["phase"] == "publish_rejected"
+
+
+async def test_an_expired_lease_is_dead_before_the_reaper_runs(store: AgentJobStore):
+    """Expiry must take effect immediately, not when the reaper next passes.
+
+    Previously every fenced write checked only generation and status, so a
+    stalled worker kept full authority for up to a reaper interval after its
+    lease ran out — it could renew, write events, store artifacts and finish
+    the job. The reaper is a cleanup mechanism, not the thing that revokes.
+    """
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    fence = {
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+    # Everything works while the lease is live.
+    assert await store.append_event(**fence, event_type="message", payload={}) is not None
+
+    await _expire_attempt(store, claim["attempt_id"])
+    # Deliberately do NOT run the reaper.
+
+    assert (await store.heartbeat(**fence, lease_ttl_seconds=60))["ok"] is False
+    assert await store.append_event(**fence, event_type="message", payload={}) is None
+    assert await store.save_artifact(**fence, kind="patch", content="x") is None
+    assert (
+        await store.transition(
+            job_id=job["id"], **fence, from_states=("running",), to_state="succeeded"
+        )
+        is False
+    )
+    assert await store.begin_publish(job_id=job["id"], **fence) is False
+
+    # And the job is untouched: still running, no artifact, no terminal state.
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "running"
+    assert await store.get_artifact(job_id=job["id"], kind="patch") is None
