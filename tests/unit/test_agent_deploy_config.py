@@ -196,3 +196,18 @@ def test_the_sandbox_uid_matches_what_the_runner_chowns_to():
     text = _DOCKERFILE.read_text()
     assert f"--uid {SANDBOX_UID}" in text
     assert f"--gid {SANDBOX_GID}" in text
+
+
+def test_agent_runtimes_are_pinned_not_floating():
+    """`latest` in the image is a dependency that changes under you between builds.
+
+    It already cost a job: `latest` resolved to Claude Code 2.1.220, whose
+    request shape the gateway rejected, and every run died at its first model
+    call with an error that pointed at the model rather than the CLI version.
+    """
+    text = _DOCKERFILE.read_text()
+    versions = dict(re.findall(r"^ARG (\w+_VERSION)=(\S+)$", text, re.MULTILINE))
+    assert versions, "the image must declare runtime versions"
+    for name, value in versions.items():
+        assert value != "latest", f"{name} must be pinned, not 'latest'"
+        assert re.fullmatch(r"\d+\.\d+\.\d+", value), f"{name}={value} is not an exact version"
