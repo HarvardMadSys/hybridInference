@@ -1,9 +1,40 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import TeamPage from './page';
+
+// The roster is distribution content (NEXT_PUBLIC_TEAM_JSON); upstream ships
+// none, so the page is exercised with an explicit one.
+vi.mock('@/config/branding', () => ({
+  branding: {
+    orgName: 'Example Org',
+    orgUrl: 'https://org.example.test',
+    team: [
+      {
+        name: 'Juncheng Yang',
+        affiliations: ['Assistant Professor at Harvard University'],
+        badge: 'Lead',
+        image: 'https://junchengyang.com/img/me4.jpg',
+      },
+      {
+        name: 'Murphy Tian',
+        affiliations: [
+          'Research Intern at Harvard University',
+          'Undergraduate at University of Toronto',
+        ],
+        badge: 'Core developer',
+        image: '/team/murphy-tian.jpg',
+        website: 'https://realtmxi.github.io/',
+      },
+      {
+        name: 'Haoran Ni',
+        affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
+      },
+    ],
+  },
+}));
 
 describe('TeamPage', () => {
   afterEach(() => {

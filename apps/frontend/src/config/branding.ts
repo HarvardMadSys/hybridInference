@@ -125,55 +125,13 @@ export const branding = {
   // visitor out of dismissed-state memory; keep it stable per distribution.
   storageKeyPrefix: process.env.NEXT_PUBLIC_STORAGE_KEY_PREFIX || 'hybridinference',
 
-  // People and sponsors (empty arrays hide the sections).
-  team: fromJsonEnv<TeamMember[]>(
-    process.env.NEXT_PUBLIC_TEAM_JSON,
-    [
-      {
-        name: 'Juncheng Yang',
-        affiliations: ['Assistant Professor at Harvard University'],
-        badge: 'Lead',
-        image: 'https://junchengyang.com/img/me4.jpg',
-      },
-      {
-        name: 'Murphy Tian',
-        affiliations: [
-          'Research Intern at Harvard University',
-          'Undergraduate at University of Toronto',
-        ],
-        badge: 'Core developer',
-        image: '/team/murphy-tian.jpg',
-        website: 'https://realtmxi.github.io/',
-      },
-      {
-        name: 'Haoran Ni',
-        affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
-      },
-    ],
-    teamSchema,
-  ),
-  sponsors: fromJsonEnv<Sponsor[]>(
-    process.env.NEXT_PUBLIC_SPONSORS_JSON,
-    [
-      {
-        name: 'NVIDIA',
-        alt: 'NVIDIA logo',
-        src: '/sponsors/nvidia.svg',
-        className: 'h-10 sm:h-12',
-        width: 975,
-        height: 180,
-      },
-      {
-        name: 'Harvard SEAS',
-        alt: 'Harvard SEAS logo',
-        src: '/sponsors/harvard-seas.svg',
-        className: 'h-12 sm:h-14',
-        width: 307,
-        height: 86,
-      },
-    ],
-    sponsorsSchema,
-  ),
+  // People and sponsors. Empty upstream — a neutral console has neither, and
+  // arrays hidden behind a fallback are the kind of content that silently
+  // ships one distribution's identity to everyone else. FreeInference passes
+  // its own through NEXT_PUBLIC_TEAM_JSON / NEXT_PUBLIC_SPONSORS_JSON
+  // (deploy/docker/docker-compose.yml). Empty arrays hide the sections.
+  team: fromJsonEnv<TeamMember[]>(process.env.NEXT_PUBLIC_TEAM_JSON, [], teamSchema),
+  sponsors: fromJsonEnv<Sponsor[]>(process.env.NEXT_PUBLIC_SPONSORS_JSON, [], sponsorsSchema),
 };
 
 export type Branding = typeof branding;
