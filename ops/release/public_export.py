@@ -99,13 +99,42 @@ def excluded(name: str, rules: list[dict]) -> str | None:
     return None
 
 
-def audit(names: list[str]) -> dict[str, list[str]]:
+def materialize(names: list[str], overlay: list[dict], target: Path) -> None:
+    """Write the tree the export would publish, replacements included.
+
+    Auditing the source tree minus its exclusions is not the same thing: it
+    never reads the files the export *adds*, so a replacement carrying the very
+    content it stands in for would pass. It also cannot answer whether what
+    survives still imports, builds or tests.
+    """
+    import shutil
+
+    for name in names:
+        destination = target / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(REPO / name, destination, follow_symlinks=False)
+    for rule in overlay:
+        source = REPO / rule["source"]
+        if not source.exists():
+            continue
+        destination = target / rule["path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
+def audit(
+    names: list[str], root: Path | None = None, overlay: list[dict] | None = None
+) -> dict[str, list[str]]:
+    """Scan the exported files, and the replacements if the tree was built."""
+    base = root or REPO
+    if root is not None:
+        names = list(names) + [r["path"] for r in (overlay or []) if (base / r["path"]).exists()]
     findings: dict[str, list[str]] = defaultdict(list)
     for name in names:
         if name.lower().endswith(BINARY_SUFFIXES):
             continue
         try:
-            text = (REPO / name).read_text(encoding="utf-8", errors="ignore")
+            text = (base / name).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
         for label, rx in AUDIT.items():
@@ -120,6 +149,14 @@ def audit(names: list[str]) -> dict[str, list[str]]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", action="store_true", help="print every exported path")
+    parser.add_argument(
+        "--materialize",
+        metavar="DIR",
+        help=(
+            "build the real export tree in DIR (must be empty or absent) and "
+            "audit that, instead of auditing the source tree minus exclusions"
+        ),
+    )
     args = parser.parse_args()
 
     rules, undecided, overlay = load_manifest()
@@ -173,7 +210,16 @@ def main() -> int:
         for rule in undecided:
             print(f"  {rule['path']}\n      {' '.join(rule['question'].split())}")
 
-    findings = audit(kept)
+    if args.materialize:
+        target = Path(args.materialize)
+        if target.exists() and any(target.iterdir()):
+            print(f"\n{target} is not empty; refusing to write into it.")
+            return 2
+        materialize(kept, overlay, target)
+        print(f"\nExport tree written to {target}")
+        findings = audit(kept, root=target, overlay=overlay)
+    else:
+        findings = audit(kept)
     print()
     if not findings:
         print("Public-surface audit of the exported tree: clean.")

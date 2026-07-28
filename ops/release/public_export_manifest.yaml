@@ -34,6 +34,25 @@ exclude:
       Ad-hoc queries against the production database, written against real user
       accounts. Named in the design doc's exclusion list for that reason.
 
+  # A test whose subject is excluded has to go with it. Found by building the
+  # export tree and collecting in it: both import ops.db.analysis, so the
+  # exported suite could not start — 2 collection errors, from a repository
+  # that otherwise looks fine.
+  - path: tests/unit/analytics/test_geo_exporter.py
+    reason: Tests ops/db/analysis/geo_hourly_export.py, which does not travel.
+  - path: tests/unit/ops/test_trace_viewer_core.py
+    reason: Tests the trace viewer in ops/db/analysis/, which does not travel.
+  - path: tests/test_local_deployment_proxy.py
+    reason: Tests ops/local_deployment_proxy/, one deployment's GPU orchestration.
+  - path: tests/test_spark_idle_proxy.py
+    reason: Tests ops/spark_idle_proxy/, the DGX Spark box's idle proxy.
+  - path: tests/unit/deploy/test_geoip_deployment.py
+    reason: Asserts what this deployment's deploy scripts install; both go together.
+  - path: tests/unit/release/test_public_export_manifest.py
+    reason: >-
+      Checks this manifest, which is part of the export tooling rather than of
+      the result — ops/release/ does not travel either.
+
 # Flagged by the public-surface audit (2026-07-28). Each entry cites what was
 # found, so a future reader can re-judge rather than inherit a bare rule.
   # ops/ is not uniformly this deployment's, and excluding it wholesale was a
@@ -109,6 +128,7 @@ exclude:
       docs/collaboration/.
 
   - path: tests/fixtures/data/
+    optional: true   # #1075 deletes it outright; excluded either way
     reason: >-
       Third-party research datasets with their own terms and no attribution
       here. Being removed outright in #1075; excluded regardless so the export
