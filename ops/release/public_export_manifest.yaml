@@ -104,6 +104,18 @@ exclude:
   - path: docs/developer/codex-oncall.md
     reason: This deployment's on-call pipeline.
 
+  - path: config/models.yaml
+    reason: >-
+      This deployment's production registry: fourteen models across its own
+      provider accounts, needing twenty-four environment variables. A clone
+      that inherited it would boot with nothing available and an error naming
+      all twenty-four. Replaced by the reference registry — see `overlay:`.
+
+  - path: config/routing.yaml
+    reason: >-
+      This deployment's endpoint map, down to a model directory on a Harvard
+      cluster. Replaced by the minimal example — see `overlay:`.
+
   - path: .github/workflows/
     reason: >-
       Every job targets self-hosted runners this deployment owns, and the deploy
@@ -122,18 +134,27 @@ overlay:
       deploy jobs, no self-hosted labels, no secrets — a fork can run it, which
       is the whole point.
 
+  - path: config/models.yaml
+    source: config/examples/models.openrouter.yaml
+    requires: "#1067"   # source lands with that PR; delete this line once it has
+    reason: >-
+      The default registry a clone starts from: three models behind one
+      credential, including a local-first hybrid entry. Same file the README
+      quickstart uses, so the documented path and the default path agree.
+
+  - path: config/routing.yaml
+    source: config/examples/routing.minimal.yaml
+    requires: "#1067"   # source lands with that PR; delete this line once it has
+    reason: >-
+      Declares no endpoint at all. A fresh gateway knows about no machines
+      until its operator adds theirs.
+
 undecided: []
 
 # What the exported tree still leaks today, with the reason each is pending.
 # The test treats this as a ceiling: anything new fails, and an entry that stops
 # being found must be deleted, so the list can only shrink.
 known_findings:
-  - where: config/routing.yaml
-    what: cluster path
-    pending: >-
-      Production config truth still lives upstream; it moves into the overlay in
-      the config-migration PR. Copying it early would go stale within a day.
-
   - where: tests/fixtures/e2e_config.yaml
     what: cluster path
     pending: >-

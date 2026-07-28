@@ -64,12 +64,29 @@ def test_nothing_is_left_undecided(manifest: dict) -> None:
 
 
 def test_every_overlay_source_exists(manifest: dict) -> None:
-    """A missing source means the export adds nothing where it promised to."""
+    """A missing source means the export adds nothing where it promised to.
+
+    One exception, and it cleans itself up: an entry may name the pull request
+    its source arrives with. Once that source exists the marker is stale, and
+    the assertion below deletes it by failing — the same discipline as
+    `known_findings`, so the manifest cannot keep describing a past state.
+    """
     for rule in manifest.get("overlay") or []:
-        assert (REPO / rule["source"]).exists(), (
-            f"{rule['path']} is supposed to come from {rule['source']}, which is gone"
-        )
         assert rule.get("reason", "").strip()
+        exists = (REPO / rule["source"]).exists()
+        requires = rule.get("requires")
+
+        if not exists:
+            assert requires, (
+                f"{rule['path']} is supposed to come from {rule['source']}, which "
+                "is gone — either restore it or say which PR brings it"
+            )
+            continue
+
+        assert not requires, (
+            f"{rule['source']} exists now, so `requires: {requires}` on "
+            f"{rule['path']} is stale — delete it"
+        )
 
 
 def test_the_exported_ci_runs_where_anyone_can_reach_it(manifest: dict) -> None:

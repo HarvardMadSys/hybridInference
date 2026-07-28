@@ -156,9 +156,13 @@ def main() -> int:
         for rule in overlay:
             print(f"      {rule['path']}  <- {rule['source']}")
         missing = [r for r in overlay if not (REPO / r["source"]).exists()]
-        if missing:
+        pending = [r for r in missing if r.get("requires")]
+        broken = [r for r in missing if not r.get("requires")]
+        for r in pending:
+            print(f"      (waiting on {r['requires']} for {r['source']})")
+        if broken:
             print("\nOverlay sources are missing — the export would add nothing:")
-            for r in missing:
+            for r in broken:
                 print(f"  {r['source']}")
             return 2
 
