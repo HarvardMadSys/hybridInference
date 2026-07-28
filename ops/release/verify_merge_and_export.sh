@@ -189,10 +189,10 @@ for f in (work / "tests").rglob("*.py"):
 
 # What each branch removes on purpose, and why. Anything else is a bug in a
 # resolution, not a deletion.
-_ALERTS = "#1060 moved config/alerts.yaml into the overlay, so there is no root copy to load"
-_LOCAL_ENV = ("#1060/#1085 delete tests/unit/config/test_local_deployment_env.py -- it "
-              "asserts against this deployment's models.yaml and routing.yaml, now in the overlay")
-_MODELS = "#1085 moved config/models.yaml into the overlay; this read the root copy"
+_ALERTS = "#1060 moved the alerts config into the overlay, so there is no root copy left to load"
+_LOCAL_ENV = ("#1060/#1085 delete the local-deployment env test -- it asserts against this "
+              "deployment's model registry and routing map, both now in the overlay")
+_MODELS = "#1085 moved the model registry into the overlay; this one read the root copy"
 _RAG = ("#1055 replaces it with four tests that resolve the index inside the overlay "
         "(test_index_path_resolves_to_the_overlay_in_this_checkout and friends)")
 
