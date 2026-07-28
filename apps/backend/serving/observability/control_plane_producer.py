@@ -162,6 +162,34 @@ def _metric_value(value: float, field: str) -> float:
     return number
 
 
+def _bounded_int(value: int | None, field: str, low: int, high: int) -> int | None:
+    """Check an optional integer against the contract's own bounds.
+
+    The validator rejects these, so letting them through would move the failure
+    to ingress — where the producer only learns a status code — and defeat the
+    reason this module restates the rules.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ControlPlaneEventError(f"{field} must be an integer")
+    if not low <= value <= high:
+        raise ControlPlaneEventError(f"{field} must be between {low} and {high}")
+    return value
+
+
+def _bounded_ratio(value: float | None, field: str) -> float | None:
+    """Check an optional 0..1 ratio, refusing the non-finite values too."""
+    if value is None:
+        return None
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ControlPlaneEventError(f"{field} must be a finite number")
+    if not 0.0 <= number <= 1.0:
+        raise ControlPlaneEventError(f"{field} must be between 0 and 1")
+    return number
+
+
 def _backend(value: str | None) -> str | None:
     """Validate the store's implementation label, or reject it here."""
     if value is None:
@@ -207,13 +235,15 @@ def build_metric_threshold_event(
             "metric": metric,
             "observed": _metric_value(observed, "observed"),
             "threshold": _metric_value(threshold, "threshold"),
-            "window_sec": window_sec,
+            "window_sec": _bounded_int(window_sec, "window_sec", 1, 31 * 24 * 60 * 60),
             "scope": scope,
             "subject": normalized_subject,
             "source_addresses": _source_addresses(source_addresses, metric),
-            "distinct_sources": distinct_sources,
-            "top_source_share": top_source_share,
-            "sample_count": sample_count,
+            "distinct_sources": _bounded_int(
+                distinct_sources, "distinct_sources", 0, 1_000_000_000
+            ),
+            "top_source_share": _bounded_ratio(top_source_share, "top_source_share"),
+            "sample_count": _bounded_int(sample_count, "sample_count", 0, 1_000_000_000),
         }
     )
     title = _METRIC_TITLE[metric]

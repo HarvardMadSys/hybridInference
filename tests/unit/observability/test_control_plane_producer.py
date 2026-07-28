@@ -351,3 +351,27 @@ class TestTheBuilderRefusesWhatIngressWould:
             dependency="operational_store", status="firing", backend="postgres"
         )
         assert event["context"]["backend"] == "postgres"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"window_sec": 0},
+            {"window_sec": -1},
+            {"window_sec": 31 * 24 * 60 * 60 + 1},
+            {"distinct_sources": -1},
+            {"sample_count": -1},
+            {"top_source_share": 1.5},
+            {"top_source_share": float("nan")},
+        ],
+    )
+    def test_optional_numbers_outside_the_contract_are_refused(
+        self, kwargs: dict[str, float]
+    ) -> None:
+        with pytest.raises(ControlPlaneEventError):
+            build_metric_threshold_event(
+                metric="http_5xx_rate",
+                status="firing",
+                observed=0.2,
+                threshold=0.05,
+                **kwargs,
+            )

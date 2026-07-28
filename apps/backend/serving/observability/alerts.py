@@ -461,8 +461,9 @@ _STALE_SWEEP_INTERVAL_SEC = 60
 
 def reset_transition_state() -> None:
     """Drop all open-breach state. For tests and for a clean engine restart."""
-    _TRANSITIONS._firing.clear()
-    _STATE_TRANSITIONS._firing.clear()
+    for tracker_ in (_TRANSITIONS, _STATE_TRANSITIONS):
+        tracker_._firing.clear()
+        tracker_._bounds.clear()
 
 
 async def alert_on_transition(

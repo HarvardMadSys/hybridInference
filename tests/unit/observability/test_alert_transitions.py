@@ -240,11 +240,24 @@ class TestPerKeyStaleness:
         assert t.sweep(now=900.0) == ["k"]
 
     def test_rearm_keeps_the_key_on_its_own_window(self) -> None:
+        # observe/sweep delete the key before the caller knows whether the
+        # resolution was sent, so the bound has to outlive the entry itself.
         t = tracker(stale_after_sec=7_200.0)
         t.observe("k", breached=True, now=0.0, stale_after=120.0)
         assert t.sweep(now=120.0) == ["k"]
 
-        t.rearm("k", now=120.0, retry_in=60.0)
+        t.rearm("k", now=120.0)
 
-        assert t.sweep(now=179.0) == []
-        assert t.sweep(now=180.0) == ["k"]
+        # Its own 120s window, not the tracker's 7200s default.
+        assert t.sweep(now=239.0) == []
+        assert t.sweep(now=240.0) == ["k"]
+
+    def test_forget_drops_the_remembered_window_too(self) -> None:
+        t = tracker(stale_after_sec=900.0)
+        t.observe("k", breached=True, now=0.0, stale_after=120.0)
+        t.forget("k")
+
+        t.observe("k", breached=True, now=0.0)
+
+        assert t.sweep(now=120.0) == []
+        assert t.sweep(now=900.0) == ["k"]

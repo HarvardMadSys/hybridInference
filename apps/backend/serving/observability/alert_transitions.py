@@ -85,6 +85,11 @@ class ThresholdTransitionTracker:
     clear_after_sec: float = DEFAULT_CLEAR_AFTER_SEC
     stale_after_sec: float | None = DEFAULT_STALE_AFTER_SEC
     _firing: dict[str, _KeyState] = field(default_factory=dict, init=False)
+    #: A key's own bound, kept outside ``_firing`` because it has to survive the
+    #: delete that ``observe``/``sweep`` do before the caller knows whether the
+    #: resolution was delivered — otherwise ``rearm`` silently restores the key
+    #: on the default bound instead of its rule's.
+    _bounds: dict[str, float] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         if self.clear_after_sec < 0:
@@ -115,6 +120,8 @@ class ThresholdTransitionTracker:
 
         if breached:
             if state is None:
+                if stale_after is not None:
+                    self._bounds[key] = stale_after
                 self._firing[key] = _KeyState(
                     last_observed_at=now,
                     stale_after=stale_after,
@@ -177,8 +184,7 @@ class ThresholdTransitionTracker:
         ``stale_after_sec``. A sweep retry should follow the failed send by
         about one sweep interval, not by another whole rule window.
         """
-        previous = self._firing.get(key)
-        stale_after = previous.stale_after if previous is not None else None
+        stale_after = self._bounds.get(key)
         bound = stale_after if stale_after is not None else self.stale_after_sec
         observed = now
         if retry_in is not None and bound is not None:
@@ -192,3 +198,4 @@ class ThresholdTransitionTracker:
     def forget(self, key: str) -> None:
         """Drop state without emitting a transition (for shutdown or reload)."""
         self._firing.pop(key, None)
+        self._bounds.pop(key, None)
