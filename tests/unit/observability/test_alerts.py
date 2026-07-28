@@ -1,17 +1,22 @@
 """Tests for serving.observability.alerts.alert_slack."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from serving.observability.alerts import (
+    _EMOJI,
     AlertSeverity,
     _base_url,
     _detect_environment,
     _format_message,
+    alert_on_transition,
     alert_slack,
     reset_dedupe_state,
+    reset_transition_state,
     server_info,
+    sweep_stale_breaches,
 )
 
 
@@ -239,3 +244,339 @@ def test_format_message_includes_server_block():
     assert "• *Host:*" in message
     info = server_info()
     assert info["hostname"] in message
+
+
+def test_format_message_marks_a_resolution_as_recovery():
+    """The plain webhook has no status field, so the text must carry it.
+
+    Titles are breach statements, so rendering a resolution with the breach's
+    severity emoji would read in Slack as a second outage.
+    """
+    title = "Provider circuit opened"
+    firing = _format_message(AlertSeverity.ERROR, title, {}, "firing")
+    resolved = _format_message(AlertSeverity.ERROR, title, {}, "resolved")
+
+    assert firing.startswith(f"{_EMOJI[AlertSeverity.ERROR]} *{title}*")
+    assert resolved.startswith(f"✅ *Recovered:* {title}")
+    assert _EMOJI[AlertSeverity.ERROR] not in resolved
+    # Defaulting to "firing" keeps every existing caller rendering as before.
+    assert _format_message(AlertSeverity.ERROR, title, {}) == firing
+
+
+class TestResolutionIsNeverSuppressed:
+    """A dropped resolution leaves its control-plane incident open forever.
+
+    Both suppressions in ``alert_slack`` exist to stop a breach from repeating.
+    Applying them to a resolution instead holds principal quota until it is
+    exhausted, at which point real outages start being suppressed — the exact
+    failure the recovery work exists to prevent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cooldown_does_not_swallow_the_resolution_it_follows(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with patch("serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)):
+            assert await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+            # A repeat of the breach is correctly suppressed …
+            assert not await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+            # … but the resolution inside the same window must still go out.
+            assert await alert_slack(
+                AlertSeverity.INFO,
+                "5xx rate recovered",
+                {},
+                dedupe_key="k",
+                cooldown_sec=300,
+                status="resolved",
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_next_breach_pages_immediately_after_a_resolution(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with patch("serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)):
+            await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+            await alert_slack(
+                AlertSeverity.INFO,
+                "5xx rate recovered",
+                {},
+                dedupe_key="k",
+                cooldown_sec=300,
+                status="resolved",
+            )
+            # The incident is closed, so a fresh breach must not serve out the
+            # cooldown the previous one started.
+            assert await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+
+    @pytest.mark.asyncio
+    async def test_snooze_silences_breaches_but_still_closes_incidents(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with (
+            patch(
+                "serving.observability.alert_snooze.is_snoozed",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)),
+        ):
+            assert not await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k"
+            )
+            # Silencing alerts means "stop telling me it is broken", not
+            # "leave the incident open once it is fixed".
+            assert await alert_slack(
+                AlertSeverity.INFO,
+                "5xx rate recovered",
+                {},
+                dedupe_key="k",
+                status="resolved",
+            )
+
+
+class TestStateAlertsResolveOnTheirOnlyEdge:
+    """A circuit or store reports one healthy edge, so it must resolve on it."""
+
+    async def test_state_kind_resolves_immediately(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ):
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            sent = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+
+        # Under the metric settling period this would be False, and the only
+        # healthy edge the breaker ever reports would be spent.
+        assert sent is True
+
+    async def test_a_state_alert_is_never_swept(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(return_value=True),
+        ) as mock_post:
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            mock_post.reset_mock()
+            await sweep_stale_breaches()
+
+        # Silence is not recovery: sweeping would report the outage as over.
+        mock_post.assert_not_awaited()
+
+
+class TestUndeliveredResolutionIsRetried:
+    async def test_a_failed_resolution_stays_open_for_a_retry(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, False, True]),
+        ):
+            await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            first = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+            retry = await alert_on_transition(
+                key="circuit_open:zhipu",
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Provider circuit opened",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+            )
+
+        assert first is False
+        # Without re-arming, the transition is spent and the incident can never
+        # be closed by anything.
+        assert retry is True
+
+
+class TestResolutionWaitsForAnInFlightFiring:
+    async def test_a_recovery_during_the_firing_send_is_not_dropped(self, monkeypatch):
+        """A state alert has no later observation to retry with.
+
+        Dropping the resolution here costs a repeat for a metric — another
+        evaluation follows — but strands a circuit-breaker incident forever.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        posted: list[str] = []
+
+        async def slow_post(_url, message):
+            if "Recovered" not in message:
+                started.set()
+                await release.wait()
+            posted.append(message)
+            return True
+
+        with patch("serving.observability.alerts._post_to_slack", new=slow_post):
+            firing = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=True,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await started.wait()
+            recovery = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=False,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await asyncio.sleep(0)
+            release.set()
+            assert await firing is True
+            assert await recovery is True
+
+        # Both landed, and the outage was reported before the recovery.
+        assert len(posted) == 2
+        assert "Recovered" not in posted[0]
+        assert "Recovered" in posted[1]
+
+
+class TestAFailedSweepRetriesPromptly:
+    async def test_the_next_sweep_retries_rather_than_the_next_window(self, monkeypatch):
+        """A plain re-arm restarts the staleness clock.
+
+        With the staleness window tracking the longest rule window — an hour in
+        the shipped config — that pushes the retry hours out while the incident
+        stays open.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, False, True]),
+        ) as mock_post:
+            await alert_on_transition(
+                key="failed_request_rate",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded",
+                context=dict,
+                cooldown_sec=0,
+                stale_after=3_600.0,
+                now=clock[0],
+            )
+            clock[0] += 3_600.0
+            await sweep_stale_breaches()
+            assert mock_post.await_count == 2
+
+            # One sweep interval later, not one staleness window later.
+            clock[0] += 60.0
+            await sweep_stale_breaches()
+
+        assert mock_post.await_count == 3
+
+
+class TestTheResolutionWaitSpansBothSinks:
+    async def test_a_timeout_does_not_end_the_wait_after_one_attempt(self, monkeypatch):
+        """A firing send that tries the relay then the webhook takes both timeouts.
+
+        Giving up on the first would drop exactly the resolution this wait
+        exists to save.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        monkeypatch.setattr("serving.observability.alerts._RESOLUTION_WAIT_SEC", 0.01)
+        reset_transition_state()
+        reset_dedupe_state()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_post(_url, message):
+            if "Recovered" not in message:
+                started.set()
+                # Outlives one wait window but not the attempt bound.
+                await asyncio.wait_for(release.wait(), timeout=1.0)
+            return True
+
+        with patch("serving.observability.alerts._post_to_slack", new=slow_post):
+            firing = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=True,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await started.wait()
+            recovery = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=False,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await asyncio.sleep(0.015)
+            release.set()
+            assert await firing is True
+            assert await recovery is True
