@@ -103,9 +103,8 @@ This repository hosts both documentation sites used by the project:
   `docs/developer/` and is published by whichever distribution hosts it
   (FreeInference: <https://internaldoc.freeinference.org/>).
 - **User-facing documentation** (API quickstart, models, IDE integrations)
-  lives in the active distribution's overlay, e.g.
-  `distributions/freeinference/content/docs/docs/source/`, published to
-  <https://doc.freeinference.org/>.
+  lives in the active distribution's overlay, under
+  `<overlay>/content/docs/docs/source/`, and each deployment publishes its own.
 
 Both sites are deployed automatically by Cloudflare Pages on push to `main`.
 To update either site, edit the relevant Markdown/reStructuredText files and

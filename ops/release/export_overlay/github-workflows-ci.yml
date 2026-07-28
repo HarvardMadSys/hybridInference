@@ -69,7 +69,7 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Lint
-        run: npx eslint src
+        run: npm run lint
 
       - name: Test
         run: npm test

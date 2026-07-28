@@ -76,17 +76,17 @@ def test_every_overlay_source_exists(manifest: dict) -> None:
         exists = (REPO / rule["source"]).exists()
         requires = rule.get("requires")
 
-        if not exists:
-            assert requires, (
-                f"{rule['path']} is supposed to come from {rule['source']}, which "
-                "is gone — either restore it or say which PR brings it"
-            )
-            continue
-
-        # A satisfied `requires` is stale rather than wrong. Failing on it made
-        # merging every branch turn this suite red for a bookkeeping reason,
-        # which is a landmine to hand whoever merges last. public_export.py
-        # reports them instead; see `--materialize`.
+        assert exists, (
+            f"{rule['path']} is supposed to come from {rule['source']}, which is "
+            "gone. A `requires:` marker does not make this safe: the export "
+            "writes a tree with nothing at that path and reports success."
+        )
+        assert not requires, (
+            f"{rule['path']} still says it is waiting on {requires}, and its "
+            f"source {rule['source']} is here. Delete the marker — left in, it "
+            "is a note saying 'not yet' attached to a file that arrived, which "
+            "is how a manifest stops being read."
+        )
 
 
 def test_the_exported_ci_runs_where_anyone_can_reach_it(manifest: dict) -> None:
@@ -140,25 +140,51 @@ def test_the_design_doc_exclusions_are_present(manifest: dict) -> None:
     assert "ops/db/analysis/" in excluded
 
 
+def test_every_known_finding_says_why_it_is_pending(manifest: dict) -> None:
+    """An exception without a reason is an exception nobody will ever remove."""
+    for entry in manifest.get("known_findings") or []:
+        assert entry.get("pending", "").strip(), (
+            f"{entry['where']} ({entry['what']}) is allowed to leak without "
+            "saying why, or when that stops"
+        )
+        assert isinstance(entry.get("count", 1), int) and entry.get("count", 1) >= 1
+
+
 def test_the_exported_tree_grows_no_new_leak(manifest: dict) -> None:
-    """New findings fail here; known ones are listed with why they are pending."""
+    """The known list is a ceiling *and* a floor, counted per occurrence.
+
+    Comparing sets of ``(file, category)`` let a file already on the list grow
+    a second leak of the same kind without anything failing — the one place a
+    real key is most likely to land is next to the one already forgiven. So
+    each entry carries how many occurrences it covers, and both directions
+    fail: more than allowed is a new leak, fewer is an entry that has been
+    fixed and has to go.
+    """
+    from collections import Counter
+
     import public_export
 
     rules = manifest["exclude"]
     kept = [n for n in public_export.tracked_files() if not public_export.excluded(n, rules)]
     findings = public_export.audit(kept)
 
-    allowed = {(f["where"], f["what"]) for f in manifest.get("known_findings", [])}
-    actual = {
+    allowed = Counter()
+    for entry in manifest.get("known_findings") or []:
+        allowed[(entry["where"], entry["what"])] += entry.get("count", 1)
+    actual = Counter(
         (where.rsplit(":", 1)[0], label) for label, places in findings.items() for where in places
-    }
-
-    new = sorted(actual - allowed)
-    assert not new, (
-        "the exported tree would leak something not on the known list — either "
-        f"fix it or add it with a reason it is pending: {new}"
     )
 
-    # A resolved finding is bookkeeping, not a defect: failing on it meant that
-    # merging the branches that fixed one turned this red. The tool prints them
-    # so the list still shrinks, without blocking the merge that shrank it.
+    grew = sorted(k for k in actual if actual[k] > allowed[k])
+    assert not grew, (
+        "the exported tree leaks more than the known list allows — either fix "
+        f"it or raise the count with a reason it is pending: "
+        f"{[(k, actual[k], allowed[k]) for k in grew]}"
+    )
+
+    resolved = sorted(k for k in allowed if actual[k] < allowed[k])
+    assert not resolved, (
+        "these known findings no longer occur as often as the manifest claims; "
+        f"the list only shrinks, so delete or lower them: "
+        f"{[(k, allowed[k], actual[k]) for k in resolved]}"
+    )
