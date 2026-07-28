@@ -9,9 +9,14 @@ document for months because both of those held at once.
 
 This test closes the second gap in the repository's own language, and covers
 the credential formats this project issues, which the scanner's default rules
-do not know about. It says nothing about history: a key that was ever committed
-stays in the history, so removing it here is cleanup, not a fix. The fix is to
-revoke it.
+do not know about.
+
+It guards the tree, which is what gets published: the split design settles the
+route as a filtered export into a new public repository and forbids rewriting
+this repo's history, so the past stays private and the export carries the tree.
+That makes removing a leaked key here worth doing — but not sufficient. Anyone
+with repository access has already been able to read it, so it still has to be
+revoked.
 """
 
 from __future__ import annotations
@@ -98,8 +103,9 @@ def test_no_tracked_file_carries_a_credential(label: str) -> None:
             findings.append(f"{path.relative_to(REPO)}:{line} ({value[:12]}...)")
 
     assert not findings, (
-        f"{label} committed to the repository. Revoke it first — it stays in the "
-        f"history whatever this file says — then remove it here: {findings}"
+        f"{label} committed to the repository. Revoke it — everyone with "
+        f"repository access has been able to read it — then remove it here: "
+        f"{findings}"
     )
 
 
