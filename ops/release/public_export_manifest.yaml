@@ -166,6 +166,24 @@ overlay:
 
 undecided: []
 
+# ---------------------------------------------------------------------------
+# What this list is *not*
+#
+# The split design has the overlay grow until it holds everything specific to a
+# deployment, so that moving the deployment means moving one directory. That
+# migration is staged and unfinished: distributions/freeinference/ currently
+# holds four files, while the truth it is meant to carry still sits in config/,
+# ops/, services/ and deploy/systemd/.
+#
+# This file excludes those in place instead. Which is enough for publishing —
+# the public repository does not receive them either way — but it is not the
+# same thing, and reading a clean audit as "the split is done" would be wrong.
+#
+# The useful consequence is the other direction: publishing does not have to
+# wait for the migration. `exclude:` is also the inventory of what still has to
+# move, so the two can proceed in either order.
+# ---------------------------------------------------------------------------
+
 # What the exported tree still leaks today, with the reason each is pending.
 # The test treats this as a ceiling: anything new fails, and an entry that stops
 # being found must be deleted, so the list can only shrink.
