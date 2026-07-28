@@ -313,3 +313,41 @@ class TestBuilderOutputSatisfiesTheContract:
 
         assert parsed.alert_type == event["alert_type"]
         assert parsed.fingerprint == event["fingerprint"]
+
+
+class TestTheBuilderRefusesWhatIngressWould:
+    """The point of building here is a stack trace at the call site.
+
+    An event the builder accepts but the validator drops is the failure mode
+    this module exists to prevent — the producer would only learn a status code.
+    """
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_metric_values_are_refused(self, value: float) -> None:
+        # NaN also slips past the firing coherence check, whose `<` is false.
+        with pytest.raises(ControlPlaneEventError):
+            build_metric_threshold_event(
+                metric="http_5xx_rate", status="firing", observed=value, threshold=0.05
+            )
+
+    def test_values_beyond_the_contract_range_are_refused(self) -> None:
+        with pytest.raises(ControlPlaneEventError):
+            build_metric_threshold_event(
+                metric="http_5xx_rate", status="firing", observed=1e13, threshold=1.0
+            )
+
+    @pytest.mark.parametrize(
+        "backend",
+        ["postgres://localhost/app", "Postgres", "postgres db", "a" * 65, ""],
+    )
+    def test_a_backend_that_is_not_a_bare_label_is_refused(self, backend: str) -> None:
+        with pytest.raises(ControlPlaneEventError):
+            build_dependency_unavailable_event(
+                dependency="operational_store", status="firing", backend=backend
+            )
+
+    def test_a_bare_label_still_passes(self) -> None:
+        event = build_dependency_unavailable_event(
+            dependency="operational_store", status="firing", backend="postgres"
+        )
+        assert event["context"]["backend"] == "postgres"

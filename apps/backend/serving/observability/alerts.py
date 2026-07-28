@@ -41,7 +41,15 @@ log = logging.getLogger(__name__)
 _HOST = socket.gethostname()
 _DEDUPE_LOCK = asyncio.Lock()
 _LAST_FIRED: dict[str, float] = defaultdict(float)
-_IN_FLIGHT: set[str] = set()
+#: Keyed by dedupe key, each event fires when that key's send finishes. A
+#: resolution waits on it instead of being dropped; see ``alert_slack``.
+_IN_FLIGHT: dict[str, asyncio.Event] = {}
+
+#: How long a resolution waits for an in-flight send of the same key, and how
+#: many times. Bounded so a hung sink cannot pin the caller — the alert path
+#: runs on the request loop for the health checks.
+_RESOLUTION_WAIT_SEC = 10.0
+_RESOLUTION_WAIT_ATTEMPTS = 2
 
 # Hostnames that always indicate a non-deployed (local/dev) gateway.
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"))
@@ -361,16 +369,31 @@ async def alert_slack(
             log.debug("alert snooze check failed; sending alert", exc_info=True)
 
     key = dedupe_key or f"{severity.value}:{title}"
+    # A resolution waits for a send already running for this key rather than
+    # being dropped by the guard. Dropping it costs a repeat for a breach —
+    # another evaluation follows — but for a state alert the recovery edge is
+    # the only one there is, so a discarded resolution strands the incident.
+    # Waiting also keeps firing and resolved in order.
+    for _ in range(_RESOLUTION_WAIT_ATTEMPTS):
+        async with _DEDUPE_LOCK:
+            done = _IN_FLIGHT.get(key)
+        if done is None or not resolution:
+            break
+        try:
+            await asyncio.wait_for(done.wait(), timeout=_RESOLUTION_WAIT_SEC)
+        except (TimeoutError, asyncio.TimeoutError):
+            break
+
     now = _monotonic()
     async with _DEDUPE_LOCK:
         last = _LAST_FIRED.get(key, 0.0)
-        # The in-flight guard still applies to both: it prevents two concurrent
-        # sends of the same key, which would duplicate rather than repeat.
+        # Two concurrent sends of the same key would duplicate rather than
+        # repeat, so one of them still has to yield.
         if key in _IN_FLIGHT:
             return False
         if not resolution and last > 0.0 and now - last < cooldown_sec:
             return False
-        _IN_FLIGHT.add(key)
+        _IN_FLIGHT[key] = asyncio.Event()
 
     sent = False
     try:
@@ -399,7 +422,9 @@ async def alert_slack(
         return False
     finally:
         async with _DEDUPE_LOCK:
-            _IN_FLIGHT.discard(key)
+            done = _IN_FLIGHT.pop(key, None)
+            if done is not None:
+                done.set()
             if sent and resolution:
                 # The breach is over, so the next one must page immediately
                 # rather than serve out the cooldown this incident started.
@@ -543,5 +568,8 @@ async def sweep_stale_breaches() -> None:
             log.exception("stale breach resolution failed for %s", key)
         if not sent:
             # The sweep already dropped the key, so leaving it dropped would
-            # lose the resolution outright. Re-armed, the next sweep retries.
-            _TRANSITIONS.rearm(key, now)
+            # lose the resolution outright. Re-arm stale enough that the *next*
+            # sweep retries: plain re-arming would restart the staleness clock
+            # and, with a long rule window, push the retry hours out while the
+            # incident stays open.
+            _TRANSITIONS.rearm(key, now, retry_in=_STALE_SWEEP_INTERVAL_SEC)

@@ -179,7 +179,7 @@ class TestUndeliveredResolutions:
         # The next healthy observation retries rather than losing it outright.
         assert t.observe("k", breached=False, now=2.0) == "resolved"
 
-    def test_rearm_after_a_sweep_lets_the_next_sweep_retry(self) -> None:
+    def test_a_plain_rearm_waits_a_full_staleness_window(self) -> None:
         t = tracker(stale_after_sec=900.0)
         t.observe("k", breached=True, now=0.0)
         assert t.sweep(now=900.0) == ["k"]
@@ -188,6 +188,25 @@ class TestUndeliveredResolutions:
 
         assert t.sweep(now=1_000.0) == []
         assert t.sweep(now=1_800.0) == ["k"]
+
+    def test_retry_in_brings_the_next_sweep_forward(self) -> None:
+        # The staleness window tracks the longest rule window, which the shipped
+        # config puts at an hour, so a plain re-arm would push the retry hours
+        # out while the incident stays open.
+        t = tracker(stale_after_sec=3_600.0)
+        t.observe("k", breached=True, now=0.0)
+        assert t.sweep(now=3_600.0) == ["k"]
+
+        t.rearm("k", now=3_600.0, retry_in=60.0)
+
+        assert t.sweep(now=3_659.0) == []
+        assert t.sweep(now=3_660.0) == ["k"]
+
+    def test_retry_in_is_ignored_when_staleness_is_disabled(self) -> None:
+        t = tracker(stale_after_sec=None)
+        t.observe("k", breached=True, now=0.0)
+        t.rearm("k", now=10.0, retry_in=60.0)
+        assert t.sweep(now=100_000.0) == []
 
     def test_rearm_does_not_re_emit_a_firing_edge(self) -> None:
         # The incident was never closed, so re-announcing it would post a

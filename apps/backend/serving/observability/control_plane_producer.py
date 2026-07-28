@@ -59,6 +59,12 @@ ADDRESS_BEARING_METRICS: frozenset[str] = frozenset({"auth_failure_count"})
 MAX_SOURCE_ADDRESSES = 5
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 _SUBJECT_MAX_LENGTH = 128
+#: A bare implementation label. General text checks are not enough: a
+#: credential-free DSN like ``postgres://localhost/app`` passes all of them,
+#: which is exactly the connection-string leak this field exists to prevent.
+_BACKEND_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+#: The contract's numeric bound. Matches ``boundedNumber`` in the validator.
+_MAX_METRIC_VALUE = 1e12
 
 #: Severity per metric, preserving what each backend rule sends today so the
 #: migration does not silently downgrade or inflate an alert's urgency.
@@ -141,6 +147,32 @@ def dependency_fingerprint(dependency: str) -> str:
     return f"gateway:dependency:{dependency}"
 
 
+def _metric_value(value: float, field: str) -> float:
+    """Coerce a metric number, refusing what the contract will not accept.
+
+    ``float("nan")`` survives every comparison — including the firing coherence
+    check, whose ``<`` is false for NaN — so without this an event this module
+    claims to have validated is dropped at ingress instead of at the call site.
+    """
+    number = float(value)
+    if number != number or number in (float("inf"), float("-inf")):
+        raise ControlPlaneEventError(f"{field} must be a finite number")
+    if not 0 <= number <= _MAX_METRIC_VALUE:
+        raise ControlPlaneEventError(f"{field} is outside the contract's range")
+    return number
+
+
+def _backend(value: str | None) -> str | None:
+    """Validate the store's implementation label, or reject it here."""
+    if value is None:
+        return None
+    if not _BACKEND_RE.fullmatch(value):
+        raise ControlPlaneEventError(
+            "backend must be a bare lowercase label, not a connection string"
+        )
+    return value
+
+
 def build_metric_threshold_event(
     *,
     metric: BreachedMetric,
@@ -173,8 +205,8 @@ def build_metric_threshold_event(
     context = _drop_none(
         {
             "metric": metric,
-            "observed": float(observed),
-            "threshold": float(threshold),
+            "observed": _metric_value(observed, "observed"),
+            "threshold": _metric_value(threshold, "threshold"),
             "window_sec": window_sec,
             "scope": scope,
             "subject": normalized_subject,
@@ -222,6 +254,7 @@ def build_dependency_unavailable_event(
     """
     if dependency not in ("log_store", "operational_store"):
         raise ControlPlaneEventError(f"unsupported dependency: {dependency!r}")
+    backend = _backend(backend)
     label = dependency.replace("_", " ")
     return {
         "schema_version": 1,

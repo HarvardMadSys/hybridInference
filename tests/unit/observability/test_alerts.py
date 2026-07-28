@@ -1,5 +1,6 @@
 """Tests for serving.observability.alerts.alert_slack."""
 
+import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from serving.observability.alerts import (
     reset_dedupe_state,
     reset_transition_state,
     server_info,
+    set_stale_after,
     sweep_stale_breaches,
 )
 
@@ -430,3 +432,98 @@ class TestUndeliveredResolutionIsRetried:
         # Without re-arming, the transition is spent and the incident can never
         # be closed by anything.
         assert retry is True
+
+
+class TestResolutionWaitsForAnInFlightFiring:
+    async def test_a_recovery_during_the_firing_send_is_not_dropped(self, monkeypatch):
+        """A state alert has no later observation to retry with.
+
+        Dropping the resolution here costs a repeat for a metric — another
+        evaluation follows — but strands a circuit-breaker incident forever.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        posted: list[str] = []
+
+        async def slow_post(_url, message):
+            if "Recovered" not in message:
+                started.set()
+                await release.wait()
+            posted.append(message)
+            return True
+
+        with patch("serving.observability.alerts._post_to_slack", new=slow_post):
+            firing = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=True,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await started.wait()
+            recovery = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=False,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await asyncio.sleep(0)
+            release.set()
+            assert await firing is True
+            assert await recovery is True
+
+        # Both landed, and the outage was reported before the recovery.
+        assert len(posted) == 2
+        assert "Recovered" not in posted[0]
+        assert "Recovered" in posted[1]
+
+
+class TestAFailedSweepRetriesPromptly:
+    async def test_the_next_sweep_retries_rather_than_the_next_window(self, monkeypatch):
+        """A plain re-arm restarts the staleness clock.
+
+        With the staleness window tracking the longest rule window — an hour in
+        the shipped config — that pushes the retry hours out while the incident
+        stays open.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        reset_transition_state()
+        reset_dedupe_state()
+        set_stale_after(3_600.0)
+        clock = [1_000.0]
+        monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
+
+        with patch(
+            "serving.observability.alerts._post_to_slack",
+            new=AsyncMock(side_effect=[True, False, True]),
+        ) as mock_post:
+            await alert_on_transition(
+                key="failed_request_rate",
+                breached=True,
+                severity=AlertSeverity.ERROR,
+                title="Failed-request rate exceeded",
+                context=dict,
+                cooldown_sec=0,
+                now=clock[0],
+            )
+            clock[0] += 3_600.0
+            await sweep_stale_breaches()
+            assert mock_post.await_count == 2
+
+            # One sweep interval later, not one staleness window later.
+            clock[0] += 60.0
+            await sweep_stale_breaches()
+
+        assert mock_post.await_count == 3

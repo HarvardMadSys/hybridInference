@@ -144,7 +144,7 @@ class ThresholdTransitionTracker:
             del self._firing[key]
         return sorted(stale)
 
-    def rearm(self, key: str, now: float) -> None:
+    def rearm(self, key: str, now: float, *, retry_in: float | None = None) -> None:
         """Put a resolved key back into firing after its resolution was not sent.
 
         ``observe`` and ``sweep`` clear the key before the caller has a delivery
@@ -153,8 +153,16 @@ class ThresholdTransitionTracker:
         nothing able to close it. Re-arming makes the next healthy observation
         try again; a discrete state alert with no further observations stays
         open, which is where it was before this module existed.
+
+        ``retry_in`` backdates the liveness clock so :meth:`sweep` reconsiders
+        the key after roughly that long, rather than after a further full
+        ``stale_after_sec``. A sweep retry should follow the failed send by
+        about one sweep interval, not by another whole rule window.
         """
-        self._firing[key] = _KeyState(last_observed_at=now, clear_started_at=None)
+        observed = now
+        if retry_in is not None and self.stale_after_sec is not None:
+            observed = now - max(self.stale_after_sec - retry_in, 0.0)
+        self._firing[key] = _KeyState(last_observed_at=observed, clear_started_at=None)
 
     def forget(self, key: str) -> None:
         """Drop state without emitting a transition (for shutdown or reload)."""
