@@ -8,9 +8,14 @@ type DeployTarget = 'production' | 'staging';
 const rawDeployTarget = process.env.NEXT_PUBLIC_DEPLOY_TARGET || 'production';
 const deployTarget: DeployTarget = rawDeployTarget === 'staging' ? 'staging' : 'production';
 
+// Build-time fallbacks only: every real deployment passes NEXT_PUBLIC_API_BASE
+// (deploy/docker/docker-compose.yml sets it for both targets). A build that
+// supplies nothing is a local clone, so it must talk to a local backend —
+// pointing it at someone else's production gateway would send an unconfigured
+// operator's traffic to a service they do not run.
 const defaultApiBaseByTarget: Record<DeployTarget, string> = {
-  production: 'https://freeinference.org',
-  staging: 'http://localhost:8000',
+  production: 'http://localhost:8080',
+  staging: 'http://localhost:8080',
 };
 
 export const config = {
@@ -21,7 +26,7 @@ export const config = {
   deployTarget,
 
   // Application Configuration
-  appName: process.env.NEXT_PUBLIC_APP_NAME || 'FreeInference',
+  appName: process.env.NEXT_PUBLIC_APP_NAME || 'HybridInference',
   environment: process.env.NODE_ENV || 'development',
 
   // Build Identity (baked in at build time by deploy scripts)

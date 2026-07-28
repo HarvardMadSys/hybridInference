@@ -9,9 +9,29 @@ vi.mock('@/components/ui/BuildInfo', () => ({
   BuildInfo: () => <span>Build info</span>,
 }));
 
+// The footer renders whatever the active distribution supplies; these tests
+// drive both shapes explicitly rather than depending on the build-time
+// defaults, which are neutral (and therefore mostly empty) upstream.
+const configuredBranding = {
+  appName: 'Example Inference',
+  orgName: 'Example Org',
+  orgUrl: 'https://org.example.test',
+  docsUrl: 'https://docs.example.test/',
+  statusUrl: 'https://status.example.test/',
+  githubUrl: 'https://github.com/example/repo',
+  team: [{ name: 'A', affiliations: [] }],
+};
+
+let brandingOverride: Record<string, unknown> = configuredBranding;
+
+vi.mock('@/components/providers/SiteConfigProvider', () => ({
+  useBranding: () => brandingOverride,
+}));
+
 describe('SiteFooter', () => {
   afterEach(() => {
     cleanup();
+    brandingOverride = configuredBranding;
   });
 
   it('includes an external status link', () => {
@@ -21,7 +41,7 @@ describe('SiteFooter', () => {
     const statusLink = screen.getByRole('link', { name: 'Status' });
     const termsLink = screen.getByRole('link', { name: /terms/i });
 
-    expect(statusLink).toHaveAttribute('href', 'https://status.staging.freeinference.org/');
+    expect(statusLink).toHaveAttribute('href', 'https://status.example.test/');
     expect(statusLink).toHaveAttribute('target', '_blank');
     expect(statusLink).toHaveAttribute('rel', 'noopener noreferrer');
     expect(
@@ -42,5 +62,25 @@ describe('SiteFooter', () => {
     render(<SiteFooter />);
 
     expect(screen.getByRole('link', { name: /team/i })).toHaveAttribute('href', '/team');
+  });
+
+  it('omits links a deployment has not configured, without stranding separators', () => {
+    brandingOverride = {
+      ...configuredBranding,
+      orgName: '',
+      orgUrl: '',
+      docsUrl: '',
+      statusUrl: '',
+      team: [],
+    };
+
+    const { container } = render(<SiteFooter />);
+
+    expect(screen.queryByRole('link', { name: 'Docs' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Status' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /team/i })).not.toBeInTheDocument();
+    // Copyright · Terms · GitHub · build info => exactly three separators.
+    expect(container.querySelectorAll('[aria-hidden="true"]')).toHaveLength(3);
+    expect(screen.getByRole('link', { name: /terms/i })).toBeInTheDocument();
   });
 });

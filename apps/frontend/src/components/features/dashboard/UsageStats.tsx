@@ -93,13 +93,15 @@ export function UsageStats(): JSX.Element {
                     </div>
                   )}
                 </div>
-                <div className="max-w-md text-sm text-blue-800">
-                  Need more quota? Email{' '}
-                  <a className="font-medium underline" href={`mailto:${contactEmail}`}>
-                    {contactEmail}
-                  </a>{' '}
-                  and explain your use case.
-                </div>
+                {contactEmail && (
+                  <div className="max-w-md text-sm text-blue-800">
+                    Need more quota? Email{' '}
+                    <a className="font-medium underline" href={`mailto:${contactEmail}`}>
+                      {contactEmail}
+                    </a>{' '}
+                    and explain your use case.
+                  </div>
+                )}
               </div>
             </div>
           )}

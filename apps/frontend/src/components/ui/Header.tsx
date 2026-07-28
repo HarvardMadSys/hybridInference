@@ -21,7 +21,7 @@ export function Header() {
         <Link href="/" className="text-xl font-bold tracking-tight">
           {branding.appName}
         </Link>
-        {branding.orgName && (
+        {branding.orgName && branding.orgUrl && (
           <a
             href={branding.orgUrl}
             className="font-serif text-sm text-gray-500 hover:text-crimson"
@@ -33,14 +33,16 @@ export function Header() {
         )}
       </div>
       <div className="ml-auto flex flex-wrap items-center justify-end gap-1 sm:gap-2">
-        <a
-          href={branding.statusUrl}
-          className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Status
-        </a>
+        {branding.statusUrl && (
+          <a
+            href={branding.statusUrl}
+            className="rounded-md px-2 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-3"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Status
+          </a>
+        )}
         {state.isAuthenticated && (
           <>
             {features.rag && (

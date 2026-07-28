@@ -41,15 +41,20 @@ export default function TeamPage(): JSX.Element {
           </span>
         </h1>
         <p className="mx-auto mt-5 max-w-xl text-base text-gray-600 sm:text-lg">
-          A small research team building free, open LLM inference at{' '}
-          <a
-            href={branding.orgUrl}
-            className="text-crimson hover:underline"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {branding.orgName}
-          </a>
+          A small research team building free, open LLM inference
+          {branding.orgName && branding.orgUrl ? (
+            <>
+              {' at '}
+              <a
+                href={branding.orgUrl}
+                className="text-crimson hover:underline"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {branding.orgName}
+              </a>
+            </>
+          ) : null}
           .
         </p>
       </section>

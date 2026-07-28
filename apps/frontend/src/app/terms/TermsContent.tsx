@@ -72,7 +72,9 @@ export function TermsContent(): JSX.Element {
     {
       title: '10. Contact',
       body: [
-        `For questions about ${branding.appName} or these terms, contact us at ${branding.contactEmail}.`,
+        branding.contactEmail
+          ? `For questions about ${branding.appName} or these terms, contact us at ${branding.contactEmail}.`
+          : `For questions about ${branding.appName} or these terms, contact the operator of this deployment.`,
       ],
     },
   ];

@@ -11,8 +11,9 @@ describe('branding JSON overrides', () => {
 
     const { branding } = await import('./branding');
 
+    // The fallback is the neutral empty list: upstream ships no people.
     expect(Array.isArray(branding.team)).toBe(true);
-    expect(branding.team[0]?.name).toBe('Juncheng Yang');
+    expect(branding.team).toHaveLength(0);
   });
 
   it('accepts a validated team override', async () => {
@@ -43,6 +44,6 @@ describe('branding JSON overrides', () => {
 
     const { branding } = await import('./branding');
 
-    expect(branding.sponsors[0]?.name).toBe('NVIDIA');
+    expect(branding.sponsors).toHaveLength(0);
   });
 });
