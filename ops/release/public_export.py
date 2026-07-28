@@ -219,7 +219,13 @@ def main() -> int:
         print(f"\nExport tree written to {target}")
         findings = audit(kept, root=target, overlay=overlay)
     else:
-        findings = audit(kept)
+        stale_requires = [r for r in overlay if r.get("requires") and (REPO / r["source"]).exists()]
+    if stale_requires:
+        print("\nOverlay sources have arrived; drop their `requires` markers:")
+        for r in stale_requires:
+            print(f"  {r['path']}  (was waiting on {r['requires']})")
+
+    findings = audit(kept)
     print()
     if not findings:
         print("Public-surface audit of the exported tree: clean.")

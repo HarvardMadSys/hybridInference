@@ -153,6 +153,7 @@ exclude:
     reason: This deployment's on-call pipeline.
 
   - path: config/models.yaml
+    optional: true   # #1060 moves it into the overlay; the replacement below still applies
     reason: >-
       This deployment's production registry: fourteen models across its own
       provider accounts, needing twenty-four environment variables. A clone
@@ -160,6 +161,7 @@ exclude:
       all twenty-four. Replaced by the reference registry — see `overlay:`.
 
   - path: config/routing.yaml
+    optional: true   # #1060 moves it into the overlay; the replacement below still applies
     reason: >-
       This deployment's endpoint map, down to a model directory on a Harvard
       cluster. Replaced by the minimal example — see `overlay:`.
