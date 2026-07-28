@@ -50,8 +50,22 @@ Be precise about these when reporting status:
   matrix (below) to close this.
 - **The Actions workflow has never executed on GitHub.** See the blockers.
 - **Kata.** Isolation was verified on a shared-kernel container. The Kata path
-  differs only by `--runtime`, but that has not been run on a host with Kata
-  installed.
+  is wired correctly — the daemon accepts `--runtime io.containerd.kata.v2` and
+  proceeds to start the shim, failing only because this host has no shim
+  binary — but no job has run under an actual Kata kernel.
+
+  The three cases give three distinct errors, which is what makes this
+  meaningful rather than hopeful:
+
+  | `--runtime` | Result |
+  |---|---|
+  | unset (runc) | runs |
+  | a name that does not exist | `unknown or invalid runtime name` — the daemon rejects it, so the flag is reaching the daemon and is not being silently dropped |
+  | `io.containerd.kata.v2` | `failed to start shim` — the name is accepted and the shim is attempted; only the binary is missing |
+
+  A dropped flag would be the dangerous failure: the kata backend would
+  silently run as a plain shared-kernel container while every log line and
+  config said otherwise. That is ruled out.
 
 ## Before a job can run for real
 
