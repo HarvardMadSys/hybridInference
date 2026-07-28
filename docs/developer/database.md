@@ -18,7 +18,7 @@ docker compose -f deploy/docker/docker-compose.yml --env-file .env --profile adm
 ```
 
 ## Access pgAdmin Securely
-- SSH into the host with local port forwarding: `ssh -L 5050:127.0.0.1:5050 user@freeinference.org`.
+- SSH into the host with local port forwarding: `ssh -L 5050:127.0.0.1:5050 <user>@<gateway-host>`.
 - Open `http://localhost:5050`, sign in with the configured email/password. If a master password is configured, unlock with it; otherwise continue directly.
 
 ## Register Primary Database
@@ -30,7 +30,7 @@ docker compose -f deploy/docker/docker-compose.yml --env-file .env --profile adm
    - `Maintenance database`: value of `DB_NAME`
    - `Username`: value of `DB_USER`
    - `Password`: value of `DB_PASSWORD`
-4. Save and expand the new server to inspect `freeinference_db`; leave the default `postgres` database for maintenance tasks only.
+4. Save and expand the new server to inspect the database named by `DB_NAME`; leave the default `postgres` database for maintenance tasks only.
 
 ## Post-Restart Checks
 - `make ps` to confirm bindings on `127.0.0.1`.
