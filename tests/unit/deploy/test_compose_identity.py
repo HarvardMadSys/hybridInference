@@ -177,3 +177,29 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
     assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
         "--env-file .env"
     ), "the server's .env must come last so per-host overrides still win"
+
+
+def test_neutral_config_defaults_name_files_that_exist() -> None:
+    """A clone running `make up` must not be pointed at a file nobody ships.
+
+    The three config paths carry a neutral default for the case where no
+    distribution supplies one. Those defaults used to read `config/*.yaml`,
+    which is where the files lived until they moved into the overlay — after
+    which the default named nothing. Every way that fails is quiet: an absent
+    registry serves an empty catalogue, an absent routing file drops the
+    endpoint map and starts anyway, an absent alerts file falls back to the
+    built-in thresholds. Nothing here errors, so nothing caught it.
+
+    The quickstart passes these paths explicitly and is fine; it is the
+    compose route that had no test walking it.
+    """
+    text = COMPOSE.read_text()
+    for var in ("MODELS_CONFIG_PATH", "ROUTING_CONFIG_PATH", "ALERTS_CONFIG_PATH"):
+        match = re.search(rf"^\s*{var}: \$\{{{var}-([^}}]*)\}}", text, re.M)
+        assert match, f"{var} lost its neutral default in the compose file"
+        default = match.group(1).strip()
+        if not default:
+            continue  # deliberately unset — the code treats "" as unconfigured
+        assert (REPO / default).is_file(), (
+            f"{var} defaults to {default!r}, which this repository does not ship"
+        )
