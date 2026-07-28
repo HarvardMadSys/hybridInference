@@ -25,9 +25,31 @@ from pathlib import Path
 
 BRAND_MARKERS = ("freeinference", "harvard", "madsys", "junchengyang")
 
-# path prefix (or exact file) -> why brand mentions are currently expected
-# there. Delete entries as their work stream completes; an empty allowlist
-# plus a clean --strict run is the criterion-② acceptance.
+# Two lists, because "brand marker" covers two different things and only one of
+# them is residue.
+#
+# ATTRIBUTION is where naming the origin is correct and permanent: a copyright
+# holder, a dependency's repository, the deployment this project runs for. It
+# never empties, and asking it to was a mistake — with LICENSE and the RouteWise
+# dependency URL in the same list as the acceptance criterion, criterion ② could
+# not be met by any amount of work, so it could never signal anything either.
+ATTRIBUTION: dict[str, str] = {
+    "LICENSE": "MIT, (c) Harvard SEAS — the copyright holder is required attribution",
+    "pyproject.toml": (
+        "the `authors` field, and the RouteWise dependency's git URL — the "
+        "org name is how the package is fetched, from a public repository"
+    ),
+    "uv.lock": "the same RouteWise URL, resolved",
+    "README.md": (
+        "names the deployment this gateway runs for, and points at it as a "
+        "worked example — true, useful to a reader, and not a leak"
+    ),
+    "README.user.md": "the same, plus the clone URL",
+}
+
+# PENDING is residue: a work stream that has not finished moving something out
+# of the neutral upstream. Delete entries as they complete. **An empty PENDING
+# plus a clean --strict run is the criterion-② acceptance.**
 ALLOWLIST: dict[str, str] = {
     "distributions/": "distribution overlay — the intended home for brand content",
     "docs/agents/": "historical design docs (not shipped)",
@@ -43,19 +65,15 @@ ALLOWLIST: dict[str, str] = {
     "apps/frontend/": "compile-time branding defaults — neutral-defaults flip wave",
     "apps/backend/": "Settings/RAG deployment defaults + docstrings — neutral-defaults flip wave",
     "tests/": "frozen contract values — flipped together with the neutral-defaults PR",
-    "README.md": "neutral README task",
-    "README.user.md": "neutral README task",
     "README.developer.md": "neutral README task",
     "CLAUDE.md": "mixed agent guide — site lines move with the neutral wave",
     "AGENTS.md": "mixed agent guide — site lines move with the neutral wave",
-    "pyproject.toml": "harness excludes + RouteWise git dep URL (public repo; org name matches markers)",
     ".github/workflows/": "FreeInference CD workflows — step-2 move",
     ".env.oncall.example": "on-call site config example — step-2 move",
     ".env.example": "one commented overlay-manifest path, which is the example that works",
     ".codex/": "agent skill guides — mixed, neutral wave",
     ".kilo/": "agent skill guides — mixed, neutral wave",
     ".gitleaks.toml": "site-specific scan allowances — neutral wave",
-    "LICENSE": "MIT, (c) Harvard SEAS — the copyright holder is required attribution, not residue",
     "benchmark/": "paper artifacts — step-2 per ownership inventory",
     "Makefile": (
         "one pointer to docs/developer/freeinference.md — that doc is itself "
@@ -63,7 +81,6 @@ ALLOWLIST: dict[str, str] = {
         "dangling-path guard fails the pull request that forgets"
     ),
     "docs/openrouter.md": "developer note — neutral wave",
-    "uv.lock": "RouteWise git dep URL (public repo; org name matches markers) — fine to ship",
 }
 
 
@@ -73,7 +90,7 @@ def classify(path: str) -> str | None:
     Entries ending in ``/`` are directory prefixes; anything else must match
     the path exactly (so ``LICENSE`` does not swallow ``LICENSE-THIRD-PARTY``).
     """
-    for entry in ALLOWLIST:
+    for entry in {**ATTRIBUTION, **ALLOWLIST}:
         if entry.endswith("/"):
             if path.startswith(entry):
                 return entry
@@ -123,17 +140,38 @@ def main() -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="exit non-zero when any hit falls outside the allowlist",
+        help="exit non-zero while any residue remains (attribution does not count)",
+    )
+    parser.add_argument(
+        "--tree",
+        metavar="DIR",
+        help=(
+            "sweep a materialised export instead of this repository. This is "
+            "the measurement that decides whether the published artifact "
+            "carries residue; the repository keeps the overlay by design, so "
+            "sweeping it answers a different question"
+        ),
     )
     args = parser.parse_args()
-    repo_root = Path(__file__).resolve().parents[2]
+    repo_root = Path(args.tree) if args.tree else Path(__file__).resolve().parents[2]
 
     buckets, violations = sweep(repo_root)
     total = sum(len(files) for files in buckets.values())
     print(f"brand markers: {', '.join(BRAND_MARKERS)}")
     print(f"allowlisted hits: {total} files across {len(buckets)} buckets\n")
-    for prefix in sorted(buckets, key=lambda p: -len(buckets[p])):
-        print(f"  {len(buckets[prefix]):4d}  {prefix:42s} {ALLOWLIST[prefix]}")
+    pending = {p: f for p, f in buckets.items() if p in ALLOWLIST}
+    attribution = {p: f for p, f in buckets.items() if p in ATTRIBUTION}
+
+    if attribution:
+        print("attribution (permanent — naming the origin is correct here):")
+        for prefix in sorted(attribution, key=lambda p: -len(attribution[p])):
+            print(f"  {len(attribution[prefix]):4d}  {prefix:42s} {ATTRIBUTION[prefix]}")
+        print()
+    print("pending (residue — criterion \u2461 is met when this is empty):")
+    for prefix in sorted(pending, key=lambda p: -len(pending[p])):
+        print(f"  {len(pending[prefix]):4d}  {prefix:42s} {ALLOWLIST[prefix]}")
+    if not pending:
+        print("  (none)")
 
     if violations:
         print(f"\nOUTSIDE allowlist ({len(violations)}):")
@@ -142,7 +180,14 @@ def main() -> int:
     else:
         print("\nno hits outside the allowlist")
 
-    if args.strict and violations:
+    remaining = sorted(p for p in buckets if p in ALLOWLIST)
+    print(
+        f"\ncriterion \u2461: {len(violations)} unclaimed, "
+        f"{len(remaining)} work stream(s) still to finish"
+        + (" — met." if not violations and not remaining else ".")
+    )
+
+    if args.strict and (violations or remaining):
         return 1
     return 0
 
