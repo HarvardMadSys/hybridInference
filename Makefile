@@ -158,8 +158,17 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 #   make up                          # discovers the overlay, and says so
 #   make up DISTRIBUTION=none        # your own gateway, named after nobody
 #   make up DISTRIBUTION=freeinference
-# distributions/<name>/deploy/<file>.env -> <name>
-DISTRIBUTION ?= $(word 2,$(subst /, ,$(firstword $(wildcard distributions/*/deploy/*.env))))
+# distributions/<name>/deploy/<file>.env -> <name>, deduplicated.
+_DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
+ifeq ($(words $(_DISTRIBUTION_DIRS)),1)
+DISTRIBUTION ?= $(_DISTRIBUTION_DIRS)
+else ifeq ($(words $(_DISTRIBUTION_DIRS)),0)
+DISTRIBUTION ?=
+else
+# Picking the alphabetically first of several would compile one deployment's
+# identity into another's console, and say nothing while doing it.
+DISTRIBUTION ?= $(error Several distributions carry deploy/*.env ($(_DISTRIBUTION_DIRS)). Name one: make $(MAKECMDGOALS) DISTRIBUTION=<name>, or DISTRIBUTION=none)
+endif
 ifeq ($(DISTRIBUTION),none)
 DISTRIBUTION_ENV_FILES :=
 else ifneq ($(DISTRIBUTION),)
