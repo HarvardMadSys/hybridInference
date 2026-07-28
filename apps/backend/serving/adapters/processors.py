@@ -821,9 +821,18 @@ class ReasoningExtractProcessor(BaseProcessor):
             reasonings.append(match.group(2))
             return ""
 
-        new_content = self._nonstream_re.sub(_grab, content).strip()
+        new_content = self._nonstream_re.sub(_grab, content)
+        # An unterminated opening tag (e.g. a reply truncated at max_tokens
+        # inside the reasoning block) has no closing tag for the pair regex to
+        # match: treat everything from the opening tag onward as reasoning,
+        # mirroring the streaming flush().
+        open_idx, open_tag = self._find_open(new_content)
+        if open_idx != -1:
+            reasonings.append(new_content[open_idx + len(open_tag) :])
+            new_content = new_content[:open_idx]
+
         if reasonings:
-            message["content"] = new_content
+            message["content"] = new_content.strip()
             joined = "".join(reasonings).strip()
             existing = message.get("reasoning_content")
             message["reasoning_content"] = f"{existing}{joined}" if existing else joined
@@ -843,8 +852,8 @@ class ReasoningExtractProcessor(BaseProcessor):
 
     def _close_for(self, open_tag: str) -> str:
         """Return the closing tag paired with *open_tag*."""
-        for open_candidate, close_tag in self.tag_pairs:
-            if open_candidate == open_tag:
+        for known_open_tag, close_tag in self.tag_pairs:
+            if known_open_tag == open_tag:
                 return close_tag
         return "</think>"
 

@@ -1422,6 +1422,22 @@ class TestReasoningExtractProcessor:
         assert msg["content"] == "just an answer"
         assert "reasoning_content" not in msg
 
+    def test_r18b_nonstream_unterminated_reasoning(self):
+        """R-18b: Non-streaming — an unterminated <mm:think> (truncated) becomes reasoning."""
+        proc = ReasoningExtractProcessor()
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "<mm:think>partial thought with no close"},
+                    "finish_reason": "length",
+                }
+            ],
+        }
+        result = proc.process_response(response)
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == ""
+        assert msg["reasoning_content"] == "partial thought with no close"
+
     def test_r19_nonstream_appends_to_existing_reasoning(self):
         """R-19: Non-streaming — extracted reasoning appends to existing reasoning_content."""
         proc = ReasoningExtractProcessor()
