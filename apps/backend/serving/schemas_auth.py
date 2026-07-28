@@ -179,11 +179,22 @@ class QuotaInfo(BaseModel):
     reset_at: datetime | None = None
     reset_timezone: str = "UTC"
     contact_email: str = Field(default_factory=lambda: get_site_identity().support_email)
-    increase_request_message: str = Field(
-        default_factory=lambda: (
-            f"Need more quota? Email {get_site_identity().support_email} and explain your use case."
-        )
-    )
+    increase_request_message: str = Field(default_factory=lambda: _quota_message())
+
+
+def _quota_message() -> str:
+    """Ask for more quota, naming an address only when there is one.
+
+    A deployment that has configured no support address renders the empty
+    string, and "Email  and explain your use case." reads as a bug in the
+    product rather than as a gap in its configuration. Same rule as the 429
+    path and the OpenRouter attribution headers: say the true thing or say
+    nothing, never say a blank.
+    """
+    contact = get_site_identity().support_email
+    if contact:
+        return f"Need more quota? Email {contact} and explain your use case."
+    return "Need more quota? Contact the operator of this deployment and explain your use case."
 
 
 class UsageStats(BaseModel):

@@ -73,7 +73,22 @@ def _analysis_base_url() -> str:
     admin's stored key and the sampled content still holds.
     """
     base = get_site_identity().public_base_url.rstrip("/")
-    return f"{base}/v1" if base else "http://localhost:8080/v1"
+    if base:
+        return f"{base}/v1"
+    # No public URL configured, so the only thing left is a guess — and the
+    # guess has to include a port. 8080 is the Compose stack's; the staging
+    # systemd unit in this repository runs on 8000, and a deployment that
+    # chose neither would silently post its sampled prompts nowhere. Say what
+    # is missing instead: this feature needs to know its own address.
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            "Usage Insights sends sampled prompts to this gateway's own API, "
+            "so it needs to know this deployment's address. Set "
+            "SITE_PUBLIC_BASE_URL (or supply it through the distribution "
+            "manifest) and retry."
+        ),
+    )
 
 
 _SYSTEM_PROMPT = (
