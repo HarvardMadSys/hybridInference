@@ -41,6 +41,14 @@ export interface AgentJobApi {
   metadata: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;
+  // Read server-side from the billing ledger, never from the agent's own
+  // report. Null means "no ledger configured", which is not the same as zero.
+  spent_usd: number | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  model_calls: number | null;
+  setup_egress_tier: string | null;
+  agent_egress_tier: string | null;
 }
 
 export interface AgentJobEventApi {

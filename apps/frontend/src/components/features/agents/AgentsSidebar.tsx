@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/components/providers';
-import { AGENT_JOBS } from './mock';
+import { useAgentJobList } from './useAgentJobs';
 import type { AgentJobState } from './types';
 
 // Sidebar status dots stay deliberately minimal (Codex-style titles-only
@@ -28,9 +28,18 @@ export function AgentsSidebar() {
   const { state } = useAuth();
   const displayName = state.user?.user_name || state.user?.email || '';
 
-  // P0 runs against our own repo only; the repo group structure is what
-  // scales to multi-repo in P1 without changing the shell.
-  const repos = [{ name: 'hybridInference', jobs: AGENT_JOBS }];
+  const { jobs, loading, error } = useAgentJobList();
+
+  // Group by the repository each job actually names, rather than assuming one:
+  // the shell already scales to multi-repo, and hardcoding a single group made
+  // every job look like it belonged to the same one.
+  const repos = Object.entries(
+    jobs.reduce<Record<string, typeof jobs>>((groups, job) => {
+      const key = job.repo || 'unknown';
+      (groups[key] ??= []).push(job);
+      return groups;
+    }, {}),
+  ).map(([name, group]) => ({ name: name.split('/').pop() || name, jobs: group }));
 
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-gray-200 bg-gray-50">
@@ -60,6 +69,18 @@ export function AgentsSidebar() {
         <div className="mt-4 px-2 text-[11px] font-medium uppercase tracking-wide text-gray-400">
           Repositories
         </div>
+
+        {loading ? (
+          <p className="mt-2 px-2 text-[13px] text-gray-400">Loading…</p>
+        ) : null}
+        {error ? (
+          <p className="mt-2 px-2 text-[13px] text-red-600" role="alert">
+            {error}
+          </p>
+        ) : null}
+        {!loading && !error && repos.length === 0 ? (
+          <p className="mt-2 px-2 text-[13px] text-gray-400">No jobs yet.</p>
+        ) : null}
 
         {repos.map((repo) => (
           <div key={repo.name} className="mt-1.5">

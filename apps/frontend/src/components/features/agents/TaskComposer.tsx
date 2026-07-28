@@ -1,13 +1,43 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
+import { createAgentJob } from '@/lib/api/agents';
 
 // New-task composer (the /agents index state). Runtime × model are
 // first-class controls — BYOA × BYOM is the product, not an advanced option.
-// The pickers are static until the Job API lands (issue #1041); the P-1
-// harness verdict for the selected pair renders next to the model.
+// The pickers are static; the P-1 harness verdict for the selected pair
+// renders next to the model.
+const DEFAULT_REPO = process.env.NEXT_PUBLIC_AGENT_DEFAULT_REPO ?? '';
+
 export function TaskComposer() {
+  const router = useRouter();
   const [task, setTask] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canRun = task.trim().length > 0 && !submitting;
+
+  async function run() {
+    if (!canRun) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const job = await createAgentJob({
+        repo: DEFAULT_REPO,
+        task_prompt: task.trim(),
+        runtime: 'claude-code',
+        model: 'glm-5.1',
+      });
+      router.push(`/agents/${job.id}`);
+    } catch (cause: unknown) {
+      // The backend refuses a repository this deployment is not entitled to,
+      // and that message is the useful one to show — it tells the operator
+      // exactly what to configure.
+      setError(cause instanceof Error ? cause.message : 'could not start the job');
+      setSubmitting(false);
+    }
+  }
 
   return (
     <section className="mx-auto w-full max-w-2xl px-6 pb-16 pt-24">
@@ -114,11 +144,13 @@ export function TaskComposer() {
           </span>
           <button
             type="button"
-            disabled
-            title="Skeleton — submitting arrives with the Job API (issue #1041)"
-            className="ml-auto inline-flex cursor-not-allowed items-center gap-1.5 rounded-lg bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white opacity-60"
+            disabled={!canRun}
+            onClick={() => void run()}
+            className={`ml-auto inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-3.5 py-1.5 text-[13px] font-medium text-white ${
+              canRun ? 'hover:bg-gray-800' : 'cursor-not-allowed opacity-60'
+            }`}
           >
-            Run
+            {submitting ? 'Starting…' : 'Run'}
             <svg
               className="h-3.5 w-3.5"
               fill="none"
@@ -131,6 +163,12 @@ export function TaskComposer() {
           </button>
         </div>
       </div>
+
+      {error ? (
+        <p className="mt-3 text-center text-[13px] text-red-600" role="alert">
+          {error}
+        </p>
+      ) : null}
 
       <div className="mt-3 flex items-center justify-center gap-4 text-[12px] text-gray-400">
         <span>
