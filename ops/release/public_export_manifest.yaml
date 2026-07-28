@@ -82,6 +82,7 @@ exclude:
       Resolves the RAG corpus and index through a distribution overlay; the
       export ships none, so there is nothing for it to find.
   - path: tests/unit/repo/test_no_dangling_repo_paths.py
+    optional: true   # arrives with #1084
     reason: >-
       Asserts that the scan reaches this deployment's deploy scripts. They do
       not travel, so in the export the assertion is about an absence.
