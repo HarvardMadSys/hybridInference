@@ -111,8 +111,11 @@ def test_the_shapes_actually_discriminate() -> None:
     """
     gateway = SECRET_SHAPES["HybridInference gateway API key"]
 
-    # The shape of the key that actually leaked (this value is invented).
-    assert gateway.fullmatch("hyi-QQ7mKp2XvR9tLbN4wZcE6yHsA1dJfG3uT8oViM5rPkB")
+    # Split so the literal does not itself match the pattern above — the scan
+    # reads tracked files, and this file is one of them. (It caught exactly
+    # that when the sample was written out whole.)
+    sample = "hyi-" + "QQ7mKp2XvR9tLbN4wZcE6yHsA1dJfG3uT8oViM5rPkB"
+    assert gateway.fullmatch(sample)
 
     # Fixtures in this repository must keep passing.
     for fixture in (
