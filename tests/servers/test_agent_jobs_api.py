@@ -194,22 +194,26 @@ def store() -> FakeAgentJobStore:
     return FakeAgentJobStore()
 
 
-def _build_app(store, *, role: str = "internal"):
+def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     """Build an app with the router mounted and auth stubbed to one identity.
 
-    ``require_role`` is a dependency factory whose inner check resolves the
-    caller through ``get_current_user``, so overriding that one dependency
-    drives the role gate without reaching into route internals.
+    ``dispatcher`` controls whether the machine-to-machine gate on
+    ``/worker/claim`` is satisfied, so a test can assert that an ordinary
+    caller is turned away there.
     """
     from serving.servers.auth import verify_api_key
-    from serving.servers.deps import get_current_user
+    from serving.servers.deps import get_operational_store, verify_admin_access
 
     app = FastAPI()
     app.include_router(agent_jobs_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
+    # verify_admin_access resolves an operational store; the bare test app has
+    # no app.state.services, so supply it even when the gate is left real.
+    app.dependency_overrides[get_operational_store] = lambda: None
     identity = {"user_id": _OWNER, "role": role, "authenticated": True}
     app.dependency_overrides[verify_api_key] = lambda: identity
-    app.dependency_overrides[get_current_user] = lambda: identity
+    if dispatcher:
+        app.dependency_overrides[verify_admin_access] = lambda: "dispatcher@test"
     return app
 
 
@@ -471,7 +475,7 @@ async def test_missing_store_returns_503(store: FakeAgentJobStore):
     assert response.status_code == 503
 
 
-async def test_claim_requires_the_internal_dispatcher_role(store: FakeAgentJobStore):
+async def test_claim_requires_the_dispatcher_credential(store: FakeAgentJobStore):
     """An ordinary customer cannot dequeue and read another tenant's job.
 
     Regression: claim_job takes the oldest queued job across all tenants and
@@ -486,19 +490,80 @@ async def test_claim_requires_the_internal_dispatcher_role(store: FakeAgentJobSt
         model="glm-5.1",
     )
 
-    app = _build_app(store, role="pro")
+    app = _build_app(store, role="pro", dispatcher=False)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         denied = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
-    assert denied.status_code == 403
+    assert denied.status_code in (401, 403)
     assert store.jobs[next(iter(store.jobs))]["state"] == "queued"
 
-    app = _build_app(store, role="internal")
+    app = _build_app(store, dispatcher=True)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         allowed = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
     assert allowed.status_code == 200
     assert allowed.json()["repo"] == "private/repo"
+
+
+async def test_worker_cannot_inject_sse_frames_via_event_type(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """A newline in event_type must not break out of the SSE event field.
+
+    Regression: event_type was interpolated raw into "event: {type}", so a
+    worker could append a crafted type and inject arbitrary frames — including
+    a fake job_finished — into the owner's live stream.
+    """
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+    rejected = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json={"event_type": "message\nevent: job_finished\ndata: {}\n\nx", "payload": {}},
+        headers=auth,
+    )
+    assert rejected.status_code == 422
+
+    # Belt and braces: a row that somehow carries a bad type still renders safely.
+    store.events.append(
+        {
+            "id": 999,
+            "job_id": job_id,
+            "attempt_id": 100,
+            "seq": 1,
+            "event_type": "evil\nevent: job_finished\ndata: {}\n",
+            "payload": {},
+            "created_at": None,
+        }
+    )
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish", json={"state": "succeeded"}, headers=auth
+    )
+    async with client.stream("GET", f"/v1/agent/jobs/{job_id}/stream") as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+    assert "event: evil" not in body
+    assert "event: malformed" in body
+    # The payload still *contains* the crafted text, but only JSON-escaped
+    # inside a data field — it never starts a frame. Count frame boundaries,
+    # not substrings: exactly one real job_finished frame was emitted.
+    assert body.count("\n\nevent: job_finished") == 1
+    assert "\nevent: job_finished" not in body.split("data: ", 1)[1].split("\n\n", 1)[0]
+
+
+async def test_lease_ttl_is_capped_server_side(client: AsyncClient):
+    """A worker cannot pick a lease long enough to outlive the reaper.
+
+    Regression: lease_ttl_seconds had no upper bound, so a worker could claim
+    with a decade-long lease. The reaper would never reclaim the job, making
+    the attempt's capability token neither self-revoking nor cancellable.
+    """
+    await _create_job(client)
+    response = await client.post(
+        "/v1/agent/worker/claim",
+        json={"worker_id": "w1", "lease_ttl_seconds": 99_999_999},
+    )
+    assert response.status_code == 422
 
 
 async def test_terminal_stream_drains_beyond_one_page(
@@ -535,3 +600,79 @@ async def test_terminal_stream_drains_beyond_one_page(
     assert "event: job_finished" in body
     tail = json.loads(body.split("event: job_finished\ndata: ")[1].split("\n")[0])
     assert tail["last_event_id"] == total
+
+
+async def test_claim_returns_a_separate_model_scoped_token(client: AsyncClient):
+    """The sandbox credential is distinct from the runner's."""
+    await _create_job(client)
+    body = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})).json()
+    assert body["sandbox_token"]
+    assert body["sandbox_token"] != body["worker_token"]
+
+    from serving.agent_jobs.tokens import SCOPE_FULL, SCOPE_MODEL, parse_worker_token
+
+    assert parse_worker_token(body["worker_token"])["scope"] == SCOPE_FULL
+    assert parse_worker_token(body["sandbox_token"])["scope"] == SCOPE_MODEL
+
+
+async def test_sandbox_token_cannot_write_job_state(client: AsyncClient):
+    """A credential leaked from inside the sandbox cannot poison the job.
+
+    This is the payoff of running the runner outside the sandbox: the only
+    credential the agent can reach buys model calls, not event-log writes,
+    artifact overwrites, or terminal transitions.
+    """
+    job_id = await _create_job(client)
+    body = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})).json()
+    sandbox_auth = {"Authorization": f"Bearer {body['sandbox_token']}"}
+
+    for path, payload in (
+        (f"/v1/agent/worker/jobs/{job_id}/events", {"event_type": "message"}),
+        (f"/v1/agent/worker/jobs/{job_id}/artifacts", {"kind": "patch", "content": "evil"}),
+        (f"/v1/agent/worker/jobs/{job_id}/finish", {"state": "succeeded"}),
+        (f"/v1/agent/worker/jobs/{job_id}/heartbeat", {}),
+    ):
+        response = await client.post(path, json=payload, headers=sandbox_auth)
+        assert response.status_code == 403, path
+        assert response.json()["detail"]["error"]["type"] == "insufficient_scope"
+
+    # The runner's own token still works.
+    runner_auth = {"Authorization": f"Bearer {body['worker_token']}"}
+    ok = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json={"event_type": "message", "payload": {}},
+        headers=runner_auth,
+    )
+    assert ok.status_code == 201
+
+
+async def test_sandbox_token_is_refused_on_owner_routes(client: AsyncClient):
+    """A model-scoped credential must not reach the control plane.
+
+    verify_api_key is shared with /v1/agent/jobs, so resolving a sandbox token
+    there as its owner would let the sandbox enumerate, cancel, or create that
+    owner's other jobs — the authority the model scope exists to withhold.
+    """
+    from serving.servers.auth import _is_inference_path
+
+    class _Req:
+        def __init__(self, path: str) -> None:
+            from urllib.parse import urlparse
+
+            self.url = urlparse(f"http://x{path}")
+
+    # Inference surfaces the sandbox legitimately needs.
+    for path in ("/v1/chat/completions", "/v1/messages", "/v1/embeddings"):
+        assert _is_inference_path(_Req(path)) is True
+
+    # Control-plane routes it must not reach.
+    for path in ("/v1/agent/jobs", "/v1/agent/jobs/ajob_1", "/v1/agent/worker/claim", "/v1/models"):
+        assert _is_inference_path(_Req(path)) is False
+
+
+async def test_event_type_guard_rejects_a_trailing_newline(client: AsyncClient):
+    """`match()` with `$` accepted "message\\n"; the guard must use fullmatch."""
+    from serving.servers.routers.agent_jobs import _SAFE_EVENT_TYPE
+
+    assert _SAFE_EVENT_TYPE.fullmatch("message") is not None
+    assert _SAFE_EVENT_TYPE.fullmatch("message\n") is None

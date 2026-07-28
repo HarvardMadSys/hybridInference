@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.logging import get_logger
@@ -93,6 +94,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "current_attempt_id": row["current_attempt_id"],
         "published_pr_url": row["published_pr_url"],
         "detail": row["detail"],
+        "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
         "metadata": _load_json(row["metadata"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -101,7 +103,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
 
 _JOB_COLUMNS = (
     "id, user_id, repo, base_sha, task_prompt, runtime, model, state, "
-    "cancel_requested, current_attempt_id, published_pr_url, detail, metadata, "
+    "cancel_requested, current_attempt_id, published_pr_url, detail, budget_usd, metadata, "
     "created_at, updated_at"
 )
 
@@ -131,11 +133,17 @@ class AgentJobStore:
                     current_attempt_id BIGINT,
                     published_pr_url TEXT,
                     detail TEXT,
+                    budget_usd NUMERIC(12, 6),
                     metadata JSONB,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
+            )
+            # Idempotent column migrations for databases created by an earlier
+            # revision (CREATE TABLE IF NOT EXISTS never adds columns).
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_jobs_queued "
@@ -210,6 +218,7 @@ class AgentJobStore:
         runtime: str,
         model: str,
         base_sha: str | None = None,
+        budget_usd: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a queued job and return it."""
@@ -218,8 +227,9 @@ class AgentJobStore:
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO agent_jobs
-                    (id, user_id, repo, base_sha, task_prompt, runtime, model, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                    (id, user_id, repo, base_sha, task_prompt, runtime, model,
+                     budget_usd, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -229,9 +239,56 @@ class AgentJobStore:
                 task_prompt,
                 runtime,
                 model,
+                Decimal(str(budget_usd)) if budget_usd is not None else None,
                 json.dumps(metadata) if metadata is not None else None,
             )
         return _job_row_to_dict(row)
+
+    async def resolve_model_credential(
+        self,
+        *,
+        job_id: str,
+        attempt_id: int,
+        lease_generation: int,
+    ) -> dict[str, Any] | None:
+        """Resolve a worker token into the identity its model calls run as.
+
+        This is what lets the *same* capability token the sandbox already holds
+        also authorize model traffic, so no second credential ever enters the
+        sandbox. It returns ``None`` — meaning "reject" — unless the fence is
+        still live, which makes revocation automatic: the moment the reaper
+        supersedes the attempt or the job reaches a terminal state, the token
+        stops buying inference. There is no separate key to remember to revoke.
+
+        Returns ``{"user_id", "job_id", "budget_usd", "model"}``; the caller
+        bills the job's owner and enforces the budget.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT j.user_id, j.id AS job_id, j.budget_usd, j.model, j.state
+                FROM agent_attempts a
+                JOIN agent_jobs j ON j.id = a.job_id
+                WHERE a.id = $1
+                  AND a.lease_generation = $2
+                  AND a.status = 'running'
+                  AND a.lease_expires_at > NOW()
+                  AND j.id = $3
+                  AND j.current_attempt_id = a.id
+                  AND j.state IN ('running', 'publishing')
+                """,
+                attempt_id,
+                lease_generation,
+                job_id,
+            )
+        if row is None:
+            return None
+        return {
+            "user_id": row["user_id"],
+            "job_id": row["job_id"],
+            "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
+            "model": row["model"],
+        }
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Fetch one job by id."""
@@ -651,6 +708,115 @@ class AgentJobStore:
                     job_id,
                 )
             return state
+
+    # ── Platform-side publishing ───────────────────────────────────────
+    #
+    # Publishing is driven by the trusted server, not by the worker: the
+    # sandbox holds no git credential, so it can only hand over a patch. These
+    # three methods are therefore *not* lease-fenced — the fence exists to stop
+    # zombie workers, and no worker is involved here. Exactly-once is enforced
+    # instead by ``published_pr_url IS NULL`` plus ``SKIP LOCKED``, so two
+    # gateway processes can run the publisher loop without double-publishing.
+
+    async def claim_for_publish(self) -> dict[str, Any] | None:
+        """Take one finished job that has a patch and no PR yet.
+
+        Marks it ``publishing`` in the same transaction, so a second publisher
+        cannot pick it up. Returns the job plus its patch, or ``None``.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT j.id, j.user_id, j.repo, j.base_sha, j.task_prompt, a.content AS patch
+                FROM agent_jobs j
+                JOIN agent_job_artifacts a
+                  ON a.job_id = j.id AND a.kind = 'patch'
+                WHERE j.state = 'succeeded'
+                  AND j.published_pr_url IS NULL
+                ORDER BY j.updated_at
+                LIMIT 1
+                FOR UPDATE OF j SKIP LOCKED
+                """
+            )
+            if row is None:
+                return None
+            await conn.execute(
+                "UPDATE agent_jobs SET state = 'publishing', updated_at = NOW() WHERE id = $1",
+                row["id"],
+            )
+            job_id = row["id"]
+            await self._insert_event(
+                conn,
+                job_id=job_id,
+                attempt_id=await conn.fetchval(
+                    "SELECT current_attempt_id FROM agent_jobs WHERE id = $1", job_id
+                ),
+                event_type="lifecycle",
+                payload={"phase": "publishing"},
+            )
+        return {
+            "job_id": row["id"],
+            "user_id": row["user_id"],
+            "repo": row["repo"],
+            "base_sha": row["base_sha"],
+            "task_prompt": row["task_prompt"],
+            "patch": row["patch"],
+        }
+
+    async def record_publish(self, *, job_id: str, pr_url: str) -> bool:
+        """Record the published PR exactly once, returning the job to succeeded."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            updated = await conn.fetchval(
+                """
+                UPDATE agent_jobs
+                SET state = 'succeeded', published_pr_url = $2, updated_at = NOW()
+                WHERE id = $1 AND published_pr_url IS NULL
+                RETURNING id
+                """,
+                job_id,
+                pr_url,
+            )
+            if updated is None:
+                return False
+            attempt_id = await conn.fetchval(
+                "SELECT current_attempt_id FROM agent_jobs WHERE id = $1", job_id
+            )
+            if attempt_id is not None:
+                await self._insert_event(
+                    conn,
+                    job_id=job_id,
+                    attempt_id=attempt_id,
+                    event_type="lifecycle",
+                    payload={"phase": "published", "pr_url": pr_url},
+                )
+        return True
+
+    async def fail_publish(self, *, job_id: str, detail: str) -> None:
+        """Mark a job whose patch could not be published.
+
+        The job is failed rather than left ``publishing``: a rejected patch
+        (a blocked ``.github/`` change, a leaked credential, a conflict) is a
+        human-review situation, and silently retrying it would either spam the
+        repository or hide the rejection.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE agent_jobs SET state = 'failed', detail = $2, updated_at = NOW() "
+                "WHERE id = $1 AND published_pr_url IS NULL",
+                job_id,
+                detail[:2000],
+            )
+            attempt_id = await conn.fetchval(
+                "SELECT current_attempt_id FROM agent_jobs WHERE id = $1", job_id
+            )
+            if attempt_id is not None:
+                await self._insert_event(
+                    conn,
+                    job_id=job_id,
+                    attempt_id=attempt_id,
+                    event_type="error",
+                    payload={"phase": "publish_rejected", "detail": detail[:2000]},
+                )
 
     # ── Reaper ─────────────────────────────────────────────────────────
 

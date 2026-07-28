@@ -1061,6 +1061,11 @@ async def anthropic_messages(
         "alias_input": model_id if model_id != canonical else None,
         "reroute": reroute_info,
     }
+    # Agent-sandbox attribution (issue #1041). This surface is the one Claude
+    # Code actually uses, so omitting it here would leave the flagship runtime's
+    # spend unattributed — and the per-job budget reads this same ledger.
+    if user_ctx.get("agent_job_id"):
+        metadata["agent_job_id"] = user_ctx["agent_job_id"]
 
     params_for_log: dict[str, Any] = {"surface": "anthropic_messages"}
     for k in ("temperature", "top_p", "max_tokens", "stop_sequences", "stream"):

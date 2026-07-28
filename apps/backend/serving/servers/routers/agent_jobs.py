@@ -26,13 +26,21 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from serving.agent_jobs.tokens import InvalidAgentToken, mint_worker_token, parse_worker_token
+from serving.agent_jobs.tokens import (
+    SCOPE_FULL,
+    SCOPE_MODEL,
+    InvalidAgentToken,
+    mint_worker_token,
+    parse_worker_token,
+)
 from serving.schemas_agent_jobs import (
+    EVENT_TYPE_PATTERN,
     AgentJobArtifactResponse,
     AgentJobCancelResponse,
     AgentJobCreate,
@@ -53,7 +61,7 @@ from serving.schemas_agent_jobs import (
     WorkerPublishRequest,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_agent_job_store, require_role
+from serving.servers.deps import get_agent_job_store, verify_admin_access
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
@@ -75,6 +83,24 @@ _SSE_HEADERS = {
 _POLL_INTERVAL_S = 1.0
 _KEEPALIVE_EVERY_N_POLLS = 15
 _EVENT_PAGE_SIZE = 500
+
+# The schema constrains event_type on the way in, but the SSE writer must be
+# safe on its own: rows written before that constraint existed (or by any
+# future non-HTTP writer) must not be able to break out of the ``event:`` field
+# and inject frames into the owner's stream.
+_SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
+
+
+def _sse_frame(event: dict[str, Any]) -> str:
+    """Render one stored event as an SSE frame with a safe event name."""
+    event_type = event["event_type"]
+    # fullmatch, not match: `$` also matches before a trailing newline, so
+    # `match()` would accept "message\n" — exactly the value this guard
+    # exists to reject, since the newline splits the SSE frame.
+    if not _SAFE_EVENT_TYPE.fullmatch(event_type or ""):
+        event_type = "malformed"
+    data = json.dumps(_event_response(event).model_dump(), separators=(",", ":"))
+    return f"id: {event['id']}\nevent: {event_type}\ndata: {data}\n\n"
 
 
 def _require_store(store: AgentJobStore | None) -> AgentJobStore:
@@ -111,6 +137,7 @@ def _job_response(job: dict[str, Any]) -> AgentJobResponse:
         current_attempt_id=job["current_attempt_id"],
         published_pr_url=job["published_pr_url"],
         detail=job["detail"],
+        budget_usd=job.get("budget_usd"),
         metadata=job["metadata"],
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
@@ -166,6 +193,7 @@ async def create_agent_job(
         runtime=body.runtime,
         model=body.model,
         base_sha=body.base_sha,
+        budget_usd=body.budget_usd,
         metadata=body.metadata,
     )
     logger.info(
@@ -303,10 +331,7 @@ async def stream_agent_job_events(
                     idle_polls = 0
                     for event in events:
                         cursor = event["id"]
-                        data = json.dumps(
-                            _event_response(event).model_dump(), separators=(",", ":")
-                        )
-                        yield f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
+                        yield _sse_frame(event)
                 else:
                     idle_polls += 1
                     if idle_polls % _KEEPALIVE_EVERY_N_POLLS == 0:
@@ -330,12 +355,7 @@ async def stream_agent_job_events(
                             break
                         for event in tail:
                             cursor = event["id"]
-                            data = json.dumps(
-                                _event_response(event).model_dump(), separators=(",", ":")
-                            )
-                            yield (
-                                f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
-                            )
+                            yield _sse_frame(event)
                     final = json.dumps(
                         {
                             "state": job["state"],
@@ -372,12 +392,28 @@ def _worker_claims(authorization: str | None) -> dict[str, Any]:
             detail={"error": {"type": "unauthorized", "message": "Missing worker token."}},
         )
     try:
-        return parse_worker_token(token)
+        claims = parse_worker_token(token)
     except InvalidAgentToken as exc:
         raise HTTPException(
             status_code=401,
             detail={"error": {"type": "unauthorized", "message": f"Invalid worker token: {exc}"}},
         ) from exc
+    if claims.get("scope") != SCOPE_FULL:
+        # A model-scoped token is what lives inside the sandbox. Reaching these
+        # endpoints with it means the credential escaped its intended use.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "type": "insufficient_scope",
+                    "message": (
+                        "This credential may only be used for model calls, not for "
+                        "reporting job state."
+                    ),
+                }
+            },
+        )
+    return claims
 
 
 def _lease_lost() -> HTTPException:
@@ -404,7 +440,7 @@ def _match_job(claims: dict[str, Any], job_id: str) -> None:
 @router.post("/worker/claim", response_model=WorkerClaimResponse | None)
 async def worker_claim(
     body: WorkerClaimRequest,
-    _dispatcher: dict[str, Any] = Depends(require_role("internal")),
+    _dispatcher: str = Depends(verify_admin_access),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> WorkerClaimResponse | None:
     """Claim the next queued job and mint this attempt's capability token.
@@ -413,11 +449,17 @@ async def worker_claim(
 
     **Dispatcher-only.** ``claim_job`` takes the oldest queued job across all
     tenants, and the response carries that job's repo, prompt, and metadata
-    plus a working capability token for it. Ordinary API-key authentication
-    would therefore let any customer dequeue and read another customer's job,
-    so this requires the ``internal`` role. The credential proving that role
-    belongs to the dispatcher and never enters a sandbox; only the returned
-    per-attempt token does.
+    plus a working capability token for it — so ordinary API-key auth here
+    would let any customer dequeue and read another customer's job, and drain
+    the queue besides.
+
+    ``verify_admin_access`` is the right gate rather than a role check on a
+    user key: this is a machine-to-machine endpoint, and that dependency
+    accepts the shared ``ADMIN_TOKEN`` a dispatcher can actually hold (as well
+    as an admin JWT). It also has no "auth disabled" bypass, so the endpoint
+    does not fall open in a deployment running with user auth off. The
+    dispatcher credential stays outside the sandbox; only the returned
+    per-attempt token goes in.
     """
     job_store = _require_store(store)
     claim = await job_store.claim_job(
@@ -425,11 +467,17 @@ async def worker_claim(
     )
     if claim is None:
         return None
-    token = mint_worker_token(
-        job_id=claim["id"],
-        attempt_id=claim["attempt_id"],
-        lease_generation=claim["lease_generation"],
-    )
+    fence = {
+        "job_id": claim["id"],
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+    # Two credentials with different powers. The runner keeps the full one and
+    # passes only the model-scoped one into the sandbox, so a credential that
+    # leaks from inside the agent can spend the job's capped budget but cannot
+    # touch its event log, artifacts, or terminal state.
+    token = mint_worker_token(**fence, scope=SCOPE_FULL)
+    sandbox_token = mint_worker_token(**fence, scope=SCOPE_MODEL)
     return WorkerClaimResponse(
         job_id=claim["id"],
         attempt_id=claim["attempt_id"],
@@ -440,6 +488,7 @@ async def worker_claim(
         runtime=claim["runtime"],
         model=claim["model"],
         worker_token=token,
+        sandbox_token=sandbox_token,
         metadata=claim["metadata"],
     )
 

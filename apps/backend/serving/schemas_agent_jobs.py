@@ -6,6 +6,28 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+# A lease is the only thing that lets the reaper take a job back from a stuck
+# or malicious worker. If the worker could pick the TTL, it could pick one long
+# enough that the lease never expires — and then the capability token bound to
+# that attempt would be neither self-revoking nor cancellable by the owner. The
+# server therefore caps it, and 15 minutes is far above any legitimate gap
+# between heartbeats.
+MAX_LEASE_TTL_SECONDS = 900.0
+
+# Every job carries a spending cap. The default is small enough that a
+# misconfigured or runaway job is an annoyance rather than a bill, and the
+# ceiling stops a typo (or a hostile caller) from requesting an unbounded one.
+DEFAULT_JOB_BUDGET_USD = 5.0
+MAX_JOB_BUDGET_USD = 500.0
+
+# Normalized event kinds (issue #1041) plus the control events the platform
+# appends. The pattern is the security-relevant part: an event type is
+# interpolated into the SSE ``event:`` field, so anything containing a newline
+# would let a worker inject arbitrary frames into the owner's stream. Keeping
+# the charset to lowercase/digits/underscore makes that structurally impossible
+# while still letting runtime adapters introduce new kinds.
+EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+
 
 class AgentJobCreate(BaseModel):
     """Request body for creating an agent job."""
@@ -14,7 +36,23 @@ class AgentJobCreate(BaseModel):
     task_prompt: str = Field(..., description="What the agent should do.")
     runtime: str = Field("claude-code", description="Agent runtime id.")
     model: str = Field(..., description="Gateway model id the runtime should use.")
-    base_sha: str | None = Field(None, description="Commit SHA to work from.")
+    base_sha: str | None = Field(
+        None,
+        # A bare commit hash, enforced here as well as in the publisher: git
+        # reads a leading `-` as an option even where an operand is expected,
+        # so an unconstrained ref would be an argument injection into the
+        # trusted process that holds the repository credential.
+        pattern=r"^[0-9a-fA-F]{7,64}$",
+        description="Commit SHA to work from.",
+    )
+    budget_usd: float = Field(
+        DEFAULT_JOB_BUDGET_USD,
+        gt=0,
+        le=MAX_JOB_BUDGET_USD,
+        # Always present and bounded: an absent budget would mean a live
+        # sandbox credential with no spending limit at all.
+        description="Cap on this job's model spend, in USD.",
+    )
     metadata: dict[str, Any] | None = Field(None, description="Opaque caller metadata.")
 
 
@@ -32,6 +70,7 @@ class AgentJobResponse(BaseModel):
     current_attempt_id: int | None = None
     published_pr_url: str | None = None
     detail: str | None = None
+    budget_usd: float | None = None
     metadata: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -87,7 +126,10 @@ class WorkerClaimRequest(BaseModel):
 
     worker_id: str = Field(..., description="Stable identifier of the claiming worker.")
     lease_ttl_seconds: float = Field(
-        120.0, gt=0, description="How long the lease is valid without a heartbeat."
+        120.0,
+        gt=0,
+        le=MAX_LEASE_TTL_SECONDS,
+        description="How long the lease is valid without a heartbeat.",
     )
 
 
@@ -103,13 +145,17 @@ class WorkerClaimResponse(BaseModel):
     runtime: str
     model: str
     worker_token: str
+    sandbox_token: str = Field(
+        "",
+        description="Model-scoped credential; the only one that enters the sandbox.",
+    )
     metadata: dict[str, Any] | None = None
 
 
 class WorkerHeartbeatRequest(BaseModel):
     """Worker lease renewal."""
 
-    lease_ttl_seconds: float = Field(120.0, gt=0)
+    lease_ttl_seconds: float = Field(120.0, gt=0, le=MAX_LEASE_TTL_SECONDS)
 
 
 class WorkerHeartbeatResponse(BaseModel):
@@ -123,7 +169,11 @@ class WorkerHeartbeatResponse(BaseModel):
 class WorkerEventRequest(BaseModel):
     """One normalized event reported by a worker."""
 
-    event_type: str = Field(..., description="thinking|message|tool_use|...|lifecycle")
+    event_type: str = Field(
+        ...,
+        pattern=EVENT_TYPE_PATTERN,
+        description="thinking|message|tool_use|...|lifecycle",
+    )
     payload: dict[str, Any] | None = None
 
 

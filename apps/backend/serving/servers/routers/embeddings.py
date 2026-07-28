@@ -168,6 +168,8 @@ async def create_embeddings(
         "authorization": bool(authorization) or is_authenticated,
         "authenticated": is_authenticated,
         "user_id": user_ctx.get("user_id"),
+        # Agent-sandbox attribution (issue #1041); None for ordinary traffic.
+        "agent_job_id": user_ctx.get("agent_job_id"),
     }
     if is_synthetic_probe:
         metadata["synthetic_probe"] = True

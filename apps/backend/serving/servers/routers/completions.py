@@ -594,6 +594,11 @@ async def chat_completions(
         metadata["synthetic_probe"] = True
     if session_id:
         metadata["session_id"] = session_id
+    # Present only when the caller authenticated with an agent-sandbox
+    # capability token; lands in api_logs.agent_job_id, which is both the
+    # owner's cost report and the ledger the job's budget is measured from.
+    if user_ctx.get("agent_job_id"):
+        metadata["agent_job_id"] = user_ctx["agent_job_id"]
 
     early_params: dict[str, Any] = {"stream": effective_stream}
     if session_id:

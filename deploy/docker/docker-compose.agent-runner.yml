@@ -1,0 +1,73 @@
+# Self-hosted agent runners (issue #1041).
+#
+# Overlay, not a replacement: compose this alongside the main stack when you
+# want jobs executed on your own machines instead of GitHub Actions.
+#
+#   docker compose -f deploy/docker/docker-compose.yml \
+#                  -f deploy/docker/docker-compose.agent-runner.yml \
+#                  up -d --scale agent-runner=4
+#
+# Scaling is just --scale: AgentJobStore.claim_job uses FOR UPDATE SKIP LOCKED,
+# so runners share one queue with no coordination, no leader, and no sharding.
+# Adding replicas adds throughput; a replica dying mid-job is handled by the
+# lease reaper, not by anything here.
+#
+# The runner is the TRUSTED side. It holds the dispatcher credential and the
+# full capability token, and it spawns a disposable sandbox per job — only a
+# model-scoped token crosses into that sandbox. That is why this service mounts
+# the Docker socket and the sandbox does not: the boundary is between the
+# runner and the container it starts, not around the runner itself.
+
+services:
+  agent-runner:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.backend
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - serving.agent_jobs.runner
+      - --loop
+      - --worker-id
+      - ${AGENT_WORKER_ID:-runner}
+    environment:
+      FREEINFERENCE_BASE_URL: ${AGENT_GATEWAY_URL:-http://backend:8080}
+      AGENT_DISPATCHER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
+
+      # Isolation. `kata` gives each job its own kernel and is what untrusted
+      # multi-tenant code needs; `container` shares the host kernel and is a
+      # reasonable choice only for repositories you already trust.
+      AGENT_SANDBOX_BACKEND: ${AGENT_SANDBOX_BACKEND:-kata}
+      AGENT_SANDBOX_IMAGE: ${AGENT_SANDBOX_IMAGE:-freeinference/agent-sandbox:latest}
+
+      # Egress policy. `agent-egress` is an internal network with no route to
+      # the internet: a sandbox on it reaches the gateway (models + event
+      # reporting) and nothing else. Point this at a network with an allowlist
+      # proxy when jobs need to install dependencies.
+      AGENT_SANDBOX_NETWORK: ${AGENT_SANDBOX_NETWORK:-agent-egress}
+
+      AGENT_LEASE_TTL: ${AGENT_LEASE_TTL:-120}
+      AGENT_TIMEOUT_S: ${AGENT_TIMEOUT_S:-3600}
+    volumes:
+      # The runner starts the sandbox containers, so it needs the daemon.
+      # Read-only: the runner creates and removes its own containers and has no
+      # business reconfiguring the daemon.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Job worktrees. Bind-mounted into each sandbox, discarded per job.
+      - agent_workdirs:/var/lib/freeinference/agent-jobs
+    networks:
+      - hybridinference
+    depends_on:
+      - backend
+
+networks:
+  agent-egress:
+    # internal: no gateway to the outside world. The sandbox can talk to
+    # services on this network and nothing else, which is the PlatformOnly
+    # tier from the design doc expressed as infrastructure rather than policy
+    # an agent could talk its way around.
+    internal: true
+
+volumes:
+  agent_workdirs:
