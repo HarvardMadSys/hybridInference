@@ -65,14 +65,16 @@ def test_container_command_carries_the_isolation_flags():
 
 def test_plain_container_is_not_vm_isolated():
     """A shared-kernel container must not claim VM isolation."""
-    backend = ContainerBackend()
+    backend = ContainerBackend(image="img:1")
     assert backend.is_vm_isolated is False
     assert "--runtime" not in backend.build_command(_SPEC)
 
 
 def test_kata_backend_requests_the_vm_runtime():
     """Selecting kata puts a kernel boundary around each job."""
-    backend = build_backend_from_env({"AGENT_SANDBOX_BACKEND": "kata"})
+    backend = build_backend_from_env(
+        {"AGENT_SANDBOX_BACKEND": "kata", "AGENT_SANDBOX_IMAGE": "img:1"}
+    )
     assert isinstance(backend, ContainerBackend)
     assert backend.is_vm_isolated is True
     command = backend.build_command(_SPEC)
@@ -81,7 +83,7 @@ def test_kata_backend_requests_the_vm_runtime():
 
 def test_env_reaches_the_container_as_env_flags_not_inherited():
     """Agent environment is passed explicitly, never inherited by accident."""
-    command = ContainerBackend().build_command(
+    command = ContainerBackend(image="img:1").build_command(
         SandboxSpec(argv=["x"], workdir="/w", env={"TOKEN": "secret", "B": "2"})
     )
     assert "TOKEN=secret" in command
@@ -92,7 +94,10 @@ def test_backend_selection_from_env():
     """The three configured shapes resolve to the right backend."""
     assert isinstance(build_backend_from_env({}), ProcessBackend)
     assert isinstance(
-        build_backend_from_env({"AGENT_SANDBOX_BACKEND": "container"}), ContainerBackend
+        build_backend_from_env(
+            {"AGENT_SANDBOX_BACKEND": "container", "AGENT_SANDBOX_IMAGE": "img:1"}
+        ),
+        ContainerBackend,
     )
     with pytest.raises(SandboxError):
         build_backend_from_env({"AGENT_SANDBOX_BACKEND": "nonsense"})
@@ -101,9 +106,26 @@ def test_backend_selection_from_env():
 def test_explicit_runtime_override_wins():
     """An operator can name a different VM runtime than the Kata default."""
     backend = build_backend_from_env(
-        {"AGENT_SANDBOX_BACKEND": "container", "AGENT_SANDBOX_RUNTIME": "runsc"}
+        {
+            "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_RUNTIME": "runsc",
+            "AGENT_SANDBOX_IMAGE": "img:1",
+        }
     )
     assert backend.is_vm_isolated is True
     assert backend.build_command(_SPEC)[backend.build_command(_SPEC).index("--runtime") + 1] == (
         "runsc"
     )
+
+
+def test_a_container_backend_without_an_image_refuses() -> None:
+    """No default, because an unqualified name is not inert.
+
+    `docker run hybridinference/agent-sandbox` resolves through Docker Hub, so
+    a default here hands the container an untrusted agent runs inside to
+    whoever registered that namespace.
+    """
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_IMAGE"):
+        build_backend_from_env({"AGENT_SANDBOX_BACKEND": "container"})
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_IMAGE"):
+        build_backend_from_env({"AGENT_SANDBOX_BACKEND": "kata", "AGENT_SANDBOX_IMAGE": "  "})
