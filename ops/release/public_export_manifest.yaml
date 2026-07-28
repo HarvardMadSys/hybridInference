@@ -53,6 +53,25 @@ exclude:
       Checks this manifest, which is part of the export tooling rather than of
       the result — ops/release/ does not travel either.
 
+  # Found the same way as the rest: build the export tree and run it. Each of
+  # these asserts something about a directory the export removes, so they fail
+  # in the result while passing here.
+  - path: tests/unit/deploy/test_oncall_container.py
+    reason: Asserts the on-call image build, which lives in services/.
+  - path: tests/unit/deploy/test_status_monitor_control_plane_workflow.py
+    reason: Asserts the status-monitor deploy workflow and its wrangler pin.
+  - path: tests/unit/deploy/test_slack_readback_gate_workflow.py
+    reason: Asserts a workflow in .github/workflows/, which the export replaces.
+  - path: tests/unit/observability/test_control_plane_contract.py
+    reason: >-
+      Reads the alert control plane's shared fixtures from
+      services/alert-control-plane-worker/test/, which does not travel.
+  - path: tests/unit/config/test_distribution_manifests_discovery.py
+    reason: >-
+      Asserts that this deployment's manifest resolves its config inside the
+      overlay — a claim about distributions/, which the export removes. The
+      overlay keeps its own copy of the same check.
+
 # Flagged by the public-surface audit (2026-07-28). Each entry cites what was
 # found, so a future reader can re-judge rather than inherit a bare rule.
   # ops/ is not uniformly this deployment's, and excluding it wholesale was a
