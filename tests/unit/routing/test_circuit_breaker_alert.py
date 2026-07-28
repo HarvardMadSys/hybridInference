@@ -5,6 +5,8 @@ import gc
 import logging
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from routing.endpoint_health import (
     _MAX_TRACKED_OFFENDERS,
     EndpointHealthRegistry,
@@ -12,6 +14,15 @@ from routing.endpoint_health import (
     _CircuitState,
     _offender_str,
 )
+from serving.observability.alerts import reset_transition_state
+
+
+@pytest.fixture(autouse=True)
+def _clean_transition_state():
+    """The breach tracker is shared, so an open circuit would leak between tests."""
+    reset_transition_state()
+    yield
+    reset_transition_state()
 
 
 async def test_default_settings_keep_circuit_closed_until_third_failure(monkeypatch):
@@ -23,7 +34,7 @@ async def test_default_settings_keep_circuit_closed_until_third_failure(monkeypa
     registry = EndpointHealthRegistry()
     endpoint_id = "openai"
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()):
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
         registry.record_failure(endpoint_id, reason="upstream_500")
         registry.record_failure(endpoint_id, reason="upstream_500")
         assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
@@ -44,7 +55,7 @@ async def test_circuit_open_fires_alert(monkeypatch):
 
     cb = _CircuitBreaker(provider="openai")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="upstream_500")
         cb.on_failure(reason="upstream_500")
         assert cb.state == _CircuitState.OPEN
@@ -64,7 +75,7 @@ async def test_circuit_open_alert_includes_upstream_error(monkeypatch):
 
     cb = _CircuitBreaker(provider="openai")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="stream_exception", detail="HTTP 502 from upstream: bad gateway")
         cb.on_failure(reason="stream_exception", detail="HTTP 502 from upstream: bad gateway")
         assert cb.state == _CircuitState.OPEN
@@ -86,7 +97,7 @@ async def test_circuit_open_alert_omits_upstream_error_when_absent(monkeypatch):
 
     cb = _CircuitBreaker(provider="openai")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="upstream_500")
         cb.on_failure(reason="upstream_500")
         await asyncio.sleep(0)
@@ -106,7 +117,7 @@ async def test_circuit_open_alert_only_on_first_transition(monkeypatch):
 
     cb = _CircuitBreaker(provider="openai")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="upstream_500")
         cb.on_failure(reason="upstream_500")  # CLOSED → OPEN
         cb.on_failure(reason="upstream_500")  # OPEN → OPEN (no alert)
@@ -131,7 +142,7 @@ async def test_circuit_open_emits_structured_log(monkeypatch, caplog):
     cb = _CircuitBreaker(provider="openai")
 
     with (
-        patch("routing.endpoint_health.alert_slack", new=AsyncMock()),
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()),
         caplog.at_level(logging.INFO, logger="routing.routers"),
     ):
         cb.on_failure(reason="stream_exception", detail="access_terminated_error", offender="dave")
@@ -174,7 +185,7 @@ async def test_circuit_open_logs_once_per_transition(monkeypatch, caplog):
     cb = _CircuitBreaker(provider="openai")
 
     with (
-        patch("routing.endpoint_health.alert_slack", new=AsyncMock()),
+        patch("serving.observability.alerts.alert_slack", new=AsyncMock()),
         caplog.at_level(logging.WARNING, logger="routing.routers"),
     ):
         cb.on_failure(reason="upstream_500")
@@ -203,7 +214,7 @@ async def test_circuit_open_alert_survives_breaker_gc(monkeypatch):
 
     reset_dedupe_state()
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb = _CircuitBreaker(provider="openai")
         cb.on_failure(reason="upstream_500")
         cb.on_failure(reason="upstream_500")
@@ -267,7 +278,7 @@ async def test_circuit_open_alert_lists_offending_users(monkeypatch):
 
     cb = _CircuitBreaker(provider="kimi_coding-api")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="stream_exception", offender="bob (02)")
         cb.on_failure(reason="stream_exception", offender="alice (01)")
         cb.on_failure(reason="stream_exception", offender="alice (01)")
@@ -290,7 +301,7 @@ async def test_circuit_open_alert_omits_offending_users_when_unattributed(monkey
 
     cb = _CircuitBreaker(provider="openai")
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         cb.on_failure(reason="upstream_500")
         cb.on_failure(reason="upstream_500")
         await asyncio.sleep(0)
@@ -339,7 +350,7 @@ async def test_registry_attributes_offender_from_request_context(monkeypatch):
 
     registry = EndpointHealthRegistry()
 
-    with patch("routing.endpoint_health.alert_slack", new=AsyncMock()) as mock_alert:
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()) as mock_alert:
         with req_ctx.push(user_id="01ABC", user_name="alice"):
             registry.record_failure("kimi_coding-api", reason="stream_exception")
             registry.record_failure("kimi_coding-api", reason="stream_exception")
