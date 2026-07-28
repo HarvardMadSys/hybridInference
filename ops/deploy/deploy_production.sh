@@ -9,7 +9,18 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/health}"
 FRONTEND_HEALTH_URL="${FRONTEND_HEALTH_URL:-http://127.0.0.1:3001/}"
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
 DEPLOY_SHA="${DEPLOY_SHA:-}"
-COMPOSE=(docker compose -f deploy/docker/docker-compose.yml --env-file .env)
+# This deployment's public identity — site name, links, CORS, console build
+# args — lives in the distribution overlay, because the upstream defaults name
+# no deployment. Without these files the stack would come up unbranded. `.env`
+# is passed last so it wins, keeping per-host overrides working; secrets live
+# only in `.env`, never in the checked-in overlay.
+COMPOSE=(docker compose -f deploy/docker/docker-compose.yml)
+for env_file in "$APP_DIR"/distributions/freeinference/deploy/*.env; do
+  if [[ -f "$env_file" ]]; then
+    COMPOSE+=(--env-file "$env_file")
+  fi
+done
+COMPOSE+=(--env-file .env)
 
 log() {
   printf '[deploy] %s\n' "$*"

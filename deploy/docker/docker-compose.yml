@@ -38,24 +38,24 @@ services:
       # cannot be reached except through Cloudflare (Authenticated Origin Pulls
       # or a Cloudflare IP allowlist) — otherwise anyone hitting the origin
       # directly can forge it. Set to 1 in .env once that is true.
-      # See docs/developer/freeinference.md#client-ip-resolution.
       TRUST_CLOUDFLARE_HEADERS: ${TRUST_CLOUDFLARE_HEADERS:-0}
       GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
       GEOIP_COUNTRY_PROVIDER: dbip-lite
-      # Identity rendered into emails, the docs-assistant prompt, quota help
-      # text and OpenRouter attribution. Supplied here so the upstream code
-      # defaults can stay neutral; .env still overrides each one.
-      SITE_NAME: ${SITE_NAME-FreeInference}
-      SITE_PUBLIC_BASE_URL: ${SITE_PUBLIC_BASE_URL-https://freeinference.org}
-      SITE_DOCS_URL: ${SITE_DOCS_URL-https://doc.freeinference.org}
-      SITE_SUPPORT_EMAIL: ${SITE_SUPPORT_EMAIL-admin@freeinference.org}
-      # Deployment identity that used to live as code defaults. Pinned here so
-      # upstream can ship neutral ones; .env still overrides each.
-      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL-noreply@freeinference.org}
-      SMTP_FROM_NAME: ${SMTP_FROM_NAME-FreeInference}
-      BASE_URL: ${BASE_URL-https://freeinference.org}
-      FRONTEND_URL: ${FRONTEND_URL-https://freeinference.org}
-      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS-http://localhost:3000,http://localhost:3001,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002,https://localhost:8443,https://127.0.0.1:8443,http://freeinference.org,http://freeinference.org:3001,https://freeinference.org,https://freeinference.org:3001,http://staging-internal.freeinference.org,https://staging-internal.freeinference.org}
+      # Identity rendered into emails, links, CORS, the docs-assistant prompt
+      # and OpenRouter attribution. The defaults below name no deployment, so
+      # `docker compose up` on a fresh clone brings up *your* gateway, not
+      # someone else's. A deployment supplies its own values through an env
+      # file (see distributions/*/deploy/backend.env and ops/deploy/*.sh);
+      # the server's own .env still overrides each one.
+      SITE_NAME: ${SITE_NAME-HybridInference}
+      SITE_PUBLIC_BASE_URL: ${SITE_PUBLIC_BASE_URL-}
+      SITE_DOCS_URL: ${SITE_DOCS_URL-}
+      SITE_SUPPORT_EMAIL: ${SITE_SUPPORT_EMAIL-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL-noreply@localhost}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME-HybridInference}
+      BASE_URL: ${BASE_URL-}
+      FRONTEND_URL: ${FRONTEND_URL-http://localhost:3001}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS-http://localhost:3000,http://localhost:3001,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002,https://localhost:8443,https://127.0.0.1:8443}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -108,34 +108,40 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.frontend
       args:
-        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://freeinference.org}
+        # Console identity. Every value below is empty by default, and the
+        # console's own code supplies a neutral fallback for each, so a clone
+        # builds a console that names no deployment. A deployment fills these
+        # in through an env file (distributions/*/deploy/frontend.env, fed to
+        # `docker compose --env-file` by ops/deploy/*.sh); the server's .env
+        # still overrides any of them.
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE-}
         NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
         NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
         NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
-        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME-FreeInference}
-        NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION-Free LLM inference for research, built at Harvard SEAS.}
-        NEXT_PUBLIC_SITE_HOST: ${NEXT_PUBLIC_SITE_HOST-freeinference.org}
-        NEXT_PUBLIC_ORG_NAME: ${NEXT_PUBLIC_ORG_NAME-Harvard SEAS}
-        NEXT_PUBLIC_ORG_URL: ${NEXT_PUBLIC_ORG_URL-https://madsys.seas.harvard.edu}
-        NEXT_PUBLIC_ORG_TAGLINE: ${NEXT_PUBLIC_ORG_TAGLINE-Built at Harvard SEAS · MadSys Lab}
-        NEXT_PUBLIC_DOCS_URL: ${NEXT_PUBLIC_DOCS_URL-https://doc.freeinference.org/}
-        NEXT_PUBLIC_STATUS_URL: ${NEXT_PUBLIC_STATUS_URL-https://status.staging.freeinference.org/}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME-}
+        NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION-}
+        NEXT_PUBLIC_SITE_HOST: ${NEXT_PUBLIC_SITE_HOST-}
+        NEXT_PUBLIC_ORG_NAME: ${NEXT_PUBLIC_ORG_NAME-}
+        NEXT_PUBLIC_ORG_URL: ${NEXT_PUBLIC_ORG_URL-}
+        NEXT_PUBLIC_ORG_TAGLINE: ${NEXT_PUBLIC_ORG_TAGLINE-}
+        NEXT_PUBLIC_DOCS_URL: ${NEXT_PUBLIC_DOCS_URL-}
+        NEXT_PUBLIC_STATUS_URL: ${NEXT_PUBLIC_STATUS_URL-}
+        # The upstream project's own repository, not a deployment's: a fork
+        # that wants its own overrides it like any other value.
         NEXT_PUBLIC_GITHUB_URL: ${NEXT_PUBLIC_GITHUB_URL-https://github.com/HarvardMadSys/hybridInference}
-        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL-admin@freeinference.org}
-        NEXT_PUBLIC_EXAMPLE_API_BASE: ${NEXT_PUBLIC_EXAMPLE_API_BASE-https://freeinference.org}
-        NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR: ${NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR-FREEINFERENCE_API_KEY}
-        NEXT_PUBLIC_EXAMPLE_MODEL: ${NEXT_PUBLIC_EXAMPLE_MODEL-glm-5.1}
-        # Use `${VAR-default}` (not `:-`) so an explicit empty value can
-        # disable analytics and the signup fast-track hint.
-        NEXT_PUBLIC_STATCOUNTER_PROJECT_ID: ${NEXT_PUBLIC_STATCOUNTER_PROJECT_ID-13224568}
-        NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY: ${NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY-2d8ab84a}
-        NEXT_PUBLIC_FAST_TRACK_DOMAIN: ${NEXT_PUBLIC_FAST_TRACK_DOMAIN-harvard.edu}
-        NEXT_PUBLIC_FAST_TRACK_ORG: ${NEXT_PUBLIC_FAST_TRACK_ORG-Harvard}
-        NEXT_PUBLIC_STORAGE_KEY_PREFIX: ${NEXT_PUBLIC_STORAGE_KEY_PREFIX-freeinference}
+        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL-}
+        NEXT_PUBLIC_EXAMPLE_API_BASE: ${NEXT_PUBLIC_EXAMPLE_API_BASE-}
+        NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR: ${NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR-}
+        NEXT_PUBLIC_EXAMPLE_MODEL: ${NEXT_PUBLIC_EXAMPLE_MODEL-}
+        NEXT_PUBLIC_STATCOUNTER_PROJECT_ID: ${NEXT_PUBLIC_STATCOUNTER_PROJECT_ID-}
+        NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY: ${NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY-}
+        NEXT_PUBLIC_FAST_TRACK_DOMAIN: ${NEXT_PUBLIC_FAST_TRACK_DOMAIN-}
+        NEXT_PUBLIC_FAST_TRACK_ORG: ${NEXT_PUBLIC_FAST_TRACK_ORG-}
+        NEXT_PUBLIC_STORAGE_KEY_PREFIX: ${NEXT_PUBLIC_STORAGE_KEY_PREFIX-}
         NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
         NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
-        NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-junchengyang.com}
+        NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-}
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:

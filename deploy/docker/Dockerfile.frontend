@@ -7,7 +7,11 @@ RUN npm ci
 # ---- Stage 2: build ----
 FROM node:22-alpine AS builder
 WORKDIR /app
-ARG NEXT_PUBLIC_API_BASE=https://freeinference.org
+# Every NEXT_PUBLIC_* below is empty by default so an image built straight from
+# this Dockerfile names no deployment; the console's own code supplies a
+# neutral fallback for each. A deployment passes its values as build args --
+# see deploy/docker/docker-compose.yml and distributions/*/deploy/frontend.env.
+ARG NEXT_PUBLIC_API_BASE=
 ARG NEXT_PUBLIC_DEPLOY_TARGET=production
 ARG NEXT_PUBLIC_BUILD_SHA=
 ARG NEXT_PUBLIC_BUILD_TIMESTAMP=
@@ -25,10 +29,10 @@ ARG NEXT_PUBLIC_CONTACT_EMAIL=
 ARG NEXT_PUBLIC_EXAMPLE_API_BASE=
 ARG NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR=
 ARG NEXT_PUBLIC_EXAMPLE_MODEL=
-ARG NEXT_PUBLIC_STATCOUNTER_PROJECT_ID=13224568
-ARG NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY=2d8ab84a
-ARG NEXT_PUBLIC_FAST_TRACK_DOMAIN=harvard.edu
-ARG NEXT_PUBLIC_FAST_TRACK_ORG=Harvard
+ARG NEXT_PUBLIC_STATCOUNTER_PROJECT_ID=
+ARG NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY=
+ARG NEXT_PUBLIC_FAST_TRACK_DOMAIN=
+ARG NEXT_PUBLIC_FAST_TRACK_ORG=
 ARG NEXT_PUBLIC_STORAGE_KEY_PREFIX=
 ARG NEXT_PUBLIC_TEAM_JSON=
 ARG NEXT_PUBLIC_SPONSORS_JSON=

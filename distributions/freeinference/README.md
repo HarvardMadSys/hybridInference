@@ -10,9 +10,34 @@ What belongs here vs. upstream is ruled per directory by the
 ([#953](https://github.com/HarvardMadSys/hybridInference/pull/953)).
 Both relative links resolve once those PRs merge; until then use the PR links.
 
+## `deploy/` — this site's public identity
+
+`deploy/*.env` is live, not a skeleton. It holds the values that make the
+stack *this* site: name, public URLs, support address, CORS origins, and the
+console's build-time identity. Upstream's compose defaults name no deployment
+(so `docker compose up` on a clone brings up an unbranded gateway), which
+means these files are what production actually runs on —
+`ops/deploy/deploy_{production,staging}.sh` feed every `deploy/*.env` to
+`docker compose --env-file`, ahead of the server's `.env`.
+
+Two consequences worth remembering:
+
+- **Deleting a key here changes production**, silently and immediately on the
+  next deploy — it falls back to the neutral upstream default rather than
+  erroring. `tests/unit/deploy/test_compose_identity.py` pins the ones that
+  matter, and also fails if compose stops reading these files.
+- **These files are checked in, so no secrets.** Keys, passwords and tokens
+  stay in the server's `.env`, which is passed last and still overrides
+  anything here, so per-host tweaks keep working.
+
+Adding a value is two steps: reference it in `deploy/docker/docker-compose.yml`
+with a neutral default (`${VAR-}` is enough when the code already has one),
+then set it in the matching `deploy/*.env`.
+
 ## Current state
 
-Skeleton only. `distribution.yaml` is a real, loadable manifest, but its
+Everything below `deploy/` is skeleton. `distribution.yaml` is a real,
+loadable manifest, but its
 `paths:` deliberately point back at the legacy `config/*.yaml` locations —
 **the legacy paths remain production truth** (Phase 1). To try it on
 staging, add to the repo-root `.env` (Compose passes it via `env_file`; the
