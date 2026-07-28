@@ -183,15 +183,6 @@ class FakeAgentJobStore:
         self.live_fence = None
         return True
 
-    async def begin_publish(self, **kwargs: Any) -> bool:
-        return await self.transition(from_states=("running",), to_state="publishing", **kwargs)
-
-    async def complete_publish(self, *, pr_url: str, **kwargs: Any) -> bool:
-        ok = await self.transition(from_states=("publishing",), to_state="succeeded", **kwargs)
-        if ok:
-            self.jobs[kwargs["job_id"]]["published_pr_url"] = pr_url
-        return ok
-
 
 @pytest.fixture(autouse=True)
 def _api_key_secret(monkeypatch):
@@ -382,8 +373,6 @@ async def test_lost_lease_maps_to_409_on_every_write_path(
         ("post", f"/v1/agent/worker/jobs/{job_id}/events", {"event_type": "message"}),
         ("post", f"/v1/agent/worker/jobs/{job_id}/artifacts", {"kind": "p", "content": "c"}),
         ("post", f"/v1/agent/worker/jobs/{job_id}/finish", {"state": "succeeded"}),
-        ("post", f"/v1/agent/worker/jobs/{job_id}/publish/begin", None),
-        ("post", f"/v1/agent/worker/jobs/{job_id}/publish/complete", {"pr_url": "http://x"}),
     ]
     for method, path, payload in calls:
         response = await getattr(client, method)(
@@ -416,24 +405,6 @@ async def test_worker_token_is_required_and_scoped(client: AsyncClient):
         headers={"Authorization": f"Bearer {foreign_token}"},
     )
     assert wrong_job.status_code == 409
-
-
-async def test_publish_two_phase(client: AsyncClient, store: FakeAgentJobStore):
-    """begin → complete records the PR URL and finishes the job."""
-    job_id = await _create_job(client)
-    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
-    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
-
-    begin = await client.post(f"/v1/agent/worker/jobs/{job_id}/publish/begin", headers=auth)
-    assert begin.status_code == 200
-    complete = await client.post(
-        f"/v1/agent/worker/jobs/{job_id}/publish/complete",
-        json={"pr_url": "https://github.com/o/n/pull/1"},
-        headers=auth,
-    )
-    assert complete.status_code == 200
-    assert store.jobs[job_id]["state"] == "succeeded"
-    assert store.jobs[job_id]["published_pr_url"] == "https://github.com/o/n/pull/1"
 
 
 async def test_finish_rejects_non_terminal_state(client: AsyncClient):
@@ -957,3 +928,25 @@ async def test_the_owner_can_see_what_the_sandbox_could_reach(client: AsyncClien
     body = (await client.get(f"/v1/agent/jobs/{job_id}")).json()
 
     assert body["agent_egress_tier"] == "platform_only"
+
+
+async def test_a_worker_cannot_write_the_publish_record(client: AsyncClient):
+    """Publishing is the platform's, not the sandbox runner's.
+
+    These endpoints had no production caller — the runner leaves publishing to
+    the platform and the publisher uses its own claim path — while letting a
+    worker token write `published_pr_url` from an arbitrary string. That marked
+    the job succeeded, showed the owner that URL, and made the real publisher
+    skip the job forever (it only claims rows where the URL is null), so the
+    patch was never gated or pushed.
+    """
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+    for path, body in (
+        (f"/v1/agent/worker/jobs/{job_id}/publish/begin", None),
+        (f"/v1/agent/worker/jobs/{job_id}/publish/complete", {"pr_url": "https://evil/pr/1"}),
+    ):
+        response = await client.post(path, json=body, headers=auth)
+        assert response.status_code == 404, f"{path} must not exist"

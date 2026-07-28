@@ -64,7 +64,6 @@ from serving.schemas_agent_jobs import (
     WorkerFinishRequest,
     WorkerHeartbeatRequest,
     WorkerHeartbeatResponse,
-    WorkerPublishRequest,
 )
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
@@ -738,45 +737,3 @@ async def worker_finish(
     if not ok:
         raise _lease_lost()
     return WorkerAckResponse(ok=True, state=body.state)
-
-
-@router.post("/worker/jobs/{job_id}/publish/begin", response_model=WorkerAckResponse)
-async def worker_begin_publish(
-    job_id: str,
-    authorization: str | None = Header(None),
-    store: AgentJobStore | None = Depends(get_agent_job_store),
-) -> WorkerAckResponse:
-    """Enter the one-shot publish phase (``running -> publishing``)."""
-    job_store = _require_store(store)
-    claims = _worker_claims(authorization)
-    _match_job(claims, job_id)
-    ok = await job_store.begin_publish(
-        job_id=job_id,
-        attempt_id=claims["attempt_id"],
-        lease_generation=claims["lease_generation"],
-    )
-    if not ok:
-        raise _lease_lost()
-    return WorkerAckResponse(ok=True, state="publishing")
-
-
-@router.post("/worker/jobs/{job_id}/publish/complete", response_model=WorkerAckResponse)
-async def worker_complete_publish(
-    job_id: str,
-    body: WorkerPublishRequest,
-    authorization: str | None = Header(None),
-    store: AgentJobStore | None = Depends(get_agent_job_store),
-) -> WorkerAckResponse:
-    """Record the published PR URL and finish the job (exactly once)."""
-    job_store = _require_store(store)
-    claims = _worker_claims(authorization)
-    _match_job(claims, job_id)
-    ok = await job_store.complete_publish(
-        job_id=job_id,
-        attempt_id=claims["attempt_id"],
-        lease_generation=claims["lease_generation"],
-        pr_url=body.pr_url,
-    )
-    if not ok:
-        raise _lease_lost()
-    return WorkerAckResponse(ok=True, state="succeeded")

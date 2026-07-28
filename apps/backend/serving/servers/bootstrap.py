@@ -174,6 +174,15 @@ async def _reap_expired_agent_attempts(
                     "agent_attempts_reaped",
                     extra={"event": "agent_attempts_reaped", "count": len(actions)},
                 )
+            # A job the publisher took and never finished is invisible to the
+            # loop above: that scans running attempts, and this job's attempt
+            # finished before publishing began.
+            stalled = await store.reap_stalled_publishes()
+            if stalled:
+                logger.warning(
+                    "agent_publishes_stalled",
+                    extra={"event": "agent_publishes_stalled", "job_ids": stalled},
+                )
         except Exception:
             logger.warning("Agent attempt reaper pass failed", exc_info=True)
 

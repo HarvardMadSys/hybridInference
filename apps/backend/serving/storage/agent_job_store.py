@@ -543,68 +543,6 @@ class AgentJobStore:
                 )
         return True
 
-    async def begin_publish(
-        self,
-        *,
-        job_id: str,
-        attempt_id: int,
-        lease_generation: int,
-    ) -> bool:
-        """Enter the one-shot publish phase (``running -> publishing``)."""
-        return await self.transition(
-            job_id=job_id,
-            attempt_id=attempt_id,
-            lease_generation=lease_generation,
-            from_states=(RUNNING,),
-            to_state=PUBLISHING,
-        )
-
-    async def complete_publish(
-        self,
-        *,
-        job_id: str,
-        attempt_id: int,
-        lease_generation: int,
-        pr_url: str,
-    ) -> bool:
-        """Record the published PR and finish the job (exactly once).
-
-        Requires ``state = 'publishing'``, the live fenced lease, and
-        ``published_pr_url IS NULL`` — so no second publish can ever land.
-        """
-        async with self._pool.acquire() as conn, conn.transaction():
-            updated = await conn.fetchval(
-                """
-                UPDATE agent_jobs j
-                SET state = 'succeeded', published_pr_url = $4, updated_at = NOW()
-                WHERE j.id = $1
-                  AND j.state = 'publishing'
-                  AND j.current_attempt_id = $2
-                  AND j.published_pr_url IS NULL
-                  AND EXISTS (
-                        SELECT 1 FROM agent_attempts a
-                        WHERE a.id = $2 AND a.lease_generation = $3
-                          AND a.status = 'running'
-                          AND a.lease_expires_at > NOW()
-                  )
-                RETURNING j.id
-                """,
-                job_id,
-                attempt_id,
-                lease_generation,
-                pr_url,
-            )
-            if updated is None:
-                return False
-            await conn.execute(
-                "UPDATE agent_attempts SET status = 'finished', finished_at = NOW() "
-                "WHERE id = $1 AND status = 'running'",
-                attempt_id,
-            )
-        return True
-
-    # ── Events ─────────────────────────────────────────────────────────
-
     async def append_event(
         self,
         *,
@@ -910,6 +848,38 @@ class AgentJobStore:
                 )
 
     # ── Reaper ─────────────────────────────────────────────────────────
+
+    async def reap_stalled_publishes(self, *, stall_seconds: float = 900.0) -> list[str]:
+        """Fail jobs the publisher took and never finished.
+
+        ``claim_for_publish`` moves a job to ``publishing`` in its own
+        transaction; if the publisher then crashes, nothing else ever touches
+        that row. ``reap_expired`` cannot help — it scans running *attempts*,
+        and this job's attempt finished before publishing began — so the job
+        sits in ``publishing`` forever, invisible to its owner and to the
+        publish queue.
+
+        Failed rather than retried, for the reason this module already gives
+        for a lease that expires while publishing: the branch or PR may
+        already exist, and a second automatic publish must never happen.
+        Returns the job ids it failed.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            rows = await conn.fetch(
+                """
+                UPDATE agent_jobs
+                SET state = 'failed',
+                    detail = $2,
+                    updated_at = NOW()
+                WHERE state = 'publishing'
+                  AND published_pr_url IS NULL
+                  AND updated_at < NOW() - make_interval(secs => $1)
+                RETURNING id
+                """,
+                stall_seconds,
+                "the publisher stopped before finishing; manual review required",
+            )
+        return [row["id"] for row in rows]
 
     async def reap_expired(self, *, max_attempts: int = 3) -> list[dict[str, Any]]:
         """Close expired attempts and requeue (or fail) their jobs.
