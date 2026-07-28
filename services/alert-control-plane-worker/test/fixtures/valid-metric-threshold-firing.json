@@ -6,7 +6,7 @@
   "status": "firing",
   "severity": "warn",
   "title": "Auth failure spike",
-  "occurred_at": "2026-07-28T12:00:00Z",
+  "occurred_at": "2026-07-19T06:00:00Z",
   "summary": "Auth failure spike crossed its configured threshold.",
   "context": {
     "metric": "auth_failure_count",

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from serving.observability.control_plane_contract import parse_control_plane_alert_event
 from serving.observability.control_plane_producer import (
     ControlPlaneEventError,
     build_dependency_unavailable_event,
@@ -182,6 +183,12 @@ def test_naive_timestamps_are_refused() -> None:
         )
 
 
+#: The shared fixtures are pinned to one instant because both language suites
+#: parse them against a fixed clock; a builder call reproducing a fixture has to
+#: use that instant rather than this module's own.
+FIXTURE_MOMENT = dt.datetime(2026, 7, 19, 6, 0, 0, tzinfo=dt.timezone.utc)
+
+
 def test_events_match_the_fixtures_the_typescript_validator_parses() -> None:
     """Cross-language contract: what Python builds is what the control plane accepts.
 
@@ -209,7 +216,7 @@ def test_events_match_the_fixtures_the_typescript_validator_parses() -> None:
             source_addresses=["203.0.113.7"],
             distinct_sources=3,
             top_source_share=0.8,
-            occurred_at=MOMENT,
+            occurred_at=FIXTURE_MOMENT,
             event_id="gateway-auth-failure-1",
         )
         == breach
@@ -220,8 +227,89 @@ def test_events_match_the_fixtures_the_typescript_validator_parses() -> None:
             status="firing",
             backend="postgres",
             reason="health_check_failed",
-            occurred_at=MOMENT,
+            occurred_at=FIXTURE_MOMENT,
             event_id="gateway-dependency-1",
         )
         == outage
     )
+
+
+class TestBuilderOutputSatisfiesTheContract:
+    """The builders hand-mirror the validator, so nothing yet proved they agree.
+
+    ``control_plane_producer`` reimplements the rules rather than importing the
+    contract, which keeps a malformed event failing at the call site with a
+    stack trace. The cost is a third implementation, so every builder path is
+    parsed back through the contract here — the fixture test above only covers
+    the two shapes that happen to have a fixture.
+    """
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            build_metric_threshold_event(
+                metric="failed_request_rate",
+                status="firing",
+                observed=0.123,
+                threshold=0.05,
+                window_sec=300,
+                scope="gateway",
+                sample_count=366,
+                occurred_at=FIXTURE_MOMENT,
+            ),
+            build_metric_threshold_event(
+                metric="http_5xx_rate",
+                status="resolved",
+                observed=0.01,
+                threshold=0.05,
+                occurred_at=FIXTURE_MOMENT,
+            ),
+            build_metric_threshold_event(
+                metric="latency_p95_ms",
+                status="firing",
+                observed=2200,
+                threshold=1500,
+                scope="provider",
+                subject="zhipu",
+                occurred_at=FIXTURE_MOMENT,
+            ),
+            build_metric_threshold_event(
+                metric="auth_failure_count",
+                status="firing",
+                observed=41,
+                threshold=20,
+                source_addresses=["203.0.113.7", "2001:0db8::0001"],
+                distinct_sources=3,
+                top_source_share=0.8,
+                occurred_at=FIXTURE_MOMENT,
+            ),
+            build_metric_threshold_event(
+                metric="user_daily_cost",
+                status="firing",
+                observed=42.5,
+                threshold=25,
+                scope="user",
+                subject="user-4711",
+                occurred_at=FIXTURE_MOMENT,
+            ),
+            build_dependency_unavailable_event(
+                dependency="operational_store",
+                status="firing",
+                backend="postgres",
+                reason="health_check_failed",
+                occurred_at=FIXTURE_MOMENT,
+            ),
+            build_dependency_unavailable_event(
+                dependency="log_store",
+                status="resolved",
+                occurred_at=FIXTURE_MOMENT,
+            ),
+        ],
+    )
+    def test_every_built_event_parses(self, event: dict[str, object]) -> None:
+        parsed = parse_control_plane_alert_event(
+            event, now=FIXTURE_MOMENT + dt.timedelta(minutes=1)
+        )
+
+        assert parsed.alert_type == event["alert_type"]
+        assert parsed.fingerprint == event["fingerprint"]

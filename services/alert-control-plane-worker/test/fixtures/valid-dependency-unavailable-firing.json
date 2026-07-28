@@ -6,7 +6,7 @@
   "status": "firing",
   "severity": "critical",
   "title": "Database disconnected: operational store",
-  "occurred_at": "2026-07-28T12:00:00Z",
+  "occurred_at": "2026-07-19T06:00:00Z",
   "summary": "The operational store failed its health check.",
   "context": {
     "dependency": "operational_store",
