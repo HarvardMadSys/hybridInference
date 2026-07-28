@@ -82,6 +82,11 @@ class _Rule(Protocol):
 #: so a rule reloaded with new config does not lose which breaches are open.
 _TRANSITIONS = ThresholdTransitionTracker()
 
+#: How often to look for breaches nothing is evaluating any more. Well under
+#: the tracker's own staleness threshold so a stale incident closes promptly
+#: once it qualifies, rather than at the next multiple of a long interval.
+_STALE_SWEEP_INTERVAL_SEC = 60
+
 
 def reset_transition_state() -> None:
     """Drop all open-breach state. For tests and for a clean engine restart."""
@@ -313,23 +318,27 @@ class P95LatencyRule:
         threshold = self._cfg.overrides.get(provider, {}).get(
             "threshold_ms", self._cfg.threshold_ms
         )
-        if p95 < threshold:
-            return
-        p99_idx = int(0.99 * (len(sorted_durations) - 1))
-        p99 = sorted_durations[p99_idx]
-        await alert_slack(
-            AlertSeverity.WARN,
-            f"p95 latency exceeded for provider {provider}",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            p99_idx = int(0.99 * (len(sorted_durations) - 1))
+            p99 = sorted_durations[p99_idx]
+            return {
                 "provider": provider,
                 "p95_ms": p95,
                 "p99_ms": p99,
                 "samples": len(items),
                 "window_sec": self._cfg.window_sec,
                 "threshold_ms": threshold,
-            },
-            dedupe_key=f"p95_latency:{provider}",
+            }
+
+        await _emit_transition(
+            key=f"p95_latency:{provider}",
+            breached=p95 >= threshold,
+            severity=AlertSeverity.WARN,
+            title=f"p95 latency exceeded for provider {provider}",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            now=now,
         )
 
 
@@ -357,18 +366,15 @@ class AuthFailureSpikeRule:
             },
         )
         items = self._window.items(now)
-        if len(items) <= self._cfg.threshold_count:
-            return
-        ip_counts: collections.Counter[str] = collections.Counter(
-            it["remote_ip"] for it in items if it["remote_ip"]
-        )
-        key_counts: collections.Counter[str] = collections.Counter(
-            it["key_prefix"] for it in items if it["key_prefix"]
-        )
-        await alert_slack(
-            AlertSeverity.WARN,
-            "Auth failure spike",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            ip_counts: collections.Counter[str] = collections.Counter(
+                it["remote_ip"] for it in items if it["remote_ip"]
+            )
+            key_counts: collections.Counter[str] = collections.Counter(
+                it["key_prefix"] for it in items if it["key_prefix"]
+            )
+            return {
                 "count": len(items),
                 "window_sec": self._cfg.window_sec,
                 "top_ips": (
@@ -377,9 +383,16 @@ class AuthFailureSpikeRule:
                 "top_key_prefixes": (
                     ", ".join(f"{p} ({c})" for p, c in key_counts.most_common(3)) or "n/a"
                 ),
-            },
-            dedupe_key="auth_failure_spike",
+            }
+
+        await _emit_transition(
+            key="auth_failure_spike",
+            breached=len(items) > self._cfg.threshold_count,
+            severity=AlertSeverity.WARN,
+            title="Auth failure spike",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            now=now,
         )
 
 
@@ -416,21 +429,18 @@ class PendingPrefixCacheLeakRule:
             },
         )
         items = self._window.items(now)
-        if len(items) <= self._cfg.threshold_count:
-            return
-        reason_counts = collections.Counter(str(item["reason"]) for item in items)
-        ages = [item["age_sec"] for item in items if isinstance(item["age_sec"], (int, float))]
-        idle_times = [
-            item["idle_sec"] for item in items if isinstance(item["idle_sec"], (int, float))
-        ]
-        pending_counts = [
-            item["pending_count"] for item in items if isinstance(item["pending_count"], int)
-        ]
-        capacities = [item["capacity"] for item in items if isinstance(item["capacity"], int)]
-        await alert_slack(
-            AlertSeverity.WARN,
-            "RouteWise pending prefix-cache entries leaking",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            reason_counts = collections.Counter(str(item["reason"]) for item in items)
+            ages = [item["age_sec"] for item in items if isinstance(item["age_sec"], (int, float))]
+            idle_times = [
+                item["idle_sec"] for item in items if isinstance(item["idle_sec"], (int, float))
+            ]
+            pending_counts = [
+                item["pending_count"] for item in items if isinstance(item["pending_count"], int)
+            ]
+            capacities = [item["capacity"] for item in items if isinstance(item["capacity"], int)]
+            return {
                 "evicted_count": len(items),
                 "window_sec": self._cfg.window_sec,
                 "ttl_count": reason_counts["ttl"],
@@ -439,9 +449,16 @@ class PendingPrefixCacheLeakRule:
                 "max_idle_sec": max(idle_times, default=0),
                 "max_pending_count": max(pending_counts, default=0),
                 "capacity": max(capacities, default=0),
-            },
-            dedupe_key="prefix_cache_pending_leak",
+            }
+
+        await _emit_transition(
+            key="prefix_cache_pending_leak",
+            breached=len(items) > self._cfg.threshold_count,
+            severity=AlertSeverity.WARN,
+            title="RouteWise pending prefix-cache entries leaking",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            now=now,
         )
 
 
@@ -477,19 +494,23 @@ class TrackedTaskFailureRateRule:
             return
         failed = sum(1 for it in items if not it["success"])
         pct = (failed / len(items)) * 100.0
-        if pct < self._cfg.threshold_pct:
-            return
-        await alert_slack(
-            AlertSeverity.ERROR,
-            f"Tracked-task failure rate exceeded for {task_name}",
-            {
+
+        def breach_context() -> dict[str, Any]:
+            return {
                 "task_name": task_name,
                 "rate": (
                     f"{pct:.1f}% ({failed} of {len(items)} tasks, last {self._cfg.window_sec}s)"
                 ),
-            },
-            dedupe_key=f"tracked_task_failure:{task_name}",
+            }
+
+        await _emit_transition(
+            key=f"tracked_task_failure:{task_name}",
+            breached=pct >= self._cfg.threshold_pct,
+            severity=AlertSeverity.ERROR,
+            title=f"Tracked-task failure rate exceeded for {task_name}",
+            context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            now=now,
         )
 
 
@@ -658,6 +679,35 @@ class AlertEngine:
                 replace_existing=True,
             )
             self._scheduled_jobs.append(scheduled)
+
+        # Record-driven rules resolve when the metric recovers, but two classes
+        # of breach never re-evaluate on their own: a rule whose traffic stops
+        # entirely, and the budget jobs above, whose incident key embeds the day
+        # or hour so the previous period is simply never observed again. Both
+        # would leave incidents open forever. This sweep is what closes them.
+        scheduled = self._scheduler.add_job(
+            self._sweep_stale_breaches,
+            trigger=IntervalTrigger(seconds=_STALE_SWEEP_INTERVAL_SEC),
+            id="alert_stale_breach_sweep",
+            replace_existing=True,
+        )
+        self._scheduled_jobs.append(scheduled)
+
+    async def _sweep_stale_breaches(self) -> None:
+        """Resolve incidents whose rule or period stopped producing evaluations."""
+        for key in _TRANSITIONS.sweep(time.time()):
+            try:
+                await alert_slack(
+                    AlertSeverity.INFO,
+                    f"Recovered: {key}",
+                    {"alert": key, "reason": "no longer reported"},
+                    dedupe_key=key,
+                    cooldown_sec=0,
+                    status="resolved",
+                )
+            except Exception:
+                # One stuck resolution must not stop the others from closing.
+                log.exception("stale breach resolution failed for %s", key)
 
     async def _drain(self) -> None:
         try:

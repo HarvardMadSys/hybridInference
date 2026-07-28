@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -1013,3 +1014,61 @@ async def test_rate_rule_reports_recovery_once_the_breach_clears(monkeypatch):
             assert mock_alert.await_args.kwargs["dedupe_key"] == "failed_request_rate"
         finally:
             await engine.stop()
+
+
+@pytest.mark.asyncio
+async def test_sweep_closes_breaches_nothing_evaluates_any_more(monkeypatch):
+    """Two breach classes never re-evaluate themselves and would stay open forever.
+
+    A record-driven rule whose traffic stops entirely, and the budget jobs whose
+    incident key embeds the day or hour so the previous period is never observed
+    again. The scheduled sweep is what closes both.
+    """
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setattr(alert_rules_module._TRANSITIONS, "stale_after_sec", 1.0)
+
+    engine = AlertEngine(
+        handler=AlertingLogHandler(maxsize=10),
+        config=AlertConfig(),
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    alert_rules_module._TRANSITIONS.observe(
+        "cost_overrun:4711:2026-07-27", breached=True, now=time.time() - 10
+    )
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(),
+    ) as mock_alert:
+        await engine._sweep_stale_breaches()
+
+    assert mock_alert.await_count == 1
+    assert mock_alert.await_args.kwargs["status"] == "resolved"
+    assert mock_alert.await_args.kwargs["dedupe_key"] == "cost_overrun:4711:2026-07-27"
+    assert not alert_rules_module._TRANSITIONS.is_firing("cost_overrun:4711:2026-07-27")
+
+
+@pytest.mark.asyncio
+async def test_sweep_keeps_closing_after_one_resolution_fails(monkeypatch):
+    """One stuck resolution must not strand every other open incident."""
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://x")
+    monkeypatch.setattr(alert_rules_module._TRANSITIONS, "stale_after_sec", 1.0)
+    engine = AlertEngine(
+        handler=AlertingLogHandler(maxsize=10),
+        config=AlertConfig(),
+        scheduler=None,
+        op_store=None,
+        log_store=None,
+    )
+    for key in ("a", "b"):
+        alert_rules_module._TRANSITIONS.observe(key, breached=True, now=time.time() - 10)
+
+    with patch(
+        "serving.observability.alert_rules.alert_slack",
+        new=AsyncMock(side_effect=[RuntimeError("slack down"), True]),
+    ) as mock_alert:
+        await engine._sweep_stale_breaches()
+
+    assert mock_alert.await_count == 2
