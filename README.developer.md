@@ -101,7 +101,7 @@ apps/
     benchmark/    # Benchmark utilities
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, routewise, alerts
-services/         # status-monitor-worker, freeinference-harness
+services/         # Sidecar workers (present only where a deployment ships them)
 tests/            # Unit, API, integration, e2e, external tests
 ops/              # Operational tooling
 deploy/           # Systemd units, Docker, observability manifests
@@ -137,10 +137,11 @@ YAML files support `${VAR}` and `${VAR:-default}` environment variable interpola
 - User-facing docs belong to a deployment rather than to the project: each
   keeps its own under `distributions/<name>/content/docs/`.
 
-The FreeInference deployment publishes both: its user docs at
-[doc.freeinference.org](https://doc.freeinference.org/), and a build of
-`docs/developer/` at internaldoc.freeinference.org, which is reachable from
-Harvard SEAS infrastructure only — read the sources in this repository instead.
+A deployment publishes both from its own overlay. FreeInference, the
+deployment this gateway was written for, is a worked example: its user docs are
+at [doc.freeinference.org](https://doc.freeinference.org/), and its build of
+`docs/developer/` is internal to its own network — read the sources here
+instead.
 
 ## Contribution Workflow
 
