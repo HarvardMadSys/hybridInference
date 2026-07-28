@@ -339,6 +339,46 @@ describe("DeploymentRegistry", () => {
       expect(registry.lookup(previous).retiredAt).toBeNull();
     });
 
+    it("does not retire a deployment newer than the one superseding", async () => {
+      // Attestations are only checked against a clock-skew window and carry no
+      // ordering, so a delayed activation can land after a newer one. Without
+      // the bound it would retire the deployment that superseded it and leave
+      // the stale one as the sole survivor — killing the live capability.
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+      const current = await registry.apply(activation(OTHER, true));
+
+      await registry.apply(activation({ activatedAt: 1_000 }, true));
+
+      expect(registry.lookup(current).retiredAt).toBeNull();
+    });
+
+    it("never writes a retirement earlier than the record's own activation", async () => {
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+      const later = await registry.apply(activation(OTHER, true));
+
+      await registry.apply(activation({ activatedAt: 1_000 }, true));
+
+      const record = registry.lookup(later);
+      expect(record.retiredAt === null || record.retiredAt >= record.activatedAt).toBe(
+        true,
+      );
+    });
+
+    it("applies a superseding retry to a deployment already registered", async () => {
+      // The first attempt registered without superseding. Returning early on
+      // the retry would leave the earlier deployments active until some later
+      // deploy happened to supersede them.
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+      const previous = await registry.apply(activation());
+      await registry.apply(activation(OTHER));
+
+      await registry.apply(activation(OTHER, true));
+
+      expect(() => registry.lookup(previous)).toThrow(
+        expect.objectContaining({ code: "retired_deployment" }),
+      );
+    });
+
     it("spends no registry version when nothing was superseded", async () => {
       const registry = new InMemoryDeploymentRegistry(verifier([]));
 

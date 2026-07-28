@@ -230,9 +230,11 @@ class SqlRegistryRepository implements RegistryRepository {
         `SELECT COUNT(*) AS count
          FROM deployment_registry
          WHERE environment = ? AND service = ? AND retired_at IS NULL
+           AND activated_at <= ?
            AND NOT (deployment_id = ? AND artifact_digest = ?)`,
         survivor.environment,
         survivor.service,
+        retiredAt,
         survivor.deploymentId,
         survivor.artifactDigest,
       )
@@ -245,11 +247,13 @@ class SqlRegistryRepository implements RegistryRepository {
       `UPDATE deployment_registry
        SET retired_at = ?, registry_version = ?
        WHERE environment = ? AND service = ? AND retired_at IS NULL
+         AND activated_at <= ?
          AND NOT (deployment_id = ? AND artifact_digest = ?)`,
       retiredAt,
       allocateVersion(),
       survivor.environment,
       survivor.service,
+      retiredAt,
       survivor.deploymentId,
       survivor.artifactDigest,
     );
@@ -345,7 +349,8 @@ class MemoryRegistryRepository implements RegistryRepository {
         key !== survivorKey &&
         record.retiredAt === null &&
         record.environment === survivor.environment &&
-        record.service === survivor.service,
+        record.service === survivor.service &&
+        record.activatedAt <= retiredAt,
     );
     if (doomed.length === 0) return;
     const registryVersion = allocateVersion();
@@ -465,6 +470,10 @@ class DeploymentRegistryCore<Attestation> {
       ) {
         throw new DeploymentRegistryWriteError("deployment_conflict");
       }
+      // A retry that adds `supersedes` must still take effect. Returning here
+      // would leave the earlier deployments this command asks to retire active
+      // until some later deployment happened to supersede them.
+      this.supersede(exact, supersedes);
       return exact;
     }
 
@@ -474,15 +483,32 @@ class DeploymentRegistryCore<Attestation> {
       registryVersion: this.repository.nextVersion(),
     });
     this.repository.insert(record);
-    // Without this the previous record stays active forever, so a capability
-    // minted for it keeps authenticating long after that code stopped being
-    // deployed — leaving token expiry as the only revocation there is.
-    if (supersedes) {
-      this.repository.retireSuperseded(record, record.activatedAt, () =>
-        this.repository.nextVersion(),
-      );
-    }
+    this.supersede(record, supersedes);
     return record;
+  }
+
+  /**
+   * Retire what this deployment replaced. Without it the previous record stays
+   * active forever, so a capability minted for it keeps authenticating long
+   * after that code stopped being deployed — leaving token expiry as the only
+   * revocation there is.
+   *
+   * Only records that activated no later than the survivor are retired.
+   * Attestations are accepted anywhere inside a clock-skew window and carry no
+   * ordering, so a delayed activation can arrive after a newer one; unbounded,
+   * it would retire the deployment that actually superseded *it*, leaving the
+   * stale one as the sole survivor and killing the live one's capability. The
+   * bound also keeps a written `retiredAt` from preceding its own record's
+   * `activatedAt`.
+   */
+  private supersede(
+    survivor: TrustedDeploymentMetadata,
+    supersedes: boolean,
+  ): void {
+    if (!supersedes) return;
+    this.repository.retireSuperseded(survivor, survivor.activatedAt, () =>
+      this.repository.nextVersion(),
+    );
   }
 
   private retire(
