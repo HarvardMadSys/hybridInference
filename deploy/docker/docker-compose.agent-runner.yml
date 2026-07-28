@@ -32,14 +32,28 @@ services:
       - --worker-id
       - ${AGENT_WORKER_ID:-runner}
     environment:
-      FREEINFERENCE_BASE_URL: ${AGENT_GATEWAY_URL:-http://backend:8080}
+      AGENT_GATEWAY_URL: ${AGENT_GATEWAY_URL:-http://backend:8080}
       AGENT_DISPATCHER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
 
       # Isolation. `kata` gives each job its own kernel and is what untrusted
       # multi-tenant code needs; `container` shares the host kernel and is a
       # reasonable choice only for repositories you already trust.
       AGENT_SANDBOX_BACKEND: ${AGENT_SANDBOX_BACKEND:-kata}
-      AGENT_SANDBOX_IMAGE: ${AGENT_SANDBOX_IMAGE:-freeinference/agent-sandbox:latest}
+      # Required, not defaulted. Upstream publishes no images, so any default
+      # here names a registry path that does not resolve, and a runner that
+      # pulls nothing fails one job at a time, far from the cause. The deploy
+      # scripts do not invoke this file, so it never sees an overlay env file;
+      # whoever launches the runner supplies this.
+      AGENT_SANDBOX_IMAGE: ${AGENT_SANDBOX_IMAGE:?name the sandbox image this deployment runs}
+
+      # Who published commits are attributed to; the code's defaults name the
+      # software rather than one site.
+      AGENT_GIT_AUTHOR_NAME: ${AGENT_GIT_AUTHOR_NAME:-}
+      AGENT_GIT_AUTHOR_EMAIL: ${AGENT_GIT_AUTHOR_EMAIL:-}
+
+      # Where job directories live inside the container; the volume below
+      # mounts this same path.
+      AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
 
       # Egress policy. `agent-egress` is an internal network with no route to
       # the internet: a sandbox on it reaches the gateway (models + event
@@ -55,7 +69,10 @@ services:
       # business reconfiguring the daemon.
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Job worktrees. Bind-mounted into each sandbox, discarded per job.
-      - agent_workdirs:/var/lib/freeinference/agent-jobs
+      # Must match AGENT_WORKDIR_ROOT above, or the runner writes job
+      # directories onto the container filesystem while the volume holds
+      # nothing.
+      - agent_workdirs:${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
     networks:
       - hybridinference
     depends_on:

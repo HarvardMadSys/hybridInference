@@ -482,7 +482,13 @@ def build_parser() -> argparse.ArgumentParser:
     a runner container crash-loops.
     """
     parser = argparse.ArgumentParser(description="Run queued agent jobs.")
-    parser.add_argument("--base-url", default=os.environ.get("FREEINFERENCE_BASE_URL", ""))
+    # AGENT_GATEWAY_URL is the neutral name; the deployment's compose already
+    # spells it that way on the outside. FREEINFERENCE_BASE_URL is still read
+    # so a host that sets only the old one keeps working.
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("AGENT_GATEWAY_URL") or os.environ.get("FREEINFERENCE_BASE_URL", ""),
+    )
     parser.add_argument("--worker-id", default=os.environ.get("AGENT_WORKER_ID", "runner"))
     parser.add_argument("--workdir", default=".")
     parser.add_argument("--lease-ttl", type=float, default=DEFAULT_LEASE_TTL_S)
@@ -495,7 +501,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--workdir-root",
-        default=os.environ.get("AGENT_WORKDIR_ROOT", "/var/lib/freeinference/agent-jobs"),
+        default=os.environ.get("AGENT_WORKDIR_ROOT", "/var/lib/hybridinference/agent-jobs"),
         help="Where per-job worktrees are created in --loop mode.",
     )
     return parser
@@ -508,7 +514,7 @@ def main(argv: list[str] | None = None) -> int:
 
     dispatcher_token = os.environ.get("AGENT_DISPATCHER_TOKEN", "")
     if not args.base_url or not dispatcher_token:
-        parser.error("FREEINFERENCE_BASE_URL and AGENT_DISPATCHER_TOKEN are required")
+        parser.error("AGENT_GATEWAY_URL and AGENT_DISPATCHER_TOKEN are required")
 
     if args.loop:
         return run_forever(

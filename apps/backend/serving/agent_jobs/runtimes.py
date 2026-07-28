@@ -280,10 +280,10 @@ class CodexRuntime(AgentRuntime):
         return "\n".join(
             [
                 f'model = "{model}"',
-                'model_provider = "freeinference"',
+                'model_provider = "hybridinference"',
                 "",
-                "[model_providers.freeinference]",
-                'name = "freeinference"',
+                "[model_providers.hybridinference]",
+                'name = "hybridinference"',
                 f'base_url = "{base}/v1"',
                 'env_key = "CODEX_API_KEY"',
                 'wire_api = "chat"',

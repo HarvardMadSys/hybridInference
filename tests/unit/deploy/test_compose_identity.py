@@ -177,3 +177,36 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
     assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
         "--env-file .env"
     ), "the server's .env must come last so per-host overrides still win"
+
+
+def test_the_agent_workdir_volume_matches_the_variable_that_names_it() -> None:
+    """The mount point and AGENT_WORKDIR_ROOT have to be the same path.
+
+    They were two literals: the volume mounted one deployment's directory and
+    the runner defaulted to the same string, so changing either alone left the
+    runner writing job directories onto the container filesystem while the
+    volume held nothing — a data-loss shape that no test would notice, because
+    nothing reads the volume back.
+    """
+    import re
+
+    text = (
+        Path(__file__).resolve().parents[3]
+        / "deploy"
+        / "docker"
+        / "docker-compose.agent-runner.yml"
+    ).read_text()
+
+    mounts = re.findall(r"agent_workdirs:(\S+)", text)
+    # Anchored: the interpolation ${AGENT_WORKDIR_ROOT:-...} contains the
+    # name again, and an unanchored pattern matches inside it.
+    declared = re.findall(r"^\s*AGENT_WORKDIR_ROOT:\s*(\S+)", text, re.M)
+
+    assert mounts and declared, "the agent runner lost its work directory wiring"
+    assert set(mounts) == set(declared), (
+        f"the volume mounts {mounts} but the runner is told {declared}; job "
+        "directories would be written outside the volume"
+    )
+    assert "freeinference" not in " ".join(mounts + declared).lower(), (
+        "the neutral compose names one deployment's directory"
+    )

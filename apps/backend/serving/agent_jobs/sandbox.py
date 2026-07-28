@@ -38,7 +38,11 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-DEFAULT_IMAGE = "ghcr.io/harvardmadsys/freeinference-agent-sandbox:latest"
+# Neutral placeholder: a deployment names its own image through
+# AGENT_SANDBOX_IMAGE. This upstream default is not a registry anyone can
+# pull from, which is the honest state for a repository that publishes no
+# images.
+DEFAULT_IMAGE = "hybridinference/agent-sandbox:latest"
 # containerd's Kata shim. Docker exposes VM-isolated runtimes under the same
 # `--runtime` flag as runc, which is why one backend covers both: they are the
 # same mechanism with a different isolation boundary underneath.
