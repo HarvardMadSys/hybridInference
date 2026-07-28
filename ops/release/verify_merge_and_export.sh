@@ -239,11 +239,23 @@ say "Export: materialise and audit"
 rm -rf "$EXPORT_DIR"
 uv run python ops/release/public_export.py --materialize "$EXPORT_DIR"
 
+say "Export: install from the exported tree's own metadata"
+# Deliberately not $SCRATCH/.venv. Borrowing the merged tree's environment
+# tests the exported code against dependencies resolved somewhere else, so a
+# dependency the export failed to carry -- a dropped pyproject entry, a package
+# directory excluded by mistake -- resolves anyway and the run stays green.
+# This is the step a person cloning the published repository actually performs.
+(cd "$EXPORT_DIR" && uv venv -p 3.12 -q && uv sync -q)
+
 say "Export: backend suite"
-(cd "$EXPORT_DIR" && PYTHONPATH=apps/backend "$SCRATCH/.venv/bin/python" \
+(cd "$EXPORT_DIR" && PYTHONPATH=apps/backend .venv/bin/python \
   -m pytest -q -m "not external and not dbtest" -p no:randomly)
 
 say "Export: frontend gates"
-(cd "$EXPORT_DIR/apps/frontend" && npm ci --silent && npx tsc --noEmit && npx eslint src && npm test)
+# `npm run build` and not only the type check: Next.js prerenders every static
+# route at build time, so a page that compiles and unit-tests cleanly can still
+# fail here. It is also the first command anyone runs on a fresh clone.
+(cd "$EXPORT_DIR/apps/frontend" && npm ci --silent && npx tsc --noEmit \
+  && npx eslint src && npm test && npm run build)
 
 say "Acceptance run complete."
