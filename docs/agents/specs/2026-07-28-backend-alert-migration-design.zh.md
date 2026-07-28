@@ -1,6 +1,6 @@
 # 后端 `alert_slack` 迁移设计（roadmap 步骤 4）
 
-> 状态：**待决策** —— 三个缺口均已给出推荐；G1 需一次拍板（选项差异是「要不要多一个组件」，非「能否做」）
+> 状态：**已定案（2026-07-28）** —— G1 采纳方案 B（部署期签发长期令牌，不新增组件）；G2 采纳按形状归并的 2 个新类型；G3 采纳结构化计数替代明文 IP/key 前缀。4.1 起可依序实施。
 > 日期：2026-07-28
 > 前置：status-monitor 三类告警已迁移（roadmap 步骤 2/3 完成）
 > 关联：[roadmap](../plans/2026-07-25-alert-control-plane-roadmap.zh.md)、[C3c 验证档案](../../reviews/2026-07-27-c3c-staging-validation.md)
@@ -62,7 +62,7 @@ webhook_url = os.environ.get("SLACK_ALERTS_WEBHOOK_URL", "")   # URL 本身即�
 | A. 中继 Worker | 略好：中继侧可加限流与来源约束 | 新增可部署组件；**网关→中继一跳仍是静态 secret** |
 | C. 令牌续签端点 | 不改善：泄露令牌可无限续签，实际等价长期令牌 | 多一个端点和一套逻辑。❌ |
 
-### 推荐：B
+### 推荐：B —— ✅ **已采纳（2026-07-28）**
 
 关键判断：**A 与 B 的弱点是同构的** —— A 里网关→中继那一跳一样是永不过期的静态 secret，泄露一样能伪造告警。A 的真实增量只有「中继侧可加限流/来源约束」与「轮换 secret 不必重走认证流程」。
 
@@ -80,7 +80,7 @@ webhook_url = os.environ.get("SLACK_ALERTS_WEBHOOK_URL", "")   # URL 本身即�
 
 契约今天只放行三种类型：`provider_circuit_open`、`model_unavailable`、`monitoring_cycle_failure`。11 个后端告警里只有 `Provider circuit opened` 对得上。
 
-### 推荐：按**形状**而非按名字，新增 2 个类型
+### 推荐：按**形状**而非按名字，新增 2 个类型 —— ✅ **已采纳（2026-07-28）**
 
 | 新类型 | 覆盖的后端告警 | context 字段（全部有界、闭集） |
 |---|---|---|
@@ -122,7 +122,9 @@ webhook_url = os.environ.get("SLACK_ALERTS_WEBHOOK_URL", "")   # URL 本身即�
 
 on-call 今天能在"Auth failure spike"告警里直接看到攻击来源 IP 和被试的 key 前缀 —— 这对立即封禁是有用的。迁移后这些**不会出现在 Slack 里**。
 
-### 推荐：结构化计数替代明文值
+### 推荐：结构化计数替代明文值 —— ✅ **已采纳（2026-07-28）**
+
+> 明确接受的代价：on-call 不再能从 Slack 直接复制攻击者 IP 去封禁，需转到 dashboard/日志。
 
 | 现在 | 迁移后 | on-call 损失什么 |
 |---|---|---|
@@ -143,7 +145,7 @@ on-call 今天能在"Auth failure spike"告警里直接看到攻击来源 IP 和
 |---|---|---|
 | 4.1 | 契约扩展：新增 `metric_threshold_breach` + `dependency_unavailable`（TS 侧类型/校验/渲染 + 测试），dormant | G2 推荐 |
 | 4.2 | Python 生产者适配层：`control_plane_contract.py` 补 builder，`alert_slack` 的 11 个调用点改为结构化字段，dormant（不接传输） | G2 + G3 推荐 |
-| 4.3 | 传输接线 | **G1 拍板后开始**（推荐 B：无新组件） |
+| 4.3 | 传输接线 | ✅ G1 已定 = B（部署期令牌，无新组件） |
 | 4.4 | snooze 能力对齐（roadmap 步骤 5） | 4.3 |
 
-4.1 与 4.2 不依赖 G1，可立即开工。
+三条决策均已定案，4.1 → 4.4 可依序实施。
