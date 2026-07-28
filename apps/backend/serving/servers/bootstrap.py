@@ -792,7 +792,35 @@ async def initialize() -> AppServices:
         agent_reaper_task = asyncio.create_task(_reap_expired_agent_attempts(agent_job_store))
         _BACKGROUND_TASKS.add(agent_reaper_task)
         agent_reaper_task.add_done_callback(_BACKGROUND_TASKS.discard)
-        logger.info("Agent job store initialized (Postgres); attempt reaper started")
+
+        # The publish step runs here, in the trusted server, because it is the
+        # only component that holds a GitHub credential — that is precisely
+        # what keeps the sandbox credential-free. Without a configured token
+        # the provider yields None and the loop idles, so a deployment that
+        # has not set up GitHub simply never publishes.
+        from serving.agent_jobs.publish_worker import GitHubCredential, publish_loop
+
+        github_token = os.getenv("AGENT_GITHUB_TOKEN", "")
+        publish_base_branch = os.getenv("AGENT_PUBLISH_BASE_BRANCH", "dev")
+
+        def _agent_github_credential() -> GitHubCredential | None:
+            """Mint the credential used for one publish, or None if unconfigured."""
+            token = os.getenv("AGENT_GITHUB_TOKEN", github_token)
+            return GitHubCredential(token) if token else None
+
+        agent_publish_task = asyncio.create_task(
+            publish_loop(
+                agent_job_store,
+                credential_provider=_agent_github_credential,
+                base_branch=publish_base_branch,
+            )
+        )
+        _BACKGROUND_TASKS.add(agent_publish_task)
+        agent_publish_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        logger.info(
+            "Agent job store initialized (Postgres); reaper started; publisher %s",
+            "started" if github_token else "idle (AGENT_GITHUB_TOKEN unset)",
+        )
 
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)

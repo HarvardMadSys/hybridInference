@@ -399,3 +399,75 @@ async def test_model_credential_dies_with_a_terminal_job(store: AgentJobStore):
 
     await store.transition(**fence, from_states=("running",), to_state="succeeded")
     assert await store.resolve_model_credential(**fence) is None
+
+
+async def test_publish_claim_is_exactly_once(store: AgentJobStore):
+    """Two publishers cannot both take the same finished job.
+
+    The publish step has an externally visible side effect, so 'at most once'
+    has to hold at the database level rather than by convention.
+    """
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    fence = {
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+    await store.save_artifact(**fence, kind="patch", content="diff --git a/x b/x\n")
+    await store.transition(
+        job_id=job["id"], **fence, from_states=("running",), to_state="succeeded"
+    )
+
+    first = await store.claim_for_publish()
+    assert first is not None
+    assert first["job_id"] == job["id"]
+    assert first["patch"].startswith("diff --git")
+
+    # Already claimed (now `publishing`), so a second publisher finds nothing.
+    assert await store.claim_for_publish() is None
+
+    assert await store.record_publish(job_id=job["id"], pr_url="https://x/pr/1") is True
+    # Recording twice is refused, so a retry cannot open a second PR.
+    assert await store.record_publish(job_id=job["id"], pr_url="https://x/pr/2") is False
+
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "succeeded"
+    assert fetched["published_pr_url"] == "https://x/pr/1"
+
+
+async def test_jobs_without_a_patch_are_not_published(store: AgentJobStore):
+    """A job that changed nothing must never produce an empty PR."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.transition(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+    assert await store.claim_for_publish() is None
+
+
+async def test_failed_publish_surfaces_the_reason(store: AgentJobStore):
+    """A rejected patch fails the job with a reason the owner can read."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    fence = {
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+    await store.save_artifact(**fence, kind="patch", content="diff --git a/x b/x\n")
+    await store.transition(
+        job_id=job["id"], **fence, from_states=("running",), to_state="succeeded"
+    )
+    await store.claim_for_publish()
+
+    await store.fail_publish(job_id=job["id"], detail="patch rejected: modifies .github/")
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "failed"
+    assert ".github/" in fetched["detail"]
+
+    events = await store.list_events_after(job_id=job["id"], after_id=0)
+    assert events[-1]["event_type"] == "error"
+    assert events[-1]["payload"]["phase"] == "publish_rejected"

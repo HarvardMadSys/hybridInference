@@ -709,6 +709,115 @@ class AgentJobStore:
                 )
             return state
 
+    # ── Platform-side publishing ───────────────────────────────────────
+    #
+    # Publishing is driven by the trusted server, not by the worker: the
+    # sandbox holds no git credential, so it can only hand over a patch. These
+    # three methods are therefore *not* lease-fenced — the fence exists to stop
+    # zombie workers, and no worker is involved here. Exactly-once is enforced
+    # instead by ``published_pr_url IS NULL`` plus ``SKIP LOCKED``, so two
+    # gateway processes can run the publisher loop without double-publishing.
+
+    async def claim_for_publish(self) -> dict[str, Any] | None:
+        """Take one finished job that has a patch and no PR yet.
+
+        Marks it ``publishing`` in the same transaction, so a second publisher
+        cannot pick it up. Returns the job plus its patch, or ``None``.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                SELECT j.id, j.user_id, j.repo, j.base_sha, j.task_prompt, a.content AS patch
+                FROM agent_jobs j
+                JOIN agent_job_artifacts a
+                  ON a.job_id = j.id AND a.kind = 'patch'
+                WHERE j.state = 'succeeded'
+                  AND j.published_pr_url IS NULL
+                ORDER BY j.updated_at
+                LIMIT 1
+                FOR UPDATE OF j SKIP LOCKED
+                """
+            )
+            if row is None:
+                return None
+            await conn.execute(
+                "UPDATE agent_jobs SET state = 'publishing', updated_at = NOW() WHERE id = $1",
+                row["id"],
+            )
+            job_id = row["id"]
+            await self._insert_event(
+                conn,
+                job_id=job_id,
+                attempt_id=await conn.fetchval(
+                    "SELECT current_attempt_id FROM agent_jobs WHERE id = $1", job_id
+                ),
+                event_type="lifecycle",
+                payload={"phase": "publishing"},
+            )
+        return {
+            "job_id": row["id"],
+            "user_id": row["user_id"],
+            "repo": row["repo"],
+            "base_sha": row["base_sha"],
+            "task_prompt": row["task_prompt"],
+            "patch": row["patch"],
+        }
+
+    async def record_publish(self, *, job_id: str, pr_url: str) -> bool:
+        """Record the published PR exactly once, returning the job to succeeded."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            updated = await conn.fetchval(
+                """
+                UPDATE agent_jobs
+                SET state = 'succeeded', published_pr_url = $2, updated_at = NOW()
+                WHERE id = $1 AND published_pr_url IS NULL
+                RETURNING id
+                """,
+                job_id,
+                pr_url,
+            )
+            if updated is None:
+                return False
+            attempt_id = await conn.fetchval(
+                "SELECT current_attempt_id FROM agent_jobs WHERE id = $1", job_id
+            )
+            if attempt_id is not None:
+                await self._insert_event(
+                    conn,
+                    job_id=job_id,
+                    attempt_id=attempt_id,
+                    event_type="lifecycle",
+                    payload={"phase": "published", "pr_url": pr_url},
+                )
+        return True
+
+    async def fail_publish(self, *, job_id: str, detail: str) -> None:
+        """Mark a job whose patch could not be published.
+
+        The job is failed rather than left ``publishing``: a rejected patch
+        (a blocked ``.github/`` change, a leaked credential, a conflict) is a
+        human-review situation, and silently retrying it would either spam the
+        repository or hide the rejection.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE agent_jobs SET state = 'failed', detail = $2, updated_at = NOW() "
+                "WHERE id = $1 AND published_pr_url IS NULL",
+                job_id,
+                detail[:2000],
+            )
+            attempt_id = await conn.fetchval(
+                "SELECT current_attempt_id FROM agent_jobs WHERE id = $1", job_id
+            )
+            if attempt_id is not None:
+                await self._insert_event(
+                    conn,
+                    job_id=job_id,
+                    attempt_id=attempt_id,
+                    event_type="error",
+                    payload={"phase": "publish_rejected", "detail": detail[:2000]},
+                )
+
     # ── Reaper ─────────────────────────────────────────────────────────
 
     async def reap_expired(self, *, max_attempts: int = 3) -> list[dict[str, Any]]:
