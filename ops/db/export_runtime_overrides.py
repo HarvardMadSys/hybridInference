@@ -3,7 +3,7 @@
 The admin UI can change routing weights, disable providers, and adjust
 visibility/concurrency at runtime; those changes live only in Postgres and are
 invisible to git. Before ``config/models.yaml`` / ``routing.yaml`` move into
-the FreeInference overlay, each active override must be triaged: incident
+a distribution overlay, each active override must be triaged: incident
 leftovers get deleted, long-term intent gets folded into the YAML. This script
 produces that triage inventory.
 

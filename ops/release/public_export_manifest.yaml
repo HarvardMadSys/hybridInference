@@ -169,6 +169,13 @@ exclude:
       here. Being removed outright in #1075; excluded regardless so the export
       does not republish someone else's data under this project's licence.
 
+  - path: ops/ci/pytest-file-durations.json
+    reason: >-
+      Per-file test timings measured on this deployment's own runners, used to
+      balance its CI shards. Meaningless on anyone else's hardware, and the
+      exported workflow does not shard at all, so it would travel as a stale
+      cache that also names an overlay the export removes.
+
 # Decisions this file cannot make. The export tool refuses to run while any
 # remain, so the list is short on purpose.
   # docs/developer/ is mixed, so it is split by name rather than dropped. The

@@ -76,7 +76,11 @@ def test_configured_relay_protects_process_before_starting_worker(tmp_path):
         slack_bot_token=SecretStr("slack-secret"),
         slack_channel_id="C0123456789",
         github_token=SecretStr("github-secret"),
-        github_repository="HarvardMadSys/hybridInference",
+        github_repository="example-org/example-repo",
+        # Required for `configured` now that it has no default; an unset base
+        # URL leaves the relay unconfigured rather than dispatching at whatever
+        # gateway happened to be compiled in.
+        model_base_url="https://gateway.example.com/v1",
         state_dir=tmp_path,
     )
 

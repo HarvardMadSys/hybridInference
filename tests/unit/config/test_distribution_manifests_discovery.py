@@ -27,7 +27,7 @@ def test_every_checked_in_distribution_manifest_loads():
                 assert Path(value).exists(), f"{manifest}: paths.{kind} -> {value} missing"
 
 
-def test_freeinference_overlay_preserves_phase_one_legacy_aliases():
+def test_example_site_overlay_preserves_phase_one_legacy_aliases():
     """Keep the stack's explicit Phase 1 compatibility invariant in PR CI."""
     manifest = REPO_ROOT / "distributions" / "freeinference" / "distribution.yaml"
     config = load_distribution_config(manifest)

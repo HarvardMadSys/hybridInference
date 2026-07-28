@@ -97,12 +97,12 @@ def test_claude_prepare_points_at_the_gateway_and_disables_telemetry():
         workdir="/tmp/x",
         task_prompt="do the thing",
         model="glm-5.1",
-        gateway_base_url="https://freeinference.org/v1",
+        gateway_base_url="https://gateway.example.com/v1",
         credential="ajt.a.b",
     )
     assert argv[:3] == ["claude", "-p", "do the thing"]
     assert "--output-format" in argv and "stream-json" in argv
-    assert env["ANTHROPIC_BASE_URL"] == "https://freeinference.org"
+    assert env["ANTHROPIC_BASE_URL"] == "https://gateway.example.com"
     assert env["ANTHROPIC_API_KEY"] == "ajt.a.b"
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
     assert env["DISABLE_AUTOUPDATER"] == "1"

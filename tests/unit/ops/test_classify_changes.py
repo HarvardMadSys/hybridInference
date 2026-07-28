@@ -105,7 +105,7 @@ def test_image_specific_dockerfile_change(path: str, category: str, matrix: list
         "README.md",  # repo-root README is a Dockerfile COPY input, not docs
         ".github/workflows/ci.yml",
         "config/models.yaml",
-        "distributions/freeinference/overlay.yaml",
+        "distributions/example-site/overlay.yaml",
     ],
 )
 def test_full_triggers(path: str) -> None:
@@ -125,9 +125,9 @@ def test_full_triggers(path: str) -> None:
         "some/deep/NOTES.md",
         # Overlay doc-site source: exempt from the distributions/ full trigger,
         # markdown and non-markdown alike.
-        "distributions/freeinference/content/docs/docs/source/quickstart.md",
-        "distributions/freeinference/content/docs/docs/Makefile",
-        "distributions/freeinference/content/docs/docs/source/_static/custom.css",
+        "distributions/example-site/content/docs/docs/source/quickstart.md",
+        "distributions/example-site/content/docs/docs/Makefile",
+        "distributions/example-site/content/docs/docs/source/_static/custom.css",
     ],
 )
 def test_docs_only_changes_are_security_only(path: str) -> None:

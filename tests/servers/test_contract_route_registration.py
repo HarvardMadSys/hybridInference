@@ -3,7 +3,7 @@
 Characterization tests for ``register_from_models_yaml`` ahead of the
 config-path / distribution-overlay migration
 (docs/agents/specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md).
-When the production models.yaml later moves into the FreeInference overlay,
+When the production models.yaml later moves into a distribution overlay,
 these tests must keep passing unchanged: they pin the loader's semantics,
 not the production catalog's contents.
 """

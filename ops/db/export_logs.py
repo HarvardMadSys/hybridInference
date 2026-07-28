@@ -63,7 +63,7 @@ async def main(output_path: str = "api_logs_export.jsonl.zst") -> int:
         f":{db_password}"
         f"@{os.environ.get('DB_HOST', 'localhost')}"
         f":{os.environ.get('DB_PORT', '5432')}"
-        f"/{os.environ.get('DB_NAME', 'freeinference_db')}"
+        f"/{os.environ.get('DB_NAME', 'hybridinference')}"
     )
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     try:

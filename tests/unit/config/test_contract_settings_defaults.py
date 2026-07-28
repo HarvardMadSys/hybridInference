@@ -39,7 +39,7 @@ def settings(monkeypatch) -> Settings:
 def test_site_identity_defaults(settings):
     """Deliberate neutral flip: the defaults name no distribution.
 
-    FreeInference's values moved to deploy/docker/docker-compose.yml, which
+    A deployment's values moved to deploy/docker/docker-compose.yml, which
     pins each of these for the backend, so its deployments are unchanged.
     """
     # Empty: an unconfigured gateway has no public URL. Auth derives one from

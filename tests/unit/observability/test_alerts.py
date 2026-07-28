@@ -193,35 +193,35 @@ def test_unconfigured_default_base_url_is_not_rendered(monkeypatch):
     assert (url, explicit) == ("", False)
 
     message = _format_message(AlertSeverity.ERROR, "Boom", {})
-    assert "• *Base URL:* https://freeinference.org" not in message
+    assert "• *Base URL:* https://gateway.example.com" not in message
 
 
 def test_explicit_base_url_is_rendered(monkeypatch):
-    monkeypatch.setenv("BASE_URL", "https://staging.freeinference.org")
+    monkeypatch.setenv("BASE_URL", "https://staging.example.com")
 
     url, explicit = _base_url()
-    assert (url, explicit) == ("https://staging.freeinference.org", True)
+    assert (url, explicit) == ("https://staging.example.com", True)
 
     message = _format_message(AlertSeverity.ERROR, "Boom", {})
-    assert "• *Base URL:* https://staging.freeinference.org" in message
+    assert "• *Base URL:* https://staging.example.com" in message
 
 
 @pytest.mark.parametrize(
     "env_overrides, base_url, explicit, expected",
     [
         # Explicit DEPLOYMENT_ENV/ENVIRONMENT overrides always win (and are stripped).
-        ({"DEPLOYMENT_ENV": "qa"}, "https://freeinference.org", True, "qa"),
-        ({"ENVIRONMENT": "  canary\n"}, "https://staging.freeinference.org", True, "canary"),
+        ({"DEPLOYMENT_ENV": "qa"}, "https://gateway.example.com", True, "qa"),
+        ({"ENVIRONMENT": "  canary\n"}, "https://staging.example.com", True, "canary"),
         # Host-based inference (urlparse, so path segments don't misclassify).
-        ({}, "https://staging.freeinference.org", True, "staging"),
-        ({}, "https://freeinference.org", True, "production"),
+        ({}, "https://staging.example.com", True, "staging"),
+        ({}, "https://gateway.example.com", True, "production"),
         ({}, "http://localhost:8000", True, "local"),
         ({}, "http://127.0.0.1:8080/staging", True, "local"),
         # Any explicitly configured public host is that operator's production,
         # not just one known domain.
         ({}, "https://example.com", True, "production"),
         # No configured base URL => treat as local, not prod.
-        ({}, "https://freeinference.org", False, "local"),
+        ({}, "https://gateway.example.com", False, "local"),
         ({}, "", True, "local"),
         # Malformed URL (unclosed IPv6 literal) must not raise.
         ({}, "http://[::1", True, "unknown"),
