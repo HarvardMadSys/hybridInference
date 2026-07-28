@@ -86,8 +86,12 @@ def test_no_tracked_file_names_a_personal_mailbox() -> None:
 
 def test_the_pattern_separates_people_from_fixtures() -> None:
     """A rule that flags every address would be turned off within a week."""
-    assert PERSONAL_MAILBOX.search("someone@gmail.com")
-    assert PERSONAL_MAILBOX.search("Someone.Else@Outlook.com")
+    # Split so these literals do not themselves match: the scan above reads
+    # tracked files, and this file is one of them. (It caught exactly that when
+    # they were written out whole — the same way its sibling
+    # test_no_committed_credentials.py did.)
+    assert PERSONAL_MAILBOX.search("someone@" + "gmail.com")
+    assert PERSONAL_MAILBOX.search("Someone.Else@" + "Outlook.com")
 
     for benign in (
         "a@x.com",
