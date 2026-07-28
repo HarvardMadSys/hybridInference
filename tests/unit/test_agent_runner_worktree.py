@@ -378,3 +378,31 @@ def test_an_ordinary_failure_is_not_reported_as_egress(text: str):
     from serving.agent_jobs.runner import detect_blocked_egress
 
     assert detect_blocked_egress(text) is None
+
+
+def test_a_repository_whose_name_merely_ends_the_same_is_refused(tmp_path: Path, remote):
+    """`endswith` accepted `acme/foo` for a job targeting `me/foo`.
+
+    The agent would then run against the wrong codebase and produce a patch
+    that applies to nothing — and nothing downstream would have caught it,
+    because the patch itself is well-formed.
+    """
+    base, repo, _first, _head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=None, remote_base=base)
+    _git("remote", "add", "origin", "https://github.com/evilowner/name.git", cwd=workdir)
+
+    with pytest.raises(WorktreeError, match="wrong repository"):
+        existing_checkout_sha(str(workdir), "owner/name")
+
+
+def test_the_exact_repository_is_still_accepted(tmp_path: Path, remote):
+    """Tightening the comparison must not reject the legitimate case."""
+    base, repo, _first, head = remote
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+    prepare_worktree(workdir=str(workdir), repo=repo, base_sha=None, remote_base=base)
+    _git("remote", "add", "origin", "git@github.com:owner/name.git", cwd=workdir)
+
+    assert existing_checkout_sha(str(workdir), repo) == head

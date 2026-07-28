@@ -417,8 +417,13 @@ def existing_checkout_sha(workdir: str, repo: str) -> str | None:
         return None
     remote = _run_git(["config", "--get", "remote.origin.url"], cwd=workdir).stdout.strip()
     if remote:
+        # Exact `owner/name`, not a suffix: `endswith` accepted a checkout of
+        # `acme/foo` for a job targeting `me/foo`, and the agent would then run
+        # against the wrong codebase and produce a patch that applies to
+        # nothing.
         slug = remote.removesuffix(".git").rsplit(":", 1)[-1].strip("/")
-        if not slug.lower().endswith(repo.lower()):
+        slug = "/".join(slug.split("/")[-2:])
+        if slug.lower() != repo.lower():
             raise WorktreeError(
                 f"the working tree holds {slug!r} but this job targets {repo!r}; "
                 "refusing to run an agent against the wrong repository"
@@ -857,6 +862,16 @@ def run_once(
 
         control.finish("succeeded", "agent completed", base_sha=base_sha)
         return 0
+    except WorktreeError as exc:
+        # Bounded patch generation raises this on a timeout or byte cap. Left
+        # to escape, the job stayed `running` until its lease expired and was
+        # then retried — repeating a deterministic failure until the attempt
+        # budget ran out, with nothing in the record saying why.
+        print(f"patch generation failed: {exc}", file=sys.stderr)
+        with contextlib.suppress(Exception):
+            control.append_event(NormalizedEvent("error", {"text": str(exc)}))
+            control.finish("failed", str(exc), base_sha=base_sha)
+        return 2
     except LeaseLost as exc:
         print(f"lease lost, stopping: {exc}", file=sys.stderr)
         return 3

@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from serving.agent_jobs.entitlement import RepoNotAllowed, require_entitled_repo
 from serving.agent_jobs.patch_gate import branch_name_for
 from serving.agent_jobs.publisher import PublishError, publish_patch
 from serving.utils.logging import get_logger
@@ -142,6 +143,25 @@ async def publish_one(
 
     job_id = job["job_id"]
     base_sha = job["base_sha"]
+
+    # Re-checked here, before any credential is minted. Publishing happens well
+    # after the job ran, and it is the step that asks for *write* authority —
+    # so an entitlement withdrawn in between (a revoked connection, a narrowed
+    # allowlist) has to be able to stop it. The read side already refuses at
+    # claim; without this the same deployment would block the read-only token
+    # and still hand out the push token.
+    try:
+        await require_entitled_repo(
+            job["repo"],
+            job.get("user_id", ""),
+            store=store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        await store.fail_publish(
+            job_id=job_id, detail=f"no longer entitled to publish to {job['repo']}: {exc}"
+        )
+        return None
 
     # Prefer the App: it mints a token scoped to this repository's
     # installation, valid an hour. A static token is the fallback for a

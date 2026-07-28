@@ -702,3 +702,40 @@ async def test_a_release_writes_its_event_into_the_right_job(store: AgentJobStor
     )
     owned = await store.list_events_after(job_id=claim["id"])
     assert [e for e in owned if e["event_type"] == "attempt_aborted"]
+
+
+async def test_a_cancelled_job_released_from_a_claim_ends_cancelled(store: AgentJobStore):
+    """Requeueing a cancelled job put it somewhere nothing could ever reach.
+
+    `claim_job` skips queued rows with `cancel_requested`, and the reaper only
+    reaches jobs that still have a *running* attempt — which a released one
+    does not. So the job sat in `queued` permanently, invisible to its owner's
+    cancellation and to every worker.
+    """
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    assert await store.request_cancel(job_id=job["id"]) == "running"
+
+    await store.release_claim(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+    )
+
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "cancelled", "a cancelled job must not be requeued"
+
+
+async def test_an_uncancelled_job_still_returns_to_the_queue(store: AgentJobStore):
+    """The ordinary release path is unchanged."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    await store.release_claim(
+        job_id=job["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+    )
+
+    assert (await store.get_job(job["id"]))["state"] == "queued"
+    assert await store.claim_job(worker_id="w2", lease_ttl_seconds=60) is not None

@@ -40,7 +40,6 @@ from serving.agent_jobs.egress import (
 from serving.agent_jobs.entitlement import (
     RepoNotAllowed,
     repos_for_user,
-    require_allowed_repo,
     require_entitled_repo,
 )
 from serving.agent_jobs.github_app import AppNotInstalled
@@ -736,7 +735,16 @@ async def worker_claim(
     # this check existed — or while the allowlist was wider — must not be able
     # to produce a credential now.
     try:
-        require_allowed_repo(claim["repo"])
+        # The same check create used. The allowlist-only variant here meant a
+        # job entitled by its owner's own GitHub connection passed creation and
+        # was then refused at claim — the two gates disagreeing about what the
+        # word entitled means.
+        await require_entitled_repo(
+            claim["repo"],
+            claim["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
     except RepoNotAllowed as exc:
         await job_store.release_claim(
             job_id=claim["id"],

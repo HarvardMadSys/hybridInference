@@ -522,17 +522,25 @@ class ContainerBackend(SandboxBackend):
 
     def _check_bind_mountable(self, workdir_root: str) -> None:
         """Fail startup if the daemon cannot bind-mount the job workdir root."""
+        # Under the runtime jobs will actually use. Without `--runtime` the
+        # probe ran under the daemon's default (runc) while the shipped default
+        # backend is kata — so it passed on a host with no Kata shim, and every
+        # job then died at spawn, which is exactly what this check exists to
+        # turn into one startup failure.
+        argv = [self.docker_binary, "run", "--rm"]
+        if self.runtime:
+            argv += ["--runtime", self.runtime]
+        argv += [
+            "--mount",
+            f"type=bind,source={workdir_root},target=/probe",
+            "--user",
+            f"{self.uid}:{self.gid}",
+            "--entrypoint",
+            "true",
+            self.image,
+        ]
         probe = subprocess.run(
-            [
-                self.docker_binary,
-                "run",
-                "--rm",
-                "--mount",
-                f"type=bind,source={workdir_root},target=/probe",
-                "--entrypoint",
-                "true",
-                self.image,
-            ],
+            argv,
             capture_output=True,
             text=True,
             timeout=120,
@@ -540,7 +548,8 @@ class ContainerBackend(SandboxBackend):
         )
         if probe.returncode != 0:
             raise SandboxError(
-                f"the container runtime cannot bind-mount {workdir_root!r}: "
+                f"the container runtime {self.runtime or 'default'} could not start a "
+                f"container mounting {workdir_root!r}: "
                 f"{probe.stderr.strip()[:200]}. Job worktrees must live on a path "
                 "the daemon can see (inside the VM for colima/Lima, or a shared "
                 "mount) — otherwise every job fails at spawn."

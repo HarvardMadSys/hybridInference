@@ -102,7 +102,9 @@ async def repos_for_user(
     Both fail closed: with no connection and no allowlist the answer is empty,
     and an empty answer means no job can be created at all.
     """
-    repos: set[str] = set(allowed_repos(env))
+    # Only concrete entries seed the list a picker shows; a wildcard is a rule,
+    # not a repository, and `require_entitled_repo` matches it separately.
+    repos: set[str] = {entry for entry in allowed_repos(env) if not entry.endswith("/*")}
     if store is None or app_credentials is None:
         return sorted(repos)
     try:
@@ -131,6 +133,10 @@ async def require_entitled_repo(
     """Raise :class:`RepoNotAllowed` unless this user may target ``repo``."""
     if not _REPO_RE.match(repo or ""):
         raise RepoNotAllowed(f"repo must be 'owner/name', got {repo!r}")
+    # The allowlist half first, so an `owner/*` rule is honoured without needing
+    # to enumerate every repository under that owner.
+    if repo_is_allowed(repo, env):
+        return
     entitled = await repos_for_user(user_id, store=store, app_credentials=app_credentials, env=env)
     if not any(entry.lower() == repo.lower() for entry in entitled):
         raise RepoNotAllowed(

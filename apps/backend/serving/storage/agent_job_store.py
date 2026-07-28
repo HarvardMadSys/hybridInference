@@ -512,10 +512,18 @@ class AgentJobStore:
             )
             # Fenced on this attempt still being the current one, so a job that
             # has since moved on is never dragged back to `queued`.
+            #
+            # An owner who cancelled while we held the claim gets `cancelled`,
+            # not `queued`. Requeueing them was a dead end: `claim_job` skips
+            # queued rows with `cancel_requested`, and the reaper only reaches
+            # jobs with a *running* attempt — which this no longer has — so the
+            # job sat in `queued` that nothing could ever move again.
             await conn.execute(
                 """
                 UPDATE agent_jobs
-                SET state = 'queued', current_attempt_id = NULL, updated_at = NOW()
+                SET state = CASE WHEN cancel_requested THEN 'cancelled' ELSE 'queued' END,
+                    current_attempt_id = NULL,
+                    updated_at = NOW()
                 WHERE id = $1 AND current_attempt_id = $2 AND state = 'running'
                 """,
                 released,

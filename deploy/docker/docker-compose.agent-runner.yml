@@ -47,13 +47,17 @@ services:
 
       # Egress policy. `agent-egress` is an internal network with no route to
       # the internet: a sandbox on it reaches the gateway (models + event
-      # reporting) and nothing else. Point this at a network with an allowlist
-      # proxy when jobs need to install dependencies.
+      # reporting) and nothing else. This is the *closed* tier and must stay
+      # the network the gateway is on — a setup tier with an allowlist proxy is
+      # AGENT_EGRESS_NETWORK_TRUSTED, which this overlay does not ship.
       # Egress is a per-phase tier, not one network. `platform_only` reaches
       # the gateway and nothing else; `trusted` additionally reaches whatever
       # the setup network is fronted by, for installing dependencies. The agent
       # turn — the one driven by untrusted model output — gets the closed one.
-      AGENT_SANDBOX_NETWORK: ${AGENT_SANDBOX_NETWORK:-agent-egress}
+      # One variable decides all three: the network compose creates, the one
+      # the gateway joins, and the one the runner spawns onto. AGENT_SANDBOX_NETWORK
+      # is deliberately not set here — the tier variable shadows it, so offering
+      # both invited an override that silently did nothing.
       AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
       AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
       AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
@@ -103,7 +107,7 @@ networks:
     # ("hybridinference_agent-egress"), but the runner passes this value
     # straight to `docker run --network`. Without the pin, every sandbox
     # spawn fails on a network the daemon has never heard of.
-    name: agent-egress
+    name: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
     # internal: no gateway to the outside world. The sandbox can talk to
     # services on this network and nothing else, which is the PlatformOnly
     # tier from the design doc expressed as infrastructure rather than policy

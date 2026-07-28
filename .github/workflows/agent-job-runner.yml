@@ -46,6 +46,12 @@ permissions:
 
 jobs:
   run-agent-job:
+    # Cost and noise containment, not a secrets boundary: a fork never receives
+    # this repository's secrets or variables, so the scheduled run there would
+    # only install two CLIs and then fail preflight, every ten minutes, forever.
+    # The isolation control for the /proc property below is the container/kata
+    # backend, not this line.
+    if: github.repository == 'HarvardMadSys/hybridInference'
     runs-on: ubuntu-latest
     timeout-minutes: 55
 

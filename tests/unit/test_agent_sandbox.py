@@ -347,3 +347,39 @@ def test_the_phase_decides_which_network_the_container_joins():
 
     assert network_of("agent") == "agent-egress"
     assert network_of("setup") == "agent-setup"
+
+
+def test_the_bind_probe_uses_the_runtime_jobs_will_use():
+    """Probing under runc while jobs run under kata validates nobody's config.
+
+    The shipped default backend is kata, and the probe exists precisely to turn
+    "every job dies at spawn with exit 125" into one startup failure — which it
+    cannot do if it exercises a different runtime.
+    """
+    backend = build_backend_from_env(
+        {"AGENT_SANDBOX_BACKEND": "kata", "AGENT_SANDBOX_NETWORK": "agent-egress"}
+    )
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Result()
+
+    import subprocess as sp
+
+    original = sp.run
+    sp.run = fake_run
+    try:
+        backend._check_bind_mountable("/var/lib/agent-jobs")
+    finally:
+        sp.run = original
+
+    argv = captured["argv"]
+    assert "--runtime" in argv
+    assert argv[argv.index("--runtime") + 1] == KATA_RUNTIME

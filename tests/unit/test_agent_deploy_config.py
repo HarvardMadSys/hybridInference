@@ -139,7 +139,9 @@ def test_the_egress_network_name_is_pinned(compose: dict):
     the network that exists is `hybridinference_agent-egress`, and every spawn
     fails.
     """
-    assert compose["networks"]["agent-egress"]["name"] == "agent-egress"
+    # Interpolated off the tier variable, so the network compose creates, the
+    # one the gateway joins and the one the runner spawns onto cannot diverge.
+    assert _expand(compose["networks"]["agent-egress"]["name"]) == "agent-egress"
 
 
 def test_the_gateway_is_reachable_from_the_sandbox_network(compose: dict):
@@ -223,6 +225,10 @@ def test_both_phases_are_closed_in_the_shipped_configuration(compose: dict):
     behind it reaches only the gateway.
     """
     env = compose["services"]["agent-runner"]["environment"]
+    # And the spawn network tracks the same variable the network block names.
+    assert _expand(env["AGENT_EGRESS_NETWORK_PLATFORM_ONLY"]) == _expand(
+        compose["networks"]["agent-egress"]["name"]
+    )
     for var in ("AGENT_EGRESS_SETUP_TIER", "AGENT_EGRESS_AGENT_TIER"):
         assert "platform_only" in env[var], f"{var} must be closed until a tier exists for it"
 
