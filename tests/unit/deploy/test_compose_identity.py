@@ -257,13 +257,21 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
         "make build/up must pass the distribution overlay, or a rebuild drops "
         f"the deployment's console identity: {compose_line}"
     )
-    # ...but only when one is asked for. Discovering it would hand every clone
-    # whichever overlay is checked in, which is what the neutral defaults exist
-    # to prevent.
+    # Discovered by default, because the runbooks have operators run `make
+    # build` by hand on the server: requiring a flag there would mean a routine
+    # rebuild silently ships a console with no identity. The clone case is
+    # handled by announcing the pick and offering DISTRIBUTION=none, and stops
+    # existing once the overlay lives outside this repository.
     assert "distributions/$(DISTRIBUTION)/deploy/*.env" in makefile, (
-        "the overlay must be selected by name, not discovered by glob"
+        "the overlay must resolve through DISTRIBUTION, not a bare glob"
     )
-    assert "DISTRIBUTION ?=" in makefile, "make must default to no distribution"
+    assert "DISTRIBUTION ?=" in makefile, "DISTRIBUTION must stay overridable"
+    assert "ifeq ($(DISTRIBUTION),none)" in makefile, (
+        "there must be a way to ask for a stack that names no deployment"
+    )
+    assert "$(info Using distribution" in makefile, (
+        "compiling a deployment's identity into the console must not be silent"
+    )
     assert "--env-file .env" in compose_line
     assert compose_line.index("$(DISTRIBUTION_ENV_FILES)") < compose_line.index(
         "--env-file .env"

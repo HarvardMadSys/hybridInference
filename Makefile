@@ -141,19 +141,33 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # not just the deploy scripts: the console's identity is baked in as build
 # args, so a rebuild without them ships an unbranded frontend. `.env` stays
 # last so per-host overrides still win, and secrets stay only in `.env`.
-# Selecting a distribution is explicit. Discovering one instead would mean that
-# anyone who clones this repository and runs `make up` gets whichever overlay
-# happens to be checked in — the exact outcome the neutral defaults exist to
-# prevent, reached by a different route.
+# Which deployment's identity `make up` and `make build` compile in.
 #
-#   make up                                 # your own gateway, named after nobody
-#   make up DISTRIBUTION=freeinference      # this site
-DISTRIBUTION ?=
-ifneq ($(DISTRIBUTION),)
+# Discovered by default, because the runbooks tell operators to run these by
+# hand on the server (docs/developer/freeinference.md, adding-models.md), and a
+# rebuild that quietly dropped the identity would publish an unbranded console
+# from a routine command. Discovery keeps that working with no change to any
+# machine.
+#
+# The cost is that this repository still contains the overlay, so a clone gets
+# it too. That is an artifact of the split being unfinished — once the overlay
+# lives elsewhere, discovery finds nothing and every clone is neutral without
+# anything here changing. Until then it is announced rather than silent, and
+# `DISTRIBUTION=none` opts out:
+#
+#   make up                          # discovers the overlay, and says so
+#   make up DISTRIBUTION=none        # your own gateway, named after nobody
+#   make up DISTRIBUTION=freeinference
+# distributions/<name>/deploy/<file>.env -> <name>
+DISTRIBUTION ?= $(word 2,$(subst /, ,$(firstword $(wildcard distributions/*/deploy/*.env))))
+ifeq ($(DISTRIBUTION),none)
+DISTRIBUTION_ENV_FILES :=
+else ifneq ($(DISTRIBUTION),)
 DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard distributions/$(DISTRIBUTION)/deploy/*.env))
 ifeq ($(DISTRIBUTION_ENV_FILES),)
 $(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION)/deploy/*.env)
 endif
+$(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
 endif
 COMPOSE := docker compose -f deploy/docker/docker-compose.yml $(DISTRIBUTION_ENV_FILES) --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data
