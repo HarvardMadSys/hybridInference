@@ -127,7 +127,7 @@
 
 | ID | 决策 | 选项与价签 | 影响 |
 |---|---|---|---|
-| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | ✅ **已决（2026-07-27）：(b) 每模型独立 thread**。storm 汇总仅保留在 legacy 回滚模式（`ALERT_DEFAULT_OWNER=legacy`）防 webhook 刷屏；以后如需聚合帖可在此之上叠加 | cycle 告警仍需新类型（+1–2 人周，独立工作） |
+| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | ✅ **已决（2026-07-27）：(b) 每模型独立 thread**。storm 汇总仅保留在 legacy 回滚模式（`ALERT_DEFAULT_OWNER=legacy`）防 webhook 刷屏；以后如需聚合帖可在此之上叠加 | 已落地于 #1050。cycle 所需的新类型也已在 #1059 实现（原估 1–2 人周，实际同日完成） |
 | **D2** | "原地更新、不重复响铃"，on-call 真的想要吗？ | 当前设计不响 | 影响 `update_parent` 策略 |
 | **D6** | Codex 分析在后端迁移之前还是之后？ | (a) 之前：无回归窗口，推迟迁移 2–4 周<br>(b) 之后：接受"最有价值的告警恰好没分析"窗口<br>(c) 之后，但依赖分析的 producer 排最后迁 | 决定步骤 4/6 顺序 |
 | D3 | 生产上线时间窗口与审批路径 | — | 步骤 7 排期 |
@@ -142,7 +142,7 @@
 
 - [ ] staging 与 prod 的 Slack 里再也找不到旧格式裸文本告警
 - [ ] 老 `SLACK_WEBHOOK_URL` / `SLACK_ALERTS_WEBHOOK_URL` / relay secrets 已删除，删除后经真实故障验证
-- [ ] 任何一次告警未发出都有可见信号（health 字段 + 日志），不静默
+- [ ] 任何一次告警未发出都有可见信号（health 字段 + 日志），不静默 —— status-monitor 侧已交付（#1049：`pendingControlPlaneTransitions` + undeliverable 日志）；后端 `alert_slack` 侧随步骤 4 迁移时补
 - [ ] 全局 snooze 已在新链路对齐
 - [ ] 回滚是"退回旧路"而非"卡死"，经演练验证（P3-H）
 - [ ] `docs/reviews/` 有端到端验证档案：故障 → 帖子 → 恢复的仓库内消息全文 + permalink（或截图），staging（✅ 2026-07-27）+ prod 各一份
