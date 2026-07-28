@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 from markdown_it import MarkdownIt
 
 from serving.config.settings import settings
+from serving.config.site_identity import get_site_identity
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -122,13 +123,14 @@ def send_verification_email(to_email: str, verification_token: str, base_url: st
     # Frontend will call backend API to verify the token
     verification_url = f"{settings.frontend_url}/verify-email?token={verification_token}"
 
-    subject = "Verify your FreeInference account"
+    site_name = get_site_identity().name
+    subject = f"Verify your {site_name} account"
 
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
-            <h2 style="color: #2563eb;">Welcome to FreeInference!</h2>
+            <h2 style="color: #2563eb;">Welcome to {site_name}!</h2>
             <p>Thank you for signing up. Please verify your email address by clicking the link below:</p>
             <p style="margin: 30px 0;">
                 <a href="{verification_url}"
@@ -154,7 +156,7 @@ def send_verification_email(to_email: str, verification_token: str, base_url: st
     """
 
     text_body = f"""
-Welcome to FreeInference!
+Welcome to {site_name}!
 
 Thank you for signing up. Please verify your email address by visiting:
 
@@ -206,7 +208,8 @@ def send_password_reset_email(to_email: str, reset_token: str, base_url: str) ->
     # Link to frontend page (not backend API)
     reset_url = f"{settings.frontend_url}/reset-password?token={reset_token}"
 
-    subject = "Reset your FreeInference password"
+    site_name = get_site_identity().name
+    subject = f"Reset your {site_name} password"
 
     html_body = f"""
     <html>
@@ -263,14 +266,15 @@ def send_approval_email(to_email: str) -> bool:
     """
     login_url = f"{settings.frontend_url}/login"
 
-    subject = "Your FreeInference account has been approved"
+    site_name = get_site_identity().name
+    subject = f"Your {site_name} account has been approved"
 
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
             <h2 style="color: #10b981;">Account Approved</h2>
-            <p>Your FreeInference account has been approved by an administrator.</p>
+            <p>Your {site_name} account has been approved by an administrator.</p>
             <p>You can now log in and start using the API.</p>
             <p style="margin: 30px 0;">
                 <a href="{login_url}"
@@ -281,7 +285,7 @@ def send_approval_email(to_email: str) -> bool:
             </p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
             <p style="color: #999; font-size: 12px;">
-                If you did not register for FreeInference, please ignore this email.
+                If you did not register for {site_name}, please ignore this email.
             </p>
         </div>
     </body>
@@ -291,12 +295,12 @@ def send_approval_email(to_email: str) -> bool:
     text_body = f"""
 Account Approved
 
-Your FreeInference account has been approved by an administrator.
+Your {site_name} account has been approved by an administrator.
 
 You can now log in and start using the API:
 {login_url}
 
-If you did not register for FreeInference, please ignore this email.
+If you did not register for {site_name}, please ignore this email.
     """
 
     return send_email(to_email, subject, html_body, text_body)
@@ -312,14 +316,15 @@ def send_rejection_email(to_email: str, reason: str) -> bool:
     Returns:
         True if email sent successfully, False otherwise.
     """
-    subject = "Your FreeInference registration update"
+    site_name = get_site_identity().name
+    subject = f"Your {site_name} registration update"
 
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
         <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
             <h2 style="color: #ef4444;">Registration Not Approved</h2>
-            <p>Unfortunately, your FreeInference registration was not approved at this time.</p>
+            <p>Unfortunately, your {site_name} registration was not approved at this time.</p>
             <div style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px;
                         margin: 20px 0; border-radius: 4px;">
                 <strong>Reason:</strong> {reason}
@@ -327,7 +332,7 @@ def send_rejection_email(to_email: str, reason: str) -> bool:
             <p>If you believe this was a mistake, please contact the administrator.</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
             <p style="color: #999; font-size: 12px;">
-                If you did not register for FreeInference, please ignore this email.
+                If you did not register for {site_name}, please ignore this email.
             </p>
         </div>
     </body>
@@ -337,7 +342,7 @@ def send_rejection_email(to_email: str, reason: str) -> bool:
     text_body = f"""
 Registration Not Approved
 
-Unfortunately, your FreeInference registration was not approved at this time.
+Unfortunately, your {site_name} registration was not approved at this time.
 
 Reason: {reason}
 
@@ -372,7 +377,8 @@ def send_new_registration_admin_email(
     # HTML-escape the user-supplied use case and preserve line breaks.
     use_case_html = html_lib.escape(use_case_text).replace("\r\n", "\n").replace("\n", "<br>")
 
-    subject = f"[FreeInference] New registration pending approval: {user_email}"
+    site_name = get_site_identity().name
+    subject = f"[{site_name}] New registration pending approval: {user_email}"
 
     html_body = f"""
     <html>
@@ -448,12 +454,13 @@ def render_markdown_email(markdown_src: str) -> tuple[str, str]:
         which is already human-readable.
     """
     fragment = _md.render(markdown_src)
+    site_name = get_site_identity().name
     wrapped_html = (
         '<html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">'
         f'<div style="max-width: 600px; margin: 0 auto; padding: 20px;">{fragment}'
         '<hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">'
         '<p style="color: #999; font-size: 12px;">You received this because you have an '
-        "active FreeInference account.</p>"
+        f"active {site_name} account.</p>"
         "</div></body></html>"
     )
     return wrapped_html, markdown_src.strip()
@@ -477,7 +484,7 @@ EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
                 <p>We are planning scheduled maintenance on <strong>{date}</strong> lasting approximately <strong>{duration}</strong>.</p>
                 <p>During this time the service will be unavailable. We apologize for any inconvenience.</p>
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-                <p style="color: #999; font-size: 12px;">You received this because you have an active FreeInference account.</p>
+                <p style="color: #999; font-size: 12px;">You received this because you have an active {site_name} account.</p>
             </div>
         </body>
         </html>
@@ -493,7 +500,7 @@ EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
                 <h2 style="color: #2563eb;">New: {feature_name}</h2>
                 <p>{description}</p>
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-                <p style="color: #999; font-size: 12px;">You received this because you have an active FreeInference account.</p>
+                <p style="color: #999; font-size: 12px;">You received this because you have an active {site_name} account.</p>
             </div>
         </body>
         </html>
@@ -501,7 +508,7 @@ EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
         "body_text": "New: {feature_name}\n\n{description}",
     },
     "quota_change": {
-        "subject": "Your FreeInference quota has been updated",
+        "subject": "Your {site_name} quota has been updated",
         "body_html": """
         <html>
         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
@@ -509,7 +516,7 @@ EMAIL_TEMPLATES: dict[str, dict[str, str]] = {
                 <h2 style="color: #10b981;">Quota Updated</h2>
                 <p>Your daily usage quota has been updated to <strong>{new_quota}</strong>.</p>
                 <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-                <p style="color: #999; font-size: 12px;">You received this because you have an active FreeInference account.</p>
+                <p style="color: #999; font-size: 12px;">You received this because you have an active {site_name} account.</p>
             </div>
         </body>
         </html>
@@ -556,7 +563,8 @@ def render_broadcast_template(
         raise ValueError(f"Unknown template: {template_key!r}. Available: {list(EMAIL_TEMPLATES)}")
 
     tmpl = EMAIL_TEMPLATES[template_key]
-    safe = _SafeDict(template_vars)
+    # site_name last so template callers cannot spoof the operator identity.
+    safe = _SafeDict({**template_vars, "site_name": get_site_identity().name})
     return {
         "subject": tmpl["subject"].format_map(safe),
         "body_html": tmpl["body_html"].format_map(safe),

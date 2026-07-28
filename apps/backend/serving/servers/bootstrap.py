@@ -497,6 +497,19 @@ async def _init_router_and_models(
                     f"Registered {len(embedding_adapters)} embedding adapter(s): "
                     f"{list(embedding_adapters.keys())}"
                 )
+        else:
+            # Default path, nothing there. Previously silent, and silence is the
+            # worst answer here: /v1/models returns an empty list, every request
+            # 404s, and the log says nothing at all. The registry is a
+            # deployment's own file — upstream ships none — so this is what a
+            # fresh checkout hits on its first run.
+            logger.error(
+                "No model registry at %s, so no models are available: "
+                "/v1/models will be empty and every request will report the "
+                "model as not found. Point MODELS_CONFIG_PATH at your registry, "
+                "or copy one of the files in config/examples/ to that path.",
+                models_path,
+            )
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 

@@ -15,6 +15,11 @@ from serving.adapters.openrouter import OpenRouterAdapter
 
 pytestmark = [
     pytest.mark.integration,
+    # Also `external`: this file talks to the real OpenRouter API, which is what
+    # that marker means and why `make test` excludes it. Without this, the file
+    # runs — and spends money — for anyone who happens to have
+    # OPENROUTER_API_KEY exported, which is most developers here.
+    pytest.mark.external,
     pytest.mark.skipif(
         not os.getenv("OPENROUTER_API_KEY"),
         reason="OPENROUTER_API_KEY not set; skipping live OpenRouter integration tests.",

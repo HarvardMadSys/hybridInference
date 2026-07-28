@@ -64,7 +64,6 @@ PROVIDER_DEFAULT_BASE_URLS = {
     "ollama": "https://ollama.com/v1",
     "openrouter": "https://openrouter.ai/api/v1",
     "sglang": "http://host.docker.internal:8001/v1",
-    "staging": "https://staging.freeinference.org/v1",
     "vllm": "http://host.docker.internal:8002/v1",
     "zai": "https://api.z.ai/api/coding/paas/v4/",
 }

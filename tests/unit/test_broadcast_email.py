@@ -70,7 +70,7 @@ def test_render_markdown_email_includes_shell_and_footer():
 
     assert html.startswith("<html><body")
     assert "max-width: 600px; margin: 0 auto; padding: 20px;" in html
-    assert "You received this because you have an active FreeInference account." in html
+    assert "You received this because you have an active HybridInference account." in html
     assert html.rstrip().endswith("</body></html>")
 
 
