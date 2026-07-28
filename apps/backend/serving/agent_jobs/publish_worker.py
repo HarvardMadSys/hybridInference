@@ -121,7 +121,8 @@ def _pr_body(job: dict[str, Any], changed_files: list[str]) -> str:
 async def publish_one(
     store: AgentJobStore,
     *,
-    credential: GitHubCredential,
+    credential: GitHubCredential | None = None,
+    app_credentials: Any | None = None,
     base_branch: str = "dev",
     allow_workflow_changes: bool = False,
 ) -> str | None:
@@ -136,6 +137,23 @@ async def publish_one(
 
     job_id = job["job_id"]
     base_sha = job["base_sha"]
+
+    # Prefer the App: it mints a token scoped to this repository's
+    # installation, valid an hour. A static token is the fallback for a
+    # deployment that has not set the App up.
+    if app_credentials is not None:
+        try:
+            credential = GitHubCredential(await app_credentials.token_for(job["repo"]))
+        except Exception as exc:
+            await store.fail_publish(
+                job_id=job_id, detail=f"could not obtain a GitHub credential: {exc}"
+            )
+            return None
+    if credential is None:
+        await store.fail_publish(
+            job_id=job_id, detail="no GitHub credential is configured for publishing"
+        )
+        return None
     if not base_sha:
         await store.fail_publish(
             job_id=job_id,
@@ -199,7 +217,8 @@ async def publish_one(
 async def publish_loop(
     store: AgentJobStore,
     *,
-    credential_provider: Any,
+    credential_provider: Any = None,
+    app_credentials: Any | None = None,
     base_branch: str = "dev",
     interval_seconds: float = POLL_INTERVAL_S,
 ) -> None:

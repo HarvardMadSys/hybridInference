@@ -71,18 +71,34 @@ and can run as soon as the gateway is deployed.
 
 Neither exists yet. Both must be created by a person.
 
-| Secret | What it is | Why it cannot be shared with anything else |
-|---|---|---|
-| `AGENT_DISPATCHER_TOKEN` | A gateway API key whose user has the `internal` role | `/v1/agent/worker/claim` takes the oldest queued job **across all tenants** and returns its repo, prompt, and a working capability token. An ordinary key here is a cross-tenant read. |
-| `AGENT_GITHUB_TOKEN` | A GitHub token (App installation token preferred) with `contents:write` + `pull_requests:write` | Held only by the gateway's publisher. Short-lived is strongly preferred: an installation token expires in an hour, so a leak has a bounded life. |
+**Dispatcher credential** — a gateway API key whose user has the `internal`
+role:
 
 ```bash
 gh secret set AGENT_DISPATCHER_TOKEN --repo HarvardMadSys/hybridInference
-gh secret set AGENT_GITHUB_TOKEN --repo HarvardMadSys/hybridInference
 ```
 
-For the gateway itself, set `AGENT_GITHUB_TOKEN` in its environment. Without
-it the publisher loop idles and logs that it is idle — jobs still run and still
+It cannot be an ordinary key: `/v1/agent/worker/claim` takes the oldest queued
+job **across all tenants** and returns its repo, prompt, and a working
+capability token, so an ordinary key there is a cross-tenant read.
+
+**GitHub credential** — install a GitHub App and give the *gateway* its private
+key. Nothing needs to be minted or rotated by hand: the platform signs a
+ten-minute App JWT and exchanges it for an hour-long token scoped to the
+installation covering the repository being published to.
+
+```bash
+AGENT_GITHUB_APP_ID=123456
+AGENT_GITHUB_APP_PRIVATE_KEY_PATH=/etc/freeinference/agent-app.pem
+```
+
+The App needs `contents: write` and `pull_requests: write` and nothing else —
+notably not `workflows`, so a patch touching `.github/` cannot be pushed even
+if the gate were bypassed. Revocation is uninstalling the App.
+
+A static `AGENT_GITHUB_TOKEN` still works as a fallback, but it is a
+long-lived credential someone has to create and rotate; prefer the App.
+With neither, the publisher loop idles and says so — jobs still run and still
 produce patches, they just never become PRs.
 
 ## Running self-hosted
