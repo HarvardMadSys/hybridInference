@@ -14,7 +14,12 @@ from fastapi import Depends, Header, HTTPException, Request
 from serving.config.settings import get_settings
 from serving.model_access import get_disabled_models_from_preferences
 from serving.observability.rejection_log import log_rejection
-from serving.servers.deps import get_db_logger, get_log_store, get_operational_store
+from serving.servers.deps import (
+    NO_AUTH_DATABASE_DETAIL,
+    get_db_logger,
+    get_log_store,
+    get_operational_store,
+)
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
 
@@ -130,7 +135,10 @@ async def _authenticate_by_api_key(
 
     # Validate key against database
     if not op_store:
-        raise HTTPException(status_code=500, detail="Database not available for authentication")
+        # A configuration state, not a server fault: 503 tells the caller the
+        # deployment cannot authenticate anyone right now, and the detail says
+        # which of the two supported setups is missing.
+        raise HTTPException(status_code=503, detail=NO_AUTH_DATABASE_DETAIL)
 
     key_hash = hash_api_key(api_key)
 
@@ -340,7 +348,7 @@ async def optional_verify_api_key(
 
     if not op_store:
         logger.warning("optional_verify_api_key: DB unavailable, cannot resolve identity")
-        raise HTTPException(status_code=500, detail="Database not available for authentication")
+        raise HTTPException(status_code=503, detail=NO_AUTH_DATABASE_DETAIL)
 
     try:
         key_hash = hash_api_key(api_key)

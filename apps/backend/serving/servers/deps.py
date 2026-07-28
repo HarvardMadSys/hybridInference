@@ -20,6 +20,17 @@ from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
 
+
+# Raised when a deployment leaves user auth on but has no database to
+# authenticate against — the state a first-time local run lands in. It is a
+# configuration state rather than a server fault, so callers get 503 plus the
+# two supported ways out.
+NO_AUTH_DATABASE_DETAIL = (
+    "Authentication requires a database, but none is configured. "
+    "Configure Postgres (DB_ENABLED=true), or set USER_AUTH_ENABLED=false "
+    "to run this gateway without user accounts."
+)
+
 if TYPE_CHECKING:
     from routing.executor import RouteExecutor
     from routing.manager import RoutingManager
@@ -282,8 +293,8 @@ async def get_current_user(
     # Verify user still exists and is active in database
     if not op_store:
         raise HTTPException(
-            status_code=500,
-            detail="Database not available for authentication",
+            status_code=503,
+            detail=NO_AUTH_DATABASE_DETAIL,
         )
 
     user_row = await op_store.get_user_by_id(user_id)

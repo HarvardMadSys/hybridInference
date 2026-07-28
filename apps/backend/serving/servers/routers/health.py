@@ -162,15 +162,21 @@ async def health(
     store_health = await _test_store_health(op_store, log_store)
     db_connected = store_health["healthy"]
 
+    if not store_health["database_configured"]:
+        # No database configured (DB_ENABLED=false, or a gateway-only
+        # deployment): healthy, but the database booleans must say so.
+        # This is checked before `db_connected` because _test_store_health
+        # reports an unconfigured database as healthy — reading `healthy`
+        # first made this branch unreachable and the response claimed a
+        # connected database that does not exist.
+        return {
+            "status": "healthy",
+            "routes_configured": routes_count,
+            "database_configured": False,
+            "database_connected": False,
+        }
+
     if not db_connected:
-        if not store_health["database_configured"]:
-            # No database configured — service is healthy without a DB
-            return {
-                "status": "healthy",
-                "routes_configured": routes_count,
-                "database_configured": False,
-                "database_connected": False,
-            }
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return {
             "status": "unhealthy",
