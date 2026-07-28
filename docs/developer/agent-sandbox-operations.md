@@ -59,13 +59,22 @@ Two things are outside the code and must be done by a human.
 
 ### 1. The workflow must be on the default branch
 
-`repository_dispatch` only fires for workflows on the default branch, which is
-`main`. `agent-job-runner.yml` is on `dev`. Until `dev` reaches `main` the
-workflow cannot be triggered at all — this is a production release decision,
-not a configuration step.
+A workflow is only *registered* once its file exists on the default branch
+(`main`). Until then it cannot be triggered **by any means** — not
+`repository_dispatch`, not the schedule, and not `workflow_dispatch` even with
+an explicit `--ref dev`. Verified rather than assumed:
+
+```console
+$ gh workflow list --all | grep agent-job-runner      # absent
+$ gh api -X POST .../workflows/agent-job-runner.yml/dispatches -f ref=dev
+{"message":"Not Found","status":"404"}
+```
+
+So the Actions path is gated on a production release, not on configuration.
 
 Self-hosted runners have no such constraint: they poll `/v1/agent/worker/claim`
-and can run as soon as the gateway is deployed.
+and can run as soon as the gateway is deployed. That is the shorter path to a
+first real job.
 
 ### 2. Two credentials
 
