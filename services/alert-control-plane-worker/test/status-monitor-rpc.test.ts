@@ -214,6 +214,75 @@ describe("status-monitor role RPC", () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it("accepts the role's monitoring_cycle_failure type", async () => {
+    const submit = vi.fn().mockResolvedValue(acknowledgement);
+    const cycleBody = JSON.stringify({
+      schema_version: 1,
+      event_id: "status-monitor-event-cycle-1",
+      alert_type: "monitoring_cycle_failure",
+      fingerprint: "status-monitor:cycle",
+      status: "firing",
+      severity: "critical",
+      title: "Monitoring cycle failing",
+      occurred_at: new Date().toISOString(),
+      summary: "The monitoring cycle failed; no models could be probed.",
+      context: { reason: "discovery_failed" },
+      evidence_refs: [],
+    });
+
+    await expect(
+      submitStatusMonitorRpcEvent(env(), cycleBody, VERSION_ID, submit),
+    ).resolves.toEqual({ accepted: true, acknowledgement });
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  // Routing keys on fingerprint alone, so the type allowlist is not enough: a
+  // cycle body carrying a model fingerprint would drive that model's incident
+  // object, polluting its lifecycle with events of another type.
+  it("binds each role alert type to its exact fingerprint namespace", async () => {
+    const submit = vi.fn();
+    const cycleWithModelFingerprint = JSON.stringify({
+      schema_version: 1,
+      event_id: "status-monitor-event-poisoned-cycle",
+      alert_type: "monitoring_cycle_failure",
+      fingerprint: "status-monitor:model:deepseek-v3",
+      status: "firing",
+      severity: "critical",
+      title: "Monitoring cycle failing",
+      occurred_at: new Date().toISOString(),
+      summary: "The monitoring cycle failed; no models could be probed.",
+      context: { reason: "discovery_failed" },
+      evidence_refs: [],
+    });
+    await expect(
+      submitStatusMonitorRpcEvent(env(), cycleWithModelFingerprint, VERSION_ID, submit),
+    ).resolves.toEqual({ accepted: false, errorCode: "invalid_event" });
+
+    const modelWithForeignFingerprint = JSON.parse(body()) as Record<string, unknown>;
+    modelWithForeignFingerprint.fingerprint = "status-monitor:model:other-model";
+    await expect(
+      submitStatusMonitorRpcEvent(
+        env(),
+        JSON.stringify(modelWithForeignFingerprint),
+        VERSION_ID,
+        submit,
+      ),
+    ).resolves.toEqual({ accepted: false, errorCode: "invalid_event" });
+
+    const modelWithCycleFingerprint = JSON.parse(body()) as Record<string, unknown>;
+    modelWithCycleFingerprint.fingerprint = "status-monitor:cycle";
+    await expect(
+      submitStatusMonitorRpcEvent(
+        env(),
+        JSON.stringify(modelWithCycleFingerprint),
+        VERSION_ID,
+        submit,
+      ),
+    ).resolves.toEqual({ accepted: false, errorCode: "invalid_event" });
+
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   // The shared producer validator accepts provider_circuit_open too, and routing
   // keys on fingerprint rather than alert type — so without a role-specific guard
   // this body would drive the very same incident object as the model alerts and

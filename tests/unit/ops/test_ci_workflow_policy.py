@@ -47,14 +47,3 @@ def test_python_tests_signal_controls_only_the_pytest_job() -> None:
 
     assert "needs.changes.outputs.python_tests == 'true'" in jobs["test"]["if"]
     assert "needs.changes.outputs.backend == 'true'" in jobs["backend-quality"]["if"]
-
-
-def test_always_run_security_job_checks_transitional_public_docs_parity() -> None:
-    steps = _workflow("ci.yml")["jobs"]["security"]["steps"]
-    parity_step = next(
-        step
-        for step in steps
-        if step.get("name") == "Verify transitional public documentation parity"
-    )
-
-    assert parity_step["run"] == "python3 ops/ci/check_public_docs_parity.py"

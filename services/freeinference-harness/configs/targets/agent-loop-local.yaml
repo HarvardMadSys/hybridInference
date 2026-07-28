@@ -1,0 +1,38 @@
+# Local targets for the agent-loop conformance suite (issue #1041, P-1 layer 1).
+#
+# fake-direct: talks to the fake provider itself. Start it first:
+#   freeinference-harness fake-provider --port 8351
+# Pins the fake's own replay behavior; no gateway required.
+#
+# gateway-local: talks to a dev gateway that has the fake registered as an
+# openai_compat route (see configs/gateway/agent-loop-models.snippet.yaml).
+# This is the layer-1 chain that pins the gateway translation layer, including
+# the Anthropic-surface scenarios.
+
+defaults:
+  suite_type: conformance
+  sampling_count: 1
+  timeout_seconds: 60
+
+targets:
+  - name: fake-direct
+    model: agent-loop-fake
+    base_url: http://127.0.0.1:8351
+    api_key: harness-local
+    tags: [conformance, fake]
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      anthropic_messages: false
+
+  - name: gateway-local
+    model: agent-loop-fake
+    base_url: http://127.0.0.1:8000
+    api_key_env: FREEINFERENCE_API_KEY
+    tags: [conformance, gateway]
+    capabilities:
+      chat: true
+      streaming: true
+      tools: true
+      anthropic_messages: true
