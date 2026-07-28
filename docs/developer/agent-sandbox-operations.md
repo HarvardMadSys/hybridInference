@@ -60,15 +60,9 @@ Be precise about these when reporting status:
   above); the 2-runtime × 3-model matrix has not been run, so cross-model
   behaviour differences are still unknown.
 - **The Actions workflow has never executed on GitHub.** See the blockers.
-- **The setup phase has not run against a real registry.** It is implemented,
-  spawned under the setup tier, and unit-tested including the cache — but the
-  deployment ships both phases `platform_only`, so nothing can reach PyPI or
-  npm until an operator configures a Trusted-tier network. A job with a
-  `setup_script` on the shipped configuration will fail to install.
-- **Compose has not been run as a unit.** A self-hosted runner has completed a
-  real job (see above), but it was launched by hand against staging rather than
-  by `docker compose … agent-runner`, so the overlay itself is verified only
-  statically.
+- **Kata.** Still a shared-kernel container in every run so far; the
+  `--runtime` flag provably reaches the daemon but no job has run under an
+  actual Kata kernel.
 - **Production.** `/v1/agent/*` is live on staging; production has not been
   deployed from it — production returns 404 on those routes today.
 - **Staging's model surface is thin.** Of the 15 models `/v1/models` lists,
@@ -118,6 +112,28 @@ the other half, and is what actually revokes the platform's reach.
 ## Before a job can run for real
 
 Two things are outside the code and must be done by a human.
+
+### 0. A closed agent network needs the gateway on it
+
+`platform_only` means "our gateway and nothing else", which assumes the gateway
+is *on that network* — true when it is the compose `backend` service, false the
+moment `AGENT_GATEWAY_URL` points at a remote one. The sandbox then resolves
+nothing and every job dies at its first model call, with an error that reads
+like a broken model.
+
+Preflight now probes this: it starts one container on the agent phase's real
+network and asks whether the gateway host resolves, refusing at startup if not.
+For a remote gateway, give the agent phase a network that routes to it:
+
+```bash
+AGENT_EGRESS_AGENT_TIER=custom
+AGENT_EGRESS_NETWORK_CUSTOM=agent-routable
+```
+
+One more compose detail worth knowing: the overlay *declares* `agent-egress`,
+so compose insists on creating it. A network of that name created by hand
+beforehand is refused with a label mismatch — let compose own it, or point the
+tier variables at names compose does not declare.
 
 ### 1. The workflow must be on the default branch
 

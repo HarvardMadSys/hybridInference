@@ -61,6 +61,14 @@ services:
       AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
       AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
       AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
+      # The other tiers' networks must be passed through too, or selecting a
+      # tier here sets the name and not the network — the runner then refuses
+      # at preflight with "names no network", which is correct but baffling
+      # when the operator did set the variable in their .env.
+      AGENT_EGRESS_NETWORK_TRUSTED: ${AGENT_EGRESS_NETWORK_TRUSTED:-}
+      AGENT_EGRESS_NETWORK_CUSTOM: ${AGENT_EGRESS_NETWORK_CUSTOM:-}
+      AGENT_EGRESS_NETWORK_FULL: ${AGENT_EGRESS_NETWORK_FULL:-}
+      AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
 
       # Identical inside this container and on the host — see the bind mount
       # below for why that is not a stylistic choice.

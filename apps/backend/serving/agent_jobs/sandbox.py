@@ -520,6 +520,54 @@ class ContainerBackend(SandboxBackend):
                 "AGENT_SANDBOX_ALLOW_OPEN_NETWORK=1 to accept that deliberately."
             )
 
+    def check_gateway_reachable(self, base_url: str) -> None:
+        """Fail startup if the sandbox cannot reach the gateway it will be given.
+
+        `platform_only` means "our gateway and nothing else", which quietly
+        assumes the gateway is *on that network* — true when it is the compose
+        `backend` service, false the moment an operator points
+        AGENT_GATEWAY_URL at a remote one. The sandbox then resolves nothing,
+        every job dies at its first model call, and the error reads like a
+        broken model rather than a network that was never going to work.
+
+        Probed rather than inferred: one container on the phase's real network,
+        asking whether the host resolves. A heuristic on the URL would be wrong
+        for every deployment that does route out.
+        """
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url).hostname or "").strip()
+        if not host:
+            return
+        network = self.network_for_phase("agent")
+        probe = subprocess.run(
+            [
+                self.docker_binary,
+                "run",
+                "--rm",
+                "--network",
+                network,
+                "--entrypoint",
+                "/bin/sh",
+                self.image,
+                "-c",
+                f"getent hosts {shlex.quote(host)} >/dev/null 2>&1",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise SandboxError(
+                f"the sandbox network {network!r} cannot resolve {host!r}, the gateway "
+                "the agent is told to call. Every job would fail at its first model "
+                "call. A closed `platform_only` network only works when the gateway is "
+                "on it (the compose `backend` service); for a remote gateway use a "
+                "network that routes to it (AGENT_EGRESS_AGENT_TIER=custom with "
+                "AGENT_EGRESS_NETWORK_CUSTOM)."
+            )
+
     def _check_bind_mountable(self, workdir_root: str) -> None:
         """Fail startup if the daemon cannot bind-mount the job workdir root."""
         # Under the runtime jobs will actually use. Without `--runtime` the

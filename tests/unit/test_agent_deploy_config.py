@@ -278,3 +278,26 @@ def test_an_unparsable_bound_falls_back_rather_than_crash_looping(monkeypatch):
     monkeypatch.setenv("AGENT_LEASE_TTL", "two minutes")
     args = build_parser().parse_args([])
     assert args.lease_ttl > 0
+
+
+def test_every_tier_the_overlay_lets_you_select_is_passed_through(compose: dict):
+    """Selecting a tier must also deliver that tier's network to the container.
+
+    The overlay offered the tier variables while passing through only the
+    `platform_only` network, so an operator who set
+    AGENT_EGRESS_AGENT_TIER=custom *and* AGENT_EGRESS_NETWORK_CUSTOM in their
+    .env got the first and not the second — and the runner refused at preflight
+    with "names no network" for a variable they had plainly set. Found by
+    running the overlay, not by reading it.
+    """
+    env = compose["services"]["agent-runner"]["environment"]
+    selectable = {
+        "platform_only": "PLATFORM_ONLY",
+        "trusted": "TRUSTED",
+        "custom": "CUSTOM",
+        "full": "FULL",
+    }
+    for tier, suffix in selectable.items():
+        assert f"AGENT_EGRESS_NETWORK_{suffix}" in env, (
+            f"tier {tier!r} is selectable but its network variable never reaches the runner"
+        )

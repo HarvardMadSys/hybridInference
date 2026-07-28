@@ -908,6 +908,11 @@ def run_forever(
     # Pass the workdir root so a backend that bind-mounts it can prove the
     # mount works now, rather than failing every job with an opaque error.
     backend.preflight(workdir_root=str(root))
+    # The sandbox must be able to reach the gateway it will be handed. Checked
+    # once here rather than discovered per job as an opaque model failure.
+    checker = getattr(backend, "check_gateway_reachable", None)
+    if checker is not None:
+        checker(base_url)
     print(f"agent runner {worker_id} started (sandbox backend: {backend.name})", flush=True)
 
     while True:
