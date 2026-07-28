@@ -2183,3 +2183,52 @@ async def test_failed_request_does_not_increment_quota_counter(
 
     await asyncio.sleep(0.05)
     mock_operational_store.increment_user_cost.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inline_system_is_normalized_before_native_passthrough(
+    anthropic_test_client, monkeypatch
+):
+    """The native route forwards the body unchanged, so it must arrive clean.
+
+    Claude Code 2.1.220 sends its agent-type listing as a `role: "system"`
+    message inside `messages`. A native Anthropic upstream rejects that role
+    outright, so normalizing only inside the OpenAI translator would leave
+    exactly these clients broken on Anthropic-backed models.
+    """
+    captured: dict = {}
+
+    async def fake_post(self, url, json=None, headers=None, timeout=None, retries=2):
+        captured.update(json or {})
+        return {
+            "id": "msg_native",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-opus-4-7",
+            "content": [{"type": "text", "text": "Hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 1},
+        }
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "json_post_with_retry", fake_post)
+
+    body = {
+        "model": NATIVE_MODEL,
+        "max_tokens": 50,
+        "system": [{"type": "text", "text": "You are Claude Code."}],
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": [{"type": "text", "text": "Available agent types…"}]},
+        ],
+    }
+    r = await anthropic_test_client.post("/v1/messages", json=body, headers=_auth())
+
+    assert r.status_code == 200
+    roles = [m["role"] for m in captured["messages"]]
+    assert "system" not in roles, f"a system role reached the native upstream: {roles}"
+    # And the instruction is not lost — it moved into the top-level field.
+    system_text = " ".join(b.get("text", "") for b in captured["system"])
+    assert "You are Claude Code." in system_text
+    assert "Available agent types" in system_text

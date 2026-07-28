@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
+from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
@@ -971,6 +972,13 @@ async def anthropic_messages(
         return _anthropic_error(400, "Missing required field: messages")
     if "max_tokens" not in body:
         return _anthropic_error(400, "Missing required field: max_tokens")
+
+    # Before dispatch, so this covers the native passthrough as well as the
+    # translated path. A native Anthropic upstream is forwarded this body
+    # unchanged and rejects an inline `role: "system"` message outright, so
+    # normalizing only inside the OpenAI translator would leave the Anthropic
+    # routes broken for exactly the clients that send it.
+    body = normalize_inline_system(body)
 
     try:
         canonical, _route, adapter = await _resolve(
