@@ -197,7 +197,14 @@ async def test_anthropic_messages_429_when_free_user_at_cap(auth_app, auth_clien
         )
         assert resp.status_code == 429, f"expected 429, got {resp.status_code}: {resp.text}"
         body = resp.json()
-        assert body["error"]["code"] == "concurrency_limit_exceeded"
+        # The Anthropic surfaces re-wrap structured errors into the Anthropic
+        # envelope on purpose: Claude Code's parser reads error.type and
+        # error.message, and shows an opaque failure without them. So the
+        # machine-readable part is `error.type`, not the `code` this used to
+        # assert, and the inner message is the human-readable one.
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "rate_limit_error"
+        assert "concurrent" in body["error"]["message"].lower()
     finally:
         auth_app.dependency_overrides.pop(verify_api_key, None)
         auth_app.dependency_overrides.pop(get_user_concurrency_limiter, None)
