@@ -34,6 +34,13 @@ probe() {
     local what="$1"; shift
     local dir="${OUT}.probe"
     rm -rf "$dir"; cp -R "$SRC" "$dir" 2>/dev/null
+    # A worktree's .git is a *file* pointing back at the real repository, and
+    # the project's own workflow says to always develop in one. Copied as-is,
+    # the `git add -A` below follows that pointer and stages the planted leak
+    # into the actual checkout — which is how a probe artefact reached a branch
+    # once. Give the copy its own repository instead.
+    rm -rf "$dir/.git"
+    git -C "$dir" init -q && git -C "$dir" add -A
     ( cd "$dir" && "$@" ) || { rm -rf "$dir"; fail "could not set up probe: $what"; }
     ( cd "$dir" && rm -rf ./.export-probe \
         && uv run python ops/release/public_export.py --materialize ./.export-probe >/dev/null 2>&1 )
