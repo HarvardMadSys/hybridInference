@@ -6,6 +6,22 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+# A lease is the only thing that lets the reaper take a job back from a stuck
+# or malicious worker. If the worker could pick the TTL, it could pick one long
+# enough that the lease never expires — and then the capability token bound to
+# that attempt would be neither self-revoking nor cancellable by the owner. The
+# server therefore caps it, and 15 minutes is far above any legitimate gap
+# between heartbeats.
+MAX_LEASE_TTL_SECONDS = 900.0
+
+# Normalized event kinds (issue #1041) plus the control events the platform
+# appends. The pattern is the security-relevant part: an event type is
+# interpolated into the SSE ``event:`` field, so anything containing a newline
+# would let a worker inject arbitrary frames into the owner's stream. Keeping
+# the charset to lowercase/digits/underscore makes that structurally impossible
+# while still letting runtime adapters introduce new kinds.
+EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+
 
 class AgentJobCreate(BaseModel):
     """Request body for creating an agent job."""
@@ -87,7 +103,10 @@ class WorkerClaimRequest(BaseModel):
 
     worker_id: str = Field(..., description="Stable identifier of the claiming worker.")
     lease_ttl_seconds: float = Field(
-        120.0, gt=0, description="How long the lease is valid without a heartbeat."
+        120.0,
+        gt=0,
+        le=MAX_LEASE_TTL_SECONDS,
+        description="How long the lease is valid without a heartbeat.",
     )
 
 
@@ -109,7 +128,7 @@ class WorkerClaimResponse(BaseModel):
 class WorkerHeartbeatRequest(BaseModel):
     """Worker lease renewal."""
 
-    lease_ttl_seconds: float = Field(120.0, gt=0)
+    lease_ttl_seconds: float = Field(120.0, gt=0, le=MAX_LEASE_TTL_SECONDS)
 
 
 class WorkerHeartbeatResponse(BaseModel):
@@ -123,7 +142,11 @@ class WorkerHeartbeatResponse(BaseModel):
 class WorkerEventRequest(BaseModel):
     """One normalized event reported by a worker."""
 
-    event_type: str = Field(..., description="thinking|message|tool_use|...|lifecycle")
+    event_type: str = Field(
+        ...,
+        pattern=EVENT_TYPE_PATTERN,
+        description="thinking|message|tool_use|...|lifecycle",
+    )
     payload: dict[str, Any] | None = None
 
 

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -33,6 +34,7 @@ from fastapi.responses import StreamingResponse
 
 from serving.agent_jobs.tokens import InvalidAgentToken, mint_worker_token, parse_worker_token
 from serving.schemas_agent_jobs import (
+    EVENT_TYPE_PATTERN,
     AgentJobArtifactResponse,
     AgentJobCancelResponse,
     AgentJobCreate,
@@ -75,6 +77,21 @@ _SSE_HEADERS = {
 _POLL_INTERVAL_S = 1.0
 _KEEPALIVE_EVERY_N_POLLS = 15
 _EVENT_PAGE_SIZE = 500
+
+# The schema constrains event_type on the way in, but the SSE writer must be
+# safe on its own: rows written before that constraint existed (or by any
+# future non-HTTP writer) must not be able to break out of the ``event:`` field
+# and inject frames into the owner's stream.
+_SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
+
+
+def _sse_frame(event: dict[str, Any]) -> str:
+    """Render one stored event as an SSE frame with a safe event name."""
+    event_type = event["event_type"]
+    if not _SAFE_EVENT_TYPE.match(event_type or ""):
+        event_type = "malformed"
+    data = json.dumps(_event_response(event).model_dump(), separators=(",", ":"))
+    return f"id: {event['id']}\nevent: {event_type}\ndata: {data}\n\n"
 
 
 def _require_store(store: AgentJobStore | None) -> AgentJobStore:
@@ -303,10 +320,7 @@ async def stream_agent_job_events(
                     idle_polls = 0
                     for event in events:
                         cursor = event["id"]
-                        data = json.dumps(
-                            _event_response(event).model_dump(), separators=(",", ":")
-                        )
-                        yield f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
+                        yield _sse_frame(event)
                 else:
                     idle_polls += 1
                     if idle_polls % _KEEPALIVE_EVERY_N_POLLS == 0:
@@ -330,12 +344,7 @@ async def stream_agent_job_events(
                             break
                         for event in tail:
                             cursor = event["id"]
-                            data = json.dumps(
-                                _event_response(event).model_dump(), separators=(",", ":")
-                            )
-                            yield (
-                                f"id: {event['id']}\nevent: {event['event_type']}\ndata: {data}\n\n"
-                            )
+                            yield _sse_frame(event)
                     final = json.dumps(
                         {
                             "state": job["state"],

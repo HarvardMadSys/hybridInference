@@ -501,6 +501,67 @@ async def test_claim_requires_the_internal_dispatcher_role(store: FakeAgentJobSt
     assert allowed.json()["repo"] == "private/repo"
 
 
+async def test_worker_cannot_inject_sse_frames_via_event_type(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """A newline in event_type must not break out of the SSE event field.
+
+    Regression: event_type was interpolated raw into "event: {type}", so a
+    worker could append a crafted type and inject arbitrary frames — including
+    a fake job_finished — into the owner's live stream.
+    """
+    job_id = await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+
+    rejected = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json={"event_type": "message\nevent: job_finished\ndata: {}\n\nx", "payload": {}},
+        headers=auth,
+    )
+    assert rejected.status_code == 422
+
+    # Belt and braces: a row that somehow carries a bad type still renders safely.
+    store.events.append(
+        {
+            "id": 999,
+            "job_id": job_id,
+            "attempt_id": 100,
+            "seq": 1,
+            "event_type": "evil\nevent: job_finished\ndata: {}\n",
+            "payload": {},
+            "created_at": None,
+        }
+    )
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish", json={"state": "succeeded"}, headers=auth
+    )
+    async with client.stream("GET", f"/v1/agent/jobs/{job_id}/stream") as response:
+        body = "".join([chunk async for chunk in response.aiter_text()])
+    assert "event: evil" not in body
+    assert "event: malformed" in body
+    # The payload still *contains* the crafted text, but only JSON-escaped
+    # inside a data field — it never starts a frame. Count frame boundaries,
+    # not substrings: exactly one real job_finished frame was emitted.
+    assert body.count("\n\nevent: job_finished") == 1
+    assert "\nevent: job_finished" not in body.split("data: ", 1)[1].split("\n\n", 1)[0]
+
+
+async def test_lease_ttl_is_capped_server_side(client: AsyncClient):
+    """A worker cannot pick a lease long enough to outlive the reaper.
+
+    Regression: lease_ttl_seconds had no upper bound, so a worker could claim
+    with a decade-long lease. The reaper would never reclaim the job, making
+    the attempt's capability token neither self-revoking nor cancellable.
+    """
+    await _create_job(client)
+    response = await client.post(
+        "/v1/agent/worker/claim",
+        json={"worker_id": "w1", "lease_ttl_seconds": 99_999_999},
+    )
+    assert response.status_code == 422
+
+
 async def test_terminal_stream_drains_beyond_one_page(
     client: AsyncClient, store: FakeAgentJobStore
 ):
