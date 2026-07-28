@@ -7,6 +7,7 @@
 models:
   - id: glm-5.1
     name: GLM-5.1
+    required_role: free
     provider: zai
     quantization: "fp8"
     context_length: 200000
@@ -60,7 +61,7 @@ models:
   - id: glm-5.2
     name: GLM-5.2
     provider: zai
-    required_role: internal
+    required_role: pro
     quantization: "fp8"
     context_length: 1000000
     max_output_length: 131072
@@ -114,6 +115,7 @@ models:
 
   - id: glm-5-turbo
     name: GLM-5 Turbo
+    required_role: admin
     provider: zai
     quantization: "fp8"
     context_length: 200000
@@ -160,6 +162,7 @@ models:
 
   - id: minimax-m2.5
     name: MiniMax M2.5
+    required_role: free
     provider: minimax
     quantization: "bf16"
     input_modalities: ["text"]
@@ -222,6 +225,7 @@ models:
 
   - id: minimax-m3
     name: MiniMax M3
+    required_role: free
     provider: minimax
     quantization: "bf16"
     # MiniMax-M3 natively accepts image and video upstream (OpenAI-compat
@@ -280,6 +284,7 @@ models:
 
   - id: minimax-fast
     name: MiniMax Fast
+    required_role: admin
     provider: minimax
     quantization: "bf16"
     # Routes to MiniMax-M2.5, which is text-only upstream; do not advertise image.
@@ -398,6 +403,7 @@ models:
   # a weighted fallback for when the coding-plan endpoint is unhealthy.
   - id: kimi-k2.7-code
     name: Kimi K2.7 Code (only support coding agents)
+    required_role: pro
     provider: kimi
     quantization: "fp8"
     # The Kimi coding endpoint supports image and video inputs.
@@ -459,6 +465,7 @@ models:
 
   - id: kimi-k2.7-code-highspeed
     name: Kimi K2.7 Code (only support coding agents)
+    required_role: internal
     provider: kimi
     quantization: "fp8"
     # kimi-for-coding-highspeed exposes the same image/video input capabilities.
@@ -486,6 +493,7 @@ models:
 
   - id: kimi-k3
     name: Kimi K3 (only support coding agents)
+    required_role: internal
     provider: kimi
     quantization: "fp8"
     input_modalities: ["text", "image", "video"]
@@ -571,7 +579,7 @@ models:
   - id: diffusiongemma
     name: DiffusionGemma 26B
     provider: vllm
-    required_role: internal
+    required_role: free
     provider_model_id: "nvidia/diffusiongemma-26B-A4B-it-NVFP4"
     quantization: "nvfp4"
     aliases: ["freeinference-diffusiongemma"]
@@ -613,7 +621,7 @@ models:
   - id: deepseek-v4-flash
     name: DeepSeek V4 Flash (high speed)
     provider: deepseek
-    required_role: pro
+    required_role: free
     provider_model_id: "deepseek-v4-flash"
     context_length: 1000000
     max_output_length: 393216
@@ -671,7 +679,7 @@ models:
   - id: deepseek-v4-pro
     name: DeepSeek V4 Pro
     provider: deepseek
-    required_role: internal
+    required_role: admin
     provider_model_id: "deepseek-v4-pro"
     context_length: 1000000
     max_output_length: 393216

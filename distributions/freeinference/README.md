@@ -91,6 +91,46 @@ the legacy location.
 The tests here remain local/deploy verification until the future CI/CD stage
 wires the distribution suite in.
 
+## What `config/models.yaml` here does not say
+
+The admin console can change routing weights, disable a provider and gate a
+model by role at runtime. Those changes live only in Postgres, so the registry
+in this directory is not by itself a description of what production serves.
+`ops/db/export_runtime_overrides.py` produces the inventory; run it on the host.
+
+The C0 export on 2026-07-28 found 75 overrides. Role gating has been folded in
+— `required_role` here now equals what production serves, for all fourteen
+models — and the database still wins at runtime, so nothing about production
+changed. What is left is deliberate, and it is worth knowing before deploying
+this registry anywhere else.
+
+**Four providers are disabled in production and still declared here.**
+`chutes`, `featherless`, `ollama` and `openrouter` were turned off between
+2026-07-06 and 2026-07-21. The disable is a database row; the routes stay in
+this file because the intent is temporary. So a deployment that starts from
+this registry with an empty database gets routes production has switched off:
+
+```
+minimax-fast        production: no usable route   fresh: chutes, featherless, openrouter
+deepseek-v4-flash   production: sglang, staging   fresh: + deepseek, ollama
+deepseek-v4-pro     production: deepseek, staging fresh: + ollama
+glm-5.1 / glm-5.2   production: zai, staging      fresh: + ollama, chutes
+glm-5-turbo         production: zai, staging      fresh: + chutes
+minimax-m2.5        production: minimax, staging  fresh: + ollama, chutes
+minimax-m3          production: minimax, staging  fresh: + ollama
+kimi-k2.7-code      production: kimi_coding, ...  fresh: + ollama, chutes
+```
+
+`minimax-fast` is the one to look at first: every route it declares belongs to
+a disabled provider, so production serves it from nowhere and does not list it
+in `/v1/models`. It is in the registry and it is not a model this deployment
+offers.
+
+**Eight database rows point at models this registry no longer declares** —
+`glm-4.7`, `glm-5`, `gpt-5.3-spark`, `gpt-oss-20b` and `minimax-m2.7` still
+carry weight or visibility rows. They are inert while the models are absent.
+Deleting them is a write against the production database and has not been done.
+
 ## Target layout (Phase 2 in progress, one category per PR)
 
 ```text
