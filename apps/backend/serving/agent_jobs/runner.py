@@ -222,10 +222,10 @@ def run_agent(
     heart: Heartbeater,
     timeout_s: float,
     backend: SandboxBackend,
-) -> tuple[int, str]:
+) -> tuple[int, str, list[str]]:
     """Run the agent, streaming its output back as normalized events.
 
-    Returns ``(exit_code, tail)``. Raises :class:`LeaseLost` if this attempt
+    Returns ``(exit_code, tail, tool_errors)``. Raises :class:`LeaseLost` if this attempt
     stops owning the job mid-run.
     """
     argv, extra_env = runtime.prepare(
@@ -254,6 +254,11 @@ def run_agent(
 
     deadline = time.monotonic() + timeout_s
     tail: list[str] = []
+    # Tool failures the agent may or may not acknowledge. A model that says "I
+    # added the docstring" after its Edit was denied is a real behaviour we
+    # observed, so the runner reports what the tools did rather than trusting
+    # the agent's summary.
+    tool_errors: list[str] = []
 
     # Read stdout on a separate thread and poll for it here, so cancellation
     # and the deadline are honoured even when the agent goes quiet. Iterating
@@ -279,13 +284,13 @@ def run_agent(
         if heart.cancel_requested:
             process.kill()
             control.append_event(NormalizedEvent("lifecycle", {"phase": "cancelled_by_owner"}))
-            return 130, "".join(tail)
+            return 130, "".join(tail), tool_errors
         if time.monotonic() > deadline:
             process.kill()
             control.append_event(
                 NormalizedEvent("error", {"text": f"agent exceeded {timeout_s:.0f}s"})
             )
-            return 124, "".join(tail)
+            return 124, "".join(tail), tool_errors
 
         try:
             line = lines.get(timeout=_POLL_INTERVAL_S)
@@ -299,13 +304,24 @@ def run_agent(
         del tail[:-40]
         event = runtime.parse_event(line)
         if event is not None:
+            if event.event_type == "tool_result" and (event.payload or {}).get("is_error"):
+                tool_errors.append(str((event.payload or {}).get("content", ""))[:200])
             control.append_event(event)
 
     exit_code = process.wait()
     stderr = process.stderr_text()
     if stderr.strip():
         tail.append(stderr[-2000:])
-    return exit_code, "".join(tail)
+    if tool_errors:
+        # Surfaced as an event so the owner sees it in the stream, not only in
+        # the final detail string.
+        control.append_event(
+            NormalizedEvent(
+                "error",
+                {"detail": f"{len(tool_errors)} tool call(s) failed", "first": tool_errors[0]},
+            )
+        )
+    return exit_code, "".join(tail), tool_errors
 
 
 def run_once(
@@ -368,7 +384,7 @@ def run_once(
                 {"phase": "started", "runtime": job.runtime, "attempt_no": job.attempt_no},
             )
         )
-        exit_code, tail = run_agent(
+        exit_code, tail, tool_errors = run_agent(
             runtime,
             job=job,
             workdir=workdir,
@@ -400,7 +416,22 @@ def run_once(
         # runner's job ends at a validated patch. Leaving the job `running`
         # would be a lie, so report success and let the publisher take it from
         # here when a patch exists.
-        control.finish("succeeded", "agent completed" + ("" if patch.strip() else " (no changes)"))
+        if not patch.strip():
+            # No patch is only success if nothing went wrong. A denied write
+            # followed by an agent claiming it succeeded must not be recorded
+            # as a clean run — the owner would see "succeeded" on a job that
+            # did nothing and never learn why.
+            if tool_errors:
+                control.finish(
+                    "failed",
+                    f"agent produced no changes after {len(tool_errors)} failed "
+                    f"tool call(s): {tool_errors[0]}",
+                )
+                return 1
+            control.finish("succeeded", "agent completed (no changes)")
+            return 0
+
+        control.finish("succeeded", "agent completed")
         return 0
     except LeaseLost as exc:
         print(f"lease lost, stopping: {exc}", file=sys.stderr)
