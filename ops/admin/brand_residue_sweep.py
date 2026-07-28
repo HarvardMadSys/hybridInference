@@ -45,6 +45,39 @@ ATTRIBUTION: dict[str, str] = {
         "worked example — true, useful to a reader, and not a leak"
     ),
     "README.user.md": "the same, plus the clone URL",
+    "README.developer.md": "the clone URL, and the same worked example",
+    "docs/developer/conf.py": "the documentation's own copyright line",
+    "docs/developer/installation.md": "the clone URL",
+    "docs/developer/deployment.md": "the clone URL",
+    "docs/developer/adding-models.md": (
+        "a link to this repository's own pull request, and the FreeInference "
+        "doc site labelled as the worked example it is"
+    ),
+    "docs/developer/claude-code-setup.md": "the same worked example, labelled",
+    "docs/developer/index.rst": "the same worked example, labelled",
+    "deploy/docker/docker-compose.yml": (
+        "NEXT_PUBLIC_GITHUB_URL defaults to this repository, which is where "
+        "the console's source link should point"
+    ),
+    "apps/frontend/src/config/branding.ts": (
+        "the same default, and comments naming this deployment as the example "
+        "for why each neutral default is what it is"
+    ),
+}
+
+# GUARDS are files whose job is to notice these markers. They have to contain
+# them: a test asserting a marker is absent quotes it, and the list of markers
+# lives here. Counting them as residue meant the criterion could not reach zero
+# for the same reason ATTRIBUTION could not — the thing being measured includes
+# the measuring apparatus.
+GUARDS: dict[str, str] = {
+    "ops/admin/brand_residue_sweep.py": "defines BRAND_MARKERS",
+    "tests/unit/ops/test_brand_residue_sweep.py": "exercises the classifier above",
+    "tests/servers/test_neutral_startup.py": "asserts no marker reaches a response",
+    "tests/unit/config/test_site_identity.py": "asserts the identity names no deployment",
+    "tests/unit/config/test_contract_settings_defaults.py": "asserts no marker in the CORS default",
+    "tests/unit/deploy/test_compose_identity.py": "asserts compose defaults name no deployment",
+    "tests/unit/test_no_personal_data.py": "carries the address shapes it scans for",
 }
 
 # PENDING is residue: a work stream that has not finished moving something out
@@ -65,7 +98,6 @@ ALLOWLIST: dict[str, str] = {
     "apps/frontend/": "compile-time branding defaults — neutral-defaults flip wave",
     "apps/backend/": "Settings/RAG deployment defaults + docstrings — neutral-defaults flip wave",
     "tests/": "frozen contract values — flipped together with the neutral-defaults PR",
-    "README.developer.md": "neutral README task",
     "CLAUDE.md": "mixed agent guide — site lines move with the neutral wave",
     "AGENTS.md": "mixed agent guide — site lines move with the neutral wave",
     ".github/workflows/": "FreeInference CD workflows — step-2 move",
@@ -90,7 +122,7 @@ def classify(path: str) -> str | None:
     Entries ending in ``/`` are directory prefixes; anything else must match
     the path exactly (so ``LICENSE`` does not swallow ``LICENSE-THIRD-PARTY``).
     """
-    for entry in {**ATTRIBUTION, **ALLOWLIST}:
+    for entry in {**ATTRIBUTION, **GUARDS, **ALLOWLIST}:
         if entry.endswith("/"):
             if path.startswith(entry):
                 return entry
@@ -161,12 +193,17 @@ def main() -> int:
     print(f"allowlisted hits: {total} files across {len(buckets)} buckets\n")
     pending = {p: f for p, f in buckets.items() if p in ALLOWLIST}
     attribution = {p: f for p, f in buckets.items() if p in ATTRIBUTION}
+    guards = {p: f for p, f in buckets.items() if p in GUARDS}
 
-    if attribution:
-        print("attribution (permanent — naming the origin is correct here):")
-        for prefix in sorted(attribution, key=lambda p: -len(attribution[p])):
-            print(f"  {len(attribution[prefix]):4d}  {prefix:42s} {ATTRIBUTION[prefix]}")
-        print()
+    for title, group, reasons in (
+        ("attribution (permanent — naming the origin is correct here)", attribution, ATTRIBUTION),
+        ("guards (must contain the markers to notice them)", guards, GUARDS),
+    ):
+        if group:
+            print(f"{title}:")
+            for prefix in sorted(group, key=lambda p: -len(group[p])):
+                print(f"  {len(group[prefix]):4d}  {prefix:42s} {reasons[prefix]}")
+            print()
     print("pending (residue — criterion \u2461 is met when this is empty):")
     for prefix in sorted(pending, key=lambda p: -len(pending[p])):
         print(f"  {len(pending[prefix]):4d}  {prefix:42s} {ALLOWLIST[prefix]}")
