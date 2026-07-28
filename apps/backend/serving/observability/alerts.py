@@ -205,13 +205,20 @@ def escape_slack_text(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _format_message(severity: AlertSeverity, title: str, context: dict[str, Any]) -> str:
+def _format_message(
+    severity: AlertSeverity,
+    title: str,
+    context: dict[str, Any],
+    status: Literal["firing", "resolved"] = "firing",
+) -> str:
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     info = server_info()
-    lines = [
-        f"{_EMOJI[severity]} *{title}*",
-        f"_{ts} · {info['environment']}_",
-    ]
+    # Titles are written as breach statements ("Provider circuit opened"), so a
+    # resolution rendered with the breach's own severity emoji is indis-
+    # tinguishable from the outage. The relay carries ``status`` as a field; the
+    # plain webhook has only this text, so the recovery has to be said in it.
+    heading = f"{_EMOJI[severity]} *{title}*" if status == "firing" else f"✅ *Recovered:* {title}"
+    lines = [heading, f"_{ts} · {info['environment']}_"]
     if context:
         lines.append("")
         for k, v in context.items():
@@ -364,7 +371,7 @@ async def alert_slack(
 
     sent = False
     try:
-        message = _format_message(severity, title, context)
+        message = _format_message(severity, title, context, status)
         if relay_configured:
             try:
                 event = _build_oncall_event(

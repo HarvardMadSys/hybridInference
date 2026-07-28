@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from serving.observability.alerts import (
+    _EMOJI,
     AlertSeverity,
     _base_url,
     _detect_environment,
@@ -236,6 +237,23 @@ def test_format_message_includes_server_block():
     assert "• *Host:*" in message
     info = server_info()
     assert info["hostname"] in message
+
+
+def test_format_message_marks_a_resolution_as_recovery():
+    """The plain webhook has no status field, so the text must carry it.
+
+    Titles are breach statements, so rendering a resolution with the breach's
+    severity emoji would read in Slack as a second outage.
+    """
+    title = "Provider circuit opened"
+    firing = _format_message(AlertSeverity.ERROR, title, {}, "firing")
+    resolved = _format_message(AlertSeverity.ERROR, title, {}, "resolved")
+
+    assert firing.startswith(f"{_EMOJI[AlertSeverity.ERROR]} *{title}*")
+    assert resolved.startswith(f"✅ *Recovered:* {title}")
+    assert _EMOJI[AlertSeverity.ERROR] not in resolved
+    # Defaulting to "firing" keeps every existing caller rendering as before.
+    assert _format_message(AlertSeverity.ERROR, title, {}) == firing
 
 
 class TestResolutionIsNeverSuppressed:
