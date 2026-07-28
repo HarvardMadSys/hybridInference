@@ -40,7 +40,7 @@
 | **P0 收口修复** | ✅ 全部合并（#1042 三项 + Codex 两条；#1049 P1-B/P2-G/health/README + cycle 无声修复） |
 | status-monitor storm 告警 | ✅ 已迁移并部署（#1050，D1=b 每模型独立 incident；legacy 汇总仅保留于 `ALERT_DEFAULT_OWNER=legacy` 回滚模式）<br>⚠️ **无真实流量验证** —— 复用已验证的单模型投递路径，但"批量并发开 N 个 incident"本身未实测（Slack 速率限制下的排队行为值得观察） |
 | status-monitor cycle 告警 | ✅ 已迁移并部署（#1059 新增 `monitoring_cycle_failure` 契约类型 + producer 双侧；#1065 翻 `ALERT_CYCLE_OWNER=control-plane`，lifecycle 部署先行完成，部署 SHA 经 binding gate 回证）<br>⚠️ **无真实流量验证** —— 全新契约类型，与单模型路径共享投递层但走独立的 fingerprint 与 producer 分支。可安全强制触发：临时把 monitor 自身的 `GATEWAY_BASE_URL` 指向死主机（只让监控自己盲一个窗口，不影响真实网关流量），顺带实测 P1-A 的空目录防护 |
-| 后端全部 `alert_slack` 告警（11 个调用点） | ❌ 未迁移，但已有 dormant Python 契约 |
+| 后端全部 `alert_slack` 告警（12 个调用点） | 🟡 语义已就绪，传输未接<br>12/12 调用点都已具备恢复边（#1076），契约新增 `metric_threshold_breach` + `dependency_unavailable` 两类（#1072），producer 侧 canonical event builder 已实现。**尚未接上传输** —— 后端目前仍走旧 webhook，见 §G1 |
 | 全局 snooze（管理员暂停告警） | ⚠️ 新链路无对应能力 —— 迁移即功能回归 |
 | 旧 Codex 自动分析回复 | ❌ 新链路未实现（`dispatch_analysis` 返回 `analysis_not_enabled`） |
 | production 上线 | ❌ 未开始（代码中**无任何可发 production 的路径**） |
@@ -182,29 +182,42 @@
 legacy 投递出口 `postCodexAlert` → `postSlack` 仅在 `ALERT_DEFAULT_OWNER` /
 `ALERT_CYCLE_OWNER` 回滚为 `legacy` 时使用，以及供切换前已开的 incident 排空。
 
-### A.2 后端 `alert_slack` —— 单一收敛点，11 个调用点
+### A.2 后端 `alert_slack` —— 单一收敛点，12 个调用点
 
-定义：`apps/backend/serving/observability/alerts.py:310`
+定义：`apps/backend/serving/observability/alerts.py`
 
-| 模块 | 行 | 告警 | 严重度 |
+「恢复边」列指该调用点现在是否会发 `status="resolved"`。迁移前 12 个全是
+fire-only（`grep 'status="resolved"'` 一条都搜不到），控制面会为每条 firing
+开 incident 却永远收不到关闭事件 —— 配额耗尽后真实故障反而被压掉。
+
+| 模块 | 告警 | 严重度 | 恢复边 |
 |---|---|---|---|
-| `routing/endpoint_health.py` | 251 | Provider circuit opened | ERROR |
-| `serving/observability/alert_rules.py` | 147 | Failed-request rate exceeded | ERROR |
-| ″ | 201 | 5xx rate exceeded | ERROR |
-| ″ | 253 | p95 latency exceeded for provider `{provider}` | WARN |
-| ″ | 301 | Auth failure spike | WARN |
-| ″ | 363 | RouteWise pending prefix-cache entries leaking | WARN |
-| ″ | 415 | Tracked-task failure rate exceeded for `{task_name}` | ERROR |
-| ″ | 451 | User cost overrun | WARN |
-| ″ | 489 | Provider hourly spend exceeded budget for `{provider}` | WARN |
-| `serving/servers/routers/health.py` | 87 | Database disconnected（operational_store） | CRITICAL |
-| ″ | 99 | Database disconnected（log_store） | CRITICAL |
-| `serving/admin/failed_request_alerter.py` | 250 | Failed request | — |
+| `routing/endpoint_health.py` | Provider circuit opened | ERROR | ✅ 复用既有 `circuit_closed` 点 |
+| `serving/observability/alert_rules.py` | Failed-request rate exceeded | ERROR | ✅ 指标转清 |
+| ″ | 5xx rate exceeded | ERROR | ✅ 指标转清 |
+| ″ | p95 latency exceeded for provider `{provider}` | WARN | ✅ 指标转清 |
+| ″ | Auth failure spike | WARN | ✅ 指标转清 |
+| ″ | RouteWise pending prefix-cache entries leaking | WARN | ✅ 指标转清 |
+| ″ | Tracked-task failure rate exceeded for `{task_name}` | ERROR | ✅ 指标转清 |
+| ″ | User cost overrun | WARN | ✅ 静默清扫（周期任务无「转清」样本） |
+| ″ | Provider hourly spend exceeded budget for `{provider}` | WARN | ✅ 静默清扫 |
+| `serving/servers/routers/health.py` | Database disconnected（operational_store） | CRITICAL | ✅ 指标转清 |
+| ″ | Database disconnected（log_store） | CRITICAL | ✅ 指标转清 |
+| `serving/admin/failed_request_alerter.py` | Failed request | — | ✅ 指标转清 |
+
+两种形状要分开处理：记录驱动的规则有流量就会重新评估，指标转清并持续
+`clear_after_sec` 后自然恢复；周期性预算任务永远看不到「转清」样本，靠
+`stale_after_sec` 静默清扫关闭。
+
+**边沿检测只管恢复边**：持续故障期间 `alert_slack` 仍按今天的节奏每次评估都
+发，因为这些重复正是控制面 occurrence 计数与 last-seen 的来源。把它们折叠掉
+会让 incident 卡片永远停在 "Occurrences: 1" —— 那是**不如现在**，不是改进。
 
 **迁移接口适配点**：`alert_slack(severity, title, context, *, dedupe_key, cooldown_sec, status)`
 - `dedupe_key` → fingerprint；`status` → status；`severity` → severity（CRITICAL/ERROR/WARN/INFO 映射）
 - ⚠️ `cooldown_sec` 与进程内去重语义需重定义（§3.1）
-- ⚠️ `is_snoozed()` 无对应物（§3.1）
+- ⚠️ `is_snoozed()` 无对应物（§3.1）—— 但**恢复事件绝不受 snooze 与 cooldown 抑制**，
+  否则静音一条告警会让它的 incident 永久挂起
 
 ### A.3 oncall relay + Codex 分析子系统
 
