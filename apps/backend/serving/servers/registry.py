@@ -292,8 +292,14 @@ def register_from_models_yaml(
                 return val
 
             # Build primary config
+            # Only carry keys the YAML actually sets: `m.get(k)` would inject
+            # None for absent optional fields, and that None overwrites the
+            # ModelConfig dataclass default downstream (an omitted
+            # `quantization` became None and made GET /v1/models fail schema
+            # validation with a 500). Presence-based copying keeps an explicit
+            # `key: null` meaningful while letting defaults apply otherwise.
             top_cfg = {
-                k: m.get(k)
+                k: m[k]
                 for k in (
                     "id",
                     "name",
@@ -316,6 +322,7 @@ def register_from_models_yaml(
                     "route_metadata",
                     "extra_body",
                 )
+                if k in m
             }
             # NOTE: top-level base_url is intentionally NOT expanded here. It is
             # expanded per-route in the loop below (raw_base_url -> base_url) so

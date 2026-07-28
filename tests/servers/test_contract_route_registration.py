@@ -177,3 +177,54 @@ def test_production_models_yaml_registers_full_inventory(monkeypatch):
             assert adapter.config.endpoint_id
     for alias, canonical_id in chat_alias_owner.items():
         assert exe.routes[alias] is exe.routes[canonical_id]
+
+
+MINIMAL_YAML = """\
+models:
+  - id: minimal-model
+    name: Minimal Model
+    provider: openai_compat
+    route:
+      - kind: openai_compat
+        base_url: https://minimal.example.test/v1
+        api_key: sk-minimal
+"""
+
+
+def test_omitted_optional_fields_fall_back_to_dataclass_defaults(tmp_path):
+    """A catalog that omits optional fields must not inject None over defaults.
+
+    Regression: top_cfg was built with ``m.get(k)``, so an absent
+    ``quantization`` became None and overwrote ModelConfig's "bf16" default —
+    which then failed ModelItem validation and made GET /v1/models return 500
+    for any minimal catalog. Production models.yaml sets these fields on every
+    entry, so only fresh/neutral catalogs hit it.
+    """
+    p = tmp_path / "models.yaml"
+    p.write_text(MINIMAL_YAML)
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    adapter, _weight = exe.routes["minimal-model"].adapters[0]
+    cfg = adapter.config
+    assert cfg.quantization == "bf16"
+    assert cfg.input_modalities == ["text"]
+    assert cfg.output_modalities == ["text"]
+    assert cfg.supports_tools is False
+    assert cfg.context_length == 8192
+
+
+def test_explicit_null_is_preserved_over_the_default(tmp_path):
+    """An explicit ``key: null`` still means None (presence, not truthiness)."""
+    p = tmp_path / "models.yaml"
+    p.write_text(
+        MINIMAL_YAML.replace(
+            "    provider: openai_compat\n",
+            "    provider: openai_compat\n    provider_model_id: null\n",
+        )
+    )
+    exe = RouteExecutor()
+    registry.register_from_models_yaml(exe, Path(p))
+
+    adapter, _weight = exe.routes["minimal-model"].adapters[0]
+    assert adapter.config.provider_model_id is None
