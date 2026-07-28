@@ -121,6 +121,13 @@ def materialize(names: list[str], overlay: list[dict], target: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
 
+    # The export becomes a git repository the moment it is pushed, and several
+    # checks in the suite find their files through `git ls-files`. A tree
+    # without one is not the artifact: those checks silently see nothing and
+    # pass, or fail for a reason that would never occur in the result.
+    subprocess.run(["git", "init", "-q"], cwd=target, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=target, check=True)
+
 
 def audit(
     names: list[str], root: Path | None = None, overlay: list[dict] | None = None
