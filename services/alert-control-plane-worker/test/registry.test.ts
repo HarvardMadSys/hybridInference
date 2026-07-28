@@ -32,11 +32,13 @@ function activation(
   overrides: Partial<
     Extract<VerifiedDeploymentCommand, { action: "activate" }>["deployment"]
   > = {},
+  supersedes = false,
 ): FakeAttestation {
   return {
     issuer: "trusted-ci",
     command: {
       action: "activate",
+      supersedes,
       deployment: {
         environment: "staging",
         service: "gateway",
@@ -295,6 +297,68 @@ describe("DeploymentRegistry", () => {
         artifactDigest: DIGEST,
       }).deploymentSha,
     ).toBe(SHA);
+  });
+
+  describe("superseding activations", () => {
+    // Only for a service where exactly one deployment can be serving. It is
+    // what makes a long-lived capability safe: retiring the record it is
+    // pinned to revokes it on the next event, without waiting out its expiry.
+    const OTHER = {
+      deploymentId: "deploy-456",
+      artifactDigest: `sha256:${"e".repeat(64)}`,
+      deploymentSha: "f".repeat(40),
+      activatedAt: 2_000,
+    };
+
+    it("retires the record the previous deployment left active", async () => {
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+      const previous = await registry.apply(activation());
+
+      await registry.apply(activation(OTHER, true));
+
+      expect(() => registry.lookup(previous)).toThrow(
+        expect.objectContaining({ code: "retired_deployment" }),
+      );
+    });
+
+    it("leaves the deployment doing the superseding active", async () => {
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+      await registry.apply(activation());
+
+      const current = await registry.apply(activation(OTHER, true));
+
+      expect(registry.lookup(current).retiredAt).toBeNull();
+    });
+
+    it("does not supersede unless the activation asks to", async () => {
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+      const previous = await registry.apply(activation());
+
+      await registry.apply(activation(OTHER));
+
+      expect(registry.lookup(previous).retiredAt).toBeNull();
+    });
+
+    it("spends no registry version when nothing was superseded", async () => {
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+
+      const only = await registry.apply(activation({}, true));
+
+      // The version is what a capability is pinned to, so it must move only
+      // when a record does.
+      expect(only.registryVersion).toBe(1);
+      expect(registry.version()).toBe(1);
+    });
+
+    it("is idempotent when the same deployment activates twice", async () => {
+      const registry = new InMemoryDeploymentRegistry(verifier([]));
+      const first = await registry.apply(activation({}, true));
+
+      const again = await registry.apply(activation({}, true));
+
+      expect(again).toEqual(first);
+      expect(registry.lookup(first).retiredAt).toBeNull();
+    });
   });
 
   it("does not rewrite an existing composite key with conflicting history", async () => {

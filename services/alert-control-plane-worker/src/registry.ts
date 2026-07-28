@@ -31,6 +31,13 @@ export type VerifiedDeploymentCommand =
         TrustedDeploymentMetadata,
         "retiredAt" | "registryVersion"
       >;
+      /**
+       * Retire whatever else this service still has active. Only correct where
+       * exactly one deployment can be serving — a single long-lived process.
+       * A Worker under a gradual rollout genuinely runs two versions at once,
+       * so superseding there would reject alerts from the half still serving.
+       */
+      readonly supersedes?: boolean;
     }
   | {
       readonly action: "retire";
@@ -83,6 +90,11 @@ interface RegistryRepository {
   countByDeploymentId(deploymentId: string): number;
   insert(record: TrustedDeploymentMetadata): void;
   retire(key: DeploymentKey, retiredAt: number, registryVersion: number): void;
+  retireSuperseded(
+    survivor: DeploymentKey,
+    retiredAt: number,
+    allocateVersion: () => number,
+  ): void;
   nextVersion(): number;
   version(): number;
 }
@@ -208,6 +220,41 @@ class SqlRegistryRepository implements RegistryRepository {
     );
   }
 
+  retireSuperseded(
+    survivor: DeploymentKey,
+    retiredAt: number,
+    allocateVersion: () => number,
+  ): void {
+    const doomed = this.storage.sql
+      .exec<Record<string, SqlValue>>(
+        `SELECT COUNT(*) AS count
+         FROM deployment_registry
+         WHERE environment = ? AND service = ? AND retired_at IS NULL
+           AND NOT (deployment_id = ? AND artifact_digest = ?)`,
+        survivor.environment,
+        survivor.service,
+        survivor.deploymentId,
+        survivor.artifactDigest,
+      )
+      .one();
+    // Allocating unconditionally would burn a registry version on every deploy
+    // that supersedes nothing, and the version is what a capability is pinned
+    // to — so it stays a number that only moves when a record does.
+    if (numberColumn(doomed, "count") === 0) return;
+    this.storage.sql.exec(
+      `UPDATE deployment_registry
+       SET retired_at = ?, registry_version = ?
+       WHERE environment = ? AND service = ? AND retired_at IS NULL
+         AND NOT (deployment_id = ? AND artifact_digest = ?)`,
+      retiredAt,
+      allocateVersion(),
+      survivor.environment,
+      survivor.service,
+      survivor.deploymentId,
+      survivor.artifactDigest,
+    );
+  }
+
   nextVersion(): number {
     return numberColumn(
       this.storage.sql
@@ -287,6 +334,29 @@ class MemoryRegistryRepository implements RegistryRepository {
     }
   }
 
+  retireSuperseded(
+    survivor: DeploymentKey,
+    retiredAt: number,
+    allocateVersion: () => number,
+  ): void {
+    const survivorKey = deploymentKey(survivor);
+    const doomed = [...this.records].filter(
+      ([key, record]) =>
+        key !== survivorKey &&
+        record.retiredAt === null &&
+        record.environment === survivor.environment &&
+        record.service === survivor.service,
+    );
+    if (doomed.length === 0) return;
+    const registryVersion = allocateVersion();
+    for (const [key, record] of doomed) {
+      this.records.set(
+        key,
+        freezeDeployment({ ...record, retiredAt, registryVersion }),
+      );
+    }
+  }
+
   nextVersion(): number {
     this.registryVersion += 1;
     return this.registryVersion;
@@ -309,7 +379,7 @@ class DeploymentRegistryCore<Attestation> {
 
     return this.repository.transaction(() => {
       if (command.action === "activate") {
-        return this.activate(command.deployment);
+        return this.activate(command.deployment, command.supersedes === true);
       }
       return this.retire(command.deployment, command.retiredAt);
     });
@@ -381,6 +451,7 @@ class DeploymentRegistryCore<Attestation> {
       TrustedDeploymentMetadata,
       "retiredAt" | "registryVersion"
     >,
+    supersedes: boolean,
   ): TrustedDeploymentMetadata {
     const key: DeploymentKey = deployment;
     const exact = this.repository.findExact(key);
@@ -403,6 +474,14 @@ class DeploymentRegistryCore<Attestation> {
       registryVersion: this.repository.nextVersion(),
     });
     this.repository.insert(record);
+    // Without this the previous record stays active forever, so a capability
+    // minted for it keeps authenticating long after that code stopped being
+    // deployed — leaving token expiry as the only revocation there is.
+    if (supersedes) {
+      this.repository.retireSuperseded(record, record.activatedAt, () =>
+        this.repository.nextVersion(),
+      );
+    }
     return record;
   }
 
