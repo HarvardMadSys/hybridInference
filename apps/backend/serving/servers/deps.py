@@ -70,6 +70,7 @@ if TYPE_CHECKING:
     from serving.observability.alert_rules import AlertEngine
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.completions_logging import CompletionsLogger
+    from serving.storage.agent_job_store import AgentJobStore
     from serving.storage.base import LogStore, OperationalStore
     from serving.storage.database import DatabaseLogger
     from serving.storage.responses_store import ResponseStore
@@ -106,6 +107,8 @@ class AppServices:
     pricing_lookup: PricingLookup | None = None
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
+    agent_job_store: AgentJobStore | None = None
+    agent_reaper_task: Any | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
@@ -165,6 +168,13 @@ def get_response_store(
 ) -> ResponseStore | None:
     """Dependency to obtain the Responses API store (if configured)."""
     return getattr(services, "responses_store", None)
+
+
+def get_agent_job_store(
+    services: AppServices = Depends(get_services),
+) -> AgentJobStore | None:
+    """Dependency to obtain the agent job store (if configured)."""
+    return getattr(services, "agent_job_store", None)
 
 
 def get_user_concurrency_limiter(

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AlertSnoozeStatus, clearAlertSnooze, getAlertSnooze, snoozeAlerts } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -41,20 +41,32 @@ export function AlertSnoozeSection({ onToast }: AlertSnoozeSectionProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // A reload in flight when this section goes away — a tab switch, or a test
+  // environment tearing down — would otherwise land its setState on an
+  // unmounted tree and throw where nothing can catch it.
+  const mounted = useRef(true);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      setStatus(await getAlertSnooze());
+      const next = await getAlertSnooze();
+      if (!mounted.current) return;
+      setStatus(next);
     } catch (e) {
+      if (!mounted.current) return;
       setError(getErrorMessage(e));
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     load();
+    return () => {
+      mounted.current = false;
+    };
   }, [load]);
 
   // Recompute the remaining countdown from the absolute deadline so it stays

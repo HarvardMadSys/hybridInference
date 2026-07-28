@@ -1,7 +1,7 @@
 # Unified Alert Control Plane — 收口与迁移 Roadmap
 
-> 状态：**v3 — P0 修复已提 PR（#1042 + closeout PR），待 PM 确认后转为 GitHub Roadmap Issue**
-> 撰写日期：2026-07-25（v3：2026-07-27 更新执行状态与产品分层）
+> 状态：**v4 — status-monitor 三类告警已全部迁移（2026-07-27）；真实流量验证目前只覆盖单模型路径**
+> 撰写日期：2026-07-25（v4：2026-07-27 收口 + storm/cycle 迁移完成后更新）
 > 评审基线：`dev@ebe6e813`（含 #1032 / #1033 / #1034）
 > 关联设计文档：
 > - [统一告警控制平面目标设计](../specs/2026-07-20-unified-alert-control-plane-target-design.zh.md)
@@ -11,7 +11,7 @@
 
 ## 0. 一句话现状
 
-**新架构已完成并成功迁移了第一个真实告警类型；不是所有 Slack 告警都迁完。**
+**status-monitor 的三类告警（单模型 / storm / cycle）已全部迁移到新链路并部署生效。真实流量验证目前只覆盖单模型路径**（storm 需 >阈值批量故障、cycle 需网关整体不可用才会自然触发，尚未发生；两者仅有单测与部署验证）。**后端 11 个 `alert_slack` 告警与生产环境仍未迁移。**
 
 产品目标（终态体验）：**一次故障 = 一个 Slack thread** —— 帖子原地更新持续时长与次数、恢复挂在同一 thread、自带部署出处、渠道可插拔。
 
@@ -21,7 +21,7 @@
 
 | 缺什么 | 现在的后果 |
 |---|---|
-| storm / cycle / 后端 11 个告警未迁移 | 同一个频道两种体验：小故障是 incident thread，大故障和后端告警还是裸文本 |
+| 后端 11 个告警未迁移 | 同一频道两种体验：status-monitor 告警是 incident thread，后端告警仍是裸文本 |
 | 生产未上线 | 新体验只在 staging，线上全是老样子 |
 | Codex 分析未移植 | thread 里没有根因回复 |
 | ack / 静默 / 转派没做 | on-call 只能看不能操作（当前 13 个 PR 完全未覆盖，属新需求） |
@@ -36,17 +36,17 @@
 |---|---|
 | Control Plane 状态机、去重、线程、重试 | ✅ 已完成 |
 | SlackSink | ✅ 已完成 |
-| staging 单模型上下线告警 | ✅ 已迁移（**仅当同时故障 ≤ `ALERT_STORM_THRESHOLD`=5**） |
-| **P0 收口修复** | 🟡 已提 PR：#1042（3 项 P0 + Codex 两条）与 closeout PR（P1-B/P2-G/health/README），待合并 |
-| status-monitor storm 告警 | 🟡 D1 已决（b，2026-07-27）：per-model 迁移已提 draft PR，待步骤 2 真实验证后合并 |
-| status-monitor cycle 告警 | 🟡 代码已完成（`monitoring_cycle_failure` 类型 + producer 双侧，draft PR）：`ALERT_CYCLE_OWNER` 默认 legacy，**须先手动重部署 control plane 再翻 flag**（status-monitor 自动部署，control plane 手动部署，共用 flag 会打开"发出即被拒"的窗口） |
-| 后端全部 `alert_slack` 告警（11 个调用点） | ❌ 未迁移，但已有 dormant Python 契约 |
+| staging 单模型上下线告警 | ✅ 已迁移（任意批量大小 —— storm 折叠已移除） |
+| **P0 收口修复** | ✅ 全部合并（#1042 三项 + Codex 两条；#1049 P1-B/P2-G/health/README + cycle 无声修复） |
+| status-monitor storm 告警 | ✅ 已迁移并部署（#1050，D1=b 每模型独立 incident；legacy 汇总仅保留于 `ALERT_DEFAULT_OWNER=legacy` 回滚模式）<br>⚠️ **无真实流量验证** —— 复用已验证的单模型投递路径，但"批量并发开 N 个 incident"本身未实测（Slack 速率限制下的排队行为值得观察） |
+| status-monitor cycle 告警 | ✅ 已迁移并部署（#1059 新增 `monitoring_cycle_failure` 契约类型 + producer 双侧；#1065 翻 `ALERT_CYCLE_OWNER=control-plane`，lifecycle 部署先行完成，部署 SHA 经 binding gate 回证）<br>⚠️ **无真实流量验证** —— 全新契约类型，与单模型路径共享投递层但走独立的 fingerprint 与 producer 分支。可安全强制触发：临时把 monitor 自身的 `GATEWAY_BASE_URL` 指向死主机（只让监控自己盲一个窗口，不影响真实网关流量），顺带实测 P1-A 的空目录防护 |
+| 后端全部 `alert_slack` 告警（12 个调用点） | 🟡 语义已就绪，传输未接<br>12/12 调用点都已具备恢复边（#1076），契约新增 `metric_threshold_breach` + `dependency_unavailable` 两类（#1072），producer 侧 canonical event builder 已实现。**尚未接上传输** —— 后端目前仍走旧 webhook，见 §G1 |
 | 全局 snooze（管理员暂停告警） | ⚠️ 新链路无对应能力 —— 迁移即功能回归 |
 | 旧 Codex 自动分析回复 | ❌ 新链路未实现（`dispatch_analysis` 返回 `analysis_not_enabled`） |
 | production 上线 | ❌ 未开始（代码中**无任何可发 production 的路径**） |
 | 删除旧 relay / webhook / secrets | ❌ 未完成 |
 | 企业微信等其他 Sink | 抽象已就位，未实现 |
-| 真实端到端验证记录 | ❌ 无 —— C3c 签收的硬前置 |
+| 真实端到端验证记录 | ⚠️ **仅单模型路径** —— `docs/reviews/2026-07-27-c3c-staging-validation.md`（incident_4a6fc4e5：12:41Z firing → 14:01Z 同 thread 恢复，threshold/去重/身份/线程完整性全部实测）。storm 与 cycle 待补，见上方两行 |
 
 ### 为什么不能一次性全切
 
@@ -82,8 +82,8 @@
 | # | 步骤 | 状态 / 前置 | 粗略工作量 |
 |---|---|---|---|
 | 1 | 暂停 production rollout | ✅ 已执行 | — |
-| 2 | 🔴 收口 P0 + 补真实 staging 验证 | 🟡 代码已提 PR（见 §2.1）；**真实 staging 验证仍缺** | 1–2 人周 |
-| 3 | staging 迁移 storm / cycle | 🟡 D1 已决 = b；storm draft PR 已提（合并 gate：步骤 2 真实验证）；cycle 仍需新类型 | storm 已完成；cycle 1–2 人周 |
+| 2 | 收口 P0 + 补真实 staging 验证 | ✅ **完成 2026-07-27**（#1042/#1049 + 验证档案） | 实际约 1 天 |
+| 3 | staging 迁移 storm / cycle | ✅ **完成 2026-07-27**（#1050 storm、#1059+#1065 cycle） | 实际约 1 天 |
 | 4 | staging 迁移后端 `alert_slack`（单点适配） | 前置：步骤 2 | 2–3 人周 |
 | 5 | 补齐 snooze 等能力对齐 | 前置：步骤 4 | 0.5–1 人周 |
 | 6 | 决定并实现新链路 Codex 分析 | 前置：D6 决策 | 2–4 人周 |
@@ -127,7 +127,7 @@
 
 | ID | 决策 | 选项与价签 | 影响 |
 |---|---|---|---|
-| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | ✅ **已决（2026-07-27）：(b) 每模型独立 thread**。storm 汇总仅保留在 legacy 回滚模式（`ALERT_DEFAULT_OWNER=legacy`）防 webhook 刷屏；以后如需聚合帖可在此之上叠加 | cycle 告警仍需新类型（+1–2 人周，独立工作） |
+| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | ✅ **已决（2026-07-27）：(b) 每模型独立 thread**。storm 汇总仅保留在 legacy 回滚模式（`ALERT_DEFAULT_OWNER=legacy`）防 webhook 刷屏；以后如需聚合帖可在此之上叠加 | 已落地于 #1050。cycle 所需的新类型也已在 #1059 实现（原估 1–2 人周，实际同日完成） |
 | **D2** | "原地更新、不重复响铃"，on-call 真的想要吗？ | 当前设计不响 | 影响 `update_parent` 策略 |
 | **D6** | Codex 分析在后端迁移之前还是之后？ | (a) 之前：无回归窗口，推迟迁移 2–4 周<br>(b) 之后：接受"最有价值的告警恰好没分析"窗口<br>(c) 之后，但依赖分析的 producer 排最后迁 | 决定步骤 4/6 顺序 |
 | D3 | 生产上线时间窗口与审批路径 | — | 步骤 7 排期 |
@@ -142,7 +142,7 @@
 
 - [ ] staging 与 prod 的 Slack 里再也找不到旧格式裸文本告警
 - [ ] 老 `SLACK_WEBHOOK_URL` / `SLACK_ALERTS_WEBHOOK_URL` / relay secrets 已删除，删除后经真实故障验证
-- [ ] 任何一次告警未发出都有可见信号（health 字段 + 日志），不静默
+- [ ] 任何一次告警未发出都有可见信号（health 字段 + 日志），不静默 —— status-monitor 侧已交付（#1049：`pendingControlPlaneTransitions` + undeliverable 日志）；后端 `alert_slack` 侧随步骤 4 迁移时补
 - [ ] 全局 snooze 已在新链路对齐
 - [ ] 回滚是"退回旧路"而非"卡死"，经演练验证（P3-H）
 - [ ] `docs/reviews/` 有端到端验证档案：故障 → 帖子 → 恢复的仓库内消息全文 + permalink（或截图），staging（✅ 2026-07-27）+ prod 各一份
@@ -175,35 +175,64 @@
 
 | 路径 | 源码 | 状态 |
 |---|---|---|
-| 单模型 `model_unavailable` | `alerts.ts` `deliverModelAlert` | ✅ 已迁移（≤ storm 阈值） |
-| storm 汇总 | `alerts.ts` `modelsDownEvent` / `modelsRecoveredEvent` | ❌ legacy |
-| cycle 网关级 | `alerts.ts` `runCycleAlert` | ❌ legacy |
+| 单模型 `model_unavailable` | `alerts.ts` `deliverModelAlert` | ✅ 已迁移 + 真实流量验证 |
+| storm（>阈值批量故障） | `alerts.ts` — 每模型独立 incident | ✅ 已迁移（D1=b），⚠️ 无真实流量验证 |
+| cycle 网关级 | `alerts.ts` `runCycleAlert` | ✅ 已迁移（`monitoring_cycle_failure`），⚠️ 无真实流量验证 |
 
-投递出口：`postCodexAlert`（relay）→ `postSlack`（webhook fallback）
+legacy 投递出口 `postCodexAlert` → `postSlack` 仅在 `ALERT_DEFAULT_OWNER` /
+`ALERT_CYCLE_OWNER` 回滚为 `legacy` 时使用，以及供切换前已开的 incident 排空。
 
-### A.2 后端 `alert_slack` —— 单一收敛点，11 个调用点
+### A.2 后端 `alert_slack` —— 单一收敛点，12 个调用点
 
-定义：`apps/backend/serving/observability/alerts.py:310`
+定义：`apps/backend/serving/observability/alerts.py`
 
-| 模块 | 行 | 告警 | 严重度 |
+「恢复边」列指该调用点现在是否会发 `status="resolved"`。迁移前 12 个全是
+fire-only（`grep 'status="resolved"'` 一条都搜不到），控制面会为每条 firing
+开 incident 却永远收不到关闭事件 —— 配额耗尽后真实故障反而被压掉。
+
+| 模块 | 告警 | 严重度 | 恢复边 |
 |---|---|---|---|
-| `routing/endpoint_health.py` | 251 | Provider circuit opened | ERROR |
-| `serving/observability/alert_rules.py` | 147 | Failed-request rate exceeded | ERROR |
-| ″ | 201 | 5xx rate exceeded | ERROR |
-| ″ | 253 | p95 latency exceeded for provider `{provider}` | WARN |
-| ″ | 301 | Auth failure spike | WARN |
-| ″ | 363 | RouteWise pending prefix-cache entries leaking | WARN |
-| ″ | 415 | Tracked-task failure rate exceeded for `{task_name}` | ERROR |
-| ″ | 451 | User cost overrun | WARN |
-| ″ | 489 | Provider hourly spend exceeded budget for `{provider}` | WARN |
-| `serving/servers/routers/health.py` | 87 | Database disconnected（operational_store） | CRITICAL |
-| ″ | 99 | Database disconnected（log_store） | CRITICAL |
-| `serving/admin/failed_request_alerter.py` | 250 | Failed request | — |
+| `routing/endpoint_health.py` | Provider circuit opened | ERROR | 状态跳变 |
+| `serving/observability/alert_rules.py` | Failed-request rate exceeded | ERROR | 指标转清 |
+| ″ | 5xx rate exceeded | ERROR | 指标转清 |
+| ″ | p95 latency exceeded for provider `{provider}` | WARN | 指标转清 |
+| ″ | Auth failure spike | WARN | 指标转清 |
+| ″ | RouteWise pending prefix-cache entries leaking | WARN | 指标转清 |
+| ″ | Tracked-task failure rate exceeded for `{task_name}` | ERROR | 指标转清 |
+| ″ | User cost overrun | WARN | 静默清扫 |
+| ″ | Provider hourly spend exceeded budget for `{provider}` | WARN | 静默清扫 |
+| `serving/servers/routers/health.py` | Database disconnected（operational_store） | CRITICAL | 状态跳变 |
+| ″ | Database disconnected（log_store） | CRITICAL | 状态跳变 |
+| `serving/admin/failed_request_alerter.py` | Failed request | — | 指标转清 |
+
+**三种形状，不能用同一套规则**：
+
+1. **指标**（记录驱动）—— 有流量就重新评估。指标转清并持续 `clear_after_sec`
+   后恢复；流量整体停了则由静默清扫兜底。清扫阈值在引擎启动时按最长规则窗口
+   推导（发布配置里 `failed_request_rate.window_sec` 是 3600，用默认的 900
+   会在故障样本还没老化出窗口时就报恢复）。
+2. **状态跳变**（熔断器、DB store）—— 报的是进程本来就在跟踪的状态，**一生只有
+   一条健康边**。静置期会让 incident 永不关闭；静默清扫更危险 —— 沉默只说明
+   没人观测，不说明状态清了，清扫它等于**在故障进行中宣告恢复**。这类立即在
+   那条边上恢复，且永不清扫。
+3. **周期性预算任务** —— 永远看不到「转清」样本，key 里嵌了日期/小时，周期一滚
+   就再也不会被观测。它们必须**经 tracker 发送**才能被清扫关闭；早期版本直接调
+   `alert_slack`，于是清扫永远返回不了它们的 key，这两个告警实际上没有任何恢复
+   路径。
+
+**恢复投递失败必须能重试**：`observe`/`sweep` 在调用方拿到投递结果之前就清掉了
+key，所以 sink 一次抖动就会永久丢掉这个 key 一生仅有的那条恢复。失败即重挂，让
+下一次观测/清扫再试。
+
+**边沿检测只管恢复边**：持续故障期间 `alert_slack` 仍按今天的节奏每次评估都
+发，因为这些重复正是控制面 occurrence 计数与 last-seen 的来源。把它们折叠掉
+会让 incident 卡片永远停在 "Occurrences: 1" —— 那是**不如现在**，不是改进。
 
 **迁移接口适配点**：`alert_slack(severity, title, context, *, dedupe_key, cooldown_sec, status)`
 - `dedupe_key` → fingerprint；`status` → status；`severity` → severity（CRITICAL/ERROR/WARN/INFO 映射）
 - ⚠️ `cooldown_sec` 与进程内去重语义需重定义（§3.1）
-- ⚠️ `is_snoozed()` 无对应物（§3.1）
+- ⚠️ `is_snoozed()` 无对应物（§3.1）—— 但**恢复事件绝不受 snooze 与 cooldown 抑制**，
+  否则静音一条告警会让它的 incident 永久挂起
 
 ### A.3 oncall relay + Codex 分析子系统
 

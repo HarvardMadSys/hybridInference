@@ -1,0 +1,216 @@
+"""Request/response schemas for the agent-sandbox job API (issue #1041)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+# A lease is the only thing that lets the reaper take a job back from a stuck
+# or malicious worker. If the worker could pick the TTL, it could pick one long
+# enough that the lease never expires — and then the capability token bound to
+# that attempt would be neither self-revoking nor cancellable by the owner. The
+# server therefore caps it, and 15 minutes is far above any legitimate gap
+# between heartbeats.
+MAX_LEASE_TTL_SECONDS = 900.0
+
+# Every job carries a spending cap. The default is small enough that a
+# misconfigured or runaway job is an annoyance rather than a bill, and the
+# ceiling stops a typo (or a hostile caller) from requesting an unbounded one.
+DEFAULT_JOB_BUDGET_USD = 5.0
+MAX_JOB_BUDGET_USD = 500.0
+
+# Normalized event kinds (issue #1041) plus the control events the platform
+# appends. The pattern is the security-relevant part: an event type is
+# interpolated into the SSE ``event:`` field, so anything containing a newline
+# would let a worker inject arbitrary frames into the owner's stream. Keeping
+# the charset to lowercase/digits/underscore makes that structurally impossible
+# while still letting runtime adapters introduce new kinds.
+EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
+
+
+class AgentJobCreate(BaseModel):
+    """Request body for creating an agent job."""
+
+    repo: str = Field(..., description="Target repository, e.g. 'owner/name'.")
+    task_prompt: str = Field(..., description="What the agent should do.")
+    runtime: str = Field("claude-code", description="Agent runtime id.")
+    model: str = Field(..., description="Gateway model id the runtime should use.")
+    base_sha: str | None = Field(
+        None,
+        # A bare commit hash, enforced here as well as in the publisher: git
+        # reads a leading `-` as an option even where an operand is expected,
+        # so an unconstrained ref would be an argument injection into the
+        # trusted process that holds the repository credential.
+        pattern=r"^[0-9a-fA-F]{7,64}$",
+        description="Commit SHA to work from.",
+    )
+    budget_usd: float = Field(
+        DEFAULT_JOB_BUDGET_USD,
+        gt=0,
+        le=MAX_JOB_BUDGET_USD,
+        # Always present and bounded: an absent budget would mean a live
+        # sandbox credential with no spending limit at all.
+        description="Cap on this job's model spend, in USD.",
+    )
+    metadata: dict[str, Any] | None = Field(None, description="Opaque caller metadata.")
+
+
+class AgentJobResponse(BaseModel):
+    """One agent job as returned to its owner."""
+
+    id: str
+    repo: str
+    task_prompt: str
+    runtime: str
+    model: str
+    base_sha: str | None = None
+    state: str
+    cancel_requested: bool = False
+    current_attempt_id: int | None = None
+    published_pr_url: str | None = None
+    detail: str | None = None
+    budget_usd: float | None = None
+    metadata: dict[str, Any] | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class AgentJobListResponse(BaseModel):
+    """A page of agent jobs."""
+
+    jobs: list[AgentJobResponse]
+
+
+class AgentJobEvent(BaseModel):
+    """One normalized event from an agent job's append-only stream."""
+
+    id: int
+    attempt_id: int
+    seq: int
+    event_type: str
+    payload: dict[str, Any] | None = None
+    created_at: str | None = None
+
+
+class AgentJobEventsResponse(BaseModel):
+    """A page of events plus the cursor to resume from."""
+
+    events: list[AgentJobEvent]
+    next_cursor: int
+
+
+class AgentJobCancelResponse(BaseModel):
+    """Result of requesting cancellation."""
+
+    id: str
+    state: str
+    cancel_requested: bool
+
+
+class AgentJobArtifactResponse(BaseModel):
+    """One stored artifact (e.g. the produced patch)."""
+
+    job_id: str
+    attempt_id: int
+    kind: str
+    content: str
+    created_at: str | None = None
+
+
+# ── Worker-facing (capability-token authenticated) ─────────────────────
+
+
+class WorkerClaimRequest(BaseModel):
+    """Worker request to claim the next queued job."""
+
+    worker_id: str = Field(..., description="Stable identifier of the claiming worker.")
+    lease_ttl_seconds: float = Field(
+        120.0,
+        gt=0,
+        le=MAX_LEASE_TTL_SECONDS,
+        description="How long the lease is valid without a heartbeat.",
+    )
+
+
+class WorkerClaimResponse(BaseModel):
+    """A claimed job plus the capability token scoped to this attempt."""
+
+    job_id: str
+    attempt_id: int
+    attempt_no: int
+    repo: str
+    base_sha: str | None = None
+    task_prompt: str
+    runtime: str
+    model: str
+    worker_token: str
+    sandbox_token: str = Field(
+        "",
+        description="Model-scoped credential; the only one that enters the sandbox.",
+    )
+    metadata: dict[str, Any] | None = None
+
+
+class WorkerHeartbeatRequest(BaseModel):
+    """Worker lease renewal."""
+
+    lease_ttl_seconds: float = Field(120.0, gt=0, le=MAX_LEASE_TTL_SECONDS)
+
+
+class WorkerHeartbeatResponse(BaseModel):
+    """Lease renewal result, carrying any pending cancellation."""
+
+    ok: bool
+    state: str
+    cancel_requested: bool
+
+
+class WorkerEventRequest(BaseModel):
+    """One normalized event reported by a worker."""
+
+    event_type: str = Field(
+        ...,
+        pattern=EVENT_TYPE_PATTERN,
+        description="thinking|message|tool_use|...|lifecycle",
+    )
+    payload: dict[str, Any] | None = None
+
+
+class WorkerEventResponse(BaseModel):
+    """Accepted event id (the SSE cursor value)."""
+
+    event_id: int
+
+
+class WorkerArtifactRequest(BaseModel):
+    """An artifact produced by a worker (e.g. the git patch)."""
+
+    kind: str = Field(..., description="Artifact kind, e.g. 'patch'.")
+    content: str
+
+
+class WorkerArtifactResponse(BaseModel):
+    """Stored artifact id."""
+
+    artifact_id: int
+
+
+class WorkerFinishRequest(BaseModel):
+    """Terminal transition reported by a worker."""
+
+    state: str = Field(..., description="succeeded|failed|cancelled")
+    detail: str | None = None
+
+
+class WorkerPublishRequest(BaseModel):
+    """Publisher result recorded against the one-shot publish transition."""
+
+    pr_url: str
+
+
+class WorkerAckResponse(BaseModel):
+    """Generic worker acknowledgement."""
+
+    ok: bool
+    state: str | None = None

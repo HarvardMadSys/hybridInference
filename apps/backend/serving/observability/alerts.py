@@ -27,14 +27,28 @@ import httpx
 from serving.oncall.models import AlertEvent, sanitize_for_agent
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from pydantic import JsonValue
+
+from serving.observability.alert_transitions import (
+    ThresholdTransitionTracker,
+)
 
 log = logging.getLogger(__name__)
 
 _HOST = socket.gethostname()
 _DEDUPE_LOCK = asyncio.Lock()
 _LAST_FIRED: dict[str, float] = defaultdict(float)
-_IN_FLIGHT: set[str] = set()
+#: Keyed by dedupe key, each event fires when that key's send finishes. A
+#: resolution waits on it instead of being dropped; see ``alert_slack``.
+_IN_FLIGHT: dict[str, asyncio.Event] = {}
+
+#: How long a resolution waits for an in-flight send of the same key, and how
+#: many times. Bounded so a hung sink cannot pin the caller — the alert path
+#: runs on the request loop for the health checks.
+_RESOLUTION_WAIT_SEC = 10.0
+_RESOLUTION_WAIT_ATTEMPTS = 2
 
 # Hostnames that always indicate a non-deployed (local/dev) gateway.
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"))
@@ -201,13 +215,20 @@ def escape_slack_text(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _format_message(severity: AlertSeverity, title: str, context: dict[str, Any]) -> str:
+def _format_message(
+    severity: AlertSeverity,
+    title: str,
+    context: dict[str, Any],
+    status: Literal["firing", "resolved"] = "firing",
+) -> str:
     ts = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     info = server_info()
-    lines = [
-        f"{_EMOJI[severity]} *{title}*",
-        f"_{ts} · {info['environment']}_",
-    ]
+    # Titles are written as breach statements ("Provider circuit opened"), so a
+    # resolution rendered with the breach's own severity emoji is indis-
+    # tinguishable from the outage. The relay carries ``status`` as a field; the
+    # plain webhook has only this text, so the recovery has to be said in it.
+    heading = f"{_EMOJI[severity]} *{title}*" if status == "firing" else f"✅ *Recovered:* {title}"
+    lines = [heading, f"_{ts} · {info['environment']}_"]
     if context:
         lines.append("")
         for k, v in context.items():
@@ -329,26 +350,57 @@ async def alert_slack(
     if not webhook_url and not relay_configured:
         return False
 
-    # Admin-controlled global snooze: pause all alerts until a deadline.
-    try:
-        from serving.observability.alert_snooze import is_snoozed
+    # Both suppressions below exist to stop a *breach* from repeating, and
+    # neither may swallow a resolution. Under the alert control plane a dropped
+    # resolution leaves its incident open forever, holding principal quota until
+    # it is exhausted and real outages start being suppressed; and closing an
+    # incident is not the noise an operator silences alerts to avoid.
+    resolution = status == "resolved"
 
-        if await is_snoozed():
-            return False
-    except Exception:
-        log.debug("alert snooze check failed; sending alert", exc_info=True)
+    # Admin-controlled global snooze: pause all alerts until a deadline.
+    if not resolution:
+        try:
+            from serving.observability.alert_snooze import is_snoozed
+
+            if await is_snoozed():
+                return False
+        except Exception:
+            log.debug("alert snooze check failed; sending alert", exc_info=True)
 
     key = dedupe_key or f"{severity.value}:{title}"
+    # A resolution waits for a send already running for this key rather than
+    # being dropped by the guard. Dropping it costs a repeat for a breach —
+    # another evaluation follows — but for a state alert the recovery edge is
+    # the only one there is, so a discarded resolution strands the incident.
+    # Waiting also keeps firing and resolved in order.
+    for _ in range(_RESOLUTION_WAIT_ATTEMPTS):
+        async with _DEDUPE_LOCK:
+            done = _IN_FLIGHT.get(key)
+        if done is None or not resolution:
+            break
+        try:
+            await asyncio.wait_for(done.wait(), timeout=_RESOLUTION_WAIT_SEC)
+        except (TimeoutError, asyncio.TimeoutError):
+            # Keep waiting up to the attempt bound. A firing send that tries the
+            # relay and then falls back to the webhook takes both timeouts, so
+            # giving up on the first would drop exactly the resolution this
+            # wait exists to save.
+            continue
+
     now = _monotonic()
     async with _DEDUPE_LOCK:
         last = _LAST_FIRED.get(key, 0.0)
-        if key in _IN_FLIGHT or (last > 0.0 and now - last < cooldown_sec):
+        # Two concurrent sends of the same key would duplicate rather than
+        # repeat, so one of them still has to yield.
+        if key in _IN_FLIGHT:
             return False
-        _IN_FLIGHT.add(key)
+        if not resolution and last > 0.0 and now - last < cooldown_sec:
+            return False
+        _IN_FLIGHT[key] = asyncio.Event()
 
     sent = False
     try:
-        message = _format_message(severity, title, context)
+        message = _format_message(severity, title, context, status)
         if relay_configured:
             try:
                 event = _build_oncall_event(
@@ -373,6 +425,148 @@ async def alert_slack(
         return False
     finally:
         async with _DEDUPE_LOCK:
-            _IN_FLIGHT.discard(key)
-            if sent:
+            done = _IN_FLIGHT.pop(key, None)
+            if done is not None:
+                done.set()
+            if sent and resolution:
+                # The breach is over, so the next one must page immediately
+                # rather than serve out the cooldown this incident started.
+                _LAST_FIRED.pop(key, None)
+            elif sent:
                 _LAST_FIRED[key] = _monotonic()
+
+
+#: Metric alerts: a quantity recomputed from a rolling window of request
+#: records. Shared across every rule so one sweep closes incidents for all of
+#: them, and so a rule reloaded with new config does not lose which breaches are
+#: open. ``stale_after_sec`` is raised at engine start to exceed the longest
+#: configured rule window — see ``alert_rules``.
+_TRANSITIONS = ThresholdTransitionTracker()
+
+#: State alerts: a condition the process already tracks (an open circuit, a
+#: disconnected store). These report exactly one healthy edge ever, so a
+#: settling period would mean the incident never closes; and silence is not
+#: recovery, so sweeping one would announce the outage as over while it is
+#: still happening.
+_STATE_TRANSITIONS = ThresholdTransitionTracker(
+    clear_after_sec=0.0,
+    stale_after_sec=None,
+)
+
+#: How often to look for breaches nothing is evaluating any more. Well under
+#: the tracker's own staleness threshold so a stale incident closes promptly
+#: once it qualifies, rather than at the next multiple of a long interval.
+_STALE_SWEEP_INTERVAL_SEC = 60
+
+
+def reset_transition_state() -> None:
+    """Drop all open-breach state. For tests and for a clean engine restart."""
+    for tracker_ in (_TRANSITIONS, _STATE_TRANSITIONS):
+        tracker_._firing.clear()
+        tracker_._bounds.clear()
+
+
+async def alert_on_transition(
+    *,
+    key: str,
+    breached: bool,
+    severity: AlertSeverity,
+    title: str,
+    context: Callable[[], dict[str, Any]],
+    cooldown_sec: int,
+    kind: Literal["metric", "state"] = "metric",
+    stale_after: float | None = None,
+    now: float | None = None,
+) -> bool:
+    """Send only when the breach state changes, so incidents open and close once.
+
+    Rules previously returned silently while healthy, which is why every alert
+    was fire-only: the moment a breach ended was observable and thrown away.
+    Routing that same decision through the tracker turns it into the resolution
+    the control plane needs to close the incident, while a sustained breach
+    still notifies exactly once.
+
+    The tracker's only job here is the *resolution* edge. Breach reporting is
+    left exactly as it was — every breached evaluation reaches the sink and its
+    cooldown decides what becomes a message — because those repeats are what
+    advance the incident's occurrence count and "last seen" on the control
+    plane. What was missing was never the repeat, only the close.
+
+    ``context`` is a callable so the breach detail — counters, top-N summaries —
+    is only built when a message is actually attempted. A resolution
+    carries just the metric identity, since breach numbers describe a healthy
+    system by then and would only mislead on the recovery card.
+    """
+    tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
+    moment = now or time.time()
+    transition = tracker.observe(
+        key,
+        breached=breached,
+        now=moment,
+        stale_after=stale_after,
+    )
+    if breached:
+        # Every breached evaluation still goes to the sink, exactly as before.
+        # The cooldown there decides whether it becomes a message, and under the
+        # control plane each repeat is what advances the incident's occurrence
+        # count and "last seen" — suppressing them here would freeze the card at
+        # one occurrence and make a long outage look like a stale alert.
+        return await alert_slack(
+            severity,
+            title,
+            context(),
+            dedupe_key=key,
+            cooldown_sec=cooldown_sec,
+        )
+    if transition != "resolved":
+        return False
+    sent = await alert_slack(
+        AlertSeverity.INFO,
+        f"Recovered: {title}",
+        {"alert": key},
+        dedupe_key=key,
+        cooldown_sec=cooldown_sec,
+        status="resolved",
+    )
+    if not sent:
+        # ``observe`` already cleared the key, so without this the only
+        # resolution it will ever produce is gone and the incident stays open
+        # with nothing able to close it.
+        tracker.rearm(key, moment)
+    return sent
+
+
+async def sweep_stale_breaches() -> None:
+    """Resolve breaches that nothing is evaluating any more.
+
+    Two classes never re-evaluate themselves: a rule whose traffic stopped
+    entirely, and periodic budget checks whose incident key embeds the day or
+    hour, so the previous period is never observed again. Without this both
+    would hold their incident — and its principal quota — forever.
+
+    Only metric alerts are swept. For a state alert silence means nothing was
+    observed, not that the condition cleared, so sweeping one would report an
+    ongoing outage as recovered.
+    """
+    now = time.time()
+    for key in _TRANSITIONS.sweep(now):
+        sent = False
+        try:
+            sent = await alert_slack(
+                AlertSeverity.INFO,
+                f"Recovered: {key}",
+                {"alert": key, "reason": "no longer reported"},
+                dedupe_key=key,
+                cooldown_sec=0,
+                status="resolved",
+            )
+        except Exception:
+            # One stuck resolution must not strand every other open incident.
+            log.exception("stale breach resolution failed for %s", key)
+        if not sent:
+            # The sweep already dropped the key, so leaving it dropped would
+            # lose the resolution outright. Re-arm stale enough that the *next*
+            # sweep retries: plain re-arming would restart the staleness clock
+            # and, with a long rule window, push the retry hours out while the
+            # incident stays open.
+            _TRANSITIONS.rearm(key, now, retry_in=_STALE_SWEEP_INTERVAL_SEC)

@@ -109,6 +109,7 @@ def load_suite(path: Path) -> SuiteConfig:
                 if item.get("forced_tool_name")
                 else None,
                 user_prompt=str(item["user_prompt"]) if item.get("user_prompt") else None,
+                agent_script=str(item["agent_script"]) if item.get("agent_script") else None,
             )
         )
 
