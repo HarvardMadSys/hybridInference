@@ -88,10 +88,15 @@ const METRIC_THRESHOLD_CONTEXT_KEYS = new Set([
   "threshold",
   "window_sec",
   "scope",
+  "subject",
+  "source_addresses",
   "distinct_sources",
   "top_source_share",
   "sample_count",
 ]);
+
+const MAX_SOURCE_ADDRESSES = 5;
+const IPV4_STRICT_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
 
 const DEPENDENCY_CONTEXT_KEYS = new Set(["dependency", "backend"]);
 
@@ -359,6 +364,47 @@ function parseMonitoringCycleContext(value: unknown): MonitoringCycleContext {
   return reason === undefined ? {} : { reason };
 }
 
+/**
+ * Parse one address that on-call is expected to act on (block, rate-limit).
+ *
+ * This is the deliberate exception to the "no network identifiers" rule that
+ * {@link untrustedString} enforces, and it is safe precisely because it is not
+ * a free-text field: a value that is not literally an IP address is rejected,
+ * so nothing else can ride along. IPv6 is normalized through URL parsing so a
+ * zone id, port, or bracket form cannot slip through as an opaque string.
+ */
+function sourceAddress(value: unknown, index: number): string {
+  const field = `context.source_addresses[${index}]`;
+  const raw = stringValue(value, field, 45);
+  if (IPV4_STRICT_RE.test(raw)) return raw;
+  try {
+    const hostname = new URL(`http://[${raw}]/`).hostname;
+    // URL keeps IPv6 bracketed; anything else came back changed or empty.
+    if (hostname.startsWith("[") && hostname.endsWith("]")) {
+      return hostname.slice(1, -1);
+    }
+  } catch {
+    // Fall through to the shared rejection below.
+  }
+  throw new ValidationError(`${field} must be an IP address`);
+}
+
+function sourceAddresses(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError("context.source_addresses must be an array");
+  }
+  if (value.length === 0 || value.length > MAX_SOURCE_ADDRESSES) {
+    throw new ValidationError(
+      `context.source_addresses must contain 1 to ${MAX_SOURCE_ADDRESSES} addresses`,
+    );
+  }
+  const addresses = value.map(sourceAddress);
+  if (new Set(addresses).size !== addresses.length) {
+    throw new ValidationError("context.source_addresses must not contain duplicates");
+  }
+  return addresses;
+}
+
 function parseMetricThresholdContext(value: unknown): MetricThresholdContext {
   const input = record(value, "context");
   strictKeys(input, METRIC_THRESHOLD_CONTEXT_KEYS, "context");
@@ -373,6 +419,8 @@ function parseMetricThresholdContext(value: unknown): MetricThresholdContext {
     threshold: number;
     window_sec?: number;
     scope?: BreachScope;
+    subject?: string;
+    source_addresses?: readonly string[];
     distinct_sources?: number;
     top_source_share?: number;
     sample_count?: number;
@@ -401,6 +449,11 @@ function parseMetricThresholdContext(value: unknown): MetricThresholdContext {
       "user",
     ]),
   );
+  // A bounded identifier, not free text: the provider/task/user on-call acts on.
+  context.subject = optional(input, "subject", (item) =>
+    stringValue(item, "context.subject", 128, IDENTIFIER_RE),
+  );
+  context.source_addresses = optional(input, "source_addresses", sourceAddresses);
   context.distinct_sources = optional(input, "distinct_sources", (item) =>
     boundedInteger(item, "context.distinct_sources", 0, 1_000_000_000),
   );

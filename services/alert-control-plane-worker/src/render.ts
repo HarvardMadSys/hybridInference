@@ -140,8 +140,13 @@ function metricThresholdContextFields(
     optionalField(fields, "Window", formatDuration(context.window_sec * 1_000));
   }
   optionalField(fields, "Scope", context.scope);
+  optionalField(fields, "Subject", context.subject);
   optionalField(fields, "Samples", context.sample_count);
-  // Counts, never the identifiers themselves — see MetricThresholdContext.
+  // Addresses are what on-call blocks, so they are rendered in full; the
+  // validator has already proven every entry is an IP and nothing else.
+  if (context.source_addresses !== undefined) {
+    optionalField(fields, "Source addresses", context.source_addresses.join(", "));
+  }
   optionalField(fields, "Distinct sources", context.distinct_sources);
   if (context.top_source_share !== undefined) {
     optionalField(

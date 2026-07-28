@@ -386,30 +386,34 @@ describe("gateway alert types (metric_threshold_breach, dependency_unavailable)"
     });
   });
 
-  // The whole point of this type: it replaces backend alerts that embedded
-  // source IPs and API key prefixes. There must be no field they can move
-  // into, so an auth-failure breach carries counts and nothing else.
-  it("has no free-text field for the identifiers it replaces", () => {
+  // The migration must not make the auth-spike alert less actionable than the
+  // one it replaces: today on-call reads the attacker addresses straight out
+  // of the Slack message and blocks them. They survive, but as a typed field.
+  it("keeps the addresses on-call acts on, in a field that only accepts addresses", () => {
     const parsed = parseAlertEvent(
       metricEvent({
         metric: "auth_failure_count",
         observed: 41,
         threshold: 20,
         window_sec: 300,
-        distinct_sources: 3,
+        source_addresses: ["203.0.113.7", "2001:db8::1"],
+        distinct_sources: 9,
         top_source_share: 0.8,
       }),
       { now: TEST_NOW },
     );
-    const serialized = JSON.stringify(parsed);
-    expect(serialized).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
-    expect(serialized).not.toContain("hyi-");
+    expect(parsed).toMatchObject({
+      context: { source_addresses: ["203.0.113.7", "2001:db8::1"] },
+    });
 
-    for (const smuggled of [
-      { top_ips: "1.2.3.4 (12), 5.6.7.8 (3)" },
-      { top_key_prefixes: "hyi-abcdefghijklmnopqrstu (7)" },
-      { user_id: 4711 },
-      { rate: "12.3% (45 of 366 requests, last 300s)" },
+    // Typed, so it cannot become the free-text channel the old context was.
+    for (const bad of [
+      ["1.2.3.4 (12), 5.6.7.8 (3)"],
+      ["not-an-address"],
+      ["203.0.113.7; DROP TABLE"],
+      ["203.0.113.7", "203.0.113.7"],
+      [],
+      ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5", "6.6.6.6"],
     ]) {
       expect(() =>
         parseAlertEvent(
@@ -417,6 +421,41 @@ describe("gateway alert types (metric_threshold_breach, dependency_unavailable)"
             metric: "auth_failure_count",
             observed: 41,
             threshold: 20,
+            source_addresses: bad,
+          }),
+          { now: TEST_NOW },
+        ),
+      ).toThrow(ValidationError);
+    }
+  });
+
+  it("keeps the scoped subject but refuses key prefixes and free text", () => {
+    expect(
+      parseAlertEvent(
+        metricEvent({
+          metric: "user_daily_cost",
+          observed: 42.5,
+          threshold: 25,
+          scope: "user",
+          subject: "4711",
+        }),
+        { now: TEST_NOW },
+      ),
+    ).toMatchObject({ context: { scope: "user", subject: "4711" } });
+
+    // Credential material and pre-formatted prose have no field to land in.
+    for (const smuggled of [
+      { top_key_prefixes: "hyi-abcdefghijklmnopqrstu (7)" },
+      { rate: "12.3% (45 of 366 requests, last 300s)" },
+      { top_paths: "/v1/chat/completions (12)" },
+      { subject: "user 4711 (over budget)" },
+    ]) {
+      expect(() =>
+        parseAlertEvent(
+          metricEvent({
+            metric: "user_daily_cost",
+            observed: 42.5,
+            threshold: 25,
             ...smuggled,
           }),
           { now: TEST_NOW },

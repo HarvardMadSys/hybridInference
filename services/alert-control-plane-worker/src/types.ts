@@ -109,12 +109,19 @@ export type BreachedMetric =
 export type BreachScope = "gateway" | "provider" | "task" | "user";
 
 /**
- * Deliberately numeric-only. The backend's current alerts embed source IPs,
- * API key prefixes, user ids, and pre-formatted rate strings; the canonical
- * validator rejects all of those, and the migration replaces them with
- * counts. Plaintext values stay in the gateway's own logs and dashboard —
- * the same reason raw upstream errors are excluded from the model and cycle
- * contracts.
+ * Structured replacement for the backend's free-text alert context.
+ *
+ * Today every context value is interpolated verbatim into the Slack message,
+ * so on-call reads attacker IPs and the offending user id straight out of the
+ * alert and acts on them. The migration must not take that away — but it also
+ * must not reintroduce free text, which is how secrets and injection payloads
+ * leak. So the operationally load-bearing values get *typed, bounded* fields
+ * ({@link subject}, {@link source_addresses}) that reject anything not of
+ * their exact shape, and only the incidental values become counts.
+ *
+ * Deliberately absent: API key prefixes (credential material, and blocking is
+ * done by address anyway) and the pre-formatted "top paths / top status codes"
+ * strings (triage colour available on the dashboard, and unbounded free text).
  */
 export interface MetricThresholdContext {
   readonly metric: BreachedMetric;
@@ -122,7 +129,18 @@ export interface MetricThresholdContext {
   readonly threshold: number;
   readonly window_sec?: number;
   readonly scope?: BreachScope;
-  /** Distinct sources (IPs, keys, principals) seen — a count, never the values. */
+  /**
+   * The provider, task, or user the breach is scoped to. A bounded identifier,
+   * never free text — this is what on-call needs to act on a scoped breach.
+   */
+  readonly subject?: string;
+  /**
+   * Addresses driving the breach, for alerts where blocking them is the
+   * response (auth failure spikes). Each entry must parse as an IP address, so
+   * this field cannot smuggle arbitrary text the way the old context could.
+   */
+  readonly source_addresses?: readonly string[];
+  /** Distinct sources seen, when listing them all would be unbounded. */
   readonly distinct_sources?: number;
   /** Share of the observation attributable to the largest single source, 0..1. */
   readonly top_source_share?: number;
