@@ -232,10 +232,18 @@ async def publish_loop(
     while True:
         await asyncio.sleep(interval_seconds)
         try:
-            credential = credential_provider()
-            if credential is None:
+            credential = credential_provider() if credential_provider else None
+            # Either source is enough. Skipping when only the App is
+            # configured is what made an App-only deployment — the one this
+            # module recommends — silently never publish anything.
+            if credential is None and app_credentials is None:
                 continue
-            while await publish_one(store, credential=credential, base_branch=base_branch):
+            while await publish_one(
+                store,
+                credential=credential,
+                app_credentials=app_credentials,
+                base_branch=base_branch,
+            ):
                 # Drain rather than publishing one per tick, so a burst of
                 # finished jobs does not sit in the queue for minutes.
                 pass

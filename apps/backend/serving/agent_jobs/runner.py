@@ -194,22 +194,48 @@ def claim(
     return ClaimedJob.from_response(body) if body else None
 
 
-def build_patch(workdir: str) -> str:
-    """Return the agent's work as a patch, or an empty string if it changed nothing.
+def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
+    """Return the agent's work as a patch, or an empty string if nothing changed.
 
-    Uses ``git diff`` against the index plus untracked files staged with
-    ``git add -N``, so new files appear in the diff. Nothing is committed and
-    nothing is pushed: the trusted publisher owns that side.
+    Runs git **inside the sandbox**, never in the trusted runner. The agent
+    owns this worktree, including its ``.git/config`` — and git reads that
+    file. A trusted process running ``git diff`` here would execute whatever
+    the agent put in ``diff.external`` (or a textconv filter, or
+    ``core.fsmonitor``), with the runner's privileges: the dispatcher
+    credential, and in the Compose deployment the Docker socket. Generating
+    the patch in the same container the agent already ran in keeps that
+    execution inside the boundary that was built for it.
+
+    ``git add -A -N`` stages intents so new files appear in the diff. Nothing
+    is committed and nothing is pushed: the trusted publisher owns that side,
+    and it re-validates the patch before it touches a repository.
     """
-    subprocess.run(["git", "add", "-A", "-N"], cwd=workdir, check=False, capture_output=True)
-    result = subprocess.run(
-        ["git", "diff", "--binary", "HEAD"],
-        cwd=workdir,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+    script = "git add -A -N >/dev/null 2>&1; git diff --binary HEAD"
+    if backend is None:
+        # No sandbox available (unit tests, an operator running by hand). Run
+        # with config sources neutralised — this is weaker than the sandbox,
+        # because repo-local .git/config is still honoured by git, so it is
+        # only appropriate where the worktree is already trusted.
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            cwd=workdir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout
+
+    process = backend.spawn(SandboxSpec(argv=["/bin/sh", "-c", script], workdir=workdir, env={}))
+    out = "".join(process.lines())
+    process.wait()
+    return out
 
 
 def run_agent(
@@ -399,7 +425,7 @@ def run_once(
             control.finish("cancelled", "cancelled by owner")
             return 0
 
-        patch = build_patch(workdir)
+        patch = build_patch(workdir, backend)
         if patch.strip():
             control.save_artifact("patch", patch)
             control.append_event(

@@ -8,6 +8,7 @@ opening a PR that is not a draft.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import httpx
@@ -17,6 +18,7 @@ from serving.agent_jobs import publish_worker
 from serving.agent_jobs.publish_worker import (
     GitHubCredential,
     create_draft_pull_request,
+    publish_loop,
     publish_one,
 )
 from serving.agent_jobs.publisher import PublishError, PublishResult
@@ -222,3 +224,52 @@ async def test_credential_never_appears_in_the_pr_body(monkeypatch):
     await publish_one(store, credential=GitHubCredential("super-secret-token"))
     assert "super-secret-token" not in captured["body"]
     assert "super-secret-token" not in captured["title"]
+
+
+async def test_app_only_deployment_actually_publishes(monkeypatch):
+    """An App-configured deployment with no static token must still publish.
+
+    Exercised through publish_loop, not publish_one: the bug lived in the loop,
+    which skipped the entire tick when the static-token provider returned None
+    and never passed app_credentials down. The recommended configuration —
+    GitHub App, no static token — therefore produced patches forever and never
+    a single PR, silently. A test that called publish_one directly would have
+    passed against the broken loop.
+    """
+    import asyncio
+
+    store = FakeStore(dict(_JOB))
+    _patch_publish(
+        monkeypatch, PublishResult(branch="agent/ajob_1", commit_sha="s", changed_files=["x"])
+    )
+    _patch_pr(monkeypatch)
+
+    class FakeApp:
+        async def token_for(self, repo: str) -> str:
+            return "ghs_from_app"
+
+    task = asyncio.create_task(
+        publish_loop(
+            store,
+            credential_provider=lambda: None,  # no static token configured
+            app_credentials=FakeApp(),
+            interval_seconds=0.01,
+        )
+    )
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if store.recorded:
+            break
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert store.recorded == ("ajob_1", "https://github.com/o/n/pull/7")
+
+
+async def test_no_credential_at_all_fails_the_job_rather_than_hanging(monkeypatch):
+    """With neither source configured the job says so instead of stalling."""
+    store = FakeStore(dict(_JOB))
+    assert await publish_one(store, credential=None, app_credentials=None) is None
+    assert store.failed is not None
+    assert "credential" in store.failed[1]
