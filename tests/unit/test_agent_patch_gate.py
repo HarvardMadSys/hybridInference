@@ -230,3 +230,22 @@ def test_branch_names_are_always_valid_git_refs(job_id):
     assert ".." not in name
     assert not name.endswith(".")
     assert " " not in name
+
+
+def test_credential_in_a_filename_is_caught():
+    """A secret can hide in a path, which is never an added-content line.
+
+    Regression: the scan only looked at `+` lines, so a patch adding a file
+    *named* after a token got the credential pushed as part of the tree.
+    """
+    patch = (
+        "diff --git a/ghp_0123456789abcdefghij.txt b/ghp_0123456789abcdefghij.txt\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/ghp_0123456789abcdefghij.txt\n"
+        "@@ -0,0 +1 @@\n"
+        "+harmless content\n"
+    )
+    result = validate_patch(patch)
+    assert not result.ok
+    assert any("credential-shaped" in violation for violation in result.violations)

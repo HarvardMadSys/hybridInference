@@ -38,6 +38,11 @@ logger = get_logger(__name__)
 # the two namespaces cannot collide and the dispatch below is unambiguous.
 AGENT_TOKEN_PREFIX = "ajt."
 
+# Headroom required before admitting another call. Sized so one ordinary
+# request cannot cross the cap on its own; it is not a reservation, and the
+# comment at the check explains what that does and does not guarantee.
+REQUEST_HEADROOM_USD = 0.25
+
 
 class AgentModelAuthError(Exception):
     """Raised when a worker token may not be used for model traffic.
@@ -92,14 +97,35 @@ async def authenticate_agent_model_call(
             "This agent job token is no longer valid for model calls.",
         )
 
+    # Fail closed on a missing budget. "No budget configured" must never mean
+    # "spend without limit": the create schema now always supplies one, so a
+    # None here is a job from before that or a direct DB write, and neither is
+    # a reason to hand out uncapped inference.
     budget = identity["budget_usd"]
-    if budget is not None and log_store is not None:
-        spent = await _job_spend(log_store, identity["job_id"])
-        if spent >= budget:
-            raise AgentModelAuthError(
-                f"Agent job budget exhausted (${spent:.4f} of ${budget:.2f}).",
-                status_code=429,
-            )
+    if budget is None:
+        raise AgentModelAuthError(
+            "This agent job has no spending limit configured.", status_code=403
+        )
+    if log_store is None:
+        # Without the ledger the budget cannot be measured, so it cannot be
+        # enforced — refuse rather than run uncapped.
+        raise AgentModelAuthError(
+            "Agent job spending cannot be verified right now.", status_code=503
+        )
+
+    spent = await _job_spend(log_store, identity["job_id"])
+    # Require headroom for one more request rather than merely "not yet over":
+    # admitting a call that starts a cent below the cap lets a single large
+    # completion blow through it. This bounds one request's overshoot; it does
+    # NOT make the cap hard under concurrency, where several in-flight calls
+    # all observe the same spend before any is logged. Overshoot is bounded by
+    # (in-flight requests x REQUEST_HEADROOM_USD); a genuinely hard cap needs a
+    # reservation counter rather than a read of the ledger.
+    if spent + REQUEST_HEADROOM_USD > budget:
+        raise AgentModelAuthError(
+            f"Agent job budget exhausted (${spent:.4f} of ${budget:.2f}).",
+            status_code=429,
+        )
 
     return {
         "user_id": identity["user_id"],

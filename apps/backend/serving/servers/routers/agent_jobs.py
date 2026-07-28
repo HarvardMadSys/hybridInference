@@ -94,7 +94,10 @@ _SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
 def _sse_frame(event: dict[str, Any]) -> str:
     """Render one stored event as an SSE frame with a safe event name."""
     event_type = event["event_type"]
-    if not _SAFE_EVENT_TYPE.match(event_type or ""):
+    # fullmatch, not match: `$` also matches before a trailing newline, so
+    # `match()` would accept "message\n" — exactly the value this guard
+    # exists to reject, since the newline splits the SSE frame.
+    if not _SAFE_EVENT_TYPE.fullmatch(event_type or ""):
         event_type = "malformed"
     data = json.dumps(_event_response(event).model_dump(), separators=(",", ":"))
     return f"id: {event['id']}\nevent: {event_type}\ndata: {data}\n\n"

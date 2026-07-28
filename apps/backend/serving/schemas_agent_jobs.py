@@ -14,6 +14,12 @@ from pydantic import BaseModel, Field
 # between heartbeats.
 MAX_LEASE_TTL_SECONDS = 900.0
 
+# Every job carries a spending cap. The default is small enough that a
+# misconfigured or runaway job is an annoyance rather than a bill, and the
+# ceiling stops a typo (or a hostile caller) from requesting an unbounded one.
+DEFAULT_JOB_BUDGET_USD = 5.0
+MAX_JOB_BUDGET_USD = 500.0
+
 # Normalized event kinds (issue #1041) plus the control events the platform
 # appends. The pattern is the security-relevant part: an event type is
 # interpolated into the SSE ``event:`` field, so anything containing a newline
@@ -30,11 +36,22 @@ class AgentJobCreate(BaseModel):
     task_prompt: str = Field(..., description="What the agent should do.")
     runtime: str = Field("claude-code", description="Agent runtime id.")
     model: str = Field(..., description="Gateway model id the runtime should use.")
-    base_sha: str | None = Field(None, description="Commit SHA to work from.")
-    budget_usd: float | None = Field(
+    base_sha: str | None = Field(
         None,
+        # A bare commit hash, enforced here as well as in the publisher: git
+        # reads a leading `-` as an option even where an operand is expected,
+        # so an unconstrained ref would be an argument injection into the
+        # trusted process that holds the repository credential.
+        pattern=r"^[0-9a-fA-F]{7,64}$",
+        description="Commit SHA to work from.",
+    )
+    budget_usd: float = Field(
+        DEFAULT_JOB_BUDGET_USD,
         gt=0,
-        description="Hard cap on this job's model spend, in USD.",
+        le=MAX_JOB_BUDGET_USD,
+        # Always present and bounded: an absent budget would mean a live
+        # sandbox credential with no spending limit at all.
+        description="Cap on this job's model spend, in USD.",
     )
     metadata: dict[str, Any] | None = Field(None, description="Opaque caller metadata.")
 

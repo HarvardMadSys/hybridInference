@@ -644,3 +644,35 @@ async def test_sandbox_token_cannot_write_job_state(client: AsyncClient):
         headers=runner_auth,
     )
     assert ok.status_code == 201
+
+
+async def test_sandbox_token_is_refused_on_owner_routes(client: AsyncClient):
+    """A model-scoped credential must not reach the control plane.
+
+    verify_api_key is shared with /v1/agent/jobs, so resolving a sandbox token
+    there as its owner would let the sandbox enumerate, cancel, or create that
+    owner's other jobs — the authority the model scope exists to withhold.
+    """
+    from serving.servers.auth import _is_inference_path
+
+    class _Req:
+        def __init__(self, path: str) -> None:
+            from urllib.parse import urlparse
+
+            self.url = urlparse(f"http://x{path}")
+
+    # Inference surfaces the sandbox legitimately needs.
+    for path in ("/v1/chat/completions", "/v1/messages", "/v1/embeddings"):
+        assert _is_inference_path(_Req(path)) is True
+
+    # Control-plane routes it must not reach.
+    for path in ("/v1/agent/jobs", "/v1/agent/jobs/ajob_1", "/v1/agent/worker/claim", "/v1/models"):
+        assert _is_inference_path(_Req(path)) is False
+
+
+async def test_event_type_guard_rejects_a_trailing_newline(client: AsyncClient):
+    """`match()` with `$` accepted "message\\n"; the guard must use fullmatch."""
+    from serving.servers.routers.agent_jobs import _SAFE_EVENT_TYPE
+
+    assert _SAFE_EVENT_TYPE.fullmatch("message") is not None
+    assert _SAFE_EVENT_TYPE.fullmatch("message\n") is None

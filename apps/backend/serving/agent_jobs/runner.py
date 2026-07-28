@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import queue
 import shutil
 import subprocess
 import sys
@@ -43,6 +44,8 @@ from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backen
 DEFAULT_LEASE_TTL_S = 120.0
 HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_AGENT_TIMEOUT_S = 3600.0
+# How often the control checks run while the agent is silent.
+_POLL_INTERVAL_S = 0.5
 
 
 class LeaseLost(Exception):
@@ -251,9 +254,25 @@ def run_agent(
 
     deadline = time.monotonic() + timeout_s
     tail: list[str] = []
-    for line in process.lines():
-        tail.append(line)
-        del tail[:-40]
+
+    # Read stdout on a separate thread and poll for it here, so cancellation
+    # and the deadline are honoured even when the agent goes quiet. Iterating
+    # the stream directly meant a hung or long-thinking agent — which produces
+    # no lines — was never checked, and ignored an owner's cancel until it
+    # happened to print something.
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def _pump() -> None:
+        try:
+            for line in process.lines():
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    pump = threading.Thread(target=_pump, daemon=True, name="agent-stdout")
+    pump.start()
+
+    while True:
         if heart.lease_lost:
             process.kill()
             raise LeaseLost("lease lost while the agent was running")
@@ -268,6 +287,16 @@ def run_agent(
             )
             return 124, "".join(tail)
 
+        try:
+            line = lines.get(timeout=_POLL_INTERVAL_S)
+        except queue.Empty:
+            # No output yet; loop so the checks above keep running.
+            continue
+        if line is None:
+            break
+
+        tail.append(line)
+        del tail[:-40]
         event = runtime.parse_event(line)
         if event is not None:
             control.append_event(event)

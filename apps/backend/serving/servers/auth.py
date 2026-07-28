@@ -196,6 +196,27 @@ async def _authenticate_by_api_key(
     return user, key_hash
 
 
+# The only routes an agent-job token may reach. An allowlist rather than a
+# denylist: a new control-plane route must not silently become reachable by a
+# sandbox credential just because nobody remembered to exclude it.
+_AGENT_TOKEN_PATH_PREFIXES = (
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/v1/embeddings",
+    "/v1/completions",
+    "/v1/responses",
+    "/anthropic/v1/messages",
+)
+
+
+def _is_inference_path(request: Request) -> bool:
+    """Return whether this request targets a billed inference endpoint."""
+    path = request.url.path.rstrip("/")
+    return any(
+        path == prefix or path.startswith(prefix + "/") for prefix in _AGENT_TOKEN_PATH_PREFIXES
+    )
+
+
 async def verify_api_key(
     request: Request,
     authorization: str | None = Header(None),
@@ -217,6 +238,21 @@ async def verify_api_key(
     # must hold in every deployment. Ordinary keys pay one prefix comparison.
     presented_key = _extract_api_key(authorization, x_api_key)
     if looks_like_agent_token(presented_key):
+        # An agent token buys inference and nothing else. This dependency is
+        # shared with the owner-facing control plane (/v1/agent/jobs), so
+        # resolving one here as its owner's normal context would let a sandbox
+        # enumerate, cancel, or create that owner's other jobs — the exact
+        # authority the model scope exists to withhold.
+        if not _is_inference_path(request):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": {
+                        "type": "insufficient_scope",
+                        "message": ("This credential may only be used for model inference."),
+                    }
+                },
+            )
         try:
             return await authenticate_agent_model_call(
                 presented_key,

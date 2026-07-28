@@ -269,3 +269,29 @@ def test_new_file_patch_publishes(origin):
         check=True,
     ).stdout
     assert "newmod.py" in listed
+
+
+def test_option_shaped_base_sha_is_refused_before_git_sees_it():
+    """base_sha must never reach git as an option.
+
+    Regression: git parses a leading `--` argument as an option even after the
+    remote name, so `--upload-pack=/bin/sh -c ...` would have executed a
+    command inside the trusted publisher — the process that holds the
+    repository credential.
+    """
+    for hostile in (
+        "--upload-pack=/bin/sh -c 'touch /tmp/pwned'",
+        "--exec=evil",
+        "-x",
+        "not-a-sha",
+        "",
+    ):
+        with pytest.raises(PublishError) as excinfo:
+            publish_patch(
+                job_id="ajob_x",
+                patch="diff --git a/x b/x\n",
+                clone_url="/nonexistent",
+                base_sha=hostile,
+                commit_message="m",
+            )
+        assert "commit hash" in str(excinfo.value)

@@ -81,7 +81,7 @@ async def test_prefix_detection_does_not_claim_user_keys():
 async def test_live_fence_resolves_to_the_job_owner():
     """A valid token bills the job's owner and carries the job attribution."""
     context = await authenticate_agent_model_call(
-        _token(), job_store=FakeJobStore(), log_store=FakeLogStore()
+        _token(), job_store=FakeJobStore(budget=5.0), log_store=FakeLogStore()
     )
     assert context["user_id"] == "owner-1"
     assert context["agent_job_id"] == "ajob_abc"
@@ -156,3 +156,33 @@ async def test_missing_job_store_is_rejected():
     """Without a database an agent token cannot be honoured."""
     with pytest.raises(AgentModelAuthError):
         await authenticate_agent_model_call(_token(), job_store=None, log_store=None)
+
+
+async def test_missing_budget_fails_closed():
+    """A job with no configured cap must not buy uncapped inference.
+
+    "No budget" previously meant "no limit", which turned an omitted field on
+    the create request into an unbounded spending credential inside a sandbox.
+    """
+    with pytest.raises(AgentModelAuthError) as excinfo:
+        await authenticate_agent_model_call(
+            _token(),
+            job_store=FakeJobStore(budget=None),
+            log_store=FakeLogStore(spent=0.0),
+        )
+    assert excinfo.value.status_code == 403
+
+
+async def test_request_headroom_is_required_not_just_being_under():
+    """A call starting just below the cap is refused, not admitted.
+
+    Admitting it lets one large completion cross a cap it was already at the
+    edge of; the check therefore requires room for another request.
+    """
+    with pytest.raises(AgentModelAuthError) as excinfo:
+        await authenticate_agent_model_call(
+            _token(),
+            job_store=FakeJobStore(budget=5.0),
+            log_store=FakeLogStore(spent=4.99),
+        )
+    assert excinfo.value.status_code == 429

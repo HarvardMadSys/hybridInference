@@ -26,6 +26,7 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -104,10 +105,32 @@ class SandboxBackend(ABC):
 
 
 class _PopenProcess(SandboxProcess):
-    """Wraps a plain ``subprocess.Popen``."""
+    """Wraps a plain ``subprocess.Popen``.
+
+    stderr is drained on a background thread from the moment the process
+    starts. Left unread, a chatty agent fills the pipe buffer and blocks
+    forever on its next write — while the runner sits reading a stdout stream
+    that will never produce another line.
+    """
 
     def __init__(self, process: subprocess.Popen) -> None:
         self._process = process
+        self._stderr_chunks: list[str] = []
+        self._stderr_thread: threading.Thread | None = None
+        if process.stderr is not None:
+            self._stderr_thread = threading.Thread(
+                target=self._drain_stderr, daemon=True, name="sandbox-stderr"
+            )
+            self._stderr_thread.start()
+
+    def _drain_stderr(self) -> None:
+        """Read stderr to EOF, keeping a bounded tail."""
+        assert self._process.stderr is not None
+        for line in self._process.stderr:
+            self._stderr_chunks.append(line)
+            # Bounded: a runaway agent must not turn its own noise into an
+            # out-of-memory on the runner.
+            del self._stderr_chunks[:-200]
 
     def lines(self) -> Iterator[str]:
         """Yield stdout lines from the child process."""
@@ -124,8 +147,10 @@ class _PopenProcess(SandboxProcess):
         return self._process.returncode
 
     def stderr_text(self) -> str:
-        """Return the child's stderr."""
-        return (self._process.stderr.read() if self._process.stderr else "") or ""
+        """Return the child's stderr tail, collected by the drain thread."""
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=5)
+        return "".join(self._stderr_chunks)
 
 
 class ProcessBackend(SandboxBackend):

@@ -17,6 +17,7 @@ branch so the caller can open the PR against it.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -29,6 +30,11 @@ from serving.utils.logging import get_logger
 logger = get_logger(__name__)
 
 _GIT_TIMEOUT_S = 120.0
+
+# A commit hash and nothing else. git treats a leading `-` as an option even
+# in positions that look like operands, so an unvalidated ref is an argument
+# injection into a process that holds the repository credential.
+_COMMIT_SHA = re.compile(r"[0-9a-fA-F]{7,64}")
 
 # Hermetic git: no user config, no hooks, no credential helpers, no prompts.
 # A patch must not be able to reach configuration that changes what git does.
@@ -104,6 +110,11 @@ def publish_patch(
     Raises :class:`PublishError` with a reviewer-readable message on any gate
     violation or git failure.
     """
+    if not _COMMIT_SHA.fullmatch(base_sha or ""):
+        # base_sha reaches here from user input on the job. Anything that is
+        # not a bare commit hash is refused before it can be handed to git.
+        raise PublishError(f"base_sha must be a full commit hash, got {base_sha!r}")
+
     gate = validate_patch(patch)
     if not _gate_permits(gate, allow_workflow_changes=allow_workflow_changes):
         raise PublishError(f"patch rejected: {gate.reason}")
@@ -116,7 +127,15 @@ def publish_patch(
         # a patch cannot be applied onto some other branch's tree by accident.
         _run_git(["init", "--quiet", str(repo)])
         _run_git(["remote", "add", "origin", clone_url], cwd=repo)
-        _run_git(["fetch", "--quiet", "--depth", "1", "origin", base_sha], cwd=repo)
+        # `--end-of-options` plus the shape check above: git parses a leading
+        # `--` argument as an option even after the remote name, so an
+        # owner-supplied base_sha of `--upload-pack=/bin/sh -c ...` would run a
+        # command *inside the trusted publisher*. Two independent stops,
+        # because this process holds the GitHub credential.
+        _run_git(
+            ["fetch", "--quiet", "--depth", "1", "origin", "--end-of-options", base_sha],
+            cwd=repo,
+        )
         _run_git(["checkout", "--quiet", "-b", branch, "FETCH_HEAD"], cwd=repo)
 
         patch_file = workdir / "job.patch"

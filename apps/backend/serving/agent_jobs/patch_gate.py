@@ -122,18 +122,24 @@ def _is_escaping(path: str) -> bool:
     return any(segment == ".." for segment in path.replace("\\", "/").split("/"))
 
 
-def _scan_secrets(patch: str) -> list[str]:
-    """Return the names of secret patterns found in added lines.
+def _scan_secrets(patch: str, paths: list[str]) -> list[str]:
+    """Return the names of secret patterns found in added content or new paths.
 
-    Only ``+`` lines are scanned: an existing secret already in the repository
-    is not this patch's doing, and flagging it would block every later job.
+    Only ``+`` lines of content are scanned: an existing secret already in the
+    repository is not this patch's doing, and flagging it would block every
+    later job.
+
+    Paths are scanned too, and separately, because a filename is never an
+    added-content line — a patch adding ``ghp_<token>.txt`` would otherwise
+    sail through the gate and get the credential pushed as part of the tree.
     """
     added = "\n".join(
         line[1:]
         for line in patch.splitlines()
         if line.startswith("+") and not line.startswith("+++")
     )
-    return [name for name, pattern in _SECRET_PATTERNS if pattern.search(added)]
+    haystack = added + "\n" + "\n".join(paths)
+    return [name for name, pattern in _SECRET_PATTERNS if pattern.search(haystack)]
 
 
 def validate_patch(
@@ -185,7 +191,7 @@ def validate_patch(
     if symlink_paths:
         violations.append(f"patch introduces symlinks: {', '.join(symlink_paths)}")
 
-    secrets = _scan_secrets(patch)
+    secrets = _scan_secrets(patch, unique_files)
     if secrets:
         violations.append(f"patch contains credential-shaped content: {', '.join(secrets)}")
 
