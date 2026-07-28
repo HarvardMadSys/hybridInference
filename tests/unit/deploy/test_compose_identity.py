@@ -70,19 +70,6 @@ def _compose_defaults() -> dict[str, str]:
     return defaults
 
 
-def _overlay_values() -> dict[str, str]:
-    """Every key the FreeInference overlay sets, across all of its env files."""
-    values: dict[str, str] = {}
-    for path in sorted(OVERLAY.glob("*.env")):
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            values[key.strip()] = value
-    return values
-
-
 def test_no_compose_default_names_a_deployment() -> None:
     """A clone that supplies nothing must not come up as somebody's site."""
     offenders = {
