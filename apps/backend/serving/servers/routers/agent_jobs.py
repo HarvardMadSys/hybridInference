@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from serving.agent_jobs.github_app import AppNotInstalled
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -503,13 +504,38 @@ async def worker_claim(
             clone_token = await app_credentials.token_for(
                 claim["repo"], permissions=_CLONE_SCOPE, repository_scoped=True
             )
-        except Exception:
-            # The job can still run against a public repository, and failing
-            # the claim here would take the job off the queue for nothing.
-            logger.warning(
+        except AppNotInstalled:
+            # A settled answer: the App does not cover this repository. Hand
+            # the job over without a credential — a public repository clones
+            # anonymously, and a private one fails with a message the owner can
+            # act on ("install the App"), which retrying would not improve.
+            logger.info(
                 "agent_job_clone_token_unavailable",
                 extra={"event": "agent_job_clone_token_unavailable", "job_id": claim["id"]},
             )
+        except Exception as exc:
+            # Anything else is GitHub or the network having a bad minute.
+            # Returning no token here would send the runner off to clone
+            # anonymously, fail on a private repository, and mark the job
+            # *terminally* failed — turning a momentary outage into the owner's
+            # problem. Abandoning the attempt instead is the retryable path:
+            # the lease expires unheartbeated and the reaper requeues it.
+            logger.warning(
+                "agent_job_clone_token_error",
+                extra={"event": "agent_job_clone_token_error", "job_id": claim["id"]},
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "type": "credential_unavailable",
+                        "message": (
+                            "Could not mint a repository credential for this job; the "
+                            "attempt has been abandoned and will be retried."
+                        ),
+                    }
+                },
+            ) from exc
 
     return WorkerClaimResponse(
         job_id=claim["id"],

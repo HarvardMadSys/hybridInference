@@ -729,18 +729,23 @@ async def test_a_deployment_without_a_github_app_still_claims_jobs(client: Async
     assert claim.json()["clone_token"] is None
 
 
-async def test_a_failure_to_mint_the_clone_token_does_not_lose_the_job(
+async def test_an_uninstalled_app_hands_the_job_over_without_a_credential(
     store: FakeAgentJobStore,
 ):
-    """Failing the claim would burn an attempt on a job that could still run."""
+    """A settled "not installed here" must not block the job.
+
+    A public repository clones anonymously, and a private one fails with a
+    message the owner can act on — which retrying would not improve.
+    """
+    from serving.agent_jobs.github_app import AppNotInstalled
     from serving.servers.deps import get_agent_app_credentials
 
-    class BrokenApp:
+    class UninstalledApp:
         async def token_for(self, repo: str, **kwargs: Any) -> str:
-            raise RuntimeError("App not installed on this repository")
+            raise AppNotInstalled(f"no App installation covers {repo}", status=404)
 
     app = _build_app(store)
-    app.dependency_overrides[get_agent_app_credentials] = lambda: BrokenApp()
+    app.dependency_overrides[get_agent_app_credentials] = lambda: UninstalledApp()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         job_id = await _create_job(client)
@@ -749,6 +754,33 @@ async def test_a_failure_to_mint_the_clone_token_does_not_lose_the_job(
     assert claim.status_code == 200
     assert claim.json()["job_id"] == job_id
     assert claim.json()["clone_token"] is None
+
+
+async def test_a_transient_credential_error_is_retryable_not_terminal(
+    store: FakeAgentJobStore,
+):
+    """GitHub having a bad minute must not permanently fail someone's job.
+
+    Handing the runner a null token here sends it off to clone anonymously,
+    fail on a private repository, and mark the job *terminally* failed.
+    Abandoning the attempt instead is the retryable path: the lease expires
+    unheartbeated and the reaper requeues it.
+    """
+    from serving.servers.deps import get_agent_app_credentials
+
+    class FlakyApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            raise TimeoutError("api.github.com timed out")
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: FlakyApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await _create_job(client)
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 503, "a null token here would terminally fail the job"
+    assert "retried" in claim.text
 
 
 async def test_the_worker_reports_the_commit_it_actually_worked_from(

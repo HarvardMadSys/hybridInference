@@ -379,6 +379,43 @@ def existing_checkout_sha(workdir: str, repo: str) -> str | None:
     return head.stdout.strip() if head.returncode == 0 else None
 
 
+def align_existing_checkout(workdir: str, *, checked_out: str, base_sha: str | None) -> str:
+    """Move a pre-populated worktree onto the commit the job pinned.
+
+    The Actions runner checks out whatever ref triggered the workflow, which
+    has nothing to do with the commit an owner pinned on their job. Running the
+    agent on the wrong tree is not a visible failure: the store keeps the
+    owner's pinned sha, and the publisher then applies a patch generated
+    against one commit onto a different one. ``--3way`` makes that *usually*
+    succeed, which is worse than failing — the PR looks plausible and encodes
+    changes nobody wrote.
+
+    Returns the commit actually in the worktree afterwards.
+    """
+    if not base_sha:
+        return checked_out
+    if not _COMMIT_SHA.fullmatch(base_sha):
+        raise WorktreeError(f"base_sha must be a commit hash, got {base_sha!r}")
+
+    # The owner may have pinned an abbreviated sha; compare resolved commits.
+    resolved = _run_git(["rev-parse", "--verify", "--quiet", f"{base_sha}^{{commit}}"], cwd=workdir)
+    target = resolved.stdout.strip()
+    if resolved.returncode != 0 or not target:
+        raise WorktreeError(
+            f"the prepared working tree does not contain {base_sha}; refusing to run "
+            "the agent against a different commit than the job pinned"
+        )
+    if target == checked_out:
+        return checked_out
+
+    switched = _run_git(["checkout", "--quiet", "--detach", target], cwd=workdir)
+    if switched.returncode != 0:
+        raise WorktreeError(
+            f"could not check out the pinned commit {base_sha}: {switched.stderr.strip()[:200]}"
+        )
+    return target
+
+
 def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
     """Return the agent's work as a patch, or an empty string if nothing changed.
 
@@ -615,9 +652,11 @@ def run_once(
                 )
             else:
                 # An externally prepared worktree (the Actions dogfood checks
-                # the repository out itself). Use what is there and report the
-                # commit it actually sits on, not the one that was requested.
-                base_sha = checked_out
+                # the repository out itself) — but on whatever ref triggered
+                # the workflow, which is not necessarily what the job pinned.
+                base_sha = align_existing_checkout(
+                    workdir, checked_out=checked_out, base_sha=job.base_sha
+                )
             # The agent owns this tree from here on, so it must be able to
             # write to it — and git must not see it as another user's repo.
             backend.adopt_workdir(workdir)

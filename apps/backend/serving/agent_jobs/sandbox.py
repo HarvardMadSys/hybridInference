@@ -59,6 +59,20 @@ class SandboxError(Exception):
     """Raised when a sandbox cannot be created or configured."""
 
 
+def _walk_entries(path: str) -> Iterator[tuple[str, bool]]:
+    """Yield ``(path, is_dir)`` for the root and everything beneath it.
+
+    Symlinks are yielded but never followed, so nothing outside the worktree is
+    reached by an operation applied to the tree.
+    """
+    yield path, True
+    for root, dirs, files in os.walk(path):
+        for name in dirs:
+            yield os.path.join(root, name), True
+        for name in files:
+            yield os.path.join(root, name), False
+
+
 @dataclass
 class SandboxSpec:
     """Everything a backend needs to run one job's agent."""
@@ -313,30 +327,53 @@ class ContainerBackend(SandboxBackend):
         all, because a repository owned by another user is "dubious ownership".
         """
         try:
-            os.chown(path, self.uid, self.gid)
-            for root, dirs, files in os.walk(path):
-                for name in (*dirs, *files):
-                    # lchown, not chown: a symlink in the tree must not be
-                    # followed to whatever it points at outside the worktree.
-                    with contextlib.suppress(FileNotFoundError):
-                        os.lchown(os.path.join(root, name), self.uid, self.gid)
+            for target, _is_dir in _walk_entries(path):
+                # lchown, not chown: a symlink in the tree must not be followed
+                # to whatever it points at outside the worktree.
+                with contextlib.suppress(FileNotFoundError):
+                    os.lchown(target, self.uid, self.gid)
         except PermissionError:
             # An unprivileged runner cannot give the tree away. World-writable
             # is the only remaining way for the sandbox user to work, and it is
             # only defensible on a dedicated single-purpose host.
-            os.chmod(path, 0o777)
+            #
+            # It has to be the whole tree. Opening up only the root leaves every
+            # checked-out file at its original mode and owner, so the agent can
+            # create new files and cannot edit any existing one — which is most
+            # of what an agent does. That fallback reads as working and is not.
+            self._make_world_writable(path)
             logger.warning(
                 "agent_sandbox_workdir_world_writable",
                 extra={
                     "event": "agent_sandbox_workdir_world_writable",
                     "detail": (
                         "the runner is not root and cannot chown the job worktree to "
-                        f"uid {self.uid}; it was made world-writable instead. Run the "
-                        "runner as root, or accept that any local user can read and "
-                        "modify job worktrees on this host."
+                        f"uid {self.uid}; the tree was made world-writable instead. "
+                        "Run the runner as root, or accept that any local user can "
+                        "read and modify job worktrees on this host — including "
+                        "planting code the agent will then execute."
                     ),
                 },
             )
+
+    @staticmethod
+    def _make_world_writable(path: str) -> None:
+        """Grant everyone read/write on the tree, and traverse on directories."""
+        for target, is_dir in _walk_entries(path):
+            # chmod follows symlinks and there is no lchmod on Linux, so a link
+            # in the worktree would otherwise let the agent widen permissions
+            # on a file outside it.
+            if os.path.islink(target):
+                continue
+            try:
+                mode = os.stat(target).st_mode & 0o7777
+                # `a+rwX`: the execute bit only where it already means something
+                # (directories, and files that were already executable), so this
+                # does not turn every data file into a program.
+                mode |= 0o666 | (0o111 if is_dir or mode & 0o111 else 0)
+                os.chmod(target, mode)
+            except OSError:
+                continue
 
     def preflight(self, workdir_root: str | None = None) -> None:
         """Verify the container runtime is usable before accepting jobs.
