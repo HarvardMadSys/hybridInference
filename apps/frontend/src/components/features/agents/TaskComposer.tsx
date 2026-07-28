@@ -2,7 +2,12 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { createAgentJob, getAgentConfig, listAgentModels } from '@/lib/api/agents';
+import {
+  createAgentJob,
+  getAgentConfig,
+  listAgentModels,
+  listRepoBranches,
+} from '@/lib/api/agents';
 import type { AgentConfigApi } from '@/lib/api/agents';
 import { ConnectSourceControl } from './ConnectSourceControl';
 import { Picker } from './Picker';
@@ -29,6 +34,8 @@ export function TaskComposer() {
   const [config, setConfig] = useState<AgentConfigApi | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [repo, setRepo] = useState('');
+  const [branches, setBranches] = useState<string[]>([]);
+  const [branch, setBranch] = useState('');
   const [runtime, setRuntime] = useState('');
   const [model, setModel] = useState('');
   const [loading, setLoading] = useState(true);
@@ -57,6 +64,29 @@ export function TaskComposer() {
     };
   }, []);
 
+  // Branches follow the selected repository, so they reload when it changes.
+  useEffect(() => {
+    if (!repo) return undefined;
+    let cancelled = false;
+    listRepoBranches(repo)
+      .then((found) => {
+        if (cancelled) return;
+        setBranches(found.branches);
+        setBranch(found.default ?? found.branches[0] ?? '');
+      })
+      .catch(() => {
+        // No branch list is a working state: the job then runs against the
+        // repository's own default, which is what omitting a ref means.
+        if (!cancelled) {
+          setBranches([]);
+          setBranch('');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [repo]);
+
   const canRun = task.trim().length > 0 && !submitting && Boolean(repo && runtime && model);
 
   async function run() {
@@ -66,7 +96,15 @@ export function TaskComposer() {
     try {
       // Exactly what the controls show. That this needs saying is the bug it
       // replaced: the old composer displayed one thing and queued another.
-      const job = await createAgentJob({ repo, task_prompt: task.trim(), runtime, model });
+      const job = await createAgentJob({
+        repo,
+        task_prompt: task.trim(),
+        runtime,
+        model,
+        // Sent as a ref; the platform pins it to a commit at creation, because
+        // a branch moves and the publisher applies onto a fixed one.
+        ...(branch ? { base_ref: branch } : {}),
+      });
       router.push(`/agents/${job.id}`);
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : 'could not start the job');
@@ -104,6 +142,7 @@ export function TaskComposer() {
 
         <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3.5 py-2.5">
           <Picker label="Repository" value={repo} options={config?.repos ?? []} onChange={setRepo} />
+          <Picker label="Branch" value={branch} options={branches} onChange={setBranch} />
           <span className="h-4 w-px bg-gray-200" />
           <Picker
             label="Runtime"

@@ -65,6 +65,7 @@ from serving.schemas_agent_jobs import (
     AgentJobResponse,
     GitHubConnectionResponse,
     GitHubConnectRequest,
+    RepoBranchesResponse,
     WorkerAckResponse,
     WorkerArtifactRequest,
     WorkerArtifactResponse,
@@ -351,6 +352,39 @@ async def disconnect_github(
     )
 
 
+@router.get("/branches", response_model=RepoBranchesResponse)
+async def list_repo_branches(
+    repo: str = Query(..., description="owner/name"),
+    user: dict[str, Any] = Depends(verify_api_key),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> RepoBranchesResponse:
+    """List a repository's branches, for the composer's branch picker.
+
+    Entitlement first: this reads a repository through the platform's own
+    installation, so without the check it would be a way to enumerate branches
+    of any repository the App happens to cover.
+    """
+    job_store = _require_store(store)
+    try:
+        await require_entitled_repo(
+            repo, user["user_id"], store=job_store, app_credentials=app_credentials
+        )
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+    if app_credentials is None:
+        return RepoBranchesResponse()
+    try:
+        found = await app_credentials.branches_for_repo(repo)
+    except Exception:
+        logger.warning("agent_branches_unavailable", extra={"event": "agent_branches_unavailable"})
+        return RepoBranchesResponse()
+    return RepoBranchesResponse(default=found.get("default"), branches=found.get("branches", []))
+
+
 @router.post("/jobs", response_model=AgentJobResponse, status_code=201)
 async def create_agent_job(
     body: AgentJobCreate,
@@ -376,13 +410,32 @@ async def create_agent_job(
             status_code=403,
             detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
         ) from exc
+    # A branch is resolved to the commit it points at *now*. The job stores the
+    # sha: a branch moves, so a job that recorded "dev" would silently mean a
+    # different tree by the time it ran, and the publisher applies its patch
+    # onto a pinned commit.
+    base_sha = body.base_sha
+    if base_sha is None and body.base_ref and app_credentials is not None:
+        try:
+            base_sha = await app_credentials.resolve_ref(body.repo, body.base_ref)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "type": "invalid_request",
+                        "message": f"could not resolve {body.base_ref!r} in {body.repo}: {exc}",
+                    }
+                },
+            ) from exc
+
     job = await job_store.create_job(
         user_id=user["user_id"],
         repo=body.repo,
         task_prompt=body.task_prompt,
         runtime=body.runtime,
         model=body.model,
-        base_sha=body.base_sha,
+        base_sha=base_sha,
         budget_usd=body.budget_usd,
         metadata=body.metadata,
     )

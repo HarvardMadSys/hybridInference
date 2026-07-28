@@ -343,6 +343,65 @@ class GitHubAppCredentials:
                 page += 1
         return repos
 
+    async def branches_for_repo(self, repo: str) -> dict[str, Any]:
+        """Return ``{"default": name, "branches": [...]}`` for one repository.
+
+        Read with the repository's own installation token, so a caller cannot
+        learn anything about a repository the App does not cover.
+        """
+        owner, _, name = repo.partition("/")
+        if not owner or not name:
+            raise GitHubAppError(f"repo must be 'owner/name', got {repo!r}")
+        token = await self.token_for(repo, permissions={"contents": "read"}, repository_scoped=True)
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            meta = await client.get(
+                f"{self._config.api_base}/repos/{owner}/{name}", headers=headers
+            )
+            listing = await client.get(
+                f"{self._config.api_base}/repos/{owner}/{name}/branches",
+                params={"per_page": 100},
+                headers=headers,
+            )
+        if meta.status_code >= 400 or listing.status_code >= 400:
+            raise GitHubAppError(f"could not read branches for {repo}")
+        names = [item.get("name") for item in listing.json() if item.get("name")]
+        default = meta.json().get("default_branch")
+        # Default first, so the picker's first option is the one a reader expects.
+        ordered = ([default] if default in names else []) + sorted(n for n in names if n != default)
+        return {"default": default, "branches": ordered}
+
+    async def resolve_ref(self, repo: str, ref: str) -> str:
+        """Resolve a branch (or any ref) to the commit sha it points at.
+
+        The job stores the *sha*, never the branch name. A branch moves; a job
+        that recorded "dev" would silently mean a different tree by the time it
+        ran, and the publisher applies its patch onto a pinned commit.
+        """
+        owner, _, name = repo.partition("/")
+        if not owner or not name:
+            raise GitHubAppError(f"repo must be 'owner/name', got {repo!r}")
+        token = await self.token_for(repo, permissions={"contents": "read"}, repository_scoped=True)
+        async with httpx.AsyncClient(timeout=self._timeout_s) as client:
+            response = await client.get(
+                f"{self._config.api_base}/repos/{owner}/{name}/commits/{ref}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+        if response.status_code >= 400:
+            raise GitHubAppError(f"could not resolve {ref!r} in {repo}")
+        sha = response.json().get("sha")
+        if not isinstance(sha, str) or not sha:
+            raise GitHubAppError(f"GitHub returned no commit for {ref!r} in {repo}")
+        return sha
+
     async def _installation_token(self, installation_id: int) -> str:
         """Mint a plain installation token for a known installation id."""
         body = await self._request(

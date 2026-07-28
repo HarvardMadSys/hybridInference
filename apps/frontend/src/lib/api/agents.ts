@@ -103,11 +103,27 @@ export async function listAgentModels(): Promise<string[]> {
   return (body.data ?? []).map((entry) => entry.id).filter(Boolean);
 }
 
+export interface RepoBranchesApi {
+  default: string | null;
+  branches: string[];
+}
+
+/** Branches of one entitled repository, for the composer's branch picker. */
+export async function listRepoBranches(repo: string): Promise<RepoBranchesApi> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/branches?repo=${encodeURIComponent(repo)}`,
+  );
+  return jsonOrThrow(resp);
+}
+
 export interface CreateAgentJobRequest {
   repo: string;
   task_prompt: string;
   model: string;
   runtime?: string;
+  /** A branch. The platform pins it to a commit at creation. */
+  base_ref?: string;
   base_sha?: string;
   budget_usd?: number;
 }

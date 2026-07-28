@@ -1101,3 +1101,94 @@ async def test_disconnecting_removes_the_entitlement(store: FakeAgentJobStore, m
         )
 
     assert after.status_code == 403
+
+
+async def test_a_branch_is_pinned_to_a_commit_at_creation(store: FakeAgentJobStore, monkeypatch):
+    """A job records the sha, never the branch name.
+
+    A branch moves. A job that stored "dev" would silently mean a different
+    tree by the time it ran, and the publisher applies its patch onto a pinned
+    commit — so resolving late would mean generating a diff against one tree
+    and pushing it onto another.
+    """
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name")
+    from serving.servers.deps import get_agent_app_credentials
+
+    class BranchApp(_FakeGitHubApp):
+        async def resolve_ref(self, repo: str, ref: str) -> str:
+            assert ref == "dev"
+            return "f" * 40
+
+    app_creds = BranchApp(installations=[], repos_by_installation={})
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/v1/agent/jobs",
+            json={
+                "repo": "owner/name",
+                "task_prompt": "fix it",
+                "model": "m",
+                "base_ref": "dev",
+            },
+        )
+
+    assert created.status_code == 201
+    assert created.json()["base_sha"] == "f" * 40
+
+
+async def test_an_unresolvable_branch_is_refused_at_creation(store: FakeAgentJobStore, monkeypatch):
+    """Better a clear 400 than a job queued against a ref that does not exist."""
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name")
+    from serving.servers.deps import get_agent_app_credentials
+
+    class BrokenBranchApp(_FakeGitHubApp):
+        async def resolve_ref(self, repo: str, ref: str) -> str:
+            raise RuntimeError("no such branch")
+
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: BrokenBranchApp(
+        installations=[], repos_by_installation={}
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/v1/agent/jobs",
+            json={
+                "repo": "owner/name",
+                "task_prompt": "fix it",
+                "model": "m",
+                "base_ref": "nope",
+            },
+        )
+
+    assert created.status_code == 400
+    assert "nope" in created.text
+
+
+async def test_branches_are_only_listed_for_an_entitled_repo(store: FakeAgentJobStore, monkeypatch):
+    """This reads through the platform's installation, so it needs the same gate.
+
+    Without it, the endpoint enumerates branches of any repository the App
+    happens to cover — which is the confused deputy again, one level down.
+    """
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name")
+    from serving.servers.deps import get_agent_app_credentials
+
+    class BranchApp(_FakeGitHubApp):
+        async def branches_for_repo(self, repo: str) -> dict[str, Any]:
+            return {"default": "main", "branches": ["main", "dev"]}
+
+    app = _build_app(_store_with_grants(store))
+    app.dependency_overrides[get_agent_app_credentials] = lambda: BranchApp(
+        installations=[], repos_by_installation={}
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        mine = await client.get("/v1/agent/branches", params={"repo": "owner/name"})
+        theirs = await client.get("/v1/agent/branches", params={"repo": "someone/private"})
+
+    assert mine.status_code == 200
+    assert mine.json()["default"] == "main"
+    assert theirs.status_code == 403

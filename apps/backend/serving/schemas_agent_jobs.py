@@ -46,6 +46,14 @@ class AgentJobCreate(BaseModel):
     task_prompt: str = Field(..., description="What the agent should do.")
     runtime: str = Field("claude-code", description="Agent runtime id.")
     model: str = Field(..., description="Gateway model id the runtime should use.")
+    base_ref: str | None = Field(
+        None,
+        max_length=255,
+        description=(
+            "Branch to work from. Resolved to a commit at creation and stored as "
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+        ),
+    )
     base_sha: str | None = Field(
         None,
         # A bare commit hash, enforced here as well as in the publisher: git
@@ -235,6 +243,14 @@ class WorkerFinishRequest(BaseModel):
 
     state: str = Field(..., description="succeeded|failed|cancelled")
     detail: str | None = None
+    base_ref: str | None = Field(
+        None,
+        max_length=255,
+        description=(
+            "Branch to work from. Resolved to a commit at creation and stored as "
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+        ),
+    )
     base_sha: str | None = Field(
         None,
         pattern=r"^[0-9a-fA-F]{7,64}$",
@@ -296,3 +312,10 @@ class GitHubConnectionResponse(BaseModel):
 
     connections: list[dict[str, Any]] = Field(default_factory=list)
     repos: list[str] = Field(default_factory=list)
+
+
+class RepoBranchesResponse(BaseModel):
+    """Branches of one repository the caller is entitled to."""
+
+    default: str | None = None
+    branches: list[str] = Field(default_factory=list)
