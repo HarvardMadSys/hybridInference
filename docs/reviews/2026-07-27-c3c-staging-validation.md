@@ -177,7 +177,33 @@ incident firing→resolved through the binding, evidence in `docs/reviews/`"),
 which unblocks:
 
 - [x] C3c accepted — individual `model_unavailable` on the Control Plane
-- [ ] #1050 storm per-model migration — un-draft and merge
-- [ ] #1048 cycle migration — restack on post-#1050 dev, merge, then redeploy
-      the control plane (manual lifecycle workflow) before flipping
-      `ALERT_CYCLE_OWNER`
+- [x] storm per-model migration — merged as #1050
+- [x] cycle migration — merged as #1059 (superseding #1048); control plane
+      redeployed via the lifecycle workflow, then `ALERT_CYCLE_OWNER` flipped
+      in #1065. The 14:32Z binding gate reported deployment SHA `98ee1694`,
+      confirming the deployed Worker version is the flag-flip commit.
+
+### Scope of this evidence — do not over-read it
+
+This run validated the **individual `model_unavailable`** path only. It
+unblocked the storm and cycle migrations because they reuse the incident
+object, outbox, and SlackSink it exercised — but neither has been observed on
+real traffic:
+
+| Class | Real-traffic evidence | Why not yet |
+|---|---|---|
+| individual | ✅ this document | — |
+| storm | ❌ | needs more than `ALERT_STORM_THRESHOLD` models failing in one cycle; has not occurred |
+| cycle | ❌ | needs the gateway or prober key to fail wholesale; has not occurred |
+
+Both remain covered by unit tests and by the per-deploy synthetic binding gate,
+which exercises the shared RPC and delivery layers. Forcing them is possible
+and was deliberately not done here:
+
+- **cycle** can be forced safely by pointing the monitor's own
+  `GATEWAY_BASE_URL` at a dead host for one window — that blinds only the
+  monitor, not the real gateway, and would also exercise the P1-A
+  empty-catalog guard under real conditions
+- **storm** would need several deliberately broken catalog entries: a wider
+  blast radius and more channel noise than this run, and worth pairing with an
+  observation of Slack rate-limit queueing when N parents post at once
