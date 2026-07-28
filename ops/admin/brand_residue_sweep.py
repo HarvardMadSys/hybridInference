@@ -51,7 +51,7 @@ ALLOWLIST: dict[str, str] = {
     "pyproject.toml": "harness excludes + RouteWise git dep URL (public repo; org name matches markers)",
     ".github/workflows/": "FreeInference CD workflows — step-2 move",
     ".env.oncall.example": "on-call site config example — step-2 move",
-    ".env.example": "example env carries FreeInference defaults — neutral-defaults flip wave",
+    ".env.example": "one commented overlay-manifest path, which is the example that works",
     ".codex/": "agent skill guides — mixed, neutral wave",
     ".kilo/": "agent skill guides — mixed, neutral wave",
     ".gitleaks.toml": "site-specific scan allowances — neutral wave",
