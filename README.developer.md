@@ -123,7 +123,7 @@ docs/             # User docs, developer docs, agent specs/plans, reviews
 ## Configuration Files
 
 - `config/models.yaml`: required model registry.
-- `config/routing.yaml`: optional local/remote split, routing strategy, and health checks.
+- `distributions/<name>/config/routing.yaml`: local/remote split, routing strategy, health checks. Upstream ships none; the gateway starts without one.
 - `distributions/<name>/config/alerts.yaml`: alert rules. Upstream ships none; without one the built-in thresholds apply.
 
 Per-model RouteWise tuning lives under each model's `router_params:` in `config/models.yaml`.

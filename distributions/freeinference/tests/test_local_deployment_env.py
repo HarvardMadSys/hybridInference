@@ -1,3 +1,14 @@
+"""This deployment's own models and machines, asserted where they belong.
+
+Every case here names something particular to FreeInference —
+deepseek-v4-flash, minimax-fast, H200_DEPLOYMENT_URL, SPARK_DEPLOYMENT_URL.
+Upstream has no opinion about any of them, so these moved out of
+tests/unit/config/ along with the routing file they read.
+
+models.yaml is still at the legacy path; when it moves, the reads below move
+with it.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -60,7 +71,9 @@ def test_deepseek_v4_flash_has_optional_h200_sglang_route() -> None:
 
 def test_routing_local_deployment_uses_local_deployment_url() -> None:
     """Routing local_deployment must match the SGLang deployment env var."""
-    routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())
+    routing = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "routing.yaml").read_text()
+    )
 
     endpoints = [deployment["endpoint"] for deployment in routing["local_deployment"]]
 
@@ -71,7 +84,9 @@ def test_routing_local_deployment_uses_local_deployment_url() -> None:
 
 def test_routing_h200_local_deployment_lists_deepseek_v4_flash() -> None:
     """H200 local_deployment entry must register deepseek-v4-flash."""
-    routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())
+    routing = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "routing.yaml").read_text()
+    )
 
     h200 = next(
         (d for d in routing["local_deployment"] if d.get("endpoint") == "${H200_DEPLOYMENT_URL}"),

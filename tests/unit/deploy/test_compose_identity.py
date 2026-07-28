@@ -180,6 +180,9 @@ def test_compose_cors_default_admits_only_local_development(
         # thresholds rather than erroring, so production would keep
         # alerting, on different numbers, with nothing to notice.
         ("ALERTS_CONFIG_PATH", "/app/distributions/freeinference/config/alerts.yaml"),
+        # Sharper edge again: without it the deployment loses its entire
+        # endpoint map and health-check settings, and still starts.
+        ("ROUTING_CONFIG_PATH", "/app/distributions/freeinference/config/routing.yaml"),
     ],
 )
 def test_overlay_supplies_what_the_default_gave_up(var: str, expected: str) -> None:

@@ -28,15 +28,22 @@ def test_manifest_paths_point_at_legacy_truth():
     # alerts.yaml has moved into the overlay; models and routing have not.
     # Each line here is a claim about where production reads from, so moving
     # one without editing this is the mistake worth catching.
-    for kind in ("models", "routing"):
-        resolved = Path(getattr(config.paths, kind))
-        legacy = (REPO_ROOT / "config" / f"{kind}.yaml").resolve()
-        assert resolved == legacy, f"{kind} no longer aliases legacy truth"
-
-    alerts = Path(config.paths.alerts)
-    overlay = (REPO_ROOT / "distributions" / "freeinference" / "config" / "alerts.yaml").resolve()
-    assert alerts == overlay, "alerts.yaml moved into the overlay; the manifest must follow"
-    assert not (REPO_ROOT / "config" / "alerts.yaml").exists(), (
-        "two copies of a deployment's alert config is how they drift apart"
+    # models.yaml is the last one still aliasing legacy truth — it changes
+    # daily, so it moves when the drift window costs least. The other two are
+    # in the overlay, with nothing left at the old path: two copies of a
+    # deployment's config is how they drift apart.
+    models = Path(config.paths.models)
+    assert models == (REPO_ROOT / "config" / "models.yaml").resolve(), (
+        "models.yaml no longer aliases legacy truth"
     )
-    assert alerts.exists()
+
+    overlay_config = REPO_ROOT / "distributions" / "freeinference" / "config"
+    for kind in ("alerts", "routing"):
+        resolved = Path(getattr(config.paths, kind))
+        assert resolved == (overlay_config / f"{kind}.yaml").resolve(), (
+            f"{kind}.yaml moved into the overlay; the manifest must follow"
+        )
+        assert not (REPO_ROOT / "config" / f"{kind}.yaml").exists(), (
+            f"a second copy of {kind}.yaml at the legacy path will drift"
+        )
+        assert resolved.exists()

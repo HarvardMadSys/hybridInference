@@ -131,7 +131,7 @@ For the full diagram (network layer, observability, storage), see
 | File | Owns |
 |---|---|
 | `config/models.yaml` | Model registry (required); per-model `router:` / `router_params:` (incl. RouteWise tuning) |
-| `config/routing.yaml` | Local/remote split, health checks (optional) |
+| `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
 | `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
 
 YAML supports env var interpolation: `${VAR}` and `${VAR:-default}`.

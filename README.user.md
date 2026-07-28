@@ -76,7 +76,7 @@ The gateway is configured primarily through environment variables and YAML files
 
 - `.env`: secrets, database settings, provider API keys, auth settings, and runtime options.
 - `config/models.yaml`: model registry and endpoint definitions.
-- `config/routing.yaml`: local/remote split, routing strategy, and health-check settings.
+- `distributions/<name>/config/routing.yaml`: local/remote split, routing strategy, health checks. Upstream ships none; the gateway starts without one.
 - `distributions/<name>/config/alerts.yaml`: alert rules. Upstream ships none; without one the built-in thresholds apply.
 
 YAML configuration supports environment variable interpolation with `${VAR}` and `${VAR:-default}` syntax.

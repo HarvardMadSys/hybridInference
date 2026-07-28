@@ -49,6 +49,10 @@ services:
       # would swap production's thresholds for the defaults in silence,
       # which is why a test pins it.
       ALERTS_CONFIG_PATH: ${ALERTS_CONFIG_PATH-config/alerts.yaml}
+      # Same shape, sharper edge: without this a deployment loses its whole
+      # endpoint map and every health-check setting, and the gateway starts
+      # anyway — verified by booting with the file absent. Pinned by a test.
+      ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-config/routing.yaml}
       # Identity rendered into emails, links, CORS, the docs-assistant prompt
       # and OpenRouter attribution. The defaults below name no deployment, so
       # `docker compose up` on a fresh clone brings up *your* gateway, not

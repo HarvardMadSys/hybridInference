@@ -29,6 +29,6 @@ paths:
   # Relative paths resolve against this file's directory: these point at the
   # legacy locations on purpose (see header note).
   models: ../../config/models.yaml
-  routing: ../../config/routing.yaml
+  routing: config/routing.yaml
   # Moved in — no longer an alias back to the legacy location.
   alerts: config/alerts.yaml
