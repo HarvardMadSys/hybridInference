@@ -348,3 +348,145 @@ describe("trusted envelope and canonical digest", () => {
     expect(() => canonicalJson({ valid: true, omitted: undefined })).toThrow(ValidationError);
   });
 });
+
+describe("gateway alert types (metric_threshold_breach, dependency_unavailable)", () => {
+  function metricEvent(
+    context: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      schema_version: 1,
+      event_id: "gateway-metric-1",
+      alert_type: "metric_threshold_breach",
+      fingerprint: "gateway:failed_request_rate",
+      status: "firing",
+      severity: "error",
+      title: "Failed-request rate exceeded",
+      occurred_at: "2026-07-20T00:00:00Z",
+      summary: "The failed-request rate crossed its configured threshold.",
+      context,
+      evidence_refs: [],
+    };
+  }
+
+  it("accepts a numeric threshold breach with its optional counts", () => {
+    const parsed = parseAlertEvent(
+      metricEvent({
+        metric: "failed_request_rate",
+        observed: 0.123,
+        threshold: 0.05,
+        window_sec: 300,
+        scope: "gateway",
+        sample_count: 366,
+      }),
+      { now: TEST_NOW },
+    );
+    expect(parsed).toMatchObject({
+      alert_type: "metric_threshold_breach",
+      context: { metric: "failed_request_rate", observed: 0.123, threshold: 0.05 },
+    });
+  });
+
+  // The whole point of this type: it replaces backend alerts that embedded
+  // source IPs and API key prefixes. There must be no field they can move
+  // into, so an auth-failure breach carries counts and nothing else.
+  it("has no free-text field for the identifiers it replaces", () => {
+    const parsed = parseAlertEvent(
+      metricEvent({
+        metric: "auth_failure_count",
+        observed: 41,
+        threshold: 20,
+        window_sec: 300,
+        distinct_sources: 3,
+        top_source_share: 0.8,
+      }),
+      { now: TEST_NOW },
+    );
+    const serialized = JSON.stringify(parsed);
+    expect(serialized).not.toMatch(/\d+\.\d+\.\d+\.\d+/);
+    expect(serialized).not.toContain("hyi-");
+
+    for (const smuggled of [
+      { top_ips: "1.2.3.4 (12), 5.6.7.8 (3)" },
+      { top_key_prefixes: "hyi-abcdefghijklmnopqrstu (7)" },
+      { user_id: 4711 },
+      { rate: "12.3% (45 of 366 requests, last 300s)" },
+    ]) {
+      expect(() =>
+        parseAlertEvent(
+          metricEvent({
+            metric: "auth_failure_count",
+            observed: 41,
+            threshold: 20,
+            ...smuggled,
+          }),
+          { now: TEST_NOW },
+        ),
+      ).toThrow(ValidationError);
+    }
+  });
+
+  it("rejects an unknown metric and an out-of-range share", () => {
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({ metric: "cpu_temperature", observed: 1, threshold: 0 }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({
+          metric: "http_5xx_rate",
+          observed: 1,
+          threshold: 0,
+          top_source_share: 1.5,
+        }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+  });
+
+  it("accepts a dependency outage and rejects a connection string as backend", () => {
+    const base = {
+      schema_version: 1,
+      event_id: "gateway-dependency-1",
+      alert_type: "dependency_unavailable",
+      fingerprint: "gateway:operational_store",
+      status: "firing",
+      severity: "critical",
+      title: "Database disconnected",
+      occurred_at: "2026-07-20T00:00:00Z",
+      summary: "The operational store failed its health check.",
+      evidence_refs: [],
+    };
+    expect(
+      parseAlertEvent(
+        { ...base, context: { dependency: "operational_store", backend: "postgres" } },
+        { now: TEST_NOW },
+      ),
+    ).toMatchObject({
+      alert_type: "dependency_unavailable",
+      context: { dependency: "operational_store", backend: "postgres" },
+    });
+
+    // A DSN carries a host and credentials — untrustedString must refuse it.
+    expect(() =>
+      parseAlertEvent(
+        {
+          ...base,
+          context: {
+            dependency: "operational_store",
+            backend: "postgres://user:password=hunter2@10.0.0.5:5432/app",
+          },
+        },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+
+    expect(() =>
+      parseAlertEvent(
+        { ...base, context: { dependency: "redis" } },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+  });
+});

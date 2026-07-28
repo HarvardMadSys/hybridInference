@@ -3,7 +3,9 @@ export type AlertSeverity = "critical" | "error" | "warn" | "info";
 export type SupportedAlertType =
   | "provider_circuit_open"
   | "model_unavailable"
-  | "monitoring_cycle_failure";
+  | "monitoring_cycle_failure"
+  | "metric_threshold_breach"
+  | "dependency_unavailable";
 
 export type ProviderFailureReason =
   | "authentication"
@@ -86,10 +88,72 @@ export interface MonitoringCycleAlertEvent extends AlertEventBase {
   readonly context: MonitoringCycleContext;
 }
 
+/**
+ * Metrics the gateway can breach a threshold on. Grouped by *shape* rather
+ * than by alert name: eight distinct backend alerts share one "an observed
+ * value crossed its threshold over a window" structure, so they share one
+ * type and one renderer. A new gateway alert of this shape adds an enum
+ * member, not a new alert type.
+ */
+export type BreachedMetric =
+  | "auth_failure_count"
+  | "failed_request_rate"
+  | "http_5xx_rate"
+  | "latency_p95_ms"
+  | "prefix_cache_pending_evictions"
+  | "provider_hourly_spend"
+  | "tracked_task_failure_rate"
+  | "user_daily_cost";
+
+/** What the breach is scoped to. Never carries the identifier itself. */
+export type BreachScope = "gateway" | "provider" | "task" | "user";
+
+/**
+ * Deliberately numeric-only. The backend's current alerts embed source IPs,
+ * API key prefixes, user ids, and pre-formatted rate strings; the canonical
+ * validator rejects all of those, and the migration replaces them with
+ * counts. Plaintext values stay in the gateway's own logs and dashboard —
+ * the same reason raw upstream errors are excluded from the model and cycle
+ * contracts.
+ */
+export interface MetricThresholdContext {
+  readonly metric: BreachedMetric;
+  readonly observed: number;
+  readonly threshold: number;
+  readonly window_sec?: number;
+  readonly scope?: BreachScope;
+  /** Distinct sources (IPs, keys, principals) seen — a count, never the values. */
+  readonly distinct_sources?: number;
+  /** Share of the observation attributable to the largest single source, 0..1. */
+  readonly top_source_share?: number;
+  readonly sample_count?: number;
+}
+
+/** Gateway dependencies whose loss is alertable. */
+export type UnavailableDependency = "log_store" | "operational_store";
+
+export interface DependencyUnavailableContext {
+  readonly dependency: UnavailableDependency;
+  /** Backend implementation label (e.g. "postgres"); never a connection string. */
+  readonly backend?: string;
+}
+
+export interface MetricThresholdAlertEvent extends AlertEventBase {
+  readonly alert_type: "metric_threshold_breach";
+  readonly context: MetricThresholdContext;
+}
+
+export interface DependencyUnavailableAlertEvent extends AlertEventBase {
+  readonly alert_type: "dependency_unavailable";
+  readonly context: DependencyUnavailableContext;
+}
+
 export type AlertEvent =
   | ProviderCircuitAlertEvent
   | ModelUnavailableAlertEvent
-  | MonitoringCycleAlertEvent;
+  | MonitoringCycleAlertEvent
+  | MetricThresholdAlertEvent
+  | DependencyUnavailableAlertEvent;
 
 export type TrustedEnvironment = "staging" | "production";
 export type TrustedSource = "gateway" | "status-monitor";

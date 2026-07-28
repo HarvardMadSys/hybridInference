@@ -2,9 +2,14 @@ import type {
   AlertEvent,
   AlertSeverity,
   AlertStatus,
+  BreachedMetric,
+  BreachScope,
   CanonicalAlertEnvelope,
+  DependencyUnavailableContext,
+  MetricThresholdContext,
   ModelUnavailableContext,
   ModelUnavailabilityReason,
+  UnavailableDependency,
   MonitoringCycleContext,
   MonitoringCycleReason,
   ProviderCircuitContext,
@@ -76,6 +81,19 @@ const MODEL_UNAVAILABLE_CONTEXT_KEYS = new Set([
 ]);
 
 const MONITORING_CYCLE_CONTEXT_KEYS = new Set(["reason"]);
+
+const METRIC_THRESHOLD_CONTEXT_KEYS = new Set([
+  "metric",
+  "observed",
+  "threshold",
+  "window_sec",
+  "scope",
+  "distinct_sources",
+  "top_source_share",
+  "sample_count",
+]);
+
+const DEPENDENCY_CONTEXT_KEYS = new Set(["dependency", "backend"]);
 
 const UNSAFE_CONTROL_RE =
   /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
@@ -341,6 +359,89 @@ function parseMonitoringCycleContext(value: unknown): MonitoringCycleContext {
   return reason === undefined ? {} : { reason };
 }
 
+function parseMetricThresholdContext(value: unknown): MetricThresholdContext {
+  const input = record(value, "context");
+  strictKeys(input, METRIC_THRESHOLD_CONTEXT_KEYS, "context");
+
+  // Every field is numeric or a closed enum by design: this type replaces
+  // backend alerts that used to embed source IPs, key prefixes, user ids, and
+  // pre-formatted rate strings. There is deliberately no free-text field for
+  // them to move into.
+  const context: {
+    metric: BreachedMetric;
+    observed: number;
+    threshold: number;
+    window_sec?: number;
+    scope?: BreachScope;
+    distinct_sources?: number;
+    top_source_share?: number;
+    sample_count?: number;
+  } = {
+    metric: enumValue<BreachedMetric>(input.metric, "context.metric", [
+      "auth_failure_count",
+      "failed_request_rate",
+      "http_5xx_rate",
+      "latency_p95_ms",
+      "prefix_cache_pending_evictions",
+      "provider_hourly_spend",
+      "tracked_task_failure_rate",
+      "user_daily_cost",
+    ]),
+    observed: boundedNumber(input.observed, "context.observed", 0, 1e12),
+    threshold: boundedNumber(input.threshold, "context.threshold", 0, 1e12),
+  };
+  context.window_sec = optional(input, "window_sec", (item) =>
+    boundedInteger(item, "context.window_sec", 1, 31 * 24 * 60 * 60),
+  );
+  context.scope = optional(input, "scope", (item) =>
+    enumValue<BreachScope>(item, "context.scope", [
+      "gateway",
+      "provider",
+      "task",
+      "user",
+    ]),
+  );
+  context.distinct_sources = optional(input, "distinct_sources", (item) =>
+    boundedInteger(item, "context.distinct_sources", 0, 1_000_000_000),
+  );
+  context.top_source_share = optional(input, "top_source_share", (item) =>
+    boundedNumber(item, "context.top_source_share", 0, 1),
+  );
+  context.sample_count = optional(input, "sample_count", (item) =>
+    boundedInteger(item, "context.sample_count", 0, 1_000_000_000),
+  );
+
+  for (const key of Object.keys(context) as Array<keyof typeof context>) {
+    if (context[key] === undefined) delete context[key];
+  }
+  return context;
+}
+
+function parseDependencyUnavailableContext(
+  value: unknown,
+): DependencyUnavailableContext {
+  const input = record(value, "context");
+  strictKeys(input, DEPENDENCY_CONTEXT_KEYS, "context");
+
+  const context: {
+    dependency: UnavailableDependency;
+    backend?: string;
+  } = {
+    dependency: enumValue<UnavailableDependency>(
+      input.dependency,
+      "context.dependency",
+      ["log_store", "operational_store"],
+    ),
+  };
+  // An implementation label only ("postgres"), never a connection string —
+  // untrustedString additionally rejects hosts, credentials, and IPs.
+  context.backend = optional(input, "backend", (item) =>
+    untrustedString(item, "context.backend", 64),
+  );
+  if (context.backend === undefined) delete context.backend;
+  return context;
+}
+
 function validateCalendarTimestamp(match: RegExpMatchArray): void {
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -453,7 +554,9 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
   if (
     input.alert_type !== "provider_circuit_open" &&
     input.alert_type !== "model_unavailable" &&
-    input.alert_type !== "monitoring_cycle_failure"
+    input.alert_type !== "monitoring_cycle_failure" &&
+    input.alert_type !== "metric_threshold_breach" &&
+    input.alert_type !== "dependency_unavailable"
   ) {
     throw new ValidationError("alert_type is unsupported");
   }
@@ -518,6 +621,20 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
       ...base,
       alert_type: "monitoring_cycle_failure",
       context,
+    };
+  }
+  if (input.alert_type === "metric_threshold_breach") {
+    return {
+      ...base,
+      alert_type: "metric_threshold_breach",
+      context: parseMetricThresholdContext(input.context),
+    };
+  }
+  if (input.alert_type === "dependency_unavailable") {
+    return {
+      ...base,
+      alert_type: "dependency_unavailable",
+      context: parseDependencyUnavailableContext(input.context),
     };
   }
   return {

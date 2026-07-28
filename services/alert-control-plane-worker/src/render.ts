@@ -1,5 +1,7 @@
 import type {
   CanonicalAlertEnvelope,
+  DependencyUnavailableContext,
+  MetricThresholdContext,
   ModelUnavailableContext,
   MonitoringCycleContext,
   ProviderCircuitContext,
@@ -114,6 +116,51 @@ function monitoringCycleContextFields(
   return fields;
 }
 
+/** Human labels for the metric enum; the wire keeps the stable identifier. */
+const METRIC_LABELS: Readonly<Record<string, string>> = {
+  auth_failure_count: "Auth failures",
+  failed_request_rate: "Failed-request rate",
+  http_5xx_rate: "5xx rate",
+  latency_p95_ms: "p95 latency",
+  prefix_cache_pending_evictions: "Prefix-cache evictions",
+  provider_hourly_spend: "Hourly spend",
+  tracked_task_failure_rate: "Tracked-task failure rate",
+  user_daily_cost: "Daily cost",
+};
+
+function metricThresholdContextFields(
+  context: MetricThresholdContext,
+): readonly SlackTextObject[] {
+  const fields: SlackTextObject[] = [
+    field("Metric", METRIC_LABELS[context.metric] ?? context.metric),
+  ];
+  optionalField(fields, "Observed", context.observed);
+  optionalField(fields, "Threshold", context.threshold);
+  if (context.window_sec !== undefined) {
+    optionalField(fields, "Window", formatDuration(context.window_sec * 1_000));
+  }
+  optionalField(fields, "Scope", context.scope);
+  optionalField(fields, "Samples", context.sample_count);
+  // Counts, never the identifiers themselves — see MetricThresholdContext.
+  optionalField(fields, "Distinct sources", context.distinct_sources);
+  if (context.top_source_share !== undefined) {
+    optionalField(
+      fields,
+      "Top source share",
+      `${(context.top_source_share * 100).toFixed(1)}%`,
+    );
+  }
+  return fields.slice(0, 10);
+}
+
+function dependencyUnavailableContextFields(
+  context: DependencyUnavailableContext,
+): readonly SlackTextObject[] {
+  const fields: SlackTextObject[] = [field("Dependency", context.dependency)];
+  optionalField(fields, "Backend", context.backend);
+  return fields;
+}
+
 function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObject[] {
   switch (envelope.event.alert_type) {
     case "provider_circuit_open":
@@ -122,6 +169,10 @@ function contextFields(envelope: CanonicalAlertEnvelope): readonly SlackTextObje
       return modelUnavailableContextFields(envelope.event.context);
     case "monitoring_cycle_failure":
       return monitoringCycleContextFields(envelope.event.context);
+    case "metric_threshold_breach":
+      return metricThresholdContextFields(envelope.event.context);
+    case "dependency_unavailable":
+      return dependencyUnavailableContextFields(envelope.event.context);
   }
 }
 
