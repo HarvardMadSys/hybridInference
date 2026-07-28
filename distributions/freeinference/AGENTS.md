@@ -10,7 +10,8 @@ published to everyone who clones it.
 - **Production:** https://freeinference.org
 - **Staging:** https://staging.freeinference.org (deployed from `dev`)
 - **Public docs:** https://doc.freeinference.org/
-- **Internal docs:** internaldoc.freeinference.org (Harvard SEAS network only)
+- **Internal docs:** `internaldoc.freeinference.org` (Harvard SEAS network only —
+  deliberately not a link, since it resolves for nobody outside)
 
 ## Verifying a change
 

@@ -65,7 +65,8 @@ uv run pytest -vv -m dbtest
 Verify the bug against a running deployment. If you are working on one, its staging host and test account are in its overlay guide (`distributions/<name>/AGENTS.md`):
 
 ```bash
-curl -s https://<your-staging-host>/v1/chat/completions \
+# STAGING_HOST is your deployment's host; see distributions/<name>/AGENTS.md.
+curl -s "https://$STAGING_HOST/v1/chat/completions" \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
   -d '{"model":"<model>","messages":[{"role":"user","content":"hello"}]}'
