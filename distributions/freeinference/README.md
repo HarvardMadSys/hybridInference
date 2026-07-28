@@ -48,88 +48,33 @@ alerts falls back to built-in thresholds, routing loses the endpoint map and
 starts anyway, models leaves the catalogue empty. `tests/unit/deploy/test_compose_identity.py`
 pins all three for that reason.
 
-The dark-mode procedure below predates that move and its precondition no
-longer holds: `distribution.yaml` resolves all three paths inside this overlay
-now, so there is no legacy copy to compare against. Rewrite it before running
-it again.
+What remains undecided is the cutover. `resolve_config_path` applies
+`env > manifest > legacy default`, and **the env branch wins even in active
+mode** — so setting `DISTRIBUTION_CONFIG_MODE=active` while `deploy/backend.env`
+still exports MODELS/ROUTING/ALERTS_CONFIG_PATH changes nothing at all. The
+manifest becomes the source of truth only when those three variables are
+removed.
 
-`distribution.yaml` is a real, loadable manifest, and its `paths:` now resolve
-inside this directory. It is still not what production reads from: the env
-vars above are. Applying the manifest needs
-`DISTRIBUTION_CONFIG_MODE=active`, and the dark-mode rehearsal below has to be
-rewritten first, since it compares against legacy copies that no longer exist.
-For reference, that rehearsal was configured from the repo-root `.env`
-(Compose passes it via `env_file`; the backend bind-mounts `distributions/`
-read-only, so the overlay is never baked into the neutral image):
-
-```bash
-DISTRIBUTION_CONFIG_PATH=distributions/freeinference/distribution.yaml
-DISTRIBUTION_CONFIG_MODE=dark   # loads + validates + logs; changes nothing
-```
-
-While the legacy copies existed, dark mode had to log every path comparison as
-`identical`. That check is what the move retired. Because the loader fails open
-(a missing mount starts the service without any comparison), the smoke script
-was the way to verify rather than trusting a clean boot:
+`smoke_dark_load.py` answers whether that is safe, against whatever environment
+it inherits — it supplies nothing itself, so an unconfigured container fails
+rather than passing on an injected default. Exit codes: 0 the cutover is a
+no-op, 1 it would change what is served, 2 the question could not be answered.
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml exec backend \
     python distributions/freeinference/smoke_dark_load.py
 ```
 
-It validates only the *inherited* environment (it never supplies its own
-defaults) and exits non-zero if the overlay is unconfigured, the path points
-elsewhere, the mode is not explicitly `dark`, the manifest is not visible
-from the container, or any comparison is not `identical`.
+Measured on staging on 2026-07-29, loading the manifest inside the running
+container: all three resolve to exactly the paths the environment supplies,
+because relative `paths:` anchor to the manifest's own directory rather than
+the process working directory. **The cutover is a no-op today.**
 
-Note on CI: local `make test` collects `distributions/*/tests/` via pytest
-`testpaths`, but the PR CI sharder currently only walks `tests/` — the
-neutral manifest gate that runs in CI lives at
-`tests/unit/config/test_distribution_manifests_discovery.py`; it asserts that
-all three paths resolve inside this overlay and that no copy was left behind at
-the legacy location.
-The tests here remain local/deploy verification until the future CI/CD stage
-wires the distribution suite in.
-
-## What `config/models.yaml` here does not say
-
-The admin console can change routing weights, disable a provider and gate a
-model by role at runtime. Those changes live only in Postgres, so the registry
-in this directory is not by itself a description of what production serves.
-`ops/db/export_runtime_overrides.py` produces the inventory; run it on the host.
-
-The C0 export on 2026-07-28 found 75 overrides. Role gating has been folded in
-— `required_role` here now equals what production serves, for all fourteen
-models — and the database still wins at runtime, so nothing about production
-changed. What is left is deliberate, and it is worth knowing before deploying
-this registry anywhere else.
-
-**Four providers are disabled in production and still declared here.**
-`chutes`, `featherless`, `ollama` and `openrouter` were turned off between
-2026-07-06 and 2026-07-21. The disable is a database row; the routes stay in
-this file because the intent is temporary. So a deployment that starts from
-this registry with an empty database gets routes production has switched off:
-
-```
-minimax-fast        production: no usable route   fresh: chutes, featherless, openrouter
-deepseek-v4-flash   production: sglang, staging   fresh: + deepseek, ollama
-deepseek-v4-pro     production: deepseek, staging fresh: + ollama
-glm-5.1 / glm-5.2   production: zai, staging      fresh: + ollama, chutes
-glm-5-turbo         production: zai, staging      fresh: + chutes
-minimax-m2.5        production: minimax, staging  fresh: + ollama, chutes
-minimax-m3          production: minimax, staging  fresh: + ollama
-kimi-k2.7-code      production: kimi_coding, ...  fresh: + ollama, chutes
-```
-
-`minimax-fast` is the one to look at first: every route it declares belongs to
-a disabled provider, so production serves it from nowhere and does not list it
-in `/v1/models`. It is in the registry and it is not a model this deployment
-offers.
-
-**Eight database rows point at models this registry no longer declares** —
-`glm-4.7`, `glm-5`, `gpt-5.3-spark`, `gpt-oss-20b` and `minimax-m2.7` still
-carry weight or visibility rows. They are inert while the models are absent.
-Deleting them is a write against the production database and has not been done.
+It is still a decision rather than a formality, because it trades one failure
+mode for another. Paths from the environment are always present; paths from a
+manifest require the mount, and the loader fails open — a container that lost
+`distributions/` would start on the built-in defaults instead of refusing. That
+is the trade the design asks for, and it wants a person to make it.
 
 ## Target layout (Phase 2 in progress, one category per PR)
 
