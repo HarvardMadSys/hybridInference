@@ -73,3 +73,10 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # Next.js prerenders every static route here, so this fails on things
+      # the three steps above cannot see. Without it a pull request that
+      # type-checks, lints and unit-tests cleanly can still merge a build the
+      # repository cannot ship.
+      - name: Build
+        run: npm run build
