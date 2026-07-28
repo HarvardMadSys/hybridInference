@@ -135,13 +135,14 @@ def _detect_environment(base_url: str, *, explicit: bool) -> str:
         return "local"
     if "staging" in host:
         return "staging"
-    if not explicit:
-        # Built-in default URL with no override — almost certainly a local/dev
-        # process, not production. Deployments set BASE_URL or DEPLOYMENT_ENV.
+    if not explicit or not host:
+        # No configured base URL — almost certainly a local/dev process, not
+        # production. Deployments set BASE_URL or DEPLOYMENT_ENV.
         return "local"
-    if host.endswith("freeinference.org"):
-        return "production"
-    return "unknown"
+    # An explicitly configured public host is that operator's production. This
+    # used to match one domain by name, which labelled every other deployment
+    # "unknown" and put a distribution's hostname in upstream alerting logic.
+    return "production"
 
 
 def server_info() -> dict[str, str]:

@@ -212,9 +212,12 @@ def test_explicit_base_url_is_rendered(monkeypatch):
         ({}, "https://freeinference.org", True, "production"),
         ({}, "http://localhost:8000", True, "local"),
         ({}, "http://127.0.0.1:8080/staging", True, "local"),
-        ({}, "https://example.com", True, "unknown"),
-        # Built-in default URL with no explicit config => treat as local, not prod.
+        # Any explicitly configured public host is that operator's production,
+        # not just one known domain.
+        ({}, "https://example.com", True, "production"),
+        # No configured base URL => treat as local, not prod.
         ({}, "https://freeinference.org", False, "local"),
+        ({}, "", True, "local"),
         # Malformed URL (unclosed IPv6 literal) must not raise.
         ({}, "http://[::1", True, "unknown"),
     ],
