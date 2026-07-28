@@ -54,12 +54,20 @@ services:
       # Same shape, sharper edge: without this a deployment loses its whole
       # endpoint map and every health-check setting, and the gateway starts
       # anyway — verified by booting with the file absent. Pinned by a test.
-      ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-config/examples/routing.minimal.yaml}
+      ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-}
       # The last of the three, and the only one that fails loudly: without a
       # registry there are no models, /v1/models is empty, and every request
       # is a 404. A deployment names its own; a clone starts from
       # config/examples/.
-      MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-config/examples/models.openrouter.yaml}
+      MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-}
+      # Which distribution manifest supplies the three paths above, and
+      # whether it is applied or only compared. Neutral upstream sets neither:
+      # a clone has no overlay, and an unset path leaves the loader inert.
+      # A deployment names its own in distributions/*/deploy/backend.env —
+      # these lines are what carry it from that file into the container, which
+      # the --env-file layer alone does not do.
+      DISTRIBUTION_CONFIG_PATH: ${DISTRIBUTION_CONFIG_PATH-}
+      DISTRIBUTION_CONFIG_MODE: ${DISTRIBUTION_CONFIG_MODE-}
       # Which environment alerts are labelled with. Left unset upstream so
       # the existing inference from the base URL still applies; a
       # deployment states it outright, because inferring it makes the
