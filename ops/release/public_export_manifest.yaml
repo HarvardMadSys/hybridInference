@@ -36,11 +36,39 @@ exclude:
 
 # Flagged by the public-surface audit (2026-07-28). Each entry cites what was
 # found, so a future reader can re-judge rather than inherit a bare rule.
-  - path: ops/
+  # ops/ is not uniformly this deployment's, and excluding it wholesale was a
+  # mistake: it took `create_admin.py` with it, and there is no other documented
+  # way to make the first admin account, so the exported gateway could not be
+  # opened. Judged per directory instead, by how much of each names this site's
+  # machines.
+  - path: ops/release/
     reason: >-
-      This deployment's operations, not the project's — deploy scripts pinned to
-      its hosts, database tooling, Cloudflare and on-call automation. The audit
-      found internal hostnames and machine names throughout.
+      The export tooling belongs to whoever runs the export, not to the result.
+      It also names this deployment's hosts in its own reasons — the audit
+      caught that, reading this file, which is the tool working on itself.
+
+  - path: ops/deploy/
+    reason: Deploy scripts pinned to this deployment's hosts and directory layout.
+
+  - path: ops/h200_idle_proxy/
+    reason: One machine's idle proxy — every file in it names that machine.
+
+  - path: ops/spark_idle_proxy/
+    reason: As above, for the DGX Spark box.
+
+  - path: ops/local_deployment_proxy/
+    reason: >-
+      The reverse-tunnel proxy for this deployment's local GPUs, named after its
+      hosts throughout.
+
+  - path: ops/setup/setup_cloudflared.sh
+    reason: This deployment's ingress choice, with its tunnel topology.
+
+  - path: ops/setup/setup_anthropic.sh
+    reason: This deployment's provider setup.
+
+  - path: ops/setup/setup_claude_code.sh
+    reason: This deployment's agent tooling setup.
 
   - path: services/
     reason: >-
