@@ -1,7 +1,7 @@
 # Unified Alert Control Plane — 收口与迁移 Roadmap
 
-> 状态：**v3 — P0 修复已提 PR（#1042 + closeout PR），待 PM 确认后转为 GitHub Roadmap Issue**
-> 撰写日期：2026-07-25（v3：2026-07-27 更新执行状态与产品分层）
+> 状态：**v4 — status-monitor 全部三类告警已迁移并真实验证通过（2026-07-27）**
+> 撰写日期：2026-07-25（v4：2026-07-27 收口 + storm/cycle 迁移完成后更新）
 > 评审基线：`dev@ebe6e813`（含 #1032 / #1033 / #1034）
 > 关联设计文档：
 > - [统一告警控制平面目标设计](../specs/2026-07-20-unified-alert-control-plane-target-design.zh.md)
@@ -11,7 +11,7 @@
 
 ## 0. 一句话现状
 
-**新架构已完成并成功迁移了第一个真实告警类型；不是所有 Slack 告警都迁完。**
+**status-monitor 的三类告警（单模型 / storm / cycle）已全部迁移到新链路并经真实流量验证；后端 11 个 `alert_slack` 告警与生产环境仍未迁移。**
 
 产品目标（终态体验）：**一次故障 = 一个 Slack thread** —— 帖子原地更新持续时长与次数、恢复挂在同一 thread、自带部署出处、渠道可插拔。
 
@@ -21,7 +21,7 @@
 
 | 缺什么 | 现在的后果 |
 |---|---|
-| storm / cycle / 后端 11 个告警未迁移 | 同一个频道两种体验：小故障是 incident thread，大故障和后端告警还是裸文本 |
+| 后端 11 个告警未迁移 | 同一频道两种体验：status-monitor 告警是 incident thread，后端告警仍是裸文本 |
 | 生产未上线 | 新体验只在 staging，线上全是老样子 |
 | Codex 分析未移植 | thread 里没有根因回复 |
 | ack / 静默 / 转派没做 | on-call 只能看不能操作（当前 13 个 PR 完全未覆盖，属新需求） |
@@ -36,17 +36,17 @@
 |---|---|
 | Control Plane 状态机、去重、线程、重试 | ✅ 已完成 |
 | SlackSink | ✅ 已完成 |
-| staging 单模型上下线告警 | ✅ 已迁移（**仅当同时故障 ≤ `ALERT_STORM_THRESHOLD`=5**） |
-| **P0 收口修复** | 🟡 已提 PR：#1042（3 项 P0 + Codex 两条）与 closeout PR（P1-B/P2-G/health/README），待合并 |
-| status-monitor storm 告警 | 🟡 D1 已决（b，2026-07-27）：per-model 迁移已提 draft PR，待步骤 2 真实验证后合并 |
-| status-monitor cycle 告警 | 🟡 代码已完成（`monitoring_cycle_failure` 类型 + producer 双侧，draft PR）：`ALERT_CYCLE_OWNER` 默认 legacy，**须先手动重部署 control plane 再翻 flag**（status-monitor 自动部署，control plane 手动部署，共用 flag 会打开"发出即被拒"的窗口） |
+| staging 单模型上下线告警 | ✅ 已迁移（任意批量大小 —— storm 折叠已移除） |
+| **P0 收口修复** | ✅ 全部合并（#1042 三项 + Codex 两条；#1049 P1-B/P2-G/health/README + cycle 无声修复） |
+| status-monitor storm 告警 | ✅ 已迁移（#1050，D1=b 每模型独立 incident；legacy 汇总仅保留于 `ALERT_DEFAULT_OWNER=legacy` 回滚模式） |
+| status-monitor cycle 告警 | ✅ 已迁移（#1059 新增 `monitoring_cycle_failure` 契约类型 + producer 双侧；#1065 翻 `ALERT_CYCLE_OWNER=control-plane`，lifecycle 部署先行完成） |
 | 后端全部 `alert_slack` 告警（11 个调用点） | ❌ 未迁移，但已有 dormant Python 契约 |
 | 全局 snooze（管理员暂停告警） | ⚠️ 新链路无对应能力 —— 迁移即功能回归 |
 | 旧 Codex 自动分析回复 | ❌ 新链路未实现（`dispatch_analysis` 返回 `analysis_not_enabled`） |
 | production 上线 | ❌ 未开始（代码中**无任何可发 production 的路径**） |
 | 删除旧 relay / webhook / secrets | ❌ 未完成 |
 | 企业微信等其他 Sink | 抽象已就位，未实现 |
-| 真实端到端验证记录 | ❌ 无 —— C3c 签收的硬前置 |
+| 真实端到端验证记录 | ✅ `docs/reviews/2026-07-27-c3c-staging-validation.md`（incident_4a6fc4e5：12:41Z firing → 14:01Z 同 thread 恢复，threshold/去重/身份/线程完整性全部实测） |
 
 ### 为什么不能一次性全切
 
@@ -82,8 +82,8 @@
 | # | 步骤 | 状态 / 前置 | 粗略工作量 |
 |---|---|---|---|
 | 1 | 暂停 production rollout | ✅ 已执行 | — |
-| 2 | 🔴 收口 P0 + 补真实 staging 验证 | 🟡 代码已提 PR（见 §2.1）；**真实 staging 验证仍缺** | 1–2 人周 |
-| 3 | staging 迁移 storm / cycle | 🟡 D1 已决 = b；storm draft PR 已提（合并 gate：步骤 2 真实验证）；cycle 仍需新类型 | storm 已完成；cycle 1–2 人周 |
+| 2 | 收口 P0 + 补真实 staging 验证 | ✅ **完成 2026-07-27**（#1042/#1049 + 验证档案） | 实际约 1 天 |
+| 3 | staging 迁移 storm / cycle | ✅ **完成 2026-07-27**（#1050 storm、#1059+#1065 cycle） | 实际约 1 天 |
 | 4 | staging 迁移后端 `alert_slack`（单点适配） | 前置：步骤 2 | 2–3 人周 |
 | 5 | 补齐 snooze 等能力对齐 | 前置：步骤 4 | 0.5–1 人周 |
 | 6 | 决定并实现新链路 Codex 分析 | 前置：D6 决策 | 2–4 人周 |
@@ -175,11 +175,12 @@
 
 | 路径 | 源码 | 状态 |
 |---|---|---|
-| 单模型 `model_unavailable` | `alerts.ts` `deliverModelAlert` | ✅ 已迁移（≤ storm 阈值） |
-| storm 汇总 | `alerts.ts` `modelsDownEvent` / `modelsRecoveredEvent` | ❌ legacy |
-| cycle 网关级 | `alerts.ts` `runCycleAlert` | ❌ legacy |
+| 单模型 `model_unavailable` | `alerts.ts` `deliverModelAlert` | ✅ 已迁移（任意批量） |
+| storm（>阈值批量故障） | `alerts.ts` — 每模型独立 incident | ✅ 已迁移（D1=b） |
+| cycle 网关级 | `alerts.ts` `runCycleAlert` | ✅ 已迁移（`monitoring_cycle_failure`） |
 
-投递出口：`postCodexAlert`（relay）→ `postSlack`（webhook fallback）
+legacy 投递出口 `postCodexAlert` → `postSlack` 仅在 `ALERT_DEFAULT_OWNER` /
+`ALERT_CYCLE_OWNER` 回滚为 `legacy` 时使用，以及供切换前已开的 incident 排空。
 
 ### A.2 后端 `alert_slack` —— 单一收敛点，11 个调用点
 
