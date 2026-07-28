@@ -169,6 +169,15 @@ overlay:
       deploy jobs, no self-hosted labels, no secrets — a fork can run it, which
       is the whole point.
 
+  - path: deploy/systemd/hybridinference.service
+    source: ops/release/export_overlay/deploy-systemd-hybridinference.service
+    reason: >-
+      Excluding deploy/systemd/ wholesale left an operator who does not want
+      Docker with no systemd example at all — the same gap as taking
+      create_admin.py out with ops/. This site's own unit cannot travel (it
+      names its user and its install path), so the export supplies a template
+      with those two as placeholders.
+
   - path: config/models.yaml
     source: config/examples/models.openrouter.yaml
     requires: "#1067"   # source lands with that PR; delete this line once it has
