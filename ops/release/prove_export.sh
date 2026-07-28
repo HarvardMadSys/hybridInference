@@ -53,7 +53,7 @@ probe "a planted cluster path" \
 probe "a planted internal hostname" \
     bash -c 'printf "ssh spark2 uptime\n" >> README.md'
 probe "a secret hidden in an .svg" \
-    bash -c 'mkdir -p apps/frontend/public && printf "<svg><!-- hyi-%s --></svg>" "$(printf D%.0s $(seq 24))" > apps/frontend/public/probe.svg && git add -A'
+    bash -c 'd=apps/frontend/public; mkdir -p "$d"; printf "<svg><!-- hyi-%s --></svg>" "$(printf D%.0s $(seq 24))" > "$d/probe.svg"; git add -A'
 probe "a missing overlay source" \
     bash -c 'rm -f config/examples/models.openrouter.yaml'
 
