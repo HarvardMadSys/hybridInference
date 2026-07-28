@@ -33,7 +33,10 @@ vi.mock('@/config/branding', () => ({
       },
       {
         name: 'Cameron Placeholder',
-        affiliations: ['Research Intern at Example University', 'Undergraduate at Example Institute'],
+        affiliations: [
+          'Research Intern at Example University',
+          'Undergraduate at Example Institute',
+        ],
       },
     ],
   },
@@ -89,9 +92,7 @@ describe('TeamPage', () => {
     expect(
       within(internCard).getByText(/research intern at example university/i),
     ).toBeInTheDocument();
-    expect(
-      within(internCard).getByText(/undergraduate at example institute/i),
-    ).toBeInTheDocument();
+    expect(within(internCard).getByText(/undergraduate at example institute/i)).toBeInTheDocument();
     expect(
       within(internCard).getByLabelText(/placeholder avatar for cameron placeholder/i),
     ).toBeInTheDocument();
