@@ -60,6 +60,7 @@ class ScenarioConfig:
     tools_fixture: str | None = None
     forced_tool_name: str | None = None
     user_prompt: str | None = None
+    agent_script: str | None = None
 
 
 @dataclass(frozen=True)
