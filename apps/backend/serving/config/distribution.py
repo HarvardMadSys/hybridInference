@@ -44,9 +44,18 @@ logger = get_logger(__name__)
 
 ConfigKind = Literal["models", "routing", "alerts"]
 
+# The bottom of the precedence, and what a checkout with no distribution and no
+# environment gets. It used to name config/*.yaml, where these files lived until
+# they moved into the overlay — after which the fallback named nothing and a
+# clone served an empty catalogue. Pointing it at the reference registries makes
+# the neutral case work *without* an environment variable, which matters: a
+# variable would win over the manifest and make a deployment's manifest
+# decorative. Alerts keeps a path nobody ships on purpose — there is no example
+# to name, and the loader's answer to a missing alerts file is the built-in
+# thresholds, which is the right neutral behaviour.
 _LEGACY_DEFAULTS: dict[str, str] = {
-    "models": "config/models.yaml",
-    "routing": "config/routing.yaml",
+    "models": "config/examples/models.openrouter.yaml",
+    "routing": "config/examples/routing.minimal.yaml",
     "alerts": "config/alerts.yaml",
 }
 

@@ -154,7 +154,7 @@ def test_absolute_nul_byte_path_falls_back_outside_active_mode(monkeypatch, tmp_
     assert get_distribution_config() is None
     resolved = resolve_config_path("models")
     assert resolved.source == "default"
-    assert resolved.path == Path("config/models.yaml")
+    assert resolved.path == Path("config/examples/models.openrouter.yaml")
 
 
 def test_a_manifest_that_will_not_parse_is_fatal_in_active_mode(monkeypatch, tmp_path):
@@ -176,7 +176,7 @@ def test_a_manifest_that_will_not_parse_is_fatal_in_active_mode(monkeypatch, tmp
 def test_unset_manifest_means_legacy_resolution():
     resolved = resolve_config_path("models")
     assert resolved.source == "default"
-    assert resolved.path == Path("config/models.yaml")
+    assert resolved.path == Path("config/examples/models.openrouter.yaml")
 
 
 def test_manifest_path_used_when_env_unset(monkeypatch, tmp_path):
@@ -233,7 +233,7 @@ def test_dark_mode_keeps_legacy_paths(monkeypatch, tmp_path):
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "dark")
     resolved = resolve_config_path("models")
     assert resolved.source == "default"
-    assert resolved.path == Path("config/models.yaml")
+    assert resolved.path == Path("config/examples/models.openrouter.yaml")
     # The manifest itself still loads and validates in dark mode.
     assert get_distribution_config() is not None
 

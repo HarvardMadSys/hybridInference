@@ -82,13 +82,13 @@ def _overlay_values() -> dict[str, str]:
         ("NEXT_PUBLIC_STATCOUNTER_PROJECT_ID", "13224568"),
         ("NEXT_PUBLIC_STORAGE_KEY_PREFIX", "freeinference"),
         ("NEXT_PUBLIC_TEAM_IMAGE_HOST", "junchengyang.com"),
-        # Losing this one is silent: the loader falls back to built-in
-        # thresholds rather than erroring, so production would keep
-        # alerting, on different numbers, with nothing to notice.
-        ("ALERTS_CONFIG_PATH", "/app/distributions/freeinference/config/alerts.yaml"),
-        # Sharper edge again: without it the deployment loses its entire
-        # endpoint map and health-check settings, and still starts.
-        ("ROUTING_CONFIG_PATH", "/app/distributions/freeinference/config/routing.yaml"),
+        # The three config paths are no longer stated here; the manifest
+        # names them. These two lines are what carry it into the container —
+        # the --env-file layer interpolates, it does not export, so losing
+        # either leaves the loader inert and the deployment on upstream's
+        # neutral defaults.
+        ("DISTRIBUTION_CONFIG_PATH", "/app/distributions/freeinference/distribution.yaml"),
+        ("DISTRIBUTION_CONFIG_MODE", "active"),
     ],
 )
 def test_overlay_supplies_what_the_default_gave_up(var: str, expected: str) -> None:
@@ -191,3 +191,45 @@ def test_deploy_script_feeds_the_overlay_before_the_server_env(script: Path) -> 
     assert overlay_at < server_env_at, (
         "the server's .env must come last so per-host overrides still win"
     )
+
+
+def test_this_deployment_resolves_to_its_own_registry_not_the_reference_one() -> None:
+    """The failure this file exists to prevent, stated as the thing itself.
+
+    The overlay stopped naming MODELS/ROUTING/ALERTS_CONFIG_PATH so the
+    manifest could win — `resolve_config_path` returns on the env branch before
+    reading it, so leaving them would have made active mode do nothing. But an
+    upstream *default* is an env value too, and while it pointed at
+    config/examples/ this deployment would have quietly resolved to the two
+    reference models instead of its own fourteen. Both halves have to hold, so
+    both are asserted here rather than inferred from the other file.
+    """
+    import os
+
+    from serving.config import distribution
+
+    root = OVERLAY.parent
+    manifest = root / "distribution.yaml"
+    previous = {
+        k: os.environ.get(k) for k in ("DISTRIBUTION_CONFIG_PATH", "DISTRIBUTION_CONFIG_MODE")
+    }
+    os.environ["DISTRIBUTION_CONFIG_PATH"] = str(manifest)
+    os.environ["DISTRIBUTION_CONFIG_MODE"] = "active"
+    try:
+        distribution.get_settings.cache_clear()
+        distribution.get_distribution_config.cache_clear()
+        for kind in ("models", "routing", "alerts"):
+            resolved = distribution.resolve_config_path(kind)
+            assert resolved.source == "distribution", (
+                f"{kind} came from {resolved.source}, not the manifest — "
+                "an env value outranks it, including an upstream default"
+            )
+            assert resolved.path == (root / "config" / f"{kind}.yaml").resolve()
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        distribution.get_settings.cache_clear()
+        distribution.get_distribution_config.cache_clear()
