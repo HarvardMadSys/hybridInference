@@ -157,7 +157,7 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 #
 #   make up                          # discovers the overlay, and says so
 #   make up DISTRIBUTION=none        # your own gateway, named after nobody
-#   make up DISTRIBUTION=freeinference
+#   make up DISTRIBUTION=<name>       # pick one when several are present
 # distributions/<name>/deploy/<file>.env -> <name>, deduplicated.
 _DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
 ifeq ($(words $(_DISTRIBUTION_DIRS)),1)

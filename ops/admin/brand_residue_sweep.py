@@ -57,7 +57,11 @@ ALLOWLIST: dict[str, str] = {
     ".gitleaks.toml": "site-specific scan allowances — neutral wave",
     "LICENSE": "MIT, (c) Harvard SEAS — the copyright holder is required attribution, not residue",
     "benchmark/": "paper artifacts — step-2 per ownership inventory",
-    "config/": "production config truth — moves to the overlay in the config-migration PR",
+    "Makefile": (
+        "one pointer to docs/developer/freeinference.md — that doc is itself "
+        "allowlisted and moves in step 2; the reference goes with it, and the "
+        "dangling-path guard fails the pull request that forgets"
+    ),
     "docs/openrouter.md": "developer note — neutral wave",
     "uv.lock": "RouteWise git dep URL (public repo; org name matches markers) — fine to ship",
 }
