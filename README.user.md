@@ -83,9 +83,9 @@ Continue, Aider and other OpenAI-compatible clients.
 The gateway is configured primarily through environment variables and YAML files.
 
 - `.env`: secrets, database settings, provider API keys, auth settings, and runtime options.
-- `config/models.yaml`: model registry and endpoint definitions.
-- `config/routing.yaml`: local/remote split, routing strategy, and health-check settings.
-- `config/alerts.yaml`: alert rules.
+- `distributions/<name>/config/models.yaml`: model registry and endpoint definitions. Upstream ships none; `config/examples/` has one to start from.
+- `distributions/<name>/config/routing.yaml`: local/remote split, routing strategy, health checks. Upstream ships none; the gateway starts without one.
+- `distributions/<name>/config/alerts.yaml`: alert rules. Upstream ships none; without one the built-in thresholds apply.
 - `config/examples/`: reference registries you can run as-is.
 
 YAML configuration supports environment variable interpolation with `${VAR}` and `${VAR:-default}` syntax.
@@ -103,7 +103,7 @@ For model setup, see [docs/developer/adding-models.md](docs/developer/adding-mod
 ## Troubleshooting
 
 - **API key rejected:** confirm the key is active in the gateway's dashboard and sent as `Authorization: Bearer <key>`.
-- **Model not found:** call `GET /v1/models` on the gateway, or check your own `config/models.yaml`.
+- **Model not found:** call `GET /v1/models` on the gateway, or check your own registry.
 - **Database errors on startup:** verify the `.env` database values and start the database service before the backend. To run without a database at all, set `DB_ENABLED=false` — you lose accounts, keys and history.
 - **Local GPU endpoint unreachable:** verify the model server is running and that Docker networking points to the correct host.
 
