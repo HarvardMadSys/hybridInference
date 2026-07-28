@@ -35,13 +35,28 @@ def anthropic_request_to_openai(
     messages: list[dict[str, Any]] = []
 
     # System prompt -> system message prepended.
-    system = body.get("system")
-    system_text = _flatten_system(system)
-    if system_text:
-        messages.append({"role": "system", "content": system_text})
+    system_parts: list[str] = []
+    if system_text := _flatten_system(body.get("system")):
+        system_parts.append(system_text)
 
+    conversation: list[dict[str, Any]] = []
     for msg in body.get("messages", []):
-        messages.extend(_translate_message(msg))
+        if msg.get("role") == "system":
+            # Clients do put `role: "system"` inside `messages`, even though
+            # the Anthropic surface reserves a top-level field for it — Claude
+            # Code 2.1.220 sends its agent-type listing that way. Passing it
+            # through in place puts a system message after a user message, and
+            # strict upstreams reject the whole request ("System message must
+            # be at the beginning"), so every turn fails rather than degrading.
+            # Hoisting keeps the instruction and the ordering rule both intact.
+            if hoisted := _flatten_system(msg.get("content")):
+                system_parts.append(hoisted)
+            continue
+        conversation.extend(_translate_message(msg))
+
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+    messages.extend(conversation)
 
     params = _translate_params(body)
     return messages, params
