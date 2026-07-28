@@ -25,8 +25,11 @@ say "Export: default pytest"
 (cd "$OUT" && PYTHONPATH=apps/backend .venv/bin/python -m pytest -q \
     -m "not external and not dbtest" -p no:randomly) || fail "pytest"
 
-say "Export: npm ci / lint / test / build"
-(cd "$OUT/apps/frontend" && npm ci --silent && npm run lint && npm test && npm run build) \
+say "Export: npm ci / lint / format / test / build"
+# format:check is a separate gate from lint — prettier, not eslint — and a
+# branch passed lint, tsc and the whole vitest suite while failing it.
+(cd "$OUT/apps/frontend" && npm ci --silent && npm run lint && npm run format:check \
+    && npm test && npm run build) \
     || fail "frontend"
 
 # ── The audit has to fail on each of these ─────────────────────────────
