@@ -16,7 +16,6 @@ from serving.observability.alerts import (
     reset_dedupe_state,
     reset_transition_state,
     server_info,
-    set_stale_after,
     sweep_stale_breaches,
 )
 
@@ -501,7 +500,6 @@ class TestAFailedSweepRetriesPromptly:
         monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
         reset_transition_state()
         reset_dedupe_state()
-        set_stale_after(3_600.0)
         clock = [1_000.0]
         monkeypatch.setattr("serving.observability.alerts.time.time", lambda: clock[0])
 
@@ -516,6 +514,7 @@ class TestAFailedSweepRetriesPromptly:
                 title="Failed-request rate exceeded",
                 context=dict,
                 cooldown_sec=0,
+                stale_after=3_600.0,
                 now=clock[0],
             )
             clock[0] += 3_600.0
@@ -527,3 +526,54 @@ class TestAFailedSweepRetriesPromptly:
             await sweep_stale_breaches()
 
         assert mock_post.await_count == 3
+
+
+class TestTheResolutionWaitSpansBothSinks:
+    async def test_a_timeout_does_not_end_the_wait_after_one_attempt(self, monkeypatch):
+        """A firing send that tries the relay then the webhook takes both timeouts.
+
+        Giving up on the first would drop exactly the resolution this wait
+        exists to save.
+        """
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        monkeypatch.setattr("serving.observability.alerts._RESOLUTION_WAIT_SEC", 0.01)
+        reset_transition_state()
+        reset_dedupe_state()
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_post(_url, message):
+            if "Recovered" not in message:
+                started.set()
+                # Outlives one wait window but not the attempt bound.
+                await asyncio.wait_for(release.wait(), timeout=1.0)
+            return True
+
+        with patch("serving.observability.alerts._post_to_slack", new=slow_post):
+            firing = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=True,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await started.wait()
+            recovery = asyncio.ensure_future(
+                alert_on_transition(
+                    key="circuit_open:zhipu",
+                    breached=False,
+                    severity=AlertSeverity.ERROR,
+                    title="Provider circuit opened",
+                    context=dict,
+                    cooldown_sec=0,
+                    kind="state",
+                )
+            )
+            await asyncio.sleep(0.015)
+            release.set()
+            assert await firing is True
+            assert await recovery is True

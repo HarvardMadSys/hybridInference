@@ -21,6 +21,11 @@ from serving.observability.alerts import (
 )
 from serving.utils.context import MODEL_NOT_FOUND
 
+#: A breach is only genuinely stale once its rule's window can no longer hold a
+#: breaching sample. One extra window of slack, so an evaluation that lands late
+#: does not race the sweep.
+_STALE_WINDOW_FACTOR = 2
+
 if TYPE_CHECKING:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -170,6 +175,9 @@ class FailedRequestRateRule:
             title="Failed-request rate exceeded",
             context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
         )
 
@@ -227,6 +235,9 @@ class FivexxRateRule:
             title="5xx rate exceeded",
             context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
         )
 
@@ -284,6 +295,9 @@ class P95LatencyRule:
             title=f"p95 latency exceeded for provider {provider}",
             context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
         )
 
@@ -338,6 +352,9 @@ class AuthFailureSpikeRule:
             title="Auth failure spike",
             context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
         )
 
@@ -404,6 +421,9 @@ class PendingPrefixCacheLeakRule:
             title="RouteWise pending prefix-cache entries leaking",
             context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
         )
 
@@ -456,6 +476,9 @@ class TrackedTaskFailureRateRule:
             title=f"Tracked-task failure rate exceeded for {task_name}",
             context=breach_context,
             cooldown_sec=self._cfg.cooldown_sec,
+            # Its own window, not the longest rule's: a 60-second rule
+            # whose traffic stops should close on its own timescale.
+            stale_after=self._cfg.window_sec * _STALE_WINDOW_FACTOR,
             now=now,
         )
 
@@ -498,6 +521,7 @@ class UserCostOverrunJob:
                     "threshold": f"${self._cfg.thresholds_per_role.get(role, 0):.2f}",
                 },
                 cooldown_sec=self._cfg.cooldown_sec,
+                stale_after=self._cfg.check_interval_sec * _STALE_WINDOW_FACTOR,
             )
 
 
@@ -540,6 +564,7 @@ class ProviderHourlySpendJob:
                     "hour": hour_iso,
                 },
                 cooldown_sec=self._cfg.cooldown_sec,
+                stale_after=self._cfg.check_interval_sec * _STALE_WINDOW_FACTOR,
             )
 
 
@@ -572,7 +597,6 @@ class AlertEngine:
     async def start(self) -> None:
         """Build rules, schedule periodic jobs, and start the drain task."""
         self._build_rules()
-        self._align_stale_window()
         self._schedule_periodic_jobs()
         self._task = asyncio.create_task(self._drain(), name="AlertEngine.drain")
         log.info(
@@ -601,35 +625,6 @@ class AlertEngine:
                 log.exception("failed to remove alert job")
         self._scheduled_jobs.clear()
         self._task = None
-
-    def _align_stale_window(self) -> None:
-        """Keep the stale sweep from closing an incident its rule still holds.
-
-        A rule's breach is computed over ``window_sec`` of request records, so
-        a firing key that stops being observed is only genuinely stale once that
-        window can no longer contain a breaching sample. With the shipped
-        config ``failed_request_rate.window_sec`` is 3600 while the tracker's
-        default staleness is 900, which would report recovery 45 minutes before
-        the breached samples aged out.
-        """
-        windows = [
-            rule.window_sec
-            for rule in vars(self._config.rules).values()
-            if getattr(rule, "enabled", False) and getattr(rule, "window_sec", None)
-        ]
-        intervals = [
-            cfg.check_interval_sec
-            for cfg in (
-                self._config.cost.user_overrun,
-                self._config.cost.provider_hourly_spend,
-            )
-            if getattr(cfg, "enabled", False) and getattr(cfg, "check_interval_sec", None)
-        ]
-        longest = max([*windows, *intervals, 0])
-        if longest:
-            # One extra window of slack, so an evaluation that lands late does
-            # not race the sweep.
-            _alerts.set_stale_after(longest * 2)
 
     def _build_rules(self) -> None:
         self._rules.append(FailedRequestRateRule(self._config.rules.failed_request_rate))

@@ -62,6 +62,11 @@ class _KeyState:
     #: When the metric was first seen healthy after the breach; ``None`` while
     #: it is still breached. Reset by any breach so a flap cannot close early.
     clear_started_at: float | None = None
+    #: This key's own staleness bound, from the window its rule computes over.
+    #: ``None`` falls back to the tracker's. Per key because one shared value
+    #: has to be the longest rule's, which would hold a 60-second rule's
+    #: incident open for as long as an hour-long rule's.
+    stale_after: float | None = None
 
 
 @dataclass
@@ -91,7 +96,14 @@ class ThresholdTransitionTracker:
         """Whether ``key`` currently has an open incident."""
         return key in self._firing
 
-    def observe(self, key: str, *, breached: bool, now: float) -> Transition | None:
+    def observe(
+        self,
+        key: str,
+        *,
+        breached: bool,
+        now: float,
+        stale_after: float | None = None,
+    ) -> Transition | None:
         """Record one evaluation and return the edge it crossed, if any.
 
         Returns ``"firing"`` the first time a healthy key breaches,
@@ -103,7 +115,10 @@ class ThresholdTransitionTracker:
 
         if breached:
             if state is None:
-                self._firing[key] = _KeyState(last_observed_at=now)
+                self._firing[key] = _KeyState(
+                    last_observed_at=now,
+                    stale_after=stale_after,
+                )
                 return "firing"
             # Still breached: refresh liveness and cancel any pending close, so
             # a metric that dips below its threshold and comes back does not
@@ -133,16 +148,19 @@ class ThresholdTransitionTracker:
         ``observe`` will never be called to close. Returns the keys closed, for
         the caller to emit resolutions for.
         """
-        if self.stale_after_sec is None:
-            return []
         stale = [
             key
             for key, state in self._firing.items()
-            if now - state.last_observed_at >= self.stale_after_sec
+            if self._stale_after(state) is not None
+            and now - state.last_observed_at >= self._stale_after(state)
         ]
         for key in stale:
             del self._firing[key]
         return sorted(stale)
+
+    def _stale_after(self, state: _KeyState) -> float | None:
+        """This key's staleness bound, falling back to the tracker's default."""
+        return state.stale_after if state.stale_after is not None else self.stale_after_sec
 
     def rearm(self, key: str, now: float, *, retry_in: float | None = None) -> None:
         """Put a resolved key back into firing after its resolution was not sent.
@@ -159,10 +177,17 @@ class ThresholdTransitionTracker:
         ``stale_after_sec``. A sweep retry should follow the failed send by
         about one sweep interval, not by another whole rule window.
         """
+        previous = self._firing.get(key)
+        stale_after = previous.stale_after if previous is not None else None
+        bound = stale_after if stale_after is not None else self.stale_after_sec
         observed = now
-        if retry_in is not None and self.stale_after_sec is not None:
-            observed = now - max(self.stale_after_sec - retry_in, 0.0)
-        self._firing[key] = _KeyState(last_observed_at=observed, clear_started_at=None)
+        if retry_in is not None and bound is not None:
+            observed = now - max(bound - retry_in, 0.0)
+        self._firing[key] = _KeyState(
+            last_observed_at=observed,
+            clear_started_at=None,
+            stale_after=stale_after,
+        )
 
     def forget(self, key: str) -> None:
         """Drop state without emitting a transition (for shutdown or reload)."""

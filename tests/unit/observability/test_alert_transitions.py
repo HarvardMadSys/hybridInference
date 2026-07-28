@@ -217,3 +217,34 @@ class TestUndeliveredResolutions:
         t.rearm("k", now=1.0)
 
         assert t.observe("k", breached=True, now=2.0) is None
+
+
+class TestPerKeyStaleness:
+    """One shared bound has to be the longest rule's, which is wrong for the rest."""
+
+    def test_each_key_ages_out_on_its_own_window(self) -> None:
+        t = tracker(stale_after_sec=7_200.0)
+        t.observe("auth_failure_spike", breached=True, now=0.0, stale_after=120.0)
+        t.observe("failed_request_rate", breached=True, now=0.0, stale_after=7_200.0)
+
+        # The 60-second rule's incident must not be held open for as long as
+        # the hour-long rule's.
+        assert t.sweep(now=120.0) == ["auth_failure_spike"]
+        assert t.is_firing("failed_request_rate")
+        assert t.sweep(now=7_200.0) == ["failed_request_rate"]
+
+    def test_a_key_without_its_own_window_uses_the_tracker_default(self) -> None:
+        t = tracker(stale_after_sec=900.0)
+        t.observe("k", breached=True, now=0.0)
+        assert t.sweep(now=899.0) == []
+        assert t.sweep(now=900.0) == ["k"]
+
+    def test_rearm_keeps_the_key_on_its_own_window(self) -> None:
+        t = tracker(stale_after_sec=7_200.0)
+        t.observe("k", breached=True, now=0.0, stale_after=120.0)
+        assert t.sweep(now=120.0) == ["k"]
+
+        t.rearm("k", now=120.0, retry_in=60.0)
+
+        assert t.sweep(now=179.0) == []
+        assert t.sweep(now=180.0) == ["k"]

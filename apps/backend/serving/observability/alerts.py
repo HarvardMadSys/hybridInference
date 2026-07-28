@@ -32,7 +32,6 @@ if TYPE_CHECKING:
     from pydantic import JsonValue
 
 from serving.observability.alert_transitions import (
-    DEFAULT_STALE_AFTER_SEC,
     ThresholdTransitionTracker,
 )
 
@@ -382,7 +381,11 @@ async def alert_slack(
         try:
             await asyncio.wait_for(done.wait(), timeout=_RESOLUTION_WAIT_SEC)
         except (TimeoutError, asyncio.TimeoutError):
-            break
+            # Keep waiting up to the attempt bound. A firing send that tries the
+            # relay and then falls back to the webhook takes both timeouts, so
+            # giving up on the first would drop exactly the resolution this
+            # wait exists to save.
+            continue
 
     now = _monotonic()
     async with _DEDUPE_LOCK:
@@ -456,23 +459,10 @@ _STATE_TRANSITIONS = ThresholdTransitionTracker(
 _STALE_SWEEP_INTERVAL_SEC = 60
 
 
-def set_stale_after(seconds: float) -> None:
-    """Raise how long a metric breach may go unobserved before it is swept.
-
-    The default is a guess; the engine knows the real answer once its rules are
-    built, and closing an incident before its rule's own window has aged out
-    would report a recovery the metric does not agree with. Only ever raises —
-    a second engine with narrower rules must not shorten it for the first.
-    """
-    if seconds > (_TRANSITIONS.stale_after_sec or 0.0):
-        _TRANSITIONS.stale_after_sec = seconds
-
-
 def reset_transition_state() -> None:
     """Drop all open-breach state. For tests and for a clean engine restart."""
     _TRANSITIONS._firing.clear()
     _STATE_TRANSITIONS._firing.clear()
-    _TRANSITIONS.stale_after_sec = DEFAULT_STALE_AFTER_SEC
 
 
 async def alert_on_transition(
@@ -484,6 +474,7 @@ async def alert_on_transition(
     context: Callable[[], dict[str, Any]],
     cooldown_sec: int,
     kind: Literal["metric", "state"] = "metric",
+    stale_after: float | None = None,
     now: float | None = None,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
@@ -507,7 +498,12 @@ async def alert_on_transition(
     """
     tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
     moment = now or time.time()
-    transition = tracker.observe(key, breached=breached, now=moment)
+    transition = tracker.observe(
+        key,
+        breached=breached,
+        now=moment,
+        stale_after=stale_after,
+    )
     if breached:
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
