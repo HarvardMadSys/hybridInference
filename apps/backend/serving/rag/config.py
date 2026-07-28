@@ -29,35 +29,61 @@ def _repo_root_for(path: Path) -> Path:
 
 _REPO_ROOT = _repo_root_for(Path(__file__).resolve())
 
-DEFAULT_CORPUS_DIR = (
-    _REPO_ROOT / "distributions" / "freeinference" / "content" / "docs" / "docs" / "source"
-)
-# The FreeInference prebuilt index is distribution content: it lives in the
-# overlay, not in the neutral serving package (and is no longer baked into the
-# backend image).
-_OVERLAY_INDEX = Path("distributions") / "freeinference" / "content" / "rag" / "docs_index.json"
+# The corpus and its prebuilt index are distribution content, so upstream must
+# not name a distribution to find them — a clone of this repository ships
+# neither, and hardcoding one deployment's directory here would be the same
+# leak the site identity exists to prevent.
+_INDEX_WITHIN_DISTRIBUTION = Path("content") / "rag" / "docs_index.json"
+_CORPUS_WITHIN_DISTRIBUTION = Path("content") / "docs" / "docs" / "source"
+
+
+def _distribution_root() -> Path | None:
+    """Locate the one distribution overlay this deployment runs, if any.
+
+    Two roots are possible. In a repository checkout the overlays sit at the
+    repo root. In the Docker image the code tree is flattened to ``/app`` and
+    ``distributions/`` is bind-mounted beside it
+    (deploy/docker/docker-compose.yml), so the app root is the base there.
+
+    A deployment that has declared its manifest through
+    ``DISTRIBUTION_CONFIG_PATH`` has already named its overlay, so that wins.
+    Otherwise a single overlay in the tree is unambiguous and is used; zero
+    (a plain clone) or several (nothing says which) resolve to nothing, and
+    both ``RAG_CORPUS_DIR`` and ``RAG_INDEX_PATH`` still override outright.
+    """
+    manifest = os.getenv("DISTRIBUTION_CONFIG_PATH", "").strip()
+    if manifest:
+        return Path(manifest).resolve().parent
+
+    app_root = Path(__file__).resolve().parents[2]
+    for base in (_REPO_ROOT, app_root):
+        candidates = sorted(p for p in (base / "distributions").glob("*") if p.is_dir())
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
 
 
 def _default_index_path() -> Path:
-    """Resolve the overlay index for both the repo tree and the container.
+    """Resolve the overlay's prebuilt index, or a path that will not exist.
 
-    In a repository checkout the overlay sits at the repo root. In the Docker
-    image the code tree is flattened to ``/app`` and the overlay is
-    bind-mounted at ``/app/distributions`` (deploy/docker/docker-compose.yml),
-    so the app root — two levels above this package — is the base there.
-    Prefer whichever candidate exists; fall back to the repo-root candidate so
-    error messages point at the canonical location. A missing index is not
-    fatal: the ``/v1/rag/chat`` handler degrades to 503 until one is supplied.
-    ``RAG_INDEX_PATH`` overrides this default entirely.
+    A missing index is not fatal: ``/v1/rag/chat`` degrades to 503 until one is
+    supplied, which is the correct state for a deployment that ships no docs.
     """
-    app_root = Path(__file__).resolve().parents[2]
-    candidates = (_REPO_ROOT / _OVERLAY_INDEX, app_root / _OVERLAY_INDEX)
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
+    root = _distribution_root()
+    if root is None:
+        return _REPO_ROOT / "distributions" / _INDEX_WITHIN_DISTRIBUTION
+    return root / _INDEX_WITHIN_DISTRIBUTION
 
 
+def _default_corpus_dir() -> Path:
+    """Resolve the overlay's documentation source, read only by offline ingest."""
+    root = _distribution_root()
+    if root is None:
+        return _REPO_ROOT / "distributions" / _CORPUS_WITHIN_DISTRIBUTION
+    return root / _CORPUS_WITHIN_DISTRIBUTION
+
+
+DEFAULT_CORPUS_DIR = _default_corpus_dir()
 DEFAULT_INDEX_PATH = _default_index_path()
 
 # Valid embedder modes. "gateway" routes through the OpenAI-compatible gateway;
