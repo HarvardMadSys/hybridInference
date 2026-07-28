@@ -211,3 +211,17 @@ def test_agent_runtimes_are_pinned_not_floating():
     for name, value in versions.items():
         assert value != "latest", f"{name} must be pinned, not 'latest'"
         assert re.fullmatch(r"\d+\.\d+\.\d+", value), f"{name}={value} is not an exact version"
+
+
+def test_both_phases_are_closed_in_the_shipped_configuration(compose: dict):
+    """The overlay ships no setup network, so neither phase may claim `trusted`.
+
+    The design's external-beta default is setup=trusted, but there is no setup
+    phase yet and no allowlist-fronted network to run it on. Shipping `trusted`
+    as the compose default would name a tier this deployment cannot honour —
+    the config would read as "dependencies can be installed" while the network
+    behind it reaches only the gateway.
+    """
+    env = compose["services"]["agent-runner"]["environment"]
+    for var in ("AGENT_EGRESS_SETUP_TIER", "AGENT_EGRESS_AGENT_TIER"):
+        assert "platform_only" in env[var], f"{var} must be closed until a tier exists for it"

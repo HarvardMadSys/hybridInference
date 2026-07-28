@@ -33,6 +33,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from serving.agent_jobs.egress import (
+    PHASES,
+    EgressPolicy,
+    EgressPolicyError,
+    EgressTier,
+    build_policy_from_env,
+)
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -80,6 +87,11 @@ class SandboxSpec:
     argv: list[str]
     workdir: str
     env: dict[str, str] = field(default_factory=dict)
+    # Which lifecycle phase this spawn belongs to. The two get different egress
+    # tiers: setup installs dependencies and needs a registry, the agent turn
+    # afterwards does not — and the agent turn is the one running untrusted
+    # model output, so it is the one that gets the least reach.
+    phase: str = "agent"
     # Memory/CPU caps keep one runaway job from starving its neighbours on a
     # shared host. Ignored by the process backend, which has no boundary.
     memory_limit: str = "4g"
@@ -291,6 +303,7 @@ class ContainerBackend(SandboxBackend):
         docker_binary: str = "docker",
         extra_args: list[str] | None = None,
         allow_open_network: bool = False,
+        egress: EgressPolicy | None = None,
         uid: int = SANDBOX_UID,
         gid: int = SANDBOX_GID,
         home: str = SANDBOX_HOME,
@@ -301,6 +314,7 @@ class ContainerBackend(SandboxBackend):
         self.docker_binary = docker_binary
         self.extra_args = extra_args or []
         self.allow_open_network = allow_open_network
+        self.egress = egress
         self.uid = uid
         self.gid = gid
         self.home = home
@@ -309,6 +323,21 @@ class ContainerBackend(SandboxBackend):
     def is_vm_isolated(self) -> bool:
         """Whether each job gets its own kernel."""
         return self.runtime is not None
+
+    def network_for_phase(self, phase: str) -> str:
+        """Resolve the docker network this phase runs on.
+
+        With no egress policy configured this is the single network the backend
+        was built with, so an existing deployment behaves exactly as before.
+        """
+        if self.egress is None:
+            return self.network
+        try:
+            return self.egress.network_for(phase)
+        except EgressPolicyError:
+            # A phase with no network configured for its tier must not silently
+            # fall back to a more open one.
+            raise
 
     def base_env(self) -> dict[str, str]:
         """The image's own environment, not the runner's.
@@ -397,7 +426,7 @@ class ContainerBackend(SandboxBackend):
             raise SandboxError(f"{self.docker_binary} is not usable: {exc}") from exc
         if result.returncode != 0:
             raise SandboxError(f"{self.docker_binary} is not usable: {result.stderr.strip()[:200]}")
-        self._check_network_is_closed()
+        self._check_networks_are_closed()
         if workdir_root is not None:
             self._check_bind_mountable(workdir_root)
         if not self.is_vm_isolated:
@@ -412,7 +441,37 @@ class ContainerBackend(SandboxBackend):
                 },
             )
 
-    def _check_network_is_closed(self) -> None:
+    def _check_networks_are_closed(self) -> None:
+        """Check every network a phase can run on, not just the default one.
+
+        A per-phase policy means there is no single network to validate: a
+        deployment can be closed for the agent turn and open for setup, and
+        only the tier names say which is which.
+        """
+        if self.egress is None:
+            self._check_one_network(self.network)
+            return
+        for phase in PHASES:
+            tier = self.egress.tier_for(phase)
+            try:
+                network = self.egress.network_for(phase)
+            except EgressPolicyError:
+                # A phase whose tier names no network cannot run. That is only
+                # fatal for a phase this runner actually spawns — the setup
+                # phase does not exist yet, and refusing to start over a
+                # capability nothing uses would be a startup failure with no
+                # cause an operator could act on. It still fails loudly at
+                # spawn if a phase is ever added without configuring it.
+                if phase == "agent":
+                    raise
+                continue
+            # Trusted and custom tiers are allowlist-fronted by construction;
+            # asserting `internal` on them would be wrong. Full is already
+            # gated behind the acknowledgement in build_policy_from_env.
+            if tier is EgressTier.PLATFORM_ONLY:
+                self._check_one_network(network)
+
+    def _check_one_network(self, network: str) -> None:
         """Refuse to start unless the sandbox network denies egress by default.
 
         The design puts egress control at the network layer and says
@@ -427,13 +486,13 @@ class ContainerBackend(SandboxBackend):
                 extra={
                     "event": "agent_sandbox_open_network",
                     "detail": (
-                        f"sandbox network {self.network!r} is not internal and the "
+                        f"sandbox network {network!r} is not internal and the "
                         "operator has accepted that; the agent can reach the internet"
                     ),
                 },
             )
             return
-        if not self.network:
+        if not network:
             raise SandboxError(
                 "AGENT_SANDBOX_NETWORK is not set. There is deliberately no default: "
                 "an unset value used to mean the Docker bridge, i.e. unrestricted "
@@ -442,7 +501,7 @@ class ContainerBackend(SandboxBackend):
                 "set AGENT_SANDBOX_ALLOW_OPEN_NETWORK=1 to accept open egress."
             )
         probe = subprocess.run(
-            [self.docker_binary, "network", "inspect", self.network, "--format", "{{.Internal}}"],
+            [self.docker_binary, "network", "inspect", network, "--format", "{{.Internal}}"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -450,12 +509,12 @@ class ContainerBackend(SandboxBackend):
         )
         if probe.returncode != 0:
             raise SandboxError(
-                f"the sandbox network {self.network!r} does not exist: "
+                f"the sandbox network {network!r} does not exist: "
                 f"{probe.stderr.strip()[:200]}. Every job would fail at spawn."
             )
         if probe.stdout.strip().lower() != "true":
             raise SandboxError(
-                f"the sandbox network {self.network!r} is not `internal`, so the agent "
+                f"the sandbox network {network!r} is not `internal`, so the agent "
                 "would have unrestricted egress. Declare it `internal: true` (as the "
                 "compose overlay does), front it with an allowlist proxy, or set "
                 "AGENT_SANDBOX_ALLOW_OPEN_NETWORK=1 to accept that deliberately."
@@ -510,7 +569,7 @@ class ContainerBackend(SandboxBackend):
             "--user",
             f"{self.uid}:{self.gid}",
             "--network",
-            self.network,
+            self.network_for_phase(spec.phase),
             "--memory",
             spec.memory_limit,
             "--cpus",
@@ -596,6 +655,7 @@ def build_backend_from_env(env: dict[str, str] | None = None) -> SandboxBackend:
             docker_binary=source.get("AGENT_SANDBOX_DOCKER") or "docker",
             extra_args=shlex.split(source.get("AGENT_SANDBOX_EXTRA_ARGS") or ""),
             allow_open_network=source.get("AGENT_SANDBOX_ALLOW_OPEN_NETWORK", "") not in ("", "0"),
+            egress=build_policy_from_env(source),
             uid=int(source.get("AGENT_SANDBOX_UID") or SANDBOX_UID),
             gid=int(source.get("AGENT_SANDBOX_GID") or SANDBOX_GID),
             home=source.get("AGENT_SANDBOX_HOME") or SANDBOX_HOME,

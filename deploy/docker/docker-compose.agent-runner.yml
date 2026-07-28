@@ -49,7 +49,14 @@ services:
       # the internet: a sandbox on it reaches the gateway (models + event
       # reporting) and nothing else. Point this at a network with an allowlist
       # proxy when jobs need to install dependencies.
+      # Egress is a per-phase tier, not one network. `platform_only` reaches
+      # the gateway and nothing else; `trusted` additionally reaches whatever
+      # the setup network is fronted by, for installing dependencies. The agent
+      # turn — the one driven by untrusted model output — gets the closed one.
       AGENT_SANDBOX_NETWORK: ${AGENT_SANDBOX_NETWORK:-agent-egress}
+      AGENT_EGRESS_NETWORK_PLATFORM_ONLY: ${AGENT_EGRESS_NETWORK_PLATFORM_ONLY:-agent-egress}
+      AGENT_EGRESS_SETUP_TIER: ${AGENT_EGRESS_SETUP_TIER:-platform_only}
+      AGENT_EGRESS_AGENT_TIER: ${AGENT_EGRESS_AGENT_TIER:-platform_only}
 
       # Identical inside this container and on the host — see the bind mount
       # below for why that is not a stylistic choice.

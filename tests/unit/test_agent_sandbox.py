@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 
+from serving.agent_jobs.egress import EgressPolicyError
 from serving.agent_jobs.sandbox import (
     KATA_RUNTIME,
     ContainerBackend,
@@ -72,7 +73,9 @@ def test_plain_container_is_not_vm_isolated():
 
 def test_kata_backend_requests_the_vm_runtime():
     """Selecting kata puts a kernel boundary around each job."""
-    backend = build_backend_from_env({"AGENT_SANDBOX_BACKEND": "kata"})
+    backend = build_backend_from_env(
+        {"AGENT_SANDBOX_BACKEND": "kata", "AGENT_SANDBOX_NETWORK": "agent-egress"}
+    )
     assert isinstance(backend, ContainerBackend)
     assert backend.is_vm_isolated is True
     command = backend.build_command(_SPEC)
@@ -101,7 +104,11 @@ def test_backend_selection_from_env():
 def test_explicit_runtime_override_wins():
     """An operator can name a different VM runtime than the Kata default."""
     backend = build_backend_from_env(
-        {"AGENT_SANDBOX_BACKEND": "container", "AGENT_SANDBOX_RUNTIME": "runsc"}
+        {
+            "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_RUNTIME": "runsc",
+            "AGENT_SANDBOX_NETWORK": "agent-egress",
+        }
     )
     assert backend.is_vm_isolated is True
     assert backend.build_command(_SPEC)[backend.build_command(_SPEC).index("--runtime") + 1] == (
@@ -296,9 +303,12 @@ def test_an_unset_network_is_refused_not_defaulted_to_the_internet():
     backend = build_backend_from_env({"AGENT_SANDBOX_BACKEND": "container"})
 
     assert backend.network == "", "there must be no open-network fallback"
-    with pytest.raises(SandboxError) as excinfo:
-        backend._check_network_is_closed()
-    assert "AGENT_SANDBOX_ALLOW_OPEN_NETWORK" in str(excinfo.value)
+    # And nothing downstream invents one: resolving the agent phase's network
+    # is an error rather than a quiet fall back to the Docker bridge.
+    with pytest.raises((SandboxError, EgressPolicyError)):
+        backend._check_networks_are_closed()
+    with pytest.raises(EgressPolicyError):
+        backend.network_for_phase("agent")
 
 
 def test_open_egress_requires_an_explicit_acknowledgement():
@@ -306,9 +316,34 @@ def test_open_egress_requires_an_explicit_acknowledgement():
     backend = build_backend_from_env(
         {
             "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_NETWORK": "some-open-network",
             "AGENT_SANDBOX_ALLOW_OPEN_NETWORK": "1",
         }
     )
 
     assert backend.allow_open_network is True
-    backend._check_network_is_closed()  # acknowledged: does not raise
+    backend._check_networks_are_closed()  # acknowledged: does not raise
+
+
+def test_the_phase_decides_which_network_the_container_joins():
+    """setup and agent must not silently share one network.
+
+    Without this the tier model is decorative: the policy would say the agent
+    turn is closed while both phases ran on whatever single network the backend
+    was configured with.
+    """
+    backend = build_backend_from_env(
+        {
+            "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
+            "AGENT_EGRESS_NETWORK_TRUSTED": "agent-setup",
+        }
+    )
+
+    def network_of(phase: str) -> str:
+        spec = SandboxSpec(argv=["x"], workdir="/w", phase=phase)
+        command = backend.build_command(spec)
+        return command[command.index("--network") + 1]
+
+    assert network_of("agent") == "agent-egress"
+    assert network_of("setup") == "agent-setup"
