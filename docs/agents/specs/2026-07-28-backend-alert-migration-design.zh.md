@@ -1,6 +1,6 @@
 # 后端 `alert_slack` 迁移设计（roadmap 步骤 4）
 
-> 状态：**已定案（2026-07-28）** —— G1 采纳方案 B（部署期签发长期令牌，不新增组件）；G2 采纳按形状归并的 2 个新类型；G3 采纳结构化计数替代明文 IP/key 前缀。4.1 起可依序实施。
+> 状态：**已定案（2026-07-28）** —— G1 采纳方案 B（部署期签发长期令牌，不新增组件）；G2 采纳按形状归并的 2 个新类型；G3 采纳类型化字段（保住 IP/subject 的可操作性，舍弃凭证前缀与无界文本）。4.1 起可依序实施。
 > 日期：2026-07-28
 > 前置：status-monitor 三类告警已迁移（roadmap 步骤 2/3 完成）
 > 关联：[roadmap](../plans/2026-07-25-alert-control-plane-roadmap.zh.md)、[C3c 验证档案](../../reviews/2026-07-27-c3c-staging-validation.md)
@@ -17,7 +17,7 @@ roadmap 里把后端迁移估成 2–3 人周，依据是"11 个调用点收敛�
 |---|---|---|
 | **G1** | 长驻 Python 进程无法持有 CI 签发的短期能力凭证（注：**今天后端根本无凭证**，故这是「往前走多远」而非「能否做」） | 🟡 需拍板，已有低成本推荐 |
 | **G2** | 11 个告警中 10 个在契约里没有对应类型 | 🟡 设计，已有推荐 |
-| **G3** | 后端告警当前携带 IP 与 API key 前缀，**契约明确拒绝** | 🟡 产品取舍，已有推荐 |
+| **G3** | 后端告警当前携带 IP 与 API key 前缀，**契约明确拒绝** | ✅ 已定：类型化字段保住操作能力，仅舍弃凭证材料与无界文本 |
 
 status-monitor 三个都不存在：它是 Cloudflare Worker（有 Service Binding，无凭证生命周期问题）、只有模型 id 一种上下文、且数据本来就干净。
 
@@ -122,22 +122,29 @@ webhook_url = os.environ.get("SLACK_ALERTS_WEBHOOK_URL", "")   # URL 本身即�
 
 on-call 今天能在"Auth failure spike"告警里直接看到攻击来源 IP 和被试的 key 前缀 —— 这对立即封禁是有用的。迁移后这些**不会出现在 Slack 里**。
 
-### 推荐：结构化计数替代明文值 —— ✅ **已采纳（2026-07-28）**
+### 决定（2026-07-28 修订）：保留可操作数据，但改为**类型化字段**
 
-> 明确接受的代价：on-call 不再能从 Slack 直接复制攻击者 IP 去封禁，需转到 dashboard/日志。
+初版决定是「全部改为计数」，并接受 on-call 失去从 Slack 直接封禁 IP 的能力。
+**该决定已被推翻** —— 目标「效果至少不输之前」意味着不接受可操作性倒退。
 
-| 现在 | 迁移后 | on-call 损失什么 |
+核实过：`_format_message` 把每个 context 键值**原样**拼进 Slack 消息，所以
+on-call 今天确实看得到 IP / key 前缀 / user id。改成纯计数就是实打实的降级。
+
+修订后的做法 —— 区分「承载操作的值」与「顺带的自由文本」：
+
+| 现在 | 迁移后 | 是否损失能力 |
 |---|---|---|
-| `top_ips: "1.2.3.4 (12), ..."` | `distinct_sources: 2`、`top_source_share: 0.8` | 不能直接从 Slack 复制 IP 去封禁 |
-| `top_key_prefixes: "hyi-abc (7)"` | `distinct_principals: 2` | 同上 |
-| `rate: "12.3% (45 of 366...)"` | `observed: 0.123`、`window_sec: 300` | 无（渲染层重新格式化即可，且更可比） |
-| `user_id: 12345` | `scope: "user"` + 不带 id | 需要去 dashboard 查是谁 |
+| `top_ips: "1.2.3.4 (12), ..."` | `source_addresses: ["1.2.3.4", ...]` —— **类型化 IP 列表**，每项必须解析为合法 IP，上限 5 条 | ❌ 不损失，封禁工作流原样保留 |
+| `user_id` / `provider` / `task_name` | `subject: "4711"` + `scope: "user"` —— 有界标识符（`IDENTIFIER_RE`），非自由文本 | ❌ 不损失 |
+| `rate: "12.3% (45 of 366...)"` | `observed` / `threshold` / `window_sec` / `sample_count` | ❌ 不损失，渲染层可格式化得更好且更可比 |
+| `top_key_prefixes: "hyi-abc (7)"` | `distinct_sources: N` | ⚠️ **有意损失** —— 凭证材料，且封禁按地址进行不需要它 |
+| `top_paths` / `top_status_codes` | 无 | ⚠️ **有意损失** —— 无界自由文本；分诊信息在 dashboard |
 
-明文值仍然完整保留在**网关自己的日志和 admin dashboard** 里 —— 它们只是不再跨越到 Slack 这个信任边界之外。这与契约既有立场一致（模型告警里的原始 upstream 错误、cycle 告警里的原始错误文本，都是同样的理由被排除的）。
+关键点：**类型化字段不等于「放宽校验器」**。`source_addresses` 的每一项必须解析为
+合法 IP，任何非 IP 内容直接拒绝 —— 它无法像旧 context 那样夹带任意文本。相对今天
+（自由文本可承载任何东西），这是**更强**的姿态，同时保住了操作能力。
 
-**如果 on-call 强烈需要 Slack 里直接可见 IP**，那是一个明确的反对意见，应当在这里推翻我的推荐，并接受相应的契约松绑成本 —— 但不应当靠"迁移时悄悄放宽 `untrustedString`"来实现。
-
----
+两处有意损失已明确标注，不冒充零倒退。已实现于 #1072。
 
 ## 建议的执行顺序
 
