@@ -55,7 +55,6 @@ ALLOWLIST: dict[str, str] = {
     "docs/agents/": "historical design docs (not shipped)",
     "docs/superpowers/": "historical design docs (not shipped)",
     "docs/reviews/": "review records (not shipped)",
-    "docs/free_inference/": "transitional Pages copy — removed by the docs cleanup PR",
     "docs/developer/": "internal doc-site pages — step-2 / neutral wave",
     "services/freeinference-harness/": "step-2 move/neutralize per ownership inventory",
     "services/status-monitor-worker/": "step-2 move/neutralize per ownership inventory",
