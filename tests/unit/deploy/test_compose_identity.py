@@ -176,6 +176,10 @@ def test_compose_cors_default_admits_only_local_development(
         ("NEXT_PUBLIC_STATCOUNTER_PROJECT_ID", "13224568"),
         ("NEXT_PUBLIC_STORAGE_KEY_PREFIX", "freeinference"),
         ("NEXT_PUBLIC_TEAM_IMAGE_HOST", "junchengyang.com"),
+        # Losing this one is silent: the loader falls back to built-in
+        # thresholds rather than erroring, so production would keep
+        # alerting, on different numbers, with nothing to notice.
+        ("ALERTS_CONFIG_PATH", "/app/distributions/freeinference/config/alerts.yaml"),
     ],
 )
 def test_overlay_supplies_what_the_default_gave_up(var: str, expected: str) -> None:

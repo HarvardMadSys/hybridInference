@@ -756,29 +756,6 @@ async def test_pending_prefix_cache_leak_rule_disabled_does_not_fire() -> None:
     assert mock_alert.await_count == 0
 
 
-def test_alerts_yaml_loads_with_pending_prefix_cache_leak() -> None:
-    """``config/alerts.yaml`` parses cleanly and the leak block matches defaults."""
-    from pathlib import Path
-
-    import yaml
-
-    from serving.observability.alert_config import AlertConfig
-
-    # tests/unit/observability/<file>.py -> repo root
-    repo_root = Path(__file__).resolve().parents[3]
-    yaml_path = repo_root / "config" / "alerts.yaml"
-    with yaml_path.open() as f:
-        data = yaml.safe_load(f)
-
-    assert "prefix_cache_pending_leak" in data["rules"]
-    cfg = AlertConfig.model_validate(data)
-    leak = cfg.rules.prefix_cache_pending_leak
-    assert leak.enabled is True
-    assert leak.window_sec == 600
-    assert leak.threshold_count == 20
-    assert leak.cooldown_sec == 3600
-
-
 def test_legacy_pending_decisions_leak_config_migrates_for_one_release() -> None:
     """The retired key keeps custom thresholds while deployments migrate."""
     from serving.observability.alert_config import Rules
@@ -908,26 +885,3 @@ async def test_failure_rate_rule_skips_below_min_samples() -> None:
         for _ in range(49):
             await rule.on_record(_make_tracked_record("request_log", success=False))
     assert mock_alert.await_count == 0
-
-
-def test_alerts_yaml_loads_with_tracked_task_failure_rate() -> None:
-    """The committed alerts.yaml parses cleanly into AlertConfig with our defaults."""
-    from pathlib import Path
-
-    import yaml
-
-    from serving.observability.alert_config import AlertConfig
-
-    # tests/unit/observability -> repo root is parents[3].
-    repo_root = Path(__file__).resolve().parents[3]
-    yaml_path = repo_root / "config" / "alerts.yaml"
-    with yaml_path.open() as f:
-        data = yaml.safe_load(f)
-
-    cfg = AlertConfig(**data)
-    rule_cfg = cfg.rules.tracked_task_failure_rate
-    assert rule_cfg.enabled is True
-    assert rule_cfg.window_sec == 300
-    assert rule_cfg.threshold_pct == 5.0
-    assert rule_cfg.min_samples == 50
-    assert rule_cfg.cooldown_sec == 1800

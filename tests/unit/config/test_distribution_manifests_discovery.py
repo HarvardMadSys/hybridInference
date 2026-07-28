@@ -31,7 +31,17 @@ def test_freeinference_overlay_preserves_phase_one_legacy_aliases():
     """Keep the stack's explicit Phase 1 compatibility invariant in PR CI."""
     manifest = REPO_ROOT / "distributions" / "freeinference" / "distribution.yaml"
     config = load_distribution_config(manifest)
-    for kind in ("models", "routing", "alerts"):
+    # alerts.yaml has moved into the overlay; models and routing have not.
+    # Each line here is a claim about where production reads from, so moving
+    # one without editing this is the mistake worth catching.
+    for kind in ("models", "routing"):
         resolved = Path(getattr(config.paths, kind))
         legacy = (REPO_ROOT / "config" / f"{kind}.yaml").resolve()
         assert resolved == legacy, f"{kind} no longer aliases legacy truth"
+
+    alerts = Path(config.paths.alerts)
+    overlay = (REPO_ROOT / "distributions" / "freeinference" / "config" / "alerts.yaml").resolve()
+    assert alerts == overlay, "alerts.yaml moved into the overlay; the manifest must follow"
+    assert not (REPO_ROOT / "config" / "alerts.yaml").exists(), (
+        "two copies of a deployment's alert config is how they drift apart"
+    )
