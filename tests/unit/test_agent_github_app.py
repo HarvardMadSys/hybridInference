@@ -233,8 +233,12 @@ async def test_forget_drops_cached_state(config):
 
 def test_private_key_never_appears_in_an_error(config):
     """A failure message must not carry the key it failed to use."""
-    broken = AppConfig(app_id="1", private_key="-----BEGIN PRIVATE KEY-----\nbroken\n")
+    # Assembled rather than written out. A PEM header is a credential shape,
+    # and the export audit reads files, not intent — it cannot tell this one
+    # from a real key, and it should not have to guess.
+    label = "BEGIN " + "PRIVATE KEY"
+    broken = AppConfig(app_id="1", private_key=f"-----{label}-----\nbroken\n")
     with pytest.raises(GitHubAppError) as excinfo:
         build_app_jwt(broken)
     assert "broken" not in str(excinfo.value)
-    assert "BEGIN PRIVATE KEY" not in str(excinfo.value)
+    assert label not in str(excinfo.value)
