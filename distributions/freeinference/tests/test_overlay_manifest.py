@@ -28,11 +28,17 @@ def test_manifest_paths_point_at_legacy_truth():
     # alerts.yaml has moved into the overlay; models and routing have not.
     # Each line here is a claim about where production reads from, so moving
     # one without editing this is the mistake worth catching.
-    # All three have moved. `config/` holds none of them, which is the point:
-    # a second copy at the legacy path is how the two drift apart, and the
-    # gateway would keep running on whichever one it happened to read.
+    # models.yaml is the last one still aliasing legacy truth — it changes
+    # daily, so it moves when the drift window costs least. The other two are
+    # in the overlay, with nothing left at the old path: two copies of a
+    # deployment's config is how they drift apart.
+    models = Path(config.paths.models)
+    assert models == (REPO_ROOT / "config" / "models.yaml").resolve(), (
+        "models.yaml no longer aliases legacy truth"
+    )
+
     overlay_config = REPO_ROOT / "distributions" / "freeinference" / "config"
-    for kind in ("models", "alerts", "routing"):
+    for kind in ("alerts", "routing"):
         resolved = Path(getattr(config.paths, kind))
         assert resolved == (overlay_config / f"{kind}.yaml").resolve(), (
             f"{kind}.yaml moved into the overlay; the manifest must follow"
