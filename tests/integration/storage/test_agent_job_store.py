@@ -338,3 +338,64 @@ async def test_artifact_upsert_and_get(store: AgentJobStore):
     assert artifact is not None
     assert artifact["content"] == "diff-v2"
     assert await store.get_artifact(job_id=job["id"], kind="missing") is None
+
+
+async def test_model_credential_follows_the_fence(store: AgentJobStore):
+    """A worker token buys inference only while its attempt owns the job.
+
+    This is the revocation mechanism for the sandbox's model access: there is
+    no key to revoke, so the checks that matter are that a live fence resolves
+    and that every way of losing the fence stops resolving.
+    """
+    job = await _create_job(store, budget_usd=2.5)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    fence = {
+        "job_id": job["id"],
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+
+    identity = await store.resolve_model_credential(**fence)
+    assert identity is not None
+    assert identity["user_id"] == "user-1"
+    assert identity["budget_usd"] == 2.5
+
+    # A different generation never resolves.
+    assert (
+        await store.resolve_model_credential(
+            job_id=job["id"], attempt_id=claim["attempt_id"], lease_generation=99
+        )
+        is None
+    )
+
+    # Lease expiry alone stops it, even before the reaper runs.
+    await _expire_attempt(store, claim["attempt_id"])
+    assert await store.resolve_model_credential(**fence) is None
+
+    # After the reap the new attempt resolves and the old one stays dead.
+    await store.reap_expired(max_attempts=3)
+    retry = await store.claim_job(worker_id="w2", lease_ttl_seconds=60)
+    assert await store.resolve_model_credential(**fence) is None
+    assert (
+        await store.resolve_model_credential(
+            job_id=job["id"],
+            attempt_id=retry["attempt_id"],
+            lease_generation=retry["lease_generation"],
+        )
+        is not None
+    )
+
+
+async def test_model_credential_dies_with_a_terminal_job(store: AgentJobStore):
+    """Finishing the job stops its token from buying more inference."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    fence = {
+        "job_id": job["id"],
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+    assert await store.resolve_model_credential(**fence) is not None
+
+    await store.transition(**fence, from_states=("running",), to_state="succeeded")
+    assert await store.resolve_model_credential(**fence) is None

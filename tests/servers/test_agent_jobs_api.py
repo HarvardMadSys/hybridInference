@@ -194,22 +194,26 @@ def store() -> FakeAgentJobStore:
     return FakeAgentJobStore()
 
 
-def _build_app(store, *, role: str = "internal"):
+def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     """Build an app with the router mounted and auth stubbed to one identity.
 
-    ``require_role`` is a dependency factory whose inner check resolves the
-    caller through ``get_current_user``, so overriding that one dependency
-    drives the role gate without reaching into route internals.
+    ``dispatcher`` controls whether the machine-to-machine gate on
+    ``/worker/claim`` is satisfied, so a test can assert that an ordinary
+    caller is turned away there.
     """
     from serving.servers.auth import verify_api_key
-    from serving.servers.deps import get_current_user
+    from serving.servers.deps import get_operational_store, verify_admin_access
 
     app = FastAPI()
     app.include_router(agent_jobs_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
+    # verify_admin_access resolves an operational store; the bare test app has
+    # no app.state.services, so supply it even when the gate is left real.
+    app.dependency_overrides[get_operational_store] = lambda: None
     identity = {"user_id": _OWNER, "role": role, "authenticated": True}
     app.dependency_overrides[verify_api_key] = lambda: identity
-    app.dependency_overrides[get_current_user] = lambda: identity
+    if dispatcher:
+        app.dependency_overrides[verify_admin_access] = lambda: "dispatcher@test"
     return app
 
 
@@ -471,7 +475,7 @@ async def test_missing_store_returns_503(store: FakeAgentJobStore):
     assert response.status_code == 503
 
 
-async def test_claim_requires_the_internal_dispatcher_role(store: FakeAgentJobStore):
+async def test_claim_requires_the_dispatcher_credential(store: FakeAgentJobStore):
     """An ordinary customer cannot dequeue and read another tenant's job.
 
     Regression: claim_job takes the oldest queued job across all tenants and
@@ -486,14 +490,14 @@ async def test_claim_requires_the_internal_dispatcher_role(store: FakeAgentJobSt
         model="glm-5.1",
     )
 
-    app = _build_app(store, role="pro")
+    app = _build_app(store, role="pro", dispatcher=False)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         denied = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
-    assert denied.status_code == 403
+    assert denied.status_code in (401, 403)
     assert store.jobs[next(iter(store.jobs))]["state"] == "queued"
 
-    app = _build_app(store, role="internal")
+    app = _build_app(store, dispatcher=True)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         allowed = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})

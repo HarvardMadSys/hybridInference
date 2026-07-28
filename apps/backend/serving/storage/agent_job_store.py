@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import secrets
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.logging import get_logger
@@ -93,6 +94,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "current_attempt_id": row["current_attempt_id"],
         "published_pr_url": row["published_pr_url"],
         "detail": row["detail"],
+        "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
         "metadata": _load_json(row["metadata"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
@@ -101,7 +103,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
 
 _JOB_COLUMNS = (
     "id, user_id, repo, base_sha, task_prompt, runtime, model, state, "
-    "cancel_requested, current_attempt_id, published_pr_url, detail, metadata, "
+    "cancel_requested, current_attempt_id, published_pr_url, detail, budget_usd, metadata, "
     "created_at, updated_at"
 )
 
@@ -131,11 +133,17 @@ class AgentJobStore:
                     current_attempt_id BIGINT,
                     published_pr_url TEXT,
                     detail TEXT,
+                    budget_usd NUMERIC(12, 6),
                     metadata JSONB,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
+            )
+            # Idempotent column migrations for databases created by an earlier
+            # revision (CREATE TABLE IF NOT EXISTS never adds columns).
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_jobs_queued "
@@ -210,6 +218,7 @@ class AgentJobStore:
         runtime: str,
         model: str,
         base_sha: str | None = None,
+        budget_usd: float | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create a queued job and return it."""
@@ -218,8 +227,9 @@ class AgentJobStore:
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO agent_jobs
-                    (id, user_id, repo, base_sha, task_prompt, runtime, model, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                    (id, user_id, repo, base_sha, task_prompt, runtime, model,
+                     budget_usd, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
@@ -229,9 +239,56 @@ class AgentJobStore:
                 task_prompt,
                 runtime,
                 model,
+                Decimal(str(budget_usd)) if budget_usd is not None else None,
                 json.dumps(metadata) if metadata is not None else None,
             )
         return _job_row_to_dict(row)
+
+    async def resolve_model_credential(
+        self,
+        *,
+        job_id: str,
+        attempt_id: int,
+        lease_generation: int,
+    ) -> dict[str, Any] | None:
+        """Resolve a worker token into the identity its model calls run as.
+
+        This is what lets the *same* capability token the sandbox already holds
+        also authorize model traffic, so no second credential ever enters the
+        sandbox. It returns ``None`` — meaning "reject" — unless the fence is
+        still live, which makes revocation automatic: the moment the reaper
+        supersedes the attempt or the job reaches a terminal state, the token
+        stops buying inference. There is no separate key to remember to revoke.
+
+        Returns ``{"user_id", "job_id", "budget_usd", "model"}``; the caller
+        bills the job's owner and enforces the budget.
+        """
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT j.user_id, j.id AS job_id, j.budget_usd, j.model, j.state
+                FROM agent_attempts a
+                JOIN agent_jobs j ON j.id = a.job_id
+                WHERE a.id = $1
+                  AND a.lease_generation = $2
+                  AND a.status = 'running'
+                  AND a.lease_expires_at > NOW()
+                  AND j.id = $3
+                  AND j.current_attempt_id = a.id
+                  AND j.state IN ('running', 'publishing')
+                """,
+                attempt_id,
+                lease_generation,
+                job_id,
+            )
+        if row is None:
+            return None
+        return {
+            "user_id": row["user_id"],
+            "job_id": row["job_id"],
+            "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
+            "model": row["model"],
+        }
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         """Fetch one job by id."""

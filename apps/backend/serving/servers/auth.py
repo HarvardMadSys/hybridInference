@@ -11,10 +11,20 @@ from typing import Any
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
+from serving.agent_jobs.model_auth import (
+    AgentModelAuthError,
+    authenticate_agent_model_call,
+    looks_like_agent_token,
+)
 from serving.config.settings import get_settings
 from serving.model_access import get_disabled_models_from_preferences
 from serving.observability.rejection_log import log_rejection
-from serving.servers.deps import get_db_logger, get_log_store, get_operational_store
+from serving.servers.deps import (
+    get_agent_job_store,
+    get_db_logger,
+    get_log_store,
+    get_operational_store,
+)
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
 
@@ -79,6 +89,13 @@ def constant_time_compare(a: str, b: str) -> bool:
     return hmac.compare_digest(a, b)
 
 
+def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | None:
+    """Return the presented credential from either accepted header."""
+    if authorization and authorization.startswith("Bearer "):
+        return authorization[7:]
+    return x_api_key or None
+
+
 async def _authenticate_by_api_key(
     request: Request,
     authorization: str | None,
@@ -95,11 +112,7 @@ async def _authenticate_by_api_key(
     missing/invalid key and ``HTTPException(403)`` for an unverified email.
     """
     # Extract API key from headers
-    api_key = None
-    if authorization and authorization.startswith("Bearer "):
-        api_key = authorization[7:]
-    elif x_api_key:
-        api_key = x_api_key
+    api_key = _extract_api_key(authorization, x_api_key)
 
     if not api_key:
         ip_info = get_client_ip_info(request)
@@ -189,12 +202,33 @@ async def verify_api_key(
     x_api_key: str | None = Header(None, alias="X-API-Key"),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    agent_job_store=Depends(get_agent_job_store),
 ) -> dict[str, Any]:
     """Verify API key and enforce quotas.
 
     Returns user context dict with user_id, role, etc.
     Raises HTTPException(401/403/429) on auth/quota failures.
     """
+    # Agent-sandbox capability tokens (issue #1041) are a distinct credential
+    # namespace (``ajt.`` vs ``hyi-``) resolved against the job fence rather
+    # than the api_keys table, so the sandbox never needs a second credential
+    # and revocation is automatic. Checked before the auth-disabled shortcut:
+    # a job's budget and cost attribution are cost controls, not authn, and
+    # must hold in every deployment. Ordinary keys pay one prefix comparison.
+    presented_key = _extract_api_key(authorization, x_api_key)
+    if looks_like_agent_token(presented_key):
+        try:
+            return await authenticate_agent_model_call(
+                presented_key,
+                job_store=agent_job_store,
+                log_store=log_store,
+            )
+        except AgentModelAuthError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={"error": {"type": "agent_job_auth", "message": exc.message}},
+            ) from exc
+
     # Check if auth is enabled
     if not is_user_auth_enabled():
         # Auth disabled - allow all, mark as anonymous

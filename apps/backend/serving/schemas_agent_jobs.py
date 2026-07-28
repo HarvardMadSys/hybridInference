@@ -31,6 +31,11 @@ class AgentJobCreate(BaseModel):
     runtime: str = Field("claude-code", description="Agent runtime id.")
     model: str = Field(..., description="Gateway model id the runtime should use.")
     base_sha: str | None = Field(None, description="Commit SHA to work from.")
+    budget_usd: float | None = Field(
+        None,
+        gt=0,
+        description="Hard cap on this job's model spend, in USD.",
+    )
     metadata: dict[str, Any] | None = Field(None, description="Opaque caller metadata.")
 
 
@@ -48,6 +53,7 @@ class AgentJobResponse(BaseModel):
     current_attempt_id: int | None = None
     published_pr_url: str | None = None
     detail: str | None = None
+    budget_usd: float | None = None
     metadata: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None

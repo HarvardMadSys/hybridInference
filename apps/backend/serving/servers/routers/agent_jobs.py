@@ -55,7 +55,7 @@ from serving.schemas_agent_jobs import (
     WorkerPublishRequest,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_agent_job_store, require_role
+from serving.servers.deps import get_agent_job_store, verify_admin_access
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
@@ -128,6 +128,7 @@ def _job_response(job: dict[str, Any]) -> AgentJobResponse:
         current_attempt_id=job["current_attempt_id"],
         published_pr_url=job["published_pr_url"],
         detail=job["detail"],
+        budget_usd=job.get("budget_usd"),
         metadata=job["metadata"],
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
@@ -183,6 +184,7 @@ async def create_agent_job(
         runtime=body.runtime,
         model=body.model,
         base_sha=body.base_sha,
+        budget_usd=body.budget_usd,
         metadata=body.metadata,
     )
     logger.info(
@@ -413,7 +415,7 @@ def _match_job(claims: dict[str, Any], job_id: str) -> None:
 @router.post("/worker/claim", response_model=WorkerClaimResponse | None)
 async def worker_claim(
     body: WorkerClaimRequest,
-    _dispatcher: dict[str, Any] = Depends(require_role("internal")),
+    _dispatcher: str = Depends(verify_admin_access),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> WorkerClaimResponse | None:
     """Claim the next queued job and mint this attempt's capability token.
@@ -422,11 +424,17 @@ async def worker_claim(
 
     **Dispatcher-only.** ``claim_job`` takes the oldest queued job across all
     tenants, and the response carries that job's repo, prompt, and metadata
-    plus a working capability token for it. Ordinary API-key authentication
-    would therefore let any customer dequeue and read another customer's job,
-    so this requires the ``internal`` role. The credential proving that role
-    belongs to the dispatcher and never enters a sandbox; only the returned
-    per-attempt token does.
+    plus a working capability token for it — so ordinary API-key auth here
+    would let any customer dequeue and read another customer's job, and drain
+    the queue besides.
+
+    ``verify_admin_access`` is the right gate rather than a role check on a
+    user key: this is a machine-to-machine endpoint, and that dependency
+    accepts the shared ``ADMIN_TOKEN`` a dispatcher can actually hold (as well
+    as an admin JWT). It also has no "auth disabled" bypass, so the endpoint
+    does not fall open in a deployment running with user auth off. The
+    dispatcher credential stays outside the sandbox; only the returned
+    per-attempt token goes in.
     """
     job_store = _require_store(store)
     claim = await job_store.claim_job(
