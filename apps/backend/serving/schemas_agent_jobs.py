@@ -94,6 +94,12 @@ class AgentJobResponse(BaseModel):
     # can see what the sandbox could reach rather than take it on trust.
     setup_egress_tier: str | None = None
     agent_egress_tier: str | None = None
+    # Source control connection state. The composer is gated on this rather
+    # than offering pickers that submit something else: with no App installed
+    # there is no repository to work on, and a task box that looks ready is a
+    # worse answer than one that says what is missing.
+    github_connected: bool = False
+    github_install_url: str | None = None
 
 
 class AgentJobListResponse(BaseModel):
@@ -251,3 +257,29 @@ class WorkerAckResponse(BaseModel):
 
     ok: bool
     state: str | None = None
+
+
+class AgentConfigResponse(BaseModel):
+    """What this deployment will actually accept, for the task composer.
+
+    The composer used to show a repository, a branch, a runtime and a model as
+    static labels while submitting different hardcoded values — so the UI
+    described a job nobody was running. These are the real answers.
+    """
+
+    repos: list[str] = Field(
+        default_factory=list,
+        description="Repositories this deployment is entitled to work on. Empty means none.",
+    )
+    runtimes: list[str] = Field(default_factory=list, description="Runtime ids that can run here.")
+    default_budget_usd: float = Field(
+        DEFAULT_JOB_BUDGET_USD, description="Per-job spend cap applied when none is given."
+    )
+    setup_egress_tier: str | None = None
+    agent_egress_tier: str | None = None
+    # Source control connection state. The composer is gated on this rather
+    # than offering pickers that submit something else: with no App installed
+    # there is no repository to work on, and a task box that looks ready is a
+    # worse answer than one that says what is missing.
+    github_connected: bool = False
+    github_install_url: str | None = None

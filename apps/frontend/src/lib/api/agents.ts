@@ -60,6 +60,28 @@ export interface AgentJobEventApi {
   created_at: string | null;
 }
 
+export interface AgentConfigApi {
+  repos: string[];
+  runtimes: string[];
+  default_budget_usd: number;
+  setup_egress_tier: string | null;
+  agent_egress_tier: string | null;
+  github_connected: boolean;
+  github_install_url: string | null;
+}
+
+/** What this deployment will actually accept — the source for the pickers. */
+export async function getAgentConfig(): Promise<AgentConfigApi> {
+  return jsonOrThrow(await fetchWithAuth(API_BASE, '/v1/agent/config'));
+}
+
+/** Model ids this gateway serves — the model picker's options. */
+export async function listAgentModels(): Promise<string[]> {
+  const resp = await fetchWithAuth(API_BASE, '/v1/models');
+  const body = await jsonOrThrow<{ data?: Array<{ id: string }> }>(resp);
+  return (body.data ?? []).map((entry) => entry.id).filter(Boolean);
+}
+
 export interface CreateAgentJobRequest {
   repo: string;
   task_prompt: string;

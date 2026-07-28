@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -36,8 +37,13 @@ from serving.agent_jobs.egress import (
     EgressPolicyError,
     build_policy_from_env as build_egress_policy,
 )
-from serving.agent_jobs.entitlement import RepoNotAllowed, require_allowed_repo
-from serving.agent_jobs.github_app import AppNotInstalled
+from serving.agent_jobs.entitlement import (
+    RepoNotAllowed,
+    allowed_repos,
+    require_allowed_repo,
+)
+from serving.agent_jobs.github_app import AppConfig, AppNotInstalled
+from serving.agent_jobs.runtimes import registered_runtimes
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -46,7 +52,9 @@ from serving.agent_jobs.tokens import (
     parse_worker_token,
 )
 from serving.schemas_agent_jobs import (
+    DEFAULT_JOB_BUDGET_USD,
     EVENT_TYPE_PATTERN,
+    AgentConfigResponse,
     AgentJobArtifactResponse,
     AgentJobCancelResponse,
     AgentJobCreate,
@@ -235,6 +243,34 @@ async def _owned_job(
 
 
 # ── Owner endpoints ────────────────────────────────────────────────────
+
+
+@router.get("/config", response_model=AgentConfigResponse)
+async def get_agent_config(
+    _user: dict[str, Any] = Depends(verify_api_key),
+) -> AgentConfigResponse:
+    """What this deployment will actually accept.
+
+    The composer showed a repository, a branch, a runtime and a model as static
+    labels while submitting different hardcoded values, so the UI described a
+    job nobody was running. A picker has to be built from the same answers the
+    create endpoint enforces, or it is decoration.
+    """
+    setup_tier, agent_tier = _egress_tiers()
+    repos = allowed_repos()
+    app_config = AppConfig.from_env(dict(os.environ))
+    return AgentConfigResponse(
+        repos=repos,
+        runtimes=registered_runtimes(),
+        default_budget_usd=DEFAULT_JOB_BUDGET_USD,
+        setup_egress_tier=setup_tier,
+        agent_egress_tier=agent_tier,
+        # Connected means both halves: an App the platform can mint tokens
+        # from, and at least one repository this deployment may work on.
+        # Either alone leaves a composer that cannot produce a runnable job.
+        github_connected=bool(app_config and repos),
+        github_install_url=os.getenv("AGENT_GITHUB_APP_INSTALL_URL") or None,
+    )
 
 
 @router.post("/jobs", response_model=AgentJobResponse, status_code=201)

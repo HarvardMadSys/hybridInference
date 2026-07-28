@@ -1,42 +1,89 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
-import { createAgentJob } from '@/lib/api/agents';
+import { useEffect, useState } from 'react';
+import { createAgentJob, getAgentConfig, listAgentModels } from '@/lib/api/agents';
+import type { AgentConfigApi } from '@/lib/api/agents';
+import { ConnectSourceControl } from './ConnectSourceControl';
+import { Picker } from './Picker';
 
-// New-task composer (the /agents index state). Runtime × model are
-// first-class controls — BYOA × BYOM is the product, not an advanced option.
-// The pickers are static; the P-1 harness verdict for the selected pair
-// renders next to the model.
-const DEFAULT_REPO = process.env.NEXT_PUBLIC_AGENT_DEFAULT_REPO ?? '';
+// New-task composer (the /agents index state). Runtime × model are first-class
+// controls — BYOA × BYOM is the product, not an advanced option.
+//
+// Everything here is read from the backend rather than written into the markup.
+// The previous version showed a repository, a branch, a runtime and a model as
+// fixed labels and then submitted different hardcoded values, so the screen
+// described a job nobody was running; and it showed those controls whether or
+// not any source control was connected, so it looked ready when nothing it
+// produced could run.
+const TIER_LABELS: Record<string, string> = {
+  platform_only: 'PlatformOnly',
+  trusted: 'Trusted',
+  custom: 'Custom',
+  full: 'Open',
+};
 
 export function TaskComposer() {
   const router = useRouter();
   const [task, setTask] = useState('');
+  const [config, setConfig] = useState<AgentConfigApi | null>(null);
+  const [models, setModels] = useState<string[]>([]);
+  const [repo, setRepo] = useState('');
+  const [runtime, setRuntime] = useState('');
+  const [model, setModel] = useState('');
+  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canRun = task.trim().length > 0 && !submitting;
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getAgentConfig(), listAgentModels().catch(() => [] as string[])])
+      .then(([cfg, modelIds]) => {
+        if (cancelled) return;
+        setConfig(cfg);
+        setModels(modelIds);
+        setRepo(cfg.repos[0] ?? '');
+        setRuntime(cfg.runtimes[0] ?? '');
+        setModel(modelIds[0] ?? '');
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : 'could not load config');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const canRun = task.trim().length > 0 && !submitting && Boolean(repo && runtime && model);
 
   async function run() {
     if (!canRun) return;
     setSubmitting(true);
     setError(null);
     try {
-      const job = await createAgentJob({
-        repo: DEFAULT_REPO,
-        task_prompt: task.trim(),
-        runtime: 'claude-code',
-        model: 'glm-5.1',
-      });
+      // Exactly what the controls show. That this needs saying is the bug it
+      // replaced: the old composer displayed one thing and queued another.
+      const job = await createAgentJob({ repo, task_prompt: task.trim(), runtime, model });
       router.push(`/agents/${job.id}`);
     } catch (cause: unknown) {
-      // The backend refuses a repository this deployment is not entitled to,
-      // and that message is the useful one to show — it tells the operator
-      // exactly what to configure.
       setError(cause instanceof Error ? cause.message : 'could not start the job');
       setSubmitting(false);
     }
+  }
+
+  if (loading) {
+    return (
+      <section className="mx-auto w-full max-w-2xl px-6 pt-24">
+        <p className="text-center text-sm text-gray-500">Loading…</p>
+      </section>
+    );
+  }
+
+  if (config && !config.github_connected) {
+    return <ConnectSourceControl installUrl={config.github_install_url} />;
   }
 
   return (
@@ -56,92 +103,16 @@ export function TaskComposer() {
         />
 
         <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3.5 py-2.5">
-          <button
-            type="button"
-            title="P0 runs against our own repo only"
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100"
-          >
-            <svg
-              className="h-3.5 w-3.5 text-gray-400"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
-              />
-            </svg>
-            hybridInference
-          </button>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100"
-          >
-            <svg
-              className="h-3.5 w-3.5 text-gray-400"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M7 3v12m0 0a3 3 0 1 0 3 3m-3-3a3 3 0 0 1 3 3m7-15a3 3 0 1 1-3 3m3-3v6a4 4 0 0 1-4 4H10"
-              />
-            </svg>
-            dev
-          </button>
+          <Picker label="Repository" value={repo} options={config?.repos ?? []} onChange={setRepo} />
           <span className="h-4 w-px bg-gray-200" />
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100"
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-crimson" />
-            Claude Code
-            <svg
-              className="h-3 w-3 text-gray-400"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-[13px] font-medium text-gray-600 hover:bg-gray-100"
-          >
-            qwen3.6-35b <span className="text-[11px] font-normal text-emerald-600">local</span>
-            <svg
-              className="h-3 w-3 text-gray-400"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
-            </svg>
-          </button>
-          <span
-            className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600"
-            title="P-1 harness verdict for this runtime × model pair"
-          >
-            <svg
-              className="h-3 w-3"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2.5}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
-            </svg>
-            verified
-          </span>
+          <Picker
+            label="Runtime"
+            value={runtime}
+            options={config?.runtimes ?? []}
+            onChange={setRuntime}
+          />
+          <Picker label="Model" value={model} options={models} onChange={setModel} />
+
           <button
             type="button"
             disabled={!canRun}
@@ -170,17 +141,16 @@ export function TaskComposer() {
         </p>
       ) : null}
 
-      <div className="mt-3 flex items-center justify-center gap-4 text-[12px] text-gray-400">
-        <span>
-          Budget <span className="font-medium text-gray-600">$2.00</span>
-        </span>
-        <span>
-          Timeout <span className="font-medium text-gray-600">30 min</span>
-        </span>
-        <span title="setup = Trusted (deps install) · agent = PlatformOnly (gateway + events only)">
-          Network: setup Trusted · agent PlatformOnly
-        </span>
-      </div>
+      {/* Only what this deployment is actually running. Budget was shown here as
+          a fixed "$2.00" the composer never sent — it is a backend cap, not a
+          choice made on this screen, so it belongs on the job instead. */}
+      {config?.agent_egress_tier ? (
+        <p className="mt-3 text-center text-[12px] text-gray-400">
+          Network: setup{' '}
+          {TIER_LABELS[config.setup_egress_tier ?? ''] ?? config.setup_egress_tier} · agent{' '}
+          {TIER_LABELS[config.agent_egress_tier] ?? config.agent_egress_tier}
+        </p>
+      ) : null}
     </section>
   );
 }

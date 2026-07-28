@@ -421,6 +421,15 @@ _REGISTRY: dict[str, type[AgentRuntime]] = {
 }
 
 
+def registered_runtimes() -> list[str]:
+    """Runtime ids this deployment can actually run.
+
+    The composer offers these rather than a hardcoded list, so the picker
+    cannot advertise a runtime the backend would refuse at job creation.
+    """
+    return sorted(_REGISTRY)
+
+
 def get_runtime(name: str, *, generic_command: str | None = None) -> AgentRuntime:
     """Return the adapter for a runtime id.
 
