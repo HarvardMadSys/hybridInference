@@ -177,6 +177,8 @@ runners share one queue with no leader and no sharding.
 | `AGENT_SANDBOX_NETWORK` | `agent-egress` | Declared `internal: true`, so a sandbox reaches the gateway and nothing else |
 | `AGENT_WORKDIR_ROOT` | `/var/lib/freeinference/agent-jobs` | **A host path, bind-mounted at the same path inside the runner.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
 | `AGENT_SANDBOX_UID` / `_GID` | `10001` | Only for a custom sandbox image; must match its user |
+| `AGENT_REPO_ALLOWLIST` | — | **Required.** Comma-separated `owner/name`, or `owner/*`. Unset allows nothing, because the requester picks the repository and the platform mints the GitHub credential for it — without an allowlist that pair is a confused deputy |
+| `AGENT_SANDBOX_ALLOW_OPEN_NETWORK` | — | Accepts a non-`internal` sandbox network. Preflight refuses one otherwise, so a missing setting cannot quietly mean full egress |
 | `AGENT_GITHUB_TOKEN` | — | Gateway-side; unset means the publisher idles |
 | `AGENT_PUBLISH_BASE_BRANCH` | `dev` | What draft PRs target |
 

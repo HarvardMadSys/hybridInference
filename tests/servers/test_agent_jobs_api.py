@@ -195,8 +195,14 @@ class FakeAgentJobStore:
 
 @pytest.fixture(autouse=True)
 def _api_key_secret(monkeypatch):
-    """Provide the signing secret for worker tokens."""
+    """Provide the signing secret for worker tokens and an entitled repo.
+
+    The repo allowlist is deliberately empty by default (a deployment that has
+    not been configured must refuse every job), so these tests declare the one
+    repository they use.
+    """
     monkeypatch.setenv("API_KEY_SECRET", "api-test-secret")
+    monkeypatch.setenv("AGENT_REPO_ALLOWLIST", "owner/name,o/n,private/repo")
     from serving.config.settings import get_settings
 
     get_settings.cache_clear()
@@ -507,7 +513,7 @@ async def test_claim_requires_the_dispatcher_credential(store: FakeAgentJobStore
     """
     await store.create_job(
         user_id="somebody-else",
-        repo="private/repo",
+        repo="private/repo",  # entitled below; the point here is the auth gate
         task_prompt="confidential task",
         runtime="claude-code",
         model="glm-5.1",
@@ -849,3 +855,51 @@ async def test_a_worker_cannot_overwrite_a_base_the_owner_pinned(
     )
 
     assert store.jobs[job_id]["base_sha"] == pinned
+
+
+async def test_an_unentitled_repo_is_refused_at_creation(client: AsyncClient):
+    """The requester picks the repo; the platform supplies the GitHub authority.
+
+    Without this check the two combine into a confused deputy: name any
+    repository the App can reach, and read it back through your own job's
+    events and patch artifact.
+    """
+    response = await client.post(
+        "/v1/agent/jobs",
+        json={"repo": "someone-else/private", "task_prompt": "exfiltrate", "model": "m"},
+    )
+
+    assert response.status_code == 403
+    assert "repo_not_allowed" in response.text
+
+
+async def test_a_legacy_row_gets_no_credential_at_claim(store: FakeAgentJobStore):
+    """A row written before the check existed must not yield a token now."""
+    from serving.servers.deps import get_agent_app_credentials
+
+    minted: list[str] = []
+
+    class FakeApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            minted.append(repo)
+            return "ghs_should_not_happen"
+
+    # Straight into the store, bypassing the API — the shape a pre-existing row has.
+    await store.create_job(
+        user_id=_OWNER,
+        repo="someone-else/private",
+        task_prompt="legacy",
+        runtime="claude-code",
+        model="m",
+    )
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: FakeApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 403
+    assert minted == [], "no credential may be minted for an unentitled repo"
+    # And the job went back to the queue rather than burning an attempt.
+    assert store.released

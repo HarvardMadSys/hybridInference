@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from serving.agent_jobs.entitlement import REPO_PATTERN
+
 # A lease is the only thing that lets the reaper take a job back from a stuck
 # or malicious worker. If the worker could pick the TTL, it could pick one long
 # enough that the lease never expires — and then the capability token bound to
@@ -32,7 +34,15 @@ EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 class AgentJobCreate(BaseModel):
     """Request body for creating an agent job."""
 
-    repo: str = Field(..., description="Target repository, e.g. 'owner/name'.")
+    repo: str = Field(
+        ...,
+        # Shape-checked here as well as against the entitlement allowlist: the
+        # value is interpolated into a clone URL and handed to git, which reads
+        # a leading `-` as an option wherever it appears.
+        pattern=REPO_PATTERN,
+        max_length=140,
+        description="Target repository, e.g. 'owner/name'.",
+    )
     task_prompt: str = Field(..., description="What the agent should do.")
     runtime: str = Field("claude-code", description="Agent runtime id.")
     model: str = Field(..., description="Gateway model id the runtime should use.")

@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from serving.agent_jobs.entitlement import RepoNotAllowed, require_allowed_repo
 from serving.agent_jobs.github_app import AppNotInstalled
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
@@ -198,6 +199,17 @@ async def create_agent_job(
 ) -> AgentJobResponse:
     """Queue a new agent job for the authenticated user."""
     job_store = _require_store(store)
+    # The requester chooses the repository and the platform later mints a real
+    # installation token for it. Without this the two combine into a confused
+    # deputy: name any repository the App reaches, and read it back through
+    # your own job's events and patch.
+    try:
+        require_allowed_repo(body.repo)
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
     job = await job_store.create_job(
         user_id=user["user_id"],
         repo=body.repo,
@@ -498,6 +510,22 @@ async def worker_claim(
     # not the publisher's token, which can write. It stays in the runner and
     # never enters the sandbox. Absent (null) is a working configuration: a
     # public repository clones without any credential at all.
+    # Re-checked at mint time, not just at create time. A row written before
+    # this check existed — or while the allowlist was wider — must not be able
+    # to produce a credential now.
+    try:
+        require_allowed_repo(claim["repo"])
+    except RepoNotAllowed as exc:
+        await job_store.release_claim(job_id=claim["id"], attempt_id=claim["attempt_id"])
+        logger.warning(
+            "agent_job_repo_not_allowed",
+            extra={"event": "agent_job_repo_not_allowed", "job_id": claim["id"]},
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+
     clone_token: str | None = None
     if app_credentials is not None:
         try:
