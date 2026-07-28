@@ -22,8 +22,19 @@ Windows):
 `/v1/messages` is served from. `API_TIMEOUT_MS` is raised because a long
 agentic turn can exceed the client default.
 
-Some deployments ship a script that writes this file for you; check the
-gateway's own documentation. The three variables above are the whole of it.
+**Claude Code 2.1.198 and later also need the base URL in the environment.**
+Those versions withhold API-routing variables from the `settings.json` env
+block and fall back to `api.anthropic.com`, where a gateway key fails
+authentication — the settings file alone silently does nothing. Export it from
+your shell profile as well:
+
+```bash
+echo 'export ANTHROPIC_BASE_URL="https://<your-gateway>/anthropic"' >> ~/.zshrc
+```
+
+Keep the token in `settings.json` only, so no secret lands in a shell profile.
+Some deployments ship a script that does both; check the gateway's own
+documentation.
 
 ## Which models you get
 
@@ -33,9 +44,14 @@ Claude Code sends its default model IDs (`claude-opus-4-8`, `claude-sonnet-5`,
 catalogue — ask it for `/v1/models`, or read its user documentation.
 
 Legacy dated Anthropic IDs (`claude-3-5-sonnet-latest`, `claude-sonnet-4-5`)
-resolve the same way. A deployment that registers no alias for the ID your
-client sends returns `404`; that is the gateway saying it serves no such model,
-not that the model does not exist.
+do **not** resolve the same way. They go through a fixed table in
+`serving/adapters/anthropic_aliases.py` first — `claude-3-5-sonnet-latest`
+becomes `claude-sonnet-4.6` before any route lookup — so a deployment that
+registers the legacy ID as a YAML alias will still not see it. What has to
+exist is the model the table rewrites it to.
+
+Either way, a `404` is the gateway saying it serves no such model, not that
+the model does not exist.
 
 The FreeInference deployment publishes its own mapping at
 [doc.freeinference.org](https://doc.freeinference.org/claude-code.html#choosing-a-model),
