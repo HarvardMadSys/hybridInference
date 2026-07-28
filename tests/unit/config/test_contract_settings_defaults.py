@@ -37,14 +37,24 @@ def settings(monkeypatch) -> Settings:
 
 
 def test_site_identity_defaults(settings):
-    assert settings.base_url == "https://freeinference.org"
-    assert settings.frontend_url == "https://freeinference.org"
-    assert settings.smtp_from_email == "noreply@freeinference.org"
-    assert settings.smtp_from_name == "FreeInference"
-    assert settings.db_name == "freeinference_db"
+    """Deliberate neutral flip: the defaults name no distribution.
+
+    FreeInference's values moved to deploy/docker/docker-compose.yml, which
+    pins each of these for the backend, so its deployments are unchanged.
+    """
+    # Empty: an unconfigured gateway has no public URL. Auth derives one from
+    # the request and alerts treat "unset" as a local run, so nothing needs a
+    # placeholder here.
+    assert settings.base_url == ""
+    # Absolute, because it is embedded in email links.
+    assert settings.frontend_url == "http://localhost:3001"
+    assert settings.smtp_from_email == "noreply@localhost"
+    assert settings.smtp_from_name == "HybridInference"
+    assert settings.db_name == "hybridinference"
 
 
 def test_cors_default_origins(settings):
+    """Only local origins ship by default; a site adds its own."""
     assert settings.cors_allowed_origins == [
         "http://localhost:3000",
         "http://localhost:3001",
@@ -54,13 +64,8 @@ def test_cors_default_origins(settings):
         "http://127.0.0.1:3002",
         "https://localhost:8443",
         "https://127.0.0.1:8443",
-        "http://freeinference.org",
-        "http://freeinference.org:3001",
-        "https://freeinference.org",
-        "https://freeinference.org:3001",
-        "http://staging-internal.freeinference.org",
-        "https://staging-internal.freeinference.org",
     ]
+    assert not any("freeinference" in origin for origin in settings.cors_allowed_origins)
 
 
 def test_config_path_defaults(settings):

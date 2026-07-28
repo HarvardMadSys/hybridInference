@@ -49,6 +49,13 @@ services:
       SITE_PUBLIC_BASE_URL: ${SITE_PUBLIC_BASE_URL-https://freeinference.org}
       SITE_DOCS_URL: ${SITE_DOCS_URL-https://doc.freeinference.org}
       SITE_SUPPORT_EMAIL: ${SITE_SUPPORT_EMAIL-admin@freeinference.org}
+      # Deployment identity that used to live as code defaults. Pinned here so
+      # upstream can ship neutral ones; .env still overrides each.
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL-noreply@freeinference.org}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME-FreeInference}
+      BASE_URL: ${BASE_URL-https://freeinference.org}
+      FRONTEND_URL: ${FRONTEND_URL-https://freeinference.org}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS-http://localhost:3000,http://localhost:3001,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002,https://localhost:8443,https://127.0.0.1:8443,http://freeinference.org,http://freeinference.org:3001,https://freeinference.org,https://freeinference.org:3001,http://staging-internal.freeinference.org,https://staging-internal.freeinference.org}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

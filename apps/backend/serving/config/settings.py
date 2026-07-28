@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     # Database
     db_host: str = "localhost"
     db_port: int = 5432
-    db_name: str = "freeinference_db"
+    db_name: str = "hybridinference"
     db_user: str = "postgres"
     db_password: str = ""
 
@@ -78,14 +78,18 @@ class Settings(BaseSettings):
     smtp_port: int = 587
     smtp_user: str = "resend"
     smtp_password: str = ""
-    smtp_from_email: str = "noreply@freeinference.org"
-    smtp_from_name: str = "FreeInference"
+    smtp_from_email: str = "noreply@localhost"
+    smtp_from_name: str = "HybridInference"
 
-    # Base URL
-    base_url: str = "https://freeinference.org"
+    # Public base URL of this gateway. Empty by default: an unconfigured
+    # deployment has none, and the two consumers already handle that —
+    # auth derives it from the request, and alerts treat an unset value as a
+    # local run rather than claiming an environment.
+    base_url: str = ""
 
-    # Frontend URL (for email links)
-    frontend_url: str = "https://freeinference.org"
+    # Frontend URL (for email links). Must be absolute to be clickable in an
+    # email, so the default points at a local console rather than being empty.
+    frontend_url: str = "http://localhost:3001"
 
     # Qdrant (shared vector database for codebase indexing)
     qdrant_base_url: str = "http://localhost:6333"
@@ -110,12 +114,6 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3002",
         "https://localhost:8443",
         "https://127.0.0.1:8443",
-        "http://freeinference.org",
-        "http://freeinference.org:3001",
-        "https://freeinference.org",
-        "https://freeinference.org:3001",
-        "http://staging-internal.freeinference.org",
-        "https://staging-internal.freeinference.org",
     ]
 
     # Trusted proxies (for real IP detection)
