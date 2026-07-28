@@ -245,14 +245,20 @@ async def test_app_only_deployment_actually_publishes(monkeypatch):
     _patch_pr(monkeypatch)
 
     class FakeApp:
-        async def token_for(self, repo: str) -> str:
+        def __init__(self) -> None:
+            self.scoped: bool | None = None
+
+        async def token_for(self, repo: str, **kwargs) -> str:
+            self.scoped = kwargs.get("repository_scoped")
             return "ghs_from_app"
+
+    app = FakeApp()
 
     task = asyncio.create_task(
         publish_loop(
             store,
             credential_provider=lambda: None,  # no static token configured
-            app_credentials=FakeApp(),
+            app_credentials=app,
             interval_seconds=0.01,
         )
     )
@@ -265,6 +271,9 @@ async def test_app_only_deployment_actually_publishes(monkeypatch):
         await task
 
     assert store.recorded == ("ajob_1", "https://github.com/o/n/pull/7")
+    # And the token it published with is scoped to this repository, not to
+    # everything the App happens to be installed on.
+    assert app.scoped is True
 
 
 async def test_no_credential_at_all_fails_the_job_rather_than_hanging(monkeypatch):

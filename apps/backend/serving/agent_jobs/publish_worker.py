@@ -143,7 +143,12 @@ async def publish_one(
     # deployment that has not set the App up.
     if app_credentials is not None:
         try:
-            credential = GitHubCredential(await app_credentials.token_for(job["repo"]))
+            # Scoped to this one repository, not to everything the App is
+            # installed on: publishing job A must not carry a credential that
+            # could write to tenant B's repository.
+            credential = GitHubCredential(
+                await app_credentials.token_for(job["repo"], repository_scoped=True)
+            )
         except Exception as exc:
             await store.fail_publish(
                 job_id=job_id, detail=f"could not obtain a GitHub credential: {exc}"

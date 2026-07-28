@@ -71,6 +71,7 @@ class AppServices:
     cost_tracker: CostTracker | None = None
     responses_store: ResponseStore | None = None
     agent_job_store: AgentJobStore | None = None
+    agent_app_credentials: Any | None = None
     agent_reaper_task: Any | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
@@ -138,6 +139,13 @@ def get_agent_job_store(
 ) -> AgentJobStore | None:
     """Dependency to obtain the agent job store (if configured)."""
     return getattr(services, "agent_job_store", None)
+
+
+def get_agent_app_credentials(
+    services: AppServices = Depends(get_services),
+) -> Any | None:
+    """Dependency to obtain the GitHub App credential minter (if configured)."""
+    return getattr(services, "agent_app_credentials", None)
 
 
 def get_user_concurrency_limiter(

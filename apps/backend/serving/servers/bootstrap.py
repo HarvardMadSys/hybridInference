@@ -757,6 +757,7 @@ async def initialize() -> AppServices:
     log_store = None
     responses_store = None
     agent_job_store = None
+    agent_app_credentials = None
     agent_reaper_task = None
 
     if db_logger and db_logger.pool:
@@ -805,7 +806,6 @@ async def initialize() -> AppServices:
         # hour-long, installation-scoped token from a private key, so nobody
         # mints or rotates a long-lived token by hand. A static token stays
         # supported for deployments that have not set the App up.
-        agent_app_credentials = None
         try:
             app_config = AppConfig.from_env(dict(os.environ))
             if app_config is not None:
@@ -1219,6 +1219,7 @@ async def initialize() -> AppServices:
         cost_tracker=cost_tracker,
         responses_store=responses_store,
         agent_job_store=agent_job_store,
+        agent_app_credentials=agent_app_credentials,
         agent_reaper_task=agent_reaper_task,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,

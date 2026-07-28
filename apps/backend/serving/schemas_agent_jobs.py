@@ -149,6 +149,14 @@ class WorkerClaimResponse(BaseModel):
         "",
         description="Model-scoped credential; the only one that enters the sandbox.",
     )
+    clone_token: str | None = Field(
+        None,
+        description=(
+            "Short-lived read-only credential for this one repository, for the runner to "
+            "check it out with. Stays in the runner; never enters the sandbox. Null when "
+            "no GitHub App is configured, which is enough for a public repository."
+        ),
+    )
     metadata: dict[str, Any] | None = None
 
 
@@ -201,6 +209,15 @@ class WorkerFinishRequest(BaseModel):
 
     state: str = Field(..., description="succeeded|failed|cancelled")
     detail: str | None = None
+    base_sha: str | None = Field(
+        None,
+        pattern=r"^[0-9a-fA-F]{7,64}$",
+        description=(
+            "The commit the agent actually worked from. Recorded only when the job "
+            "did not already carry one — the publisher cannot apply a patch without "
+            "knowing its base, and a job may be submitted without naming a commit."
+        ),
+    )
 
 
 class WorkerPublishRequest(BaseModel):

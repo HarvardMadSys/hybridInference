@@ -51,7 +51,14 @@ RUN npm install -g \
 # Non-root by default. The runner bind-mounts the worktree and the container is
 # disposable, so there is no reason for the agent to have root — and a kernel
 # escape needs a much better bug when it starts unprivileged.
-RUN useradd --create-home --shell /bin/bash agent
+#
+# The uid is PINNED, and must match SANDBOX_UID in
+# apps/backend/serving/agent_jobs/sandbox.py: the runner chowns each job
+# worktree to that id before mounting it. If the two drift, the agent cannot
+# write a single file in its own working tree and git refuses to run at all
+# ("dubious ownership") — a failure that looks nothing like its cause.
+RUN groupadd --gid 10001 agent \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash agent
 USER agent
 WORKDIR /workspace
 

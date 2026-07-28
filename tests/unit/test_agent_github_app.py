@@ -238,3 +238,64 @@ def test_private_key_never_appears_in_an_error(config):
         build_app_jwt(broken)
     assert "broken" not in str(excinfo.value)
     assert "BEGIN PRIVATE KEY" not in str(excinfo.value)
+
+
+async def test_a_narrowed_token_asks_github_for_less(config):
+    """An installation token inherits every App permission unless it asks for less.
+
+    The App holds `contents: write` so the publisher can push. The runner only
+    needs to read, and it runs on the host that executes untrusted repository
+    code — so its token must be requested narrower, not merely used narrowly.
+    """
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 1})
+        import json as _json
+
+        bodies.append(_json.loads(request.content) if request.content else {})
+        return httpx.Response(201, json={"token": "ghs_ro", "expires_at": "2099-01-01T00:00:00Z"})
+
+    original, patched = _client_returning(handler)
+    httpx.AsyncClient = patched
+    try:
+        creds = GitHubAppCredentials(config)
+        await creds.token_for("o/n", permissions={"contents": "read"}, repository_scoped=True)
+    finally:
+        httpx.AsyncClient = original
+
+    assert bodies[0]["permissions"] == {"contents": "read"}
+    assert bodies[0]["repositories"] == ["n"]
+
+
+async def test_a_narrowed_token_is_not_served_from_the_full_token_cache(config):
+    """Sharing one cache slot would silently undo the narrowing, in both directions."""
+    minted: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 1})
+        import json as _json
+
+        payload = _json.loads(request.content) if request.content else {}
+        minted.append(payload)
+        label = "ro" if payload.get("permissions") else "rw"
+        return httpx.Response(
+            201, json={"token": f"ghs_{label}", "expires_at": "2099-01-01T00:00:00Z"}
+        )
+
+    original, patched = _client_returning(handler)
+    httpx.AsyncClient = patched
+    try:
+        creds = GitHubAppCredentials(config)
+        write = await creds.token_for("o/n")
+        read = await creds.token_for("o/n", permissions={"contents": "read"})
+        # And each is still cached within its own scope.
+        read_again = await creds.token_for("o/n", permissions={"contents": "read"})
+    finally:
+        httpx.AsyncClient = original
+
+    assert (write, read) == ("ghs_rw", "ghs_ro")
+    assert read_again == "ghs_ro"
+    assert len(minted) == 2, "the second read should have come from cache"

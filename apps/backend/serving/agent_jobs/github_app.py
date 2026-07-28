@@ -19,6 +19,7 @@ network round trip and the publisher runs per job.
 
 from __future__ import annotations
 
+import json as json_module
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -108,10 +109,12 @@ class GitHubAppCredentials:
     def __init__(self, config: AppConfig, *, timeout_s: float = 30.0) -> None:
         self._config = config
         self._timeout_s = timeout_s
-        self._tokens: dict[int, _CachedToken] = {}
+        self._tokens: dict[tuple[int, str], _CachedToken] = {}
         self._installations: dict[str, int] = {}
 
-    async def _request(self, method: str, path: str, *, token: str) -> dict[str, Any]:
+    async def _request(
+        self, method: str, path: str, *, token: str, json: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Call the GitHub API and return the decoded body."""
         async with httpx.AsyncClient(timeout=self._timeout_s) as client:
             response = await client.request(
@@ -122,6 +125,7 @@ class GitHubAppCredentials:
                     "Accept": "application/vnd.github+json",
                     "X-GitHub-Api-Version": "2022-11-28",
                 },
+                json=json,
             )
         if response.status_code >= 400:
             # The body can echo the repository name; the token never appears in
@@ -154,17 +158,45 @@ class GitHubAppCredentials:
         self._installations[repo] = installation_id
         return installation_id
 
-    async def token_for(self, repo: str) -> str:
-        """Return a live installation token for one repository."""
+    async def token_for(
+        self,
+        repo: str,
+        *,
+        permissions: dict[str, str] | None = None,
+        repository_scoped: bool = False,
+    ) -> str:
+        """Return a live installation token for one repository.
+
+        ``permissions`` narrows the token below what the App holds — an
+        installation token inherits *every* App permission unless it asks for
+        less, so a consumer that only needs to read must say so. Combined with
+        ``repository_scoped``, which limits the token to this repository alone,
+        that is how one App serves both the publisher (write, to push a branch)
+        and the runner (read, to check the repository out) without handing the
+        runner push rights on a host that executes untrusted code.
+        """
         installation_id = await self.installation_id_for(repo)
-        cached = self._tokens.get(installation_id)
+        # Narrowed tokens must not share a cache slot with full ones, in either
+        # direction: serving a read-only token to the publisher would break
+        # every push, and serving a full one to the runner would silently undo
+        # the narrowing this parameter exists for.
+        scope_key = json_module.dumps(
+            {"p": permissions, "r": repo if repository_scoped else None}, sort_keys=True
+        )
+        cached = self._tokens.get((installation_id, scope_key))
         if cached and cached.expires_at - _TOKEN_REFRESH_MARGIN_S > time.time():
             return cached.token
 
+        payload: dict[str, Any] = {}
+        if permissions:
+            payload["permissions"] = permissions
+        if repository_scoped:
+            payload["repositories"] = [repo.partition("/")[2]]
         body = await self._request(
             "POST",
             f"/app/installations/{installation_id}/access_tokens",
             token=build_app_jwt(self._config),
+            json=payload or None,
         )
         token = body.get("token")
         if not token:
@@ -174,13 +206,14 @@ class GitHubAppCredentials:
         expires_at = time.time() + 3600
         if raw_expiry := body.get("expires_at"):
             expires_at = _parse_expiry(raw_expiry, default=expires_at)
-        self._tokens[installation_id] = _CachedToken(token=token, expires_at=expires_at)
+        self._tokens[installation_id, scope_key] = _CachedToken(token=token, expires_at=expires_at)
         logger.info(
             "agent_github_app_token_minted",
             extra={
                 "event": "agent_github_app_token_minted",
                 "repo": repo,
                 "installation_id": installation_id,
+                "permissions": sorted(permissions or ()) or "inherited",
             },
         )
         return token
@@ -189,7 +222,8 @@ class GitHubAppCredentials:
         """Drop cached state for a repo, e.g. after the App is uninstalled."""
         installation_id = self._installations.pop(repo, None)
         if installation_id is not None:
-            self._tokens.pop(installation_id, None)
+            for key in [k for k in self._tokens if k[0] == installation_id]:
+                self._tokens.pop(key, None)
 
 
 def _parse_expiry(raw: str, *, default: float) -> float:

@@ -23,8 +23,10 @@ and hand back a line stream. They do not know what an agent is.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
+import shutil
 import subprocess
 import threading
 from abc import ABC, abstractmethod
@@ -43,6 +45,14 @@ DEFAULT_IMAGE = "ghcr.io/harvardmadsys/freeinference-agent-sandbox:latest"
 # `--runtime` flag as runc, which is why one backend covers both: they are the
 # same mechanism with a different isolation boundary underneath.
 KATA_RUNTIME = "io.containerd.kata.v2"
+
+# Must match `useradd --uid` in deploy/docker/Dockerfile.agent-sandbox. The
+# runner chowns each job worktree to this id before mounting it, so a drift
+# between the two means the agent cannot write to its own working tree.
+SANDBOX_UID = 10001
+SANDBOX_GID = 10001
+SANDBOX_HOME = "/home/agent"
+SANDBOX_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 class SandboxError(Exception):
@@ -91,12 +101,41 @@ class SandboxBackend(ABC):
     def spawn(self, spec: SandboxSpec) -> SandboxProcess:
         """Start the agent and return a handle to it."""
 
-    def preflight(self) -> None:
+    def preflight(self, workdir_root: str | None = None) -> None:
         """Raise :class:`SandboxError` if this backend cannot run here.
 
         Called before a job is claimed so a misconfigured host fails loudly
         instead of taking a job off the queue and burning one of its attempts.
         Backends with nothing to check inherit this no-op.
+        """
+        return
+
+    def has_binary(self, name: str) -> bool:
+        """Whether ``name`` will be runnable inside the sandbox.
+
+        Only the backend can answer this. Checking the *runner's* PATH is the
+        wrong question for every isolated backend: the agent CLIs live in the
+        sandbox image, so a runner that looked for them locally would refuse
+        every job on a correctly configured host.
+        """
+        return True
+
+    def base_env(self) -> dict[str, str]:
+        """The environment a process starts with inside this sandbox.
+
+        The runner must not forward its own ``PATH``/``HOME`` into an isolated
+        sandbox: those name paths in the *runner's* filesystem. ``HOME`` is the
+        one that bites — an agent CLI writes its config there, and pointing it
+        at a directory that does not exist (or is not writable by the sandbox
+        user) fails the job for a reason nothing in the logs explains.
+        """
+        return {}
+
+    def adopt_workdir(self, path: str) -> None:
+        """Hand ``path`` and everything under it to the sandbox's user.
+
+        Called after the runner has populated the worktree and before the agent
+        runs. A no-op where the agent runs as the runner's own user.
         """
         return
 
@@ -168,16 +207,29 @@ class ProcessBackend(SandboxBackend):
     def __init__(self, *, acknowledged_unsafe: bool = False) -> None:
         self._acknowledged = acknowledged_unsafe
 
-    def preflight(self) -> None:
+    def preflight(self, workdir_root: str | None = None) -> None:
         """Refuse to run unisolated unless explicitly acknowledged."""
         if not self._acknowledged:
             raise SandboxError(
                 "the 'process' sandbox backend provides no isolation: the agent "
-                "runs with the runner's privileges. Set "
-                "AGENT_SANDBOX_ALLOW_UNISOLATED=1 to accept that (only valid "
-                "when an ephemeral VM or a trusted single-tenant host is the "
-                "real boundary), or use AGENT_SANDBOX_BACKEND=container."
+                "runs as the runner's own user, which means it can read the "
+                "dispatcher credential out of /proc and claim other tenants' "
+                "jobs. Set AGENT_SANDBOX_ALLOW_UNISOLATED=1 to accept that "
+                "(only valid single-tenant, where an ephemeral VM is the real "
+                "boundary), or use AGENT_SANDBOX_BACKEND=container."
             )
+
+    def has_binary(self, name: str) -> bool:
+        """The agent runs on this host, so this host must have the binary."""
+        return shutil.which(name) is not None
+
+    def base_env(self) -> dict[str, str]:
+        """Inherit the host's essentials — the agent runs on this host."""
+        return {
+            key: os.environ[key]
+            for key in ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
+            if key in os.environ
+        }
 
     def spawn(self, spec: SandboxSpec) -> SandboxProcess:
         """Start the agent directly on this host."""
@@ -224,17 +276,67 @@ class ContainerBackend(SandboxBackend):
         network: str = "bridge",
         docker_binary: str = "docker",
         extra_args: list[str] | None = None,
+        uid: int = SANDBOX_UID,
+        gid: int = SANDBOX_GID,
+        home: str = SANDBOX_HOME,
     ) -> None:
         self.image = image
         self.runtime = runtime
         self.network = network
         self.docker_binary = docker_binary
         self.extra_args = extra_args or []
+        self.uid = uid
+        self.gid = gid
+        self.home = home
 
     @property
     def is_vm_isolated(self) -> bool:
         """Whether each job gets its own kernel."""
         return self.runtime is not None
+
+    def base_env(self) -> dict[str, str]:
+        """The image's own environment, not the runner's.
+
+        ``HOME`` must name a directory that exists in the *image* and is
+        writable by the sandbox user: every agent CLI writes state there, and
+        inheriting the runner's ``HOME=/root`` makes the CLI fail on startup
+        with an error about a path the operator has never heard of.
+        """
+        return {"HOME": self.home, "PATH": SANDBOX_PATH, "LANG": "C.UTF-8"}
+
+    def adopt_workdir(self, path: str) -> None:
+        """Give the job worktree to the sandbox user before the agent runs.
+
+        The runner creates and populates this tree as itself (root, in the
+        Compose deployment) while the sandbox runs unprivileged. Without this
+        the agent cannot write a single file — and git refuses to operate at
+        all, because a repository owned by another user is "dubious ownership".
+        """
+        try:
+            os.chown(path, self.uid, self.gid)
+            for root, dirs, files in os.walk(path):
+                for name in (*dirs, *files):
+                    # lchown, not chown: a symlink in the tree must not be
+                    # followed to whatever it points at outside the worktree.
+                    with contextlib.suppress(FileNotFoundError):
+                        os.lchown(os.path.join(root, name), self.uid, self.gid)
+        except PermissionError:
+            # An unprivileged runner cannot give the tree away. World-writable
+            # is the only remaining way for the sandbox user to work, and it is
+            # only defensible on a dedicated single-purpose host.
+            os.chmod(path, 0o777)
+            logger.warning(
+                "agent_sandbox_workdir_world_writable",
+                extra={
+                    "event": "agent_sandbox_workdir_world_writable",
+                    "detail": (
+                        "the runner is not root and cannot chown the job worktree to "
+                        f"uid {self.uid}; it was made world-writable instead. Run the "
+                        "runner as root, or accept that any local user can read and "
+                        "modify job worktrees on this host."
+                    ),
+                },
+            )
 
     def preflight(self, workdir_root: str | None = None) -> None:
         """Verify the container runtime is usable before accepting jobs.
@@ -313,6 +415,11 @@ class ContainerBackend(SandboxBackend):
             f"type=bind,source={spec.workdir},target=/workspace",
             "--workdir",
             "/workspace",
+            # Stated rather than inherited from the image: the runner chowns
+            # the worktree to exactly this id, and a silent drift between the
+            # two leaves the agent unable to write to its own working tree.
+            "--user",
+            f"{self.uid}:{self.gid}",
             "--network",
             self.network,
             "--memory",
@@ -374,7 +481,9 @@ def build_backend_from_env(env: dict[str, str] | None = None) -> SandboxBackend:
     (shared kernel) or ``kata`` (VM-isolated container). The remaining
     variables tune the container backends: ``AGENT_SANDBOX_IMAGE``,
     ``AGENT_SANDBOX_NETWORK``, ``AGENT_SANDBOX_RUNTIME`` (overrides the Kata
-    shim name), ``AGENT_SANDBOX_DOCKER`` and ``AGENT_SANDBOX_EXTRA_ARGS``.
+    shim name), ``AGENT_SANDBOX_DOCKER``, ``AGENT_SANDBOX_EXTRA_ARGS`` and
+    ``AGENT_SANDBOX_UID``/``AGENT_SANDBOX_GID``/``AGENT_SANDBOX_HOME`` for a
+    custom sandbox image whose user differs from the one we ship.
     """
     source = env if env is not None else dict(os.environ)
     choice = (source.get("AGENT_SANDBOX_BACKEND") or "process").strip().lower()
@@ -393,6 +502,9 @@ def build_backend_from_env(env: dict[str, str] | None = None) -> SandboxBackend:
             network=source.get("AGENT_SANDBOX_NETWORK") or "bridge",
             docker_binary=source.get("AGENT_SANDBOX_DOCKER") or "docker",
             extra_args=shlex.split(source.get("AGENT_SANDBOX_EXTRA_ARGS") or ""),
+            uid=int(source.get("AGENT_SANDBOX_UID") or SANDBOX_UID),
+            gid=int(source.get("AGENT_SANDBOX_GID") or SANDBOX_GID),
+            home=source.get("AGENT_SANDBOX_HOME") or SANDBOX_HOME,
         )
     raise SandboxError(
         f"unknown AGENT_SANDBOX_BACKEND {choice!r}; expected process, container or kata"
