@@ -236,3 +236,78 @@ def test_format_message_includes_server_block():
     assert "• *Host:*" in message
     info = server_info()
     assert info["hostname"] in message
+
+
+class TestResolutionIsNeverSuppressed:
+    """A dropped resolution leaves its control-plane incident open forever.
+
+    Both suppressions in ``alert_slack`` exist to stop a breach from repeating.
+    Applying them to a resolution instead holds principal quota until it is
+    exhausted, at which point real outages start being suppressed — the exact
+    failure the recovery work exists to prevent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cooldown_does_not_swallow_the_resolution_it_follows(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with patch("serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)):
+            assert await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+            # A repeat of the breach is correctly suppressed …
+            assert not await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+            # … but the resolution inside the same window must still go out.
+            assert await alert_slack(
+                AlertSeverity.INFO,
+                "5xx rate recovered",
+                {},
+                dedupe_key="k",
+                cooldown_sec=300,
+                status="resolved",
+            )
+
+    @pytest.mark.asyncio
+    async def test_the_next_breach_pages_immediately_after_a_resolution(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with patch("serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)):
+            await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+            await alert_slack(
+                AlertSeverity.INFO,
+                "5xx rate recovered",
+                {},
+                dedupe_key="k",
+                cooldown_sec=300,
+                status="resolved",
+            )
+            # The incident is closed, so a fresh breach must not serve out the
+            # cooldown the previous one started.
+            assert await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k", cooldown_sec=300
+            )
+
+    @pytest.mark.asyncio
+    async def test_snooze_silences_breaches_but_still_closes_incidents(self, monkeypatch):
+        monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+        with (
+            patch(
+                "serving.observability.alert_snooze.is_snoozed",
+                new=AsyncMock(return_value=True),
+            ),
+            patch("serving.observability.alerts._post_to_slack", new=AsyncMock(return_value=True)),
+        ):
+            assert not await alert_slack(
+                AlertSeverity.ERROR, "5xx rate exceeded", {}, dedupe_key="k"
+            )
+            # Silencing alerts means "stop telling me it is broken", not
+            # "leave the incident open once it is fixed".
+            assert await alert_slack(
+                AlertSeverity.INFO,
+                "5xx rate recovered",
+                {},
+                dedupe_key="k",
+                status="resolved",
+            )

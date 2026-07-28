@@ -329,20 +329,32 @@ async def alert_slack(
     if not webhook_url and not relay_configured:
         return False
 
-    # Admin-controlled global snooze: pause all alerts until a deadline.
-    try:
-        from serving.observability.alert_snooze import is_snoozed
+    # Both suppressions below exist to stop a *breach* from repeating, and
+    # neither may swallow a resolution. Under the alert control plane a dropped
+    # resolution leaves its incident open forever, holding principal quota until
+    # it is exhausted and real outages start being suppressed; and closing an
+    # incident is not the noise an operator silences alerts to avoid.
+    resolution = status == "resolved"
 
-        if await is_snoozed():
-            return False
-    except Exception:
-        log.debug("alert snooze check failed; sending alert", exc_info=True)
+    # Admin-controlled global snooze: pause all alerts until a deadline.
+    if not resolution:
+        try:
+            from serving.observability.alert_snooze import is_snoozed
+
+            if await is_snoozed():
+                return False
+        except Exception:
+            log.debug("alert snooze check failed; sending alert", exc_info=True)
 
     key = dedupe_key or f"{severity.value}:{title}"
     now = _monotonic()
     async with _DEDUPE_LOCK:
         last = _LAST_FIRED.get(key, 0.0)
-        if key in _IN_FLIGHT or (last > 0.0 and now - last < cooldown_sec):
+        # The in-flight guard still applies to both: it prevents two concurrent
+        # sends of the same key, which would duplicate rather than repeat.
+        if key in _IN_FLIGHT:
+            return False
+        if not resolution and last > 0.0 and now - last < cooldown_sec:
             return False
         _IN_FLIGHT.add(key)
 
@@ -374,5 +386,9 @@ async def alert_slack(
     finally:
         async with _DEDUPE_LOCK:
             _IN_FLIGHT.discard(key)
-            if sent:
+            if sent and resolution:
+                # The breach is over, so the next one must page immediately
+                # rather than serve out the cooldown this incident started.
+                _LAST_FIRED.pop(key, None)
+            elif sent:
                 _LAST_FIRED[key] = _monotonic()
