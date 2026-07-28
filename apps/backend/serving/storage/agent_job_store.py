@@ -8,6 +8,10 @@ Design (adjudicated in issue #1041):
 
 - **State triad separation** — the sandbox/machine can vanish at any time;
   jobs, attempts, and events live here independently.
+- **An expired lease is dead immediately**, not once the reaper notices. Every
+  fenced write requires ``lease_expires_at > NOW()`` as well as a matching
+  generation, so the window between expiry and the reaper's next pass is not a
+  window in which a stalled worker can still write, renew, or finish.
 - **Attempts + fencing tokens** — each grant of ownership is a new
   ``agent_attempts`` row with a monotonically increasing ``lease_generation``.
   Every write from a worker (heartbeat, events, artifacts, state transitions,
@@ -389,6 +393,7 @@ class AgentJobStore:
                 UPDATE agent_attempts
                 SET lease_expires_at = NOW() + make_interval(secs => $3)
                 WHERE id = $1 AND lease_generation = $2 AND status = 'running'
+                  AND lease_expires_at > NOW()
                 RETURNING job_id
                 """,
                 attempt_id,
@@ -437,6 +442,7 @@ class AgentJobStore:
                         SELECT 1 FROM agent_attempts a
                         WHERE a.id = $2 AND a.lease_generation = $6
                           AND a.status = 'running'
+                          AND a.lease_expires_at > NOW()
                   )
                 RETURNING j.id
                 """,
@@ -499,6 +505,7 @@ class AgentJobStore:
                         SELECT 1 FROM agent_attempts a
                         WHERE a.id = $2 AND a.lease_generation = $3
                           AND a.status = 'running'
+                          AND a.lease_expires_at > NOW()
                   )
                 RETURNING j.id
                 """,
@@ -534,14 +541,16 @@ class AgentJobStore:
         """
         async with self._pool.acquire() as conn, conn.transaction():
             attempt = await conn.fetchrow(
-                "SELECT job_id, status, lease_generation FROM agent_attempts "
-                "WHERE id = $1 FOR UPDATE",
+                "SELECT job_id, status, lease_generation, "
+                "lease_expires_at <= NOW() AS expired "
+                "FROM agent_attempts WHERE id = $1 FOR UPDATE",
                 attempt_id,
             )
             if (
                 attempt is None
                 or attempt["status"] != ATTEMPT_RUNNING
                 or attempt["lease_generation"] != lease_generation
+                or attempt["expired"]
             ):
                 return None
             return await self._insert_event(
@@ -625,14 +634,16 @@ class AgentJobStore:
         """Store (or replace) one artifact for an attempt, fenced by the lease."""
         async with self._pool.acquire() as conn, conn.transaction():
             attempt = await conn.fetchrow(
-                "SELECT job_id, status, lease_generation FROM agent_attempts "
-                "WHERE id = $1 FOR UPDATE",
+                "SELECT job_id, status, lease_generation, "
+                "lease_expires_at <= NOW() AS expired "
+                "FROM agent_attempts WHERE id = $1 FOR UPDATE",
                 attempt_id,
             )
             if (
                 attempt is None
                 or attempt["status"] != ATTEMPT_RUNNING
                 or attempt["lease_generation"] != lease_generation
+                or attempt["expired"]
             ):
                 return None
             return await conn.fetchval(

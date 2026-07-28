@@ -176,3 +176,4 @@ not duplicate their content.
 | Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
+| Run / operate the cloud agent sandbox | [docs/developer/agent-sandbox-operations.md](docs/developer/agent-sandbox-operations.md) |

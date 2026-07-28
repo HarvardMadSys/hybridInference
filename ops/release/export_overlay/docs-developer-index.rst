@@ -14,7 +14,6 @@ as a worked example of what that covers.
 
    installation
    deployment
-   codex-oncall
    architecture
    routing
    add-local-model
@@ -24,8 +23,5 @@ as a worked example of what that covers.
    automation-score
    rag-chat
    openrouter
-   freeinference
    claude-code-setup
-   fasrc
    contributing
-   staging

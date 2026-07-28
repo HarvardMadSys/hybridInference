@@ -44,9 +44,34 @@ fi
 host_keys=$(grep -hoE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' "$ENV_FILE" \
             | tr -d ' \t=' | sort -u)
 
-overlay_keys=$(cat "$OVERLAY_DIR"/*.env 2>/dev/null \
+# An overlay directory that exists but yields nothing readable produced an
+# empty key set, an empty difference, and the verdict "nothing changes" — the
+# most reassuring output this script has, from the case where it read nothing
+# at all. Every step below refuses instead.
+shopt -s nullglob
+overlay_files=("$OVERLAY_DIR"/*.env)
+shopt -u nullglob
+if (( ${#overlay_files[@]} == 0 )); then
+  echo "No *.env in $OVERLAY_DIR. This check cannot say anything without them."
+  exit 2
+fi
+for f in "${overlay_files[@]}"; do
+  if [[ ! -r "$f" ]]; then
+    echo "Cannot read $f — re-run with access to it rather than trusting this result."
+    exit 2
+  fi
+done
+
+if ! overlay_keys=$(cat "${overlay_files[@]}" \
                | grep -hoE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=' \
-               | tr -d ' \t=' | sort -u)
+               | tr -d ' \t=' | sort -u); then
+  echo "Failed to read keys from ${overlay_files[*]}."
+  exit 2
+fi
+if [[ -z "$overlay_keys" ]]; then
+  echo "No keys parsed from ${overlay_files[*]} — the overlay format is not what this expects."
+  exit 2
+fi
 
 unset_keys=$(comm -23 <(printf '%s\n' "$overlay_keys") <(printf '%s\n' "$host_keys"))
 

@@ -7,6 +7,7 @@ agent, and the runner must never acquire a git write path.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ from serving.agent_jobs.runner import (
     build_patch,
     run_agent,
 )
-from serving.agent_jobs.runtimes import GenericRuntime
+from serving.agent_jobs.runtimes import ClaudeCodeRuntime, GenericRuntime
 from serving.agent_jobs.sandbox import ProcessBackend
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -103,7 +104,7 @@ def _echo_runtime(lines: int = 3, *, sleep: float = 0.0) -> GenericRuntime:
 def test_agent_output_streams_back_as_events(tmp_path):
     """Every line the agent prints reaches the control plane."""
     control, heart = FakeControl(), FakeHeart()
-    code, _tail = run_agent(
+    code, _tail, _errors = run_agent(
         _echo_runtime(3),
         job=_JOB,
         workdir=str(tmp_path),
@@ -140,7 +141,7 @@ def test_losing_the_lease_aborts_instead_of_racing(tmp_path):
 def test_cancellation_kills_the_agent(tmp_path):
     """Owner cancellation, delivered via heartbeat, actually stops the process."""
     control, heart = FakeControl(), FakeHeart(cancel=True)
-    code, _tail = run_agent(
+    code, _tail, _errors = run_agent(
         _echo_runtime(200, sleep=0.02),
         job=_JOB,
         workdir=str(tmp_path),
@@ -157,7 +158,7 @@ def test_cancellation_kills_the_agent(tmp_path):
 def test_agent_timeout_is_enforced(tmp_path):
     """A runaway agent is killed rather than holding the job forever."""
     control, heart = FakeControl(), FakeHeart()
-    code, _tail = run_agent(
+    code, _tail, _errors = run_agent(
         _echo_runtime(500, sleep=0.05),
         job=_JOB,
         workdir=str(tmp_path),
@@ -279,3 +280,42 @@ def test_runner_source_contains_no_push_path():
     source = Path(runner_mod.__file__).read_text()
     assert '"push"' not in source
     assert "git push" not in source
+
+
+def test_failed_tool_calls_are_reported_not_swallowed(tmp_path):
+    """A denied tool call must reach the caller, not be trusted away.
+
+    Found on the first real run: Claude Code's permission gate denied the
+    Edit, the model then reported "I've added the docstring" anyway, and the
+    job was recorded as a clean success that changed nothing. The runner now
+    reports what the tools did rather than what the agent said about them.
+    """
+    lines = [
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Edit","input":{}}]}}',
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"permission denied"}]}}',
+        '{"type":"assistant","message":{"content":[{"type":"text","text":"Done!"}]}}',
+    ]
+    script = f"import json;[print(line, flush=True) for line in json.loads({json.dumps(lines)!r})]"
+
+    class _ScriptedClaude(ClaudeCodeRuntime):
+        """Claude Code's event parsing, driven by a scripted stdout."""
+
+        def prepare(self, **_kwargs):
+            return [sys.executable, "-c", script], {}
+
+    control = FakeControl()
+    code, _tail, errors = run_agent(
+        _ScriptedClaude(),
+        job=_JOB,
+        workdir=str(tmp_path),
+        gateway_base_url="http://gw",
+        control=control,
+        heart=FakeHeart(),
+        timeout_s=30,
+        backend=ProcessBackend(acknowledged_unsafe=True),
+    )
+    assert code == 0
+    assert len(errors) == 1
+    assert "permission denied" in errors[0]
+    # The owner sees it in the stream, not only in the final detail string.
+    assert any(kind == "error" for kind, _payload in control.events)

@@ -125,6 +125,14 @@ class ClaudeCodeRuntime(AgentRuntime):
             "--output-format",
             "stream-json",
             "--verbose",
+            # The sandbox IS the boundary, so an interactive permission prompt
+            # inside it has nothing left to protect — it only guarantees the
+            # agent cannot do the work. Without this the CLI denies every write
+            # with "you haven't granted it yet", the job produces an empty
+            # patch, and (worse) a model that ignores the error still reports
+            # success. Found by the first real run, not by the fake.
+            "--permission-mode",
+            "bypassPermissions",
         ]
         env = {
             "ANTHROPIC_BASE_URL": gateway_base_url.rstrip("/").removesuffix("/v1"),

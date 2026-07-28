@@ -28,7 +28,7 @@
 # Options:
 #   --retention-days N    Archive+delete rows older than N days (default: 180)
 #   --s3-archive URI      S3 prefix for archives, e.g.
-#                         s3://harvardsys-backup/freeinference/archive/api_logs
+#                         s3://your-bucket/hybridinference/archive/api_logs
 #                         When set, the archive is uploaded and size-verified
 #                         before any delete.
 #   --local-only          Do not upload to S3; keep the archive on local disk.
@@ -46,7 +46,7 @@
 # Examples:
 #   ./ops/db/archive-old-logs.sh --dry-run
 #   ./ops/db/archive-old-logs.sh --local-only
-#   ./ops/db/archive-old-logs.sh --s3-archive s3://harvardsys-backup/freeinference/archive/api_logs
+#   ./ops/db/archive-old-logs.sh --s3-archive s3://your-bucket/hybridinference/archive/api_logs
 #   ./ops/db/archive-old-logs.sh --retention-days 90 --s3-archive s3://bucket/prefix
 
 set -euo pipefail
