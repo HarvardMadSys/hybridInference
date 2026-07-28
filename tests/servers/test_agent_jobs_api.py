@@ -34,6 +34,7 @@ class FakeAgentJobStore:
         self.events: list[dict[str, Any]] = []
         self.artifacts: dict[tuple[str, str], dict[str, Any]] = {}
         self.live_fence: tuple[int, int] | None = None
+        self.released: list[tuple[str, int]] = []
         self._next_event_id = 1
         self._next_job = 1
 
@@ -170,6 +171,16 @@ class FakeAgentJobStore:
         # lacked, never overwrite one the owner pinned.
         if base_sha and not job.get("base_sha"):
             job["base_sha"] = base_sha
+        return True
+
+    async def release_claim(self, *, job_id: str, attempt_id: int) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job.get("current_attempt_id") != attempt_id:
+            return False
+        self.released.append((job_id, attempt_id))
+        job["state"] = "queued"
+        job["current_attempt_id"] = None
+        self.live_fence = None
         return True
 
     async def begin_publish(self, **kwargs: Any) -> bool:
@@ -780,7 +791,11 @@ async def test_a_transient_credential_error_is_retryable_not_terminal(
         claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
 
     assert claim.status_code == 503, "a null token here would terminally fail the job"
-    assert "retried" in claim.text
+    # And the claim is handed back, not merely left to lapse. A lapsed lease
+    # still spends a retry, so an outage lasting three claim cycles would fail
+    # the job outright — the outcome this path exists to avoid, only slower.
+    assert store.released, "the attempt must be returned to the queue"
+    assert store.jobs[store.released[0][0]]["state"] == "queued"
 
 
 async def test_the_worker_reports_the_commit_it_actually_worked_from(

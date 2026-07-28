@@ -518,8 +518,14 @@ async def worker_claim(
             # Returning no token here would send the runner off to clone
             # anonymously, fail on a private repository, and mark the job
             # *terminally* failed — turning a momentary outage into the owner's
-            # problem. Abandoning the attempt instead is the retryable path:
-            # the lease expires unheartbeated and the reaper requeues it.
+            # problem.
+            #
+            # Hand the claim back rather than just letting the lease lapse. A
+            # lapsed lease still spends a retry, so a GitHub outage lasting
+            # across three claim cycles would fail every queued private-repo
+            # job outright, without an agent ever having started — the very
+            # outcome this branch exists to avoid, only slower.
+            await job_store.release_claim(job_id=claim["id"], attempt_id=claim["attempt_id"])
             logger.warning(
                 "agent_job_clone_token_error",
                 extra={"event": "agent_job_clone_token_error", "job_id": claim["id"]},
@@ -530,8 +536,8 @@ async def worker_claim(
                     "error": {
                         "type": "credential_unavailable",
                         "message": (
-                            "Could not mint a repository credential for this job; the "
-                            "attempt has been abandoned and will be retried."
+                            "Could not mint a repository credential for this job; it has "
+                            "been returned to the queue and no attempt was spent."
                         ),
                     }
                 },

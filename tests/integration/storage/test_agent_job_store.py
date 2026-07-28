@@ -508,3 +508,58 @@ async def test_an_expired_lease_is_dead_before_the_reaper_runs(store: AgentJobSt
     fetched = await store.get_job(job["id"])
     assert fetched["state"] == "running"
     assert await store.get_artifact(job_id=job["id"], kind="patch") is None
+
+
+async def test_a_released_claim_costs_no_retry(store: AgentJobStore):
+    """A claim the platform gave up on must not spend the job's retry budget.
+
+    The regression this pins: the budget was read off ``attempt_no``, which
+    numbers every claim. A GitHub outage lasting across `max_attempts` claim
+    cycles would therefore fail every queued private-repo job outright, without
+    an agent ever having started — while the whole point of releasing the claim
+    is that the job never got its turn.
+    """
+    job = await _create_job(store)
+
+    # Three claims the platform abandons before the agent starts.
+    for _ in range(3):
+        claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+        assert claim is not None, "a released job must be claimable again"
+        assert await store.release_claim(job_id=job["id"], attempt_id=claim["attempt_id"])
+        assert (await store.get_job(job["id"]))["state"] == "queued"
+
+    # The budget is untouched: a real attempt still gets to run and be reaped.
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await _expire_attempt(store, claim["attempt_id"])
+    actions = await store.reap_expired(max_attempts=3)
+
+    assert actions[0]["action"] == "queued", "aborted claims must not count as attempts"
+    assert (await store.get_job(job["id"]))["state"] == "queued"
+
+
+async def test_releasing_records_why_rather_than_erasing_the_attempt(store: AgentJobStore):
+    """History stays append-only: the abandoned attempt is marked, not deleted."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+
+    await store.release_claim(job_id=job["id"], attempt_id=claim["attempt_id"])
+
+    events = await store.list_events_after(job_id=job["id"])
+    aborted = [e for e in events if e["event_type"] == "attempt_aborted"]
+    assert aborted, "an operator must be able to see the platform dropped this one"
+    assert aborted[0]["attempt_id"] == claim["attempt_id"]
+
+
+async def test_releasing_a_job_that_moved_on_is_a_no_op(store: AgentJobStore):
+    """A late release must never drag a running job back to the queue."""
+    job = await _create_job(store)
+    first = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.release_claim(job_id=job["id"], attempt_id=first["attempt_id"])
+    second = await store.claim_job(worker_id="w2", lease_ttl_seconds=60)
+
+    # The first attempt is already finished, so releasing it again changes nothing.
+    assert await store.release_claim(job_id=job["id"], attempt_id=first["attempt_id"]) is False
+
+    fetched = await store.get_job(job["id"])
+    assert fetched["state"] == "running"
+    assert fetched["current_attempt_id"] == second["attempt_id"]

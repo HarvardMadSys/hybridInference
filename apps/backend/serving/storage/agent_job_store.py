@@ -65,6 +65,11 @@ ATTEMPT_FINISHED = "finished"
 
 # Control event appended by the reaper when it supersedes an attempt.
 EVENT_ATTEMPT_SUPERSEDED = "attempt_superseded"
+EVENT_ATTEMPT_ABORTED = "attempt_aborted"
+
+# An attempt the platform gave up on before the agent ever started — the job
+# never got its turn, so it must not count toward the retry budget.
+ATTEMPT_ABORTED = "aborted"
 
 
 def _new_job_id() -> str:
@@ -372,6 +377,71 @@ class AgentJobStore:
         claim["attempt_no"] = attempt["attempt_no"]
         claim["lease_generation"] = attempt["lease_generation"]
         return claim
+
+    @staticmethod
+    async def _attempts_spent(conn: Any, job_id: str) -> int:
+        """Count attempts that actually got their turn.
+
+        The retry budget used to be read off ``attempt_no``, which numbers
+        every claim including ones the platform abandoned before the agent
+        started. Counting instead means an aborted claim is free: numbers still
+        advance (they are referenced by events, and gaps are informative), but
+        only attempts that ran spend the budget.
+        """
+        return await conn.fetchval(
+            "SELECT count(*) FROM agent_attempts WHERE job_id = $1 AND status <> $2",
+            job_id,
+            ATTEMPT_ABORTED,
+        )
+
+    async def release_claim(self, *, job_id: str, attempt_id: int) -> bool:
+        """Hand a just-claimed job back to the queue without spending a retry.
+
+        For the case where the *platform* could not go through with a claim it
+        already made — it could not mint the repository credential, say. The
+        job never got its turn, so making it pay for the attempt is wrong twice
+        over: it waits out a lease it will never use, and after
+        ``max_attempts`` such failures the reaper fails it outright. A brief
+        GitHub outage would terminally fail every queued private-repo job
+        without an agent ever starting.
+
+        The attempt row stays, marked ``aborted``, with a control event saying
+        why: history is append-only, and "the platform dropped this one" is
+        exactly the kind of thing an operator later needs to see. It simply
+        does not count — see the retry budget in :meth:`reap_expired`.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            released = await conn.fetchval(
+                """
+                UPDATE agent_attempts
+                SET status = $2, finished_at = NOW()
+                WHERE id = $1 AND status = 'running'
+                RETURNING job_id
+                """,
+                attempt_id,
+                ATTEMPT_ABORTED,
+            )
+            if released is None:
+                return False
+            await self._insert_event(
+                conn,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                event_type=EVENT_ATTEMPT_ABORTED,
+                payload={"reason": "credential_unavailable"},
+            )
+            # Fenced on this attempt still being the current one, so a job that
+            # has since moved on is never dragged back to `queued`.
+            await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET state = 'queued', current_attempt_id = NULL, updated_at = NOW()
+                WHERE id = $1 AND current_attempt_id = $2 AND state = 'running'
+                """,
+                job_id,
+                attempt_id,
+            )
+        return True
 
     async def heartbeat(
         self,
@@ -898,7 +968,7 @@ class AgentJobStore:
                         "WHERE id = $1",
                         job_id,
                     )
-                elif row["attempt_no"] >= max_attempts:
+                elif await self._attempts_spent(conn, job_id) >= max_attempts:
                     action = FAILED
                     await conn.execute(
                         "UPDATE agent_jobs SET state = 'failed', detail = $2, "
