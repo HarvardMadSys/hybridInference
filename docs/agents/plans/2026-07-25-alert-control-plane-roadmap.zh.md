@@ -1,7 +1,7 @@
 # Unified Alert Control Plane — 收口与迁移 Roadmap
 
-> 状态：**v3 — P0 修复已提 PR（#1042 + closeout PR），待 PM 确认后转为 GitHub Roadmap Issue**
-> 撰写日期：2026-07-25（v3：2026-07-27 更新执行状态与产品分层）
+> 状态：**v4 — status-monitor 三类告警已全部迁移（2026-07-27）；真实流量验证目前只覆盖单模型路径**
+> 撰写日期：2026-07-25（v4：2026-07-27 收口 + storm/cycle 迁移完成后更新）
 > 评审基线：`dev@ebe6e813`（含 #1032 / #1033 / #1034）
 > 关联设计文档：
 > - [统一告警控制平面目标设计](../specs/2026-07-20-unified-alert-control-plane-target-design.zh.md)
@@ -11,7 +11,7 @@
 
 ## 0. 一句话现状
 
-**新架构已完成并成功迁移了第一个真实告警类型；不是所有 Slack 告警都迁完。**
+**status-monitor 的三类告警（单模型 / storm / cycle）已全部迁移到新链路并部署生效。真实流量验证目前只覆盖单模型路径**（storm 需 >阈值批量故障、cycle 需网关整体不可用才会自然触发，尚未发生；两者仅有单测与部署验证）。**后端 11 个 `alert_slack` 告警与生产环境仍未迁移。**
 
 产品目标（终态体验）：**一次故障 = 一个 Slack thread** —— 帖子原地更新持续时长与次数、恢复挂在同一 thread、自带部署出处、渠道可插拔。
 
@@ -21,7 +21,7 @@
 
 | 缺什么 | 现在的后果 |
 |---|---|
-| storm / cycle / 后端 11 个告警未迁移 | 同一个频道两种体验：小故障是 incident thread，大故障和后端告警还是裸文本 |
+| 后端 11 个告警未迁移 | 同一频道两种体验：status-monitor 告警是 incident thread，后端告警仍是裸文本 |
 | 生产未上线 | 新体验只在 staging，线上全是老样子 |
 | Codex 分析未移植 | thread 里没有根因回复 |
 | ack / 静默 / 转派没做 | on-call 只能看不能操作（当前 13 个 PR 完全未覆盖，属新需求） |
@@ -36,17 +36,17 @@
 |---|---|
 | Control Plane 状态机、去重、线程、重试 | ✅ 已完成 |
 | SlackSink | ✅ 已完成 |
-| staging 单模型上下线告警 | ✅ 已迁移（**仅当同时故障 ≤ `ALERT_STORM_THRESHOLD`=5**） |
-| **P0 收口修复** | 🟡 已提 PR：#1042（3 项 P0 + Codex 两条）与 closeout PR（P1-B/P2-G/health/README），待合并 |
-| status-monitor storm 告警 | 🟡 D1 已决（b，2026-07-27）：per-model 迁移已提 draft PR，待步骤 2 真实验证后合并 |
-| status-monitor cycle 告警 | ❌ 未迁移，需要新 alert type（约 1–2 人周，独立于 D1） |
+| staging 单模型上下线告警 | ✅ 已迁移（任意批量大小 —— storm 折叠已移除） |
+| **P0 收口修复** | ✅ 全部合并（#1042 三项 + Codex 两条；#1049 P1-B/P2-G/health/README + cycle 无声修复） |
+| status-monitor storm 告警 | ✅ 已迁移并部署（#1050，D1=b 每模型独立 incident；legacy 汇总仅保留于 `ALERT_DEFAULT_OWNER=legacy` 回滚模式）<br>⚠️ **无真实流量验证** —— 复用已验证的单模型投递路径，但"批量并发开 N 个 incident"本身未实测（Slack 速率限制下的排队行为值得观察） |
+| status-monitor cycle 告警 | ✅ 已迁移并部署（#1059 新增 `monitoring_cycle_failure` 契约类型 + producer 双侧；#1065 翻 `ALERT_CYCLE_OWNER=control-plane`，lifecycle 部署先行完成，部署 SHA 经 binding gate 回证）<br>⚠️ **无真实流量验证** —— 全新契约类型，与单模型路径共享投递层但走独立的 fingerprint 与 producer 分支。可安全强制触发：临时把 monitor 自身的 `GATEWAY_BASE_URL` 指向死主机（只让监控自己盲一个窗口，不影响真实网关流量），顺带实测 P1-A 的空目录防护 |
 | 后端全部 `alert_slack` 告警（11 个调用点） | ❌ 未迁移，但已有 dormant Python 契约 |
 | 全局 snooze（管理员暂停告警） | ⚠️ 新链路无对应能力 —— 迁移即功能回归 |
 | 旧 Codex 自动分析回复 | ❌ 新链路未实现（`dispatch_analysis` 返回 `analysis_not_enabled`） |
 | production 上线 | ❌ 未开始（代码中**无任何可发 production 的路径**） |
 | 删除旧 relay / webhook / secrets | ❌ 未完成 |
 | 企业微信等其他 Sink | 抽象已就位，未实现 |
-| 真实端到端验证记录 | ❌ 无 —— C3c 签收的硬前置 |
+| 真实端到端验证记录 | ⚠️ **仅单模型路径** —— `docs/reviews/2026-07-27-c3c-staging-validation.md`（incident_4a6fc4e5：12:41Z firing → 14:01Z 同 thread 恢复，threshold/去重/身份/线程完整性全部实测）。storm 与 cycle 待补，见上方两行 |
 
 ### 为什么不能一次性全切
 
@@ -82,8 +82,8 @@
 | # | 步骤 | 状态 / 前置 | 粗略工作量 |
 |---|---|---|---|
 | 1 | 暂停 production rollout | ✅ 已执行 | — |
-| 2 | 🔴 收口 P0 + 补真实 staging 验证 | 🟡 代码已提 PR（见 §2.1）；**真实 staging 验证仍缺** | 1–2 人周 |
-| 3 | staging 迁移 storm / cycle | 🟡 D1 已决 = b；storm draft PR 已提（合并 gate：步骤 2 真实验证）；cycle 仍需新类型 | storm 已完成；cycle 1–2 人周 |
+| 2 | 收口 P0 + 补真实 staging 验证 | ✅ **完成 2026-07-27**（#1042/#1049 + 验证档案） | 实际约 1 天 |
+| 3 | staging 迁移 storm / cycle | ✅ **完成 2026-07-27**（#1050 storm、#1059+#1065 cycle） | 实际约 1 天 |
 | 4 | staging 迁移后端 `alert_slack`（单点适配） | 前置：步骤 2 | 2–3 人周 |
 | 5 | 补齐 snooze 等能力对齐 | 前置：步骤 4 | 0.5–1 人周 |
 | 6 | 决定并实现新链路 Codex 分析 | 前置：D6 决策 | 2–4 人周 |
@@ -103,7 +103,7 @@
 | P1-B | storm 无 legacy destination 时完全静默 | ✅ closeout PR（undeliverable 日志，每周期重复直到可投递；storm 归属本身仍等 D1） |
 | P2-G | `postSlack` 原始异常可能把 webhook URL 写进日志 | ✅ closeout PR（redact，镜像 `postCodexAlert`） |
 | 文档漂移 | README 4 处失实声明 | ✅ closeout PR |
-| 真实验证 | 一次真实模型故障 firing → resolved 走 binding，截图入 `docs/reviews/` | ❌ **未做 —— 步骤 2 的收尾项与 C3c 签收前置** |
+| 真实验证 | 一次真实探测故障 firing → resolved 走 binding（专用验证目录条目即可 —— 判据是"真实部署的完整链路"，非条目的商业用途），仓库内留存消息全文 + permalink（证据力 ≥ 截图，可实时复核） | ✅ **2026-07-27 完成** —— `docs/reviews/2026-07-27-c3c-staging-validation.md`（incident_4a6fc4e5，12:41Z fire → 14:01Z 同 thread 恢复）。等价性裁决见该文档 Adjudication 节；下一次自然发生的真实模型故障应链接至该文档作为补强证据（不重新阻塞） |
 
 已知边界（刻意不在本批）：目录**部分塌缩**（网关只返回大目录一小部分）仍读作大量 departure，需收缩阈值（调参决策）；P2-F（pending 表不变量违例杀掉全部 per-model 告警且不自愈，当前推演不出可达路径）；P3-I（`event_receipts` 无清理 + O(n) snapshot）。
 
@@ -127,7 +127,7 @@
 
 | ID | 决策 | 选项与价签 | 影响 |
 |---|---|---|---|
-| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | ✅ **已决（2026-07-27）：(b) 每模型独立 thread**。storm 汇总仅保留在 legacy 回滚模式（`ALERT_DEFAULT_OWNER=legacy`）防 webhook 刷屏；以后如需聚合帖可在此之上叠加 | cycle 告警仍需新类型（+1–2 人周，独立工作） |
+| **D1** | 一次挂 20 个模型，on-call 想看到什么？ | ✅ **已决（2026-07-27）：(b) 每模型独立 thread**。storm 汇总仅保留在 legacy 回滚模式（`ALERT_DEFAULT_OWNER=legacy`）防 webhook 刷屏；以后如需聚合帖可在此之上叠加 | 已落地于 #1050。cycle 所需的新类型也已在 #1059 实现（原估 1–2 人周，实际同日完成） |
 | **D2** | "原地更新、不重复响铃"，on-call 真的想要吗？ | 当前设计不响 | 影响 `update_parent` 策略 |
 | **D6** | Codex 分析在后端迁移之前还是之后？ | (a) 之前：无回归窗口，推迟迁移 2–4 周<br>(b) 之后：接受"最有价值的告警恰好没分析"窗口<br>(c) 之后，但依赖分析的 producer 排最后迁 | 决定步骤 4/6 顺序 |
 | D3 | 生产上线时间窗口与审批路径 | — | 步骤 7 排期 |
@@ -142,10 +142,10 @@
 
 - [ ] staging 与 prod 的 Slack 里再也找不到旧格式裸文本告警
 - [ ] 老 `SLACK_WEBHOOK_URL` / `SLACK_ALERTS_WEBHOOK_URL` / relay secrets 已删除，删除后经真实故障验证
-- [ ] 任何一次告警未发出都有可见信号（health 字段 + 日志），不静默
+- [ ] 任何一次告警未发出都有可见信号（health 字段 + 日志），不静默 —— status-monitor 侧已交付（#1049：`pendingControlPlaneTransitions` + undeliverable 日志）；后端 `alert_slack` 侧随步骤 4 迁移时补
 - [ ] 全局 snooze 已在新链路对齐
 - [ ] 回滚是"退回旧路"而非"卡死"，经演练验证（P3-H）
-- [ ] `docs/reviews/` 有端到端验证档案：真实故障 → 帖子截图 → 恢复截图，staging + prod 各一份
+- [ ] `docs/reviews/` 有端到端验证档案：故障 → 帖子 → 恢复的仓库内消息全文 + permalink（或截图），staging（✅ 2026-07-27）+ prod 各一份
 
 ### 🏁 远端：「好用的告警产品」（新需求面）
 
@@ -175,11 +175,12 @@
 
 | 路径 | 源码 | 状态 |
 |---|---|---|
-| 单模型 `model_unavailable` | `alerts.ts` `deliverModelAlert` | ✅ 已迁移（≤ storm 阈值） |
-| storm 汇总 | `alerts.ts` `modelsDownEvent` / `modelsRecoveredEvent` | ❌ legacy |
-| cycle 网关级 | `alerts.ts` `runCycleAlert` | ❌ legacy |
+| 单模型 `model_unavailable` | `alerts.ts` `deliverModelAlert` | ✅ 已迁移 + 真实流量验证 |
+| storm（>阈值批量故障） | `alerts.ts` — 每模型独立 incident | ✅ 已迁移（D1=b），⚠️ 无真实流量验证 |
+| cycle 网关级 | `alerts.ts` `runCycleAlert` | ✅ 已迁移（`monitoring_cycle_failure`），⚠️ 无真实流量验证 |
 
-投递出口：`postCodexAlert`（relay）→ `postSlack`（webhook fallback）
+legacy 投递出口 `postCodexAlert` → `postSlack` 仅在 `ALERT_DEFAULT_OWNER` /
+`ALERT_CYCLE_OWNER` 回滚为 `legacy` 时使用，以及供切换前已开的 incident 排空。
 
 ### A.2 后端 `alert_slack` —— 单一收敛点，11 个调用点
 
@@ -240,7 +241,7 @@ npx wrangler secret list --name freeinference-monitor
 ```
 `SLACK_WEBHOOK_URL` 必须仍在 —— storm 与 cycle 目前只走它。
 
-**最直接**：翻 staging Slack 频道，有真实模型名（非 `synthetic-control-plane-gate-*`）的 incident 帖子 = 真实链路已通。
+**最直接**：翻 staging Slack 频道，有真实目录模型（非 runner 本地伪造的 `synthetic-control-plane-gate-*` id）的 incident 帖子 = 真实链路已通。该判据区分的是"runner 本地合成 RPC"与"部署链路真实穿越"，与条目的商业用途无关 —— 2026-07-27 的 `staging-alert-validation` incident 属于后者。
 
 ---
 

@@ -493,9 +493,6 @@ jobs:
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
 
-      - name: Verify transitional public documentation parity
-        run: python3 ops/ci/check_public_docs_parity.py
-
       - name: Install gitleaks
         run: |
           set -euo pipefail

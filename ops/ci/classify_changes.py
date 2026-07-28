@@ -52,8 +52,8 @@ FULL_PREFIXES = (
     "distributions/",
 )
 # The one distributions/ subtree that must NOT force a full run: the overlay's
-# doc-site corpus is site content (moved from docs/free_inference/), read only
-# by the offline ingest CLI, never by the running application.
+# doc-site corpus is site content, read only by the offline ingest CLI, never by
+# the running application.
 FULL_PREFIX_EXCEPTIONS = ("distributions/freeinference/content/docs/",)
 
 FRONTEND_PREFIX = "apps/frontend/"
@@ -85,9 +85,9 @@ DOCKER_IMAGE_FILES = {
 DOCS_FILES = frozenset({"LICENSE"})
 DOCS_PREFIXES = (
     "docs/",
-    # Public doc-site source lives in the FreeInference overlay (moved from
-    # docs/free_inference/); its non-markdown files (Makefile, css, conf.py)
-    # are still documentation, not application inputs.
+    # Public doc-site source lives in the FreeInference overlay; its
+    # non-markdown files (Makefile, css, conf.py) are still documentation, not
+    # application inputs.
     "distributions/freeinference/content/docs/",
 )
 
