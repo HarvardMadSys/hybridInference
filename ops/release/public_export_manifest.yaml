@@ -116,6 +116,13 @@ exclude:
       This deployment's endpoint map, down to a model directory on a Harvard
       cluster. Replaced by the minimal example — see `overlay:`.
 
+  - path: tests/fixtures/e2e_config.yaml
+    reason: >-
+      Names one deployment's e2e machines, including a model path on a Harvard
+      cluster. The file's shape is generic, so it is replaced rather than
+      dropped — see `overlay:`; deleting it would leave tests/e2e/ pointing at
+      nothing.
+
   - path: .github/workflows/
     reason: >-
       Every job targets self-hosted runners this deployment owns, and the deploy
@@ -149,18 +156,20 @@ overlay:
       Declares no endpoint at all. A fresh gateway knows about no machines
       until its operator adds theirs.
 
+  - path: tests/fixtures/e2e_config.yaml
+    source: ops/release/export_overlay/tests-fixtures-e2e_config.yaml
+    reason: >-
+      The same file with plain model ids instead of one cluster's paths. An
+      `expected_model_id` has to match what your own server reports, so a path
+      from somebody else's filesystem is wrong for you as well as a disclosure
+      of their machine layout.
+
 undecided: []
 
 # What the exported tree still leaks today, with the reason each is pending.
 # The test treats this as a ceiling: anything new fails, and an entry that stops
 # being found must be deleted, so the list can only shrink.
 known_findings:
-  - where: tests/fixtures/e2e_config.yaml
-    what: cluster path
-    pending: >-
-      Describes one deployment's e2e machines; expected_model_id has to match
-      what that server reports, so it moves rather than being reworded.
-
   - where: tests/fixtures/test_models.yaml
     what: cluster path
     pending: Fixed in #1082 — delete this entry once that merges.

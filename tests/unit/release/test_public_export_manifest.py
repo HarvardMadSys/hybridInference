@@ -110,6 +110,29 @@ def test_the_exported_ci_runs_where_anyone_can_reach_it(manifest: dict) -> None:
     )
 
 
+def test_no_overlay_source_carries_what_it_is_replacing(manifest: dict) -> None:
+    """A replacement that kept the thing it replaces is worse than none.
+
+    Each of these exists because the file it stands in for names one
+    deployment's machines. Copying the original and forgetting to change the
+    part that mattered would pass every other check here.
+    """
+    import re
+
+    leaks = re.compile(
+        r"/n/netscratch/|internal\.freeinference\.org|\bhyi-[A-Za-z0-9]{32,}",
+    )
+    for rule in manifest.get("overlay") or []:
+        source = REPO / rule["source"]
+        if not source.exists():
+            continue  # covered by test_every_overlay_source_exists
+        found = sorted({m.group() for m in leaks.finditer(source.read_text())})
+        assert not found, (
+            f"{rule['source']} replaces {rule['path']} but still carries "
+            f"{found} — the reason it exists"
+        )
+
+
 def test_the_design_doc_exclusions_are_present(manifest: dict) -> None:
     """These two are settled upstream of this file; losing them is a regression."""
     excluded = {rule["path"] for rule in manifest["exclude"]}
