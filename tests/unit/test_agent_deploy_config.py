@@ -225,3 +225,50 @@ def test_both_phases_are_closed_in_the_shipped_configuration(compose: dict):
     env = compose["services"]["agent-runner"]["environment"]
     for var in ("AGENT_EGRESS_SETUP_TIER", "AGENT_EGRESS_AGENT_TIER"):
         assert "platform_only" in env[var], f"{var} must be closed until a tier exists for it"
+
+
+def test_both_substrates_pin_the_same_agent_cli_versions():
+    """A job must not behave differently depending on which substrate claims it.
+
+    The Actions runner installs the CLIs itself while the container backend
+    gets them from the sandbox image. When those drift, the same job produces
+    different results — or fails on one substrate only — for a reason nothing
+    in the job's own record explains. `latest` on the Actions side already cost
+    a real run once.
+    """
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github/workflows/agent-job-runner.yml"
+    ).read_text()
+    image = _DOCKERFILE.read_text()
+
+    for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION"):
+        pinned = re.search(rf"^ARG {name}=(\S+)$", image, re.MULTILINE)
+        assert pinned, f"{name} must be pinned in the sandbox image"
+        assert f'{name}: "{pinned.group(1)}"' in workflow, (
+            f"{name} differs between the sandbox image and the Actions workflow"
+        )
+
+
+def test_the_runner_reads_the_bounds_the_overlay_configures(monkeypatch, compose: dict):
+    """A configured lease and timeout must actually reach the runner.
+
+    The overlay set both and the runner read neither, so every self-hosted job
+    ran on the built-in defaults no matter what the operator wrote — a setting
+    that looks applied and is not.
+    """
+    env = compose["services"]["agent-runner"]["environment"]
+    assert "AGENT_LEASE_TTL" in env and "AGENT_TIMEOUT_S" in env
+
+    monkeypatch.setenv("AGENT_LEASE_TTL", "45")
+    monkeypatch.setenv("AGENT_TIMEOUT_S", "600")
+    args = build_parser().parse_args([])
+
+    assert args.lease_ttl == 45.0
+    assert args.agent_timeout == 600.0
+
+
+def test_an_unparsable_bound_falls_back_rather_than_crash_looping(monkeypatch):
+    """A typo in an env var must not take the runner down on every restart."""
+    monkeypatch.setenv("AGENT_LEASE_TTL", "two minutes")
+    args = build_parser().parse_args([])
+    assert args.lease_ttl > 0

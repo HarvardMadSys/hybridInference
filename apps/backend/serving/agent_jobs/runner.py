@@ -836,6 +836,18 @@ def run_forever(
         time.sleep(idle_sleep_s)
 
 
+def _env_float(name: str, fallback: float) -> float:
+    """Read a float setting, falling back rather than crash-looping on a typo."""
+    raw = os.environ.get(name)
+    if not raw:
+        return fallback
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"ignoring {name}={raw!r}: not a number", file=sys.stderr)
+        return fallback
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the runner CLI parser.
 
@@ -847,8 +859,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=os.environ.get("FREEINFERENCE_BASE_URL", ""))
     parser.add_argument("--worker-id", default=os.environ.get("AGENT_WORKER_ID", "runner"))
     parser.add_argument("--workdir", default=".")
-    parser.add_argument("--lease-ttl", type=float, default=DEFAULT_LEASE_TTL_S)
-    parser.add_argument("--agent-timeout", type=float, default=DEFAULT_AGENT_TIMEOUT_S)
+    # Read from the environment the way --base-url and --workdir-root already
+    # do. The compose overlay sets AGENT_LEASE_TTL and AGENT_TIMEOUT_S, and
+    # neither reached the runner: every self-hosted job used the built-in
+    # defaults regardless of what the operator configured, silently.
+    parser.add_argument(
+        "--lease-ttl",
+        type=float,
+        default=_env_float("AGENT_LEASE_TTL", DEFAULT_LEASE_TTL_S),
+    )
+    parser.add_argument(
+        "--agent-timeout",
+        type=float,
+        default=_env_float("AGENT_TIMEOUT_S", DEFAULT_AGENT_TIMEOUT_S),
+    )
     parser.add_argument("--generic-command", default=os.environ.get("AGENT_GENERIC_COMMAND"))
     parser.add_argument(
         "--loop",

@@ -66,11 +66,21 @@ jobs:
       - name: Install runner dependencies
         run: python -m pip install --quiet httpx
 
-      - name: Install the agent runtime
+      - name: Install the agent runtimes
+        env:
+          # Pinned to the same versions as deploy/docker/Dockerfile.agent-sandbox.
+          # `latest` here already cost a real job once: it resolved to a CLI whose
+          # request shape the gateway rejected, and every model call returned 400.
+          # A drift between the two substrates would mean a job behaves differently
+          # depending on which one happens to claim it.
+          CLAUDE_CODE_VERSION: "2.1.220"
+          CODEX_VERSION: "0.145.0"
         run: |
           set -euo pipefail
-          npm install -g @anthropic-ai/claude-code@latest
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
           claude --version
+          codex --version
 
       - name: Preflight (fail closed)
         env:
@@ -80,7 +90,8 @@ jobs:
           # A write-capable agent must never start on a half-configured runner.
           # Every one of these is a hard failure, not a warning.
           test -n "$BASE_URL" || { echo "::error::FREEINFERENCE_BASE_URL is not set"; exit 1; }
-          command -v claude >/dev/null || { echo "::error::agent runtime missing"; exit 1; }
+          command -v claude >/dev/null || { echo "::error::claude runtime missing"; exit 1; }
+          command -v codex >/dev/null || { echo "::error::codex runtime missing"; exit 1; }
           command -v git >/dev/null || { echo "::error::git missing"; exit 1; }
           if [ -f "$HOME/.git-credentials" ] || git config --get credential.helper >/dev/null 2>&1; then
             echo "::error::a git credential helper is configured; the sandbox must hold no git credential"
