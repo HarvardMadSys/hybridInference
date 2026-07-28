@@ -38,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the selected targets and scenarios without making network calls.",
     )
+
+    fake_parser = subparsers.add_parser(
+        "fake-provider",
+        help="Serve the deterministic agent-loop fake provider in the foreground.",
+    )
+    fake_parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
+    fake_parser.add_argument("--port", type=int, default=8351, help="Bind port.")
     return parser
 
 
@@ -45,6 +52,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Runs the CLI entrypoint."""
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "fake-provider":
+        from freeinference_harness.fake_provider import serve_forever
+
+        return serve_forever(host=args.host, port=args.port)
 
     if args.command == "run":
         targets = load_targets(Path(args.targets))

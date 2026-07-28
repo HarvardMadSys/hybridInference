@@ -1,0 +1,22 @@
+# Real-runtime smoke suite (issue #1041, P-1: runtime -> gateway -> fake).
+#
+# Spawns actual agent CLIs (Claude Code headless, codex exec) pointed at the
+# target and checks the deterministic runtime_smoke script end to end.
+# Missing binaries skip cleanly. Run against the gateway-local target with the
+# fake registered — the chain is then real runtime -> real gateway -> fake,
+# fully deterministic and token-free.
+
+suite_name: agent-loop-runtime
+
+scenarios:
+  - id: runtime_claude_smoke
+    type: runtime_claude_smoke
+    agent_script: runtime_smoke
+    required_capabilities: [anthropic_messages]
+    repetitions: 1
+
+  - id: runtime_codex_smoke
+    type: runtime_codex_smoke
+    agent_script: runtime_smoke
+    required_capabilities: [chat]
+    repetitions: 1
