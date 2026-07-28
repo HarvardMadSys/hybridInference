@@ -32,6 +32,10 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
+from serving.agent_jobs.egress import (
+    EgressPolicyError,
+    build_policy_from_env as build_egress_policy,
+)
 from serving.agent_jobs.entitlement import RepoNotAllowed, require_allowed_repo
 from serving.agent_jobs.github_app import AppNotInstalled
 from serving.agent_jobs.tokens import (
@@ -66,6 +70,7 @@ from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
     get_agent_app_credentials,
     get_agent_job_store,
+    get_log_store,
     verify_admin_access,
 )
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
@@ -136,8 +141,44 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _job_response(job: dict[str, Any]) -> AgentJobResponse:
+async def _job_usage(log_store: Any, job_id: str) -> dict[str, Any]:
+    """Read one job's spend and token totals from the billing ledger.
+
+    Deliberately the ledger and not the agent's own report: a run that
+    misstates its usage — which is a thing models do — cannot change what the
+    owner is shown, and it is the same source the budget check already trusts.
+    Absent on a deployment with no log store, rather than a fabricated zero.
+    """
+    usage: dict[str, Any] = {}
+    cost_getter = getattr(log_store, "get_agent_job_cost", None)
+    if cost_getter is not None:
+        with contextlib.suppress(Exception):
+            usage["spent_usd"] = await cost_getter(job_id)
+    usage_getter = getattr(log_store, "get_agent_job_usage", None)
+    if usage_getter is not None:
+        with contextlib.suppress(Exception):
+            totals = await usage_getter(job_id)
+            usage["tokens_in"] = int(totals.get("tokens_in", 0))
+            usage["tokens_out"] = int(totals.get("tokens_out", 0))
+            usage["model_calls"] = int(totals.get("calls", 0))
+    return usage
+
+
+def _egress_tiers() -> tuple[str | None, str | None]:
+    """Report the deployment's per-phase egress posture, if it has one."""
+    try:
+        policy = build_egress_policy()
+    except EgressPolicyError:
+        # A misconfigured policy is the runner's problem to refuse at preflight,
+        # not a reason to fail an owner reading their own job.
+        return None, None
+    return policy.tier_for("setup").value, policy.tier_for("agent").value
+
+
+def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> AgentJobResponse:
     """Shape a store job row for the owner-facing API."""
+    usage = usage or {}
+    setup_tier, agent_tier = _egress_tiers()
     return AgentJobResponse(
         id=job["id"],
         repo=job["repo"],
@@ -154,6 +195,12 @@ def _job_response(job: dict[str, Any]) -> AgentJobResponse:
         metadata=job["metadata"],
         created_at=_iso(job["created_at"]),
         updated_at=_iso(job["updated_at"]),
+        spent_usd=usage.get("spent_usd"),
+        tokens_in=usage.get("tokens_in"),
+        tokens_out=usage.get("tokens_out"),
+        model_calls=usage.get("model_calls"),
+        setup_egress_tier=setup_tier,
+        agent_egress_tier=agent_tier,
     )
 
 
@@ -244,10 +291,12 @@ async def get_agent_job(
     job_id: str,
     user: dict[str, Any] = Depends(verify_api_key),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    log_store=Depends(get_log_store),
 ) -> AgentJobResponse:
-    """Fetch one of the caller's agent jobs."""
+    """Fetch one of the caller's agent jobs, with what it has spent so far."""
     job_store = _require_store(store)
-    return _job_response(await _owned_job(job_store, job_id, user))
+    job = await _owned_job(job_store, job_id, user)
+    return _job_response(job, await _job_usage(log_store, job_id))
 
 
 @router.post("/jobs/{job_id}/cancel", response_model=AgentJobCancelResponse)

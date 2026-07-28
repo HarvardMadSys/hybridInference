@@ -84,6 +84,16 @@ class AgentJobResponse(BaseModel):
     metadata: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    # Read from the billing ledger, never from anything the agent reports about
+    # itself — the same rule the budget check already follows.
+    spent_usd: float | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    model_calls: int | None = None
+    # The deployment's egress posture for this job's two phases, so the owner
+    # can see what the sandbox could reach rather than take it on trust.
+    setup_egress_tier: str | None = None
+    agent_egress_tier: str | None = None
 
 
 class AgentJobListResponse(BaseModel):

@@ -226,6 +226,7 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     from serving.servers.auth import verify_api_key
     from serving.servers.deps import (
         get_agent_app_credentials,
+        get_log_store,
         get_operational_store,
         verify_admin_access,
     )
@@ -239,6 +240,9 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     # No GitHub App by default — the configuration most deployments start in,
     # and the one where a public repository still clones fine.
     app.dependency_overrides[get_agent_app_credentials] = lambda: None
+    # No log store: spend and usage are then absent from the response rather
+    # than reported as a fabricated zero.
+    app.dependency_overrides[get_log_store] = lambda: None
     identity = {"user_id": _OWNER, "role": role, "authenticated": True}
     app.dependency_overrides[verify_api_key] = lambda: identity
     if dispatcher:
@@ -903,3 +907,53 @@ async def test_a_legacy_row_gets_no_credential_at_claim(store: FakeAgentJobStore
     assert minted == [], "no credential may be minted for an unentitled repo"
     # And the job went back to the queue rather than burning an attempt.
     assert store.released
+
+
+async def test_spend_and_usage_come_from_the_ledger_not_the_agent(store: FakeAgentJobStore):
+    """A job's numbers must not depend on what the agent says about itself.
+
+    Models do misreport their own usage — this session watched one claim it had
+    edited a file it never touched — so the owner-facing totals read the same
+    billing ledger the budget check already trusts.
+    """
+    from serving.servers.deps import get_log_store
+
+    class Ledger:
+        async def get_agent_job_cost(self, job_id: str) -> float:
+            return 0.0075
+
+        async def get_agent_job_usage(self, job_id: str) -> dict[str, float]:
+            return {"tokens_in": 74000, "tokens_out": 523, "calls": 3}
+
+    app = _build_app(store)
+    app.dependency_overrides[get_log_store] = lambda: Ledger()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        job_id = await _create_job(client)
+        got = await client.get(f"/v1/agent/jobs/{job_id}")
+
+    body = got.json()
+    assert body["spent_usd"] == 0.0075
+    assert body["tokens_in"] == 74000
+    assert body["model_calls"] == 3
+
+
+async def test_a_deployment_without_a_ledger_reports_absent_not_zero(client: AsyncClient):
+    """A missing source must not look like a job that spent nothing."""
+    job_id = await _create_job(client)
+
+    body = (await client.get(f"/v1/agent/jobs/{job_id}")).json()
+
+    assert body["spent_usd"] is None
+    assert body["tokens_in"] is None
+
+
+async def test_the_owner_can_see_what_the_sandbox_could_reach(client: AsyncClient, monkeypatch):
+    """The egress posture is reported, not left to trust."""
+    monkeypatch.setenv("AGENT_SANDBOX_NETWORK", "agent-egress")
+    monkeypatch.setenv("AGENT_EGRESS_AGENT_TIER", "platform_only")
+    job_id = await _create_job(client)
+
+    body = (await client.get(f"/v1/agent/jobs/{job_id}")).json()
+
+    assert body["agent_egress_tier"] == "platform_only"
