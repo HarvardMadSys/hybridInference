@@ -12,6 +12,8 @@ import validFiringFixture from "./fixtures/valid-provider-circuit-firing.json";
 import validResolvedFixture from "./fixtures/valid-provider-circuit-resolved.json";
 import validModelFiringFixture from "./fixtures/valid-model-unavailable-firing.json";
 import validModelResolvedFixture from "./fixtures/valid-model-unavailable-resolved.json";
+import validMetricThresholdFixture from "./fixtures/valid-metric-threshold-firing.json";
+import validDependencyFixture from "./fixtures/valid-dependency-unavailable-firing.json";
 
 import {
   canonicalEventDigest,
@@ -80,6 +82,27 @@ describe("canonical AlertEvent validation", () => {
     expect(firing).not.toHaveProperty("slack_text");
     expect(firing).not.toHaveProperty("environment");
     expect(firing).not.toHaveProperty("source");
+  });
+
+  // The Python contract mirror parses these same two files, so a rule that
+  // drifts between the two implementations fails in one of the suites rather
+  // than at ingress, where a producer only learns a status code.
+  it("accepts the shared gateway metric-threshold fixture", () => {
+    const event = parseAlertEvent(validMetricThresholdFixture, { now: TEST_NOW });
+
+    expect(event).toEqual({
+      ...validMetricThresholdFixture,
+      occurred_at: "2026-07-19T06:00:00.000Z",
+    });
+  });
+
+  it("accepts the shared gateway dependency fixture", () => {
+    const event = parseAlertEvent(validDependencyFixture, { now: TEST_NOW });
+
+    expect(event).toEqual({
+      ...validDependencyFixture,
+      occurred_at: "2026-07-19T06:00:00.000Z",
+    });
   });
 
   it.each([

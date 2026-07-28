@@ -1,3 +1,14 @@
+"""This deployment's own models and machines, asserted where they belong.
+
+Every case here names something particular to FreeInference —
+deepseek-v4-flash, minimax-fast, H200_DEPLOYMENT_URL, SPARK_DEPLOYMENT_URL.
+Upstream has no opinion about any of them, so these moved out of
+tests/unit/config/ along with the routing file they read.
+
+All three config files live in this overlay now, which is where these read
+from.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +20,9 @@ ROOT = Path(__file__).resolve().parents[3]
 
 def test_sglang_local_route_uses_local_deployment_url() -> None:
     """SGLang routes must not reuse LOCAL_BASE_URL for upstream deployment URL."""
-    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
+    models = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "models.yaml").read_text()
+    )
 
     qwen = next((model for model in models["models"] if model["id"] == "qwen3.6-35b"), None)
     assert qwen is not None, "Model 'qwen3.6-35b' not found in config/models.yaml"
@@ -22,7 +35,9 @@ def test_sglang_local_route_uses_local_deployment_url() -> None:
 
 def test_spark_route_uses_spark_deployment_url() -> None:
     """Spark vLLM routes must use SPARK_DEPLOYMENT_URL, not LOCAL_DEPLOYMENT_URL."""
-    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
+    models = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "models.yaml").read_text()
+    )
 
     spark_model = next(
         (model for model in models["models"] if model["id"] == "diffusiongemma"), None
@@ -37,7 +52,9 @@ def test_spark_route_uses_spark_deployment_url() -> None:
 
 def test_deepseek_v4_flash_has_optional_h200_sglang_route() -> None:
     """Local H200 idle proxy route must use H200_DEPLOYMENT_URL and be optional."""
-    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())
+    models = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "models.yaml").read_text()
+    )
 
     # The model id may be renamed (deepseek-v4-flash -> deepseek-v4-flash-highspeed)
     # as long as the old name survives as an alias; resolve it the same way the
@@ -60,7 +77,9 @@ def test_deepseek_v4_flash_has_optional_h200_sglang_route() -> None:
 
 def test_routing_local_deployment_uses_local_deployment_url() -> None:
     """Routing local_deployment must match the SGLang deployment env var."""
-    routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())
+    routing = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "routing.yaml").read_text()
+    )
 
     endpoints = [deployment["endpoint"] for deployment in routing["local_deployment"]]
 
@@ -71,7 +90,9 @@ def test_routing_local_deployment_uses_local_deployment_url() -> None:
 
 def test_routing_h200_local_deployment_lists_deepseek_v4_flash() -> None:
     """H200 local_deployment entry must register deepseek-v4-flash."""
-    routing = yaml.safe_load((ROOT / "config" / "routing.yaml").read_text())
+    routing = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "routing.yaml").read_text()
+    )
 
     h200 = next(
         (d for d in routing["local_deployment"] if d.get("endpoint") == "${H200_DEPLOYMENT_URL}"),
@@ -83,7 +104,9 @@ def test_routing_h200_local_deployment_lists_deepseek_v4_flash() -> None:
 
 def test_minimax_fast_uses_routewise() -> None:
     """minimax-fast should exist as a RouteWise-routed model."""
-    models = yaml.safe_load((ROOT / "config" / "models.yaml").read_text())["models"]
+    models = yaml.safe_load(
+        (ROOT / "distributions" / "freeinference" / "config" / "models.yaml").read_text()
+    )["models"]
 
     minimax_fast = next((model for model in models if model["id"] == "minimax-fast"), None)
 
@@ -122,7 +145,7 @@ def test_minimax_fast_lists_routewise_options_in_comments() -> None:
 
     from routing.routewise.config import RouteWiseConfig
 
-    text = (ROOT / "config" / "models.yaml").read_text()
+    text = (ROOT / "distributions" / "freeinference" / "config" / "models.yaml").read_text()
 
     for field in dataclass_fields(RouteWiseConfig):
         assert field.name in text, (

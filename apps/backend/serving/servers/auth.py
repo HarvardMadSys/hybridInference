@@ -17,6 +17,7 @@ from serving.agent_jobs.model_auth import (
     looks_like_agent_token,
 )
 from serving.config.settings import get_settings
+from serving.config.site_identity import get_site_identity
 from serving.model_access import get_disabled_models_from_preferences
 from serving.observability.rejection_log import log_rejection
 from serving.servers.deps import (
@@ -29,7 +30,11 @@ from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
 
 logger = get_logger(__name__)
-QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
+
+
+def _quota_contact() -> str:
+    """Support address for quota messages, or empty when none is configured."""
+    return get_site_identity().support_email
 
 
 def is_user_auth_enabled() -> bool:
@@ -313,9 +318,11 @@ async def verify_api_key(
                 "spent_usd": cost_spent,
                 "remaining_usd": max(0, quota_daily_cost_usd - cost_spent),
                 "reset_at": quota_reset_at.isoformat(),
-                "contact_email": QUOTA_CONTACT_EMAIL,
+                "contact_email": _quota_contact(),
                 "message": (
-                    f"Need more quota? Email {QUOTA_CONTACT_EMAIL} and explain your use case."
+                    f"Need more quota? Email {_quota_contact()} and explain your use case."
+                    if _quota_contact()
+                    else "Daily quota exhausted. Contact the operator of this deployment."
                 ),
                 "retry_after": seconds_until_midnight_utc,
             },

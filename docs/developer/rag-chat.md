@@ -58,8 +58,10 @@ The committed index is prebuilt with real `bge-m3` embeddings. Regenerate it
 RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest      # real bge-m3, 1024-dim
 ```
 
-`RAG_GATEWAY_BASE_URL` defaults to `https://freeinference.org/v1`; the key must
-be a valid user API key on that gateway. Chunks are embedded with the same
+`RAG_GATEWAY_BASE_URL` defaults to `http://localhost:8080/v1` — embedding is
+billable work, so a clone draws on its own gateway rather than on whoever wrote
+the default. Point it at the gateway you want to embed through; the key must be
+a valid user API key on *that* gateway. Chunks are embedded with the same
 `bge-m3` model the serving endpoint uses at query time, so query and document
 vectors share one space.
 
@@ -131,7 +133,7 @@ All optional; sensible defaults resolve relative to the repo root.
 | `RAG_INDEX_PATH` | `serving/rag/prebuilt/docs_index.json` | Vector index location |
 | `RAG_CORPUS_DIR` | `distributions/freeinference/content/docs/docs/source` | Markdown corpus |
 | `RAG_EMBEDDER` | `gateway` | `gateway` (real bge-m3) or `hash` (offline) |
-| `RAG_GATEWAY_BASE_URL` | `https://freeinference.org/v1` | Gateway used by **ingest** (gateway mode) |
+| `RAG_GATEWAY_BASE_URL` | `http://localhost:8080/v1` | Gateway used by **ingest** (gateway mode) |
 | `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (gateway mode) |
 | `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer-generation model |
 | `RAG_TOP_K` | `4` | Chunks retrieved per query |

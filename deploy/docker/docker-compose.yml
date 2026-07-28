@@ -38,10 +38,47 @@ services:
       # cannot be reached except through Cloudflare (Authenticated Origin Pulls
       # or a Cloudflare IP allowlist) — otherwise anyone hitting the origin
       # directly can forge it. Set to 1 in .env once that is true.
-      # See docs/developer/freeinference.md#client-ip-resolution.
       TRUST_CLOUDFLARE_HEADERS: ${TRUST_CLOUDFLARE_HEADERS:-0}
       GEOIP_COUNTRY_DB: /app/var/data/geoip/dbip-country-lite.mmdb
       GEOIP_COUNTRY_PROVIDER: dbip-lite
+      # Alert thresholds and inboxes belong to a deployment, so upstream
+      # ships none. This default names a path a clone does not have, and
+      # the loader falls back to built-in defaults there — which is right
+      # for a clone and wrong for a deployment, so a deployment names its
+      # own file in distributions/*/deploy/backend.env. Losing that line
+      # would swap production's thresholds for the defaults in silence,
+      # which is why a test pins it.
+      ALERTS_CONFIG_PATH: ${ALERTS_CONFIG_PATH-config/alerts.yaml}
+      # Same shape, sharper edge: without this a deployment loses its whole
+      # endpoint map and every health-check setting, and the gateway starts
+      # anyway — verified by booting with the file absent. Pinned by a test.
+      ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-config/routing.yaml}
+      # The last of the three, and the only one that fails loudly: without a
+      # registry there are no models, /v1/models is empty, and every request
+      # is a 404. A deployment names its own; a clone starts from
+      # config/examples/.
+      MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-config/models.yaml}
+      # Which environment alerts are labelled with. Left unset upstream so
+      # the existing inference from the base URL still applies; a
+      # deployment states it outright, because inferring it makes the
+      # label depend on whether someone remembered a line in the server's
+      # .env — which is not something you can check by reading the repo.
+      DEPLOYMENT_ENV: ${DEPLOYMENT_ENV-}
+      # Identity rendered into emails, links, CORS, the docs-assistant prompt
+      # and OpenRouter attribution. The defaults below name no deployment, so
+      # `docker compose up` on a fresh clone brings up *your* gateway, not
+      # someone else's. A deployment supplies its own values through an env
+      # file (see distributions/*/deploy/backend.env and ops/deploy/*.sh);
+      # the server's own .env still overrides each one.
+      SITE_NAME: ${SITE_NAME-HybridInference}
+      SITE_PUBLIC_BASE_URL: ${SITE_PUBLIC_BASE_URL-}
+      SITE_DOCS_URL: ${SITE_DOCS_URL-}
+      SITE_SUPPORT_EMAIL: ${SITE_SUPPORT_EMAIL-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL-noreply@localhost}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME-HybridInference}
+      BASE_URL: ${BASE_URL-}
+      FRONTEND_URL: ${FRONTEND_URL-http://localhost:3001}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS-http://localhost:3000,http://localhost:3001,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002,https://localhost:8443,https://127.0.0.1:8443}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -94,34 +131,45 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.frontend
       args:
-        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-https://freeinference.org}
+        # Console identity. Every value below is empty by default, and the
+        # console's own code supplies a neutral fallback for each, so a clone
+        # builds a console that names no deployment. A deployment fills these
+        # in through an env file (distributions/*/deploy/frontend.env, fed to
+        # `docker compose --env-file` by ops/deploy/*.sh); the server's .env
+        # still overrides any of them.
+        # Explicitly local rather than empty: the console resolves an empty
+        # value through `||`, and with DEPLOY_TARGET defaulting to production
+        # that lands on the upstream author's own gateway. Where requests go
+        # is the one value that must not depend on a fallback elsewhere.
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE-http://localhost:8080}
         NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
         NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
         NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
-        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME-FreeInference}
-        NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION-Free LLM inference for research, built at Harvard SEAS.}
-        NEXT_PUBLIC_SITE_HOST: ${NEXT_PUBLIC_SITE_HOST-freeinference.org}
-        NEXT_PUBLIC_ORG_NAME: ${NEXT_PUBLIC_ORG_NAME-Harvard SEAS}
-        NEXT_PUBLIC_ORG_URL: ${NEXT_PUBLIC_ORG_URL-https://madsys.seas.harvard.edu}
-        NEXT_PUBLIC_ORG_TAGLINE: ${NEXT_PUBLIC_ORG_TAGLINE-Built at Harvard SEAS · MadSys Lab}
-        NEXT_PUBLIC_DOCS_URL: ${NEXT_PUBLIC_DOCS_URL-https://doc.freeinference.org/}
-        NEXT_PUBLIC_STATUS_URL: ${NEXT_PUBLIC_STATUS_URL-https://status.staging.freeinference.org/}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME-}
+        NEXT_PUBLIC_APP_DESCRIPTION: ${NEXT_PUBLIC_APP_DESCRIPTION-}
+        NEXT_PUBLIC_SITE_HOST: ${NEXT_PUBLIC_SITE_HOST-}
+        NEXT_PUBLIC_ORG_NAME: ${NEXT_PUBLIC_ORG_NAME-}
+        NEXT_PUBLIC_ORG_URL: ${NEXT_PUBLIC_ORG_URL-}
+        NEXT_PUBLIC_ORG_TAGLINE: ${NEXT_PUBLIC_ORG_TAGLINE-}
+        NEXT_PUBLIC_DOCS_URL: ${NEXT_PUBLIC_DOCS_URL-}
+        NEXT_PUBLIC_STATUS_URL: ${NEXT_PUBLIC_STATUS_URL-}
+        # The upstream project's own repository, not a deployment's: a fork
+        # that wants its own overrides it like any other value.
         NEXT_PUBLIC_GITHUB_URL: ${NEXT_PUBLIC_GITHUB_URL-https://github.com/HarvardMadSys/hybridInference}
-        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL-admin@freeinference.org}
-        NEXT_PUBLIC_EXAMPLE_API_BASE: ${NEXT_PUBLIC_EXAMPLE_API_BASE-https://freeinference.org}
-        NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR: ${NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR-FREEINFERENCE_API_KEY}
-        NEXT_PUBLIC_EXAMPLE_MODEL: ${NEXT_PUBLIC_EXAMPLE_MODEL-glm-5.1}
-        # Use `${VAR-default}` (not `:-`) so an explicit empty value can
-        # disable analytics and the signup fast-track hint.
-        NEXT_PUBLIC_STATCOUNTER_PROJECT_ID: ${NEXT_PUBLIC_STATCOUNTER_PROJECT_ID-13224568}
-        NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY: ${NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY-2d8ab84a}
-        NEXT_PUBLIC_FAST_TRACK_DOMAIN: ${NEXT_PUBLIC_FAST_TRACK_DOMAIN-harvard.edu}
-        NEXT_PUBLIC_FAST_TRACK_ORG: ${NEXT_PUBLIC_FAST_TRACK_ORG-Harvard}
-        NEXT_PUBLIC_STORAGE_KEY_PREFIX: ${NEXT_PUBLIC_STORAGE_KEY_PREFIX-freeinference}
+        NEXT_PUBLIC_CONTACT_EMAIL: ${NEXT_PUBLIC_CONTACT_EMAIL-}
+        NEXT_PUBLIC_EXAMPLE_API_BASE: ${NEXT_PUBLIC_EXAMPLE_API_BASE-}
+        NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR: ${NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR-}
+        NEXT_PUBLIC_EXAMPLE_MODEL: ${NEXT_PUBLIC_EXAMPLE_MODEL-}
+        NEXT_PUBLIC_STATCOUNTER_PROJECT_ID: ${NEXT_PUBLIC_STATCOUNTER_PROJECT_ID-}
+        NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY: ${NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY-}
+        NEXT_PUBLIC_FAST_TRACK_DOMAIN: ${NEXT_PUBLIC_FAST_TRACK_DOMAIN-}
+        NEXT_PUBLIC_FAST_TRACK_ORG: ${NEXT_PUBLIC_FAST_TRACK_ORG-}
+        NEXT_PUBLIC_STORAGE_KEY_PREFIX: ${NEXT_PUBLIC_STORAGE_KEY_PREFIX-}
+        NEXT_PUBLIC_DATA_POLICY_NOTICE: ${NEXT_PUBLIC_DATA_POLICY_NOTICE-}
         NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
         NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
-        NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-junchengyang.com}
+        NEXT_PUBLIC_TEAM_IMAGE_HOST: ${NEXT_PUBLIC_TEAM_IMAGE_HOST-}
     container_name: hybridinference-frontend
     restart: unless-stopped
     environment:

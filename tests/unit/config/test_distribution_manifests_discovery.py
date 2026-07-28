@@ -31,7 +31,21 @@ def test_freeinference_overlay_preserves_phase_one_legacy_aliases():
     """Keep the stack's explicit Phase 1 compatibility invariant in PR CI."""
     manifest = REPO_ROOT / "distributions" / "freeinference" / "distribution.yaml"
     config = load_distribution_config(manifest)
-    for kind in ("models", "routing", "alerts"):
+    # alerts.yaml has moved into the overlay; models and routing have not.
+    # Each line here is a claim about where production reads from, so moving
+    # one without editing this is the mistake worth catching.
+    # models.yaml is the last one still aliasing legacy truth — it changes
+    # daily, so it moves when the drift window costs least. The other two are
+    # in the overlay, with nothing left at the old path: two copies of a
+    # deployment's config is how they drift apart.
+    # All three now live in the overlay; config/ holds none of them, which is
+    # the point — a second copy at the legacy path is how the two drift apart.
+    overlay_config = REPO_ROOT / "distributions" / "freeinference" / "config"
+    for kind in ("models", "alerts", "routing"):
         resolved = Path(getattr(config.paths, kind))
-        legacy = (REPO_ROOT / "config" / f"{kind}.yaml").resolve()
-        assert resolved == legacy, f"{kind} no longer aliases legacy truth"
+        assert resolved == (overlay_config / f"{kind}.yaml").resolve(), (
+            f"{kind}.yaml moved into the overlay; the manifest must follow"
+        )
+        assert not (REPO_ROOT / "config" / f"{kind}.yaml").exists(), (
+            f"a second copy of {kind}.yaml at the legacy path will drift"
+        )

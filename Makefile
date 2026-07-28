@@ -135,7 +135,50 @@ check-all: lint test frontend-check  ## Run all checks (backend + frontend)
 all-with-frontend: format check-all  ## Format and check everything (backend + frontend)
 
 # ─── Docker / Production ─────────────────────────────────────────────────────
-COMPOSE := docker compose -f deploy/docker/docker-compose.yml --env-file .env
+# A deployment's public identity — site name, links, CORS, and the console's
+# build-time values — lives in its distribution overlay, because the upstream
+# compose defaults name no deployment. These have to reach `make build` too,
+# not just the deploy scripts: the console's identity is baked in as build
+# args, so a rebuild without them ships an unbranded frontend. `.env` stays
+# last so per-host overrides still win, and secrets stay only in `.env`.
+# Which deployment's identity `make up` and `make build` compile in.
+#
+# Discovered by default, because the runbooks tell operators to run these by
+# hand on the server (docs/developer/freeinference.md, adding-models.md), and a
+# rebuild that quietly dropped the identity would publish an unbranded console
+# from a routine command. Discovery keeps that working with no change to any
+# machine.
+#
+# The cost is that this repository still contains the overlay, so a clone gets
+# it too. That is an artifact of the split being unfinished — once the overlay
+# lives elsewhere, discovery finds nothing and every clone is neutral without
+# anything here changing. Until then it is announced rather than silent, and
+# `DISTRIBUTION=none` opts out:
+#
+#   make up                          # discovers the overlay, and says so
+#   make up DISTRIBUTION=none        # your own gateway, named after nobody
+#   make up DISTRIBUTION=freeinference
+# distributions/<name>/deploy/<file>.env -> <name>, deduplicated.
+_DISTRIBUTION_DIRS := $(sort $(foreach f,$(wildcard distributions/*/deploy/*.env),$(word 2,$(subst /, ,$(f)))))
+ifeq ($(words $(_DISTRIBUTION_DIRS)),1)
+DISTRIBUTION ?= $(_DISTRIBUTION_DIRS)
+else ifeq ($(words $(_DISTRIBUTION_DIRS)),0)
+DISTRIBUTION ?=
+else
+# Picking the alphabetically first of several would compile one deployment's
+# identity into another's console, and say nothing while doing it.
+DISTRIBUTION ?= $(error Several distributions carry deploy/*.env ($(_DISTRIBUTION_DIRS)). Name one: make $(MAKECMDGOALS) DISTRIBUTION=<name>, or DISTRIBUTION=none)
+endif
+ifeq ($(DISTRIBUTION),none)
+DISTRIBUTION_ENV_FILES :=
+else ifneq ($(DISTRIBUTION),)
+DISTRIBUTION_ENV_FILES := $(patsubst %,--env-file %,$(wildcard distributions/$(DISTRIBUTION)/deploy/*.env))
+ifeq ($(DISTRIBUTION_ENV_FILES),)
+$(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION)/deploy/*.env)
+endif
+$(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
+endif
+COMPOSE := docker compose -f deploy/docker/docker-compose.yml $(DISTRIBUTION_ENV_FILES) --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose

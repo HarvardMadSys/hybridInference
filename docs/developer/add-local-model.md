@@ -34,20 +34,20 @@ Recommended options:
         provider_model_id: "your-served-model-name"
 ```
 
-Example SSH reverse tunnel (internal host -> FreeInference host):
+Example SSH reverse tunnel (internal model host -> gateway host):
 
 ```bash
 # Run this on the INTERNAL model host
-ssh -N -R 8001:127.0.0.1:8000 jason@freeinference.org
+ssh -N -R 8001:127.0.0.1:8000 <user>@<gateway-host>
 ```
 
 Then set:
 
 ```yaml
-base_url: "http://127.0.0.1:8001/v1"  # resolved on the FreeInference host
+base_url: "http://127.0.0.1:8001/v1"  # resolved on the gateway host
 ```
 
-For reverse-tunnel setups, verify from the FreeInference side:
+For reverse-tunnel setups, verify from the gateway host:
 
 ```bash
 curl http://127.0.0.1:8001/v1/models | jq

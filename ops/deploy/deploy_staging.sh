@@ -9,7 +9,27 @@ HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/health}"
 FRONTEND_HEALTH_URL="${FRONTEND_HEALTH_URL:-http://127.0.0.1:3001/}"
 TARGET_BRANCH="${TARGET_BRANCH:-dev}"
 DEPLOY_SHA="${DEPLOY_SHA:-}"
-COMPOSE=(docker compose -f deploy/docker/docker-compose.yml --env-file .env)
+# This deployment's public identity — site name, links, CORS, console build
+# args — lives in the distribution overlay, because the upstream defaults name
+# no deployment. Without these files the stack would come up unbranded. `.env`
+# is passed last so it wins, keeping per-host overrides working; secrets live
+# only in `.env`, never in the checked-in overlay.
+COMPOSE=(docker compose -f deploy/docker/docker-compose.yml)
+for env_file in "$APP_DIR"/distributions/freeinference/deploy/*.env; do
+  if [[ -f "$env_file" ]]; then
+    COMPOSE+=(--env-file "$env_file")
+  fi
+done
+# The files above are the site's, and their values are production's. Anything
+# that has to differ on staging belongs in deploy/staging/, which is read after
+# them and before `.env` — so it can be reviewed in the repository rather than
+# living only on the host. Nothing there yet; the loop is a no-op until there is.
+for env_file in "$APP_DIR"/distributions/freeinference/deploy/staging/*.env; do
+  if [[ -f "$env_file" ]]; then
+    COMPOSE+=(--env-file "$env_file")
+  fi
+done
+COMPOSE+=(--env-file .env)
 
 log() {
   printf '[deploy-staging] %s\n' "$*"
@@ -89,7 +109,9 @@ main() {
   fi
 
   log "Rebuilding and restarting Docker Compose services."
-  make build
+  # The rebuild needs this site's identity too: the console's is compiled in
+  # as build args, and `make` no longer discovers an overlay on its own.
+  make build DISTRIBUTION=freeinference
 
   log "Current service state:"
   "${COMPOSE[@]}" ps

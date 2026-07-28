@@ -100,6 +100,8 @@ def load_rag_settings() -> RagSettings:
         temperature=_float_env("RAG_TEMPERATURE", 0.3),
         api_base_url=os.getenv("RAG_API_BASE_URL", "http://localhost:8080/v1"),
         api_key=os.getenv("RAG_API_KEY", ""),
-        gateway_base_url=os.getenv("RAG_GATEWAY_BASE_URL", "https://freeinference.org/v1"),
+        # The ingest CLI embeds through a gateway; defaulting to a specific
+        # deployment would send another operator's corpus to it.
+        gateway_base_url=os.getenv("RAG_GATEWAY_BASE_URL", "http://localhost:8080/v1"),
         gateway_api_key=os.getenv("RAG_GATEWAY_API_KEY", os.getenv("LOCAL_API_KEY", "")),
     )

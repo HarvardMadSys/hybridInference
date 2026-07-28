@@ -47,7 +47,11 @@ upstream.
 
 On every request, `OpenRouterAdapter` injects:
 
-- Headers: `HTTP-Referer: https://freeinference.org`, `X-Title: FreeInference`.
+- Headers: `HTTP-Referer` and `X-Title`, carrying this deployment's public
+  URL and name from the site identity (`SITE_PUBLIC_BASE_URL` / `SITE_NAME`,
+  else the active distribution manifest). OpenRouter attributes the traffic
+  to whoever they name, so a deployment that has declared neither sends
+  neither rather than attributing itself to someone else.
 - Body: `usage: {include: true}` so OpenRouter returns per-request `cost`.
 - For streaming requests: `stream_options: {include_usage: true}`.
 - For bracket-form routes: `provider: {order: [<slug>], allow_fallbacks: false}`.
