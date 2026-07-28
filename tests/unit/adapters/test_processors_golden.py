@@ -1335,7 +1335,7 @@ class TestReasoningExtractProcessor:
         assert result[0] is chunk
 
     def test_r11_usage_chunk_preserved(self):
-        """R-11: A terminal usage-bearing chunk is passed through."""
+        """R-11: A terminal usage-bearing chunk surfaces usage on a signal-only chunk."""
         proc = ReasoningExtractProcessor()
         chunk = {
             "id": "t",
@@ -1344,7 +1344,9 @@ class TestReasoningExtractProcessor:
         }
         result = proc.process_stream_chunk(chunk)
         assert len(result) == 1
-        assert result[0] is chunk
+        assert result[0]["usage"]["total_tokens"] == 12
+        assert result[0]["choices"][0]["finish_reason"] == "stop"
+        assert result[0]["choices"][0]["delta"] == {}
 
     def test_r12_finish_reason_forwarded_while_buffering(self):
         """R-12: An empty-content chunk carrying finish_reason forwards a signal-only chunk."""
@@ -1487,6 +1489,51 @@ class TestReasoningExtractProcessor:
         chunks = emitted + flushed
         assert _concat_reasoning(chunks) == "real reasoning"
         assert _concat_content(chunks) == "Use <think> like this, then more text."
+
+    def test_r22_finish_reason_only_on_trailing_signal_not_splits(self):
+        """R-22: finish_reason rides a trailing signal chunk, never a split delta."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<mm:think>reason</mm:think>done",
+                    model="minimax-m3",
+                    finish_reason="stop",
+                )
+            ],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "reason"
+        assert _concat_content(chunks) == "done"
+        finishers = [c for c in chunks if c.get("choices") and c["choices"][0].get("finish_reason")]
+        assert len(finishers) == 1
+        assert finishers[0]["choices"][0]["finish_reason"] == "stop"
+        assert finishers[0]["choices"][0]["delta"] == {}
+
+    def test_r23_flush_drops_partial_close_tag(self):
+        """R-23: a partial close tag held at stream end is dropped, not emitted as reasoning."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("<mm:think>reasoning</mm", model="minimax-m3")]
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "reasoning"
+        assert _concat_content(chunks) == ""
+        assert "</mm" not in _concat_reasoning(chunks)
+
+    def test_r24_nonstream_drops_partial_close_tag(self):
+        """R-24: non-streaming unterminated reasoning drops a trailing partial close tag."""
+        proc = ReasoningExtractProcessor()
+        response = {
+            "choices": [
+                {"message": {"content": "<mm:think>reasoning</mm:thi"}, "finish_reason": "length"}
+            ]
+        }
+        result = proc.process_response(response)
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == ""
+        assert msg["reasoning_content"] == "reasoning"
 
 
 class TestPendingTagLen:

@@ -726,10 +726,6 @@ class ReasoningExtractProcessor(BaseProcessor):
         if delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking"):
             return [chunk]
 
-        # Preserve terminal usage-bearing chunks even when they carry no text.
-        if chunk.get("usage") is not None:
-            return [chunk]
-
         content = delta.get("content")
         if not isinstance(content, str):
             if _has_stream_signals(chunk):
@@ -780,9 +776,10 @@ class ReasoningExtractProcessor(BaseProcessor):
                 to_yield.append(self._content_chunk(chunk, emit))
             break
 
-        if not to_yield and _has_stream_signals(chunk):
-            # The chunk was fully buffered/consumed but carries finish_reason or
-            # usage -- forward those signals so they aren't lost.
+        if _has_stream_signals(chunk):
+            # finish_reason / usage always ride a dedicated trailing chunk, never
+            # an intermediate split delta (which would surface a premature finish
+            # or duplicate usage). _signal_only_chunk empties the delta.
             to_yield.append(_signal_only_chunk(chunk))
 
         return to_yield
@@ -800,8 +797,15 @@ class ReasoningExtractProcessor(BaseProcessor):
         self.buffer = ""
         if self.in_reasoning:
             self.in_reasoning = False
+            close_tag = self.close_tag
             self.close_tag = ""
-            return [self._standalone_chunk({"reasoning_content": text})]
+            # The tail held mid-stream can be a truncated close tag (e.g. "</mm")
+            # rather than reasoning; drop that fragment instead of emitting it.
+            hold = _pending_tag_len(text, (close_tag,))
+            text = text[: len(text) - hold]
+            if text:
+                return [self._standalone_chunk({"reasoning_content": text})]
+            return []
         return [self._standalone_chunk({"content": text})]
 
     def process_response(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -828,7 +832,10 @@ class ReasoningExtractProcessor(BaseProcessor):
         # mirroring the streaming flush().
         open_idx, open_tag = self._find_open(new_content)
         if open_idx != -1:
-            reasonings.append(new_content[open_idx + len(open_tag) :])
+            tail = new_content[open_idx + len(open_tag) :]
+            # Drop a trailing partial close tag from a truncated reasoning block.
+            hold = _pending_tag_len(tail, (self._close_for(open_tag),))
+            reasonings.append(tail[: len(tail) - hold])
             new_content = new_content[:open_idx]
 
         if reasonings:
@@ -858,8 +865,14 @@ class ReasoningExtractProcessor(BaseProcessor):
         return "</think>"
 
     def _content_chunk(self, chunk: dict[str, Any], text: str) -> dict[str, Any]:
-        """Clone *chunk* carrying *text* as the sole content delta."""
+        """Clone *chunk* carrying *text* as the sole content delta.
+
+        Stream signals (usage / finish_reason) are stripped: an intermediate
+        split delta must never carry them (they ride a trailing signal chunk).
+        """
         new_chunk = _clone_chunk(chunk)
+        new_chunk.pop("usage", None)
+        new_chunk["choices"][0]["finish_reason"] = None
         new_delta = new_chunk["choices"][0]["delta"]
         for field in ("reasoning_content", "reasoning", "thinking"):
             new_delta.pop(field, None)
@@ -867,8 +880,14 @@ class ReasoningExtractProcessor(BaseProcessor):
         return new_chunk
 
     def _reasoning_chunk(self, chunk: dict[str, Any], text: str) -> dict[str, Any]:
-        """Clone *chunk* carrying *text* as the sole reasoning_content delta."""
+        """Clone *chunk* carrying *text* as the sole reasoning_content delta.
+
+        Stream signals (usage / finish_reason) are stripped: an intermediate
+        split delta must never carry them (they ride a trailing signal chunk).
+        """
         new_chunk = _clone_chunk(chunk)
+        new_chunk.pop("usage", None)
+        new_chunk["choices"][0]["finish_reason"] = None
         new_delta = new_chunk["choices"][0]["delta"]
         new_delta.pop("content", None)
         new_delta["reasoning_content"] = text
