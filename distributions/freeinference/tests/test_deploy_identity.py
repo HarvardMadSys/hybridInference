@@ -193,31 +193,49 @@ def test_deploy_script_feeds_the_overlay_before_the_server_env(script: Path) -> 
     )
 
 
-def test_this_deployment_resolves_to_its_own_registry_not_the_reference_one() -> None:
-    """The failure this file exists to prevent, stated as the thing itself.
+def test_this_deployment_resolves_to_its_own_registry_not_the_reference_one(monkeypatch) -> None:
+    """The failure this cutover could produce, stated as the thing itself.
 
-    The overlay stopped naming MODELS/ROUTING/ALERTS_CONFIG_PATH so the
-    manifest could win — `resolve_config_path` returns on the env branch before
-    reading it, so leaving them would have made active mode do nothing. But an
-    upstream *default* is an env value too, and while it pointed at
-    config/examples/ this deployment would have quietly resolved to the two
-    reference models instead of its own fourteen. Both halves have to hold, so
-    both are asserted here rather than inferred from the other file.
+    The overlay stopped naming MODELS/ROUTING/ALERTS_CONFIG_PATH so the manifest
+    could win — resolve_config_path returns on the env branch before reading it,
+    so leaving them would have made active mode do nothing. But an upstream
+    *default* is an env value too, and while one pointed at config/examples/
+    this deployment would have resolved to the two reference models instead of
+    its own fourteen.
+
+    Settings is built here rather than read from the process, because the paths
+    are exactly what must be absent: an ambient value from another test in the
+    same xdist worker would make this assert the opposite of what it claims.
+    That is how it first passed on one file and failed in CI.
     """
-    import os
-
     from serving.config import distribution
+    from serving.config.settings import Settings
+
+    # `_env_file=None` only silences the dotenv file; pydantic still reads the
+    # process environment, so a value left by another test in this xdist worker
+    # flows straight into the object built below. Every alias has to go, not
+    # just the obvious one: the fields accept MODELS_CONFIG and ROUTING_CONFIG
+    # as well, and those are the names the server fixtures actually set —
+    # deleting only the *_PATH spellings left this failing in CI while passing
+    # on the file alone.
+    for leaked in (
+        "MODELS_CONFIG_PATH",
+        "MODELS_CONFIG",
+        "ROUTING_CONFIG_PATH",
+        "ROUTING_CONFIG",
+        "ALERTS_CONFIG_PATH",
+    ):
+        monkeypatch.delenv(leaked, raising=False)
 
     root = OVERLAY.parent
-    manifest = root / "distribution.yaml"
-    previous = {
-        k: os.environ.get(k) for k in ("DISTRIBUTION_CONFIG_PATH", "DISTRIBUTION_CONFIG_MODE")
-    }
-    os.environ["DISTRIBUTION_CONFIG_PATH"] = str(manifest)
-    os.environ["DISTRIBUTION_CONFIG_MODE"] = "active"
+    supplied = Settings(
+        _env_file=None,
+        distribution_config_path=str(root / "distribution.yaml"),
+        distribution_config_mode="active",
+    )
+    monkeypatch.setattr(distribution, "get_settings", lambda: supplied)
+    distribution.get_distribution_config.cache_clear()
     try:
-        distribution.get_settings.cache_clear()
-        distribution.get_distribution_config.cache_clear()
         for kind in ("models", "routing", "alerts"):
             resolved = distribution.resolve_config_path(kind)
             assert resolved.source == "distribution", (
@@ -226,10 +244,4 @@ def test_this_deployment_resolves_to_its_own_registry_not_the_reference_one() ->
             )
             assert resolved.path == (root / "config" / f"{kind}.yaml").resolve()
     finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-        distribution.get_settings.cache_clear()
         distribution.get_distribution_config.cache_clear()
