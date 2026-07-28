@@ -176,13 +176,37 @@ ops/spark_idle_proxy       6          4
 ops/admin                  4          3
 ```
 
-Two of those references live outside the repository. `deploy/systemd/*.service`
-is templated with the real checkout path at install time and **installed on the
-machines** — the H200 box, the DGX Spark box, and whatever hosts the local
-deployment proxy. Their installed copies say
-`WorkingDirectory=/srv/hybridInference/ops/h200_idle_proxy`. Move the source and
-those units point at nothing until someone re-runs the installer, so a merge
-alone buys a guaranteed outage window on local inference.
+Some of those references live outside the repository, in systemd units
+templated with the real checkout path at install time and **installed on the
+machines**. Moving the source leaves them pointing at nothing until someone
+re-runs the installer, so the merge has to happen in a window that includes the
+machine half.
+
+That much was always true. What was not was the size of it — this paragraph
+used to name the H200 and DGX Spark boxes and quote
+`WorkingDirectory=/srv/hybridInference/ops/h200_idle_proxy`. Surveying the
+hosts on 2026-07-29 found something narrower:
+
+| host | unit | source | state |
+|---|---|---|---|
+| rtx6000b | `local_deployment_proxy` | a colleague's checkout, not `/srv` | running since 2026-07-25 |
+| rtx6000a | `local_deployment_proxy` | `/srv/hybridInference/ops/…` | running |
+| spark1, spark2, production | — | — | nothing installed |
+
+So `ops/h200_idle_proxy` and `ops/spark_idle_proxy` are installed on no
+machine at all, and the outage this paragraph promised does not exist for
+them. **One directory is coupled to running services: `ops/local_deployment_proxy`,
+on two hosts.** One of those two runs out of `/madsys/juncheng/…` rather than
+`/srv`, so re-running its installer is a conversation with its owner rather
+than a command on a box we administer — which is the real reason to schedule
+this rather than the number of files.
+
+The survey also turned up a `sglang_idle_proxy.service` on rtx6000b, enabled,
+`status=200/CHDIR`, `NRestarts=23906`. #727 renamed that directory to
+`local_deployment_proxy` on 2026-06-18; the new unit was installed and the old
+one never removed, so it has been failing to chdir every few seconds since.
+Nothing in this repository refers to the old name, so there is nothing to fix
+here — it wants `systemctl disable --now` and its unit file deleted.
 
 That is the whole blocker. Everything else is prepared:
 
