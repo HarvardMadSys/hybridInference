@@ -15,7 +15,7 @@ from serving.config.settings import get_settings
 from serving.model_access import get_disabled_models_from_preferences
 from serving.observability.rejection_log import log_rejection
 from serving.servers.deps import (
-    NO_AUTH_DATABASE_DETAIL,
+    auth_database_detail,
     get_db_logger,
     get_log_store,
     get_operational_store,
@@ -138,7 +138,7 @@ async def _authenticate_by_api_key(
         # A configuration state, not a server fault: 503 tells the caller the
         # deployment cannot authenticate anyone right now, and the detail says
         # which of the two supported setups is missing.
-        raise HTTPException(status_code=503, detail=NO_AUTH_DATABASE_DETAIL)
+        raise HTTPException(status_code=503, detail=auth_database_detail())
 
     key_hash = hash_api_key(api_key)
 
@@ -348,7 +348,7 @@ async def optional_verify_api_key(
 
     if not op_store:
         logger.warning("optional_verify_api_key: DB unavailable, cannot resolve identity")
-        raise HTTPException(status_code=503, detail=NO_AUTH_DATABASE_DETAIL)
+        raise HTTPException(status_code=503, detail=auth_database_detail())
 
     try:
         key_hash = hash_api_key(api_key)

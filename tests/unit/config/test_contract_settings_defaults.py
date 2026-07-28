@@ -81,3 +81,27 @@ def test_role_daily_quota_defaults():
     assert registry["user_daily_quota_pro"]["default"] == 100.00
     assert registry["user_daily_quota_internal"]["default"] == 1000.00
     assert registry["user_daily_quota_admin"]["default"] == 1000.00
+
+
+def test_the_auth_503_names_the_right_remedy(monkeypatch) -> None:
+    """Two states reach the same code path and need opposite advice.
+
+    A deployment that never configured a database is told how to configure one.
+    A deployment whose database is configured but was unreachable at startup
+    reaches the identical `op_store is None`, and telling it to set
+    DB_ENABLED=true sends the operator to check a setting that is already
+    right, instead of at the database.
+    """
+    from serving.servers.deps import auth_database_detail, database_enabled
+
+    monkeypatch.setenv("DB_ENABLED", "false")
+    assert not database_enabled()
+    assert "none is configured" in auth_database_detail()
+
+    monkeypatch.setenv("DB_ENABLED", "true")
+    assert database_enabled()
+    assert "could not be reached" in auth_database_detail()
+
+    # The default is on, so an unset variable is the configured case.
+    monkeypatch.delenv("DB_ENABLED", raising=False)
+    assert database_enabled()

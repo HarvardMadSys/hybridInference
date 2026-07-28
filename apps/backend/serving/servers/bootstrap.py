@@ -45,7 +45,7 @@ from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
 
 from .concurrency import UserConcurrencyLimiter
-from .deps import AppServices
+from .deps import AppServices, database_enabled
 from .registry import ModelRegistrationInfo, register_from_models_yaml
 from .routewise_rebuild import rebuild_cached_routewise_routers
 
@@ -402,8 +402,10 @@ def _init_db_logger() -> DatabaseLogger | None:
         Optional[DatabaseLogger]: A PostgreSQL logger instance or None when
         database logging is explicitly disabled.
     """
-    # Allow explicit opt-out via DB_ENABLED=false
-    if os.getenv("DB_ENABLED", "true").lower() in ("false", "0", "no"):
+    # Allow explicit opt-out via DB_ENABLED=false. The predicate lives in deps
+    # because the 503 an operator sees when auth has no store depends on the
+    # same answer, and two spellings of it would eventually disagree.
+    if not database_enabled():
         logger.info("Database logging disabled via DB_ENABLED=false")
         return None
 

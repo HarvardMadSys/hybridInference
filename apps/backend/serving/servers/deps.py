@@ -8,6 +8,7 @@ test and avoids hidden global state.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -21,15 +22,40 @@ from serving.utils.request_ip import get_client_ip
 logger = get_logger(__name__)
 
 
-# Raised when a deployment leaves user auth on but has no database to
-# authenticate against — the state a first-time local run lands in. It is a
-# configuration state rather than a server fault, so callers get 503 plus the
-# two supported ways out.
+# Raised when user auth is on and there is no operational store to authenticate
+# against. Two different situations reach this point and they need different
+# remedies, so they get different messages: a deployment that never configured
+# a database (the state a first-time local run lands in) is told how to, while
+# one whose database is configured but unreachable is told to look at the
+# database rather than at its own settings. Both are configuration or
+# environment states rather than server faults, hence 503 rather than 500.
 NO_AUTH_DATABASE_DETAIL = (
     "Authentication requires a database, but none is configured. "
     "Configure Postgres (DB_ENABLED=true), or set USER_AUTH_ENABLED=false "
     "to run this gateway without user accounts."
 )
+
+AUTH_DATABASE_UNAVAILABLE_DETAIL = (
+    "Authentication requires a database. This deployment has one configured, "
+    "but it could not be reached at startup — check the database and the "
+    "connection settings, then restart the gateway."
+)
+
+
+def database_enabled() -> bool:
+    """Whether the deployment asked for a database at all.
+
+    One definition, because two would drift: bootstrap decides whether to build
+    the logger on this, and the messages below decide what to tell an operator
+    on the same answer.
+    """
+    return os.getenv("DB_ENABLED", "true").lower() not in ("false", "0", "no")
+
+
+def auth_database_detail() -> str:
+    """Say which of the two states this is, since the remedy differs."""
+    return AUTH_DATABASE_UNAVAILABLE_DETAIL if database_enabled() else NO_AUTH_DATABASE_DETAIL
+
 
 if TYPE_CHECKING:
     from routing.executor import RouteExecutor
