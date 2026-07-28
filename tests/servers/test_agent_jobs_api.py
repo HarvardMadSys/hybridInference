@@ -600,3 +600,47 @@ async def test_terminal_stream_drains_beyond_one_page(
     assert "event: job_finished" in body
     tail = json.loads(body.split("event: job_finished\ndata: ")[1].split("\n")[0])
     assert tail["last_event_id"] == total
+
+
+async def test_claim_returns_a_separate_model_scoped_token(client: AsyncClient):
+    """The sandbox credential is distinct from the runner's."""
+    await _create_job(client)
+    body = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})).json()
+    assert body["sandbox_token"]
+    assert body["sandbox_token"] != body["worker_token"]
+
+    from serving.agent_jobs.tokens import SCOPE_FULL, SCOPE_MODEL, parse_worker_token
+
+    assert parse_worker_token(body["worker_token"])["scope"] == SCOPE_FULL
+    assert parse_worker_token(body["sandbox_token"])["scope"] == SCOPE_MODEL
+
+
+async def test_sandbox_token_cannot_write_job_state(client: AsyncClient):
+    """A credential leaked from inside the sandbox cannot poison the job.
+
+    This is the payoff of running the runner outside the sandbox: the only
+    credential the agent can reach buys model calls, not event-log writes,
+    artifact overwrites, or terminal transitions.
+    """
+    job_id = await _create_job(client)
+    body = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})).json()
+    sandbox_auth = {"Authorization": f"Bearer {body['sandbox_token']}"}
+
+    for path, payload in (
+        (f"/v1/agent/worker/jobs/{job_id}/events", {"event_type": "message"}),
+        (f"/v1/agent/worker/jobs/{job_id}/artifacts", {"kind": "patch", "content": "evil"}),
+        (f"/v1/agent/worker/jobs/{job_id}/finish", {"state": "succeeded"}),
+        (f"/v1/agent/worker/jobs/{job_id}/heartbeat", {}),
+    ):
+        response = await client.post(path, json=payload, headers=sandbox_auth)
+        assert response.status_code == 403, path
+        assert response.json()["detail"]["error"]["type"] == "insufficient_scope"
+
+    # The runner's own token still works.
+    runner_auth = {"Authorization": f"Bearer {body['worker_token']}"}
+    ok = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/events",
+        json={"event_type": "message", "payload": {}},
+        headers=runner_auth,
+    )
+    assert ok.status_code == 201

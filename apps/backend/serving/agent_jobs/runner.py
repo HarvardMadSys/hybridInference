@@ -36,6 +36,7 @@ from typing import Any
 import httpx
 
 from serving.agent_jobs.runtimes import AgentRuntime, NormalizedEvent, get_runtime
+from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
 
 DEFAULT_LEASE_TTL_S = 120.0
 HEARTBEAT_INTERVAL_S = 30.0
@@ -59,6 +60,8 @@ class ClaimedJob:
     runtime: str
     model: str
     worker_token: str
+    # Model-scoped credential: the only one that enters the sandbox.
+    sandbox_token: str
 
     @classmethod
     def from_response(cls, body: dict[str, Any]) -> ClaimedJob:
@@ -73,6 +76,9 @@ class ClaimedJob:
             runtime=body["runtime"],
             model=body["model"],
             worker_token=body["worker_token"],
+            # Older gateways return only worker_token; fall back so a
+            # runner can still talk to one that predates scoped tokens.
+            sandbox_token=body.get("sandbox_token") or body["worker_token"],
         )
 
 
@@ -210,6 +216,7 @@ def run_agent(
     control: ControlPlane,
     heart: Heartbeater,
     timeout_s: float,
+    backend: SandboxBackend,
 ) -> tuple[int, str]:
     """Run the agent, streaming its output back as normalized events.
 
@@ -221,13 +228,16 @@ def run_agent(
         task_prompt=job.task_prompt,
         model=job.model,
         gateway_base_url=gateway_base_url,
-        # The capability token is the model credential too — see model_auth.py.
-        credential=job.worker_token,
+        # Only the model-scoped credential crosses into the sandbox. The full
+        # capability token — which can write events, artifacts and terminal
+        # states — stays out here with the runner, so an agent that leaks its
+        # credential can spend the job's capped budget and nothing more.
+        credential=job.sandbox_token,
     )
 
     # Hermetic environment: only what a CLI genuinely needs, plus the runtime's
     # own variables. Inheriting the whole environment would hand the agent
-    # whatever the CI runner happens to be carrying.
+    # whatever the host happens to be carrying.
     env = {
         key: os.environ[key]
         for key in ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
@@ -235,21 +245,11 @@ def run_agent(
     }
     env.update(extra_env)
 
-    process = subprocess.Popen(
-        argv,
-        cwd=workdir,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
+    process = backend.spawn(SandboxSpec(argv=argv, workdir=workdir, env=env))
 
     deadline = time.monotonic() + timeout_s
     tail: list[str] = []
-    assert process.stdout is not None
-    for line in process.stdout:
+    for line in process.lines():
         tail.append(line)
         del tail[:-40]
         if heart.lease_lost:
@@ -270,11 +270,11 @@ def run_agent(
         if event is not None:
             control.append_event(event)
 
-    process.wait()
-    stderr = (process.stderr.read() if process.stderr else "") or ""
+    exit_code = process.wait()
+    stderr = process.stderr_text()
     if stderr.strip():
         tail.append(stderr[-2000:])
-    return process.returncode, "".join(tail)
+    return exit_code, "".join(tail)
 
 
 def run_once(
@@ -286,8 +286,17 @@ def run_once(
     lease_ttl: float = DEFAULT_LEASE_TTL_S,
     agent_timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
     generic_command: str | None = None,
+    backend: SandboxBackend | None = None,
 ) -> int:
-    """Claim one job, run it, and report the outcome. Returns a process exit code."""
+    """Claim one job, run it, and report the outcome. Returns a process exit code.
+
+    ``backend`` decides where the agent actually executes. It is checked
+    before a job is claimed so a misconfigured host fails without first
+    taking a job off the queue and burning one of its attempts.
+    """
+    backend = backend or build_backend_from_env()
+    backend.preflight()
+
     job = claim(
         base_url=base_url,
         dispatcher_token=dispatcher_token,
@@ -336,6 +345,7 @@ def run_once(
             control=control,
             heart=heart,
             timeout_s=agent_timeout_s,
+            backend=backend,
         )
 
         if exit_code == 130:

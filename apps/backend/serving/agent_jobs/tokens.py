@@ -59,10 +59,33 @@ def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + padding)
 
 
-def mint_worker_token(*, job_id: str, attempt_id: int, lease_generation: int) -> str:
+# Two scopes, because the runner and the sandbox need different powers.
+#
+# ``full`` is held by the runner (a trusted process outside the sandbox): it
+# reports events, uploads artifacts, renews the lease and drives terminal
+# transitions.
+#
+# ``model`` is the only credential that enters the sandbox. It buys model calls
+# against the job's budget and nothing else — so an agent that leaks it, or a
+# hostile repo that steals it, can spend the job's capped budget but cannot
+# poison the event log, overwrite the patch, or force a terminal state.
+SCOPE_FULL = "full"
+SCOPE_MODEL = "model"
+_VALID_SCOPES = (SCOPE_FULL, SCOPE_MODEL)
+
+
+def mint_worker_token(
+    *,
+    job_id: str,
+    attempt_id: int,
+    lease_generation: int,
+    scope: str = SCOPE_FULL,
+) -> str:
     """Mint a capability token bound to one attempt's fencing triple."""
+    if scope not in _VALID_SCOPES:
+        raise ValueError(f"scope must be one of {_VALID_SCOPES}, got {scope!r}")
     payload = json.dumps(
-        {"j": job_id, "a": attempt_id, "g": lease_generation},
+        {"j": job_id, "a": attempt_id, "g": lease_generation, "s": scope},
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
@@ -73,9 +96,10 @@ def mint_worker_token(*, job_id: str, attempt_id: int, lease_generation: int) ->
 def parse_worker_token(token: str) -> dict[str, Any]:
     """Verify a worker token and return its fencing triple.
 
-    Returns ``{"job_id", "attempt_id", "lease_generation"}``. Raises
+    Returns ``{"job_id", "attempt_id", "lease_generation", "scope"}``. Raises
     :class:`InvalidAgentToken` on any structural or signature problem — the
-    caller maps that to 401.
+    caller maps that to 401. Tokens minted before scopes existed parse as
+    ``full``, which is the conservative reading for an already-signed token.
     """
     if not token:
         raise InvalidAgentToken("empty token")
@@ -94,10 +118,14 @@ def parse_worker_token(token: str) -> dict[str, Any]:
 
     try:
         claims = json.loads(payload)
+        scope = str(claims.get("s", SCOPE_FULL))
+        if scope not in _VALID_SCOPES:
+            raise InvalidAgentToken(f"unknown scope {scope!r}")
         return {
             "job_id": str(claims["j"]),
             "attempt_id": int(claims["a"]),
             "lease_generation": int(claims["g"]),
+            "scope": scope,
         }
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         raise InvalidAgentToken("bad claims") from exc

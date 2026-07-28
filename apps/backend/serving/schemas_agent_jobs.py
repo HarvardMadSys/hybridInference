@@ -128,6 +128,10 @@ class WorkerClaimResponse(BaseModel):
     runtime: str
     model: str
     worker_token: str
+    sandbox_token: str = Field(
+        "",
+        description="Model-scoped credential; the only one that enters the sandbox.",
+    )
     metadata: dict[str, Any] | None = None
 
 

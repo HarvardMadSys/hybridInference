@@ -32,7 +32,13 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from serving.agent_jobs.tokens import InvalidAgentToken, mint_worker_token, parse_worker_token
+from serving.agent_jobs.tokens import (
+    SCOPE_FULL,
+    SCOPE_MODEL,
+    InvalidAgentToken,
+    mint_worker_token,
+    parse_worker_token,
+)
 from serving.schemas_agent_jobs import (
     EVENT_TYPE_PATTERN,
     AgentJobArtifactResponse,
@@ -383,12 +389,28 @@ def _worker_claims(authorization: str | None) -> dict[str, Any]:
             detail={"error": {"type": "unauthorized", "message": "Missing worker token."}},
         )
     try:
-        return parse_worker_token(token)
+        claims = parse_worker_token(token)
     except InvalidAgentToken as exc:
         raise HTTPException(
             status_code=401,
             detail={"error": {"type": "unauthorized", "message": f"Invalid worker token: {exc}"}},
         ) from exc
+    if claims.get("scope") != SCOPE_FULL:
+        # A model-scoped token is what lives inside the sandbox. Reaching these
+        # endpoints with it means the credential escaped its intended use.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "type": "insufficient_scope",
+                    "message": (
+                        "This credential may only be used for model calls, not for "
+                        "reporting job state."
+                    ),
+                }
+            },
+        )
+    return claims
 
 
 def _lease_lost() -> HTTPException:
@@ -442,11 +464,17 @@ async def worker_claim(
     )
     if claim is None:
         return None
-    token = mint_worker_token(
-        job_id=claim["id"],
-        attempt_id=claim["attempt_id"],
-        lease_generation=claim["lease_generation"],
-    )
+    fence = {
+        "job_id": claim["id"],
+        "attempt_id": claim["attempt_id"],
+        "lease_generation": claim["lease_generation"],
+    }
+    # Two credentials with different powers. The runner keeps the full one and
+    # passes only the model-scoped one into the sandbox, so a credential that
+    # leaks from inside the agent can spend the job's capped budget but cannot
+    # touch its event log, artifacts, or terminal state.
+    token = mint_worker_token(**fence, scope=SCOPE_FULL)
+    sandbox_token = mint_worker_token(**fence, scope=SCOPE_MODEL)
     return WorkerClaimResponse(
         job_id=claim["id"],
         attempt_id=claim["attempt_id"],
@@ -457,6 +485,7 @@ async def worker_claim(
         runtime=claim["runtime"],
         model=claim["model"],
         worker_token=token,
+        sandbox_token=sandbox_token,
         metadata=claim["metadata"],
     )
 

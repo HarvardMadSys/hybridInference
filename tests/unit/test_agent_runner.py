@@ -21,6 +21,7 @@ from serving.agent_jobs.runner import (
     run_agent,
 )
 from serving.agent_jobs.runtimes import GenericRuntime
+from serving.agent_jobs.sandbox import ProcessBackend
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -34,7 +35,19 @@ _JOB = ClaimedJob(
     runtime="generic",
     model="glm-5.1",
     worker_token="ajt.a.b",
+    sandbox_token="ajt.model.b",
 )
+
+
+@pytest.fixture(autouse=True)
+def _allow_unisolated_sandbox(monkeypatch):
+    """These tests exercise runner logic, not sandbox policy.
+
+    The process backend refuses to start unisolated unless an operator opts
+    in — that refusal is asserted in test_agent_sandbox.py; here we accept it
+    so the runner's own behaviour is what is under test.
+    """
+    monkeypatch.setenv("AGENT_SANDBOX_ALLOW_UNISOLATED", "1")
 
 
 class FakeControl:
@@ -98,6 +111,7 @@ def test_agent_output_streams_back_as_events(tmp_path):
         control=control,
         heart=heart,
         timeout_s=30,
+        backend=ProcessBackend(acknowledged_unsafe=True),
     )
     assert code == 0
     assert [payload["text"] for _kind, payload in control.events] == [
@@ -119,6 +133,7 @@ def test_losing_the_lease_aborts_instead_of_racing(tmp_path):
             control=control,
             heart=heart,
             timeout_s=30,
+            backend=ProcessBackend(acknowledged_unsafe=True),
         )
 
 
@@ -133,6 +148,7 @@ def test_cancellation_kills_the_agent(tmp_path):
         control=control,
         heart=heart,
         timeout_s=30,
+        backend=ProcessBackend(acknowledged_unsafe=True),
     )
     assert code == 130
     assert ("lifecycle", {"phase": "cancelled_by_owner"}) in control.events
@@ -149,6 +165,7 @@ def test_agent_timeout_is_enforced(tmp_path):
         control=control,
         heart=heart,
         timeout_s=0.15,
+        backend=ProcessBackend(acknowledged_unsafe=True),
     )
     assert code == 124
     assert any(kind == "error" for kind, _ in control.events)
@@ -169,6 +186,7 @@ def test_agent_environment_is_hermetic(tmp_path, monkeypatch):
         control=control,
         heart=heart,
         timeout_s=30,
+        backend=ProcessBackend(acknowledged_unsafe=True),
     )
     assert control.events[0][1]["text"] == "False"
 
@@ -225,6 +243,7 @@ def test_missing_runtime_binary_fails_the_job_loudly(monkeypatch, tmp_path):
             runtime="claude-code",
             model="m",
             worker_token="ajt.a.b",
+            sandbox_token="ajt.model.b",
         ),
     )
     monkeypatch.setattr(runner_mod, "ControlPlane", lambda *a, **k: control)
