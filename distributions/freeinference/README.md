@@ -36,23 +36,41 @@ then set it in the matching `deploy/*.env`.
 
 ## Current state
 
-Everything below `deploy/` is skeleton. `distribution.yaml` is a real,
-loadable manifest, but its
-`paths:` deliberately point back at the legacy `config/*.yaml` locations —
-**the legacy paths remain production truth** (Phase 1). To try it on
-staging, add to the repo-root `.env` (Compose passes it via `env_file`; the
-backend service bind-mounts `distributions/` read-only, so the overlay is
-never baked into the neutral image):
+`config/` holds this deployment's real `models.yaml`, `routing.yaml` and
+`alerts.yaml` — Phase 2 moved all three in, and `config/` at the repository
+root keeps only `examples/`. Production reads them through
+`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, set in
+`deploy/backend.env` above; the paths there are container paths, because
+`distributions/` is bind-mounted under `/app`.
+
+Losing any of those three lines fails differently and none of them errors:
+alerts falls back to built-in thresholds, routing loses the endpoint map and
+starts anyway, models leaves the catalogue empty. `tests/unit/deploy/test_compose_identity.py`
+pins all three for that reason.
+
+The dark-mode procedure below predates that move and its precondition no
+longer holds: `distribution.yaml` resolves all three paths inside this overlay
+now, so there is no legacy copy to compare against. Rewrite it before running
+it again.
+
+`distribution.yaml` is a real, loadable manifest, and its `paths:` now resolve
+inside this directory. It is still not what production reads from: the env
+vars above are. Applying the manifest needs
+`DISTRIBUTION_CONFIG_MODE=active`, and the dark-mode rehearsal below has to be
+rewritten first, since it compares against legacy copies that no longer exist.
+For reference, that rehearsal was configured from the repo-root `.env`
+(Compose passes it via `env_file`; the backend bind-mounts `distributions/`
+read-only, so the overlay is never baked into the neutral image):
 
 ```bash
 DISTRIBUTION_CONFIG_PATH=distributions/freeinference/distribution.yaml
 DISTRIBUTION_CONFIG_MODE=dark   # loads + validates + logs; changes nothing
 ```
 
-Dark mode must log every path comparison as `identical` while this state
-holds. Because the loader fails open (a missing mount starts the service
-without any comparison), **verify with the smoke script** instead of
-trusting a clean boot:
+While the legacy copies existed, dark mode had to log every path comparison as
+`identical`. That check is what the move retired. Because the loader fails open
+(a missing mount starts the service without any comparison), the smoke script
+was the way to verify rather than trusting a clean boot:
 
 ```bash
 docker compose -f deploy/docker/docker-compose.yml exec backend \
@@ -67,17 +85,18 @@ from the container, or any comparison is not `identical`.
 Note on CI: local `make test` collects `distributions/*/tests/` via pytest
 `testpaths`, but the PR CI sharder currently only walks `tests/` — the
 neutral manifest gate that runs in CI lives at
-`tests/unit/config/test_distribution_manifests_discovery.py`; it also carries
-the temporary Phase 1 assertion that this overlay aliases the legacy truth.
+`tests/unit/config/test_distribution_manifests_discovery.py`; it asserts that
+all three paths resolve inside this overlay and that no copy was left behind at
+the legacy location.
 The tests here remain local/deploy verification until the future CI/CD stage
 wires the distribution suite in.
 
-## Target layout (grows in Phase 2, one category per PR)
+## Target layout (Phase 2 in progress, one category per PR)
 
 ```text
 distributions/freeinference/
   distribution.yaml   # this manifest
-  config/             # real models/routing/alerts yaml (Tier A move, last)
+  config/             # real models/routing/alerts yaml — MOVED IN
   branding/           # logos, colors, site metadata
   content/            # terms, privacy, email templates
   docs/               # user docs + RAG corpus
@@ -88,10 +107,9 @@ distributions/freeinference/
 
 Two temporary states to be aware of:
 
-- The `../../config/*.yaml` cross-root aliases are a **Phase 1 expedient
-  only**: once Phase 2 moves the real config in here, `paths:` must point
-  inside the overlay — the directory is the future visibility boundary and
-  must not reach outside itself.
+- The `../../config/*.yaml` cross-root aliases are gone: `paths:` points inside
+  this directory, which is what the visibility boundary requires. The rule that
+  produced them still stands — nothing here may reach outside itself.
 - `site:` / `features:` are exposed read-only via `GET /site-config`; the
   frontend consumes the safe identity fields and public signup/RAG flags only
   when `DISTRIBUTION_CONFIG_MODE=active`. Dark mode returns the neutral
