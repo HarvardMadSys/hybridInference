@@ -1,0 +1,37 @@
+# Gateway registration snippet for the agent-loop fake provider.
+#
+# Merge this entry into the models config of a DEV gateway (per the harness
+# plan, do not add it to the primary production config/models.yaml). The fake
+# must already be running:
+#
+#   freeinference-harness fake-provider --port 8351
+#
+# Then run the suite against the gateway-local target:
+#
+#   freeinference-harness run \
+#     --targets configs/targets/agent-loop-local.yaml \
+#     --scenarios configs/scenarios/agent-loop-core.yaml \
+#     --target gateway-local
+
+models:
+  - id: agent-loop-fake
+    name: Agent-Loop Conformance Fake
+    provider: harness
+    context_length: 32768
+    max_output_length: 4096
+    supports_tools: true
+    supports_structured_output: false
+    supported_params: [temperature, top_p, max_tokens, stop, stream, tools, tool_choice]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://127.0.0.1:8351
+        api_key: harness-local
+        provider_model_id: "agent-loop-fake"

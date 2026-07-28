@@ -250,7 +250,7 @@ class PostgresLogStore(LogStore):
                     tools, upstream_cost_usd,
                     num_turns, num_user_turns, num_tool_calls,
                     last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id
+                    served_model_id, served_endpoint_id, agent_job_id
                 )
                 VALUES (
                     $1, $2, $3,
@@ -263,7 +263,7 @@ class PostgresLogStore(LogStore):
                     $26::jsonb, $27,
                     $28, $29, $30,
                     $31, $32, $33,
-                    $34, $35
+                    $34, $35, $36
                 )
                 ON CONFLICT (request_id) DO NOTHING
                 """,
@@ -302,9 +302,24 @@ class PostgresLogStore(LogStore):
                 last_user_msg_hash,
                 served_model,
                 served_endpoint,
+                (sanitized_metadata or {}).get("agent_job_id"),
             )
 
     # -- usage / cost queries ------------------------------------------------
+
+    async def get_agent_job_cost(self, agent_job_id: str) -> float:
+        """Return total cost_usd charged to one agent job.
+
+        This is the authority for a job's budget: it sums the same ledger that
+        bills everything else, so a job's spend never depends on what the
+        agent inside the sandbox reports about itself.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM api_logs WHERE agent_job_id = $1",
+                agent_job_id,
+            )
+        return float(row["spent"]) if row and row["spent"] is not None else 0.0
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return total cost_usd since UTC midnight."""
