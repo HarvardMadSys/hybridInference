@@ -140,6 +140,47 @@ def test_the_design_doc_exclusions_are_present(manifest: dict) -> None:
     assert "ops/db/analysis/" in excluded
 
 
+def test_no_exported_file_reaches_into_an_excluded_directory(manifest: dict) -> None:
+    """A kept test that imports excluded tooling breaks collection downstream.
+
+    `sys.path.insert(..., REPO / "ops" / "release")` is how a test reaches the
+    export tool. Written in a file the export keeps, it produces a tree whose
+    default `pytest` run dies on ModuleNotFoundError before a single test runs
+    — and nothing here notices, because in *this* checkout the directory is
+    present. It cost one round of exactly that to add this.
+    """
+    import re
+
+    import public_export
+
+    rules = manifest["exclude"]
+    kept = [n for n in public_export.tracked_files() if not public_export.excluded(n, rules)]
+
+    # Take every string literal inside the call and join them. The path is
+    # spelled several ways -- `REPO / "ops" / "release"`,
+    # `Path(__file__).resolve().parents[3] / "ops" / "release"`, or one
+    # "ops/release" -- and matching the spellings one at a time is how the
+    # first version of this test passed while the case it was written for
+    # sailed through.
+    call = re.compile(r"sys\.path\.insert\((.*?)\)\s*$", re.M | re.S)
+    literal = re.compile(r'["\']([A-Za-z0-9_.\-/]+)["\']')
+
+    offenders = []
+    for name in kept:
+        if not name.endswith(".py"):
+            continue
+        text = (REPO / name).read_text(encoding="utf-8", errors="ignore")
+        for args in call.findall(text):
+            joined = "/".join(part.strip("/") for part in literal.findall(args))
+            if joined and public_export.excluded(joined, rules):
+                offenders.append(f"{name} -> {joined}")
+
+    assert not offenders, (
+        "these travel with the export but import from a directory that does "
+        f"not, so the exported tree cannot collect its own tests: {offenders}"
+    )
+
+
 def test_every_known_finding_says_why_it_is_pending(manifest: dict) -> None:
     """An exception without a reason is an exception nobody will ever remove."""
     for entry in manifest.get("known_findings") or []:

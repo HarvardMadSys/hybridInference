@@ -48,10 +48,13 @@ exclude:
     reason: Tests ops/spark_idle_proxy/, the DGX Spark box's idle proxy.
   - path: tests/unit/deploy/test_geoip_deployment.py
     reason: Asserts what this deployment's deploy scripts install; both go together.
-  - path: tests/unit/release/test_public_export_manifest.py
+  - path: tests/unit/release/
     reason: >-
-      Checks this manifest, which is part of the export tooling rather than of
-      the result — ops/release/ does not travel either.
+      Tests for the export tooling, which is part of producing the result
+      rather than part of it — ops/release/ does not travel either, so these
+      import a module the exported tree does not have. Excluded as a directory
+      because that is the property every test here shares; naming them one at a
+      time meant the next one broke collection in the export instead.
 
   # Found the same way as the rest: build the export tree and run it. Each of
   # these asserts something about a directory the export removes, so they fail
