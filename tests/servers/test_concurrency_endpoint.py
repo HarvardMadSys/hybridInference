@@ -197,7 +197,13 @@ async def test_anthropic_messages_429_when_free_user_at_cap(auth_app, auth_clien
         )
         assert resp.status_code == 429, f"expected 429, got {resp.status_code}: {resp.text}"
         body = resp.json()
-        assert body["error"]["code"] == "concurrency_limit_exceeded"
+        # This route answers in Anthropic's error shape, not the OpenAI one
+        # the four cases above assert. #864 made that deliberate: a client
+        # pointed at /anthropic/v1/messages reads `error.type`, and a body
+        # carrying `error.code` instead would be the compatibility bug.
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "rate_limit_error"
+        assert "Too many concurrent requests" in body["error"]["message"]
     finally:
         auth_app.dependency_overrides.pop(verify_api_key, None)
         auth_app.dependency_overrides.pop(get_user_concurrency_limiter, None)
