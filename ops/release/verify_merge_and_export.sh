@@ -57,6 +57,12 @@ trap cleanup EXIT
 
 say "Building the merged tree in $SCRATCH"
 git -C "$REPO_ROOT" fetch -q origin
+# KEEP=1 leaves the tree behind, and the obvious way to clear it is `rm -rf`,
+# which leaves the worktree registered: the next run then dies before it starts
+# on a message about a "missing but already registered worktree". Clear the
+# stale registration here rather than leaving it for whoever runs this next.
+git -C "$REPO_ROOT" worktree prune
+git -C "$REPO_ROOT" worktree remove --force "$SCRATCH" 2>/dev/null || true
 git -C "$REPO_ROOT" worktree add -q --detach "$SCRATCH" origin/dev
 cd "$SCRATCH"
 
