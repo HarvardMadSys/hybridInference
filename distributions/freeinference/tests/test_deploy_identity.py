@@ -96,6 +96,23 @@ def test_overlay_supplies_what_the_default_gave_up(var: str, expected: str) -> N
     assert _overlay_values().get(var) == expected
 
 
+def test_the_environment_label_is_stated_not_inferred() -> None:
+    """Otherwise production's alert label depends on the server's own .env.
+
+    `_detect_environment` falls back to reading BASE_URL, and treats an
+    unconfigured one as a local run. That makes the label a function of whether
+    someone remembered a line on the machine — not something a reviewer can
+    check by reading this repository. Both files state it outright instead.
+    """
+    assert _overlay_values()["DEPLOYMENT_ENV"] == "production"
+
+    staging = OVERLAY / "staging" / "backend.env"
+    assert staging.exists(), "deploy_staging.sh reads this directory; it must exist"
+    assert "DEPLOYMENT_ENV=staging" in staging.read_text(), (
+        "staging inherits production's files first, so it has to say what differs"
+    )
+
+
 def test_overlay_cors_still_admits_the_public_site() -> None:
     """Dropping an origin here would break the site's own browser clients."""
     origins = _overlay_values()["CORS_ALLOWED_ORIGINS"].split(",")

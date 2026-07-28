@@ -58,6 +58,12 @@ services:
       # is a 404 — loud enough that it cannot ship unnoticed. A deployment
       # names its own; a clone starts from config/examples/.
       MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-config/models.yaml}
+      # Which environment alerts are labelled with. Left unset upstream so
+      # the existing inference from the base URL still applies; a
+      # deployment states it outright, because inferring it makes the
+      # label depend on whether someone remembered a line in the server's
+      # .env — which is not something you can check by reading the repo.
+      DEPLOYMENT_ENV: ${DEPLOYMENT_ENV-}
       # Identity rendered into emails, links, CORS, the docs-assistant prompt
       # and OpenRouter attribution. The defaults below name no deployment, so
       # `docker compose up` on a fresh clone brings up *your* gateway, not
