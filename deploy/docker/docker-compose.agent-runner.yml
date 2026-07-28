@@ -19,18 +19,22 @@
 # runner and the container it starts, not around the runner itself.
 
 services:
+  # The gateway also joins the sandbox's network. Without this the sandbox has
+  # an internal network with nothing on it: the model calls and the event
+  # reporting that make a job work both go to the gateway, so a sandbox that
+  # cannot reach it fails every job at the first request.
+  backend:
+    networks:
+      - hybridinference
+      - agent-egress
+
   agent-runner:
     build:
       context: ../..
-      dockerfile: deploy/docker/Dockerfile.backend
+      dockerfile: deploy/docker/Dockerfile.agent-runner
+      secrets:
+        - github_token
     restart: unless-stopped
-    command:
-      - python
-      - -m
-      - serving.agent_jobs.runner
-      - --loop
-      - --worker-id
-      - ${AGENT_WORKER_ID:-runner}
     environment:
       FREEINFERENCE_BASE_URL: ${AGENT_GATEWAY_URL:-http://backend:8080}
       AGENT_DISPATCHER_TOKEN: ${AGENT_DISPATCHER_TOKEN:?dispatcher credential is required}
@@ -47,15 +51,33 @@ services:
       # proxy when jobs need to install dependencies.
       AGENT_SANDBOX_NETWORK: ${AGENT_SANDBOX_NETWORK:-agent-egress}
 
+      # Identical inside this container and on the host — see the bind mount
+      # below for why that is not a stylistic choice.
+      AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/freeinference/agent-jobs}
+
       AGENT_LEASE_TTL: ${AGENT_LEASE_TTL:-120}
       AGENT_TIMEOUT_S: ${AGENT_TIMEOUT_S:-3600}
+    command:
+      - python
+      - -m
+      - serving.agent_jobs.runner
+      - --loop
+      - --worker-id
+      - ${AGENT_WORKER_ID:-runner}
+      - --workdir-root
+      - ${AGENT_WORKDIR_ROOT:-/var/lib/freeinference/agent-jobs}
     volumes:
       # The runner starts the sandbox containers, so it needs the daemon.
       # Read-only: the runner creates and removes its own containers and has no
       # business reconfiguring the daemon.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Job worktrees. Bind-mounted into each sandbox, discarded per job.
-      - agent_workdirs:/var/lib/freeinference/agent-jobs
+      # Job worktrees, bind-mounted **at the same path inside and out**. This
+      # has to be a host path, and it has to be the same string on both sides:
+      # the runner asks the daemon to bind-mount each job directory into the
+      # sandbox, and the daemon resolves that path on the *host*, not inside
+      # this container. A named volume looks like it works right up until every
+      # job dies at spawn with exit 125.
+      - ${AGENT_WORKDIR_ROOT:-/var/lib/freeinference/agent-jobs}:${AGENT_WORKDIR_ROOT:-/var/lib/freeinference/agent-jobs}
     networks:
       - hybridinference
     depends_on:
@@ -63,11 +85,13 @@ services:
 
 networks:
   agent-egress:
+    # Explicit name: Compose prefixes generated network names with the project
+    # ("hybridinference_agent-egress"), but the runner passes this value
+    # straight to `docker run --network`. Without the pin, every sandbox
+    # spawn fails on a network the daemon has never heard of.
+    name: agent-egress
     # internal: no gateway to the outside world. The sandbox can talk to
     # services on this network and nothing else, which is the PlatformOnly
     # tier from the design doc expressed as infrastructure rather than policy
     # an agent could talk its way around.
     internal: true
-
-volumes:
-  agent_workdirs:

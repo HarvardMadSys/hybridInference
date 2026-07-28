@@ -423,18 +423,27 @@ class AgentJobStore:
         from_states: tuple[str, ...],
         to_state: str,
         detail: str | None = None,
+        base_sha: str | None = None,
     ) -> bool:
         """Move a job between states, fenced by the attempt's live lease.
 
         Terminal transitions also close the attempt (``finished``). Returns
         False when the caller lost the lease or the job is not in
         ``from_states`` — the caller must stop.
+
+        ``base_sha`` fills in the commit the worker resolved, and only when the
+        job does not already have one: an owner who pinned a commit must get a
+        patch against *that* commit, so a worker may report the base it used
+        but never overwrite the base it was given.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             updated = await conn.fetchval(
                 """
                 UPDATE agent_jobs j
-                SET state = $4, detail = COALESCE($5, j.detail), updated_at = NOW()
+                SET state = $4,
+                    detail = COALESCE($5, j.detail),
+                    base_sha = COALESCE(j.base_sha, $7),
+                    updated_at = NOW()
                 WHERE j.id = $1
                   AND j.state = ANY($3::text[])
                   AND j.current_attempt_id = $2
@@ -452,6 +461,7 @@ class AgentJobStore:
                 to_state,
                 detail,
                 lease_generation,
+                base_sha,
             )
             if updated is None:
                 return False

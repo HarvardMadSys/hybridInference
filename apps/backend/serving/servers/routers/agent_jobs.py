@@ -61,7 +61,11 @@ from serving.schemas_agent_jobs import (
     WorkerPublishRequest,
 )
 from serving.servers.auth import verify_api_key
-from serving.servers.deps import get_agent_job_store, verify_admin_access
+from serving.servers.deps import (
+    get_agent_app_credentials,
+    get_agent_job_store,
+    verify_admin_access,
+)
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
 from serving.utils.logging import get_logger
 
@@ -89,6 +93,13 @@ _EVENT_PAGE_SIZE = 500
 # future non-HTTP writer) must not be able to break out of the ``event:`` field
 # and inject frames into the owner's stream.
 _SAFE_EVENT_TYPE = re.compile(EVENT_TYPE_PATTERN)
+
+# The clone credential is narrowed at the point it is minted, not merely by
+# convention: the App also holds `contents: write` for the publisher, and an
+# installation token inherits every permission the App has unless it is asked
+# for less. Without this the runner would be handed push rights it must not
+# have, on a host that runs untrusted repository code.
+_CLONE_SCOPE = {"contents": "read"}
 
 
 def _sse_frame(event: dict[str, Any]) -> str:
@@ -442,6 +453,7 @@ async def worker_claim(
     body: WorkerClaimRequest,
     _dispatcher: str = Depends(verify_admin_access),
     store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> WorkerClaimResponse | None:
     """Claim the next queued job and mint this attempt's capability token.
 
@@ -478,6 +490,27 @@ async def worker_claim(
     # touch its event log, artifacts, or terminal state.
     token = mint_worker_token(**fence, scope=SCOPE_FULL)
     sandbox_token = mint_worker_token(**fence, scope=SCOPE_MODEL)
+
+    # A third credential, weaker than either: read-only, this repository only,
+    # one hour. The runner needs it to check the repository out — a runner that
+    # cannot clone runs the agent in an empty directory — and it is deliberately
+    # not the publisher's token, which can write. It stays in the runner and
+    # never enters the sandbox. Absent (null) is a working configuration: a
+    # public repository clones without any credential at all.
+    clone_token: str | None = None
+    if app_credentials is not None:
+        try:
+            clone_token = await app_credentials.token_for(
+                claim["repo"], permissions=_CLONE_SCOPE, repository_scoped=True
+            )
+        except Exception:
+            # The job can still run against a public repository, and failing
+            # the claim here would take the job off the queue for nothing.
+            logger.warning(
+                "agent_job_clone_token_unavailable",
+                extra={"event": "agent_job_clone_token_unavailable", "job_id": claim["id"]},
+            )
+
     return WorkerClaimResponse(
         job_id=claim["id"],
         attempt_id=claim["attempt_id"],
@@ -489,6 +522,7 @@ async def worker_claim(
         model=claim["model"],
         worker_token=token,
         sandbox_token=sandbox_token,
+        clone_token=clone_token,
         metadata=claim["metadata"],
     )
 
@@ -590,6 +624,7 @@ async def worker_finish(
         from_states=(RUNNING,),
         to_state=body.state,
         detail=body.detail,
+        base_sha=body.base_sha,
     )
     if not ok:
         raise _lease_lost()

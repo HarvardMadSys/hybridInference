@@ -9,6 +9,7 @@ runner container crash-loops in production.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -91,3 +92,107 @@ def test_sandbox_image_disables_agent_phone_home():
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
     ):
         assert flag in text
+
+
+# ── the chain from compose file to a running sandbox ───────────────────
+#
+# Each of these encodes a way the self-hosted deployment failed while every
+# individual file looked correct in isolation. They are static because the
+# alternative is discovering them one at a time on a remote host.
+
+_RUNNER_DOCKERFILE = Path(__file__).resolve().parents[2] / "deploy/docker/Dockerfile.agent-runner"
+
+
+def _split_mount(mount: str) -> list[str]:
+    """Split a compose volume on its separators, not on the ones inside ``${}``.
+
+    ``${VAR:-/default}`` contains a colon of its own, so a naive split reports
+    a mismatch that is not there.
+    """
+    parts: list[str] = []
+    depth = 0
+    current = ""
+    for char in mount:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+        if char == ":" and depth == 0:
+            parts.append(current)
+            current = ""
+            continue
+        current += char
+    parts.append(current)
+    return parts
+
+
+def _expand(value: str) -> str:
+    """Resolve ``${VAR:-default}`` to its default, as an unset environment would."""
+    return re.sub(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}", r"\1", value)
+
+
+def test_the_egress_network_name_is_pinned(compose: dict):
+    """Compose prefixes generated network names with the project name.
+
+    The runner passes this value straight to ``docker run --network``, so
+    without an explicit name the sandbox is asked to join `agent-egress` while
+    the network that exists is `hybridinference_agent-egress`, and every spawn
+    fails.
+    """
+    assert compose["networks"]["agent-egress"]["name"] == "agent-egress"
+
+
+def test_the_gateway_is_reachable_from_the_sandbox_network(compose: dict):
+    """An internal network with only the sandbox on it is a network to nowhere.
+
+    Model calls and event reporting both go to the gateway; if it is not on
+    this network the sandbox fails at its first request.
+    """
+    assert "agent-egress" in compose["services"]["backend"]["networks"]
+
+
+def test_job_worktrees_are_a_host_path_at_the_same_path_inside(compose: dict):
+    """The daemon resolves the runner's bind source on the *host*.
+
+    A named volume satisfies the runner's own file operations and then fails
+    every `docker run --mount` with an opaque exit 125, because the path exists
+    only inside the runner container.
+    """
+    volumes = compose["services"]["agent-runner"]["volumes"]
+    workdir_mounts = [v for v in volumes if "agent-jobs" in v]
+    assert workdir_mounts, "the runner needs somewhere to put job worktrees"
+    for mount in workdir_mounts:
+        source, target = _split_mount(mount)[:2]
+        assert source == target, f"bind source and target must match, got {mount}"
+        resolved = _expand(source)
+        assert resolved.startswith("/"), "must be a host path, not a named volume"
+
+
+def test_the_runner_image_can_actually_start_a_sandbox():
+    """The container backend shells out to `docker`; the backend image has none."""
+    text = _RUNNER_DOCKERFILE.read_text()
+    assert "docker:" in text and "/usr/local/bin/docker" in text
+
+
+def test_the_runner_image_can_check_a_repository_out():
+    """No git in the runner means no worktree, and an agent with nothing to read."""
+    assert "git" in _RUNNER_DOCKERFILE.read_text()
+
+
+def test_the_runner_service_uses_the_runner_image(compose: dict):
+    """Built from the backend image, the runner has neither docker nor git."""
+    dockerfile = compose["services"]["agent-runner"]["build"]["dockerfile"]
+    assert dockerfile.endswith("Dockerfile.agent-runner")
+
+
+def test_the_sandbox_uid_matches_what_the_runner_chowns_to():
+    """The runner gives each worktree to this exact id before mounting it.
+
+    Drift here does not fail loudly: the agent simply cannot write to its own
+    working tree, and git refuses to run at all with "dubious ownership".
+    """
+    from serving.agent_jobs.sandbox import SANDBOX_GID, SANDBOX_UID
+
+    text = _DOCKERFILE.read_text()
+    assert f"--uid {SANDBOX_UID}" in text
+    assert f"--gid {SANDBOX_GID}" in text

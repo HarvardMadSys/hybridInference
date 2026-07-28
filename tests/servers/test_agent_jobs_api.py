@@ -157,6 +157,7 @@ class FakeAgentJobStore:
         from_states: tuple[str, ...],
         to_state: str,
         detail: str | None = None,
+        base_sha: str | None = None,
     ) -> bool:
         job = self.jobs.get(job_id)
         if job is None or not self._fenced(attempt_id, lease_generation):
@@ -165,6 +166,10 @@ class FakeAgentJobStore:
             return False
         job["state"] = to_state
         job["detail"] = detail
+        # Mirrors the store's COALESCE: a worker may fill in a base the job
+        # lacked, never overwrite one the owner pinned.
+        if base_sha and not job.get("base_sha"):
+            job["base_sha"] = base_sha
         return True
 
     async def begin_publish(self, **kwargs: Any) -> bool:
@@ -202,7 +207,11 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     caller is turned away there.
     """
     from serving.servers.auth import verify_api_key
-    from serving.servers.deps import get_operational_store, verify_admin_access
+    from serving.servers.deps import (
+        get_agent_app_credentials,
+        get_operational_store,
+        verify_admin_access,
+    )
 
     app = FastAPI()
     app.include_router(agent_jobs_router.router)
@@ -210,6 +219,9 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     # verify_admin_access resolves an operational store; the bare test app has
     # no app.state.services, so supply it even when the gate is left real.
     app.dependency_overrides[get_operational_store] = lambda: None
+    # No GitHub App by default — the configuration most deployments start in,
+    # and the one where a public repository still clones fine.
+    app.dependency_overrides[get_agent_app_credentials] = lambda: None
     identity = {"user_id": _OWNER, "role": role, "authenticated": True}
     app.dependency_overrides[verify_api_key] = lambda: identity
     if dispatcher:
@@ -676,3 +688,117 @@ async def test_event_type_guard_rejects_a_trailing_newline(client: AsyncClient):
 
     assert _SAFE_EVENT_TYPE.fullmatch("message") is not None
     assert _SAFE_EVENT_TYPE.fullmatch("message\n") is None
+
+
+async def test_the_claim_carries_a_read_only_clone_credential(store: FakeAgentJobStore):
+    """The runner needs to check the repository out; it must not get push rights.
+
+    An installation token inherits *every* permission the App holds unless it
+    asks for less — and this App holds `contents: write` so the publisher can
+    push. Handing that to the runner would put a write credential on the host
+    that executes untrusted repository code, which is exactly the thing the
+    patch-out design exists to avoid.
+    """
+    from serving.servers.deps import get_agent_app_credentials
+
+    asked: dict[str, Any] = {}
+
+    class FakeApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            asked.update({"repo": repo, **kwargs})
+            return "ghs_clone_only"
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: FakeApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await _create_job(client)
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.json()["clone_token"] == "ghs_clone_only"
+    assert asked["permissions"] == {"contents": "read"}
+    assert asked["repository_scoped"] is True
+
+
+async def test_a_deployment_without_a_github_app_still_claims_jobs(client: AsyncClient):
+    """No App configured is a working setup: a public repository needs no token."""
+    await _create_job(client)
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 200
+    assert claim.json()["clone_token"] is None
+
+
+async def test_a_failure_to_mint_the_clone_token_does_not_lose_the_job(
+    store: FakeAgentJobStore,
+):
+    """Failing the claim would burn an attempt on a job that could still run."""
+    from serving.servers.deps import get_agent_app_credentials
+
+    class BrokenApp:
+        async def token_for(self, repo: str, **kwargs: Any) -> str:
+            raise RuntimeError("App not installed on this repository")
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: BrokenApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        job_id = await _create_job(client)
+        claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+
+    assert claim.status_code == 200
+    assert claim.json()["job_id"] == job_id
+    assert claim.json()["clone_token"] is None
+
+
+async def test_the_worker_reports_the_commit_it_actually_worked_from(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """A job submitted without a base_sha is unpublishable until one is recorded.
+
+    The runner resolves the default branch when it checks the repository out,
+    so it is the only component that knows — and the publisher refuses to apply
+    a patch without a base.
+    """
+    job_id = await _create_job(client)
+    assert store.jobs[job_id].get("base_sha") in (None, "")
+
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+    resolved = "a" * 40
+
+    finish = await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish",
+        json={"state": "succeeded", "base_sha": resolved},
+        headers=auth,
+    )
+
+    assert finish.status_code == 200
+    assert store.jobs[job_id]["base_sha"] == resolved
+
+
+async def test_a_worker_cannot_overwrite_a_base_the_owner_pinned(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """An owner who names a commit must get a patch against that commit."""
+    pinned = "b" * 40
+    created = await client.post(
+        "/v1/agent/jobs",
+        json={
+            "repo": "o/n",
+            "task_prompt": "do the thing",
+            "model": "m",
+            "base_sha": pinned,
+        },
+    )
+    job_id = created.json()["id"]
+
+    claim = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
+    auth = {"Authorization": f"Bearer {claim.json()['worker_token']}"}
+    await client.post(
+        f"/v1/agent/worker/jobs/{job_id}/finish",
+        json={"state": "succeeded", "base_sha": "c" * 40},
+        headers=auth,
+    )
+
+    assert store.jobs[job_id]["base_sha"] == pinned

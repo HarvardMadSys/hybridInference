@@ -125,3 +125,92 @@ def test_runtime_flag_is_positioned_where_docker_reads_it():
     image_index = command.index("img:1")
     assert command[runtime_index + 1] == KATA_RUNTIME
     assert runtime_index < image_index, "docker only reads --runtime before the image"
+
+
+# ── who runs, and in what environment ──────────────────────────────────
+#
+# Three separate bugs lived here, and all three shared a shape: the runner
+# answering a question only the backend can answer. It checked its own PATH for
+# the agent CLI (which lives in the sandbox image), forwarded its own HOME into
+# the container (which does not exist there), and left job worktrees owned by
+# root (which the unprivileged sandbox user cannot write).
+
+
+def test_the_container_backend_does_not_look_for_agent_binaries_on_the_runner():
+    """The CLIs live in the sandbox image, not on the host that starts it.
+
+    Probing the runner's PATH here is what made a correctly configured host
+    refuse every job with "runtime binary 'claude' is not installed".
+    """
+    backend = ContainerBackend(image="img")
+    assert backend.has_binary("claude") is True
+    assert backend.has_binary("definitely-not-installed-anywhere") is True
+
+
+def test_the_process_backend_does_check_this_host():
+    """With no isolation the agent runs here, so here is where it must exist."""
+    backend = ProcessBackend(acknowledged_unsafe=True)
+    assert backend.has_binary("sh") is True
+    assert backend.has_binary("definitely-not-installed-anywhere") is False
+
+
+def test_the_container_env_is_the_image_s_not_the_runner_s(monkeypatch):
+    """HOME must name a directory inside the image, writable by the sandbox user.
+
+    Forwarding the runner's HOME (``/root`` in the Compose deployment) makes
+    every agent CLI fail on startup trying to write its config, with an error
+    naming a path that does not exist in the container.
+    """
+    monkeypatch.setenv("HOME", "/root")
+    monkeypatch.setenv("PATH", "/app/.venv/bin:/usr/bin")
+
+    env = ContainerBackend(image="img").base_env()
+
+    assert env["HOME"] == "/home/agent"
+    assert "/app/.venv/bin" not in env["PATH"]
+
+
+def test_the_process_env_does_inherit_the_host(monkeypatch):
+    """The unisolated backend runs here, so the host's environment is correct."""
+    monkeypatch.setenv("HOME", "/home/somebody")
+    assert ProcessBackend(acknowledged_unsafe=True).base_env()["HOME"] == "/home/somebody"
+
+
+def test_the_container_runs_as_the_uid_the_runner_chowns_to():
+    """A drift between these two leaves the agent unable to write anything."""
+    from serving.agent_jobs.sandbox import SANDBOX_GID, SANDBOX_UID
+
+    command = ContainerBackend(image="img").build_command(_SPEC)
+
+    assert "--user" in command
+    assert command[command.index("--user") + 1] == f"{SANDBOX_UID}:{SANDBOX_GID}"
+
+
+def test_adopting_a_workdir_falls_back_to_world_writable_off_root(tmp_path, monkeypatch):
+    """An unprivileged runner cannot chown, and must not fail the job silently."""
+
+    def refuse(*args, **kwargs):
+        raise PermissionError("not root")
+
+    monkeypatch.setattr("os.chown", refuse)
+    (tmp_path / "file.txt").write_text("x")
+
+    ContainerBackend(image="img").adopt_workdir(str(tmp_path))
+
+    assert tmp_path.stat().st_mode & 0o777 == 0o777
+
+
+def test_adopting_a_workdir_is_a_no_op_without_isolation(tmp_path):
+    """The process backend runs as the runner; there is nobody to hand it to."""
+    before = tmp_path.stat().st_mode
+    ProcessBackend(acknowledged_unsafe=True).adopt_workdir(str(tmp_path))
+    assert tmp_path.stat().st_mode == before
+
+
+def test_preflight_accepts_the_workdir_root_on_every_backend():
+    """The runner passes it unconditionally; a backend that cannot take it crashes.
+
+    This was previously papered over with a try/except TypeError in the runner,
+    which would also have swallowed a genuine TypeError from inside preflight.
+    """
+    ProcessBackend(acknowledged_unsafe=True).preflight(workdir_root="/tmp")
