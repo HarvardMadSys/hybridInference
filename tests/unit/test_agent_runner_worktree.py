@@ -334,3 +334,47 @@ def test_building_the_patch_refuses_unbounded_output():
         runner_module._read_bounded(process, deadline_s=30, max_bytes=4096)
 
     assert process.killed
+
+
+# ── denied egress is the data P0 exists to produce ─────────────────────
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("curl: (6) Could not resolve host: telemetry.example.com", "telemetry.example.com"),
+        ("Error: getaddrinfo ENOTFOUND registry.npmjs.org", "registry.npmjs.org"),
+        (
+            "urllib.error.URLError: <urlopen error [Errno -3] Temporary failure in name "
+            "resolution> while fetching https://pypi.org/simple/",
+            "pypi.org",
+        ),
+        ("fatal: unable to access 'https://github.com/o/n': Connection refused", "github.com"),
+    ],
+)
+def test_a_blocked_call_is_recognised_with_its_host(text: str, expected: str):
+    """On a deny-all network the denial surfaces as the tool's own failure."""
+    from serving.agent_jobs.runner import detect_blocked_egress
+
+    assert detect_blocked_egress(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "SyntaxError: invalid syntax",
+        "test failed: expected 3, got 4",
+        "Could not resolve host",  # a denial with no host is not evidence
+        "npm ERR! missing script: build",
+    ],
+)
+def test_an_ordinary_failure_is_not_reported_as_egress(text: str):
+    """A false "the sandbox tried to phone home" is worse than a missed one.
+
+    The record exists to justify what an external default should allow, so it
+    has to mean something. Every failing command is not a denial.
+    """
+    from serving.agent_jobs.runner import detect_blocked_egress
+
+    assert detect_blocked_egress(text) is None
