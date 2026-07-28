@@ -36,6 +36,7 @@ from serving.config.routewise_model_settings import (
 from serving.config.settings import get_settings
 from serving.config.weight_overrides import WeightOverrideResolver
 from serving.http import AsyncHTTPClient
+from serving.storage.agent_job_store import AgentJobStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
@@ -149,6 +150,32 @@ def _collect_routewise_runtime_routers(
             managed_routers.append(routewise_router)
             managed_ids.add(router_id)
     return routewise_routers, model_ids_by_router
+
+
+async def _reap_expired_agent_attempts(
+    store: AgentJobStore,
+    *,
+    interval_seconds: float = 30.0,
+    max_attempts: int = 3,
+) -> None:
+    """Periodically close agent attempts whose lease expired.
+
+    This is what makes a vanished sandbox recoverable: the attempt is
+    superseded (append-only control event) and the job is requeued, failed, or
+    cancelled per the store's policy. The loop never dies on an error — a
+    transient database blip must not permanently stop reaping.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            actions = await store.reap_expired(max_attempts=max_attempts)
+            if actions:
+                logger.info(
+                    "agent_attempts_reaped",
+                    extra={"event": "agent_attempts_reaped", "count": len(actions)},
+                )
+        except Exception:
+            logger.warning("Agent attempt reaper pass failed", exc_info=True)
 
 
 async def _refresh_weight_override_snapshots(
@@ -729,6 +756,8 @@ async def initialize() -> AppServices:
     operational_store = None
     log_store = None
     responses_store = None
+    agent_job_store = None
+    agent_reaper_task = None
 
     if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
@@ -754,6 +783,16 @@ async def initialize() -> AppServices:
             "Responses store initialized (Postgres; persist_enabled=%s)",
             settings.db_store_full_content,
         )
+        # Agent-sandbox jobs (issue #1041). Unlike the Responses store this is
+        # not gated on the prompt-logging privacy switch: a job's task prompt
+        # and event log *are* the product surface the user reads back, not
+        # incidental request logging.
+        agent_job_store = AgentJobStore(db_logger.pool)
+        await agent_job_store.initialize()
+        agent_reaper_task = asyncio.create_task(_reap_expired_agent_attempts(agent_job_store))
+        _BACKGROUND_TASKS.add(agent_reaper_task)
+        agent_reaper_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        logger.info("Agent job store initialized (Postgres); attempt reaper started")
 
     for rw in routewise_routers:
         rw.attach_operational_store(operational_store)
@@ -1135,6 +1174,8 @@ async def initialize() -> AppServices:
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
         responses_store=responses_store,
+        agent_job_store=agent_job_store,
+        agent_reaper_task=agent_reaper_task,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
@@ -1151,6 +1192,12 @@ async def shutdown(services: AppServices) -> None:
         services.routewise_settings_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.routewise_settings_refresh_task
+
+    # Agent attempt reaper: stop before the stores it writes to are torn down.
+    if getattr(services, "agent_reaper_task", None) is not None:
+        services.agent_reaper_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.agent_reaper_task
 
     # Alert engine — stop drain task and remove scheduled jobs first so they
     # don't fire while we're tearing down stores below.
