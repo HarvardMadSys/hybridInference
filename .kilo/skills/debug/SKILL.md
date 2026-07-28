@@ -62,10 +62,11 @@ uv run pytest -vv -m dbtest
 
 ### Runtime / API error on staging
 
-Verify the bug on staging (`https://staging.freeinference.org`) with the test account `admin@example.com:<password>`:
+Verify the bug against a running deployment. If you are working on one, its staging host and test account are in its overlay guide (`distributions/<name>/AGENTS.md`):
 
 ```bash
-curl -s https://staging.freeinference.org/v1/chat/completions \
+# STAGING_HOST is your deployment's host; see distributions/<name>/AGENTS.md.
+curl -s "https://$STAGING_HOST/v1/chat/completions" \
   -H "Authorization: Bearer <api-key>" \
   -H "Content-Type: application/json" \
   -d '{"model":"<model>","messages":[{"role":"user","content":"hello"}]}'
@@ -245,4 +246,4 @@ If the fix is non-trivial or you're unsure about side effects, flag it for the u
 - **Stop if you can't reproduce.** Don't speculate about fixes for bugs you can't observe.
 - **Don't suppress errors.** Fix the root cause, don't add blanket try/except or pass statements.
 - **One bug per invocation.** If multiple bugs are found, fix the reported one and note the others for the user.
-- **Test against staging** when applicable (`https://staging.freeinference.org`, account `admin@example.com:<password>`).
+- **Test against a running deployment** when applicable; its host and test account live in `distributions/<name>/AGENTS.md`.
