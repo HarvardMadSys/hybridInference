@@ -348,3 +348,250 @@ describe("trusted envelope and canonical digest", () => {
     expect(() => canonicalJson({ valid: true, omitted: undefined })).toThrow(ValidationError);
   });
 });
+
+describe("gateway alert types (metric_threshold_breach, dependency_unavailable)", () => {
+  function metricEvent(
+    context: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      schema_version: 1,
+      event_id: "gateway-metric-1",
+      alert_type: "metric_threshold_breach",
+      fingerprint: "gateway:failed_request_rate",
+      status: "firing",
+      severity: "error",
+      title: "Failed-request rate exceeded",
+      occurred_at: "2026-07-20T00:00:00Z",
+      summary: "The failed-request rate crossed its configured threshold.",
+      context,
+      evidence_refs: [],
+    };
+  }
+
+  it("accepts a numeric threshold breach with its optional counts", () => {
+    const parsed = parseAlertEvent(
+      metricEvent({
+        metric: "failed_request_rate",
+        observed: 0.123,
+        threshold: 0.05,
+        window_sec: 300,
+        scope: "gateway",
+        sample_count: 366,
+      }),
+      { now: TEST_NOW },
+    );
+    expect(parsed).toMatchObject({
+      alert_type: "metric_threshold_breach",
+      context: { metric: "failed_request_rate", observed: 0.123, threshold: 0.05 },
+    });
+  });
+
+  // The migration must not make the auth-spike alert less actionable than the
+  // one it replaces: today on-call reads the attacker addresses straight out
+  // of the Slack message and blocks them. They survive, but as a typed field.
+  it("keeps the addresses on-call acts on, in a field that only accepts addresses", () => {
+    const parsed = parseAlertEvent(
+      metricEvent({
+        metric: "auth_failure_count",
+        observed: 41,
+        threshold: 20,
+        window_sec: 300,
+        source_addresses: ["203.0.113.7", "2001:db8::1"],
+        distinct_sources: 9,
+        top_source_share: 0.8,
+      }),
+      { now: TEST_NOW },
+    );
+    expect(parsed).toMatchObject({
+      context: { source_addresses: ["203.0.113.7", "2001:db8::1"] },
+    });
+
+    // Typed, so it cannot become the free-text channel the old context was.
+    for (const bad of [
+      ["1.2.3.4 (12), 5.6.7.8 (3)"],
+      ["not-an-address"],
+      ["203.0.113.7; DROP TABLE"],
+      ["203.0.113.7", "203.0.113.7"],
+      [],
+      ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "5.5.5.5", "6.6.6.6"],
+    ]) {
+      expect(() =>
+        parseAlertEvent(
+          metricEvent({
+            metric: "auth_failure_count",
+            observed: 41,
+            threshold: 20,
+            source_addresses: bad,
+          }),
+          { now: TEST_NOW },
+        ),
+      ).toThrow(ValidationError);
+    }
+  });
+
+  it("keeps the scoped subject but refuses key prefixes and free text", () => {
+    expect(
+      parseAlertEvent(
+        metricEvent({
+          metric: "user_daily_cost",
+          observed: 42.5,
+          threshold: 25,
+          scope: "user",
+          subject: "4711",
+        }),
+        { now: TEST_NOW },
+      ),
+    ).toMatchObject({ context: { scope: "user", subject: "4711" } });
+
+    // Credential material and pre-formatted prose have no field to land in.
+    for (const smuggled of [
+      { top_key_prefixes: "hyi-abcdefghijklmnopqrstu (7)" },
+      { rate: "12.3% (45 of 366 requests, last 300s)" },
+      { top_paths: "/v1/chat/completions (12)" },
+      { subject: "user 4711 (over budget)" },
+    ]) {
+      expect(() =>
+        parseAlertEvent(
+          metricEvent({
+            metric: "user_daily_cost",
+            observed: 42.5,
+            threshold: 25,
+            ...smuggled,
+          }),
+          { now: TEST_NOW },
+        ),
+      ).toThrow(ValidationError);
+    }
+  });
+
+  it("rejects an unknown metric and an out-of-range share", () => {
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({ metric: "cpu_temperature", observed: 1, threshold: 0 }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({
+          metric: "http_5xx_rate",
+          observed: 1,
+          threshold: 0,
+          top_source_share: 1.5,
+        }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+  });
+
+  it("scopes the typed-IP exception to metrics where blocking is the response", () => {
+    // Otherwise any producer could attach addresses to any alert and the
+    // renderer would publish them — the exception has to be narrow.
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({
+          metric: "user_daily_cost",
+          observed: 42.5,
+          threshold: 25,
+          source_addresses: ["203.0.113.7"],
+        }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+  });
+
+  it("rejects a firing breach whose observed value is under its threshold", () => {
+    // Such a card would argue against itself in Slack.
+    expect(() =>
+      parseAlertEvent(
+        metricEvent({ metric: "http_5xx_rate", observed: 0.01, threshold: 0.05 }),
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+    // The same numbers are legitimate once the incident is resolving.
+    expect(
+      parseAlertEvent(
+        {
+          ...metricEvent({ metric: "http_5xx_rate", observed: 0.01, threshold: 0.05 }),
+          status: "resolved",
+          severity: "info",
+        },
+        { now: TEST_NOW },
+      ),
+    ).toMatchObject({ status: "resolved" });
+  });
+
+  it("accepts a dependency outage and rejects a connection string as backend", () => {
+    const base = {
+      schema_version: 1,
+      event_id: "gateway-dependency-1",
+      alert_type: "dependency_unavailable",
+      fingerprint: "gateway:operational_store",
+      status: "firing",
+      severity: "critical",
+      title: "Database disconnected",
+      occurred_at: "2026-07-20T00:00:00Z",
+      summary: "The operational store failed its health check.",
+      evidence_refs: [],
+    };
+    expect(
+      parseAlertEvent(
+        {
+          ...base,
+          context: {
+            dependency: "operational_store",
+            backend: "postgres",
+            reason: "health_check_failed",
+          },
+        },
+        { now: TEST_NOW },
+      ),
+    ).toMatchObject({
+      alert_type: "dependency_unavailable",
+      context: {
+        dependency: "operational_store",
+        backend: "postgres",
+        // Keeps the triage signal the backend sends today as free-text `error`.
+        reason: "health_check_failed",
+      },
+    });
+
+    // The failure cause is an enum, so the raw error string it replaces —
+    // which can carry a DSN or host — has nowhere to land.
+    expect(() =>
+      parseAlertEvent(
+        {
+          ...base,
+          context: {
+            dependency: "operational_store",
+            reason: "could not connect to postgres://db.internal:5432",
+          },
+        },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+
+    // A DSN carries a host and credentials — untrustedString must refuse it.
+    expect(() =>
+      parseAlertEvent(
+        {
+          ...base,
+          context: {
+            dependency: "operational_store",
+            // A credential-free DSN passes every untrustedString check, so
+            // the field's shape has to be constrained, not just scanned.
+            backend: "postgres://localhost/app",
+          },
+        },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+
+    expect(() =>
+      parseAlertEvent(
+        { ...base, context: { dependency: "redis" } },
+        { now: TEST_NOW },
+      ),
+    ).toThrow(ValidationError);
+  });
+});
