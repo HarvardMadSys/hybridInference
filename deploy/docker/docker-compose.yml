@@ -47,17 +47,19 @@ services:
       # for a clone and wrong for a deployment, so a deployment names its
       # own file in distributions/*/deploy/backend.env. Losing that line
       # would swap production's thresholds for the defaults in silence,
-      # which is why a test pins it.
-      ALERTS_CONFIG_PATH: ${ALERTS_CONFIG_PATH-config/alerts.yaml}
+      # which is why a test pins it. Empty upstream because there is no
+      # example alerts file to point at and the built-in thresholds are a
+      # working answer — a dangling path would not be.
+      ALERTS_CONFIG_PATH: ${ALERTS_CONFIG_PATH-}
       # Same shape, sharper edge: without this a deployment loses its whole
       # endpoint map and every health-check setting, and the gateway starts
       # anyway — verified by booting with the file absent. Pinned by a test.
-      ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-config/routing.yaml}
+      ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-config/examples/routing.minimal.yaml}
       # The last of the three, and the only one that fails loudly: without a
       # registry there are no models, /v1/models is empty, and every request
       # is a 404. A deployment names its own; a clone starts from
       # config/examples/.
-      MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-config/models.yaml}
+      MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-config/examples/models.openrouter.yaml}
       # Which environment alerts are labelled with. Left unset upstream so
       # the existing inference from the base URL still applies; a
       # deployment states it outright, because inferring it makes the
