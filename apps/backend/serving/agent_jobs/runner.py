@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -379,20 +381,109 @@ def run_once(
         control.close()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point used by the runner workflow."""
-    parser = argparse.ArgumentParser(description="Run one queued agent job.")
+def run_forever(
+    *,
+    base_url: str,
+    dispatcher_token: str,
+    worker_id: str,
+    workdir_root: str,
+    lease_ttl: float = DEFAULT_LEASE_TTL_S,
+    agent_timeout_s: float = DEFAULT_AGENT_TIMEOUT_S,
+    generic_command: str | None = None,
+    idle_sleep_s: float = 5.0,
+    backend: SandboxBackend | None = None,
+) -> int:
+    """Claim and run jobs until interrupted — the long-lived runner.
+
+    Each job gets a fresh directory under ``workdir_root`` which is removed
+    afterwards, so one job can never read or corrupt another's worktree even
+    when they share a host.
+
+    A failure in one job must not take the runner down: the store already
+    records the outcome against that job, and a runner that exits on the first
+    bad job turns one broken repository into an outage for every queued job.
+    """
+    backend = backend or build_backend_from_env()
+    backend.preflight()
+
+    root = pathlib.Path(workdir_root)
+    root.mkdir(parents=True, exist_ok=True)
+    print(f"agent runner {worker_id} started (sandbox backend: {backend.name})", flush=True)
+
+    while True:
+        job_dir = pathlib.Path(tempfile.mkdtemp(prefix="job-", dir=str(root)))
+        try:
+            run_once(
+                base_url=base_url,
+                dispatcher_token=dispatcher_token,
+                worker_id=worker_id,
+                workdir=str(job_dir),
+                lease_ttl=lease_ttl,
+                agent_timeout_s=agent_timeout_s,
+                generic_command=generic_command,
+                backend=backend,
+            )
+        except KeyboardInterrupt:
+            return 0
+        except Exception as exc:
+            # Keep serving: the store owns this job's outcome, and one bad
+            # repository must not stop every other queued job.
+            print(f"agent runner: job failed unexpectedly: {exc}", file=sys.stderr, flush=True)
+        finally:
+            shutil.rmtree(job_dir, ignore_errors=True)
+
+        # `run_once` returns 0 with nothing claimed too; sleeping only when the
+        # queue was empty would need a separate signal, and a short sleep after
+        # any job is harmless next to a job's own runtime.
+        time.sleep(idle_sleep_s)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the runner CLI parser.
+
+    Separate from :func:`main` so the deployment configuration can be checked
+    against the flags that actually exist, rather than discovering a typo when
+    a runner container crash-loops.
+    """
+    parser = argparse.ArgumentParser(description="Run queued agent jobs.")
     parser.add_argument("--base-url", default=os.environ.get("FREEINFERENCE_BASE_URL", ""))
     parser.add_argument("--worker-id", default=os.environ.get("AGENT_WORKER_ID", "runner"))
     parser.add_argument("--workdir", default=".")
     parser.add_argument("--lease-ttl", type=float, default=DEFAULT_LEASE_TTL_S)
     parser.add_argument("--agent-timeout", type=float, default=DEFAULT_AGENT_TIMEOUT_S)
     parser.add_argument("--generic-command", default=os.environ.get("AGENT_GENERIC_COMMAND"))
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Keep claiming jobs instead of exiting after one (self-hosted runner).",
+    )
+    parser.add_argument(
+        "--workdir-root",
+        default=os.environ.get("AGENT_WORKDIR_ROOT", "/var/lib/freeinference/agent-jobs"),
+        help="Where per-job worktrees are created in --loop mode.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point used by the runner workflow and the self-hosted service."""
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     dispatcher_token = os.environ.get("AGENT_DISPATCHER_TOKEN", "")
     if not args.base_url or not dispatcher_token:
         parser.error("FREEINFERENCE_BASE_URL and AGENT_DISPATCHER_TOKEN are required")
+
+    if args.loop:
+        return run_forever(
+            base_url=args.base_url,
+            dispatcher_token=dispatcher_token,
+            worker_id=args.worker_id,
+            workdir_root=args.workdir_root,
+            lease_ttl=args.lease_ttl,
+            agent_timeout_s=args.agent_timeout,
+            generic_command=args.generic_command,
+        )
 
     return run_once(
         base_url=args.base_url,
