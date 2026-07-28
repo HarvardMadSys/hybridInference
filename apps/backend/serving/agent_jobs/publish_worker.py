@@ -43,6 +43,11 @@ logger = get_logger(__name__)
 GITHUB_API = "https://api.github.com"
 POLL_INTERVAL_S = 15.0
 
+# Exactly what publishing does: push one branch, open one draft PR. Notably not
+# `workflows`, so a patch touching `.github/` cannot be pushed even if both
+# gates were bypassed — the credential itself would refuse.
+_PUBLISH_SCOPE = {"contents": "write", "pull_requests": "write"}
+
 
 @dataclass(frozen=True)
 class GitHubCredential:
@@ -143,11 +148,15 @@ async def publish_one(
     # deployment that has not set the App up.
     if app_credentials is not None:
         try:
-            # Scoped to this one repository, not to everything the App is
-            # installed on: publishing job A must not carry a credential that
-            # could write to tenant B's repository.
+            # Scoped twice: to this one repository, and to the two permissions
+            # publishing actually uses. An installation token inherits every
+            # permission the App holds unless it asks for less, so omitting
+            # `permissions` here handed the publisher whatever the App could
+            # ever do — against a repository the *user* named.
             credential = GitHubCredential(
-                await app_credentials.token_for(job["repo"], repository_scoped=True)
+                await app_credentials.token_for(
+                    job["repo"], permissions=_PUBLISH_SCOPE, repository_scoped=True
+                )
             )
         except Exception as exc:
             await store.fail_publish(

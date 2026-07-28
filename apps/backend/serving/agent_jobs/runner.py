@@ -49,6 +49,10 @@ DEFAULT_AGENT_TIMEOUT_S = 3600.0
 # How often the control checks run while the agent is silent.
 _POLL_INTERVAL_S = 0.5
 _GIT_TIMEOUT_S = 300.0
+# Bounds on the final in-sandbox `git diff`. Generous for a real patch, finite
+# because the worktree's git configuration belongs to the agent by then.
+_PATCH_TIMEOUT_S = 300.0
+_PATCH_MAX_BYTES = 8 * 1024 * 1024
 
 # Both are interpolated into a URL and handed to git, which reads a leading
 # `-` as an option even where an operand belongs. Validate the shape here as
@@ -457,9 +461,57 @@ def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
     process = backend.spawn(
         SandboxSpec(argv=["/bin/sh", "-c", script], workdir=workdir, env=_SAFE_DIRECTORY_ENV)
     )
-    out = "".join(process.lines())
+    return _read_bounded(process, deadline_s=_PATCH_TIMEOUT_S, max_bytes=_PATCH_MAX_BYTES)
+
+
+def _read_bounded(process: Any, *, deadline_s: float, max_bytes: int) -> str:
+    """Drain a sandbox process's stdout under a deadline and a byte cap.
+
+    This step still runs git against a worktree the agent owned for the whole
+    run, including its ``.git/config``. A ``diff.external`` (or a textconv
+    filter, or ``core.fsmonitor``) that never returns would otherwise block
+    here forever — and because the heartbeat thread keeps renewing the lease
+    until the enclosing ``finally``, the attempt never expires, the reaper
+    never takes it, and a ``--loop`` runner claims nothing further. One hostile
+    repository would take a runner out permanently.
+    """
+    chunks: list[str] = []
+    total = 0
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def _pump() -> None:
+        try:
+            for line in process.lines():
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=_pump, daemon=True, name="agent-patch").start()
+    deadline = time.monotonic() + deadline_s
+    while True:
+        if time.monotonic() > deadline:
+            process.kill()
+            raise WorktreeError(
+                f"building the patch exceeded {deadline_s:.0f}s; the working tree's git "
+                "configuration is agent-controlled and may be hostile"
+            )
+        try:
+            line = lines.get(timeout=_POLL_INTERVAL_S)
+        except queue.Empty:
+            continue
+        if line is None:
+            break
+        total += len(line.encode())
+        if total > max_bytes:
+            process.kill()
+            raise WorktreeError(
+                f"the patch exceeded {max_bytes} bytes while being read; refusing to "
+                "buffer unbounded agent output"
+            )
+        chunks.append(line)
+
     process.wait()
-    return out
+    return "".join(chunks)
 
 
 def run_agent(

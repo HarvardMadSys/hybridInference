@@ -290,6 +290,7 @@ class ContainerBackend(SandboxBackend):
         network: str = "bridge",
         docker_binary: str = "docker",
         extra_args: list[str] | None = None,
+        allow_open_network: bool = False,
         uid: int = SANDBOX_UID,
         gid: int = SANDBOX_GID,
         home: str = SANDBOX_HOME,
@@ -299,6 +300,7 @@ class ContainerBackend(SandboxBackend):
         self.network = network
         self.docker_binary = docker_binary
         self.extra_args = extra_args or []
+        self.allow_open_network = allow_open_network
         self.uid = uid
         self.gid = gid
         self.home = home
@@ -395,6 +397,7 @@ class ContainerBackend(SandboxBackend):
             raise SandboxError(f"{self.docker_binary} is not usable: {exc}") from exc
         if result.returncode != 0:
             raise SandboxError(f"{self.docker_binary} is not usable: {result.stderr.strip()[:200]}")
+        self._check_network_is_closed()
         if workdir_root is not None:
             self._check_bind_mountable(workdir_root)
         if not self.is_vm_isolated:
@@ -407,6 +410,55 @@ class ContainerBackend(SandboxBackend):
                         "trusted repositories, not for untrusted multi-tenant code"
                     ),
                 },
+            )
+
+    def _check_network_is_closed(self) -> None:
+        """Refuse to start unless the sandbox network denies egress by default.
+
+        The design puts egress control at the network layer and says
+        degradation must fail closed. An unset or open network is therefore a
+        startup failure, not a warning: the agent runs untrusted repository
+        code, and "nobody configured this" must not be the same thing as "full
+        internet".
+        """
+        if self.allow_open_network:
+            logger.warning(
+                "agent_sandbox_open_network",
+                extra={
+                    "event": "agent_sandbox_open_network",
+                    "detail": (
+                        f"sandbox network {self.network!r} is not internal and the "
+                        "operator has accepted that; the agent can reach the internet"
+                    ),
+                },
+            )
+            return
+        if not self.network:
+            raise SandboxError(
+                "AGENT_SANDBOX_NETWORK is not set. There is deliberately no default: "
+                "an unset value used to mean the Docker bridge, i.e. unrestricted "
+                "outbound internet for untrusted repository code. Point it at an "
+                "internal network (the compose overlay declares `agent-egress`), or "
+                "set AGENT_SANDBOX_ALLOW_OPEN_NETWORK=1 to accept open egress."
+            )
+        probe = subprocess.run(
+            [self.docker_binary, "network", "inspect", self.network, "--format", "{{.Internal}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if probe.returncode != 0:
+            raise SandboxError(
+                f"the sandbox network {self.network!r} does not exist: "
+                f"{probe.stderr.strip()[:200]}. Every job would fail at spawn."
+            )
+        if probe.stdout.strip().lower() != "true":
+            raise SandboxError(
+                f"the sandbox network {self.network!r} is not `internal`, so the agent "
+                "would have unrestricted egress. Declare it `internal: true` (as the "
+                "compose overlay does), front it with an allowlist proxy, or set "
+                "AGENT_SANDBOX_ALLOW_OPEN_NETWORK=1 to accept that deliberately."
             )
 
     def _check_bind_mountable(self, workdir_root: str) -> None:
@@ -536,9 +588,14 @@ def build_backend_from_env(env: dict[str, str] | None = None) -> SandboxBackend:
         return ContainerBackend(
             image=source.get("AGENT_SANDBOX_IMAGE") or DEFAULT_IMAGE,
             runtime=runtime,
-            network=source.get("AGENT_SANDBOX_NETWORK") or "bridge",
+            # No fallback. `bridge` meant an unset variable gave the agent full
+            # outbound internet — a missing setting opening the boundary rather
+            # than closing it, which is the opposite of the fail-closed rule the
+            # process backend already follows. Preflight refuses if it is unset.
+            network=source.get("AGENT_SANDBOX_NETWORK") or "",
             docker_binary=source.get("AGENT_SANDBOX_DOCKER") or "docker",
             extra_args=shlex.split(source.get("AGENT_SANDBOX_EXTRA_ARGS") or ""),
+            allow_open_network=source.get("AGENT_SANDBOX_ALLOW_OPEN_NETWORK", "") not in ("", "0"),
             uid=int(source.get("AGENT_SANDBOX_UID") or SANDBOX_UID),
             gid=int(source.get("AGENT_SANDBOX_GID") or SANDBOX_GID),
             home=source.get("AGENT_SANDBOX_HOME") or SANDBOX_HOME,

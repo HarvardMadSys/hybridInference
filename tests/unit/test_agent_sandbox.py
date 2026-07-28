@@ -281,3 +281,34 @@ def test_the_fallback_does_not_make_data_files_executable(tmp_path, monkeypatch)
 
     assert not data.stat().st_mode & 0o111
     assert script.stat().st_mode & 0o111
+
+
+# ── egress must fail closed ────────────────────────────────────────────
+
+
+def test_an_unset_network_is_refused_not_defaulted_to_the_internet():
+    """A missing setting must close the boundary, not open it.
+
+    `network` used to fall back to `bridge`, so forgetting the variable gave
+    untrusted repository code unrestricted outbound internet — the opposite of
+    the rule the process backend already follows.
+    """
+    backend = build_backend_from_env({"AGENT_SANDBOX_BACKEND": "container"})
+
+    assert backend.network == "", "there must be no open-network fallback"
+    with pytest.raises(SandboxError) as excinfo:
+        backend._check_network_is_closed()
+    assert "AGENT_SANDBOX_ALLOW_OPEN_NETWORK" in str(excinfo.value)
+
+
+def test_open_egress_requires_an_explicit_acknowledgement():
+    """Same shape as the unisolated-backend opt-in: deliberate, not accidental."""
+    backend = build_backend_from_env(
+        {
+            "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_ALLOW_OPEN_NETWORK": "1",
+        }
+    )
+
+    assert backend.allow_open_network is True
+    backend._check_network_is_closed()  # acknowledged: does not raise

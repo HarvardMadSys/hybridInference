@@ -269,3 +269,68 @@ def test_a_pinned_commit_the_worktree_lacks_stops_the_job(tmp_path: Path, remote
 
     with pytest.raises(WorktreeError, match="does not contain"):
         align_existing_checkout(str(workdir), checked_out=head, base_sha="0" * 40)
+
+
+def test_building_the_patch_gives_up_rather_than_hanging_forever(monkeypatch):
+    """A worktree whose git config never returns must not pin the lease open.
+
+    The final `git diff` runs against a tree the agent owned all run, including
+    its `.git/config`. A `diff.external` that blocks would otherwise leave the
+    runner reading forever while the heartbeat keeps renewing the lease — so
+    the attempt never expires, the reaper never takes it, and a --loop runner
+    claims nothing again.
+    """
+    import threading
+
+    from serving.agent_jobs import runner as runner_module
+
+    release = threading.Event()
+
+    class HangingProcess:
+        def __init__(self) -> None:
+            self.killed = False
+
+        def lines(self):
+            release.wait(timeout=30)
+            return iter(())
+
+        def kill(self) -> None:
+            self.killed = True
+            release.set()
+
+        def wait(self) -> int:
+            return 0
+
+    process = HangingProcess()
+    monkeypatch.setattr(runner_module, "_PATCH_TIMEOUT_S", 0.5)
+
+    with pytest.raises(WorktreeError, match="exceeded"):
+        runner_module._read_bounded(process, deadline_s=0.5, max_bytes=1024)
+
+    assert process.killed, "the sandbox process must be killed, not merely abandoned"
+
+
+def test_building_the_patch_refuses_unbounded_output():
+    """A patch that grows without end must not be buffered into the runner."""
+    from serving.agent_jobs import runner as runner_module
+
+    class FloodProcess:
+        def __init__(self) -> None:
+            self.killed = False
+
+        def lines(self):
+            while not self.killed:
+                yield "x" * 1024 + "\n"
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self) -> int:
+            return 0
+
+    process = FloodProcess()
+
+    with pytest.raises(WorktreeError, match="bytes"):
+        runner_module._read_bounded(process, deadline_s=30, max_bytes=4096)
+
+    assert process.killed
