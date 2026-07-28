@@ -16,6 +16,7 @@ read the overlay. No Docker is required -- the files are parsed directly.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -189,6 +190,30 @@ def test_overlay_cors_still_admits_the_public_site() -> None:
     assert "https://staging-internal.freeinference.org" in origins
     # The local development origins from the neutral default must survive too.
     assert "http://localhost:3000" in origins
+
+
+@pytest.mark.parametrize(
+    ("var", "expected_names"),
+    [
+        ("NEXT_PUBLIC_TEAM_JSON", {"Juncheng Yang", "Murphy Tian", "Haoran Ni"}),
+        ("NEXT_PUBLIC_SPONSORS_JSON", {"NVIDIA", "Harvard SEAS"}),
+    ],
+)
+def test_overlay_site_content_survives_as_json(var: str, expected_names: set[str]) -> None:
+    """A value mangled in transit empties its section without any error.
+
+    The console parses these with a fallback to an empty list, so anything
+    that breaks the JSON -- a stray quote, an env-file parser folding the
+    line -- removes the team or sponsors section from the live site silently.
+    """
+    entries = json.loads(_overlay_values()[var])
+    assert isinstance(entries, list) and entries
+    assert {entry["name"] for entry in entries} == expected_names
+
+
+def test_overlay_states_the_deployment_data_policy() -> None:
+    """A site that logs prompts has to say so; upstream says nothing for it."""
+    assert "logged for research purposes" in _overlay_values()["NEXT_PUBLIC_DATA_POLICY_NOTICE"]
 
 
 def test_every_overlay_key_is_actually_read_by_compose() -> None:
