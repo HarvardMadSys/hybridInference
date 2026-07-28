@@ -72,6 +72,7 @@ exclude:
       overlay — a claim about distributions/, which the export removes. The
       overlay keeps its own copy of the same check.
   - path: tests/unit/observability/test_control_plane_producer.py
+    optional: true   # lands on dev with the control-plane work, not on this branch
     reason: Asserts the alert control plane producer, which lives in services/.
   - path: tests/unit/ops/test_ci_workflow_policy.py
     reason: >-
