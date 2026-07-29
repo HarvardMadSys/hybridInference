@@ -208,9 +208,28 @@ produce patches, they just never become PRs.
 
 The runner must be a **standing service**, not a process someone starts by
 hand: a queued job waits until something claims it, and "someone's laptop had
-the runner up that afternoon" is how the first real job actually ran. One
-command per host makes it standing — compose's `restart: unless-stopped` plus
-an enabled Docker daemon carries it across crashes and reboots:
+the runner up that afternoon" is how the first real job actually ran.
+
+**On the staging host the deploy pipeline owns this.** `deploy_staging.sh`
+enables the runner overlay whenever the host's `.env` sets
+`AGENT_DISPATCHER_TOKEN` — the credential the runner needs anyway, so there is
+no second switch to forget. Opting a host in is a one-time `.env` edit:
+
+```bash
+AGENT_DISPATCHER_TOKEN=<openssl rand -hex 32>   # same value gates /worker/claim
+AGENT_SANDBOX_BACKEND=container                  # host has no Kata shim yet
+```
+
+Every subsequent deploy then builds the sandbox image and brings the runner up
+in the **same compose invocation** as the main stack. Same-invocation is a
+correctness requirement, not a convenience: the overlay attaches `backend` to
+the agent-egress network, and a separate compose call without the distribution
+env files would recreate backend stripped of its site identity.
+
+For a machine that is *not* the staging host (a dedicated runner box, a dev
+machine), the script below does the same by hand — one command per host makes
+it standing; compose's `restart: unless-stopped` plus an enabled Docker daemon
+carries it across crashes and reboots:
 
 ```bash
 ops/deploy/agent_runner.sh up 4      # build images, start 4 runners

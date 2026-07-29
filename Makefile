@@ -178,7 +178,17 @@ $(error DISTRIBUTION=$(DISTRIBUTION) matches no distributions/$(DISTRIBUTION)/de
 endif
 $(info Using distribution '$(DISTRIBUTION)' — its identity is compiled into the console. DISTRIBUTION=none for a neutral stack.)
 endif
-COMPOSE := docker compose -f deploy/docker/docker-compose.yml $(DISTRIBUTION_ENV_FILES) --env-file .env
+# Cloud-agent runner overlay (issue #1041). A host opts in with AGENT_RUNNER=1
+# and the runner rides the SAME compose invocation as the main stack. That is
+# a correctness requirement, not convenience: the overlay attaches `backend`
+# to the agent-egress network, so a separate compose call without the
+# distribution env files would recreate backend stripped of its identity.
+ifeq ($(AGENT_RUNNER),1)
+COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml -f deploy/docker/docker-compose.agent-runner.yml
+else
+COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml
+endif
+COMPOSE := docker compose $(COMPOSE_FILE_ARGS) $(DISTRIBUTION_ENV_FILES) --env-file .env
 DOCKER_VOLUMES := hybridinference_postgres_data
 
 docker-volumes:  ## Create external Docker volumes required by production compose

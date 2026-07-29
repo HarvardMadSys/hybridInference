@@ -327,3 +327,67 @@ def test_every_tier_the_overlay_lets_you_select_is_passed_through(compose: dict)
         assert f"AGENT_EGRESS_NETWORK_{suffix}" in env, (
             f"tier {tier!r} is selectable but its network variable never reaches the runner"
         )
+
+
+_STAGING_DEPLOY = Path(__file__).resolve().parents[2] / "ops/deploy/deploy_staging.sh"
+_MAKEFILE = Path(__file__).resolve().parents[2] / "Makefile"
+
+
+def test_staging_deploy_owns_the_runner_when_the_host_opts_in():
+    """The runner is part of the deploy, not a hand-started orphan.
+
+    P0 shipped runner code with no standing deployment: every queued job
+    waited for someone to start a runner by hand, and the next `make build`
+    on the host would not have known the overlay existed. The staging deploy
+    now enables the overlay when the host sets AGENT_DISPATCHER_TOKEN — and
+    it must ride the SAME compose invocation as the main stack, because the
+    overlay attaches `backend` to the agent-egress network.
+    """
+    script = _STAGING_DEPLOY.read_text()
+    assert "AGENT_DISPATCHER_TOKEN=" in script, (
+        "opt-in must key off the credential the runner needs anyway"
+    )
+    assert "docker-compose.agent-runner.yml" in script, (
+        "the overlay never enters the deploy's compose file set"
+    )
+    assert "Dockerfile.agent-sandbox" in script, (
+        "nothing builds the sandbox image the overlay requires"
+    )
+    assert 'AGENT_RUNNER="$AGENT_RUNNER"' in script, (
+        "the flag never reaches make, so the overlay is dropped at the up step"
+    )
+
+    makefile = _MAKEFILE.read_text()
+    assert "docker-compose.agent-runner.yml" in makefile, (
+        "make build must include the overlay when AGENT_RUNNER=1 — a separate "
+        "compose call would recreate backend without the distribution env files"
+    )
+
+
+def test_compose_file_has_no_duplicate_keys():
+    """Duplicate mapping keys make docker compose reject the whole file.
+
+    `yaml.safe_load` keeps the last of a repeated key, so every test in this
+    module passed while `docker compose` refused to parse the overlay at all
+    ("mapping key already defined") — the runner could not have started from
+    it on any host. Python's tolerance is what hid it; this loader is as
+    strict as the Go parser that actually reads the file.
+    """
+
+    class _StrictLoader(yaml.SafeLoader):
+        pass
+
+    def _no_duplicates(loader, node, deep=False):
+        seen = set()
+        for key_node, _value_node in node.value:
+            key = loader.construct_object(key_node, deep=deep)
+            if key in seen:
+                raise AssertionError(
+                    f"duplicate key {key!r} in {_COMPOSE.name}: docker compose "
+                    "rejects the entire file, so the runner never starts"
+                )
+            seen.add(key)
+        return yaml.SafeLoader.construct_mapping(loader, node, deep)
+
+    _StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_duplicates)
+    yaml.load(_COMPOSE.read_text(), Loader=_StrictLoader)

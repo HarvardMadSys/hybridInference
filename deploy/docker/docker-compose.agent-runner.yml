@@ -55,8 +55,8 @@ services:
       AGENT_GIT_AUTHOR_NAME: ${AGENT_GIT_AUTHOR_NAME:-}
       AGENT_GIT_AUTHOR_EMAIL: ${AGENT_GIT_AUTHOR_EMAIL:-}
 
-      # Where job directories live inside the container; the volume below
-      # mounts this same path.
+      # Where job directories live — identical inside this container and on the
+      # host, which the bind mount below depends on rather than merely prefers.
       AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
 
       # Egress policy. `agent-egress` is an internal network with no route to
@@ -83,10 +83,6 @@ services:
       AGENT_EGRESS_NETWORK_CUSTOM: ${AGENT_EGRESS_NETWORK_CUSTOM:-}
       AGENT_EGRESS_NETWORK_FULL: ${AGENT_EGRESS_NETWORK_FULL:-}
       AGENT_EGRESS_ALLOWLIST: ${AGENT_EGRESS_ALLOWLIST:-}
-
-      # Identical inside this container and on the host — see the bind mount
-      # below for why that is not a stylistic choice.
-      AGENT_WORKDIR_ROOT: ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
 
       # Setup snapshots. Keyed on repository + setup script, so a retry or a
       # later job with the same dependencies restores the tree instead of
