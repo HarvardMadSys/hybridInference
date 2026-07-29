@@ -4,13 +4,20 @@
 # want jobs executed on your own machines instead of GitHub Actions.
 #
 #   docker compose -f deploy/docker/docker-compose.yml \
-#                  -f deploy/docker/docker-compose.agent-runner.yml \
-#                  up -d --scale agent-runner=4
+#                  -f deploy/docker/docker-compose.agent-runner.yml up -d
 #
-# Scaling is just --scale: AgentJobStore.claim_job uses FOR UPDATE SKIP LOCKED,
-# so runners share one queue with no coordination, no leader, and no sharding.
-# Adding replicas adds throughput; a replica dying mid-job is handled by the
-# lease reaper, not by anything here.
+# Concurrency is AGENT_RUNNER_REPLICAS, and it lives here rather than in a
+# `--scale` flag on purpose: each runner takes ONE job at a time and only
+# claims the next when that one finishes, so the replica count *is* the number
+# of jobs the deployment can run at once. A `--scale` typed by hand survives
+# until the next deploy runs `docker compose up` without it and silently drops
+# the fleet back to one — which reads as "everyone is queueing" long after
+# anyone remembers scaling it.
+#
+# Replicas need no coordination: AgentJobStore.claim_job uses FOR UPDATE SKIP
+# LOCKED, so they share one queue with no leader and no sharding, and a replica
+# dying mid-job is handled by the lease reaper rather than by anything here.
+# Budget roughly one sandbox's limits (4g / 2 cpus by default) per replica.
 #
 # The runner is the TRUSTED side. It holds the dispatcher credential and the
 # full capability token, and it spawns a disposable sandbox per job — only a
@@ -29,6 +36,11 @@ services:
       - agent-egress
 
   agent-runner:
+    # How many jobs this deployment runs at once — one per replica. Compose
+    # honours `deploy.replicas` for `up` outside swarm, so the count survives
+    # a deploy instead of depending on someone re-typing --scale.
+    deploy:
+      replicas: ${AGENT_RUNNER_REPLICAS:-3}
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.agent-runner
@@ -97,8 +109,10 @@ services:
       - -m
       - serving.agent_jobs.runner
       - --loop
-      - --worker-id
-      - ${AGENT_WORKER_ID:-runner}
+      # No --worker-id: the flag would pin every replica to the same literal,
+      # and `lease_owner` is how an operator tells them apart. The runner
+      # derives `${AGENT_WORKER_ID:-runner}-<container hostname>`, so the
+      # configured value still groups the fleet while each member is distinct.
       - --workdir-root
       - ${AGENT_WORKDIR_ROOT:-/var/lib/hybridinference/agent-jobs}
     volumes:

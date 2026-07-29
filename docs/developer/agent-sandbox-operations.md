@@ -262,6 +262,27 @@ ops/deploy/agent_runner.sh status    # replicas + recent log tail
 ops/deploy/agent_runner.sh down      # stop them; the main stack is untouched
 ```
 
+### How many runners
+
+**One runner runs one job at a time.** It claims, runs the job to completion,
+then claims the next — so the replica count *is* how many jobs the deployment
+can run concurrently, and everything else waits in the queue. With one
+replica, two users are serialised; a job that runs to its hour-long timeout
+holds up everyone behind it.
+
+Set it with `AGENT_RUNNER_REPLICAS` (default 3). Replicas need no
+coordination — `claim_job` uses `FOR UPDATE SKIP LOCKED`, so they share one
+queue with no leader and no sharding — and each job's sandbox is capped at
+4g / 2 cpus, so budget roughly that per replica.
+
+Do not scale with a `--scale` flag instead: it survives exactly until the next
+`docker compose up` without it, which drops the fleet back to one and presents
+as "every user is queueing" long after anyone remembers scaling it.
+
+Queue order is global FIFO with no per-user fairness yet, so one user
+submitting a batch can occupy every replica. Per-user concurrency quotas are
+P1 work.
+
 The script validates the required environment before starting and surfaces
 the runner's own preflight verdict (gateway reachable, image spawnable,
 workdir bind-mountable, egress network resolvable) instead of leaving it in a

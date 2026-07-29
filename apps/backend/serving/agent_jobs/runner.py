@@ -31,6 +31,7 @@ import pathlib
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -1054,6 +1055,24 @@ def _env_float(name: str, fallback: float) -> float:
         return fallback
 
 
+def default_worker_id() -> str:
+    """Identify this runner, distinctly from its replicas.
+
+    ``lease_owner`` is how an operator answers "which runner has this job" and
+    "which one is stuck". Replicas share an environment, so a plain
+    ``AGENT_WORKER_ID`` makes every one of them report the same name — the
+    question stops being answerable exactly when a second replica makes it
+    worth asking. The hostname is unique per container, so it is appended
+    rather than replaced: the configured value still groups a fleet.
+
+    Not a correctness fix — fencing is on ``(attempt_id, lease_generation)``,
+    never on this string.
+    """
+    base = (os.environ.get("AGENT_WORKER_ID") or "runner").strip() or "runner"
+    host = socket.gethostname().strip()
+    return f"{base}-{host}" if host and not base.endswith(host) else base
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the runner CLI parser.
 
@@ -1068,7 +1087,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url",
         default=os.environ.get("AGENT_GATEWAY_URL") or os.environ.get("FREEINFERENCE_BASE_URL", ""),
     )
-    parser.add_argument("--worker-id", default=os.environ.get("AGENT_WORKER_ID", "runner"))
+    parser.add_argument("--worker-id", default=default_worker_id())
     parser.add_argument("--workdir", default=".")
     # Read from the environment the way --base-url and --workdir-root already
     # do. The compose overlay sets AGENT_LEASE_TTL and AGENT_TIMEOUT_S, and
