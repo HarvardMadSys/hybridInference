@@ -147,10 +147,14 @@ class AgentJobStore:
                     user_id TEXT NOT NULL,
                     repo TEXT NOT NULL,
                     title TEXT NOT NULL,
+                    archived_at TIMESTAMPTZ,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE agent_threads ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"
             )
             await conn.execute(
                 """
@@ -907,16 +911,54 @@ class AgentJobStore:
             )
         return _job_row_to_dict(row) if row else None
 
-    async def list_jobs(self, *, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        """List a user's jobs, newest first."""
+    async def list_jobs(
+        self, *, user_id: str, limit: int = 50, archived: bool = False
+    ) -> list[dict[str, Any]]:
+        """List a user's jobs from active or archived threads, newest first."""
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 f"SELECT {_JOB_COLUMNS} FROM agent_jobs "
-                "WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+                "WHERE user_id = $1 AND EXISTS ("
+                "    SELECT 1 FROM agent_threads t "
+                "    WHERE t.id = agent_jobs.thread_id AND t.user_id = $1 "
+                "      AND (($3 AND t.archived_at IS NOT NULL) "
+                "           OR (NOT $3 AND t.archived_at IS NULL))"
+                ") ORDER BY created_at DESC LIMIT $2",
                 user_id,
                 limit,
+                archived,
             )
         return [_job_row_to_dict(row) for row in rows]
+
+    async def set_thread_archived(
+        self, *, job_id: str, user_id: str, archived: bool
+    ) -> dict[str, Any] | None:
+        """Archive or restore the owned thread containing ``job_id``."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE agent_threads t
+                SET archived_at = CASE
+                    WHEN $3 THEN COALESCE(t.archived_at, NOW())
+                    ELSE NULL
+                END
+                WHERE t.user_id = $2
+                  AND EXISTS (
+                      SELECT 1
+                      FROM agent_jobs j
+                      WHERE j.id = $1
+                        AND j.thread_id = t.id
+                        AND j.user_id = $2
+                  )
+                RETURNING t.id AS thread_id, t.archived_at
+                """,
+                job_id,
+                user_id,
+                archived,
+            )
+        if row is None:
+            return None
+        return {"thread_id": row["thread_id"], "archived_at": row["archived_at"]}
 
     # ── Claim / lease ──────────────────────────────────────────────────
 

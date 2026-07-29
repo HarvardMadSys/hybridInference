@@ -205,11 +205,9 @@ export function IntegrationsView({
 
   return (
     <section className="mx-auto w-full max-w-5xl px-6 py-12 lg:px-12 lg:py-16">
-      <h1 className="text-3xl font-semibold tracking-tight text-gray-900">
-        Integrations &amp; MCP
-      </h1>
+      <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Integrations</h1>
       <p className="mt-2 text-base text-gray-500">
-        Connect external tools for your agents. Custom MCP server connections are coming soon.
+        Connect source control providers and extend your agents with MCP servers.
       </p>
 
       {notice ? (
@@ -293,7 +291,7 @@ export function IntegrationsView({
       </div>
 
       <div className="mt-10">
-        <h2 className="text-sm font-medium text-gray-600">Model Context Protocol</h2>
+        <h2 className="text-sm font-medium text-gray-600">MCP Servers</h2>
         <div className="mt-4 flex items-center gap-4 rounded-2xl border border-gray-200 bg-white px-6 py-5 shadow-sm">
           <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gray-100 text-gray-500">
             <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" aria-hidden="true">

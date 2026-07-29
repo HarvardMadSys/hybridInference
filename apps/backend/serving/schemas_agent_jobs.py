@@ -154,6 +154,14 @@ class AgentJobCancelResponse(BaseModel):
     cancel_requested: bool
 
 
+class AgentThreadArchiveResponse(BaseModel):
+    """Archive state for the thread containing a requested job."""
+
+    thread_id: str
+    archived: bool
+    archived_at: str | None = None
+
+
 class AgentFollowUpRequest(BaseModel):
     """A new user turn appended to an existing task thread."""
 

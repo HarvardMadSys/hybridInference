@@ -74,6 +74,7 @@ from serving.schemas_agent_jobs import (
     AgentJobEventsResponse,
     AgentJobListResponse,
     AgentJobResponse,
+    AgentThreadArchiveResponse,
     AgentThreadMessageResponse,
     AgentThreadResponse,
     GitHubConnectionResponse,
@@ -820,12 +821,13 @@ async def create_agent_job(
 @router.get("/jobs", response_model=AgentJobListResponse)
 async def list_agent_jobs(
     limit: int = Query(50, ge=1, le=200),
+    archived: bool = Query(False),
     user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
 ) -> AgentJobListResponse:
-    """List the authenticated user's agent jobs, newest first."""
+    """List jobs from the authenticated user's active or archived threads."""
     job_store = _require_store(store)
-    jobs = await job_store.list_jobs(user_id=user["user_id"], limit=limit)
+    jobs = await job_store.list_jobs(user_id=user["user_id"], limit=limit, archived=archived)
     return AgentJobListResponse(jobs=[_job_response(job) for job in jobs])
 
 
@@ -862,6 +864,52 @@ async def cancel_agent_job(
         state=state or (job or {}).get("state", "unknown"),
         cancel_requested=bool((job or {}).get("cancel_requested")),
     )
+
+
+async def _set_agent_thread_archived(
+    *,
+    job_id: str,
+    archived: bool,
+    user: dict[str, Any],
+    store: AgentJobStore | None,
+) -> AgentThreadArchiveResponse:
+    """Set archive state without exposing whether another user's job exists."""
+    job_store = _require_store(store)
+    result = await job_store.set_thread_archived(
+        job_id=job_id,
+        user_id=user["user_id"],
+        archived=archived,
+    )
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"type": "not_found", "message": f"No such agent job: {job_id}"}},
+        )
+    return AgentThreadArchiveResponse(
+        thread_id=result["thread_id"],
+        archived=archived,
+        archived_at=_iso(result["archived_at"]),
+    )
+
+
+@router.post("/jobs/{job_id}/archive", response_model=AgentThreadArchiveResponse)
+async def archive_agent_thread(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentThreadArchiveResponse:
+    """Archive the entire task thread containing an owned job."""
+    return await _set_agent_thread_archived(job_id=job_id, archived=True, user=user, store=store)
+
+
+@router.delete("/jobs/{job_id}/archive", response_model=AgentThreadArchiveResponse)
+async def restore_agent_thread(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentThreadArchiveResponse:
+    """Restore the entire task thread containing an owned job."""
+    return await _set_agent_thread_archived(job_id=job_id, archived=False, user=user, store=store)
 
 
 @router.post("/jobs/{job_id}/follow-ups", response_model=AgentJobResponse, status_code=201)

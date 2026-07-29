@@ -23,7 +23,10 @@ import type { AgentJob } from './types';
 // shape and the client resumes from the last event id.
 
 /** List the caller's jobs, refreshed on an interval while any are live. */
-export function useAgentJobList(pollMs = 10_000): {
+export function useAgentJobList(
+  pollMs = 10_000,
+  archived = false,
+): {
   jobs: AgentJob[];
   loading: boolean;
   error: string | null;
@@ -38,7 +41,7 @@ export function useAgentJobList(pollMs = 10_000): {
 
   useEffect(() => {
     let cancelled = false;
-    listAgentJobs()
+    listAgentJobs(50, archived)
       .then((api: AgentJobApi[]) => {
         if (cancelled) return;
         setJobs(api.map((job) => toDisplayJob(job)));
@@ -53,7 +56,7 @@ export function useAgentJobList(pollMs = 10_000): {
     return () => {
       cancelled = true;
     };
-  }, [tick]);
+  }, [archived, tick]);
 
   // Only poll while something can still change; a list of finished jobs does
   // not need a request every ten seconds.
