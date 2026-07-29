@@ -49,9 +49,20 @@ async def _stream_request(
         "provider": {"order": [provider], "allow_fallbacks": False},
     }
 
+    # OpenRouter attributes requests to whatever these say. Hardcoding one
+    # deployment meant anybody who ran this benchmark reported as that
+    # deployment; set them to your own, or leave them unset.
     headers = {
-        "HTTP-Referer": "https://freeinference.org",
-        "X-Title": "FreeInference",
+        **(
+            {"HTTP-Referer": os.environ["OPENROUTER_REFERER"]}
+            if os.environ.get("OPENROUTER_REFERER")
+            else {}
+        ),
+        **(
+            {"X-Title": os.environ["OPENROUTER_TITLE"]}
+            if os.environ.get("OPENROUTER_TITLE")
+            else {}
+        ),
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
