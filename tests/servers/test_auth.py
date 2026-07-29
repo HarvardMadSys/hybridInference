@@ -587,3 +587,148 @@ async def test_balance_quota_null_uses_default_1000(monkeypatch, mock_request, m
 
     assert result["quota_daily_cost_usd"] == 1000.0
     assert result["spent_today_usd"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# X-On-Behalf-Of (trusted service-account impersonation, used by RAG)
+# ---------------------------------------------------------------------------
+
+
+def _service_account_ctx() -> dict:
+    """Auth-context row for the RAG service account (the trusted impersonator)."""
+    return {
+        "id": 7,
+        "user_id": "rag-account",
+        "user_name": "RAG Service",
+        "quota_daily_cost_usd": 1000.0,
+        "role": "internal",
+        "email": "rag@example.com",
+    }
+
+
+@pytest.mark.asyncio
+async def test_on_behalf_of_trusted_service_key_attributes_to_target(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
+    """The RAG service key may attribute a request to the real end user."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    service_key = "hyi-rag-service"
+    _hashed_key(monkeypatch, service_key)  # also sets API_KEY_SECRET
+    # The presented key IS the configured RAG service account => trusted.
+    monkeypatch.setenv("RAG_API_KEY", service_key)
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = _service_account_ctx()
+    mock_op_store.get_user_by_id = AsyncMock(
+        return_value={
+            "id": "end-user-1",
+            "user_name": "End User",
+            "role": "free",
+            "status": "active",
+            "preferences": None,
+            "max_concurrent_requests": None,
+        }
+    )
+    mock_op_store.get_user_cost_today.return_value = 2.5
+
+    result = await verify_api_key(
+        request=mock_request,
+        authorization=f"Bearer {service_key}",
+        x_on_behalf_of="end-user-1",
+        op_store=mock_op_store,
+        log_store=mock_ls,
+    )
+
+    # Identity, role, and quota all follow the end user — not the service account.
+    assert result["user_id"] == "end-user-1"
+    assert result["role"] == "free"
+    assert result["is_admin"] is False
+    mock_op_store.get_user_by_id.assert_awaited_once_with("end-user-1")
+    # Cost/quota are checked against the end user.
+    mock_op_store.get_user_cost_today.assert_awaited_once_with("end-user-1")
+    # last_used is still bumped on the *presented* (service) key.
+    mock_op_store.update_key_last_used.assert_awaited_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_on_behalf_of_from_untrusted_key_is_ignored(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
+    """A normal user key cannot impersonate: the header is ignored, not honored."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    caller_key = "hyi-normal-user"
+    _hashed_key(monkeypatch, caller_key)
+    # A *different* key is the trusted service account.
+    monkeypatch.setenv("RAG_API_KEY", "hyi-some-other-service")
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = {
+        "id": 3,
+        "user_id": "normal-user",
+        "user_name": "Normal",
+        "quota_daily_cost_usd": 1000.0,
+        "role": "free",
+        "email": "n@example.com",
+    }
+    mock_op_store.get_user_by_id = AsyncMock()
+
+    result = await verify_api_key(
+        request=mock_request,
+        authorization=f"Bearer {caller_key}",
+        x_on_behalf_of="victim-user",
+        op_store=mock_op_store,
+        log_store=mock_ls,
+    )
+
+    # Fail safe: the request attributes to the caller, never the named target.
+    assert result["user_id"] == "normal-user"
+    mock_op_store.get_user_by_id.assert_not_awaited()
+    mock_op_store.get_user_cost_today.assert_awaited_once_with("normal-user")
+
+
+@pytest.mark.asyncio
+async def test_on_behalf_of_unknown_target_falls_back_to_caller(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
+    """A trusted caller naming an unknown/inactive user falls back to itself."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    service_key = "hyi-rag-service"
+    _hashed_key(monkeypatch, service_key)
+    monkeypatch.setenv("RAG_API_KEY", service_key)
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = _service_account_ctx()
+    mock_op_store.get_user_by_id = AsyncMock(return_value=None)
+
+    result = await verify_api_key(
+        request=mock_request,
+        authorization=f"Bearer {service_key}",
+        x_on_behalf_of="ghost",
+        op_store=mock_op_store,
+        log_store=mock_ls,
+    )
+
+    assert result["user_id"] == "rag-account"
+    mock_op_store.get_user_cost_today.assert_awaited_once_with("rag-account")
+
+
+@pytest.mark.asyncio
+async def test_on_behalf_of_ignored_when_rag_key_unset(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
+    """Impersonation fails closed when no service account is configured."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    caller_key = "hyi-rag-service"
+    _hashed_key(monkeypatch, caller_key)
+    monkeypatch.delenv("RAG_API_KEY", raising=False)
+
+    mock_op_store.get_auth_context_by_key_hash.return_value = _service_account_ctx()
+    mock_op_store.get_user_by_id = AsyncMock()
+
+    result = await verify_api_key(
+        request=mock_request,
+        authorization=f"Bearer {caller_key}",
+        x_on_behalf_of="end-user-1",
+        op_store=mock_op_store,
+        log_store=mock_ls,
+    )
+
+    assert result["user_id"] == "rag-account"
+    mock_op_store.get_user_by_id.assert_not_awaited()

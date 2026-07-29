@@ -19,7 +19,9 @@ gateway's **own** public API **as a user** for the model work.
 
    Both HTTP calls carry RAG_API_KEY, so they flow through the standard
    /v1/embeddings and /v1/chat/completions handlers → logged to api_logs and
-   counted toward cost / quota / concurrency.
+   counted toward cost / quota / concurrency. They also carry
+   X-On-Behalf-Of: <end-user id>, so that attribution lands on the real end
+   user (verified by JWT at /v1/rag/chat), not on the shared RAG_API_KEY account.
 ```
 
 - **Corpus:** `docs/free_inference/docs/source/*.md` — the same markdown that
@@ -86,10 +88,13 @@ at query time, `/v1/rag/chat` returns a graceful `503` rather than a 500.
 point `RAG_API_BASE_URL` at the gateway's own address for that environment — the
 default `http://localhost:8080/v1` matches the prod Docker container's port, but
 staging (systemd) binds `8000`, so it needs `RAG_API_BASE_URL=http://localhost:8000/v1`.
-Because the inner calls authenticate as a single service account, all RAG cost /
-quota / logs attribute to `RAG_API_KEY`, and the outer `/v1/rag/chat` has no
-per-user concurrency limit of its own — size the `RAG_API_KEY` account's quota
-accordingly.
+The inner calls present `RAG_API_KEY` as the credential but carry
+`X-On-Behalf-Of: <end-user id>`, so cost / quota / logs / per-user concurrency
+attribute to the **real end user** (verified by JWT at `/v1/rag/chat`) rather than
+to the shared service account — each user's RAG usage counts against their own
+daily quota. `verify_api_key` honors `X-On-Behalf-Of` **only** for the configured
+`RAG_API_KEY`; any other key's header is ignored, and if `RAG_API_KEY` is unset
+impersonation is disabled entirely.
 
 ## Endpoints
 
@@ -109,10 +114,13 @@ it already holds.
 
 The RAG model calls go through the gateway's own `/v1/embeddings` and
 `/v1/chat/completions`, so they land in `api_logs` and count toward cost, daily
-quota, and per-user concurrency — attributed to the **`RAG_API_KEY` account**
-(not the end user, who authenticates to `/v1/rag/chat` with a JWT). Set
-`RAG_API_KEY` to a valid user API key; when it is unset the endpoint returns
-`503`. An upstream `429` (quota/rate) is passed through to the caller.
+quota, and per-user concurrency — attributed to the **real end user** via the
+`X-On-Behalf-Of` header (the JWT-verified caller of `/v1/rag/chat`), with
+`RAG_API_KEY` as the presented credential. A row is identifiable as RAG-originated
+by its `metadata.user_agent = "doc_assistant"`. Set `RAG_API_KEY` to a valid user
+API key; when it is unset the endpoint returns `503`. An upstream `429`
+(quota/rate) is passed through to the caller — note this can now be the **end
+user's** own daily quota, not the service account's.
 
 ```bash
 curl -sN https://staging.freeinference.org/v1/rag/chat \
