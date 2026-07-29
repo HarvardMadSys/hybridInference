@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ops.admin import brand_residue_sweep as sweep_module
 from ops.admin.brand_residue_sweep import classify, file_has_marker
+
+REPO = Path(__file__).resolve().parents[3]
 
 
 def test_classify_matches_prefixes_and_exact_files() -> None:
@@ -53,3 +57,17 @@ def test_attribution_still_classifies_so_it_is_not_a_violation() -> None:
     for entry in sweep_module.ATTRIBUTION:
         if not entry.endswith("/"):
             assert sweep_module.classify(entry) == entry
+
+
+def test_guards_are_not_counted_as_residue() -> None:
+    """A file whose job is to notice a marker has to contain one.
+
+    Counting the scanner and the tests that assert markers are absent made the
+    criterion include its own measuring apparatus, so it could not reach zero
+    however much was fixed — the same defect as counting attribution.
+    """
+    assert not set(sweep_module.GUARDS) & set(sweep_module.ALLOWLIST)
+    assert not set(sweep_module.GUARDS) & set(sweep_module.ATTRIBUTION)
+    for entry, reason in sweep_module.GUARDS.items():
+        assert reason.strip(), f"{entry} is exempt forever without saying why"
+        assert (REPO / entry).exists(), f"{entry} is exempt but is gone"
