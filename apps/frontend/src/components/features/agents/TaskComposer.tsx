@@ -66,7 +66,7 @@ export function TaskComposer() {
 
   // Branches follow the selected repository, so they reload when it changes.
   useEffect(() => {
-    if (!repo) return undefined;
+    if (!repo || !config?.github_connected) return undefined;
     let cancelled = false;
     listRepoBranches(repo)
       .then((found) => {
@@ -85,9 +85,14 @@ export function TaskComposer() {
     return () => {
       cancelled = true;
     };
-  }, [repo]);
+  }, [config?.github_connected, repo]);
 
-  const canRun = task.trim().length > 0 && !submitting && Boolean(repo && runtime && model);
+  const disconnected = config?.github_connected === false;
+  const canRun =
+    config?.github_connected === true &&
+    task.trim().length > 0 &&
+    !submitting &&
+    Boolean(repo && runtime && model);
 
   async function run() {
     if (!canRun) return;
@@ -120,10 +125,6 @@ export function TaskComposer() {
     );
   }
 
-  if (config && !config.github_connected) {
-    return <ConnectSourceControl installUrl={config.github_install_url} />;
-  }
-
   return (
     <section className="mx-auto w-full max-w-2xl px-6 pb-16 pt-24">
       <h1 className="text-center text-2xl font-bold text-gray-900">What should the agent do?</h1>
@@ -131,31 +132,71 @@ export function TaskComposer() {
         Runs in an isolated sandbox. No credentials inside — the output is a draft PR.
       </p>
 
-      <div className="mt-8 rounded-2xl bg-white shadow-sm ring-1 ring-gray-200 focus-within:ring-2 focus-within:ring-gray-300">
+      {disconnected ? (
+        <div className="mt-8">
+          <ConnectSourceControl installUrl={config.github_install_url} />
+        </div>
+      ) : null}
+
+      <div
+        aria-disabled={disconnected || undefined}
+        className={`rounded-2xl shadow-sm ring-1 ring-gray-200 ${
+          disconnected
+            ? 'mt-4 bg-gray-50'
+            : 'mt-8 bg-white focus-within:ring-2 focus-within:ring-gray-300'
+        }`}
+      >
         <textarea
           rows={4}
           value={task}
           onChange={(event) => setTask(event.target.value)}
-          placeholder="Describe a task… e.g. Fix the SSE total-timeout regression on /v1/messages and add a unit test"
-          className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-5 pt-4 text-[15px] leading-relaxed placeholder:text-gray-400 focus:outline-none focus:ring-0"
+          disabled={disconnected}
+          placeholder={
+            disconnected
+              ? 'Connect GitHub to describe a task'
+              : 'Describe a task… e.g. Fix the SSE total-timeout regression on /v1/messages and add a unit test'
+          }
+          className="w-full resize-none rounded-t-2xl border-0 bg-transparent px-5 pt-4 text-[15px] leading-relaxed placeholder:text-gray-400 focus:outline-none focus:ring-0 disabled:cursor-not-allowed"
         />
 
         <div className="flex flex-wrap items-center gap-2 border-t border-gray-100 px-3.5 py-2.5">
-          <Picker
-            label="Repository"
-            value={repo}
-            options={config?.repos ?? []}
-            onChange={setRepo}
-          />
-          <Picker label="Branch" value={branch} options={branches} onChange={setBranch} />
-          <span className="h-4 w-px bg-gray-200" />
-          <Picker
-            label="Runtime"
-            value={runtime}
-            options={config?.runtimes ?? []}
-            onChange={setRuntime}
-          />
-          <Picker label="Model" value={model} options={models} onChange={setModel} />
+          {disconnected ? (
+            <span className="inline-flex min-w-0 flex-1 items-center gap-2 text-[13px] text-gray-400">
+              <svg
+                className="h-4 w-4 shrink-0"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={2}
+                aria-hidden="true"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M8 10V7a4 4 0 0 1 8 0v3m-9 0h10a1 1 0 0 1 1 1v8H6v-8a1 1 0 0 1 1-1Z"
+                />
+              </svg>
+              Connect GitHub to select a repository and run
+            </span>
+          ) : (
+            <>
+              <Picker
+                label="Repository"
+                value={repo}
+                options={config?.repos ?? []}
+                onChange={setRepo}
+              />
+              <Picker label="Branch" value={branch} options={branches} onChange={setBranch} />
+              <span className="h-4 w-px bg-gray-200" />
+              <Picker
+                label="Runtime"
+                value={runtime}
+                options={config?.runtimes ?? []}
+                onChange={setRuntime}
+              />
+              <Picker label="Model" value={model} options={models} onChange={setModel} />
+            </>
+          )}
 
           <button
             type="button"
@@ -188,7 +229,7 @@ export function TaskComposer() {
       {/* Only what this deployment is actually running. Budget was shown here as
           a fixed "$2.00" the composer never sent — it is a backend cap, not a
           choice made on this screen, so it belongs on the job instead. */}
-      {config?.agent_egress_tier ? (
+      {config?.github_connected && config.agent_egress_tier ? (
         <p className="mt-3 text-center text-[12px] text-gray-400">
           Network: setup {TIER_LABELS[config.setup_egress_tier ?? ''] ?? config.setup_egress_tier} ·
           agent {TIER_LABELS[config.agent_egress_tier] ?? config.agent_egress_tier}
