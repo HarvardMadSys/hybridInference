@@ -25,7 +25,6 @@ from serving.servers.routers.admin import (
     provider_routes,
     providers,
     quota,
-    routewise,
     routing_weights,
     settings,
     signup_domains,
@@ -34,6 +33,12 @@ from serving.servers.routers.admin import (
     usage_insights,
     users,
 )
+
+try:
+    from serving.servers.routers.admin import routewise
+except ImportError:  # optional RouteWise extra not installed
+    routewise = None
+
 from serving.servers.routers.admin.metrics import _decode_throughput_tps
 
 router = APIRouter()
@@ -51,7 +56,8 @@ router.include_router(provider_keys.router)
 router.include_router(provider_routes.router)
 router.include_router(providers.router)
 router.include_router(quota.router)
-router.include_router(routewise.router)
+if routewise is not None:
+    router.include_router(routewise.router)
 router.include_router(routing_weights.router)
 router.include_router(settings.router)
 router.include_router(signup_domains.router)
