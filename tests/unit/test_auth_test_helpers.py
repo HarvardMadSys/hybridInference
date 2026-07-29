@@ -24,6 +24,8 @@ def test_build_auth_test_env_defaults_uses_test_db_inputs(monkeypatch):
     assert result["DB_PASSWORD"] == "db-pass"
     assert result["API_KEY_SECRET"]
     assert result["SITE_SUPPORT_EMAIL"] == ""
+    assert result["DISTRIBUTION_CONFIG_PATH"] == ""
+    assert result["DISTRIBUTION_CONFIG_MODE"] == "dark"
     assert result["MODELS_CONFIG"] == "tests/fixtures/test_models.yaml"
 
 
