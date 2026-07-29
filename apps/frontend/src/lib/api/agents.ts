@@ -87,6 +87,8 @@ export interface AgentJobEventApi {
 export interface AgentConfigApi {
   repos: string[];
   runtimes: string[];
+  /** Models an agent job can actually call — the create endpoint's own list. */
+  models: string[];
   default_budget_usd: number;
   setup_egress_tier: string | null;
   agent_egress_tier: string | null;
@@ -177,11 +179,16 @@ export async function disconnectAgentIntegration(
   if (!resp.ok) await jsonOrThrow(resp);
 }
 
-/** Model ids this gateway serves — the model picker's options. */
+/**
+ * Model ids this gateway serves — the model picker's options.
+ *
+ * Sourced from the agent config, not /v1/models: that list answers for the
+ * browsing user, and on staging it offered 15 models of which 13 failed the
+ * job's first call. The config's list is the create endpoint's own predicate.
+ */
 export async function listAgentModels(): Promise<string[]> {
-  const resp = await fetchWithAuth(API_BASE, '/v1/models');
-  const body = await jsonOrThrow<{ data?: Array<{ id: string }> }>(resp);
-  return (body.data ?? []).map((entry) => entry.id).filter(Boolean);
+  const cfg = await getAgentConfig();
+  return cfg.models ?? [];
 }
 
 export interface RepoBranchesApi {

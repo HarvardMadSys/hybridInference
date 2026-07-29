@@ -625,6 +625,59 @@ async def test_model_credential_dies_with_a_terminal_job(store: AgentJobStore):
     assert await store.resolve_model_credential(**fence) is None
 
 
+async def test_model_credential_carries_the_owner_role_and_dies_with_the_account(
+    store: AgentJobStore,
+):
+    """Model calls run at the owner's role, and stop when the account does.
+
+    The role decides which models the sandbox can call — it must be the
+    owner's, or the composer offers models whose first call 404s. The status
+    check is the other half: a suspended owner's running job must stop buying
+    inference without waiting for the reaper.
+    """
+    async with store._pool.acquire() as conn:
+        # Mirror the production schema's constrained columns; everything else
+        # is nullable or defaulted. IF NOT EXISTS keeps this compatible with a
+        # test database where the full auth schema already exists.
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'free',
+                status TEXT DEFAULT 'active'
+            )
+            """
+        )
+        await conn.execute(
+            """
+            INSERT INTO users (id, email, password_hash, role, status)
+            VALUES ('user-1', 'agent-owner-role@test.invalid', 'x', 'internal', 'active')
+            ON CONFLICT (id) DO UPDATE SET role = 'internal', status = 'active'
+            """
+        )
+    try:
+        job = await _create_job(store)
+        claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+        fence = {
+            "job_id": job["id"],
+            "attempt_id": claim["attempt_id"],
+            "lease_generation": claim["lease_generation"],
+        }
+
+        identity = await store.resolve_model_credential(**fence)
+        assert identity is not None
+        assert identity["role"] == "internal"
+
+        async with store._pool.acquire() as conn:
+            await conn.execute("UPDATE users SET status = 'suspended' WHERE id = 'user-1'")
+        assert await store.resolve_model_credential(**fence) is None
+    finally:
+        async with store._pool.acquire() as conn:
+            await conn.execute("DELETE FROM users WHERE id = 'user-1'")
+
+
 async def test_publish_claim_is_exactly_once(store: AgentJobStore):
     """Two publishers cannot both take the same finished job.
 

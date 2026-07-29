@@ -359,3 +359,91 @@ def test_the_post_apply_gate_reports_the_real_paths(origin):
     )
 
     assert result.changed_files == ["app.py"]
+
+
+_PATCH_APP = (
+    "diff --git a/app.py b/app.py\n"
+    "--- a/app.py\n+++ b/app.py\n@@ -1,2 +1,3 @@\n def main():\n+    x = 1\n     return 0\n"
+)
+
+
+def test_follow_up_fast_forwards_its_own_branch(origin):
+    """Turn 2 built on turn 1's published commit lands on the same branch."""
+    clone_url, base_sha = origin
+
+    first = publish_patch(
+        job_id="ajob_turn1",
+        branch_id="athr_thread1",
+        patch=_PATCH_APP,
+        clone_url=clone_url,
+        base_sha=base_sha,
+        commit_message="agent: turn 1",
+    )
+
+    second_patch = (
+        "diff --git a/README.md b/README.md\n"
+        "--- a/README.md\n+++ b/README.md\n@@ -1 +1,2 @@\n # demo\n+turn two\n"
+    )
+    second = publish_patch(
+        job_id="ajob_turn2",
+        branch_id="athr_thread1",
+        patch=second_patch,
+        clone_url=clone_url,
+        # A follow-up pins the previous turn's published commit — the case the
+        # moved-branch check must let through.
+        base_sha=first.commit_sha,
+        commit_message="agent: turn 2",
+    )
+
+    assert second.branch == first.branch == "agent/athr_thread1"
+
+
+def test_branch_moved_by_someone_else_is_refused_with_the_reason(origin, tmp_path):
+    """Human commits on the agent branch refuse the publish, by name.
+
+    The platform never force-pushes, so the push would fail regardless; the
+    property under test is that the recorded reason says what happened
+    ("branch has moved", whose commits) instead of git's "failed to push some
+    refs", which reads like an infrastructure fault. Nothing may reach the
+    remote.
+    """
+    clone_url, base_sha = origin
+
+    first = publish_patch(
+        job_id="ajob_turnA",
+        branch_id="athr_moved",
+        patch=_PATCH_APP,
+        clone_url=clone_url,
+        base_sha=base_sha,
+        commit_message="agent: turn 1",
+    )
+
+    # A human pushes a commit onto the agent branch.
+    human = tmp_path / "human"
+    _git(["clone", "--quiet", "--branch", "agent/athr_moved", clone_url, str(human)], cwd=tmp_path)
+    (human / "HOTFIX.md").write_text("human edit\n", encoding="utf-8")
+    _git(["add", "--all"], cwd=human)
+    _git(["commit", "--quiet", "-m", "human: hotfix on the agent branch"], cwd=human)
+    _git(["push", "--quiet", "origin", "agent/athr_moved"], cwd=human)
+    moved_tip = _git(["rev-parse", "HEAD"], cwd=human).strip()
+
+    with pytest.raises(PublishError, match="has moved"):
+        publish_patch(
+            job_id="ajob_turnB",
+            branch_id="athr_moved",
+            patch=_PATCH_APP,
+            clone_url=clone_url,
+            base_sha=first.commit_sha,
+            commit_message="agent: turn 2",
+        )
+
+    # The human's commit is still the tip; the refused turn left no trace.
+    out = subprocess.run(
+        ["git", "rev-parse", "refs/heads/agent/athr_moved"],
+        cwd=clone_url,
+        env=_GIT_ENV,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert out == moved_tip

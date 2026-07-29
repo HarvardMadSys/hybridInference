@@ -38,12 +38,11 @@ from __future__ import annotations
 import json
 import secrets
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import asyncpg
 
 from serving.utils.logging import get_logger
-
-if TYPE_CHECKING:
-    import asyncpg
 
 logger = get_logger(__name__)
 
@@ -869,8 +868,16 @@ class AgentJobStore:
         supersedes the attempt or the job reaches a terminal state, the token
         stops buying inference. There is no separate key to remember to revoke.
 
-        Returns ``{"user_id", "job_id", "budget_usd", "model"}``; the caller
-        bills the job's owner and enforces the budget.
+        Returns ``{"user_id", "role", "job_id", "budget_usd", "model"}``; the
+        caller bills the job's owner and enforces the budget.
+
+        ``role`` is the owner's: the sandbox's model calls run with exactly the
+        model access the owner has — they pay for them and could make them
+        directly, so a narrower role here only produces 404s on models the
+        composer legitimately offered. A suspended owner's jobs stop buying
+        inference the moment the account does. The lookup tolerates a database
+        without the ``users`` table (unit fixtures build only the agent
+        schema); the caller treats a missing role as ``free``.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -890,10 +897,23 @@ class AgentJobStore:
                 lease_generation,
                 job_id,
             )
-        if row is None:
-            return None
+            if row is None:
+                return None
+            role: str | None = None
+            try:
+                owner = await conn.fetchrow(
+                    "SELECT role, status FROM users WHERE id = $1", row["user_id"]
+                )
+            except asyncpg.UndefinedTableError:
+                owner = None
+            if owner is not None:
+                if owner["status"] not in (None, "active"):
+                    # The fence is live but the account behind it is not.
+                    return None
+                role = owner["role"]
         return {
             "user_id": row["user_id"],
+            "role": role,
             "job_id": row["job_id"],
             "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
             "model": row["model"],

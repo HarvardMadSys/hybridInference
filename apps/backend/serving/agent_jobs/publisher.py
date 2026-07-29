@@ -118,6 +118,42 @@ class _StagedChangeSet:
     symlinks: list[str]
 
 
+def _remote_branch_tip(repo: Path, branch: str) -> str | None:
+    """Return the remote tip of ``branch``, or ``None`` when it does not exist."""
+    raw = _run_git(
+        ["ls-remote", "origin", "--end-of-options", f"refs/heads/{branch}"], cwd=repo
+    ).strip()
+    if not raw:
+        return None
+    return raw.split()[0]
+
+
+def _check_branch_unmoved(repo: Path, branch: str, base_sha: str) -> None:
+    """Refuse to publish onto a branch that has commits this run did not build on.
+
+    A turn's commit is built on its pinned ``base_sha`` — for a follow-up,
+    that is the previous turn's published commit, so the push fast-forwards.
+    If the remote tip is anything else, someone (a human, most likely) pushed
+    to the agent branch after the sandbox last saw it, and this patch was
+    generated against a tree that does not contain their work. Pushing would
+    fail anyway (the refspec never forces); the point of checking first is the
+    recorded reason: "failed to push some refs" reads like an infrastructure
+    fault, and this reads like what happened.
+    """
+    tip = _remote_branch_tip(repo, branch)
+    if tip is None:
+        return
+    if tip.lower().startswith(base_sha.lower()):
+        return
+    raise PublishError(
+        f"branch {branch} has moved: its tip is {tip[:12]} but this run built on "
+        f"{base_sha[:12]}. Commits were pushed to the branch after this run started — "
+        "the platform never force-pushes, so review them and either start a new "
+        "follow-up (which builds on the branch's published state) or delete the "
+        "branch to republish from scratch."
+    )
+
+
 def _staged_change_set(repo: Path) -> _StagedChangeSet:
     """Read the staged paths and their modes straight out of the index.
 
@@ -186,6 +222,9 @@ def publish_patch(
         # a patch cannot be applied onto some other branch's tree by accident.
         _run_git(["init", "--quiet", str(repo)])
         _run_git(["remote", "add", "origin", clone_url], cwd=repo)
+        # Before any expensive work: a branch someone pushed to gets a clear
+        # refusal naming their commits, not a late "failed to push some refs".
+        _check_branch_unmoved(repo, branch, base_sha)
         # `--end-of-options` plus the shape check above: git parses a leading
         # `--` argument as an option even after the remote name, so an
         # owner-supplied base_sha of `--upload-pack=/bin/sh -c ...` would run a

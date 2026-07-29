@@ -1,5 +1,30 @@
 name: CI
 
+# ── Agent-authored pull requests run NO code before a human review ──────────
+#
+# Cloud-agent jobs (issue #1041) publish `agent/*` branches whose draft PRs
+# target dev — which fires this workflow. Every job here checks out the PR
+# merge ref and executes code from it (pytest, npm ci postinstall, docker
+# build, even the classifier script), on PERSISTENT self-hosted runners, with
+# whatever secrets the job env names — before anyone has read the diff. The
+# `.github/` publish gate blocks an agent from editing workflows (which is
+# also why the guard expression itself can be trusted on agent PRs: the
+# workflow file evaluated for a pull_request comes from the merge ref, and the
+# gate keeps agent patches out of `.github/`), but it cannot block agent
+# changes to the CODE existing workflows execute. So the guard below skips
+# every job on `agent/*` PRs until a human who has reviewed the diff adds the
+# `ok-to-test` label; a later push invalidates the label (see
+# revoke-agent-ci-approval), and label events on non-agent PRs do not rerun
+# CI. With all jobs skipped, the required CI Gate check never reports and
+# branch protection keeps the PR unmergeable — fail closed, not green.
+#
+# The per-job guard (kept in sync across ALL jobs in this file):
+#   run unless this is a pull_request event where
+#     - the head branch is agent/* without a live ok-to-test label, or
+#     - the head branch is agent/* and this is a synchronize event (new,
+#       unreviewed commits — the label is being revoked in parallel), or
+#     - the head branch is NOT agent/* and the event is `labeled` (label
+#       noise must not rerun a normal PR's CI).
 on:
   workflow_dispatch:
   schedule:
@@ -18,6 +43,9 @@ on:
       - '.gitignore'
   pull_request:
     branches: [main, dev]
+    # `labeled` is what lets a reviewed agent PR start its CI run; the guard
+    # keeps it from rerunning anything else.
+    types: [opened, synchronize, reopened, labeled]
 
 concurrency:
   # Keep daily/manual backstops from cancelling a deployment-triggering push.
@@ -32,8 +60,40 @@ env:
   GITLEAKS_VERSION: "8.30.1"
 
 jobs:
+  # Removes ok-to-test when an agent PR gains new commits: the label approved
+  # a diff someone read, not the branch forever. Runs no repository code — no
+  # checkout, one API call — which is what makes it safe on the very event the
+  # other jobs skip.
+  revoke-agent-ci-approval:
+    name: Revoke agent CI approval on new commits
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.action == 'synchronize' &&
+      startsWith(github.head_ref, 'agent/') &&
+      contains(github.event.pull_request.labels.*.name, 'ok-to-test')
+    runs-on: [self-hosted, Linux, ci-general]
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove ok-to-test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          curl -fsS -X DELETE \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels/ok-to-test"
+
   changes:
     name: Classify Changes
+    if: >-
+      (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled'))
     runs-on: [self-hosted, Linux, ci-general]
     outputs:
       backend: ${{ steps.validate.outputs.backend }}
@@ -95,6 +155,12 @@ jobs:
     needs: changes
     if: >-
       always() &&
+      (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled')) &&
       (github.event_name != 'pull_request' ||
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
@@ -169,6 +235,12 @@ jobs:
     if: >-
       always() &&
       (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled')) &&
+      (github.event_name != 'pull_request' ||
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.frontend == 'true')
@@ -218,6 +290,12 @@ jobs:
     if: >-
       always() &&
       (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled')) &&
+      (github.event_name != 'pull_request' ||
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.alert_control_plane == 'true')
@@ -258,6 +336,12 @@ jobs:
     needs: changes
     if: >-
       always() &&
+      (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled')) &&
       (github.event_name != 'pull_request' ||
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
@@ -483,6 +567,13 @@ jobs:
 
   security:
     name: Security Scan
+    if: >-
+      (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled'))
     runs-on: [self-hosted, Linux, ci-general]
     steps:
       - uses: actions/checkout@v6
@@ -545,6 +636,12 @@ jobs:
       always() &&
       github.event_name != 'push' &&
       (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled')) &&
+      (github.event_name != 'pull_request' ||
       needs.changes.result != 'success' ||
       needs.changes.outputs.docker_matrix != '[]')
     # Buildx needs Docker daemon access; pin image verification to ARM64.
@@ -599,7 +696,16 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    if: always()
+    # Skipped (not green) on unapproved agent PRs: branch protection then holds
+    # the PR on a required check that never reported, which is the point.
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      (startsWith(github.head_ref, 'agent/') &&
+        contains(github.event.pull_request.labels.*.name, 'ok-to-test') &&
+        github.event.action != 'synchronize') ||
+      (!startsWith(github.head_ref, 'agent/') &&
+        github.event.action != 'labeled'))
     runs-on: [self-hosted, Linux, ci-general]
     needs:
       - changes

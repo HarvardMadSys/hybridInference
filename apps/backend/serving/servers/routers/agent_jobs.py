@@ -30,6 +30,7 @@ import contextlib
 import json
 import os
 import re
+import secrets
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -62,6 +63,7 @@ from serving.agent_jobs.tokens import (
     mint_worker_token,
     parse_worker_token,
 )
+from serving.agent_jobs.visible_models import agent_model_resolvable, agent_visible_models
 from serving.schemas_agent_jobs import (
     DEFAULT_JOB_BUDGET_USD,
     EVENT_TYPE_PATTERN,
@@ -102,7 +104,9 @@ from serving.servers.deps import (
     get_agent_job_store,
     get_current_user,
     get_log_store,
+    get_model_visibility_resolver,
     get_operational_store,
+    get_router,
     verify_admin_access,
 )
 from serving.storage.agent_job_store import RUNNING, TERMINAL_STATES
@@ -337,6 +341,8 @@ async def get_agent_config(
     user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
+    router_exec: Any = Depends(get_router),
+    model_visibility_resolver: Any = Depends(get_model_visibility_resolver),
 ) -> AgentConfigResponse:
     """What this deployment will actually accept.
 
@@ -352,6 +358,12 @@ async def get_agent_config(
     return AgentConfigResponse(
         repos=repos,
         runtimes=registered_runtimes(),
+        # Same predicate the create endpoint enforces and the sandbox's calls
+        # will hit — not /v1/models, which answers for the *browsing* user and
+        # offered models whose first agent call then 404ed.
+        models=await agent_visible_models(
+            router_exec, visibility_resolver=model_visibility_resolver, user_ctx=user
+        ),
         default_budget_usd=DEFAULT_JOB_BUDGET_USD,
         setup_egress_tier=setup_tier,
         agent_egress_tier=agent_tier,
@@ -755,15 +767,57 @@ async def list_repo_branches(
     return RepoBranchesResponse(default=found.get("default"), branches=found.get("branches", []))
 
 
+async def _require_resolvable_model(
+    model: str,
+    *,
+    router_exec: Any,
+    model_visibility_resolver: Any,
+    user: dict[str, Any],
+) -> None:
+    """Fail-fast on a model the job's first call would 404 on.
+
+    Rejecting here costs a 400. Accepting costs a claim, a clone, and an
+    attempt before the sandbox's first model call dies with an error that
+    reads like a broken model.
+    """
+    if await agent_model_resolvable(
+        model, router_exec, visibility_resolver=model_visibility_resolver, user_ctx=user
+    ):
+        return
+    visible = await agent_visible_models(
+        router_exec, visibility_resolver=model_visibility_resolver, user_ctx=user
+    )
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": {
+                "type": "model_not_available",
+                "message": (
+                    f"Model {model!r} is not available to agent jobs on this deployment. "
+                    f"Available: {', '.join(visible[:20]) or 'none'}."
+                ),
+            }
+        },
+    )
+
+
 @router.post("/jobs", response_model=AgentJobResponse, status_code=201)
 async def create_agent_job(
     body: AgentJobCreate,
     user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
+    router_exec: Any = Depends(get_router),
+    model_visibility_resolver: Any = Depends(get_model_visibility_resolver),
 ) -> AgentJobResponse:
     """Queue a new agent job for the authenticated user."""
     job_store = _require_store(store)
+    await _require_resolvable_model(
+        body.model,
+        router_exec=router_exec,
+        model_visibility_resolver=model_visibility_resolver,
+        user=user,
+    )
     # The requester chooses the repository and the platform later mints a real
     # installation token for it. Without this the two combine into a confused
     # deputy: name any repository the App reaches, and read it back through
@@ -871,10 +925,22 @@ async def create_agent_follow_up(
     user: dict[str, Any] = Depends(require_agent_owner),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
+    router_exec: Any = Depends(get_router),
+    model_visibility_resolver: Any = Depends(get_model_visibility_resolver),
 ) -> AgentJobResponse:
     """Append a turn to a task thread and queue its next isolated run."""
     job_store = _require_store(store)
     parent = await _owned_job(job_store, job_id, user)
+    # A follow-up may switch models; the switched-to model gets the same
+    # fail-fast as a fresh job. An omitted model inherits the parent's, which
+    # was validated when it was chosen.
+    if body.model:
+        await _require_resolvable_model(
+            body.model,
+            router_exec=router_exec,
+            model_visibility_resolver=model_visibility_resolver,
+            user=user,
+        )
     try:
         await require_entitled_repo(
             parent["repo"],
@@ -1107,6 +1173,35 @@ async def stream_agent_job_events(
 # ── Worker endpoints (capability-token authenticated) ──────────────────
 
 
+async def verify_dispatcher_access(
+    request: Request,
+    authorization: str | None = Header(None),
+    op_store=Depends(get_operational_store),
+) -> str:
+    """Gate for the machine-to-machine worker claim.
+
+    Prefers a dedicated ``AGENT_DISPATCHER_TOKEN``: the runner host executes
+    untrusted repository code next door, and the credential it holds should
+    open exactly one door — claiming work — not the whole admin surface, which
+    is what handing it ``ADMIN_TOKEN`` did (the design's own blast-radius rule
+    applied to our side of the fence). ``ADMIN_TOKEN`` (via
+    ``verify_admin_access``) still works, both for migration and because admin
+    legitimately outranks dispatcher; the point is the runner no longer *needs*
+    it.
+
+    The dedicated token opens nothing else: no other route reads it, and to
+    every other authenticator it is just an invalid credential.
+    """
+    configured = (os.environ.get("AGENT_DISPATCHER_TOKEN") or "").strip()
+    if configured and authorization and authorization.startswith("Bearer "):
+        presented = authorization[7:].strip()
+        if presented and secrets.compare_digest(presented, configured):
+            return "dispatcher"
+    return await verify_admin_access(
+        request=request, authorization=authorization, op_store=op_store
+    )
+
+
 def _worker_claims(authorization: str | None) -> dict[str, Any]:
     """Parse and verify the worker capability token from the auth header."""
     token = authorization[7:] if authorization and authorization.startswith("Bearer ") else None
@@ -1164,7 +1259,7 @@ def _match_job(claims: dict[str, Any], job_id: str) -> None:
 @router.post("/worker/claim", response_model=WorkerClaimResponse | None)
 async def worker_claim(
     body: WorkerClaimRequest,
-    _dispatcher: str = Depends(verify_admin_access),
+    _dispatcher: str = Depends(verify_dispatcher_access),
     store: AgentJobStore | None = Depends(get_agent_job_store),
     app_credentials: Any | None = Depends(get_agent_app_credentials),
 ) -> WorkerClaimResponse | None:
@@ -1178,10 +1273,10 @@ async def worker_claim(
     would let any customer dequeue and read another customer's job, and drain
     the queue besides.
 
-    ``verify_admin_access`` is the right gate rather than a role check on a
-    user key: this is a machine-to-machine endpoint, and that dependency
-    accepts the shared ``ADMIN_TOKEN`` a dispatcher can actually hold (as well
-    as an admin JWT). It also has no "auth disabled" bypass, so the endpoint
+    ``verify_dispatcher_access`` prefers the dedicated
+    ``AGENT_DISPATCHER_TOKEN`` (so the runner host holds a credential that
+    opens only this door) and falls back to ``verify_admin_access`` — a
+    machine-to-machine gate with no "auth disabled" bypass, so the endpoint
     does not fall open in a deployment running with user auth off. The
     dispatcher credential stays outside the sandbox; only the returned
     per-attempt token goes in.

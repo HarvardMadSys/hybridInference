@@ -2,12 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import {
-  createAgentJob,
-  getAgentConfig,
-  listAgentModels,
-  listRepoBranches,
-} from '@/lib/api/agents';
+import { createAgentJob, getAgentConfig, listRepoBranches } from '@/lib/api/agents';
 import type { AgentConfigApi } from '@/lib/api/agents';
 import { ConnectSourceControl } from './ConnectSourceControl';
 import { Picker } from './Picker';
@@ -44,9 +39,13 @@ export function TaskComposer() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getAgentConfig(), listAgentModels().catch(() => [] as string[])])
-      .then(([cfg, modelIds]) => {
+    getAgentConfig()
+      .then((cfg) => {
         if (cancelled) return;
+        // The config's model list is the create endpoint's own predicate;
+        // /v1/models answers for the browsing user and offered models whose
+        // first agent call then 404ed.
+        const modelIds = cfg.models ?? [];
         setConfig(cfg);
         setModels(modelIds);
         setRepo(cfg.repos[0] ?? '');

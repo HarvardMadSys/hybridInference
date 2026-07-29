@@ -423,6 +423,26 @@ def store() -> FakeAgentJobStore:
     return FakeAgentJobStore()
 
 
+def _fake_route_exec(*model_ids: str):
+    """The slice of RouteExecutor the visible-models predicate reads."""
+    from types import SimpleNamespace
+
+    routes = {}
+    for model_id in model_ids:
+        adapter = SimpleNamespace(config=SimpleNamespace(id=model_id, model_type="chat"))
+        routes[model_id] = SimpleNamespace(
+            published=True,
+            required_role=None,
+            admin_only=False,
+            adapters=[(adapter, 1.0)],
+        )
+    return SimpleNamespace(routes=routes)
+
+
+# Every model id the tests submit must resolve, or create fails fast by design.
+_TEST_MODELS = ("glm-5.1", "qwen-next", "m")
+
+
 def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     """Build an app with the router mounted and auth stubbed to one identity.
 
@@ -433,13 +453,18 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     from serving.servers.deps import (
         get_agent_app_credentials,
         get_log_store,
+        get_model_visibility_resolver,
         get_operational_store,
-        verify_admin_access,
+        get_router,
     )
 
     app = FastAPI()
     app.include_router(agent_jobs_router.router)
     app.dependency_overrides[get_agent_job_store] = lambda: store
+    # The create endpoints fail fast on models the deployment cannot serve, so
+    # the test registry must contain what the tests submit.
+    app.dependency_overrides[get_router] = lambda: _fake_route_exec(*_TEST_MODELS)
+    app.dependency_overrides[get_model_visibility_resolver] = lambda: None
     # verify_admin_access resolves an operational store; the bare test app has
     # no app.state.services, so supply it even when the gate is left real.
     app.dependency_overrides[get_operational_store] = lambda: None
@@ -454,7 +479,9 @@ def _build_app(store, *, role: str = "internal", dispatcher: bool = True):
     # client still exercises the internal-only dogfood entitlement.
     app.dependency_overrides[agent_jobs_router.authenticate_agent_owner] = lambda: identity
     if dispatcher:
-        app.dependency_overrides[verify_admin_access] = lambda: "dispatcher@test"
+        app.dependency_overrides[agent_jobs_router.verify_dispatcher_access] = lambda: (
+            "dispatcher@test"
+        )
     return app
 
 
@@ -546,6 +573,37 @@ async def test_follow_up_is_a_durable_waiting_turn_with_parent_context(
         {"role": "user", "content": "fix it"},
         {"role": "assistant", "content": "implemented the fix"},
     ]
+
+
+async def test_create_fails_fast_on_a_model_this_deployment_cannot_serve(client: AsyncClient):
+    """An unknown model is a 400 at create, not a dead job after claim+clone."""
+    response = await client.post(
+        "/v1/agent/jobs",
+        json={"repo": "owner/name", "task_prompt": "fix it", "model": "gpt-nonexistent"},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]["error"]
+    assert detail["type"] == "model_not_available"
+    # The rejection names what would work, so the caller can fix the request.
+    assert "glm-5.1" in detail["message"]
+
+
+async def test_follow_up_model_switch_gets_the_same_fail_fast(client: AsyncClient):
+    """Switching models on a follow-up is validated like a fresh job."""
+    parent_id = await _create_job(client)
+    response = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "try another model", "model": "gpt-nonexistent"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"]["type"] == "model_not_available"
+
+
+async def test_config_offers_the_models_the_create_endpoint_accepts(client: AsyncClient):
+    """The picker and the validator must be the same list, or one is lying."""
+    config = await client.get("/v1/agent/config")
+    assert config.status_code == 200
+    assert config.json()["models"] == list(_TEST_MODELS)
 
 
 async def test_follow_ups_append_to_latest_turn_and_reject_blank_prompts(
@@ -956,6 +1014,67 @@ async def test_claim_requires_the_dispatcher_credential(store: FakeAgentJobStore
         allowed = await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})
     assert allowed.status_code == 200
     assert allowed.json()["repo"] == "private/repo"
+
+
+async def test_dedicated_dispatcher_token_opens_exactly_one_door(
+    store: FakeAgentJobStore, monkeypatch
+):
+    """AGENT_DISPATCHER_TOKEN claims work and does nothing else.
+
+    The runner host executes untrusted repository code next door; the
+    credential it holds should open the claim endpoint, not the admin surface
+    — which is what handing it ADMIN_TOKEN did. The dedicated token must be
+    accepted at claim, rejected when wrong, and be an ordinary invalid
+    credential everywhere else.
+    """
+    monkeypatch.setenv("AGENT_DISPATCHER_TOKEN", "dispatch-secret-1")
+    await store.create_job(
+        user_id=_OWNER,
+        repo="owner/name",
+        task_prompt="fix it",
+        runtime="claude-code",
+        model="glm-5.1",
+    )
+
+    # dispatcher=False leaves the real gate in place, so the env token is what
+    # is being exercised — not a test override.
+    app = _build_app(store, dispatcher=False)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        wrong = await client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "w1"},
+            headers={"Authorization": "Bearer not-the-token"},
+        )
+        assert wrong.status_code in (401, 403)
+
+        claimed = await client.post(
+            "/v1/agent/worker/claim",
+            json={"worker_id": "w1"},
+            headers={"Authorization": "Bearer dispatch-secret-1"},
+        )
+        assert claimed.status_code == 200
+        assert claimed.json()["repo"] == "owner/name"
+
+    # On the owner surface the same value is just an unknown API key: the
+    # only authenticator that recognizes it is the claim gate. (The base fake
+    # store validates any key, which would mask exactly this property.)
+    from serving.servers.deps import get_operational_store
+
+    class _NoSuchKey(FakeOwnerAuthStore):
+        async def get_auth_context_by_key_hash(self, _key_hash: str) -> None:
+            return None
+
+    owner_app = _build_app(store, dispatcher=False)
+    owner_app.dependency_overrides.pop(agent_jobs_router.authenticate_agent_owner)
+    owner_app.dependency_overrides[get_operational_store] = lambda: _NoSuchKey()
+    transport = ASGITransport(app=owner_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/v1/agent/jobs",
+            headers={"Authorization": "Bearer dispatch-secret-1"},
+        )
+    assert response.status_code in (401, 403)
 
 
 async def test_worker_cannot_inject_sse_frames_via_event_type(

@@ -32,9 +32,12 @@ def _api_key_secret(monkeypatch):
 class FakeJobStore:
     """Resolves exactly one live fence, mirroring the real SQL predicate."""
 
-    def __init__(self, *, live: bool = True, budget: float | None = None) -> None:
+    def __init__(
+        self, *, live: bool = True, budget: float | None = None, role: str | None = None
+    ) -> None:
         self.live = live
         self.budget = budget
+        self.role = role
 
     async def resolve_model_credential(
         self, *, job_id: str, attempt_id: int, lease_generation: int
@@ -48,6 +51,7 @@ class FakeJobStore:
             return None
         return {
             "user_id": "owner-1",
+            "role": self.role,
             "job_id": job_id,
             "budget_usd": self.budget,
             "model": "glm-5.1",
@@ -86,6 +90,27 @@ async def test_live_fence_resolves_to_the_job_owner():
     assert context["user_id"] == "owner-1"
     assert context["agent_job_id"] == "ajob_abc"
     assert context["is_admin"] is False
+
+
+async def test_model_calls_run_at_the_owner_role():
+    """The sandbox can call exactly the models its owner can call directly.
+
+    A narrower role made the composer offer models whose first agent call
+    404ed (staging: 15 listed, 2 resolvable). The blast radius of a leaked
+    token is bounded by the budget, not the model tier.
+    """
+    context = await authenticate_agent_model_call(
+        _token(), job_store=FakeJobStore(budget=5.0, role="internal"), log_store=FakeLogStore()
+    )
+    assert context["role"] == "internal"
+
+
+async def test_missing_owner_role_falls_back_to_free():
+    """A store that cannot report the owner's role must not grant more."""
+    context = await authenticate_agent_model_call(
+        _token(), job_store=FakeJobStore(budget=5.0), log_store=FakeLogStore()
+    )
+    assert context["role"] == "free"
 
 
 async def test_revocation_is_automatic_when_the_fence_moves():

@@ -360,6 +360,13 @@ class AgentConfigResponse(BaseModel):
         description="Repositories this deployment is entitled to work on. Empty means none.",
     )
     runtimes: list[str] = Field(default_factory=list, description="Runtime ids that can run here.")
+    models: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Model ids an agent job can actually call for this user — the same "
+            "predicate the create endpoint enforces, not the /v1/models list."
+        ),
+    )
     default_budget_usd: float = Field(
         DEFAULT_JOB_BUDGET_USD, description="Per-job spend cap applied when none is given."
     )
