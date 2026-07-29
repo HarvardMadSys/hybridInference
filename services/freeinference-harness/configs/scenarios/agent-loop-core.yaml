@@ -1,0 +1,105 @@
+# Agent-loop conformance suite (issue #1041, P-1 layer 1).
+#
+# Deterministic protocol checks driven by shared scripts in
+# src/freeinference_harness/agent_scripts.py. Run against:
+#   - the fake provider directly (fake-direct target), or
+#   - a dev gateway with the fake registered as an openai_compat route
+#     (gateway-local target) to also pin the gateway translation layer.
+#
+# Anthropic-surface scenarios require the gateway (the fake only speaks the
+# OpenAI surface) and auto-skip on targets without anthropic_messages.
+
+suite_name: agent-loop-core
+
+scenarios:
+  # ── OpenAI chat-completions surface ──────────────────────────────────
+
+  - id: openai_tool_roundtrip
+    type: agent_loop_openai
+    agent_script: basic_tool_roundtrip
+    required_capabilities: [chat, streaming, tools]
+    repetitions: 1
+
+  - id: openai_fragmented_args
+    type: agent_loop_openai
+    agent_script: fragmented_args
+    required_capabilities: [chat, streaming, tools]
+    repetitions: 1
+
+  # Regression: DeepSeek-V4/SGLang emitted '{}""' as tool-call arguments and
+  # the echo poisoned the whole session. The OpenAI surface must pass the
+  # spliced string through verbatim and the loop must keep working.
+  - id: openai_ds4_malformed_args
+    type: agent_loop_openai
+    agent_script: ds4_malformed_args
+    required_capabilities: [chat, streaming, tools]
+    repetitions: 1
+
+  # Regression: deepseek-v4-flash returned empty content with a clean stop
+  # (PR #935). The stream must terminate cleanly instead of hanging or 500ing.
+  - id: openai_empty_content
+    type: agent_loop_openai
+    agent_script: empty_content
+    required_capabilities: [chat, streaming]
+    repetitions: 1
+
+  - id: openai_rate_limit_retry
+    type: agent_loop_openai
+    agent_script: rate_limited_then_ok
+    required_capabilities: [chat, streaming]
+    repetitions: 1
+
+  - id: openai_midstream_disconnect
+    type: agent_loop_openai
+    agent_script: midstream_disconnect
+    required_capabilities: [chat, streaming]
+    repetitions: 1
+
+  # Client aborts mid-stream, then the same conversation must keep working
+  # (black-box coverage of the gateway's client-abort path).
+  - id: openai_cancel_midstream
+    type: agent_loop_cancel
+    agent_script: cancel_mid_stream
+    required_capabilities: [chat, streaming]
+    repetitions: 1
+
+  # ── Anthropic Messages surface (gateway translation layer) ───────────
+
+  - id: anthropic_tool_roundtrip
+    type: agent_loop_anthropic
+    agent_script: basic_tool_roundtrip
+    required_capabilities: [anthropic_messages, streaming, tools]
+    repetitions: 1
+
+  - id: anthropic_fragmented_args
+    type: agent_loop_anthropic
+    agent_script: fragmented_args
+    required_capabilities: [anthropic_messages, streaming, tools]
+    repetitions: 1
+
+  # The same ds4 bytes must arrive as tool_use.input == {} (normalized object)
+  # on the Anthropic surface.
+  - id: anthropic_ds4_normalization
+    type: agent_loop_anthropic
+    agent_script: ds4_malformed_args
+    required_capabilities: [anthropic_messages, streaming, tools]
+    repetitions: 1
+
+  - id: anthropic_empty_content
+    type: agent_loop_anthropic
+    agent_script: empty_content
+    required_capabilities: [anthropic_messages, streaming]
+    repetitions: 1
+
+  # History already containing a poisoned (string) tool_use.input must be
+  # normalized instead of 400ing forever.
+  - id: anthropic_poisoned_history
+    type: anthropic_poisoned_history
+    agent_script: poisoned_history
+    required_capabilities: [anthropic_messages]
+    repetitions: 1
+
+  - id: anthropic_count_tokens
+    type: anthropic_count_tokens
+    required_capabilities: [anthropic_messages]
+    repetitions: 1

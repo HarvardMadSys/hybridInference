@@ -189,6 +189,18 @@ results/*
 benchmark/local/qwen3.6/results_*/vllm/
 .claude/*
 
+# Private working notes that have never been committed and must not start.
+#
+# The pre-publication audit
+# (docs/agents/specs/2026-06-18-opensource-decoupling.zh.md) lists "untracked
+# stray files" as a category to check, and these are what it means: business
+# correspondence naming people outside this project, and an agent's scratch
+# memory. Neither is in the history, so a git-based export cannot carry them —
+# but nothing stopped a `git add .` from committing them, and a directory-copy
+# export would sweep them up. Ignoring them closes both.
+docs/collaboration/
+.workbuddy/
+
 # Runtime data directories (var/)
 var/**
 !var/.gitkeep

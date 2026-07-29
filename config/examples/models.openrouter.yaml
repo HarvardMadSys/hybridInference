@@ -1,0 +1,96 @@
+# Neutral reference model registry: OpenRouter + optional local hybrid.
+#
+# This is the out-of-the-box catalog for a fresh HybridInference deployment:
+# supply ONE key (OPENROUTER_API_KEY) and the gateway routes real requests.
+# The third entry demonstrates the hybrid thesis — a local OpenAI-compatible
+# server (Ollama/vLLM/SGLang) as the primary route with automatic fallback to
+# OpenRouter when it is down.
+#
+# Usage:
+#   export OPENROUTER_API_KEY=sk-or-...
+#   MODELS_CONFIG_PATH=config/examples/models.openrouter.yaml <start the backend>
+#
+# Maintenance notes:
+# - Model slugs are illustrative and long-lived, but OpenRouter's catalog
+#   moves; verify at https://openrouter.ai/models and edit freely.
+# - Pricing is approximate (used for local usage accounting only); update
+#   from the same page when it matters to you.
+# - This is the upstream default catalog: a checkout with no distribution
+#   overlay serves these models, and a deployment points MODELS_CONFIG_PATH at
+#   its own registry instead.
+
+models:
+  - id: llama-3.3-70b
+    name: Llama 3.3 70B Instruct
+    provider: openrouter
+    context_length: 131072
+    max_output_length: 8192
+    supports_tools: true
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    # Approximate OpenRouter pricing, USD per 1M tokens.
+    pricing:
+      prompt: "0.12"
+      completion: "0.30"
+      image: "0"
+      request: "0"
+    route:
+      # Bare `kind: openrouter` lets OpenRouter pick the upstream provider;
+      # `kind: openrouter[<slug>]` pins one (see docs/openrouter.md).
+      - kind: openrouter
+        weight: 1.0
+        base_url: https://openrouter.ai/api/v1
+        api_keys:
+          - ${OPENROUTER_API_KEY}
+        provider_model_id: "meta-llama/llama-3.3-70b-instruct"
+
+  - id: llama-3.1-8b
+    name: Llama 3.1 8B Instruct (fast)
+    provider: openrouter
+    context_length: 131072
+    max_output_length: 8192
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    pricing:
+      prompt: "0.02"
+      completion: "0.03"
+      image: "0"
+      request: "0"
+    route:
+      - kind: openrouter
+        weight: 1.0
+        base_url: https://openrouter.ai/api/v1
+        api_keys:
+          - ${OPENROUTER_API_KEY}
+        provider_model_id: "meta-llama/llama-3.1-8b-instruct"
+
+  # The hybrid demo: local server first, OpenRouter as automatic fallback.
+  # Point the first route at any OpenAI-compatible local server —
+  # Ollama (http://localhost:11434/v1), vLLM or SGLang (their --port /v1).
+  # If the local server is down, requests fail over to the OpenRouter route.
+  - id: llama-3.1-8b-hybrid
+    name: Llama 3.1 8B (local-first hybrid)
+    provider: openai_compat
+    context_length: 131072
+    max_output_length: 8192
+    supported_params: [temperature, top_p, max_tokens, stop, stream]
+    input_modalities: ["text"]
+    output_modalities: ["text"]
+    pricing:
+      prompt: "0"
+      completion: "0"
+      image: "0"
+      request: "0"
+    route:
+      - kind: openai_compat
+        weight: 1.0
+        base_url: http://localhost:11434/v1
+        provider_model_id: "llama3.1:8b"
+      - kind: openrouter
+        weight: 0.01
+        base_url: https://openrouter.ai/api/v1
+        api_keys:
+          - ${OPENROUTER_API_KEY}
+        provider_model_id: "meta-llama/llama-3.1-8b-instruct"

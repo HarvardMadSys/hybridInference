@@ -27,7 +27,7 @@ async def postgres_op_store():
 
     # Resolve a per-xdist-worker database name so parallel CI workers don't
     # share a single test DB and race on the bulk DELETEs in setup/teardown.
-    base_db_name = os.getenv("TEST_DB_NAME", "freeinference_test_db")
+    base_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "master")
     test_db_name = base_db_name if worker_id == "master" else f"{base_db_name}_{worker_id}"
     if _ALLOWED_TEST_DB_PATTERN not in (test_db_name or ""):

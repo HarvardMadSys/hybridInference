@@ -55,8 +55,18 @@ class OpenAICompatClient:
             response.raise_for_status()
             return response.json()
 
-    def collect_stream(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Collects a streaming chat completion into a summarized observation."""
+    def collect_stream(
+        self,
+        payload: dict[str, Any],
+        *,
+        tolerate_truncation: bool = False,
+    ) -> dict[str, Any]:
+        """Collects a streaming chat completion into a summarized observation.
+
+        With ``tolerate_truncation`` the partial observation is returned (with
+        ``truncated`` set) instead of raising when the upstream closes the
+        stream mid-body, which agent-loop disconnect scenarios rely on.
+        """
         stats: dict[str, Any] = {
             "events": 0,
             "keepalives": 0,
@@ -65,15 +75,38 @@ class OpenAICompatClient:
             "saw_tool_calls": False,
             "saw_usage": False,
             "done": False,
+            "truncated": False,
             "content_parts": [],
             "samples": [],
             "finish_reasons": [],
             "usage": None,
             "tool_calls": [],
+            "stream_errors": [],
         }
         # Accumulator for incremental tool call fragments keyed by index.
         tc_acc: dict[int, dict[str, Any]] = {}
 
+        try:
+            self._consume_stream(payload, stats, tc_acc)
+        except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            if not tolerate_truncation:
+                raise
+            stats["truncated"] = True
+            stats["truncation_error"] = f"{exc.__class__.__name__}: {exc}"
+
+        stats["full_content"] = "".join(stats["content_parts"])
+        # Flatten accumulated tool calls ordered by index.
+        if tc_acc:
+            stats["tool_calls"] = [tc_acc[idx] for idx in sorted(tc_acc)]
+        return stats
+
+    def _consume_stream(
+        self,
+        payload: dict[str, Any],
+        stats: dict[str, Any],
+        tc_acc: dict[int, dict[str, Any]],
+    ) -> None:
+        """Consumes SSE lines from one streaming request into the accumulators."""
         with (
             httpx.Client(timeout=self._timeout) as client,
             client.stream(
@@ -104,6 +137,23 @@ class OpenAICompatClient:
                     continue
 
                 stats["events"] += 1
+
+                # An upstream failure that happens after the response has
+                # started is delivered as an in-stream error frame rather than
+                # an HTTP status. A driver that only watches HTTP status codes
+                # reports "no error seen" for a stream that plainly failed, so
+                # record these explicitly.
+                error = chunk.get("error")
+                if isinstance(error, dict):
+                    stats["stream_errors"].append(
+                        {
+                            "code": error.get("code"),
+                            "type": error.get("type"),
+                            "message": (error.get("message") or "")[:300],
+                        }
+                    )
+                    continue
+
                 if chunk.get("usage"):
                     stats["saw_usage"] = True
                     stats["usage"] = chunk["usage"]
@@ -158,9 +208,3 @@ class OpenAICompatClient:
                     if finish_reason:
                         sample["finish_reason"] = finish_reason
                     stats["samples"].append(sample)
-
-        stats["full_content"] = "".join(stats["content_parts"])
-        # Flatten accumulated tool calls ordered by index.
-        if tc_acc:
-            stats["tool_calls"] = [tc_acc[idx] for idx in sorted(tc_acc)]
-        return stats

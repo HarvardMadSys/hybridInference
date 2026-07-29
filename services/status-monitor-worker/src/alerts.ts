@@ -2,19 +2,22 @@ import {
   type CycleStatus,
   modelsFailingStreak,
   prepareAlertStateWrite,
+  prepareCycleAlertStateWrite,
   readAlertState,
   readCycleAlertState,
-  writeCycleAlertState,
 } from "./db";
 import {
   ControlPlanePreparationError,
+  CYCLE_FINGERPRINT,
   configuredDefaultOwner,
   getOrCreatePendingCanonicalEvent,
   hasControlPlaneDrainOwner,
   listPendingCanonicalEvents,
   modelUnavailableDepartureEvent,
   modelUnavailableEvent,
+  monitoringCycleEvent,
   prepareDrainOwnerRelease,
+  prepareDrainOwnerWrite,
   preparePendingCanonicalEventCompletion,
   readDrainOwner,
   resolveDrainOwner,
@@ -158,8 +161,11 @@ export async function postSlack(webhookUrl: string, message: string): Promise<bo
       console.error(`slack webhook returned HTTP ${resp.status}`);
     }
     return resp.ok;
-  } catch (err) {
-    console.error("slack webhook post failed", err);
+  } catch {
+    // The webhook URL is itself the credential, and a Workers fetch failure can
+    // embed the request URL in its message — so never log the caught error
+    // (mirrors postCodexAlert, which redacts for the same reason).
+    console.error("slack webhook post failed");
     return false;
   }
 }
@@ -310,6 +316,15 @@ async function deliverAlert(env: Env, event: CodexAlertEvent): Promise<boolean> 
   if (relay && (await postCodexAlert(relay, event))) return true;
 
   const webhookUrl = env.SLACK_WEBHOOK_URL?.trim();
+  if (!relay && !webhookUrl) {
+    // Storm, cycle, and legacy-drain alerts have no Control Plane path yet, so a
+    // deployment without either legacy destination drops them with no post ever
+    // attempted. The undelivered edge re-fires next cycle, making this line the
+    // only signal that the most severe alert class is going nowhere. The title
+    // is bounded and public (model ids); slack_text is deliberately excluded.
+    console.error(`legacy alert undeliverable (no relay or webhook configured): ${event.title}`);
+    return false;
+  }
   return webhookUrl ? postSlack(webhookUrl, event.slack_text) : false;
 }
 
@@ -437,7 +452,11 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   const threshold = config.alertFailureThreshold;
   const defaultOwner = configuredDefaultOwner(env.ALERT_DEFAULT_OWNER);
   const hasLegacyDestination = hasAlertDestination(env);
-  const pendingEvents = await listPendingCanonicalEvents(env.DB);
+  // Cycle transitions share the durable store but belong to runCycleAlert;
+  // this pipeline replays and reasons about per-model transitions only.
+  const pendingEvents = (await listPendingCanonicalEvents(env.DB)).filter(
+    (pending) => pending.kind === "model",
+  );
   if (
     !hasLegacyDestination &&
     env.ALERT_CONTROL_PLANE === undefined &&
@@ -458,7 +477,20 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
     prevState,
   );
 
-  const nextState: Record<string, string> = Object.assign(Object.create(null), baseState);
+  // "Absent from this cycle" only means "gone" when this cycle actually observed
+  // a catalog. An empty result set is evidence about nothing, so neither the
+  // state pruning in `decideAlerts` nor the departure inference below may act on
+  // it: pruning would drop each model's fingerprint mapping — stranding its open
+  // incident, because a later healthy probe no longer counts as a recovery — and
+  // departure would resolve every incident at once during what is almost
+  // certainly a total outage. `discoverModels` already fails the cycle before the
+  // alerter runs; this keeps both inferences sound if runAlerts is ever reached
+  // another way.
+  const observedCatalog = results.length > 0;
+  const nextState: Record<string, string> = Object.assign(
+    Object.create(null),
+    observedCatalog ? baseState : prevState,
+  );
   const completionStatements: D1PreparedStatement[] = [];
   const pendingModelIds = new Set<string>();
   for (const pending of pendingEvents) {
@@ -492,16 +524,18 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
     completionStatements.push(...preparePendingCanonicalEventCompletion(env.DB, pending));
   }
 
-  const presentModelIds = new Set(results.map((result) => result.modelId));
   const departedControlPlaneModels = new Map<string, string>();
-  for (const [modelId, stateValue] of Object.entries(prevState)) {
-    if (presentModelIds.has(modelId) || pendingModelIds.has(modelId)) continue;
-    const fingerprint = incidentFingerprint(modelId, stateValue);
-    const owner = await readDrainOwner(env.DB, fingerprint);
-    if (owner === "control-plane") {
-      departedControlPlaneModels.set(modelId, fingerprint);
-    } else if (owner === "legacy") {
-      completionStatements.push(prepareDrainOwnerRelease(env.DB, fingerprint));
+  if (observedCatalog) {
+    const presentModelIds = new Set(results.map((result) => result.modelId));
+    for (const [modelId, stateValue] of Object.entries(prevState)) {
+      if (presentModelIds.has(modelId) || pendingModelIds.has(modelId)) continue;
+      const fingerprint = incidentFingerprint(modelId, stateValue);
+      const owner = await readDrainOwner(env.DB, fingerprint);
+      if (owner === "control-plane") {
+        departedControlPlaneModels.set(modelId, fingerprint);
+      } else if (owner === "legacy") {
+        completionStatements.push(prepareDrainOwnerRelease(env.DB, fingerprint));
+      }
     }
   }
 
@@ -551,13 +585,15 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
   );
   const storm = config.alertStormThreshold;
 
-  // A provider-wide blip can take down many models at once. Past `storm`, collapse
-  // them into one summary message so the channel isn't flooded with one page per
-  // model; below it, page individually (concurrently, so a batch doesn't hold the
-  // cycle lock for count × per-request timeout). Either way a model's state
-  // transition is committed only once its page is confirmed delivered, so a failed
-  // POST retries next cycle instead of dropping the alert.
-  if (down.length > storm) {
+  // D1 decision (2026-07-27): a mass outage opens one Control Plane incident
+  // per model, so every model keeps the same thread, occurrence updates, and
+  // independent recovery regardless of batch size — the all-or-nothing group
+  // recovery below applies only to incidents opened as legacy storms. The
+  // legacy summary survives solely for the ALERT_DEFAULT_OWNER=legacy rollback
+  // mode, where one webhook text per model would flood the channel. Either way
+  // a model's state transition is committed only once its page is confirmed
+  // delivered, so a failed delivery retries next cycle instead of dropping.
+  if (defaultOwner === "legacy" && down.length > storm) {
     const event = modelsDownEvent(config, down, threshold);
     if (await deliverAlert(env, event)) {
       for (const r of down) nextState[r.modelId] = event.fingerprint;
@@ -660,18 +696,107 @@ export async function runAlerts(env: Env, config: Config, results: ProbeResult[]
  * account-wide. These paths return before any model is probed, so the per-model
  * alerter never runs; without this, the most severe outages would be silent.
  * Pages once on the transition to unhealthy and once on recovery, with
- * the same deliver-before-commit guarantee as the per-model path. No-op when
- * neither the Codex relay nor Slack webhook is configured.
+ * the same deliver-before-commit guarantee as the per-model path. With no
+ * configured destination the down edge reaches deliverAlert's undeliverable
+ * report and retries next cycle — never a silent no-op at the door, since a
+ * cycle-level outage is the most severe alert class this worker emits.
+ *
+ * Ownership mirrors the per-model split, keyed by ALERT_CYCLE_OWNER (its own
+ * flag: status-monitor auto-deploys from dev while the control plane deploys
+ * manually, so a shared flag would open a window where cycle events are
+ * emitted before the deployed control plane accepts the type). The incident
+ * stays pinned to the writer that opened it until its recovery is confirmed.
  */
 export async function runCycleAlert(env: Env, config: Config, status: CycleStatus): Promise<void> {
-  if (!hasAlertDestination(env)) return;
+  // A durable cycle transition owns this run outright (the per-model rule):
+  // replay the exact stored bytes until the control plane accepts them, and
+  // only then let a fresh edge open or close the incident.
+  const pendings = (await listPendingCanonicalEvents(env.DB)).filter(
+    (pending) => pending.kind === "cycle",
+  );
+  if (pendings.length > 0) {
+    for (const pending of pendings) {
+      const delivered = await submitPendingCanonicalEvent(
+        env.ALERT_CONTROL_PLANE,
+        pending,
+        env.CF_VERSION_METADATA,
+      );
+      if (!delivered) continue;
+      await env.DB.batch([
+        prepareCycleAlertStateWrite(
+          env.DB,
+          pending.status === "firing" ? "alerted" : null,
+        ),
+        // A replayed firing pins the writer here — pending rows only exist on
+        // the control-plane path, and the pin must land with the marker so a
+        // later flag flip cannot fork the recovery onto the legacy path.
+        ...(pending.status === "firing"
+          ? [prepareDrainOwnerWrite(env.DB, CYCLE_FINGERPRINT, "control-plane")]
+          : []),
+        ...preparePendingCanonicalEventCompletion(env.DB, pending),
+      ]);
+    }
+    return;
+  }
 
   const alerted = (await readCycleAlertState(env.DB)) != null;
-  if (!status.ok) {
-    if (!alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
-      await writeCycleAlertState(env.DB, status.checkedAt || "alerted");
-    }
-  } else if (alerted && (await deliverAlert(env, cycleEvent(config, status)))) {
-    await writeCycleAlertState(env.DB, null);
+  if (!status.ok && !alerted) {
+    await deliverCycleTransition(env, config, status, "firing");
+  } else if (status.ok && alerted) {
+    await deliverCycleTransition(env, config, status, "resolved");
   }
+}
+
+/** Deliver one cycle edge through its owner, committing state only on success. */
+async function deliverCycleTransition(
+  env: Env,
+  config: Config,
+  status: CycleStatus,
+  transition: ModelUnavailableStatus,
+): Promise<void> {
+  // The writer is pinned only when a transition actually commits, unlike the
+  // per-model path (resolveDrainOwner pins on attempt, but its no-destination
+  // guard keeps it from ever attempting an undeliverable legacy edge). The
+  // cycle path deliberately attempts without a destination so the failure is
+  // reported — pinning that attempt would let an edge no writer can deliver
+  // permanently claim the incident for the legacy path, turning a later
+  // ALERT_CYCLE_OWNER flip into a no-op.
+  const owner =
+    (await readDrainOwner(env.DB, CYCLE_FINGERPRINT)) ??
+    (transition === "resolved"
+      ? "legacy" // a recovery with no pinned writer predates ownership: drain via legacy
+      : configuredDefaultOwner(env.ALERT_CYCLE_OWNER));
+  const marker = transition === "firing" ? status.checkedAt || "alerted" : null;
+  const ownerCommit =
+    transition === "firing"
+      ? [prepareDrainOwnerWrite(env.DB, CYCLE_FINGERPRINT, owner)]
+      : [prepareDrainOwnerRelease(env.DB, CYCLE_FINGERPRINT)];
+  if (owner === "legacy") {
+    if (!(await deliverAlert(env, cycleEvent(config, status)))) return;
+    await env.DB.batch([
+      prepareCycleAlertStateWrite(env.DB, marker),
+      ...ownerCommit,
+    ]);
+    return;
+  }
+
+  const pending = await getOrCreatePendingCanonicalEvent(
+    env.DB,
+    monitoringCycleEvent(status, transition),
+  );
+  const delivered = await submitPendingCanonicalEvent(
+    env.ALERT_CONTROL_PLANE,
+    pending,
+    env.CF_VERSION_METADATA,
+  );
+  // Not delivered: the durable pending replays on the next cycle-status write.
+  if (!delivered) return;
+  await env.DB.batch([
+    prepareCycleAlertStateWrite(env.DB, marker),
+    // Completion already releases the owner on resolved; pin only on firing.
+    ...(transition === "firing"
+      ? [prepareDrainOwnerWrite(env.DB, CYCLE_FINGERPRINT, "control-plane")]
+      : []),
+    ...preparePendingCanonicalEventCompletion(env.DB, pending),
+  ]);
 }

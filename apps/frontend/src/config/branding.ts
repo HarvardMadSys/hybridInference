@@ -1,10 +1,15 @@
 // Centralized site branding (design doc: neutral-upstream split, 6-18 epic P2).
 //
-// Three-step rule: the FreeInference values below are the compiled-in legacy
-// defaults so the shipped build behaves exactly as before; a neutral or
-// third-party distribution overrides them via NEXT_PUBLIC_* at build time
-// (arrays via *_JSON). Physical removal of the FreeInference defaults waits
-// for the overlay-is-truth milestone.
+// Three-step rule, step 2: defaults that would misdirect a third-party
+// deployment (analytics ids, the API host in the copy-paste example, the
+// affiliated-domain hint) are now neutral or off. FreeInference keeps its
+// identity because deploy/docker/docker-compose.yml passes an explicit value
+// for every one of these at build time, so its rendered output is unchanged.
+//
+// Team and sponsors are empty upstream and come from NEXT_PUBLIC_TEAM_JSON /
+// NEXT_PUBLIC_SPONSORS_JSON; a deployment supplies its own. (This paragraph
+// used to say they still carried built-in defaults, which stopped being true
+// when they were moved and nobody came back for the comment.)
 //
 // These values are the build-time fallback. SiteConfigProvider overlays the
 // safe identity and feature fields from GET /site-config at browser runtime,
@@ -72,91 +77,61 @@ export const branding = {
   appName: config.appName,
   appDescription:
     process.env.NEXT_PUBLIC_APP_DESCRIPTION ||
-    'Free LLM inference for research, built at Harvard SEAS.',
-  siteHost: process.env.NEXT_PUBLIC_SITE_HOST || 'freeinference.org',
+    'A gateway that routes LLM requests across local and remote inference providers.',
+  // Reads as a name in prose ("Why X", "How did you find X?"), so it falls
+  // back to the product name rather than to an empty string.
+  siteHost: process.env.NEXT_PUBLIC_SITE_HOST || config.appName,
 
-  // Operating organization.
-  orgName: process.env.NEXT_PUBLIC_ORG_NAME || 'Harvard SEAS',
-  orgUrl: process.env.NEXT_PUBLIC_ORG_URL || 'https://madsys.seas.harvard.edu',
-  orgTagline: process.env.NEXT_PUBLIC_ORG_TAGLINE || 'Built at Harvard SEAS · MadSys Lab',
-
-  // External properties.
-  docsUrl: process.env.NEXT_PUBLIC_DOCS_URL || 'https://doc.freeinference.org/',
-  statusUrl: process.env.NEXT_PUBLIC_STATUS_URL || 'https://status.staging.freeinference.org/',
+  // Operating organization and external properties: empty means "this
+  // deployment has none", and every consumer hides the corresponding link
+  // or sentence rather than rendering an empty href.
+  orgName: process.env.NEXT_PUBLIC_ORG_NAME || '',
+  orgUrl: process.env.NEXT_PUBLIC_ORG_URL || '',
+  orgTagline: process.env.NEXT_PUBLIC_ORG_TAGLINE || '',
+  docsUrl: process.env.NEXT_PUBLIC_DOCS_URL || '',
+  statusUrl: process.env.NEXT_PUBLIC_STATUS_URL || '',
   githubUrl,
   commitUrlBase: `${githubUrl}/commit`,
-  contactEmail: process.env.NEXT_PUBLIC_CONTACT_EMAIL || 'admin@freeinference.org',
+  contactEmail: process.env.NEXT_PUBLIC_CONTACT_EMAIL || '',
 
-  // Landing-page code example.
-  exampleApiBase: process.env.NEXT_PUBLIC_EXAMPLE_API_BASE || 'https://freeinference.org',
-  exampleApiKeyEnvVar: process.env.NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR || 'FREEINFERENCE_API_KEY',
-  exampleModel: process.env.NEXT_PUBLIC_EXAMPLE_MODEL || 'glm-5.1',
+  // Landing-page code example. The default must be copy-pasteable against the
+  // reader's own deployment, never against someone else's hosted service; the
+  // model id matches config/examples/models.openrouter.yaml.
+  exampleApiBase: process.env.NEXT_PUBLIC_EXAMPLE_API_BASE || 'http://localhost:8080',
+  exampleApiKeyEnvVar: process.env.NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR || 'HYBRIDINFERENCE_API_KEY',
+  exampleModel: process.env.NEXT_PUBLIC_EXAMPLE_MODEL || 'llama-3.3-70b',
 
-  // Analytics. FreeInference's Statcounter ids remain the legacy default
-  // (three-step rule: shipped behavior unchanged); set
-  // NEXT_PUBLIC_STATCOUNTER_PROJECT_ID="" to disable entirely. Flipping the
-  // default to off is a pre-publication task tracked in the 6-18 epic.
-  statcounterProjectId: process.env.NEXT_PUBLIC_STATCOUNTER_PROJECT_ID ?? '13224568',
-  statcounterSecurityKey: process.env.NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY ?? '2d8ab84a',
+  // Analytics: off unless an operator opts in with their own Statcounter ids
+  // (layout.tsx skips the scripts entirely when the project id is empty).
+  // A shipped default would report every third-party deployment's traffic
+  // into the FreeInference account; those ids now come from the deployment
+  // (docker-compose passes them for FreeInference builds).
+  statcounterProjectId: process.env.NEXT_PUBLIC_STATCOUNTER_PROJECT_ID ?? '',
+  statcounterSecurityKey: process.env.NEXT_PUBLIC_STATCOUNTER_SECURITY_KEY ?? '',
 
   // Signup fast-track hint (display copy only; the real allowlist is
-  // server-side). Empty fastTrackDomain hides the hint.
-  fastTrackDomain: process.env.NEXT_PUBLIC_FAST_TRACK_DOMAIN ?? 'harvard.edu',
-  fastTrackOrg: process.env.NEXT_PUBLIC_FAST_TRACK_ORG ?? 'Harvard',
+  // server-side). Empty fastTrackDomain hides the hint, which is the right
+  // default for a deployment that has no affiliated domain.
+  fastTrackDomain: process.env.NEXT_PUBLIC_FAST_TRACK_DOMAIN ?? '',
+  fastTrackOrg: process.env.NEXT_PUBLIC_FAST_TRACK_ORG ?? '',
+
+  // Data-handling notice shown on the landing page. Empty by default and
+  // hidden when empty: a deployment must state its own policy, and no
+  // upstream default can be correct for someone else's users. FreeInference
+  // supplies its text through the deployment (docker-compose).
+  dataPolicyNotice: process.env.NEXT_PUBLIC_DATA_POLICY_NOTICE || '',
 
   // Namespace for localStorage keys and DOM events. Changing it logs every
   // visitor out of dismissed-state memory; keep it stable per distribution.
-  storageKeyPrefix: process.env.NEXT_PUBLIC_STORAGE_KEY_PREFIX || 'freeinference',
+  storageKeyPrefix: process.env.NEXT_PUBLIC_STORAGE_KEY_PREFIX || 'hybridinference',
 
-  // People and sponsors (empty arrays hide the sections).
-  team: fromJsonEnv<TeamMember[]>(
-    process.env.NEXT_PUBLIC_TEAM_JSON,
-    [
-      {
-        name: 'Juncheng Yang',
-        affiliations: ['Assistant Professor at Harvard University'],
-        badge: 'Lead',
-        image: 'https://junchengyang.com/img/me4.jpg',
-      },
-      {
-        name: 'Murphy Tian',
-        affiliations: [
-          'Research Intern at Harvard University',
-          'Undergraduate at University of Toronto',
-        ],
-        badge: 'Core developer',
-        image: '/team/murphy-tian.jpg',
-        website: 'https://realtmxi.github.io/',
-      },
-      {
-        name: 'Haoran Ni',
-        affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
-      },
-    ],
-    teamSchema,
-  ),
-  sponsors: fromJsonEnv<Sponsor[]>(
-    process.env.NEXT_PUBLIC_SPONSORS_JSON,
-    [
-      {
-        name: 'NVIDIA',
-        alt: 'NVIDIA logo',
-        src: '/sponsors/nvidia.svg',
-        className: 'h-10 sm:h-12',
-        width: 975,
-        height: 180,
-      },
-      {
-        name: 'Harvard SEAS',
-        alt: 'Harvard SEAS logo',
-        src: '/sponsors/harvard-seas.svg',
-        className: 'h-12 sm:h-14',
-        width: 307,
-        height: 86,
-      },
-    ],
-    sponsorsSchema,
-  ),
+  // People and sponsors. Empty upstream — a neutral console has neither, and
+  // arrays hidden behind a fallback are the kind of content that silently
+  // ships one distribution's identity to everyone else. FreeInference passes
+  // its own through NEXT_PUBLIC_TEAM_JSON / NEXT_PUBLIC_SPONSORS_JSON
+  // (deploy/docker/docker-compose.yml). Empty arrays hide the sections.
+  team: fromJsonEnv<TeamMember[]>(process.env.NEXT_PUBLIC_TEAM_JSON, [], teamSchema),
+  sponsors: fromJsonEnv<Sponsor[]>(process.env.NEXT_PUBLIC_SPONSORS_JSON, [], sponsorsSchema),
 };
 
 export type Branding = typeof branding;

@@ -380,6 +380,36 @@ class TestRenderSamples:
 
 
 class TestCallAnalysisModel:
+    @pytest.fixture(autouse=True)
+    def _deployment_knows_its_own_address(self, monkeypatch):
+        """The feature posts to this gateway, so it has to be told which one.
+
+        There used to be a localhost:8080 fallback here. It is right for the
+        Compose stack and wrong for the systemd unit in this repository, which
+        listens on 8000 — so these cases name the address rather than inherit
+        a guess, and the guess is gone.
+        """
+        monkeypatch.setenv("SITE_PUBLIC_BASE_URL", "http://localhost:8080")
+
+    @pytest.mark.asyncio
+    async def test_without_a_configured_address_it_says_so(self):
+        """A 503 naming the missing setting beats posting prompts at a guess."""
+        import os
+
+        from fastapi import HTTPException
+
+        from serving.servers.routers.admin.usage_insights import _analysis_base_url
+
+        previous = os.environ.pop("SITE_PUBLIC_BASE_URL", None)
+        try:
+            with pytest.raises(HTTPException) as caught:
+                _analysis_base_url()
+        finally:
+            if previous is not None:
+                os.environ["SITE_PUBLIC_BASE_URL"] = previous
+        assert caught.value.status_code == 503
+        assert "SITE_PUBLIC_BASE_URL" in caught.value.detail
+
     @pytest.mark.asyncio
     async def test_marks_synthetic_probe_and_builds_url(self, monkeypatch):
         """The outbound call targets <base>/chat/completions and is a synthetic probe.
@@ -401,7 +431,9 @@ class TestCallAnalysisModel:
         text = await usage_insights._call_analysis_model("sk-x", "glm-5.1", "the content")
 
         assert text == "report"
-        assert captured["url"] == "https://freeinference.org/v1/chat/completions"
+        # The target is this deployment's own gateway; unconfigured, that is the
+        # local one. Sampled user prompts must never leave for a hardcoded host.
+        assert captured["url"] == "http://localhost:8080/v1/chat/completions"
         assert captured["headers"]["X-Probe"] == "synthetic"
         assert captured["headers"]["Authorization"] == "Bearer sk-x"
         assert captured["json"]["model"] == "glm-5.1"

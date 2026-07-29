@@ -404,7 +404,7 @@ overlay 存续期间本仓保持 private。
 | `config/routing.yaml`、`alerts.yaml` | 示例上游、真实值发行版 | 区分 example 与 production |
 | landing/team/sponsors/terms | FreeInference 发行版 | 改成 site config/content |
 | Dashboard/Admin shell | 上游 | 消除品牌硬编码 |
-| `docs/free_inference` | FreeInference 发行版 | 与开发文档分开 |
+| `distributions/freeinference/content/docs` | FreeInference 发行版 | 与开发文档分开 |
 | FreeInference RAG index | FreeInference 发行版 | 构建跟随发行版内容 |
 | `ops/local_deployment_proxy` | Mixed | 通用逻辑保留；具体主机配置移出 |
 | 特定主机/tunnel/systemd | FreeInference 发行版 | 集中到 distribution ops |

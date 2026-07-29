@@ -48,7 +48,7 @@ async def _skip_if_test_db_unavailable(context: str = "") -> None:
     db_config = {
         "host": os.environ.get("DB_HOST", "localhost"),
         "port": int(os.environ.get("DB_PORT", "5432")),
-        "database": os.environ.get("DB_NAME", "freeinference_test_db"),
+        "database": os.environ.get("DB_NAME", "hybridinference_test_db"),
         "user": os.environ.get("DB_USER", "postgres"),
         "password": os.environ.get("DB_PASSWORD", "postgres"),
     }
@@ -138,7 +138,7 @@ def auth_test_env():
     # falling back to Docker-friendly defaults.
     _db_host = os.environ.get("TEST_DB_HOST", "localhost")
     _db_port = os.environ.get("TEST_DB_PORT", "5432")
-    _base_db_name = os.environ.get("TEST_DB_NAME", "freeinference_test_db")
+    _base_db_name = os.environ.get("TEST_DB_NAME", "hybridinference_test_db")
     _worker_id = _xdist_worker_id()
     _db_name = _worker_db_name(_base_db_name, _worker_id)
     if _worker_id != "master":

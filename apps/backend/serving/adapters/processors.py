@@ -669,6 +669,241 @@ class ThinkBlockProcessor(BaseProcessor):
         return response
 
 
+class ReasoningExtractProcessor(BaseProcessor):
+    """Lift inline reasoning tags into the OpenAI reasoning channel.
+
+    Some providers stream a model's chain-of-thought as literal tag-delimited
+    text inside ``delta.content`` instead of a dedicated ``reasoning_content``
+    delta. MiniMax's OpenAI-compatible endpoint is the motivating case: in
+    streaming mode it emits the thinking block as content, e.g.
+
+        content: "<mm:think>" -> "reasoning ..." -> "</mm:think>" -> "answer"
+
+    By default only MiniMax-M3's ``<mm:think>`` pair is recognized: the inner
+    text is re-emitted as ``reasoning_content`` deltas and text outside the tag
+    streams through as ``content``. ``<think>`` is deliberately NOT matched by
+    default -- on an M3 route the model never emits it, so a literal ``<think>``
+    in the *answer* (discussing reasoning models, XML, etc.) must stream as
+    content, not open a reasoning block that never closes and swallows the rest
+    of the reply. Pass ``tag_pairs`` to reuse this processor for a
+    ``<think>``-style model.
+
+    Unlike a "reasoning starts open" parser, tags are matched only when actually
+    present: a reply with no thinking (no tags) streams its answer verbatim
+    rather than being misclassified wholesale as reasoning.
+
+    Structured reasoning deltas (``reasoning_content`` / ``reasoning`` /
+    ``thinking``) and native ``tool_calls`` are passed through untouched, and
+    terminal usage / ``finish_reason`` signals are preserved.
+    """
+
+    # Each pair is (open_tag, close_tag) with close_tag == "</" + inner + ">".
+    _DEFAULT_TAG_PAIRS: tuple[tuple[str, str], ...] = (("<mm:think>", "</mm:think>"),)
+
+    def __init__(self, tag_pairs: tuple[tuple[str, str], ...] | None = None) -> None:
+        self.tag_pairs = tag_pairs or self._DEFAULT_TAG_PAIRS
+        self._open_tags = tuple(open_tag for open_tag, _ in self.tag_pairs)
+        names = "|".join(re.escape(open_tag[1:-1]) for open_tag, _ in self.tag_pairs)
+        self._nonstream_re = re.compile(rf"<({names})>([\s\S]*?)</\1>")
+        self.buffer = ""
+        self.in_reasoning = False
+        self.close_tag = ""
+        self.model_id = "unknown"
+
+    def process_stream_chunk(self, chunk: dict[str, Any]) -> list[dict[str, Any]]:
+        """Convert inline reasoning-tag content into reasoning_content deltas."""
+        choices = chunk.get("choices", [])
+        if not choices:
+            return [chunk]
+
+        delta = choices[0].get("delta", {})
+
+        # Pass through native tool_calls and already-structured reasoning fields
+        # untouched (ignoring null/empty). This processor only lifts literal
+        # reasoning tags embedded in content.
+        if delta.get("tool_calls"):
+            return [chunk]
+        if delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking"):
+            return [chunk]
+
+        content = delta.get("content")
+        if not isinstance(content, str):
+            if _has_stream_signals(chunk):
+                # Forward finish_reason/usage even when there is no text.
+                return [_signal_only_chunk(chunk)]
+            return []
+
+        self.buffer += content
+        self.model_id = chunk.get("model", self.model_id)
+
+        to_yield: list[dict[str, Any]] = []
+
+        while True:
+            if self.in_reasoning:
+                end_idx = self.buffer.find(self.close_tag)
+                if end_idx != -1:
+                    inner = self.buffer[:end_idx]
+                    if inner:
+                        to_yield.append(self._reasoning_chunk(chunk, inner))
+                    self.buffer = self.buffer[end_idx + len(self.close_tag) :]
+                    self.in_reasoning = False
+                    self.close_tag = ""
+                    continue
+                # Closing tag not seen yet: stream the reasoning so far, holding
+                # back a possible partial close tag at the tail.
+                hold = _pending_tag_len(self.buffer, (self.close_tag,))
+                emit = self.buffer[: len(self.buffer) - hold]
+                self.buffer = self.buffer[len(self.buffer) - hold :]
+                if emit:
+                    to_yield.append(self._reasoning_chunk(chunk, emit))
+                break
+
+            open_idx, open_tag = self._find_open(self.buffer)
+            if open_idx != -1:
+                before = self.buffer[:open_idx]
+                if before:
+                    to_yield.append(self._content_chunk(chunk, before))
+                self.buffer = self.buffer[open_idx + len(open_tag) :]
+                self.in_reasoning = True
+                self.close_tag = self._close_for(open_tag)
+                continue
+            # No opening tag: stream content, holding back a possible partial
+            # opening tag at the tail.
+            hold = _pending_tag_len(self.buffer, self._open_tags)
+            emit = self.buffer[: len(self.buffer) - hold]
+            self.buffer = self.buffer[len(self.buffer) - hold :]
+            if emit:
+                to_yield.append(self._content_chunk(chunk, emit))
+            break
+
+        if _has_stream_signals(chunk):
+            # finish_reason / usage always ride a dedicated trailing chunk, never
+            # an intermediate split delta (which would surface a premature finish
+            # or duplicate usage). _signal_only_chunk empties the delta.
+            to_yield.append(_signal_only_chunk(chunk))
+
+        return to_yield
+
+    def flush(self) -> list[dict[str, Any]]:
+        """Emit any buffered tail at end of stream.
+
+        A reasoning block left unclosed (upstream truncated mid-thought) is
+        surfaced as reasoning_content rather than dropped; a held-back partial
+        opening tag that never completed is emitted as content.
+        """
+        if not self.buffer:
+            return []
+        text = self.buffer
+        self.buffer = ""
+        if self.in_reasoning:
+            self.in_reasoning = False
+            close_tag = self.close_tag
+            self.close_tag = ""
+            # The tail held mid-stream can be a truncated close tag (e.g. "</mm")
+            # rather than reasoning; drop that fragment instead of emitting it.
+            hold = _pending_tag_len(text, (close_tag,))
+            text = text[: len(text) - hold]
+            if text:
+                return [self._standalone_chunk({"reasoning_content": text})]
+            return []
+        return [self._standalone_chunk({"content": text})]
+
+    def process_response(self, response: dict[str, Any]) -> dict[str, Any]:
+        """Lift inline reasoning tags out of non-streaming response content."""
+        choices = response.get("choices", [])
+        if not choices:
+            return response
+
+        message = choices[0].get("message", {})
+        content = message.get("content", "")
+        if not content or not isinstance(content, str):
+            return response
+
+        reasonings: list[str] = []
+
+        def _grab(match: re.Match[str]) -> str:
+            reasonings.append(match.group(2))
+            return ""
+
+        new_content = self._nonstream_re.sub(_grab, content)
+        # An unterminated opening tag (e.g. a reply truncated at max_tokens
+        # inside the reasoning block) has no closing tag for the pair regex to
+        # match: treat everything from the opening tag onward as reasoning,
+        # mirroring the streaming flush().
+        open_idx, open_tag = self._find_open(new_content)
+        if open_idx != -1:
+            tail = new_content[open_idx + len(open_tag) :]
+            # Drop a trailing partial close tag from a truncated reasoning block.
+            hold = _pending_tag_len(tail, (self._close_for(open_tag),))
+            reasonings.append(tail[: len(tail) - hold])
+            new_content = new_content[:open_idx]
+
+        if reasonings:
+            message["content"] = new_content.strip()
+            joined = "".join(reasonings).strip()
+            existing = message.get("reasoning_content")
+            message["reasoning_content"] = f"{existing}{joined}" if existing else joined
+
+        return response
+
+    def _find_open(self, buffer: str) -> tuple[int, str]:
+        """Return (index, tag) of the earliest opening tag, or (-1, "")."""
+        best_idx, best_tag = -1, ""
+        for tag in self._open_tags:
+            idx = buffer.find(tag)
+            if idx == -1:
+                continue
+            if best_idx == -1 or idx < best_idx or (idx == best_idx and len(tag) > len(best_tag)):
+                best_idx, best_tag = idx, tag
+        return best_idx, best_tag
+
+    def _close_for(self, open_tag: str) -> str:
+        """Return the closing tag paired with *open_tag*."""
+        for known_open_tag, close_tag in self.tag_pairs:
+            if known_open_tag == open_tag:
+                return close_tag
+        return "</think>"
+
+    def _content_chunk(self, chunk: dict[str, Any], text: str) -> dict[str, Any]:
+        """Clone *chunk* carrying *text* as the sole content delta.
+
+        Stream signals (usage / finish_reason) are stripped: an intermediate
+        split delta must never carry them (they ride a trailing signal chunk).
+        """
+        new_chunk = _clone_chunk(chunk)
+        new_chunk.pop("usage", None)
+        new_chunk["choices"][0]["finish_reason"] = None
+        new_delta = new_chunk["choices"][0]["delta"]
+        for field in ("reasoning_content", "reasoning", "thinking"):
+            new_delta.pop(field, None)
+        new_delta["content"] = text
+        return new_chunk
+
+    def _reasoning_chunk(self, chunk: dict[str, Any], text: str) -> dict[str, Any]:
+        """Clone *chunk* carrying *text* as the sole reasoning_content delta.
+
+        Stream signals (usage / finish_reason) are stripped: an intermediate
+        split delta must never carry them (they ride a trailing signal chunk).
+        """
+        new_chunk = _clone_chunk(chunk)
+        new_chunk.pop("usage", None)
+        new_chunk["choices"][0]["finish_reason"] = None
+        new_delta = new_chunk["choices"][0]["delta"]
+        new_delta.pop("content", None)
+        new_delta["reasoning_content"] = text
+        return new_chunk
+
+    def _standalone_chunk(self, delta: dict[str, Any]) -> dict[str, Any]:
+        """Build a fresh chunk carrying *delta* (used by flush)."""
+        return {
+            "id": f"chatcmpl-{int(time.time())}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": self.model_id,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+        }
+
+
 def _clone_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     """Deep copy structure of a chunk for modification."""
     new_chunk = chunk.copy()
@@ -702,11 +937,28 @@ def _signal_only_chunk(chunk: dict[str, Any]) -> dict[str, Any]:
     return new_chunk
 
 
+def _pending_tag_len(text: str, tags: tuple[str, ...]) -> int:
+    """Length of the longest tail of *text* that is a proper prefix of a *tag*.
+
+    Held back from emission so a tag split across chunk boundaries is not
+    surfaced as content (or reasoning) before it can be recognized as a tag.
+    """
+    best = 0
+    for tag in tags:
+        limit = min(len(text), len(tag) - 1)
+        for length in range(limit, best, -1):
+            if tag.startswith(text[-length:]):
+                best = length
+                break
+    return best
+
+
 _PROCESSOR_MAP: dict[str, type[BaseProcessor]] = {
     "default": DefaultProcessor,
     "glm": GLMProcessor,
     "qwen_coder": QwenCoderProcessor,
     "think_block": ThinkBlockProcessor,
+    "reasoning_extract": ReasoningExtractProcessor,
 }
 
 
@@ -716,7 +968,8 @@ def get_processor(model_id: str | None, override: str | None = None) -> BaseProc
     Args:
         model_id: Model identifier for auto-detection.
         override: Explicit processor name (bypasses auto-detection).
-                  Values: "default", "glm", "qwen_coder", "think_block".
+                  Values: "default", "glm", "qwen_coder", "think_block",
+                  "reasoning_extract".
     """
     if override:
         cls = _PROCESSOR_MAP.get(override)

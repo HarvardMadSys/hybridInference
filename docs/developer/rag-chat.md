@@ -1,7 +1,7 @@
 # Docs RAG Assistant
 
 A retrieval-augmented-generation (RAG) chat feature that answers user questions
-about FreeInference using the **public user docs** as its knowledge base. Both
+about a deployment using its own **public user docs** as the knowledge base. Both
 retrieval and generation route through the gateway itself.
 
 ## Architecture
@@ -24,10 +24,12 @@ gateway's **own** public API **as a user** for the model work.
    user (verified by JWT at /v1/rag/chat), not on the shared RAG_API_KEY account.
 ```
 
-- **Corpus:** `docs/free_inference/docs/source/*.md` — the same markdown that
-  builds the public doc site.
+- **Corpus:** the active distribution overlay's documentation source
+  (`<overlay>/content/docs/docs/source/*.md`) — the same markdown that builds
+  that deployment's public doc site. A checkout with no overlay has no corpus;
+  set `RAG_CORPUS_DIR` to your own documentation.
 - **Vector store:** a plain JSON file
-  (`apps/backend/serving/rag/prebuilt/docs_index.json`) scanned with pure-Python
+  (`<overlay>/content/rag/docs_index.json`) scanned with pure-Python
   cosine similarity. The corpus is tiny, so no numpy / ANN index is needed. The
   index is **committed** (embeddings rounded to 6 decimals, ~0.9 MB) and lives
   inside the `serving` package so it ships in the Docker image — a fresh
@@ -60,8 +62,10 @@ The committed index is prebuilt with real `bge-m3` embeddings. Regenerate it
 RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest      # real bge-m3, 1024-dim
 ```
 
-`RAG_GATEWAY_BASE_URL` defaults to `https://freeinference.org/v1`; the key must
-be a valid user API key on that gateway. Chunks are embedded with the same
+`RAG_GATEWAY_BASE_URL` defaults to `http://localhost:8080/v1` — embedding is
+billable work, so a clone draws on its own gateway rather than on whoever wrote
+the default. Point it at the gateway you want to embed through; the key must be
+a valid user API key on *that* gateway. Chunks are embedded with the same
 `bge-m3` model the serving endpoint uses at query time, so query and document
 vectors share one space.
 
@@ -123,7 +127,7 @@ API key; when it is unset the endpoint returns `503`. An upstream `429`
 user's** own daily quota, not the service account's.
 
 ```bash
-curl -sN https://staging.freeinference.org/v1/rag/chat \
+curl -sN https://<your-gateway>/v1/rag/chat \
   -H "Authorization: Bearer <jwt>" -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"How do I get an API key?"}]}'
 ```
@@ -136,10 +140,10 @@ All optional; sensible defaults resolve relative to the repo root.
 |---|---|---|
 | `RAG_API_KEY` | _(unset)_ | User API key the handler calls the gateway with (**required** at serving time) |
 | `RAG_API_BASE_URL` | `http://localhost:8080/v1` | Gateway the handler calls (self-call for logging/quota) |
-| `RAG_INDEX_PATH` | `serving/rag/prebuilt/docs_index.json` | Vector index location |
-| `RAG_CORPUS_DIR` | `docs/free_inference/docs/source` | Markdown corpus |
+| `RAG_INDEX_PATH` | the overlay's `content/rag/docs_index.json`, if one is present | Vector index location |
+| `RAG_CORPUS_DIR` | the overlay's `content/docs/docs/source`, if one is present | Markdown corpus |
 | `RAG_EMBEDDER` | `gateway` | `gateway` (real bge-m3) or `hash` (offline) |
-| `RAG_GATEWAY_BASE_URL` | `https://freeinference.org/v1` | Gateway used by **ingest** (gateway mode) |
+| `RAG_GATEWAY_BASE_URL` | `http://localhost:8080/v1` | Gateway used by **ingest** (gateway mode) |
 | `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (gateway mode) |
 | `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer-generation model |
 | `RAG_TOP_K` | `4` | Chunks retrieved per query |

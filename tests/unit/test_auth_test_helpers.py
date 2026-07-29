@@ -10,7 +10,7 @@ from tests.fixtures import auth_helpers
 def test_build_auth_test_env_defaults_uses_test_db_inputs(monkeypatch):
     monkeypatch.setenv("TEST_DB_HOST", "db-host")
     monkeypatch.setenv("TEST_DB_PORT", "5544")
-    monkeypatch.setenv("TEST_DB_NAME", "freeinference_test_db")
+    monkeypatch.setenv("TEST_DB_NAME", "hybridinference_test_db")
     monkeypatch.setenv("TEST_DB_USER", "db-user")
     monkeypatch.setenv("TEST_DB_PASSWORD", "db-pass")
 
@@ -19,10 +19,13 @@ def test_build_auth_test_env_defaults_uses_test_db_inputs(monkeypatch):
     assert result["DB_ENABLED"] == "true"
     assert result["DB_HOST"] == "db-host"
     assert result["DB_PORT"] == "5544"
-    assert result["DB_NAME"] == "freeinference_test_db"
+    assert result["DB_NAME"] == "hybridinference_test_db"
     assert result["DB_USER"] == "db-user"
     assert result["DB_PASSWORD"] == "db-pass"
     assert result["API_KEY_SECRET"]
+    assert result["SITE_SUPPORT_EMAIL"] == ""
+    assert result["DISTRIBUTION_CONFIG_PATH"] == ""
+    assert result["DISTRIBUTION_CONFIG_MODE"] == "dark"
     assert result["MODELS_CONFIG"] == "tests/fixtures/test_models.yaml"
 
 
@@ -41,18 +44,18 @@ def test_build_auth_test_env_defaults_applies_overrides():
 
 
 def test_assert_test_db_name_accepts_dedicated_test_db():
-    auth_helpers.assert_test_db_name("freeinference_test_db")
+    auth_helpers.assert_test_db_name("hybridinference_test_db")
 
 
 def test_assert_test_db_name_rejects_non_test_db():
     with pytest.raises(pytest.fail.Exception, match="refusing to run tests"):
-        auth_helpers.assert_test_db_name("freeinference_prod")
+        auth_helpers.assert_test_db_name("hybridinference_prod")
 
 
 @pytest.mark.asyncio
 async def test_assert_test_db_from_pool_queries_current_database():
     conn = MagicMock()
-    conn.fetchval = AsyncMock(return_value="freeinference_test_db")
+    conn.fetchval = AsyncMock(return_value="hybridinference_test_db")
     acquire_cm = MagicMock()
     acquire_cm.__aenter__ = AsyncMock(return_value=conn)
     acquire_cm.__aexit__ = AsyncMock(return_value=None)
@@ -67,7 +70,7 @@ async def test_assert_test_db_from_pool_queries_current_database():
 @pytest.mark.asyncio
 async def test_cleanup_auth_tables_deletes_expected_tables_in_order():
     conn = MagicMock()
-    conn.fetchval = AsyncMock(return_value="freeinference_test_db")
+    conn.fetchval = AsyncMock(return_value="hybridinference_test_db")
     conn.execute = AsyncMock()
     transaction_cm = MagicMock()
     transaction_cm.__aenter__ = AsyncMock(return_value=None)

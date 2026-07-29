@@ -16,8 +16,10 @@ from serving.adapters.processors import (
     DefaultProcessor,
     GLMProcessor,
     QwenCoderProcessor,
+    ReasoningExtractProcessor,
     ThinkBlockProcessor,
     _clone_chunk,
+    _pending_tag_len,
 )
 
 pytestmark = pytest.mark.unit
@@ -65,6 +67,15 @@ def _concat_content(chunks: list[dict[str, Any]]) -> str:
     """Concatenate all delta.content from chunks."""
     return "".join(
         c["choices"][0]["delta"].get("content", "") or "" for c in chunks if c.get("choices")
+    )
+
+
+def _concat_reasoning(chunks: list[dict[str, Any]]) -> str:
+    """Concatenate all delta.reasoning_content from chunks."""
+    return "".join(
+        c["choices"][0]["delta"].get("reasoning_content", "") or ""
+        for c in chunks
+        if c.get("choices")
     )
 
 
@@ -1185,3 +1196,365 @@ class TestStreamSignalPreservation:
         proc = GLMProcessor()
         proc.process_stream_chunk(_make_stream_chunk("<tool_call>get_weather\n"))
         assert proc.process_stream_chunk(_make_stream_chunk("<arg_key>a</arg_key>")) == []
+
+
+# ---------------------------------------------------------------------------
+# ReasoningExtractProcessor Tests (R-01 .. R-20)
+# ---------------------------------------------------------------------------
+
+
+class TestReasoningExtractProcessor:
+    """Tests for ReasoningExtractProcessor — lift <think>/<mm:think> into reasoning."""
+
+    def test_r01_plain_text_no_tags(self):
+        """R-01: No reasoning tags — text streams as content, reasoning stays empty."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("Hello world", model="minimax-m3")]
+        )
+        chunks = emitted + flushed
+        assert _concat_content(chunks) == "Hello world"
+        assert _concat_reasoning(chunks) == ""
+
+    def test_r02_complete_mm_think_one_chunk(self):
+        """R-02: <mm:think>...</mm:think> in one chunk — inner to reasoning, rest to content."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("<mm:think>reasoning</mm:think>Answer", model="minimax-m3")]
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "reasoning"
+        assert _concat_content(chunks) == "Answer"
+
+    def test_r03_mm_think_streamed_across_chunks(self):
+        """R-03: MiniMax-M3 real shape — tags alone, reasoning and answer in separate chunks."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<mm:think>", model="minimax-m3"),
+                _make_stream_chunk("step one "),
+                _make_stream_chunk("step two"),
+                _make_stream_chunk("</mm:think>"),
+                _make_stream_chunk("Final answer."),
+            ],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "step one step two"
+        assert _concat_content(chunks) == "Final answer."
+
+    def test_r04_think_not_matched_by_default(self):
+        """R-04: <think> is not a default tag; on an M3 route it streams as content."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("<think>thoughts</think>Reply", model="minimax-m3")]
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == ""
+        assert _concat_content(chunks) == "<think>thoughts</think>Reply"
+
+    def test_r04b_configurable_think_pair(self):
+        """R-04b: a processor built with a <think> pair extracts <think> reasoning."""
+        proc = ReasoningExtractProcessor(tag_pairs=(("<think>", "</think>"),))
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("<think>thoughts</think>Reply", model="some-model")]
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "thoughts"
+        assert _concat_content(chunks) == "Reply"
+
+    def test_r05_text_before_and_after(self):
+        """R-05: content before and after a reasoning block both reach the content channel."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("pre <mm:think>mid</mm:think> post", model="minimax-m3")]
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "mid"
+        assert _concat_content(chunks) == "pre  post"
+
+    def test_r06_split_closing_tag(self):
+        """R-06: A closing tag split across chunks is reassembled, no leak."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<mm:think>reasoning</mm:", model="minimax-m3"),
+                _make_stream_chunk("think>answer"),
+            ],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "reasoning"
+        assert _concat_content(chunks) == "answer"
+        assert "</mm:" not in _concat_reasoning(chunks)
+        assert "</mm:" not in _concat_content(chunks)
+
+    def test_r07_split_opening_tag(self):
+        """R-07: An opening tag split across chunks is reassembled."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<mm:", model="minimax-m3"),
+                _make_stream_chunk("think>reasoning</mm:think>done"),
+            ],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "reasoning"
+        assert _concat_content(chunks) == "done"
+
+    def test_r08_native_tool_calls_passthrough(self):
+        """R-08: Native tool_calls delta passed through untouched."""
+        proc = ReasoningExtractProcessor()
+        chunk = _make_stream_chunk(
+            content=None,
+            tool_calls=[{"id": "c1", "function": {"name": "f"}}],
+            model="minimax-m3",
+        )
+        result = proc.process_stream_chunk(chunk)
+        assert result == [chunk]
+        assert result[0] is chunk
+
+    def test_r09_content_none(self):
+        """R-09: Content None (non-string) with no signals — returns []."""
+        proc = ReasoningExtractProcessor()
+        chunk = _make_stream_chunk(model="minimax-m3")
+        chunk["choices"][0]["delta"]["content"] = None
+        assert proc.process_stream_chunk(chunk) == []
+
+    @pytest.mark.parametrize("field", ["reasoning_content", "reasoning", "thinking"])
+    def test_r10_structured_reasoning_passthrough(self, field):
+        """R-10: Already-structured reasoning deltas pass through untouched."""
+        proc = ReasoningExtractProcessor()
+        chunk = {
+            "id": "t",
+            "choices": [{"index": 0, "delta": {field: "thinking..."}, "finish_reason": None}],
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert result == [chunk]
+        assert result[0] is chunk
+
+    def test_r11_usage_chunk_preserved(self):
+        """R-11: A terminal usage-bearing chunk surfaces usage on a signal-only chunk."""
+        proc = ReasoningExtractProcessor()
+        chunk = {
+            "id": "t",
+            "choices": [{"finish_reason": "stop", "index": 0, "delta": {"content": ""}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 7, "total_tokens": 12},
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert len(result) == 1
+        assert result[0]["usage"]["total_tokens"] == 12
+        assert result[0]["choices"][0]["finish_reason"] == "stop"
+        assert result[0]["choices"][0]["delta"] == {}
+
+    def test_r12_finish_reason_forwarded_while_buffering(self):
+        """R-12: An empty-content chunk carrying finish_reason forwards a signal-only chunk."""
+        proc = ReasoningExtractProcessor()
+        chunk = {
+            "id": "t",
+            "choices": [{"finish_reason": "length", "index": 0, "delta": {"content": ""}}],
+        }
+        result = proc.process_stream_chunk(chunk)
+        assert len(result) == 1
+        assert result[0]["choices"][0]["finish_reason"] == "length"
+        assert result[0]["choices"][0]["delta"] == {}
+
+    def test_r13_truncated_reasoning_flushed_as_reasoning(self):
+        """R-13: Reasoning cut off with no closing tag is surfaced as reasoning, not dropped."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("<mm:think>partial thought", model="minimax-m3")]
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "partial thought"
+        assert _concat_content(chunks) == ""
+
+    def test_r14_no_choices_passthrough(self):
+        """R-14: Chunk with no choices returned unchanged."""
+        proc = ReasoningExtractProcessor()
+        chunk = {"choices": [], "model": "minimax-m3"}
+        result = proc.process_stream_chunk(chunk)
+        assert result == [chunk]
+        assert result[0] is chunk
+
+    def test_r15_reasoning_contains_angle_bracket(self):
+        """R-15: '<' inside reasoning is preserved, not treated as a tag start."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [_make_stream_chunk("<mm:think>if a < b and c<d</mm:think>ok", model="minimax-m3")],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "if a < b and c<d"
+        assert _concat_content(chunks) == "ok"
+
+    def test_r16_flush_partial_open_tag_as_content(self):
+        """R-16: A held-back partial opening tag that never completes flushes as content."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(proc, [_make_stream_chunk("plain<mm:", model="minimax-m3")])
+        chunks = emitted + flushed
+        assert _concat_content(chunks) == "plain<mm:"
+        assert _concat_reasoning(chunks) == ""
+
+    def test_r17_nonstream_extracts_reasoning(self):
+        """R-17: Non-streaming — tags lifted out of content into reasoning_content."""
+        proc = ReasoningExtractProcessor()
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "<mm:think>the reasoning</mm:think>The answer."},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        result = proc.process_response(response)
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == "The answer."
+        assert msg["reasoning_content"] == "the reasoning"
+
+    def test_r18_nonstream_no_tags_unchanged(self):
+        """R-18: Non-streaming — content without tags is left untouched."""
+        proc = ReasoningExtractProcessor()
+        response = {
+            "choices": [{"message": {"content": "just an answer"}, "finish_reason": "stop"}],
+        }
+        result = proc.process_response(response)
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == "just an answer"
+        assert "reasoning_content" not in msg
+
+    def test_r18b_nonstream_unterminated_reasoning(self):
+        """R-18b: Non-streaming — an unterminated <mm:think> (truncated) becomes reasoning."""
+        proc = ReasoningExtractProcessor()
+        response = {
+            "choices": [
+                {
+                    "message": {"content": "<mm:think>partial thought with no close"},
+                    "finish_reason": "length",
+                }
+            ],
+        }
+        result = proc.process_response(response)
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == ""
+        assert msg["reasoning_content"] == "partial thought with no close"
+
+    def test_r19_nonstream_appends_to_existing_reasoning(self):
+        """R-19: Non-streaming — extracted reasoning appends to existing reasoning_content."""
+        proc = ReasoningExtractProcessor()
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "<mm:think>more</mm:think>done",
+                        "reasoning_content": "seed ",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        result = proc.process_response(response)
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == "done"
+        assert msg["reasoning_content"] == "seed more"
+
+    def test_r20_multiple_blocks(self):
+        """R-20: Multiple reasoning blocks interleaved with content."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "a<mm:think>r1</mm:think>b<mm:think>r2</mm:think>c", model="minimax-m3"
+                )
+            ],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "r1r2"
+        assert _concat_content(chunks) == "abc"
+
+    def test_r21_literal_think_in_answer_does_not_swallow_content(self):
+        """R-21: a literal <think> in the answer (post-reasoning) stays content, no cascade."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk("<mm:think>", model="minimax-m3"),
+                _make_stream_chunk("real reasoning"),
+                _make_stream_chunk("</mm:think>"),
+                _make_stream_chunk("Use <think> like this, then more text."),
+            ],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "real reasoning"
+        assert _concat_content(chunks) == "Use <think> like this, then more text."
+
+    def test_r22_finish_reason_only_on_trailing_signal_not_splits(self):
+        """R-22: finish_reason rides a trailing signal chunk, never a split delta."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc,
+            [
+                _make_stream_chunk(
+                    "<mm:think>reason</mm:think>done",
+                    model="minimax-m3",
+                    finish_reason="stop",
+                )
+            ],
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "reason"
+        assert _concat_content(chunks) == "done"
+        finishers = [c for c in chunks if c.get("choices") and c["choices"][0].get("finish_reason")]
+        assert len(finishers) == 1
+        assert finishers[0]["choices"][0]["finish_reason"] == "stop"
+        assert finishers[0]["choices"][0]["delta"] == {}
+
+    def test_r23_flush_drops_partial_close_tag(self):
+        """R-23: a partial close tag held at stream end is dropped, not emitted as reasoning."""
+        proc = ReasoningExtractProcessor()
+        emitted, flushed = _feed_stream(
+            proc, [_make_stream_chunk("<mm:think>reasoning</mm", model="minimax-m3")]
+        )
+        chunks = emitted + flushed
+        assert _concat_reasoning(chunks) == "reasoning"
+        assert _concat_content(chunks) == ""
+        assert "</mm" not in _concat_reasoning(chunks)
+
+    def test_r24_nonstream_drops_partial_close_tag(self):
+        """R-24: non-streaming unterminated reasoning drops a trailing partial close tag."""
+        proc = ReasoningExtractProcessor()
+        response = {
+            "choices": [
+                {"message": {"content": "<mm:think>reasoning</mm:thi"}, "finish_reason": "length"}
+            ]
+        }
+        result = proc.process_response(response)
+        msg = result["choices"][0]["message"]
+        assert msg["content"] == ""
+        assert msg["reasoning_content"] == "reasoning"
+
+
+class TestPendingTagLen:
+    """Tests for the _pending_tag_len partial-tag holdback helper."""
+
+    def test_open_tag_prefix_held(self):
+        """A tail equal to a proper prefix of an opening tag is held back."""
+        assert _pending_tag_len("foo<mm:th", ("<mm:think>", "<think>")) == len("<mm:th")
+
+    def test_lone_bracket_held(self):
+        """A trailing '<' could start any tag, so it is held back."""
+        assert _pending_tag_len("x<", ("<mm:think>", "<think>")) == 1
+
+    def test_non_prefix_not_held(self):
+        """A '<' that is not a tag prefix (e.g. 'a < b') is not held back."""
+        assert _pending_tag_len("a < b", ("<mm:think>", "<think>")) == 0
+
+    def test_complete_tag_not_held(self):
+        """A fully-present tag is matched by str.find, so nothing is held back for it."""
+        assert _pending_tag_len("<think>", ("<think>",)) == 0
+
+    def test_empty_text(self):
+        """Empty text holds back nothing."""
+        assert _pending_tag_len("", ("<think>",)) == 0

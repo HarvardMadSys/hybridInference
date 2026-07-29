@@ -402,7 +402,9 @@ class TestUsageStatistics:
         assert "remaining_today_usd" in data["quota"]
         assert "reset_at" in data["quota"]
         assert data["quota"]["reset_timezone"] == "UTC"
-        assert data["quota"]["contact_email"] == "admin@freeinference.org"
+        # An overlay-less deployment has no support address. Site-specific
+        # tests cover the configured identity separately.
+        assert data["quota"]["contact_email"] == ""
 
     @pytest.mark.asyncio
     async def test_get_usage_with_data(

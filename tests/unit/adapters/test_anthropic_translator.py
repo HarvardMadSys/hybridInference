@@ -1194,3 +1194,62 @@ def test_stream_tool_call_dict_arguments_serialized_to_string():
     ]
     assert pj == ['{"city": "SF"}']
     assert all(isinstance(x, str) for x in pj)
+
+
+def test_an_inline_system_message_is_hoisted_to_the_front():
+    """Clients send `role: "system"` inside `messages`, and upstreams reject it.
+
+    Claude Code 2.1.220 sends its agent-type listing that way, in addition to
+    the top-level `system` field. Passing it through in place puts a system
+    message after a user message; strict upstreams answer "System message must
+    be at the beginning" and the whole request fails. Captured from a real
+    request that broke every agent job at its first model call.
+    """
+    body = {
+        "system": [{"type": "text", "text": "You are Claude Code."}],
+        "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": [{"type": "text", "text": "Available agent types: …"}]},
+            {"role": "assistant", "content": "hi"},
+        ],
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    roles = [m["role"] for m in messages]
+    assert roles == ["system", "user", "assistant"], f"system must lead, got {roles}"
+    # Both instructions survive — hoisting must not drop what it moves.
+    assert "You are Claude Code." in messages[0]["content"]
+    assert "Available agent types" in messages[0]["content"]
+    assert sum(r == "system" for r in roles) == 1
+
+
+def test_an_inline_system_message_works_without_a_top_level_one():
+    """The hoist must create the leading system message when there is none."""
+    body = {
+        "messages": [{"role": "user", "content": "hi"}, {"role": "system", "content": "Be terse."}]
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == "Be terse."
+
+
+def test_conversation_order_is_otherwise_untouched():
+    """Hoisting must not reorder the turns around it."""
+    body = {
+        "messages": [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+        ]
+    }
+
+    messages, _ = anthropic_request_to_openai(body)
+
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", "one"),
+        ("assistant", "two"),
+        ("user", "three"),
+    ]

@@ -1,4 +1,5 @@
 import { runAlerts, runCycleAlert } from "./alerts";
+import { countPendingCanonicalEvents } from "./control-plane";
 import { renderDashboard } from "./dashboard";
 import {
   acquireCycleLock,
@@ -75,12 +76,16 @@ async function runProbeCycle(env: Env): Promise<void> {
     return;
   }
 
-  // Alerting is opt-in via either the Codex relay or direct Slack fallback.
-  // Log once per cycle when neither complete path is configured.
+  // Since the C3c cutover, "no legacy destination" no longer means alerting is
+  // fully disabled: individual model incidents still deliver through the
+  // Control Plane binding. What it does mean is that storm summaries, cycle
+  // alerts, and pre-cutover legacy incidents have nowhere to go. Say exactly
+  // that once per cycle instead of the old blanket "disabled" message.
   if (!hasAlertDestination(env)) {
     console.warn(
-      "alert delivery disabled; configure the Codex on-call relay or " +
-        "set SLACK_WEBHOOK_URL.",
+      "no legacy alert destination (Codex relay or SLACK_WEBHOOK_URL): storm, " +
+        "cycle, and legacy-owned model alerts cannot be delivered; individual " +
+        "model alerts still use the Control Plane binding when configured.",
     );
   }
 
@@ -212,6 +217,12 @@ export default {
 
     if (path === "/api/health") {
       const snap = await getSnapshot(env.DB);
+      // Control Plane transitions awaiting acceptance. A probe cycle in flight
+      // can legitimately show a transient nonzero (rows exist between creation
+      // and the post-delivery batch), so this never flips `ok` — but a value
+      // that persists across cycles (~20min) means submissions keep being
+      // rejected and individual model alerting is silently stalled.
+      const pendingControlPlaneTransitions = await countPendingCanonicalEvents(env.DB);
       // Healthy only when the monitor ran cleanly AND no model is down, so an
       // uptime check keyed to this endpoint surfaces detected provider outages.
       const ok = snap.cycle.ok && snap.unhealthy === 0;
@@ -224,6 +235,7 @@ export default {
           cycleOk: snap.cycle.ok,
           lastCycleAt: snap.cycle.checkedAt,
           lastCycleError: snap.cycle.error,
+          pendingControlPlaneTransitions,
         },
         ok ? 200 : 503,
       );

@@ -11,6 +11,18 @@ let authState = {
   user: null as { id: string; email: string; role: string; user_name?: string | null } | null,
 };
 
+const NOTICE = 'Requests are logged by this deployment for research purposes.';
+
+let dataPolicyNotice = NOTICE;
+
+vi.mock('@/config/branding', () => ({
+  branding: {
+    get dataPolicyNotice() {
+      return dataPolicyNotice;
+    },
+  },
+}));
+
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
     state: authState,
@@ -50,15 +62,14 @@ describe('HomePage', () => {
       isAuthenticated: false,
       user: null,
     };
+    dataPolicyNotice = NOTICE;
   });
 
-  it('shows the no-guarantee notice before the prompt logging notice', () => {
+  it('shows the no-guarantee notice before the data-policy notice', () => {
     const { container } = render(<HomePage />);
 
     const warrantyNotice = screen.getByText(/service is provided without guarantee/i);
-    const loggingNotice = screen.getByText(
-      /all prompts and responses are logged for research purposes/i,
-    );
+    const loggingNotice = screen.getByText(new RegExp(NOTICE, 'i'));
 
     expect(warrantyNotice).toBeInTheDocument();
     expect(loggingNotice).toBeInTheDocument();
@@ -89,8 +100,18 @@ describe('HomePage', () => {
     );
     expect(screen.queryByLabelText(/dashboard view/i)).not.toBeInTheDocument();
     expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
-    expect(
-      screen.getByText(/all prompts and responses are logged for research purposes/i),
-    ).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(NOTICE, 'i'))).toBeInTheDocument();
+  });
+
+  it('states no data policy when the deployment has not declared one', () => {
+    // A deployment that configures nothing must not inherit someone else's
+    // claim about what happens to its users' prompts.
+    dataPolicyNotice = '';
+
+    render(<HomePage />);
+
+    expect(screen.getByText(/service is provided without guarantee/i)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(NOTICE, 'i'))).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /terms of service/i })).toBeInTheDocument();
   });
 });
