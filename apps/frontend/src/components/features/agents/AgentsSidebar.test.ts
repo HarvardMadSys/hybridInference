@@ -34,6 +34,8 @@ function job(overrides: Partial<AgentJob>): AgentJob {
 
 describe('groupJobsByConversation', () => {
   it('shows one row per thread, with the first prompt and latest run state', () => {
+    const localTime = (hour: number, minute = 0) =>
+      new Date(2026, 6, 29, hour, minute).toISOString();
     const sections = groupJobsByConversation(
       [
         job({
@@ -42,17 +44,17 @@ describe('groupJobsByConversation', () => {
           turnNo: 2,
           title: 'Follow-up',
           state: 'running',
-          createdAt: '2026-07-29T10:05:00Z',
+          createdAt: localTime(10, 5),
         }),
         job({
           id: 'turn-1',
           threadId: 'thread-1',
           turnNo: 1,
           title: 'Explain this repository',
-          createdAt: '2026-07-29T10:00:00Z',
+          createdAt: localTime(10),
         }),
       ],
-      new Date('2026-07-29T12:00:00Z'),
+      new Date(2026, 6, 29, 12),
     );
 
     expect(sections).toHaveLength(1);
@@ -65,13 +67,15 @@ describe('groupJobsByConversation', () => {
   });
 
   it('separates recent and older conversations', () => {
+    const localTime = (year: number, month: number, day: number, hour = 1) =>
+      new Date(year, month, day, hour).toISOString();
     const sections = groupJobsByConversation(
       [
-        job({ id: 'today', createdAt: '2026-07-29T01:00:00Z' }),
-        job({ id: 'week', createdAt: '2026-07-25T01:00:00Z' }),
-        job({ id: 'old', createdAt: '2026-06-01T01:00:00Z' }),
+        job({ id: 'today', createdAt: localTime(2026, 6, 29) }),
+        job({ id: 'week', createdAt: localTime(2026, 6, 25) }),
+        job({ id: 'old', createdAt: localTime(2026, 5, 1) }),
       ],
-      new Date('2026-07-29T12:00:00Z'),
+      new Date(2026, 6, 29, 12),
     );
 
     expect(sections.map((section) => section.label)).toEqual(['Today', 'Previous 7 days', 'Older']);
