@@ -6,6 +6,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from serving.agent_jobs.entitlement import REPO_PATTERN
+
 # A lease is the only thing that lets the reaper take a job back from a stuck
 # or malicious worker. If the worker could pick the TTL, it could pick one long
 # enough that the lease never expires — and then the capability token bound to
@@ -32,10 +34,34 @@ EVENT_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 class AgentJobCreate(BaseModel):
     """Request body for creating an agent job."""
 
-    repo: str = Field(..., description="Target repository, e.g. 'owner/name'.")
+    repo: str = Field(
+        ...,
+        # Shape-checked here as well as against the entitlement allowlist: the
+        # value is interpolated into a clone URL and handed to git, which reads
+        # a leading `-` as an option wherever it appears.
+        pattern=REPO_PATTERN,
+        max_length=140,
+        description="Target repository, e.g. 'owner/name'.",
+    )
     task_prompt: str = Field(..., description="What the agent should do.")
     runtime: str = Field("claude-code", description="Agent runtime id.")
     model: str = Field(..., description="Gateway model id the runtime should use.")
+    setup_script: str | None = Field(
+        None,
+        max_length=8000,
+        description=(
+            "Shell run before the agent, under the setup egress tier. Its result is "
+            "cached per repository and script, so a retry does not reinstall."
+        ),
+    )
+    base_ref: str | None = Field(
+        None,
+        max_length=255,
+        description=(
+            "Branch to work from. Resolved to a commit at creation and stored as "
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+        ),
+    )
     base_sha: str | None = Field(
         None,
         # A bare commit hash, enforced here as well as in the publisher: git
@@ -74,6 +100,22 @@ class AgentJobResponse(BaseModel):
     metadata: dict[str, Any] | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    # Read from the billing ledger, never from anything the agent reports about
+    # itself — the same rule the budget check already follows.
+    spent_usd: float | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    model_calls: int | None = None
+    # The deployment's egress posture for this job's two phases, so the owner
+    # can see what the sandbox could reach rather than take it on trust.
+    setup_egress_tier: str | None = None
+    agent_egress_tier: str | None = None
+    # Source control connection state. The composer is gated on this rather
+    # than offering pickers that submit something else: with no App installed
+    # there is no repository to work on, and a task box that looks ready is a
+    # worse answer than one that says what is missing.
+    github_connected: bool = False
+    github_install_url: str | None = None
 
 
 class AgentJobListResponse(BaseModel):
@@ -142,12 +184,21 @@ class WorkerClaimResponse(BaseModel):
     repo: str
     base_sha: str | None = None
     task_prompt: str
+    setup_script: str | None = None
     runtime: str
     model: str
     worker_token: str
     sandbox_token: str = Field(
         "",
         description="Model-scoped credential; the only one that enters the sandbox.",
+    )
+    clone_token: str | None = Field(
+        None,
+        description=(
+            "Short-lived read-only credential for this one repository, for the runner to "
+            "check it out with. Stays in the runner; never enters the sandbox. Null when "
+            "no GitHub App is configured, which is enough for a public repository."
+        ),
     )
     metadata: dict[str, Any] | None = None
 
@@ -201,6 +252,31 @@ class WorkerFinishRequest(BaseModel):
 
     state: str = Field(..., description="succeeded|failed|cancelled")
     detail: str | None = None
+    setup_script: str | None = Field(
+        None,
+        max_length=8000,
+        description=(
+            "Shell run before the agent, under the setup egress tier. Its result is "
+            "cached per repository and script, so a retry does not reinstall."
+        ),
+    )
+    base_ref: str | None = Field(
+        None,
+        max_length=255,
+        description=(
+            "Branch to work from. Resolved to a commit at creation and stored as "
+            "base_sha — a branch moves, and the publisher applies onto a pinned commit."
+        ),
+    )
+    base_sha: str | None = Field(
+        None,
+        pattern=r"^[0-9a-fA-F]{7,64}$",
+        description=(
+            "The commit the agent actually worked from. Recorded only when the job "
+            "did not already carry one — the publisher cannot apply a patch without "
+            "knowing its base, and a job may be submitted without naming a commit."
+        ),
+    )
 
 
 class WorkerPublishRequest(BaseModel):
@@ -214,3 +290,49 @@ class WorkerAckResponse(BaseModel):
 
     ok: bool
     state: str | None = None
+
+
+class AgentConfigResponse(BaseModel):
+    """What this deployment will actually accept, for the task composer.
+
+    The composer used to show a repository, a branch, a runtime and a model as
+    static labels while submitting different hardcoded values — so the UI
+    described a job nobody was running. These are the real answers.
+    """
+
+    repos: list[str] = Field(
+        default_factory=list,
+        description="Repositories this deployment is entitled to work on. Empty means none.",
+    )
+    runtimes: list[str] = Field(default_factory=list, description="Runtime ids that can run here.")
+    default_budget_usd: float = Field(
+        DEFAULT_JOB_BUDGET_USD, description="Per-job spend cap applied when none is given."
+    )
+    setup_egress_tier: str | None = None
+    agent_egress_tier: str | None = None
+    # Source control connection state. The composer is gated on this rather
+    # than offering pickers that submit something else: with no App installed
+    # there is no repository to work on, and a task box that looks ready is a
+    # worse answer than one that says what is missing.
+    github_connected: bool = False
+    github_install_url: str | None = None
+
+
+class GitHubConnectRequest(BaseModel):
+    """The callback values GitHub hands back after the user authorizes."""
+
+    code: str = Field(..., min_length=1, max_length=512)
+
+
+class GitHubConnectionResponse(BaseModel):
+    """Which GitHub installations this user has connected."""
+
+    connections: list[dict[str, Any]] = Field(default_factory=list)
+    repos: list[str] = Field(default_factory=list)
+
+
+class RepoBranchesResponse(BaseModel):
+    """Branches of one repository the caller is entitled to."""
+
+    default: str | None = None
+    branches: list[str] = Field(default_factory=list)

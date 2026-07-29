@@ -82,7 +82,7 @@ For bare-metal development without Docker, replace `host.docker.internal` with `
 ## Nginx and HTTPS
 
 Nginx runs on the host (not in Docker) to terminate TLS. The example config
-that used to ship at `deploy/nginx/freeinference.conf` was removed from the
+that used to ship under `deploy/nginx/` was removed from the
 repo; write a host-level site config yourself, then:
 
 ```bash
@@ -95,9 +95,10 @@ This assumes:
 
 ### Cloudflare
 
-FreeInference runs behind Cloudflare. Key settings:
-- **SSL/TLS mode**: Full (strict)
-- **Caching**: Disabled for API paths (`/v1/*`)
+Behind a CDN, two settings matter whichever one you use:
+- **SSL/TLS mode**: full verification to the origin
+- **Caching**: disabled for API paths (`/v1/*`) — streamed responses must not
+  be cached, and a cached completion is served to the wrong user
 
 ## Monitoring
 

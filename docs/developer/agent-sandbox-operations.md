@@ -9,7 +9,8 @@ this page is only about running it.
 
 ```text
 POST /v1/agent/jobs           owner queues work
-  → dispatcher claims          internal-role credential, mints two tokens
+  → dispatcher claims          internal-role credential, mints three tokens
+    → runner checks out        read-only clone credential, never enters the sandbox
     → sandbox runs the agent   only a model-scoped token crosses the boundary
       → normalized events      streamed to the owner over SSE
       → model calls            billed through the gateway into api_logs
@@ -23,7 +24,12 @@ Two properties are load-bearing and easy to break by accident:
 
 - **No repository credential ever enters the sandbox.** The agent emits a
   patch; the publisher — running in the gateway, outside the sandbox — is the
-  only component holding a GitHub token.
+  only component holding a GitHub token that can *write*. The runner does hold
+  a clone credential, but it is read-only, scoped to the one repository, and
+  deliberately never recorded in `.git/config`: the checkout adds no remote,
+  the credential travels in git's environment rather than its argv, and the
+  runner refuses to start the agent if it finds the token anywhere under
+  `.git/`.
 - **The sandbox's only credential is model-scoped.** It buys inference against
   the job's capped budget. It cannot write the event log, overwrite the patch,
   or move the job to a terminal state; the runner holds the token that can.
@@ -41,6 +47,10 @@ Against real components on a developer machine:
 | Publish: patch → branch → draft PR | real `git push` to a local bare repo |
 | **A real job on a real model** | live Claude Code CLI × `deepseek-v4-flash` through the production gateway: docstring landed on disk, patch produced, 3 calls / 74,523 tokens / $0.0075 attributed to the job in `api_logs` |
 | Sandbox isolation | real Docker: non-root, `CapEff: 0000000000000000`, cap-drop enforced, `--network none`, `--rm` leaves nothing |
+| Checkout → edit → patch | real git against a real repository: pinned commit materializes the right tree, an agent edit and a new file both appear in the patch, no remote is left behind |
+| Worktree handover to the sandbox user | real Docker: root creates a `0700` worktree, chowns it to 10001, and a `--user 10001` container writes to it and produces a diff. Without the chown the same container gets `Permission denied` and `fatal: not a git repository` |
+| The gateway on staging | `/v1/agent/*` live: job create/get/list/cancel, SSE stream, and a non-dispatcher key refused at `/worker/claim` with 401 |
+| **A self-hosted runner completing a real job** | `ajob_04de5d509a25ded2` against staging: claimed → cloned `psf/requests` at `414f0513` (verified equal to that repo's HEAD) → Claude Code 2.1.220 in a Docker sandbox as uid 10001 → `Read` + `Edit` with `is_error: false` → 518-byte patch stored → `succeeded`. The patch was read back and matches the file the agent left on disk |
 
 ## Not verified
 
@@ -50,8 +60,16 @@ Be precise about these when reporting status:
   above); the 2-runtime × 3-model matrix has not been run, so cross-model
   behaviour differences are still unknown.
 - **The Actions workflow has never executed on GitHub.** See the blockers.
-- **Nothing is deployed.** `/v1/agent/*` returns 404 on both staging and
-  production — the merged code has not reached either environment.
+- **Kata.** Still a shared-kernel container in every run so far; the
+  `--runtime` flag provably reaches the daemon but no job has run under an
+  actual Kata kernel.
+- **Production.** `/v1/agent/*` is live on staging; production has not been
+  deployed from it — production returns 404 on those routes today.
+- **Staging's model surface is thin.** Of the 15 models `/v1/models` lists,
+  only `glm-5.1` and `qwen3.6-35b` actually resolve for an agent-job token, and
+  both land on `qwen3.6-35b`. Everything else answers `404 Model not found`, so
+  a job that names one fails at its first turn. Pick a model that resolves
+  before concluding anything about the chain.
 - **Kata.** Isolation was verified on a shared-kernel container. The Kata path
   is wired correctly — the daemon accepts `--runtime io.containerd.kata.v2` and
   proceeds to start the shim, failing only because this host has no shim
@@ -70,9 +88,52 @@ Be precise about these when reporting status:
   silently run as a plain shared-kernel container while every log line and
   config said otherwise. That is ruled out.
 
+## Who may run a job against which repository
+
+Two independent entitlements, and a repository qualifies on either. Both fail
+closed: with neither, no job can be created at all.
+
+**A connection the user made.** They authorize the GitHub App, GitHub returns a
+code to `<frontend>/agents/connected`, and the platform exchanges it for a
+token that speaks *as that user* to ask which installations they can reach.
+Those installation ids are recorded against the user, and the repositories they
+cover are what the composer offers. Every step is GitHub's answer rather than
+the requester's — which is the point, because the requester chooses the
+repository and the *platform* mints the credential for it. Anything the
+requester could simply assert would be a confused deputy.
+
+**The deployment allowlist** (`AGENT_REPO_ALLOWLIST`), for the single-tenant
+dogfood where the repository is the operator's own and there is no user to
+connect.
+
+Disconnecting removes the platform's half. Uninstalling the App on GitHub is
+the other half, and is what actually revokes the platform's reach.
+
 ## Before a job can run for real
 
 Two things are outside the code and must be done by a human.
+
+### 0. A closed agent network needs the gateway on it
+
+`platform_only` means "our gateway and nothing else", which assumes the gateway
+is *on that network* — true when it is the compose `backend` service, false the
+moment `AGENT_GATEWAY_URL` points at a remote one. The sandbox then resolves
+nothing and every job dies at its first model call, with an error that reads
+like a broken model.
+
+Preflight now probes this: it starts one container on the agent phase's real
+network and asks whether the gateway host resolves, refusing at startup if not.
+For a remote gateway, give the agent phase a network that routes to it:
+
+```bash
+AGENT_EGRESS_AGENT_TIER=custom
+AGENT_EGRESS_NETWORK_CUSTOM=agent-routable
+```
+
+One more compose detail worth knowing: the overlay *declares* `agent-egress`,
+so compose insists on creating it. A network of that name created by hand
+beforehand is refused with a label mismatch — let compose own it, or point the
+tier variables at names compose does not declare.
 
 ### 1. The workflow must be on the default branch
 
@@ -121,6 +182,17 @@ The App needs `contents: write` and `pull_requests: write` and nothing else —
 notably not `workflows`, so a patch touching `.github/` cannot be pushed even
 if the gate were bypassed. Revocation is uninstalling the App.
 
+The same App also supplies the runner's clone credential, and the two are
+*not* the same token. An installation token inherits every permission the App
+holds unless it asks for less, so the clone token is requested as
+`contents: read` on the single repository being worked on. Getting that wrong
+would put a push-capable credential on the host that executes untrusted
+repository code.
+
+With no App configured the claim returns no clone token and the runner clones
+anonymously, which is enough for a public repository. A private repository
+needs the App.
+
 A static `AGENT_GITHUB_TOKEN` still works as a fallback, but it is a
 long-lived credential someone has to create and rotate; prefer the App.
 With neither, the publisher loop idles and says so — jobs still run and still
@@ -144,10 +216,46 @@ runners share one queue with no leader and no sharding.
 |---|---|---|
 | `AGENT_SANDBOX_BACKEND` | `kata` | `process` (no isolation) refuses to start unless `AGENT_SANDBOX_ALLOW_UNISOLATED=1` |
 | `AGENT_SANDBOX_IMAGE` | `freeinference/agent-sandbox:latest` | |
-| `AGENT_SANDBOX_NETWORK` | `agent-egress` | Declared `internal: true`, so a sandbox reaches the gateway and nothing else |
-| `AGENT_WORKDIR_ROOT` | `/var/lib/freeinference/agent-jobs` | **Must be bind-mountable by the container runtime.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
+| `AGENT_SANDBOX_NETWORK` | `agent-egress` | Declared `internal: true`, so a sandbox reaches the gateway and nothing else. Also the `platform_only` network unless `AGENT_EGRESS_NETWORK_PLATFORM_ONLY` overrides it |
+| `AGENT_EGRESS_SETUP_TIER` / `_AGENT_TIER` | `platform_only` | One of `platform_only` / `trusted` / `custom` / `full`, **per phase**. The design's external-beta shape is setup=`trusted`, agent=`platform_only`; the overlay ships both closed because there is no setup phase yet and no allowlist-fronted network to run one on |
+| `AGENT_EGRESS_NETWORK_*` | — | Network per tier. A tier with no network is an error when a phase selects it, never a fall back to a more open one |
+| `AGENT_SNAPSHOT_ROOT` | — | Where setup snapshots live. Unset disables caching, so every job reinstalls. Bind it at the same path inside and out, like the worktrees |
+| `AGENT_SNAPSHOT_TTL_S` | `604800` | Seven days, as the design specifies. A stale entry means a wrong dependency tree |
+| `AGENT_EGRESS_ALLOWLIST` | — | Checked at startup: it may not contain an agent vendor's telemetry domain, which would let a "closed" sandbox report on the repository it was given |
+| `AGENT_WORKDIR_ROOT` | `/var/lib/freeinference/agent-jobs` | **A host path, bind-mounted at the same path inside the runner.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
+| `AGENT_SANDBOX_UID` / `_GID` | `10001` | Only for a custom sandbox image; must match its user |
+| `AGENT_REPO_ALLOWLIST` | — | Comma-separated `owner/name`, or `owner/*`, for the single-tenant dogfood. Users who connect the App themselves do not need it; unset simply means the only entitlement is a user's own connection |
+| `AGENT_GITHUB_APP_CLIENT_ID` / `_CLIENT_SECRET` | — | The App's OAuth half. Only the user-facing connect flow needs it; minting installation tokens uses the private key alone |
+| `AGENT_GITHUB_APP_INSTALL_URL` | — | Where the Connect button sends the user. Set the App's callback to `<frontend>/agents/connected` |
+| `AGENT_SANDBOX_ALLOW_OPEN_NETWORK` | — | Accepts a non-`internal` sandbox network. Preflight refuses one otherwise, so a missing setting cannot quietly mean full egress |
 | `AGENT_GITHUB_TOKEN` | — | Gateway-side; unset means the publisher idles |
 | `AGENT_PUBLISH_BASE_BRANCH` | `dev` | What draft PRs target |
+
+### Three things about this topology that look like details and are not
+
+**The runner is not the gateway image.** It builds from
+`Dockerfile.agent-runner`, which adds a Docker client (the container backend
+shells out to `docker` to start each sandbox) and `git` (the runner checks the
+repository out). The gateway image has neither, and a runner built from it
+fails preflight on every host.
+
+**The job worktree must be a host path with the same name on both sides.** The
+runner asks the daemon to bind-mount each job directory into the sandbox, and
+the daemon resolves that path on the *host* — not inside the runner container.
+A named volume works for the runner's own file operations and then fails every
+`docker run --mount` with exit 125.
+
+**The runner runs as root, and that is the design.** It creates each job
+worktree, checks the repository out, and then chowns the tree to uid 10001 —
+the sandbox image's user — before mounting it. Skip that and the agent cannot
+write a single file, and git refuses to look at the repository at all
+("dubious ownership"). An unprivileged runner falls back to making the tree
+world-writable and logs `agent_sandbox_workdir_world_writable`; that is only
+defensible on a dedicated single-purpose host.
+
+The isolation boundary is between the runner and the sandbox it starts, not
+around the runner. Running the runner unprivileged does not buy isolation — it
+already holds the dispatcher credential and the Docker socket.
 
 ## Layer-2 model matrix
 

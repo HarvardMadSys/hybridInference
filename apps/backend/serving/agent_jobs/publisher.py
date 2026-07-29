@@ -25,7 +25,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from serving.agent_jobs.patch_gate import PatchGateResult, branch_name_for, validate_patch
+from serving.agent_jobs.patch_gate import (
+    PatchGateResult,
+    branch_name_for,
+    validate_change_set,
+    validate_patch,
+)
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -104,6 +109,45 @@ def _run_git(
     return completed.stdout
 
 
+@dataclass
+class _StagedChangeSet:
+    """What git reports is staged, as opposed to what the patch text implied."""
+
+    paths: list[str]
+    symlinks: list[str]
+
+
+def _staged_change_set(repo: Path) -> _StagedChangeSet:
+    """Read the staged paths and their modes straight out of the index.
+
+    ``-z`` output is NUL-separated and never quoted, which is the point: the
+    quoting git applies in a *diff header* is exactly what a hostile patch used
+    to hide a path from the pre-apply gate.
+    """
+    raw = _run_git(["diff", "--cached", "--raw", "-z", "--no-renames"], cwd=repo)
+    paths: list[str] = []
+    symlinks: list[str] = []
+    # `:<srcmode> <dstmode> <srcsha> <dstsha> <status>\0<path>\0`
+    fields = raw.split("\0")
+    index = 0
+    while index < len(fields):
+        meta = fields[index]
+        if not meta.startswith(":"):
+            index += 1
+            continue
+        if index + 1 >= len(fields):
+            break
+        path = fields[index + 1]
+        parts = meta[1:].split()
+        dst_mode = parts[1] if len(parts) > 1 else ""
+        if path:
+            paths.append(path)
+            if dst_mode == "120000":
+                symlinks.append(path)
+        index += 2
+    return _StagedChangeSet(paths=paths, symlinks=symlinks)
+
+
 def publish_patch(
     *,
     job_id: str,
@@ -163,6 +207,18 @@ def publish_patch(
         _run_git(["add", "--all"], cwd=repo)
         if not _run_git(["status", "--porcelain"], cwd=repo).strip():
             raise PublishError("patch applied cleanly but produced no changes")
+
+        # Re-gate against what git says actually landed, not against the parse
+        # of the patch text. The pre-apply gate gives an early rejection with a
+        # readable reason, but a hostile patch only has to defeat the *parser*
+        # to get past it — a C-quoted `.github/` path did exactly that. Here
+        # the paths and modes come from the index itself, so there is nothing
+        # left to misread.
+        staged = _staged_change_set(repo)
+        post = validate_change_set(staged.paths, staged.symlinks)
+        if not _gate_permits(post, allow_workflow_changes=allow_workflow_changes):
+            raise PublishError(f"patch rejected after apply: {post.reason}")
+        gate = post
         _run_git(["commit", "--quiet", "--no-verify", "-m", commit_message], cwd=repo)
         commit_sha = _run_git(["rev-parse", "HEAD"], cwd=repo).strip()
 

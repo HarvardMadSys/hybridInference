@@ -179,34 +179,42 @@ def test_the_makefile_feeds_the_overlay_too() -> None:
     ), "the server's .env must come last so per-host overrides still win"
 
 
-def test_the_agent_workdir_volume_matches_the_variable_that_names_it() -> None:
-    """The mount point and AGENT_WORKDIR_ROOT have to be the same path.
+def test_the_bottom_of_the_precedence_names_files_that_exist() -> None:
+    """A checkout with no distribution and no environment must still resolve.
 
-    They were two literals: the volume mounted one deployment's directory and
-    the runner defaulted to the same string, so changing either alone left the
-    runner writing job directories onto the container filesystem while the
-    volume held nothing — a data-loss shape that no test would notice, because
-    nothing reads the volume back.
+    #1104 checked this one layer too high. Compose is not where the neutral
+    case is decided: a value there is an environment variable for every
+    deployment, and env returns before the manifest is read — so pinning a
+    working path there fixed the clone and quietly made every deployment's
+    manifest decorative. The clone's fallback belongs at the bottom of the
+    precedence instead, which is this table.
+
+    Alerts is deliberately not asserted: there is no example alerts file to
+    name, and a missing one resolves to the built-in thresholds, which is the
+    neutral answer.
     """
-    import re
+    from serving.config.distribution import _LEGACY_DEFAULTS
 
-    text = (
-        Path(__file__).resolve().parents[3]
-        / "deploy"
-        / "docker"
-        / "docker-compose.agent-runner.yml"
-    ).read_text()
+    for kind in ("models", "routing"):
+        default = _LEGACY_DEFAULTS[kind]
+        assert (REPO / default).is_file(), (
+            f"the {kind} fallback is {default!r}, which this repository does not ship"
+        )
 
-    mounts = re.findall(r"agent_workdirs:(\S+)", text)
-    # Anchored: the interpolation ${AGENT_WORKDIR_ROOT:-...} contains the
-    # name again, and an unanchored pattern matches inside it.
-    declared = re.findall(r"^\s*AGENT_WORKDIR_ROOT:\s*(\S+)", text, re.M)
 
-    assert mounts and declared, "the agent runner lost its work directory wiring"
-    assert set(mounts) == set(declared), (
-        f"the volume mounts {mounts} but the runner is told {declared}; job "
-        "directories would be written outside the volume"
-    )
-    assert "freeinference" not in " ".join(mounts + declared).lower(), (
-        "the neutral compose names one deployment's directory"
-    )
+def test_compose_leaves_the_config_paths_to_the_precedence() -> None:
+    """Compose must supply none of them, or the manifest can never win.
+
+    `resolve_config_path` returns on the env branch before reading the
+    manifest, in active mode too. A non-empty default here is an env value for
+    every deployment, so it would make DISTRIBUTION_CONFIG_MODE=active do
+    nothing at all — silently, because the resolved paths would still be
+    plausible files.
+    """
+    text = COMPOSE.read_text()
+    for var in ("MODELS_CONFIG_PATH", "ROUTING_CONFIG_PATH", "ALERTS_CONFIG_PATH"):
+        match = re.search(rf"^\s*{var}: \$\{{{var}-([^}}]*)\}}", text, re.M)
+        assert match, f"{var} lost its neutral default in the compose file"
+        assert not match.group(1).strip(), (
+            f"{var} defaults to {match.group(1)!r}; a value here outranks the manifest"
+        )

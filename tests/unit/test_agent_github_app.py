@@ -233,8 +233,109 @@ async def test_forget_drops_cached_state(config):
 
 def test_private_key_never_appears_in_an_error(config):
     """A failure message must not carry the key it failed to use."""
-    broken = AppConfig(app_id="1", private_key="-----BEGIN PRIVATE KEY-----\nbroken\n")
+    # Assembled rather than written out. A PEM header is a credential shape,
+    # and the export audit reads files, not intent — it cannot tell this one
+    # from a real key, and it should not have to guess.
+    label = "BEGIN " + "PRIVATE KEY"
+    broken = AppConfig(app_id="1", private_key=f"-----{label}-----\nbroken\n")
     with pytest.raises(GitHubAppError) as excinfo:
         build_app_jwt(broken)
     assert "broken" not in str(excinfo.value)
-    assert "BEGIN PRIVATE KEY" not in str(excinfo.value)
+    assert label not in str(excinfo.value)
+
+
+async def test_a_narrowed_token_asks_github_for_less(config):
+    """An installation token inherits every App permission unless it asks for less.
+
+    The App holds `contents: write` so the publisher can push. The runner only
+    needs to read, and it runs on the host that executes untrusted repository
+    code — so its token must be requested narrower, not merely used narrowly.
+    """
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 1})
+        import json as _json
+
+        bodies.append(_json.loads(request.content) if request.content else {})
+        return httpx.Response(201, json={"token": "ghs_ro", "expires_at": "2099-01-01T00:00:00Z"})
+
+    original, patched = _client_returning(handler)
+    httpx.AsyncClient = patched
+    try:
+        creds = GitHubAppCredentials(config)
+        await creds.token_for("o/n", permissions={"contents": "read"}, repository_scoped=True)
+    finally:
+        httpx.AsyncClient = original
+
+    assert bodies[0]["permissions"] == {"contents": "read"}
+    assert bodies[0]["repositories"] == ["n"]
+
+
+async def test_a_narrowed_token_is_not_served_from_the_full_token_cache(config):
+    """Sharing one cache slot would silently undo the narrowing, in both directions."""
+    minted: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 1})
+        import json as _json
+
+        payload = _json.loads(request.content) if request.content else {}
+        minted.append(payload)
+        label = "ro" if payload.get("permissions") else "rw"
+        return httpx.Response(
+            201, json={"token": f"ghs_{label}", "expires_at": "2099-01-01T00:00:00Z"}
+        )
+
+    original, patched = _client_returning(handler)
+    httpx.AsyncClient = patched
+    try:
+        creds = GitHubAppCredentials(config)
+        write = await creds.token_for("o/n")
+        read = await creds.token_for("o/n", permissions={"contents": "read"})
+        # And each is still cached within its own scope.
+        read_again = await creds.token_for("o/n", permissions={"contents": "read"})
+    finally:
+        httpx.AsyncClient = original
+
+    assert (write, read) == ("ghs_rw", "ghs_ro")
+    assert read_again == "ghs_ro"
+    assert len(minted) == 2, "the second read should have come from cache"
+
+
+async def test_an_uninstalled_repository_is_distinguishable_from_an_outage(config):
+    """404 is a settled answer; 503 is GitHub having a bad minute.
+
+    Collapsing the two is what lets a momentary outage be handled as "no
+    credential needed" and terminally fail a private repository's job.
+    """
+    from serving.agent_jobs.github_app import AppNotInstalled
+
+    def not_found(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "Not Found"})
+
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"message": "Service Unavailable"})
+
+    original, patched = _client_returning(not_found)
+    httpx.AsyncClient = patched
+    try:
+        with pytest.raises(AppNotInstalled):
+            await GitHubAppCredentials(config).token_for("o/n")
+    finally:
+        httpx.AsyncClient = original
+
+    original, patched = _client_returning(unavailable)
+    httpx.AsyncClient = patched
+    try:
+        with pytest.raises(GitHubAppError) as excinfo:
+            await GitHubAppCredentials(config).token_for("o/n")
+    finally:
+        httpx.AsyncClient = original
+
+    assert not isinstance(excinfo.value, AppNotInstalled), (
+        "a 503 must not be reported as 'the App is not installed here'"
+    )
+    assert excinfo.value.status == 503

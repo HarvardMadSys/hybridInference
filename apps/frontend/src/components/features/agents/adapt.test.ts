@@ -26,6 +26,12 @@ const JOB: AgentJobApi = {
   metadata: null,
   created_at: null,
   updated_at: null,
+  spent_usd: null,
+  tokens_in: null,
+  tokens_out: null,
+  model_calls: null,
+  setup_egress_tier: null,
+  agent_egress_tier: null,
 };
 
 function event(
@@ -184,5 +190,34 @@ describe('patch parsing', () => {
     expect(job.diffFiles).toEqual([]);
     expect(job.diffLines).toEqual([]);
     expect(job.diffStat).toBeUndefined();
+  });
+});
+
+describe('ledger-sourced fields', () => {
+  it('reports spend and usage from the API rather than inventing them', () => {
+    const job = toDisplayJob({
+      ...JOB,
+      spent_usd: 0.0075,
+      tokens_in: 74523,
+      tokens_out: 512,
+      model_calls: 3,
+      agent_egress_tier: 'platform_only',
+    });
+
+    expect(job.spentUsd).toBe(0.0075);
+    expect(job.hasLedger).toBe(true);
+    expect(job.usage.tokensIn).toBe('74.5k');
+    expect(job.usage.turns).toBe(3);
+    // The tier is rendered for a reader who does not know the tier names.
+    expect(job.networkAgent).toBe('gateway only');
+  });
+
+  it('distinguishes "no ledger" from "spent nothing"', () => {
+    // A deployment with no billing ledger must not be shown as a free job.
+    const job = toDisplayJob(JOB);
+
+    expect(job.spentUsd).toBe(0);
+    expect(job.hasLedger).toBe(false);
+    expect(job.usage.tokensIn).toBe('');
   });
 });
