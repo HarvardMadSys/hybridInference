@@ -6,10 +6,10 @@
 // identity because deploy/docker/docker-compose.yml passes an explicit value
 // for every one of these at build time, so its rendered output is unchanged.
 //
-// Still carrying FreeInference defaults, deliberately: team and sponsors,
-// whose compose default is empty — meaning the arrays below are what
-// production actually renders today. They move once their data is supplied
-// through NEXT_PUBLIC_TEAM_JSON / NEXT_PUBLIC_SPONSORS_JSON.
+// Team and sponsors are empty upstream and come from NEXT_PUBLIC_TEAM_JSON /
+// NEXT_PUBLIC_SPONSORS_JSON; a deployment supplies its own. (This paragraph
+// used to say they still carried built-in defaults, which stopped being true
+// when they were moved and nobody came back for the comment.)
 //
 // These values are the build-time fallback. SiteConfigProvider overlays the
 // safe identity and feature fields from GET /site-config at browser runtime,

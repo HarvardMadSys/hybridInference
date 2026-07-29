@@ -12,7 +12,7 @@ export default function GeoAnalyticsPage() {
       </Link>
       <h2 className="mt-3 text-xl font-semibold tracking-tight text-gray-900">Request origins</h2>
       <p className="mt-1 text-sm text-gray-500">
-        See where FreeInference requests come from and how traffic changes over time.
+        See where requests come from and how traffic changes over time.
       </p>
       <GeoGlobe />
     </div>

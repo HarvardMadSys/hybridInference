@@ -12,7 +12,7 @@ const SAMPLE_LIMIT = 100;
 
 /**
  * On-demand LLM analysis of a single user's recent requests, shown in the admin
- * user detail panel. Uses the freeinference.org provider configured in Admin →
+ * user detail panel. Uses the analysis provider configured in Admin →
  * Settings → Usage Insights; if no key is set the backend returns a 400 that
  * points the admin there.
  */

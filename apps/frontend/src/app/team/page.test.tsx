@@ -7,30 +7,36 @@ import TeamPage from './page';
 
 // The roster is distribution content (NEXT_PUBLIC_TEAM_JSON); upstream ships
 // none, so the page is exercised with an explicit one.
+//
+// Invented people, deliberately. The previous fixture used the real roster —
+// names, job titles, employers, personal websites and photo URLs — as test
+// data in a repository that is about to be published. What the page has to be
+// shown doing is rendering whatever roster it is handed, and a real person's
+// affiliation proves nothing about that.
 vi.mock('@/config/branding', () => ({
   branding: {
     orgName: 'Example Org',
     orgUrl: 'https://org.example.test',
     team: [
       {
-        name: 'Juncheng Yang',
-        affiliations: ['Assistant Professor at Harvard University'],
+        name: 'Ada Example',
+        affiliations: ['Principal Investigator at Example University'],
         badge: 'Lead',
-        image: 'https://junchengyang.com/img/me4.jpg',
+        image: 'https://images.example.test/ada.jpg',
       },
       {
-        name: 'Murphy Tian',
-        affiliations: [
-          'Research Intern at Harvard University',
-          'Undergraduate at University of Toronto',
-        ],
+        name: 'Blake Sample',
+        affiliations: ['Research Intern at Example University', 'Undergraduate at Example College'],
         badge: 'Core developer',
-        image: '/team/murphy-tian.jpg',
-        website: 'https://realtmxi.github.io/',
+        image: '/team/blake-sample.jpg',
+        website: 'https://blake.example.test/',
       },
       {
-        name: 'Haoran Ni',
-        affiliations: ['Research Intern at Harvard University', 'Undergraduate at NJU'],
+        name: 'Cameron Placeholder',
+        affiliations: [
+          'Research Intern at Example University',
+          'Undergraduate at Example Institute',
+        ],
       },
     ],
   },
@@ -54,41 +60,41 @@ describe('TeamPage', () => {
       screen.getByRole('heading', { level: 1, name: /the people behind/i }),
     ).toBeInTheDocument();
 
-    const junchengCard = cardFor(/juncheng yang/i);
-    expect(within(junchengCard).getByText(/^lead$/i)).toBeInTheDocument();
+    const leadCard = cardFor(/ada example/i);
+    expect(within(leadCard).getByText(/^lead$/i)).toBeInTheDocument();
     expect(
-      within(junchengCard).getByText(/assistant professor at harvard university/i),
+      within(leadCard).getByText(/principal investigator at example university/i),
     ).toBeInTheDocument();
 
-    const photo = within(junchengCard).getByAltText(/photo of juncheng yang/i);
-    expect(photo).toHaveAttribute('src', expect.stringContaining('junchengyang.com'));
+    const photo = within(leadCard).getByAltText(/photo of ada example/i);
+    expect(photo).toHaveAttribute('src', expect.stringContaining('images.example.test'));
   });
 
   it('renders the research interns with badges, affiliations, photos, and placeholder avatars', () => {
     render(<TeamPage />);
 
-    const murphyCard = cardFor(/murphy tian/i);
-    expect(within(murphyCard).getByText(/^core developer$/i)).toBeInTheDocument();
-    expect(within(murphyCard).getByRole('link', { name: /murphy tian/i })).toHaveAttribute(
+    const developerCard = cardFor(/blake sample/i);
+    expect(within(developerCard).getByText(/^core developer$/i)).toBeInTheDocument();
+    expect(within(developerCard).getByRole('link', { name: /blake sample/i })).toHaveAttribute(
       'href',
-      'https://realtmxi.github.io/',
+      'https://blake.example.test/',
     );
     expect(
-      within(murphyCard).getByText(/research intern at harvard university/i),
+      within(developerCard).getByText(/research intern at example university/i),
     ).toBeInTheDocument();
     expect(
-      within(murphyCard).getByText(/undergraduate at university of toronto/i),
+      within(developerCard).getByText(/undergraduate at example college/i),
     ).toBeInTheDocument();
-    const murphyPhoto = within(murphyCard).getByAltText(/photo of murphy tian/i);
-    expect(murphyPhoto).toHaveAttribute('src', expect.stringContaining('murphy-tian.jpg'));
+    const developerPhoto = within(developerCard).getByAltText(/photo of blake sample/i);
+    expect(developerPhoto).toHaveAttribute('src', expect.stringContaining('blake-sample.jpg'));
 
-    const haoranCard = cardFor(/haoran ni/i);
+    const internCard = cardFor(/cameron placeholder/i);
     expect(
-      within(haoranCard).getByText(/research intern at harvard university/i),
+      within(internCard).getByText(/research intern at example university/i),
     ).toBeInTheDocument();
-    expect(within(haoranCard).getByText(/undergraduate at nju/i)).toBeInTheDocument();
+    expect(within(internCard).getByText(/undergraduate at example institute/i)).toBeInTheDocument();
     expect(
-      within(haoranCard).getByLabelText(/placeholder avatar for haoran ni/i),
+      within(internCard).getByLabelText(/placeholder avatar for cameron placeholder/i),
     ).toBeInTheDocument();
   });
 });
