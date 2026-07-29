@@ -62,7 +62,7 @@ async def _init_pg_backend():
     from serving.storage.postgres_log import PostgresLogStore
     from serving.storage.postgres_operational import PostgresOperationalStore
 
-    test_db_name = os.getenv("TEST_DB_NAME", "freeinference_test_db")
+    test_db_name = os.getenv("TEST_DB_NAME", "hybridinference_test_db")
     assert_test_db_name(test_db_name, context="auth_backend init")
 
     db_config = {

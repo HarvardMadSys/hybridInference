@@ -13,12 +13,12 @@ from serving.servers.routers import site_config
 MANIFEST = """\
 schema_version: 1
 distribution:
-  id: freeinference
-  display_name: FreeInference
+  id: example-site
+  display_name: Example Site
   release: 2026.07.1
 site:
-  public_base_url: https://freeinference.org
-  support_email: admin@freeinference.org
+  public_base_url: https://gateway.example.com
+  support_email: admin@example.com
   terms_document: ./content/terms.md
 features:
   routers: [fixed, routewise]
@@ -68,12 +68,12 @@ async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
     resp = await client.get("/site-config")
     body = resp.json()
     assert body["distribution"] == {
-        "id": "freeinference",
-        "display_name": "FreeInference",
+        "id": "example-site",
+        "display_name": "Example Site",
         "release": "2026.07.1",
     }
-    assert body["site"]["public_base_url"] == "https://freeinference.org"
-    assert body["site"]["support_email"] == "admin@freeinference.org"
+    assert body["site"]["public_base_url"] == "https://gateway.example.com"
+    assert body["site"]["support_email"] == "admin@example.com"
     assert body["features"]["routers"] == ["fixed", "routewise"]
 
 

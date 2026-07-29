@@ -18,9 +18,9 @@ def settings(**overrides) -> OnCallSettings:
         "slack_bot_token": SecretStr("xoxb-token"),
         "slack_channel_id": "C123",
         "github_token": SecretStr("github-secret"),
-        "github_repository": "HarvardMadSys/hybridInference",
+        "github_repository": "example-org/example-repo",
         "codex_model": "glm-5.1",
-        "model_base_url": "https://freeinference.org/v1/",
+        "model_base_url": "https://gateway.example.com/v1/",
     }
     base.update(overrides)
     return OnCallSettings(**base)
@@ -75,7 +75,7 @@ def test_payload_is_sanitized_and_excludes_slack_text():
     assert oncall["slack_channel_id"] == "C123"
     assert oncall["slack_thread_ts"] == "171.1"
     assert oncall["model"] == "glm-5.1"
-    assert oncall["base_url"] == "https://freeinference.org/v1"
+    assert oncall["base_url"] == "https://gateway.example.com/v1"
     assert "github-secret" not in json.dumps(payload)
 
 
@@ -85,7 +85,7 @@ async def test_dispatch_posts_repository_dispatch():
         await GitHubDispatcher(settings()).dispatch(event(), "171.1")
 
     url, kwargs = fake.calls[0]
-    assert url == "https://api.github.com/repos/HarvardMadSys/hybridInference/dispatches"
+    assert url == "https://api.github.com/repos/example-org/example-repo/dispatches"
     assert kwargs["headers"]["Authorization"] == "Bearer github-secret"
     assert kwargs["headers"]["Accept"] == "application/vnd.github+json"
     assert kwargs["json"]["event_type"] == "codex-oncall"
@@ -114,4 +114,6 @@ def test_defaults_point_at_the_gateway_responses_api(monkeypatch):
         monkeypatch.delenv(var, raising=False)
     defaults = OnCallSettings()
     assert defaults.codex_model == "glm-5.2"
-    assert defaults.model_base_url == "https://freeinference.org/v1"
+    # No default any more: it used to be one deployment's public URL, so
+    # every other operator dispatched their analysis at it.
+    assert defaults.model_base_url == ""

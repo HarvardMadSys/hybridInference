@@ -20,7 +20,7 @@ def build_auth_test_env_defaults(overrides: Mapping[str, str] | None = None) -> 
         "DB_ENABLED": "true",
         "DB_HOST": os.getenv("TEST_DB_HOST", "localhost"),
         "DB_PORT": os.getenv("TEST_DB_PORT", "5432"),
-        "DB_NAME": os.getenv("TEST_DB_NAME", "freeinference_test_db"),
+        "DB_NAME": os.getenv("TEST_DB_NAME", "hybridinference_test_db"),
         "DB_USER": os.getenv("TEST_DB_USER", "postgres"),
         "DB_PASSWORD": os.getenv("TEST_DB_PASSWORD", "postgres"),
         "JWT_SECRET_KEY": "test-secret-key-for-testing-only-do-not-use-in-production",

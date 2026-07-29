@@ -73,7 +73,7 @@ def _dsn() -> str:
     return (
         f"postgresql://{user}:{os.environ.get('DB_PASSWORD', '')}"
         f"@{os.environ.get('DB_HOST', 'localhost')}:{os.environ.get('DB_PORT', '5432')}"
-        f"/{os.environ.get('DB_NAME', 'freeinference_db')}"
+        f"/{os.environ.get('DB_NAME', 'hybridinference')}"
     )
 
 

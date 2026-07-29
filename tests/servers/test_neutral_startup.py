@@ -1,12 +1,12 @@
 """Acceptance test for a neutral, overlay-less deployment.
 
 Open-source criterion 3: someone who clones the repo, configures nothing
-FreeInference-specific, and supplies a single provider key must get a
+deployment-specific, and supplies a single provider key must get a
 working, neutral gateway. This test *is* that criterion, executable.
 
 It runs in a subprocess with a deliberately bare environment (no
 DISTRIBUTION_CONFIG_PATH, no SITE_* overrides, DB disabled) so it cannot
-inherit the shared suite's FreeInference-flavored test settings, and it
+inherit the shared suite's deployment-flavored test settings, and it
 boots the real app through its lifespan rather than inspecting config.
 """
 
@@ -54,7 +54,7 @@ def test_neutral_deployment_serves_the_reference_registry() -> None:
     env = {
         # A bare environment on purpose: PATH/HOME only, plus what an
         # operator would actually set. Inheriting os.environ would import
-        # the suite's FreeInference-shaped settings and prove nothing.
+        # the suite's deployment-shaped settings and prove nothing.
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
         "PYTHONPATH": str(_REPO_ROOT / "apps" / "backend"),
