@@ -10,7 +10,7 @@
 #   --backup-dir PATH     Custom backup directory (default: ./backups)
 #   --compress            Compress backups with zstd (default: on)
 #   --no-compress         Write an uncompressed .sql dump instead
-#   --s3-bucket URI       Upload backup to S3 (e.g. s3://freeinference/backup)
+#   --s3-bucket URI       Upload backup to S3 (e.g. s3://your-bucket/hybridinference/backup)
 #   --s3-only             Upload to S3 and remove local backup after success
 #   --keep-daily N        Keep N most recent daily backups (default: 3)
 #   --keep-weekly N       Keep N most recent weekly backups (default: 2)
@@ -23,15 +23,16 @@
 # S3 Upload:
 #   Requires AWS CLI v2 configured with credentials.
 #   Credentials are read from ~/.aws/credentials (or env vars).
-#   The freeinference service account (/home/freeinference/.aws/) is used
-#   when running via cron as the freeinference user.
+#   Credentials come from the AWS CLI's usual sources; under cron that
+#   means the invoking user's ~/.aws/, so schedule it as a user that has
+#   them.
 #
 # Examples:
 #   ./ops/db/backup.sh
 #   ./ops/db/backup.sh --compress
 #   ./ops/db/backup.sh --backup-dir /mnt/backups
-#   ./ops/db/backup.sh --compress --s3-bucket s3://freeinference/backup
-#   ./ops/db/backup.sh --compress --s3-bucket s3://freeinference/backup --s3-only
+#   ./ops/db/backup.sh --compress --s3-bucket s3://your-bucket/hybridinference/backup
+#   ./ops/db/backup.sh --compress --s3-bucket s3://your-bucket/hybridinference/backup --s3-only
 #   ./ops/db/backup.sh --keep-daily 5 --keep-weekly 3 --keep-monthly 2
 
 set -euo pipefail

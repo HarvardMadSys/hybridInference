@@ -321,6 +321,32 @@ class PostgresLogStore(LogStore):
             )
         return float(row["spent"]) if row and row["spent"] is not None else 0.0
 
+    async def get_agent_job_usage(self, agent_job_id: str) -> dict[str, float]:
+        """Return token and call totals charged to one agent job.
+
+        Same ledger, same reason as :meth:`get_agent_job_cost`: what a job
+        consumed is read from what the gateway billed, never from the usage an
+        agent reports about itself. A run that lies about its own token counts
+        cannot change these numbers.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(SUM(prompt_tokens), 0) AS tokens_in,
+                       COALESCE(SUM(completion_tokens), 0) AS tokens_out,
+                       COUNT(*) AS calls
+                FROM api_logs WHERE agent_job_id = $1
+                """,
+                agent_job_id,
+            )
+        if row is None:
+            return {"tokens_in": 0.0, "tokens_out": 0.0, "calls": 0.0}
+        return {
+            "tokens_in": float(row["tokens_in"] or 0),
+            "tokens_out": float(row["tokens_out"] or 0),
+            "calls": float(row["calls"] or 0),
+        }
+
     async def get_user_cost_today(self, user_id: str) -> float:
         """Return total cost_usd since UTC midnight."""
         async with self.pool.acquire() as conn:

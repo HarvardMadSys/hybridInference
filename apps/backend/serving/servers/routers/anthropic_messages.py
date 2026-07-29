@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
+from serving.adapters.anthropic_translator import normalize_inline_system
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.config.settings import has_role
 from serving.exceptions import operator_safe_error, scrub_error_for_user
@@ -119,7 +120,7 @@ def _map_upstream_status(status: int) -> tuple[int, str]:
     """Map an upstream provider HTTP status to (client_status, anthropic error type).
 
     Upstream auth/permission/billing failures mean the operator's provider
-    account is invalid/revoked/out of credit -- never the client's freeinference
+    account is invalid/revoked/out of credit -- never the client's gateway
     key, which already authenticated. Surfacing them verbatim would make the
     Anthropic SDK raise AuthenticationError / a 402 and Claude Code blame the
     user's (valid) key or payment, so 401/402/403 are remapped to a retryable
@@ -972,6 +973,13 @@ async def anthropic_messages(
     if "max_tokens" not in body:
         return _anthropic_error(400, "Missing required field: max_tokens")
 
+    # Before dispatch, so this covers the native passthrough as well as the
+    # translated path. A native Anthropic upstream is forwarded this body
+    # unchanged and rejects an inline `role: "system"` message outright, so
+    # normalizing only inside the OpenAI translator would leave the Anthropic
+    # routes broken for exactly the clients that send it.
+    body = normalize_inline_system(body)
+
     try:
         canonical, _route, adapter = await _resolve(
             model_id,
@@ -1490,7 +1498,7 @@ async def anthropic_user_balance(
 ):
     """Return the caller's remaining daily quota as an Anthropic-surface balance check.
 
-    FreeInference has no persistent prepaid balance -- quota is a per-user
+    This gateway has no persistent prepaid balance -- quota is a per-user
     daily USD allowance that resets at UTC midnight. This endpoint exists for
     Anthropic-compatible clients that, when pointed at a custom
     ``ANTHROPIC_BASE_URL``, probe a conventional ``/user/balance`` path (as

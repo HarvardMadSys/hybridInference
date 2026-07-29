@@ -24,9 +24,12 @@ ends the run instead of being retried.
 from __future__ import annotations
 
 import argparse
+import base64
+import contextlib
 import os
 import pathlib
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -40,16 +43,91 @@ import httpx
 
 from serving.agent_jobs.runtimes import AgentRuntime, NormalizedEvent, get_runtime
 from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
+from serving.agent_jobs.setup import build_cache_from_env, run_setup
 
 DEFAULT_LEASE_TTL_S = 120.0
 HEARTBEAT_INTERVAL_S = 30.0
 DEFAULT_AGENT_TIMEOUT_S = 3600.0
 # How often the control checks run while the agent is silent.
 _POLL_INTERVAL_S = 0.5
+_GIT_TIMEOUT_S = 300.0
+# Bounds on the final in-sandbox `git diff`. Generous for a real patch, finite
+# because the worktree's git configuration belongs to the agent by then.
+_PATCH_TIMEOUT_S = 300.0
+_PATCH_MAX_BYTES = 8 * 1024 * 1024
+
+# Both are interpolated into a URL and handed to git, which reads a leading
+# `-` as an option even where an operand belongs. Validate the shape here as
+# well as at the API edge: this process holds the dispatcher credential.
+_COMMIT_SHA = re.compile(r"[0-9a-fA-F]{7,64}")
+_REPO_SLUG = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
+
+# Hermetic git for anything the *runner* runs: no user config, no hooks, no
+# credential helpers, no prompts.
+_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_ASKPASS": "/bin/true",
+    "GIT_LFS_SKIP_SMUDGE": "1",
+}
+
+# git refuses to touch a repository owned by another user ("dubious
+# ownership"). The runner normally hands the worktree over with a chown so the
+# ids match, but an unprivileged runner cannot — and there the agent's own
+# `git status` and our patch build would both abort. Set for the sandbox side
+# only; it is not config the runner itself ever runs under.
+_SAFE_DIRECTORY_ENV = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "safe.directory",
+    "GIT_CONFIG_VALUE_0": "*",
+}
+
+
+# A blocked egress attempt looks like a connection failure in the agent's own
+# tool output, because that is where it surfaces: on a deny-all network the
+# kernel drops the packet and the tool reports the failure. Recording these is
+# what the design asks P0 to produce — the evidence for what an external
+# default should allow. Deliberately narrow: a name-resolution or connection
+# error carrying a host, not every failing command.
+_EGRESS_FAILURE = re.compile(
+    r"(?:"
+    r"Could not resolve host|Name or service not known|Temporary failure in name resolution"
+    r"|Connection refused|Network is unreachable|No route to host|Connection timed out"
+    r"|getaddrinfo (?:failed|ENOTFOUND)|ENOTFOUND|EAI_AGAIN"
+    r")",
+    re.IGNORECASE,
+)
+# Hosts as they appear in those messages, or in any URL alongside them.
+_HOST_IN_TEXT = re.compile(
+    r"https?://([A-Za-z0-9.-]+\.[A-Za-z]{2,})|"
+    r"(?:host|ENOTFOUND|resolve)[:\s]+'?([A-Za-z0-9.-]+\.[A-Za-z]{2,})'?",
+    re.IGNORECASE,
+)
+
+
+def detect_blocked_egress(text: str) -> str | None:
+    """Return the host an agent failed to reach, if this reads as a denial.
+
+    Returns ``None`` for anything that is merely a failed command: a false
+    "the sandbox tried to phone home" is worse than a missed one, because the
+    whole point of the record is to be evidence.
+    """
+    if not text or not _EGRESS_FAILURE.search(text):
+        return None
+    match = _HOST_IN_TEXT.search(text)
+    if match is None:
+        return None
+    host = match.group(1) or match.group(2)
+    return host.strip("'\"").lower() or None
 
 
 class LeaseLost(Exception):
     """Raised when this attempt no longer owns the job and must stop."""
+
+
+class WorktreeError(Exception):
+    """Raised when the job's repository could not be materialized."""
 
 
 @dataclass
@@ -67,6 +145,13 @@ class ClaimedJob:
     worker_token: str
     # Model-scoped credential: the only one that enters the sandbox.
     sandbox_token: str
+    # Shell run before the agent, under the setup egress tier. Optional, so it
+    # carries a default rather than forcing every caller to pass one.
+    setup_script: str | None = None
+    # Read-only, single-repo, short-lived: what the runner clones with. Stays
+    # in the runner — it is never put in .git/config and never enters the
+    # sandbox environment. ``None`` for a public repository.
+    clone_token: str | None = None
 
     @classmethod
     def from_response(cls, body: dict[str, Any]) -> ClaimedJob:
@@ -78,12 +163,14 @@ class ClaimedJob:
             repo=body["repo"],
             base_sha=body.get("base_sha"),
             task_prompt=body["task_prompt"],
+            setup_script=body.get("setup_script"),
             runtime=body["runtime"],
             model=body["model"],
             worker_token=body["worker_token"],
             # Older gateways return only worker_token; fall back so a
             # runner can still talk to one that predates scoped tokens.
             sandbox_token=body.get("sandbox_token") or body["worker_token"],
+            clone_token=body.get("clone_token") or None,
         )
 
 
@@ -125,11 +212,17 @@ class ControlPlane:
             {"kind": kind, "content": content},
         )
 
-    def finish(self, state: str, detail: str | None = None) -> None:
-        """Drive the fenced terminal transition."""
+    def finish(self, state: str, detail: str | None = None, base_sha: str | None = None) -> None:
+        """Drive the fenced terminal transition.
+
+        ``base_sha`` reports the commit the agent actually worked from. A job
+        may be submitted without one, and the publisher cannot apply a patch
+        without knowing its base — so the runner, which resolves it when it
+        checks the repository out, is the component that knows.
+        """
         self._post(
             f"/v1/agent/worker/jobs/{self.job_id}/finish",
-            {"state": state, "detail": detail},
+            {"state": state, "detail": detail, "base_sha": base_sha},
         )
 
     job_id: str = ""
@@ -194,22 +287,280 @@ def claim(
     return ClaimedJob.from_response(body) if body else None
 
 
-def build_patch(workdir: str) -> str:
-    """Return the agent's work as a patch, or an empty string if it changed nothing.
-
-    Uses ``git diff`` against the index plus untracked files staged with
-    ``git add -N``, so new files appear in the diff. Nothing is committed and
-    nothing is pushed: the trusted publisher owns that side.
-    """
-    subprocess.run(["git", "add", "-A", "-N"], cwd=workdir, check=False, capture_output=True)
-    result = subprocess.run(
-        ["git", "diff", "--binary", "HEAD"],
-        cwd=workdir,
-        check=False,
+def _run_git(args: list[str], *, cwd: str | None = None, env_extra: dict[str, str] | None = None):
+    """Run one git command hermetically and return the completed process."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **_GIT_ENV, **(env_extra or {})}
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        env=env,
         capture_output=True,
         text=True,
+        timeout=_GIT_TIMEOUT_S,
+        stdin=subprocess.DEVNULL,
+        check=False,
     )
-    return result.stdout
+
+
+def _auth_env(clone_token: str | None) -> dict[str, str]:
+    """Carry the clone credential in git's environment, never in argv.
+
+    ``GIT_CONFIG_COUNT`` sets config for this invocation only. That matters
+    twice over: the token never lands in ``.git/config`` (where the agent would
+    read it out of the worktree we are about to mount), and it never appears in
+    the process arguments (where any other user on the runner host could see it
+    in ``ps`` for the duration of the fetch).
+    """
+    if not clone_token:
+        return {}
+    basic = base64.b64encode(f"x-access-token:{clone_token}".encode()).decode()
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.extraHeader",
+        "GIT_CONFIG_VALUE_0": f"Authorization: Basic {basic}",
+    }
+
+
+def _assert_no_credential_on_disk(workdir: str, clone_token: str | None) -> None:
+    """Fail rather than mount a worktree that carries the clone credential.
+
+    The whole patch-out design rests on no repository credential reaching the
+    sandbox, and this tree is about to be bind-mounted into it. Asserting the
+    property beats assuming it: git writes several files during a fetch, and a
+    future change to how we authenticate could quietly start recording the
+    token in one of them.
+    """
+    if not clone_token:
+        return
+    git_dir = pathlib.Path(workdir) / ".git"
+    for path in git_dir.rglob("*"):
+        # Object and pack files hold repository content, not our configuration,
+        # and are compressed; skipping them keeps this check bounded.
+        if not path.is_file() or path.is_symlink() or "objects" in path.parts:
+            continue
+        try:
+            if path.stat().st_size > 1_000_000:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if clone_token in text:
+            raise WorktreeError(
+                f"refusing to run: the clone credential was written to .git/{path.name}, "
+                "which the sandbox would be able to read"
+            )
+
+
+def prepare_worktree(
+    *,
+    workdir: str,
+    repo: str,
+    base_sha: str | None,
+    clone_token: str | None = None,
+    remote_base: str = "https://github.com",
+) -> str:
+    """Materialize the job's repository in ``workdir`` and return its commit.
+
+    Runs in the **trusted runner**, and deliberately before the agent starts:
+    at this point the worktree is ours, not the agent's, so running git here is
+    safe in a way that :func:`build_patch` afterwards is not.
+
+    A shallow single-commit fetch, with no remote recorded. Not adding a remote
+    is the point — it is what keeps the credential out of ``.git/config``, and
+    the runner has no reason to offer the agent a push path it must not use.
+    """
+    if not _REPO_SLUG.fullmatch(repo or ""):
+        raise WorktreeError(f"repo must be 'owner/name', got {repo!r}")
+    if base_sha and not _COMMIT_SHA.fullmatch(base_sha):
+        raise WorktreeError(f"base_sha must be a commit hash, got {base_sha!r}")
+
+    url = f"{remote_base.rstrip('/')}/{repo}.git"
+    auth = _auth_env(clone_token)
+
+    init = _run_git(["init", "--quiet", workdir])
+    if init.returncode != 0:
+        raise WorktreeError(f"git init failed: {init.stderr.strip()[:200]}")
+
+    # `--end-of-options` so a ref that survived the shape check above still
+    # cannot be parsed as an option by a git version we did not anticipate.
+    ref = base_sha or "HEAD"
+    fetch = _run_git(
+        ["fetch", "--quiet", "--depth", "1", url, "--end-of-options", ref],
+        cwd=workdir,
+        env_extra=auth,
+    )
+    if fetch.returncode != 0:
+        detail = (fetch.stderr or fetch.stdout).strip().splitlines()
+        raise WorktreeError(
+            f"could not fetch {repo}@{ref}: {detail[-1] if detail else 'no output'}"
+        )
+
+    checkout = _run_git(["checkout", "--quiet", "--detach", "FETCH_HEAD"], cwd=workdir)
+    if checkout.returncode != 0:
+        raise WorktreeError(f"could not check out {ref}: {checkout.stderr.strip()[:200]}")
+
+    resolved = _run_git(["rev-parse", "HEAD"], cwd=workdir).stdout.strip()
+    _assert_no_credential_on_disk(workdir, clone_token)
+    return resolved or (base_sha or "")
+
+
+def existing_checkout_sha(workdir: str, repo: str) -> str | None:
+    """Return the checked-out commit if ``workdir`` already holds ``repo``.
+
+    The GitHub Actions dogfood checks the repository out itself, so the runner
+    must use that worktree rather than clone over it. Returns ``None`` when
+    there is nothing usable here, and raises when a worktree exists but is a
+    *different* repository — running a job against the wrong repo would produce
+    a patch that looks plausible and applies to nothing.
+    """
+    if not (pathlib.Path(workdir) / ".git").exists():
+        return None
+    remote = _run_git(["config", "--get", "remote.origin.url"], cwd=workdir).stdout.strip()
+    if remote:
+        # Exact `owner/name`, not a suffix: `endswith` accepted a checkout of
+        # `acme/foo` for a job targeting `me/foo`, and the agent would then run
+        # against the wrong codebase and produce a patch that applies to
+        # nothing.
+        slug = remote.removesuffix(".git").rsplit(":", 1)[-1].strip("/")
+        slug = "/".join(slug.split("/")[-2:])
+        if slug.lower() != repo.lower():
+            raise WorktreeError(
+                f"the working tree holds {slug!r} but this job targets {repo!r}; "
+                "refusing to run an agent against the wrong repository"
+            )
+    head = _run_git(["rev-parse", "HEAD"], cwd=workdir)
+    return head.stdout.strip() if head.returncode == 0 else None
+
+
+def align_existing_checkout(workdir: str, *, checked_out: str, base_sha: str | None) -> str:
+    """Move a pre-populated worktree onto the commit the job pinned.
+
+    The Actions runner checks out whatever ref triggered the workflow, which
+    has nothing to do with the commit an owner pinned on their job. Running the
+    agent on the wrong tree is not a visible failure: the store keeps the
+    owner's pinned sha, and the publisher then applies a patch generated
+    against one commit onto a different one. ``--3way`` makes that *usually*
+    succeed, which is worse than failing — the PR looks plausible and encodes
+    changes nobody wrote.
+
+    Returns the commit actually in the worktree afterwards.
+    """
+    if not base_sha:
+        return checked_out
+    if not _COMMIT_SHA.fullmatch(base_sha):
+        raise WorktreeError(f"base_sha must be a commit hash, got {base_sha!r}")
+
+    # The owner may have pinned an abbreviated sha; compare resolved commits.
+    resolved = _run_git(["rev-parse", "--verify", "--quiet", f"{base_sha}^{{commit}}"], cwd=workdir)
+    target = resolved.stdout.strip()
+    if resolved.returncode != 0 or not target:
+        raise WorktreeError(
+            f"the prepared working tree does not contain {base_sha}; refusing to run "
+            "the agent against a different commit than the job pinned"
+        )
+    if target == checked_out:
+        return checked_out
+
+    switched = _run_git(["checkout", "--quiet", "--detach", target], cwd=workdir)
+    if switched.returncode != 0:
+        raise WorktreeError(
+            f"could not check out the pinned commit {base_sha}: {switched.stderr.strip()[:200]}"
+        )
+    return target
+
+
+def build_patch(workdir: str, backend: SandboxBackend | None = None) -> str:
+    """Return the agent's work as a patch, or an empty string if nothing changed.
+
+    Runs git **inside the sandbox**, never in the trusted runner. The agent
+    owns this worktree, including its ``.git/config`` — and git reads that
+    file. A trusted process running ``git diff`` here would execute whatever
+    the agent put in ``diff.external`` (or a textconv filter, or
+    ``core.fsmonitor``), with the runner's privileges: the dispatcher
+    credential, and in the Compose deployment the Docker socket. Generating
+    the patch in the same container the agent already ran in keeps that
+    execution inside the boundary that was built for it.
+
+    ``git add -A -N`` stages intents so new files appear in the diff. Nothing
+    is committed and nothing is pushed: the trusted publisher owns that side,
+    and it re-validates the patch before it touches a repository.
+    """
+    script = "git add -A -N >/dev/null 2>&1; git diff --binary HEAD"
+    if backend is None:
+        # No sandbox available (unit tests, an operator running by hand). Run
+        # with config sources neutralised — this is weaker than the sandbox,
+        # because repo-local .git/config is still honoured by git, so it is
+        # only appropriate where the worktree is already trusted.
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            cwd=workdir,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout
+
+    process = backend.spawn(
+        SandboxSpec(argv=["/bin/sh", "-c", script], workdir=workdir, env=_SAFE_DIRECTORY_ENV)
+    )
+    return _read_bounded(process, deadline_s=_PATCH_TIMEOUT_S, max_bytes=_PATCH_MAX_BYTES)
+
+
+def _read_bounded(process: Any, *, deadline_s: float, max_bytes: int) -> str:
+    """Drain a sandbox process's stdout under a deadline and a byte cap.
+
+    This step still runs git against a worktree the agent owned for the whole
+    run, including its ``.git/config``. A ``diff.external`` (or a textconv
+    filter, or ``core.fsmonitor``) that never returns would otherwise block
+    here forever — and because the heartbeat thread keeps renewing the lease
+    until the enclosing ``finally``, the attempt never expires, the reaper
+    never takes it, and a ``--loop`` runner claims nothing further. One hostile
+    repository would take a runner out permanently.
+    """
+    chunks: list[str] = []
+    total = 0
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def _pump() -> None:
+        try:
+            for line in process.lines():
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    threading.Thread(target=_pump, daemon=True, name="agent-patch").start()
+    deadline = time.monotonic() + deadline_s
+    while True:
+        if time.monotonic() > deadline:
+            process.kill()
+            raise WorktreeError(
+                f"building the patch exceeded {deadline_s:.0f}s; the working tree's git "
+                "configuration is agent-controlled and may be hostile"
+            )
+        try:
+            line = lines.get(timeout=_POLL_INTERVAL_S)
+        except queue.Empty:
+            continue
+        if line is None:
+            break
+        total += len(line.encode())
+        if total > max_bytes:
+            process.kill()
+            raise WorktreeError(
+                f"the patch exceeded {max_bytes} bytes while being read; refusing to "
+                "buffer unbounded agent output"
+            )
+        chunks.append(line)
+
+    process.wait()
+    return "".join(chunks)
 
 
 def run_agent(
@@ -222,10 +573,10 @@ def run_agent(
     heart: Heartbeater,
     timeout_s: float,
     backend: SandboxBackend,
-) -> tuple[int, str]:
+) -> tuple[int, str, list[str]]:
     """Run the agent, streaming its output back as normalized events.
 
-    Returns ``(exit_code, tail)``. Raises :class:`LeaseLost` if this attempt
+    Returns ``(exit_code, tail, tool_errors)``. Raises :class:`LeaseLost` if this attempt
     stops owning the job mid-run.
     """
     argv, extra_env = runtime.prepare(
@@ -240,20 +591,28 @@ def run_agent(
         credential=job.sandbox_token,
     )
 
-    # Hermetic environment: only what a CLI genuinely needs, plus the runtime's
-    # own variables. Inheriting the whole environment would hand the agent
-    # whatever the host happens to be carrying.
-    env = {
-        key: os.environ[key]
-        for key in ("PATH", "HOME", "LANG", "LC_ALL", "TERM", "TMPDIR")
-        if key in os.environ
-    }
+    # Hermetic environment, and the *backend's* idea of it rather than the
+    # runner's. For an isolated backend the runner's PATH and HOME name paths
+    # inside the runner's own filesystem: forwarding HOME=/root into a
+    # container that runs unprivileged makes every agent CLI fail on startup
+    # trying to write its config. Inheriting the whole environment would be
+    # worse still — it would hand the agent whatever the host is carrying.
+    env = dict(backend.base_env())
+    env.update(_SAFE_DIRECTORY_ENV)
     env.update(extra_env)
 
     process = backend.spawn(SandboxSpec(argv=argv, workdir=workdir, env=env))
 
     deadline = time.monotonic() + timeout_s
     tail: list[str] = []
+    # Tool failures the agent may or may not acknowledge. A model that says "I
+    # added the docstring" after its Edit was denied is a real behaviour we
+    # observed, so the runner reports what the tools did rather than trusting
+    # the agent's summary.
+    tool_errors: list[str] = []
+    # One row per host, not per retry: an agent that retries a blocked address
+    # ten times tried to reach one place.
+    denied_hosts: set[str] = set()
 
     # Read stdout on a separate thread and poll for it here, so cancellation
     # and the deadline are honoured even when the agent goes quiet. Iterating
@@ -279,13 +638,13 @@ def run_agent(
         if heart.cancel_requested:
             process.kill()
             control.append_event(NormalizedEvent("lifecycle", {"phase": "cancelled_by_owner"}))
-            return 130, "".join(tail)
+            return 130, "".join(tail), tool_errors
         if time.monotonic() > deadline:
             process.kill()
             control.append_event(
                 NormalizedEvent("error", {"text": f"agent exceeded {timeout_s:.0f}s"})
             )
-            return 124, "".join(tail)
+            return 124, "".join(tail), tool_errors
 
         try:
             line = lines.get(timeout=_POLL_INTERVAL_S)
@@ -299,13 +658,31 @@ def run_agent(
         del tail[:-40]
         event = runtime.parse_event(line)
         if event is not None:
+            if event.event_type == "tool_result" and (event.payload or {}).get("is_error"):
+                content = str((event.payload or {}).get("content", ""))
+                tool_errors.append(content[:200])
+                blocked = detect_blocked_egress(content)
+                if blocked and blocked not in denied_hosts:
+                    denied_hosts.add(blocked)
+                    # `host` is what makes this a first-class egress row in the
+                    # owner's stream rather than one more failed command.
+                    control.append_event(NormalizedEvent("error", {"host": blocked}))
             control.append_event(event)
 
     exit_code = process.wait()
     stderr = process.stderr_text()
     if stderr.strip():
         tail.append(stderr[-2000:])
-    return exit_code, "".join(tail)
+    if tool_errors:
+        # Surfaced as an event so the owner sees it in the stream, not only in
+        # the final detail string.
+        control.append_event(
+            NormalizedEvent(
+                "error",
+                {"detail": f"{len(tool_errors)} tool call(s) failed", "first": tool_errors[0]},
+            )
+        )
+    return exit_code, "".join(tail), tool_errors
 
 
 def run_once(
@@ -350,7 +727,10 @@ def run_once(
         control.close()
         return 2
 
-    if shutil.which(runtime.binary) is None:
+    # Ask the backend, not this host: with an isolated backend the agent CLIs
+    # live in the sandbox image, so probing the runner's own PATH would refuse
+    # every job on a correctly configured machine.
+    if not backend.has_binary(runtime.binary):
         # Fail the job explicitly rather than letting it hang in `running`
         # until the reaper eventually gives up on it.
         control.append_event(
@@ -368,7 +748,71 @@ def run_once(
                 {"phase": "started", "runtime": job.runtime, "attempt_no": job.attempt_no},
             )
         )
-        exit_code, tail = run_agent(
+
+        # Give the agent something to work on. Without this the self-hosted
+        # runner ran every job in an empty directory: the agent had no code to
+        # read, and the patch it produced was necessarily empty.
+        try:
+            checked_out = existing_checkout_sha(workdir, job.repo)
+            if checked_out is None:
+                base_sha = prepare_worktree(
+                    workdir=workdir,
+                    repo=job.repo,
+                    base_sha=job.base_sha,
+                    clone_token=job.clone_token,
+                )
+            else:
+                # An externally prepared worktree (the Actions dogfood checks
+                # the repository out itself) — but on whatever ref triggered
+                # the workflow, which is not necessarily what the job pinned.
+                base_sha = align_existing_checkout(
+                    workdir, checked_out=checked_out, base_sha=job.base_sha
+                )
+            # The agent owns this tree from here on, so it must be able to
+            # write to it — and git must not see it as another user's repo.
+            backend.adopt_workdir(workdir)
+        except WorktreeError as exc:
+            control.append_event(NormalizedEvent("error", {"text": str(exc)}))
+            control.finish("failed", str(exc))
+            return 2
+        control.append_event(
+            NormalizedEvent("lifecycle", {"phase": "checked_out", "base_sha": base_sha})
+        )
+
+        # Setup runs before the agent and under its own egress tier: it needs
+        # a package registry, and the turn that follows — the one driven by
+        # untrusted model output — does not.
+        if job.setup_script:
+            setup = run_setup(
+                script=job.setup_script,
+                workdir=workdir,
+                repo=job.repo,
+                backend=backend,
+                cache=build_cache_from_env(),
+            )
+            control.append_event(
+                NormalizedEvent(
+                    "lifecycle",
+                    {
+                        "phase": "setup",
+                        "cached": setup.restored_from_cache,
+                        "ran": setup.ran,
+                    },
+                )
+            )
+            if setup.exit_code != 0:
+                # A job whose dependencies did not install cannot do the work,
+                # and letting the agent start anyway produces a confusing
+                # failure much later, in the model's voice rather than the
+                # installer's.
+                control.finish(
+                    "failed",
+                    f"setup failed ({setup.exit_code}): {setup.detail}",
+                    base_sha=base_sha,
+                )
+                return 1
+
+        exit_code, tail, tool_errors = run_agent(
             runtime,
             job=job,
             workdir=workdir,
@@ -380,10 +824,10 @@ def run_once(
         )
 
         if exit_code == 130:
-            control.finish("cancelled", "cancelled by owner")
+            control.finish("cancelled", "cancelled by owner", base_sha=base_sha)
             return 0
 
-        patch = build_patch(workdir)
+        patch = build_patch(workdir, backend)
         if patch.strip():
             control.save_artifact("patch", patch)
             control.append_event(
@@ -393,15 +837,41 @@ def run_once(
             control.append_event(NormalizedEvent("diff", {"bytes": 0, "stored": False}))
 
         if exit_code != 0:
-            control.finish("failed", f"agent exited {exit_code}: {tail[-500:]}")
+            control.finish("failed", f"agent exited {exit_code}: {tail[-500:]}", base_sha=base_sha)
             return 1
 
         # The publisher runs outside the sandbox and drives publish/*; the
         # runner's job ends at a validated patch. Leaving the job `running`
         # would be a lie, so report success and let the publisher take it from
         # here when a patch exists.
-        control.finish("succeeded", "agent completed" + ("" if patch.strip() else " (no changes)"))
+        if not patch.strip():
+            # No patch is only success if nothing went wrong. A denied write
+            # followed by an agent claiming it succeeded must not be recorded
+            # as a clean run — the owner would see "succeeded" on a job that
+            # did nothing and never learn why.
+            if tool_errors:
+                control.finish(
+                    "failed",
+                    f"agent produced no changes after {len(tool_errors)} failed "
+                    f"tool call(s): {tool_errors[0]}",
+                    base_sha=base_sha,
+                )
+                return 1
+            control.finish("succeeded", "agent completed (no changes)", base_sha=base_sha)
+            return 0
+
+        control.finish("succeeded", "agent completed", base_sha=base_sha)
         return 0
+    except WorktreeError as exc:
+        # Bounded patch generation raises this on a timeout or byte cap. Left
+        # to escape, the job stayed `running` until its lease expired and was
+        # then retried — repeating a deterministic failure until the attempt
+        # budget ran out, with nothing in the record saying why.
+        print(f"patch generation failed: {exc}", file=sys.stderr)
+        with contextlib.suppress(Exception):
+            control.append_event(NormalizedEvent("error", {"text": str(exc)}))
+            control.finish("failed", str(exc), base_sha=base_sha)
+        return 2
     except LeaseLost as exc:
         print(f"lease lost, stopping: {exc}", file=sys.stderr)
         return 3
@@ -437,13 +907,12 @@ def run_forever(
     root.mkdir(parents=True, exist_ok=True)
     # Pass the workdir root so a backend that bind-mounts it can prove the
     # mount works now, rather than failing every job with an opaque error.
-    try:
-        backend.preflight(workdir_root=str(root))  # type: ignore[call-arg]
-    except TypeError:
-        backend.preflight()
-
-    root = pathlib.Path(workdir_root)
-    root.mkdir(parents=True, exist_ok=True)
+    backend.preflight(workdir_root=str(root))
+    # The sandbox must be able to reach the gateway it will be handed. Checked
+    # once here rather than discovered per job as an opaque model failure.
+    checker = getattr(backend, "check_gateway_reachable", None)
+    if checker is not None:
+        checker(base_url)
     print(f"agent runner {worker_id} started (sandbox backend: {backend.name})", flush=True)
 
     while True:
@@ -468,10 +937,29 @@ def run_forever(
         finally:
             shutil.rmtree(job_dir, ignore_errors=True)
 
+        # Housekeeping on the idle tick: a snapshot cache on the same host as
+        # every job worktree must not be the thing that fills the disk.
+        cache = build_cache_from_env()
+        if cache is not None:
+            with contextlib.suppress(Exception):
+                cache.purge_expired()
+
         # `run_once` returns 0 with nothing claimed too; sleeping only when the
         # queue was empty would need a separate signal, and a short sleep after
         # any job is harmless next to a job's own runtime.
         time.sleep(idle_sleep_s)
+
+
+def _env_float(name: str, fallback: float) -> float:
+    """Read a float setting, falling back rather than crash-looping on a typo."""
+    raw = os.environ.get(name)
+    if not raw:
+        return fallback
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"ignoring {name}={raw!r}: not a number", file=sys.stderr)
+        return fallback
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -485,8 +973,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=os.environ.get("FREEINFERENCE_BASE_URL", ""))
     parser.add_argument("--worker-id", default=os.environ.get("AGENT_WORKER_ID", "runner"))
     parser.add_argument("--workdir", default=".")
-    parser.add_argument("--lease-ttl", type=float, default=DEFAULT_LEASE_TTL_S)
-    parser.add_argument("--agent-timeout", type=float, default=DEFAULT_AGENT_TIMEOUT_S)
+    # Read from the environment the way --base-url and --workdir-root already
+    # do. The compose overlay sets AGENT_LEASE_TTL and AGENT_TIMEOUT_S, and
+    # neither reached the runner: every self-hosted job used the built-in
+    # defaults regardless of what the operator configured, silently.
+    parser.add_argument(
+        "--lease-ttl",
+        type=float,
+        default=_env_float("AGENT_LEASE_TTL", DEFAULT_LEASE_TTL_S),
+    )
+    parser.add_argument(
+        "--agent-timeout",
+        type=float,
+        default=_env_float("AGENT_TIMEOUT_S", DEFAULT_AGENT_TIMEOUT_S),
+    )
     parser.add_argument("--generic-command", default=os.environ.get("AGENT_GENERIC_COMMAND"))
     parser.add_argument(
         "--loop",
@@ -536,4 +1036,14 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["ClaimedJob", "ControlPlane", "LeaseLost", "build_patch", "main", "run_once"]
+__all__ = [
+    "ClaimedJob",
+    "ControlPlane",
+    "LeaseLost",
+    "WorktreeError",
+    "build_patch",
+    "existing_checkout_sha",
+    "main",
+    "prepare_worktree",
+    "run_once",
+]

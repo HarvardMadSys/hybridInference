@@ -82,13 +82,13 @@ def _overlay_values() -> dict[str, str]:
         ("NEXT_PUBLIC_STATCOUNTER_PROJECT_ID", "13224568"),
         ("NEXT_PUBLIC_STORAGE_KEY_PREFIX", "freeinference"),
         ("NEXT_PUBLIC_TEAM_IMAGE_HOST", "junchengyang.com"),
-        # Losing this one is silent: the loader falls back to built-in
-        # thresholds rather than erroring, so production would keep
-        # alerting, on different numbers, with nothing to notice.
-        ("ALERTS_CONFIG_PATH", "/app/distributions/freeinference/config/alerts.yaml"),
-        # Sharper edge again: without it the deployment loses its entire
-        # endpoint map and health-check settings, and still starts.
-        ("ROUTING_CONFIG_PATH", "/app/distributions/freeinference/config/routing.yaml"),
+        # The three config paths are no longer stated here; the manifest
+        # names them. These two lines are what carry it into the container —
+        # the --env-file layer interpolates, it does not export, so losing
+        # either leaves the loader inert and the deployment on upstream's
+        # neutral defaults.
+        ("DISTRIBUTION_CONFIG_PATH", "/app/distributions/freeinference/distribution.yaml"),
+        ("DISTRIBUTION_CONFIG_MODE", "active"),
     ],
 )
 def test_overlay_supplies_what_the_default_gave_up(var: str, expected: str) -> None:
@@ -191,3 +191,57 @@ def test_deploy_script_feeds_the_overlay_before_the_server_env(script: Path) -> 
     assert overlay_at < server_env_at, (
         "the server's .env must come last so per-host overrides still win"
     )
+
+
+def test_this_deployment_resolves_to_its_own_registry_not_the_reference_one(monkeypatch) -> None:
+    """The failure this cutover could produce, stated as the thing itself.
+
+    The overlay stopped naming MODELS/ROUTING/ALERTS_CONFIG_PATH so the manifest
+    could win — resolve_config_path returns on the env branch before reading it,
+    so leaving them would have made active mode do nothing. But an upstream
+    *default* is an env value too, and while one pointed at config/examples/
+    this deployment would have resolved to the two reference models instead of
+    its own fourteen.
+
+    Settings is built here rather than read from the process, because the paths
+    are exactly what must be absent: an ambient value from another test in the
+    same xdist worker would make this assert the opposite of what it claims.
+    That is how it first passed on one file and failed in CI.
+    """
+    from serving.config import distribution
+    from serving.config.settings import Settings
+
+    # `_env_file=None` only silences the dotenv file; pydantic still reads the
+    # process environment, so a value left by another test in this xdist worker
+    # flows straight into the object built below. Every alias has to go, not
+    # just the obvious one: the fields accept MODELS_CONFIG and ROUTING_CONFIG
+    # as well, and those are the names the server fixtures actually set —
+    # deleting only the *_PATH spellings left this failing in CI while passing
+    # on the file alone.
+    for leaked in (
+        "MODELS_CONFIG_PATH",
+        "MODELS_CONFIG",
+        "ROUTING_CONFIG_PATH",
+        "ROUTING_CONFIG",
+        "ALERTS_CONFIG_PATH",
+    ):
+        monkeypatch.delenv(leaked, raising=False)
+
+    root = OVERLAY.parent
+    supplied = Settings(
+        _env_file=None,
+        distribution_config_path=str(root / "distribution.yaml"),
+        distribution_config_mode="active",
+    )
+    monkeypatch.setattr(distribution, "get_settings", lambda: supplied)
+    distribution.get_distribution_config.cache_clear()
+    try:
+        for kind in ("models", "routing", "alerts"):
+            resolved = distribution.resolve_config_path(kind)
+            assert resolved.source == "distribution", (
+                f"{kind} came from {resolved.source}, not the manifest — "
+                "an env value outranks it, including an upstream default"
+            )
+            assert resolved.path == (root / "config" / f"{kind}.yaml").resolve()
+    finally:
+        distribution.get_distribution_config.cache_clear()

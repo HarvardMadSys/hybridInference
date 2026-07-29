@@ -58,7 +58,7 @@ _SETTING_MODEL = "usage_insights_model"
 # Default analysis model. Must be a chat model this deployment actually serves
 # (see GET /v1/models) — an unserved id makes the upstream return "model not
 # found" and the analysis fails. Deployments set their own in
-# Admin -> Settings; this default matches the FreeInference catalog.
+# Admin -> Settings; a deployment whose catalogue differs overrides it there.
 _DEFAULT_MODEL = "glm-5.1"
 
 

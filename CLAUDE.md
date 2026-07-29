@@ -27,7 +27,7 @@ apps/
     routing/      # Routing engine: strategies, routers, health, circuit breaker
   frontend/       # Next.js web UI
 config/           # YAML config: models, routing, alerts
-services/         # status-monitor-worker, freeinference-harness
+services/         # Sidecar workers (present only where a deployment ships them)
 tests/
   unit/           # Fast, mocked. Default in CI.
   api/            # Per-provider API surface tests.
@@ -36,9 +36,10 @@ tests/
   external/       # Hits live servers. Marker: external.
 ops/              # Operational tooling (deploy, setup, runtime, admin, perf, db, cloudflare)
 deploy/           # Systemd units, Docker, observability manifests
-distributions/
-  freeinference/  # FreeInference distribution overlay: manifest + site content
-    content/docs/ # Public doc site source (Sphinx → doc.freeinference.org)
+distributions/      # Deployment overlays, one directory each. Absent from a
+                    # neutral checkout; see section 6.5.
+  <name>/           # manifest + site config, branding, content, docs
+    content/docs/   # that deployment's public doc-site source (Sphinx)
 docs/
   developer/      # Developer guide (built into the internal doc site)
   agents/         # Agent-facing artifacts: specs/ and plans/
@@ -176,3 +177,4 @@ not duplicate their content.
 | Address PR review / fix CI | [.kilo/skills/check-pr/SKILL.md](.kilo/skills/check-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
+| Run / operate the cloud agent sandbox | [docs/developer/agent-sandbox-operations.md](docs/developer/agent-sandbox-operations.md) |

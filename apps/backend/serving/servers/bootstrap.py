@@ -174,6 +174,15 @@ async def _reap_expired_agent_attempts(
                     "agent_attempts_reaped",
                     extra={"event": "agent_attempts_reaped", "count": len(actions)},
                 )
+            # A job the publisher took and never finished is invisible to the
+            # loop above: that scans running attempts, and this job's attempt
+            # finished before publishing began.
+            stalled = await store.reap_stalled_publishes()
+            if stalled:
+                logger.warning(
+                    "agent_publishes_stalled",
+                    extra={"event": "agent_publishes_stalled", "job_ids": stalled},
+                )
         except Exception:
             logger.warning("Agent attempt reaper pass failed", exc_info=True)
 
@@ -772,6 +781,7 @@ async def initialize() -> AppServices:
     log_store = None
     responses_store = None
     agent_job_store = None
+    agent_app_credentials = None
     agent_reaper_task = None
 
     if db_logger and db_logger.pool:
@@ -813,7 +823,19 @@ async def initialize() -> AppServices:
         # what keeps the sandbox credential-free. Without a configured token
         # the provider yields None and the loop idles, so a deployment that
         # has not set up GitHub simply never publishes.
+        from serving.agent_jobs.github_app import AppConfig, GitHubAppCredentials
         from serving.agent_jobs.publish_worker import GitHubCredential, publish_loop
+
+        # A GitHub App is the intended credential: the platform derives an
+        # hour-long, installation-scoped token from a private key, so nobody
+        # mints or rotates a long-lived token by hand. A static token stays
+        # supported for deployments that have not set the App up.
+        try:
+            app_config = AppConfig.from_env(dict(os.environ))
+            if app_config is not None:
+                agent_app_credentials = GitHubAppCredentials(app_config)
+        except Exception:
+            logger.warning("GitHub App config present but unusable", exc_info=True)
 
         github_token = os.getenv("AGENT_GITHUB_TOKEN", "")
         publish_base_branch = os.getenv("AGENT_PUBLISH_BASE_BRANCH", "dev")
@@ -827,6 +849,7 @@ async def initialize() -> AppServices:
             publish_loop(
                 agent_job_store,
                 credential_provider=_agent_github_credential,
+                app_credentials=agent_app_credentials,
                 base_branch=publish_base_branch,
             )
         )
@@ -834,7 +857,9 @@ async def initialize() -> AppServices:
         agent_publish_task.add_done_callback(_BACKGROUND_TASKS.discard)
         logger.info(
             "Agent job store initialized (Postgres); reaper started; publisher %s",
-            "started" if github_token else "idle (AGENT_GITHUB_TOKEN unset)",
+            "started (GitHub App)"
+            if agent_app_credentials
+            else ("started (static token)" if github_token else "idle (no GitHub credential)"),
         )
 
     for rw in routewise_routers:
@@ -1218,6 +1243,7 @@ async def initialize() -> AppServices:
         cost_tracker=cost_tracker,
         responses_store=responses_store,
         agent_job_store=agent_job_store,
+        agent_app_credentials=agent_app_credentials,
         agent_reaper_task=agent_reaper_task,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,

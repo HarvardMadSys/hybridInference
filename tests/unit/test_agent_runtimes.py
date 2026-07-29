@@ -120,9 +120,22 @@ def test_codex_prepare_and_config_target_the_gateway():
     )
     assert argv[:2] == ["codex", "exec"]
     assert env["CODEX_API_KEY"] == "ajt.a.b"
-    config = runtime.config_toml(model="glm-5.1", gateway_base_url="http://localhost:8000")
-    assert 'base_url = "http://localhost:8000/v1"' in config
-    assert 'wire_api = "chat"' in config
+
+    # The owner's model must actually reach the CLI. This used to ride
+    # `CODEX_MODEL`, which Codex does not read, so the choice was dropped
+    # silently and the run used whatever the CLI defaulted to.
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "glm-5.1"
+
+    joined = " ".join(argv)
+    assert 'base_url="http://localhost:8000/v1"' in joined
+    # Codex removed chat wire support upstream (openai/codex#7782); the gateway
+    # serves /v1/responses. `chat` here would fail every turn.
+    assert 'wire_api="responses"' in joined
+    # The operator's own Codex config must not reach a sandbox run.
+    assert "--ignore-user-config" in argv
+    # The prompt is the final operand, after every flag.
+    assert argv[-1] == "do it"
 
 
 def test_codex_events_normalize():

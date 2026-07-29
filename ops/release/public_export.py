@@ -15,6 +15,7 @@ Read-only: it prints, it never writes or pushes anything.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import re
 import shlex
 import subprocess
@@ -27,16 +28,41 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 MANIFEST = Path(__file__).resolve().parent / "public_export_manifest.yaml"
 
+# Every command here is a local git read that finishes in milliseconds; a
+# minute means something is wrong (a lock, a network filesystem stall) and
+# waiting forever turns a release check into a hung terminal.
+GIT_TIMEOUT_SEC = 60
+
+_PATCH_GATE = REPO / "apps" / "backend" / "serving" / "agent_jobs" / "patch_gate.py"
+
+
+def _shared_credential_patterns() -> dict[str, re.Pattern[str]]:
+    """Reuse the agent sandbox's credential shapes instead of restating them.
+
+    Two scanners with two hand-written lists drift, and the drift is invisible
+    until the one that matters misses something: this audit had no Slack token,
+    no agent-worker token, no PEM header, and required a longer key than a real
+    one has. Loading the module by path keeps this script standalone — it is
+    run as `python ops/release/public_export.py`, with no PYTHONPATH and no
+    installed package — and patch_gate.py imports nothing outside the standard
+    library, which is a condition a test pins.
+    """
+    spec = importlib.util.spec_from_file_location("_hi_patch_gate", _PATCH_GATE)
+    if spec is None or spec.loader is None:  # pragma: no cover - unreachable in-tree
+        raise SystemExit(f"cannot load credential patterns from {_PATCH_GATE}")
+    module = importlib.util.module_from_spec(spec)
+    # `@dataclass` resolves annotations through sys.modules[cls.__module__], so
+    # a module executed without being registered there raises on its first
+    # decorated class rather than importing.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return {f"credential ({name})": pattern for name, pattern in module.SECRET_PATTERNS}
+
+
 # The audit categories, kept in step with the tests that enforce each one:
 # tests/unit/test_no_committed_credentials.py and test_no_personal_data.py.
 AUDIT = {
-    "gateway API key": re.compile(r"hyi-[A-Za-z0-9]{32,}"),
-    "provider API key": re.compile(
-        r"sk-or-v1-[A-Za-z0-9]{32,}|sk-ant-[A-Za-z0-9\-_]{40,}|sk-(?:proj-)?[A-Za-z0-9]{40,}"
-    ),
-    "cloud credential": re.compile(
-        r"AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,}|AIza[0-9A-Za-z\-_]{35}"
-    ),
+    **_shared_credential_patterns(),
     "personal mailbox": re.compile(
         r"\b[A-Za-z0-9._%+-]+@(?:gmail|googlemail|outlook|hotmail|live|icloud|"
         r"me|yahoo|qq|163|126|foxmail)\.(?:com|me)\b",
@@ -44,8 +70,14 @@ AUDIT = {
     ),
     "internal hostname": re.compile(
         r"\b(?:internal|staging-internal)\.[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+        # The deployment's own machines, named directly. These are not
+        # fully-qualified, so the pattern above never saw them.
+        r"|\b(?:spark2|h200|holygpu\d*[a-z0-9]*)\b"
     ),
-    "cluster path": re.compile(r"/n/netscratch/[A-Za-z0-9_./-]+"),
+    # `/n/netscratch` is this cluster's absolute form, but the same paths get
+    # written relative to a mount point (`/netscratch/...`) or as a plain
+    # scratch directory, and those were travelling.
+    "cluster path": re.compile(r"(?:/n)?/(?:net)?scratch/[A-Za-z0-9_./-]+"),
     "cloudflare identifier": re.compile(r'(?:account_id|database_id)\s*=\s*"[0-9a-f-]{32,}"'),
 }
 
@@ -58,21 +90,49 @@ FIXTURES = {
     "hyi-" + "abcdefghijklmnopqrstuvwxyz0123456789",
     "AKIA" + "ABCDEFGHIJKLMNOP",
     "AKIA" + "IOSFODNN7EXAMPLE",  # AWS's own documented example key
+    # Placeholders and obviously-fake keys that the widened patterns now reach.
+    # Each says what it is in the value itself, which is the property that
+    # makes it safe to list here.
+    "xoxb-" + "replace-me",
+    "hyi-" + "anthropic-compat-test",
+    "hyi-" + "testkey01-FULL-SECRET-VALUE",
 }
 
-BINARY_SUFFIXES = (
-    ".png",
-    ".jpg",
-    ".jpeg",
-    ".gif",
-    ".svg",
-    ".ico",
-    ".woff",
-    ".woff2",
-    ".pdf",
-    ".mmdb",
-    ".lock",
+# Files whose subject *is* credential detection, and which therefore have to
+# carry samples of every shape to test anything. Naming the files is more
+# honest than listing each sample literal in FIXTURES and pretending they are
+# incidental; a test pins that this list stays short and that each entry really
+# is a scanner test.
+SCANNER_TEST_FILES = frozenset(
+    {
+        "tests/unit/test_agent_patch_gate.py",
+        "tests/unit/test_no_committed_credentials.py",
+    }
 )
+
+# How much of a file to look at before deciding it is not text. A NUL byte is
+# the standard signal, and every real binary here has one well inside this.
+_SNIFF_BYTES = 8192
+
+
+def _read_text(path: Path) -> str | None:
+    """Return the file's text, or None if it is genuinely binary.
+
+    This used to be a suffix list, which got two things wrong in the same
+    direction. `.svg` is XML — it holds hostnames, addresses and, in an
+    exported icon set, whatever the author pasted. `.lock` is the resolver's
+    output, and a private index or a URL with credentials in it lands there.
+    Both were skipped by name while being perfectly readable text.
+
+    Raises OSError, which the caller must treat as a failure rather than a
+    skip: a file the audit could not read is a file the audit did not clear.
+    """
+    with path.open("rb") as fh:
+        head = fh.read(_SNIFF_BYTES)
+        if b"\x00" in head:
+            return None
+        rest = fh.read()
+    return (head + rest).decode("utf-8", errors="replace")
 
 
 def load_manifest() -> tuple[list[dict], list[dict], list[dict]]:
@@ -84,11 +144,23 @@ def load_manifest() -> tuple[list[dict], list[dict], list[dict]]:
     )
 
 
+def _git(cmd: list[str], *, cwd: Path) -> subprocess.CompletedProcess[bytes]:
+    """Run a git command, and say which one failed when it does."""
+    try:
+        return subprocess.run(
+            cmd, cwd=cwd, capture_output=True, check=True, timeout=GIT_TIMEOUT_SEC
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"timed out after {GIT_TIMEOUT_SEC}s: {shlex.join(cmd)} (in {cwd})"
+        ) from None
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or b"").decode(errors="replace").strip()
+        raise SystemExit(f"{shlex.join(cmd)} failed in {cwd}: {detail}") from None
+
+
 def tracked_files() -> list[str]:
-    out = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=REPO, capture_output=True, check=True
-    ).stdout
-    return [n.decode() for n in out.split(b"\0") if n]
+    return [n.decode() for n in _git(["git", "ls-files", "-z"], cwd=REPO).stdout.split(b"\0") if n]
 
 
 def excluded(name: str, rules: list[dict]) -> str | None:
@@ -113,21 +185,33 @@ def materialize(names: list[str], overlay: list[dict], target: Path) -> None:
     for name in names:
         destination = target / name
         destination.parent.mkdir(parents=True, exist_ok=True)
+        # Never follow a link out of the tree. A tracked symlink pointing at
+        # something outside the repository would otherwise be published as a
+        # copy of whatever it aimed at.
         shutil.copy2(REPO / name, destination, follow_symlinks=False)
     for rule in overlay:
         source = REPO / rule["source"]
         if not source.exists():
-            continue
+            # Callers refuse to reach here; assert it rather than skipping,
+            # which is how a tree with no config/models.yaml got written and
+            # then reported as a successful export.
+            raise SystemExit(f"overlay source {rule['source']} is missing; refusing to write")
         destination = target / rule["path"]
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        shutil.copy2(source, destination, follow_symlinks=False)
 
     # The export becomes a git repository the moment it is pushed, and several
     # checks in the suite find their files through `git ls-files`. A tree
     # without one is not the artifact: those checks silently see nothing and
     # pass, or fail for a reason that would never occur in the result.
-    subprocess.run(["git", "init", "-q"], cwd=target, check=True)
-    subprocess.run(["git", "add", "-A"], cwd=target, check=True)
+    _git(["git", "init", "-q"], cwd=target)
+    _git(["git", "add", "-A"], cwd=target)
+
+    # Read back what was written. Everything above is a plan; this is the only
+    # statement about the artifact.
+    absent = [r["path"] for r in overlay if not (target / r["path"]).exists()]
+    if absent:
+        raise SystemExit("overlay replacements did not land: " + ", ".join(absent))
 
 
 def broken_docker_context(target: Path) -> list[tuple[str, str]]:
@@ -169,19 +253,29 @@ def broken_docker_context(target: Path) -> list[tuple[str, str]]:
 def audit(
     names: list[str], root: Path | None = None, overlay: list[dict] | None = None
 ) -> dict[str, list[str]]:
-    """Scan the exported files, and the replacements if the tree was built."""
+    """Scan the exported files, and the replacements if the tree was built.
+
+    Unreadable files are reported under their own category rather than skipped.
+    A permission error or a copy that did not land used to `continue`, and the
+    run still ended in "clean" — the one word this tool exists to be trusted
+    about. Whatever it could not read, it did not clear.
+    """
     base = root or REPO
     if root is not None:
         names = list(names) + [r["path"] for r in (overlay or []) if (base / r["path"]).exists()]
     findings: dict[str, list[str]] = defaultdict(list)
     for name in names:
-        if name.lower().endswith(BINARY_SUFFIXES):
-            continue
         try:
-            text = (base / name).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+            text = _read_text(base / name)
+        except OSError as exc:
+            findings["unreadable (audit could not clear it)"].append(f"{name}: {exc.strerror}")
             continue
+        if text is None:
+            continue
+        scanner_test = name in SCANNER_TEST_FILES
         for label, rx in AUDIT.items():
+            if scanner_test and label.startswith("credential ("):
+                continue
             for m in rx.finditer(text):
                 if m.group() in FIXTURES:
                     continue
@@ -236,15 +330,16 @@ def main() -> int:
         print(f"\n  added by the export: {len(overlay)}")
         for rule in overlay:
             print(f"      {rule['path']}  <- {rule['source']}")
+        # A `requires:` marker records which pull request brings the source. It
+        # is scheduling information, not permission to export without it: the
+        # tree that comes out has no file at that path, and used to come out
+        # with exit 0 and the word "clean".
         missing = [r for r in overlay if not (REPO / r["source"]).exists()]
-        pending = [r for r in missing if r.get("requires")]
-        broken = [r for r in missing if not r.get("requires")]
-        for r in pending:
-            print(f"      (waiting on {r['requires']} for {r['source']})")
-        if broken:
-            print("\nOverlay sources are missing — the export would add nothing:")
-            for r in broken:
-                print(f"  {r['source']}")
+        if missing:
+            print("\nOverlay sources are missing — the export would add nothing at:")
+            for r in missing:
+                waiting = f"  (expected from {r['requires']})" if r.get("requires") else ""
+                print(f"  {r['path']}  <- {r['source']}{waiting}")
             return 2
 
     if undecided:
@@ -254,11 +349,16 @@ def main() -> int:
         for rule in undecided:
             print(f"  {rule['path']}\n      {' '.join(rule['question'].split())}")
 
-    stale_requires = [r for r in overlay if r.get("requires") and (REPO / r["source"]).exists()]
+    # Every source exists by this point, so any surviving marker describes a
+    # state the repository has left. Left in, it is a note saying "not here
+    # yet" attached to a file that is — which is exactly the kind of stale
+    # bookkeeping that makes a manifest stop being read.
+    stale_requires = [r for r in overlay if r.get("requires")]
     if stale_requires:
         print("\nOverlay sources have arrived; drop their `requires` markers:")
         for r in stale_requires:
             print(f"  {r['path']}  (was waiting on {r['requires']})")
+        return 2
 
     if args.materialize:
         target = Path(args.materialize)

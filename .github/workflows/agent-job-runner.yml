@@ -46,6 +46,12 @@ permissions:
 
 jobs:
   run-agent-job:
+    # Cost and noise containment, not a secrets boundary: a fork never receives
+    # this repository's secrets or variables, so the scheduled run there would
+    # only install two CLIs and then fail preflight, every ten minutes, forever.
+    # The isolation control for the /proc property below is the container/kata
+    # backend, not this line.
+    if: github.repository == 'HarvardMadSys/hybridInference'
     runs-on: ubuntu-latest
     timeout-minutes: 55
 
@@ -66,11 +72,21 @@ jobs:
       - name: Install runner dependencies
         run: python -m pip install --quiet httpx
 
-      - name: Install the agent runtime
+      - name: Install the agent runtimes
+        env:
+          # Pinned to the same versions as deploy/docker/Dockerfile.agent-sandbox.
+          # `latest` here already cost a real job once: it resolved to a CLI whose
+          # request shape the gateway rejected, and every model call returned 400.
+          # A drift between the two substrates would mean a job behaves differently
+          # depending on which one happens to claim it.
+          CLAUDE_CODE_VERSION: "2.1.220"
+          CODEX_VERSION: "0.145.0"
         run: |
           set -euo pipefail
-          npm install -g @anthropic-ai/claude-code@latest
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          npm install -g "@openai/codex@${CODEX_VERSION}"
           claude --version
+          codex --version
 
       - name: Preflight (fail closed)
         env:
@@ -80,7 +96,8 @@ jobs:
           # A write-capable agent must never start on a half-configured runner.
           # Every one of these is a hard failure, not a warning.
           test -n "$BASE_URL" || { echo "::error::FREEINFERENCE_BASE_URL is not set"; exit 1; }
-          command -v claude >/dev/null || { echo "::error::agent runtime missing"; exit 1; }
+          command -v claude >/dev/null || { echo "::error::claude runtime missing"; exit 1; }
+          command -v codex >/dev/null || { echo "::error::codex runtime missing"; exit 1; }
           command -v git >/dev/null || { echo "::error::git missing"; exit 1; }
           if [ -f "$HOME/.git-credentials" ] || git config --get credential.helper >/dev/null 2>&1; then
             echo "::error::a git credential helper is configured; the sandbox must hold no git credential"
@@ -94,6 +111,16 @@ jobs:
           # the agent itself gets, and it never appears in this file.
           AGENT_DISPATCHER_TOKEN: ${{ secrets.AGENT_DISPATCHER_TOKEN }}
           FREEINFERENCE_BASE_URL: ${{ vars.FREEINFERENCE_BASE_URL }}
+          # This runner IS the sandbox: the agent runs as the same user as the
+          # runner, on a VM GitHub throws away afterwards. The backend refuses
+          # that arrangement unless it is acknowledged, and the acknowledgement
+          # is narrow — it is only defensible because this workflow is a
+          # single-tenant dogfood against our own repository. The agent here
+          # can read the dispatcher credential out of /proc, which on a
+          # multi-tenant deployment would let it dequeue other tenants' jobs.
+          # Anything multi-tenant uses the container/kata backend instead.
+          AGENT_SANDBOX_BACKEND: process
+          AGENT_SANDBOX_ALLOW_UNISOLATED: "1"
           # Untrusted-input rule: read the worker id from the environment
           # rather than interpolating ${{ }} into the shell.
           WORKER_ID_INPUT: ${{ github.event.inputs.worker_id }}
