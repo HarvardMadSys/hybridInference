@@ -129,7 +129,13 @@ async def authenticate_agent_model_call(
 
     return {
         "user_id": identity["user_id"],
-        "role": "free",
+        # The owner's role, so the sandbox can call exactly the models its
+        # owner can call directly — they are billed to the owner either way,
+        # and a narrower role here made the composer offer models whose first
+        # call then failed with 404 (staging: 15 listed, 2 resolvable). The
+        # blast radius of a leaked token is bounded by the budget, not by the
+        # model tier. Falls back to `free` for a store that cannot report it.
+        "role": identity.get("role") or "free",
         "authenticated": True,
         "is_admin": False,
         # Attribution: propagated into api_logs.agent_job_id, which is both the

@@ -155,13 +155,20 @@ first real job.
 
 ### 2. Credentials
 
-**Dispatcher credential** — the gate on `/v1/agent/worker/claim` is
-`verify_admin_access`, which already accepts the deployment's `ADMIN_TOKEN`.
-Nothing new needs minting; point the runner at that value.
+**Dispatcher credential** — set the same `AGENT_DISPATCHER_TOKEN` on the
+gateway and the runner; the claim gate accepts it directly.
 
 ```bash
-AGENT_DISPATCHER_TOKEN=$ADMIN_TOKEN
+# both sides — one value, one purpose
+AGENT_DISPATCHER_TOKEN=$(openssl rand -hex 32)
 ```
+
+Prefer this over pointing the runner at `ADMIN_TOKEN` (which the gate still
+accepts, for migration): the runner host executes untrusted repository code
+next door, and the credential it holds should open exactly one door. The
+dedicated token claims work and does nothing else — to every other route it is
+an invalid credential, and rotating it touches nothing but the two settings
+above.
 
 It must not be an ordinary user key: that endpoint takes the oldest queued job
 **across all tenants** and returns its repo, prompt, and a working capability
@@ -198,6 +205,23 @@ With neither, the publisher loop idles and says so — jobs still run and still
 produce patches, they just never become PRs.
 
 ## Running self-hosted
+
+The runner must be a **standing service**, not a process someone starts by
+hand: a queued job waits until something claims it, and "someone's laptop had
+the runner up that afternoon" is how the first real job actually ran. One
+command per host makes it standing — compose's `restart: unless-stopped` plus
+an enabled Docker daemon carries it across crashes and reboots:
+
+```bash
+ops/deploy/agent_runner.sh up 4      # build images, start 4 runners
+ops/deploy/agent_runner.sh status    # replicas + recent log tail
+ops/deploy/agent_runner.sh down      # stop them; the main stack is untouched
+```
+
+The script validates the required environment before starting and surfaces
+the runner's own preflight verdict (gateway reachable, image spawnable,
+workdir bind-mountable, egress network resolvable) instead of leaving it in a
+detached log. Equivalent by hand:
 
 ```bash
 docker build -f deploy/docker/Dockerfile.agent-sandbox \

@@ -4,12 +4,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  createAgentJob,
-  getAgentConfig,
-  listAgentModels,
-  listRepoBranches,
-} from '@/lib/api/agents';
+import { createAgentJob, getAgentConfig, listRepoBranches } from '@/lib/api/agents';
 import type { AgentConfigApi } from '@/lib/api/agents';
 
 import { TaskComposer } from './TaskComposer';
@@ -23,7 +18,6 @@ vi.mock('next/navigation', () => ({
 vi.mock('@/lib/api/agents', () => ({
   createAgentJob: vi.fn(),
   getAgentConfig: vi.fn(),
-  listAgentModels: vi.fn(),
   listRepoBranches: vi.fn(),
 }));
 
@@ -31,6 +25,7 @@ function config(overrides: Partial<AgentConfigApi> = {}): AgentConfigApi {
   return {
     repos: ['owner/repository'],
     runtimes: ['claude-code'],
+    models: ['model-a'],
     default_budget_usd: 2,
     setup_egress_tier: 'trusted',
     agent_egress_tier: 'platform_only',
@@ -45,9 +40,7 @@ describe('TaskComposer source-control onboarding', () => {
     navigation.push.mockReset();
     vi.mocked(createAgentJob).mockReset();
     vi.mocked(getAgentConfig).mockReset();
-    vi.mocked(listAgentModels).mockReset();
     vi.mocked(listRepoBranches).mockReset();
-    vi.mocked(listAgentModels).mockResolvedValue(['model-a']);
     vi.mocked(listRepoBranches).mockResolvedValue({ default: 'dev', branches: ['dev', 'main'] });
   });
 
