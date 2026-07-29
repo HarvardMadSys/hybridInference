@@ -36,6 +36,7 @@ from serving.servers.routewise_compat import (
     RouteWiseSettingsResolver,
     apply_routewise_settings_to_router,
 )
+from serving.storage.agent_job_store import AgentJobStore
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
@@ -45,7 +46,7 @@ from serving.utils import email_scheduler
 from serving.utils.logging import get_logger, setup_logging
 
 from .concurrency import UserConcurrencyLimiter
-from .deps import AppServices
+from .deps import AppServices, database_enabled
 from .registry import ModelRegistrationInfo, register_from_models_yaml
 from .routewise_rebuild import rebuild_cached_routewise_routers
 
@@ -149,6 +150,41 @@ def _collect_routewise_runtime_routers(
             managed_routers.append(routewise_router)
             managed_ids.add(router_id)
     return routewise_routers, model_ids_by_router
+
+
+async def _reap_expired_agent_attempts(
+    store: AgentJobStore,
+    *,
+    interval_seconds: float = 30.0,
+    max_attempts: int = 3,
+) -> None:
+    """Periodically close agent attempts whose lease expired.
+
+    This is what makes a vanished sandbox recoverable: the attempt is
+    superseded (append-only control event) and the job is requeued, failed, or
+    cancelled per the store's policy. The loop never dies on an error — a
+    transient database blip must not permanently stop reaping.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            actions = await store.reap_expired(max_attempts=max_attempts)
+            if actions:
+                logger.info(
+                    "agent_attempts_reaped",
+                    extra={"event": "agent_attempts_reaped", "count": len(actions)},
+                )
+            # A job the publisher took and never finished is invisible to the
+            # loop above: that scans running attempts, and this job's attempt
+            # finished before publishing began.
+            stalled = await store.reap_stalled_publishes()
+            if stalled:
+                logger.warning(
+                    "agent_publishes_stalled",
+                    extra={"event": "agent_publishes_stalled", "job_ids": stalled},
+                )
+        except Exception:
+            logger.warning("Agent attempt reaper pass failed", exc_info=True)
 
 
 async def _refresh_weight_override_snapshots(
@@ -402,8 +438,10 @@ def _init_db_logger() -> DatabaseLogger | None:
         Optional[DatabaseLogger]: A PostgreSQL logger instance or None when
         database logging is explicitly disabled.
     """
-    # Allow explicit opt-out via DB_ENABLED=false
-    if os.getenv("DB_ENABLED", "true").lower() in ("false", "0", "no"):
+    # Allow explicit opt-out via DB_ENABLED=false. The predicate lives in deps
+    # because the 503 an operator sees when auth has no store depends on the
+    # same answer, and two spellings of it would eventually disagree.
+    if not database_enabled():
         logger.info("Database logging disabled via DB_ENABLED=false")
         return None
 
@@ -470,6 +508,19 @@ async def _init_router_and_models(
                     f"Registered {len(embedding_adapters)} embedding adapter(s): "
                     f"{list(embedding_adapters.keys())}"
                 )
+        else:
+            # Default path, nothing there. Previously silent, and silence is the
+            # worst answer here: /v1/models returns an empty list, every request
+            # 404s, and the log says nothing at all. The registry is a
+            # deployment's own file — upstream ships none — so this is what a
+            # fresh checkout hits on its first run.
+            logger.error(
+                "No model registry at %s, so no models are available: "
+                "/v1/models will be empty and every request will report the "
+                "model as not found. Point MODELS_CONFIG_PATH at your registry, "
+                "or copy one of the files in config/examples/ to that path.",
+                models_path,
+            )
     except Exception as exc:
         logger.warning(f"Failed to load models.yaml: {exc}")
 
@@ -729,6 +780,9 @@ async def initialize() -> AppServices:
     operational_store = None
     log_store = None
     responses_store = None
+    agent_job_store = None
+    agent_app_credentials = None
+    agent_reaper_task = None
 
     if db_logger and db_logger.pool:
         pg_operational = PostgresOperationalStore(db_logger.pool)
@@ -753,6 +807,59 @@ async def initialize() -> AppServices:
         logger.info(
             "Responses store initialized (Postgres; persist_enabled=%s)",
             settings.db_store_full_content,
+        )
+        # Agent-sandbox jobs (issue #1041). Unlike the Responses store this is
+        # not gated on the prompt-logging privacy switch: a job's task prompt
+        # and event log *are* the product surface the user reads back, not
+        # incidental request logging.
+        agent_job_store = AgentJobStore(db_logger.pool)
+        await agent_job_store.initialize()
+        agent_reaper_task = asyncio.create_task(_reap_expired_agent_attempts(agent_job_store))
+        _BACKGROUND_TASKS.add(agent_reaper_task)
+        agent_reaper_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+        # The publish step runs here, in the trusted server, because it is the
+        # only component that holds a GitHub credential — that is precisely
+        # what keeps the sandbox credential-free. Without a configured token
+        # the provider yields None and the loop idles, so a deployment that
+        # has not set up GitHub simply never publishes.
+        from serving.agent_jobs.github_app import AppConfig, GitHubAppCredentials
+        from serving.agent_jobs.publish_worker import GitHubCredential, publish_loop
+
+        # A GitHub App is the intended credential: the platform derives an
+        # hour-long, installation-scoped token from a private key, so nobody
+        # mints or rotates a long-lived token by hand. A static token stays
+        # supported for deployments that have not set the App up.
+        try:
+            app_config = AppConfig.from_env(dict(os.environ))
+            if app_config is not None:
+                agent_app_credentials = GitHubAppCredentials(app_config)
+        except Exception:
+            logger.warning("GitHub App config present but unusable", exc_info=True)
+
+        github_token = os.getenv("AGENT_GITHUB_TOKEN", "")
+        publish_base_branch = os.getenv("AGENT_PUBLISH_BASE_BRANCH", "dev")
+
+        def _agent_github_credential() -> GitHubCredential | None:
+            """Mint the credential used for one publish, or None if unconfigured."""
+            token = os.getenv("AGENT_GITHUB_TOKEN", github_token)
+            return GitHubCredential(token) if token else None
+
+        agent_publish_task = asyncio.create_task(
+            publish_loop(
+                agent_job_store,
+                credential_provider=_agent_github_credential,
+                app_credentials=agent_app_credentials,
+                base_branch=publish_base_branch,
+            )
+        )
+        _BACKGROUND_TASKS.add(agent_publish_task)
+        agent_publish_task.add_done_callback(_BACKGROUND_TASKS.discard)
+        logger.info(
+            "Agent job store initialized (Postgres); reaper started; publisher %s",
+            "started (GitHub App)"
+            if agent_app_credentials
+            else ("started (static token)" if github_token else "idle (no GitHub credential)"),
         )
 
     for rw in routewise_routers:
@@ -1135,6 +1242,9 @@ async def initialize() -> AppServices:
         pricing_lookup=pricing_lookup,
         cost_tracker=cost_tracker,
         responses_store=responses_store,
+        agent_job_store=agent_job_store,
+        agent_app_credentials=agent_app_credentials,
+        agent_reaper_task=agent_reaper_task,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,
         disabled_provider_refresh_task=disabled_provider_refresh_task,
@@ -1151,6 +1261,12 @@ async def shutdown(services: AppServices) -> None:
         services.routewise_settings_refresh_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await services.routewise_settings_refresh_task
+
+    # Agent attempt reaper: stop before the stores it writes to are torn down.
+    if getattr(services, "agent_reaper_task", None) is not None:
+        services.agent_reaper_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await services.agent_reaper_task
 
     # Alert engine — stop drain task and remove scheduled jobs first so they
     # don't fire while we're tearing down stores below.

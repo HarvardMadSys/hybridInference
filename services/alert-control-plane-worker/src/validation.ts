@@ -2,9 +2,17 @@ import type {
   AlertEvent,
   AlertSeverity,
   AlertStatus,
+  BreachedMetric,
+  BreachScope,
   CanonicalAlertEnvelope,
+  DependencyFailureReason,
+  DependencyUnavailableContext,
+  MetricThresholdContext,
   ModelUnavailableContext,
   ModelUnavailabilityReason,
+  UnavailableDependency,
+  MonitoringCycleContext,
+  MonitoringCycleReason,
   ProviderCircuitContext,
   ProviderFailureReason,
   TrustedAlertMetadata,
@@ -72,6 +80,33 @@ const MODEL_UNAVAILABLE_CONTEXT_KEYS = new Set([
   "latency_ms",
   "reason",
 ]);
+
+const MONITORING_CYCLE_CONTEXT_KEYS = new Set(["reason"]);
+
+const METRIC_THRESHOLD_CONTEXT_KEYS = new Set([
+  "metric",
+  "observed",
+  "threshold",
+  "window_sec",
+  "scope",
+  "subject",
+  "source_addresses",
+  "distinct_sources",
+  "top_source_share",
+  "sample_count",
+]);
+
+const MAX_SOURCE_ADDRESSES = 5;
+/**
+ * Metrics for which listing addresses is meaningful and blocking them is the
+ * response. The typed-IP field is an exception to the no-network-identifier
+ * rule, so it is scoped rather than available to every metric.
+ */
+const ADDRESS_BEARING_METRICS: ReadonlySet<string> = new Set(["auth_failure_count"]);
+const IPV4_STRICT_RE = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+const DEPENDENCY_CONTEXT_KEYS = new Set(["dependency", "backend", "reason"]);
+const DEPENDENCY_BACKEND_RE = /^[a-z][a-z0-9_-]{0,63}$/;
 
 const UNSAFE_CONTROL_RE =
   /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/u;
@@ -322,6 +357,175 @@ function parseModelUnavailableContext(value: unknown): ModelUnavailableContext {
   return context;
 }
 
+function parseMonitoringCycleContext(value: unknown): MonitoringCycleContext {
+  const input = record(value, "context");
+  strictKeys(input, MONITORING_CYCLE_CONTEXT_KEYS, "context");
+
+  const reason = optional(input, "reason", (item) =>
+    enumValue<MonitoringCycleReason>(item, "context.reason", [
+      "account_rejected",
+      "discovery_failed",
+      "not_configured",
+      "unknown",
+    ]),
+  );
+  return reason === undefined ? {} : { reason };
+}
+
+/**
+ * Parse one address that on-call is expected to act on (block, rate-limit).
+ *
+ * This is the deliberate exception to the "no network identifiers" rule that
+ * {@link untrustedString} enforces, and it is safe precisely because it is not
+ * a free-text field: a value that is not literally an IP address is rejected,
+ * so nothing else can ride along. IPv6 is normalized through URL parsing so a
+ * zone id, port, or bracket form cannot slip through as an opaque string.
+ */
+function sourceAddress(value: unknown, index: number): string {
+  const field = `context.source_addresses[${index}]`;
+  const raw = stringValue(value, field, 45);
+  if (IPV4_STRICT_RE.test(raw)) return raw;
+  try {
+    const hostname = new URL(`http://[${raw}]/`).hostname;
+    // URL keeps IPv6 bracketed; anything else came back changed or empty.
+    if (hostname.startsWith("[") && hostname.endsWith("]")) {
+      return hostname.slice(1, -1);
+    }
+  } catch {
+    // Fall through to the shared rejection below.
+  }
+  throw new ValidationError(`${field} must be an IP address`);
+}
+
+function sourceAddresses(value: unknown): readonly string[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError("context.source_addresses must be an array");
+  }
+  if (value.length === 0 || value.length > MAX_SOURCE_ADDRESSES) {
+    throw new ValidationError(
+      `context.source_addresses must contain 1 to ${MAX_SOURCE_ADDRESSES} addresses`,
+    );
+  }
+  const addresses = value.map(sourceAddress);
+  if (new Set(addresses).size !== addresses.length) {
+    throw new ValidationError("context.source_addresses must not contain duplicates");
+  }
+  return addresses;
+}
+
+function parseMetricThresholdContext(value: unknown): MetricThresholdContext {
+  const input = record(value, "context");
+  strictKeys(input, METRIC_THRESHOLD_CONTEXT_KEYS, "context");
+
+  // Every field is numeric or a closed enum by design: this type replaces
+  // backend alerts that used to embed source IPs, key prefixes, user ids, and
+  // pre-formatted rate strings. There is deliberately no free-text field for
+  // them to move into.
+  const context: {
+    metric: BreachedMetric;
+    observed: number;
+    threshold: number;
+    window_sec?: number;
+    scope?: BreachScope;
+    subject?: string;
+    source_addresses?: readonly string[];
+    distinct_sources?: number;
+    top_source_share?: number;
+    sample_count?: number;
+  } = {
+    metric: enumValue<BreachedMetric>(input.metric, "context.metric", [
+      "auth_failure_count",
+      "failed_request_rate",
+      "http_5xx_rate",
+      "latency_p95_ms",
+      "prefix_cache_pending_evictions",
+      "provider_hourly_spend",
+      "tracked_task_failure_rate",
+      "user_daily_cost",
+    ]),
+    observed: boundedNumber(input.observed, "context.observed", 0, 1e12),
+    threshold: boundedNumber(input.threshold, "context.threshold", 0, 1e12),
+  };
+  context.window_sec = optional(input, "window_sec", (item) =>
+    boundedInteger(item, "context.window_sec", 1, 31 * 24 * 60 * 60),
+  );
+  context.scope = optional(input, "scope", (item) =>
+    enumValue<BreachScope>(item, "context.scope", [
+      "gateway",
+      "provider",
+      "task",
+      "user",
+    ]),
+  );
+  // A bounded identifier, not free text: the provider/task/user on-call acts on.
+  context.subject = optional(input, "subject", (item) =>
+    stringValue(item, "context.subject", 128, IDENTIFIER_RE),
+  );
+  context.source_addresses = optional(input, "source_addresses", sourceAddresses);
+  context.distinct_sources = optional(input, "distinct_sources", (item) =>
+    boundedInteger(item, "context.distinct_sources", 0, 1_000_000_000),
+  );
+  context.top_source_share = optional(input, "top_source_share", (item) =>
+    boundedNumber(item, "context.top_source_share", 0, 1),
+  );
+  context.sample_count = optional(input, "sample_count", (item) =>
+    boundedInteger(item, "context.sample_count", 0, 1_000_000_000),
+  );
+
+  if (
+    context.source_addresses !== undefined &&
+    !ADDRESS_BEARING_METRICS.has(context.metric)
+  ) {
+    throw new ValidationError(
+      `context.source_addresses is not allowed for metric ${context.metric}`,
+    );
+  }
+
+  for (const key of Object.keys(context) as Array<keyof typeof context>) {
+    if (context[key] === undefined) delete context[key];
+  }
+  return context;
+}
+
+function parseDependencyUnavailableContext(
+  value: unknown,
+): DependencyUnavailableContext {
+  const input = record(value, "context");
+  strictKeys(input, DEPENDENCY_CONTEXT_KEYS, "context");
+
+  const context: {
+    dependency: UnavailableDependency;
+    backend?: string;
+    reason?: DependencyFailureReason;
+  } = {
+    dependency: enumValue<UnavailableDependency>(
+      input.dependency,
+      "context.dependency",
+      ["log_store", "operational_store"],
+    ),
+  };
+  // A bare implementation label only. untrustedString is not enough here: a
+  // credential-free DSN like "postgres://localhost/app" passes all of its
+  // checks, so the shape itself is constrained to a lowercase name.
+  context.backend = optional(input, "backend", (item) =>
+    stringValue(item, "context.backend", 64, DEPENDENCY_BACKEND_RE),
+  );
+  // Replaces the backend's free-text `error`, which is where a DSN or host
+  // would otherwise reach Slack, while keeping the triage signal.
+  context.reason = optional(input, "reason", (item) =>
+    enumValue<DependencyFailureReason>(item, "context.reason", [
+      "authentication",
+      "connection_refused",
+      "health_check_failed",
+      "timeout",
+      "unknown",
+    ]),
+  );
+  if (context.backend === undefined) delete context.backend;
+  if (context.reason === undefined) delete context.reason;
+  return context;
+}
+
 function validateCalendarTimestamp(match: RegExpMatchArray): void {
   const year = Number(match[1]);
   const month = Number(match[2]);
@@ -431,7 +635,13 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
   if (input.schema_version !== 1) {
     throw new ValidationError("schema_version must be 1");
   }
-  if (input.alert_type !== "provider_circuit_open" && input.alert_type !== "model_unavailable") {
+  if (
+    input.alert_type !== "provider_circuit_open" &&
+    input.alert_type !== "model_unavailable" &&
+    input.alert_type !== "monitoring_cycle_failure" &&
+    input.alert_type !== "metric_threshold_breach" &&
+    input.alert_type !== "dependency_unavailable"
+  ) {
     throw new ValidationError("alert_type is unsupported");
   }
 
@@ -477,6 +687,47 @@ export function parseAlertEvent(value: unknown, options: ParseAlertOptions = {})
       ...base,
       alert_type: "model_unavailable",
       context,
+    };
+  }
+  if (input.alert_type === "monitoring_cycle_failure") {
+    const context = parseMonitoringCycleContext(input.context);
+    if (base.status === "firing" && context.reason === undefined) {
+      throw new ValidationError(
+        "firing monitoring_cycle_failure context requires reason",
+      );
+    }
+    if (base.status === "resolved" && context.reason !== undefined) {
+      throw new ValidationError(
+        "resolved monitoring_cycle_failure context must not contain firing-only fields",
+      );
+    }
+    return {
+      ...base,
+      alert_type: "monitoring_cycle_failure",
+      context,
+    };
+  }
+  if (input.alert_type === "metric_threshold_breach") {
+    const context = parseMetricThresholdContext(input.context);
+    // Every metric in this type breaches upward, so a firing event whose
+    // observed value sits under its own threshold is incoherent — it would
+    // open an incident whose Slack card argues against itself.
+    if (base.status === "firing" && context.observed < context.threshold) {
+      throw new ValidationError(
+        "firing metric_threshold_breach requires observed to be at or above threshold",
+      );
+    }
+    return {
+      ...base,
+      alert_type: "metric_threshold_breach",
+      context,
+    };
+  }
+  if (input.alert_type === "dependency_unavailable") {
+    return {
+      ...base,
+      alert_type: "dependency_unavailable",
+      context: parseDependencyUnavailableContext(input.context),
     };
   }
   return {

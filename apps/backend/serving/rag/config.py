@@ -19,8 +19,8 @@ def _repo_root_for(path: Path) -> Path:
     repo root is ``parents[4]``. Inside the Docker image the tree is flattened to
     ``/app/serving/rag/config.py`` (only 4 parents), where ``parents[4]`` raises
     ``IndexError`` and crashes the whole app at import. Fall back to the package
-    dir there: serving never reads the corpus default — it uses the
-    package-relative prebuilt index below — so the fallback never affects
+    dir there: in the container the index default resolves via the app root
+    instead (see :func:`_default_index_path`), so the fallback never affects
     requests, and the offline ingest CLI always runs from the repo tree.
     """
     parents = path.parents
@@ -29,12 +29,62 @@ def _repo_root_for(path: Path) -> Path:
 
 _REPO_ROOT = _repo_root_for(Path(__file__).resolve())
 
-DEFAULT_CORPUS_DIR = (
-    _REPO_ROOT / "distributions" / "freeinference" / "content" / "docs" / "docs" / "source"
-)
-# Package-relative so the prebuilt index ships inside the Docker image (which
-# COPYs apps/backend/serving/) and resolves identically in dev and container.
-DEFAULT_INDEX_PATH = Path(__file__).resolve().parent / "prebuilt" / "docs_index.json"
+# The corpus and its prebuilt index are distribution content, so upstream must
+# not name a distribution to find them — a clone of this repository ships
+# neither, and hardcoding one deployment's directory here would be the same
+# leak the site identity exists to prevent.
+_INDEX_WITHIN_DISTRIBUTION = Path("content") / "rag" / "docs_index.json"
+_CORPUS_WITHIN_DISTRIBUTION = Path("content") / "docs" / "docs" / "source"
+
+
+def _distribution_root() -> Path | None:
+    """Locate the one distribution overlay this deployment runs, if any.
+
+    Two roots are possible. In a repository checkout the overlays sit at the
+    repo root. In the Docker image the code tree is flattened to ``/app`` and
+    ``distributions/`` is bind-mounted beside it
+    (deploy/docker/docker-compose.yml), so the app root is the base there.
+
+    A deployment that has declared its manifest through
+    ``DISTRIBUTION_CONFIG_PATH`` has already named its overlay, so that wins.
+    Otherwise a single overlay in the tree is unambiguous and is used; zero
+    (a plain clone) or several (nothing says which) resolve to nothing, and
+    both ``RAG_CORPUS_DIR`` and ``RAG_INDEX_PATH`` still override outright.
+    """
+    manifest = os.getenv("DISTRIBUTION_CONFIG_PATH", "").strip()
+    if manifest:
+        return Path(manifest).resolve().parent
+
+    app_root = Path(__file__).resolve().parents[2]
+    for base in (_REPO_ROOT, app_root):
+        candidates = sorted(p for p in (base / "distributions").glob("*") if p.is_dir())
+        if len(candidates) == 1:
+            return candidates[0]
+    return None
+
+
+def _default_index_path() -> Path:
+    """Resolve the overlay's prebuilt index, or a path that will not exist.
+
+    A missing index is not fatal: ``/v1/rag/chat`` degrades to 503 until one is
+    supplied, which is the correct state for a deployment that ships no docs.
+    """
+    root = _distribution_root()
+    if root is None:
+        return _REPO_ROOT / "distributions" / _INDEX_WITHIN_DISTRIBUTION
+    return root / _INDEX_WITHIN_DISTRIBUTION
+
+
+def _default_corpus_dir() -> Path:
+    """Resolve the overlay's documentation source, read only by offline ingest."""
+    root = _distribution_root()
+    if root is None:
+        return _REPO_ROOT / "distributions" / _CORPUS_WITHIN_DISTRIBUTION
+    return root / _CORPUS_WITHIN_DISTRIBUTION
+
+
+DEFAULT_CORPUS_DIR = _default_corpus_dir()
+DEFAULT_INDEX_PATH = _default_index_path()
 
 # Valid embedder modes. "gateway" routes through the OpenAI-compatible gateway;
 # "hash" is a deterministic offline fallback for dev/CI (poor retrieval quality).
@@ -100,6 +150,8 @@ def load_rag_settings() -> RagSettings:
         temperature=_float_env("RAG_TEMPERATURE", 0.3),
         api_base_url=os.getenv("RAG_API_BASE_URL", "http://localhost:8080/v1"),
         api_key=os.getenv("RAG_API_KEY", ""),
-        gateway_base_url=os.getenv("RAG_GATEWAY_BASE_URL", "https://freeinference.org/v1"),
+        # The ingest CLI embeds through a gateway; defaulting to a specific
+        # deployment would send another operator's corpus to it.
+        gateway_base_url=os.getenv("RAG_GATEWAY_BASE_URL", "http://localhost:8080/v1"),
         gateway_api_key=os.getenv("RAG_GATEWAY_API_KEY", os.getenv("LOCAL_API_KEY", "")),
     )

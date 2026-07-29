@@ -16,10 +16,10 @@ changes and for periodic backups in production.
 ./ops/db/backup.sh --compress
 
 # Backup and upload to S3 (auto-enables compression)
-./ops/db/backup.sh --s3-bucket s3://freeinference/backup
+./ops/db/backup.sh --s3-bucket s3://your-bucket/hybridinference/backup
 
 # Upload to S3 and remove local copy afterwards
-./ops/db/backup.sh --s3-bucket s3://freeinference/backup --s3-only
+./ops/db/backup.sh --s3-bucket s3://your-bucket/hybridinference/backup --s3-only
 ```
 
 ### Restore the database
@@ -49,7 +49,7 @@ those rows from the database.
 ./ops/db/archive-old-logs.sh --dry-run
 
 # Archive to S3, verify, then delete (recommended)
-./ops/db/archive-old-logs.sh --s3-archive s3://harvardsys-backup/freeinference/archive/api_logs
+./ops/db/archive-old-logs.sh --s3-archive s3://your-bucket/hybridinference/archive/api_logs
 
 # Keep the archive on local disk only (no S3), then delete
 ./ops/db/archive-old-logs.sh --local-only
@@ -58,11 +58,15 @@ those rows from the database.
 ./ops/db/archive-old-logs.sh --retention-days 90 --s3-archive s3://bucket/prefix
 ```
 
-Install the monthly cron job (1st of each month, 05:00 UTC, after the nightly backup):
+Schedule it monthly, after the nightly backup. Write the entry for the user
+that owns your AWS credentials and your checkout:
 
-```bash
-sudo cp ops/db/archive-old-logs-cron /etc/cron.d/freeinference-archive-logs
-sudo chmod 644 /etc/cron.d/freeinference-archive-logs
+```cron
+# /etc/cron.d/hybridinference-archive-logs
+SHELL=/bin/bash
+HOME=/home/<user>
+0 5 1 * * <user> /path/to/hybridInference/ops/db/archive-old-logs.sh \
+    --retention-days 180 --s3-archive s3://your-bucket/hybridinference/archive/api_logs >> ~/archive-logs.log 2>&1
 ```
 
 > ⚠️ `api_logs` contains user prompts/responses (**PII**). The `--s3-archive`
@@ -90,17 +94,21 @@ sudo chmod 644 /etc/cron.d/freeinference-archive-logs
 
 ### Case 2: Scheduled backups (daily to S3)
 
-```bash
-# Install the cron job (runs daily at 04:00 UTC as the freeinference user)
-sudo cp ops/db/backup-cron /etc/cron.d/freeinference-backup
-sudo chmod 644 /etc/cron.d/freeinference-backup
+```cron
+# /etc/cron.d/hybridinference-backup — daily at 04:00 UTC
+SHELL=/bin/bash
+HOME=/home/<user>
+0 4 * * * <user> /path/to/hybridInference/ops/db/backup.sh \
+    --compress --s3-bucket s3://your-bucket/hybridinference/backup --s3-only >> ~/backup.log 2>&1
+```
 
-# Prerequisites:
-#   sudo usermod -aG docker freeinference   # docker access for pg_dump
-#   AWS credentials in /home/freeinference/.aws/credentials
+```bash
+# Prerequisites for <user>:
+#   sudo usermod -aG docker <user>          # docker access for pg_dump
+#   AWS credentials in ~<user>/.aws/credentials
 
 # Retention: 3 daily + 2 weekly + 1 monthly (GFS rotation)
-# Logs:      /home/freeinference/backup.log
+# Logs:      wherever the cron entry above redirects them
 ```
 
 ## What gets backed up
@@ -139,7 +147,7 @@ Each backup directory contains:
 ```text
 --backup-dir PATH     Custom backup root directory (default: ./backups)
 --compress            Compress PostgreSQL dumps with gzip
---s3-bucket URI       Upload backup to S3 (e.g. s3://freeinference/backup)
+--s3-bucket URI       Upload backup to S3 (e.g. s3://your-bucket/hybridinference/backup)
 --s3-only             Upload to S3 and remove local backup after success
 --keep-daily N        Keep N most recent daily backups (default: 3)
 --keep-weekly N       Keep N most recent weekly backups (default: 2)

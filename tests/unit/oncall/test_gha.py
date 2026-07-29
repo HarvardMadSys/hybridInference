@@ -21,7 +21,7 @@ def _payload_file(tmp_path):
         "slack_channel_id": "C123",
         "slack_thread_ts": "171.1",
         "model": "glm-5.2",
-        "base_url": "https://freeinference.org/v1",
+        "base_url": "https://gateway.example.com/v1",
     }
     path = tmp_path / "payload.json"
     path.write_text(json.dumps(payload), encoding="utf-8")

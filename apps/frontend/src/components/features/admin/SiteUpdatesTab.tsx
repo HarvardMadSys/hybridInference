@@ -188,7 +188,7 @@ export function SiteUpdatesTab() {
             </label>
             <input
               className="w-full rounded-md border border-gray-200 px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-gray-900"
-              placeholder="https://doc.freeinference.org/..."
+              placeholder="https://docs.example.com/..."
               value={form.link_url ?? ''}
               onChange={(e) => setForm((f) => ({ ...f, link_url: e.target.value || null }))}
             />

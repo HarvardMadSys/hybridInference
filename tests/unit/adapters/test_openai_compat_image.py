@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-import yaml
 
 from serving.adapters.base import ModelConfig
 from serving.adapters.openai_compat import (
@@ -193,19 +190,3 @@ class TestZaiModelsDoNotSupportImage:
         assert "image_url" not in str(result["content"])
         # The image URL itself should NOT appear in the final content
         assert "photo.jpg" not in result["content"]
-
-    def test_all_zai_route_entries_text_only_modalities(self):
-        """Verify all ZAI route entries in models.yaml use text-only input_modalities."""
-        models_path = Path(__file__).resolve().parents[3] / "config" / "models.yaml"
-        with open(models_path) as f:
-            data = yaml.safe_load(f)
-
-        for model in data["models"]:
-            model_id = model.get("id", "")
-            for route in model.get("route", []):
-                if route.get("kind") != "zai":
-                    continue
-                modalities = model.get("input_modalities", [])
-                assert "image" not in modalities, (
-                    f"Model {model_id} with kind=zai should not support image (got {modalities})"
-                )

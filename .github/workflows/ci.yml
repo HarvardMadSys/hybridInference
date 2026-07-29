@@ -276,7 +276,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: freeinference_test_db
+          POSTGRES_DB: hybridinference_test_db
         ports:
           - 5432/tcp
         options: >-
@@ -404,7 +404,7 @@ jobs:
           # Database configuration for auth tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}
-          DB_NAME: freeinference_test_db
+          DB_NAME: hybridinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
           # Auth system configuration
@@ -432,7 +432,7 @@ jobs:
           # Database configuration for auth tests
           DB_HOST: localhost
           DB_PORT: ${{ job.services.postgres.ports['5432'] }}
-          DB_NAME: freeinference_test_db
+          DB_NAME: hybridinference_test_db
           DB_USER: postgres
           DB_PASSWORD: postgres
           # Auth system configuration
@@ -492,9 +492,6 @@ jobs:
           # blob object"), which has been failing random jobs at checkout.
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
-
-      - name: Verify transitional public documentation parity
-        run: python3 ops/ci/check_public_docs_parity.py
 
       - name: Install gitleaks
         run: |

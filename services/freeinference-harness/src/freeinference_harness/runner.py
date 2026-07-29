@@ -8,6 +8,13 @@ from typing import Any
 
 import httpx
 
+from freeinference_harness.agent_loop import (
+    run_agent_loop_anthropic,
+    run_agent_loop_cancel,
+    run_agent_loop_openai,
+    run_anthropic_count_tokens,
+    run_anthropic_poisoned_history,
+)
 from freeinference_harness.clients.openai_compat import OpenAICompatClient
 from freeinference_harness.config import load_tools_fixture
 from freeinference_harness.models import (
@@ -17,6 +24,10 @@ from freeinference_harness.models import (
     ScenarioSummary,
     SuiteConfig,
     TargetConfig,
+)
+from freeinference_harness.runtime_drivers import (
+    run_runtime_claude_smoke,
+    run_runtime_codex_smoke,
 )
 from freeinference_harness.tool_validation import validate_tool_calls
 
@@ -159,6 +170,20 @@ class HarnessRunner:
                 result = self._run_multi_turn_tool(client, target, scenario)
             elif scenario.scenario_type == "embedding_basic":
                 result = self._run_embedding_basic(client, target)
+            elif scenario.scenario_type == "agent_loop_openai":
+                result = run_agent_loop_openai(client, target, scenario)
+            elif scenario.scenario_type == "agent_loop_anthropic":
+                result = run_agent_loop_anthropic(target, scenario)
+            elif scenario.scenario_type == "anthropic_poisoned_history":
+                result = run_anthropic_poisoned_history(target, scenario)
+            elif scenario.scenario_type == "anthropic_count_tokens":
+                result = run_anthropic_count_tokens(target, scenario)
+            elif scenario.scenario_type == "agent_loop_cancel":
+                result = run_agent_loop_cancel(target, scenario)
+            elif scenario.scenario_type == "runtime_claude_smoke":
+                result = run_runtime_claude_smoke(target, scenario)
+            elif scenario.scenario_type == "runtime_codex_smoke":
+                result = run_runtime_codex_smoke(target, scenario)
             else:
                 return self._attempt(
                     target=target,

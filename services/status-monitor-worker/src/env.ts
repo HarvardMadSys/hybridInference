@@ -29,6 +29,13 @@ export interface Env {
   // New individual model incidents use this writer. Existing incidents remain
   // pinned to the writer that opened them until their recovery is confirmed.
   ALERT_DEFAULT_OWNER?: string;
+  // Writer for NEW cycle-level (gateway-down) incidents. Deliberately separate
+  // from ALERT_DEFAULT_OWNER: the deployed control plane must accept
+  // `monitoring_cycle_failure` before this flips, and status-monitor
+  // auto-deploys from dev while the control plane deploys manually — a shared
+  // flag would open a window where cycle events are emitted and rejected.
+  // Unset means legacy.
+  ALERT_CYCLE_OWNER?: string;
 }
 
 /** Normalized configuration derived from {@link Env}. */

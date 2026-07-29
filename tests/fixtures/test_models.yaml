@@ -75,4 +75,4 @@ models:
       - kind: vllm
         weight: 1.0
         base_url: http://localhost:8001/v1
-        provider_model_id: "/n/netscratch/juncheng_lab/yiyuliu/llm_models/Test-Model"
+        provider_model_id: "/srv/models/Test-Model"

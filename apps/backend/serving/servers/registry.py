@@ -283,6 +283,12 @@ def register_from_models_yaml(
     models: list[dict[str, Any]] = data.get("models", [])
     count = 0
     model_infos: list[ModelRegistrationInfo] = []
+    # A model whose credential is unset is skipped, one warning per model, deep
+    # in the log. Someone following the quickstart sees only an empty
+    # /v1/models and then "Model not found", which sends them looking for a
+    # typo. Collect what was dropped and say so once, plainly, at the end.
+    skipped_for_missing_env: list[str] = []
+    unset_env_vars: set[str] = set()
     for m in models:
         try:
             # Environment expansion for base_url/api_key in both top-level and route entries
@@ -292,8 +298,14 @@ def register_from_models_yaml(
                 return val
 
             # Build primary config
+            # Only carry keys the YAML actually sets: `m.get(k)` would inject
+            # None for absent optional fields, and that None overwrites the
+            # ModelConfig dataclass default downstream (an omitted
+            # `quantization` became None and made GET /v1/models fail schema
+            # validation with a 500). Presence-based copying keeps an explicit
+            # `key: null` meaningful while letting defaults apply otherwise.
             top_cfg = {
-                k: m.get(k)
+                k: m[k]
                 for k in (
                     "id",
                     "name",
@@ -316,6 +328,7 @@ def register_from_models_yaml(
                     "route_metadata",
                     "extra_body",
                 )
+                if k in m
             }
             # NOTE: top-level base_url is intentionally NOT expanded here. It is
             # expanded per-route in the loop below (raw_base_url -> base_url) so
@@ -404,6 +417,8 @@ def register_from_models_yaml(
                                 top_cfg.get("id"),
                                 raw,
                             )
+                            if isinstance(raw, str) and raw.startswith("${") and raw.endswith("}"):
+                                unset_env_vars.add(raw[2:-1])
                             continue
                         if not isinstance(val, str):
                             raise ValueError(
@@ -615,6 +630,31 @@ def register_from_models_yaml(
             if not continue_on_missing_env:
                 raise
             logger.warning("Skipping model %r from %s: %s", m.get("id"), path, exc)
+            skipped_for_missing_env.append(str(m.get("id")))
             continue
+
+    if skipped_for_missing_env:
+        missing = ", ".join(sorted(unset_env_vars)) or "the referenced environment variables"
+        dropped = ", ".join(skipped_for_missing_env)
+        if count == 0:
+            logger.error(
+                "No models are available: every model in %s was skipped because "
+                "its credential is unset. Set %s and restart. /v1/models will "
+                "stay empty until then, and requests will report the model as "
+                "not found. Skipped: %s",
+                path,
+                missing,
+                dropped,
+            )
+        else:
+            logger.warning(
+                "%d of %d models in %s are unavailable because their credentials "
+                "are unset (%s). Skipped: %s",
+                len(skipped_for_missing_env),
+                len(models),
+                path,
+                missing,
+                dropped,
+            )
 
     return count, model_infos

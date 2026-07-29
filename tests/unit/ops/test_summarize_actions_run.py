@@ -147,7 +147,7 @@ def test_markdown_includes_runner_and_summary() -> None:
                     created="2026-07-22T08:41:14Z",
                     started="2026-07-22T08:41:15Z",
                     completed="2026-07-22T08:41:35Z",
-                    runner="spark2",
+                    runner="self-hosted-1",
                 )
             ]
         },
@@ -157,7 +157,7 @@ def test_markdown_includes_runner_and_summary() -> None:
     markdown = render_markdown(report, "123")
 
     assert "Run `123`" in markdown
-    assert "| Backend | spark2 | 1.0s | 1.0s | 20.0s | success |" in markdown
+    assert "| Backend | self-hosted-1 | 1.0s | 1.0s | 20.0s | success |" in markdown
 
 
 def test_cli_writes_json_and_markdown(tmp_path: Path) -> None:

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "event_id": "gateway-dependency-1",
+  "alert_type": "dependency_unavailable",
+  "fingerprint": "gateway:dependency:operational_store",
+  "status": "firing",
+  "severity": "critical",
+  "title": "Database disconnected: operational store",
+  "occurred_at": "2026-07-19T06:00:00Z",
+  "summary": "The operational store failed its health check.",
+  "context": {
+    "dependency": "operational_store",
+    "backend": "postgres",
+    "reason": "health_check_failed"
+  },
+  "evidence_refs": []
+}

@@ -23,6 +23,11 @@ from routing.model_router_registry import StaleRouterStrategyChangeError
 from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
+from serving.adapters.openrouter import openrouter_attribution_headers
+from serving.config.routewise_model_settings import (
+    apply_routewise_settings_to_router,
+    model_routewise_setting_keys,
+)
 from serving.config.settings import VALID_ROLES
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
@@ -1049,10 +1054,7 @@ async def _fetch_openrouter_endpoint_payload(provider_model_id: str) -> dict[str
             aiohttp.ClientSession(timeout=timeout) as session,
             session.get(
                 url,
-                headers={
-                    "HTTP-Referer": "https://freeinference.org",
-                    "X-Title": "FreeInference",
-                },
+                headers=openrouter_attribution_headers(),
             ) as response,
         ):
             if response.status >= 400:

@@ -128,7 +128,7 @@ class TestRequestLogMiddleware:
                     "x-forwarded-for": "203.0.113.8",
                     "x-real-ip": "203.0.113.8",
                     "user-agent": "pytest-client",
-                    "origin": "https://freeinference.org",
+                    "origin": "https://gateway.example.com",
                 },
             )
 
@@ -141,7 +141,7 @@ class TestRequestLogMiddleware:
         assert record.x_forwarded_for == "203.0.113.8"
         assert record.x_real_ip == "203.0.113.8"
         assert record.user_agent == "pytest-client"
-        assert record.origin == "https://freeinference.org"
+        assert record.origin == "https://gateway.example.com"
 
     @pytest.mark.asyncio
     async def test_request_log_json_output_carries_cf_connecting_ip(

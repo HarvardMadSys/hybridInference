@@ -7,7 +7,7 @@ shared login IPs and user agents from ``login_events`` -- which are the stronges
 evidence that two accounts belong to the same operator.
 
 Usage:
-    python ops/db/analysis/compare_users.py shark.pd@gmail.com shark3d.pd@gmail.com
+    python ops/db/analysis/compare_users.py a@x.com b@x.com
     python ops/db/analysis/compare_users.py a@x.com b@x.com --json
 """
 

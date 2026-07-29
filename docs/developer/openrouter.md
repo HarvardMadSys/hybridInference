@@ -69,7 +69,7 @@ LOCAL_DEPLOYMENT_URL=http://host.docker.internal:8001/v1
 DEEPSEEK_API_KEY=your-deepseek-api-key
 GEMINI_API_KEY=your-gemini-api-key
 DB_HOST=localhost
-DB_NAME=freeinference_db
+DB_NAME=hybridinference
 DB_USER=postgres
 DB_PASSWORD=postgres
 JWT_SECRET_KEY=replace-me
@@ -125,7 +125,7 @@ Runtime operations:
 - Logs: `make logs` or `make logs s=backend`
 
 See [Deployment](deployment.md) for the full guide.
-- Health: `curl https://freeinference.org/health`
+- Health: `curl https://<your-gateway>/health`
 
 ## API Surface
 
@@ -188,6 +188,6 @@ pytest tests/servers/test_bootstrap.py -q
 
 ## Related Docs
 
-- [FreeInference Deployment](freeinference.md): Current production deployment architecture (Cloudflare + Nginx + FastAPI) and historical deployment iterations.
+- [Deployment](deployment.md): running the gateway behind a CDN and a reverse proxy.
 - [Routing](routing.md): Detailed routing manager configuration and strategy extension guide.
 - [Adding Models](adding-models.md): How to add new models (YAML) and integrate new providers (adapter) in one place.

@@ -1,4 +1,4 @@
-"""RouteWise router for FreeInference.
+"""RouteWise router.
 
 The production ``routewise`` strategy follows the RouteWise paper/simulator
 selection semantics:

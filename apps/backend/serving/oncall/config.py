@@ -44,13 +44,16 @@ class OnCallSettings(BaseSettings):
     codex_model: str = Field(default="glm-5.2", alias="CODEX_ONCALL_CODEX_MODEL")
     # Codex speaks only the OpenAI Responses API (chat wire support was
     # removed upstream, openai/codex#7782), so this must be an endpoint that
-    # serves /v1/responses — in practice our own gateway, which translates to
-    # Chat Completions southbound. Must be reachable from GitHub-hosted
-    # runners, so the public gateway URL.
-    model_base_url: str = Field(
-        default="https://freeinference.org/v1",
-        alias="CODEX_ONCALL_MODEL_BASE_URL",
-    )
+    # serves /v1/responses — in practice this gateway, which translates to
+    # Chat Completions southbound. It has to be reachable from GitHub-hosted
+    # runners, so a public address rather than a Compose hostname.
+    #
+    # Empty by default. The previous default was this deployment's public URL,
+    # so an operator who never configured on-call would have been dispatching
+    # their analysis at someone else's gateway. Required is not an option here
+    # — these settings are constructed whether or not on-call is enabled — so
+    # it is checked where it is used instead.
+    model_base_url: str = Field(default="", alias="CODEX_ONCALL_MODEL_BASE_URL")
     worker_poll_seconds: float = Field(
         default=1.0,
         ge=0.05,

@@ -1,0 +1,89 @@
+# syntax=docker/dockerfile:1.7
+#
+# The image an agent job actually executes in (issue #1041).
+#
+# This is the untrusted side of the system: it runs an agent that will install
+# dependencies and execute code from a repository nobody vetted. Two rules
+# follow from that and shape everything below.
+#
+# 1. **No credentials are baked in.** The only secret that ever reaches this
+#    image is the job's model-scoped token, injected as an environment variable
+#    at run time and capped by the job's budget. There is no GitHub token here,
+#    because the agent never pushes — it emits a patch and the trusted
+#    publisher outside handles git.
+# 2. **Nothing here is trusted at run time.** The container is thrown away
+#    after each job, runs as a non-root user, and (under the kata backend) has
+#    its own kernel. Anything the agent installs lives and dies with the job.
+#
+# Runtimes are pinned rather than floating: an agent CLI that silently updates
+# changes its own event format, and the normalized event mapping in
+# serving/agent_jobs/runtimes.py is written against a specific shape.
+
+FROM node:22-bookworm-slim
+
+# Pin every agent runtime. Bump deliberately, and re-run the agent-loop
+# conformance suite (a deployment's harness under services/) when you
+# do — that suite exists to catch an event-format change before it reaches a
+# user's job.
+#
+# These were `latest`, which made the comment above a wish rather than a fact,
+# and it cost a real job: `latest` resolved to Claude Code 2.1.220, which sends
+# a `role: "system"` message inside `messages`. The gateway passed it through
+# where it stood and every model call came back
+# `400 System message must be at the beginning` — so each job died at its first
+# turn, with an error that pointed at the model rather than at the CLI version.
+# An unpinned agent CLI is a dependency that changes under you between builds.
+ARG CLAUDE_CODE_VERSION=2.1.220
+ARG CODEX_VERSION=0.145.0
+
+# Tools an agent legitimately needs to understand and change a repository.
+# Deliberately not installed: anything that would let it reach the host
+# (docker CLI) or persist beyond the job.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        ca-certificates \
+        curl \
+        jq \
+        ripgrep \
+        python3 \
+        python3-pip \
+        python3-venv \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g \
+        "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+        "@openai/codex@${CODEX_VERSION}" \
+    && npm cache clean --force
+
+# Non-root by default. The runner bind-mounts the worktree and the container is
+# disposable, so there is no reason for the agent to have root — and a kernel
+# escape needs a much better bug when it starts unprivileged.
+#
+# The uid is PINNED, and must match SANDBOX_UID in
+# apps/backend/serving/agent_jobs/sandbox.py: the runner chowns each job
+# worktree to that id before mounting it. If the two drift, the agent cannot
+# write a single file in its own working tree and git refuses to run at all
+# ("dubious ownership") — a failure that looks nothing like its cause.
+RUN groupadd --gid 10001 agent \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /bin/bash agent
+USER agent
+WORKDIR /workspace
+
+# Turn off every phone-home an agent CLI does by default. The egress allowlist
+# blocks these anyway; setting them here means a blocked request never becomes
+# a confusing timeout in the middle of a job.
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    DISABLE_TELEMETRY=1 \
+    DISABLE_AUTOUPDATER=1 \
+    DISABLE_ERROR_REPORTING=1 \
+    npm_config_update_notifier=false \
+    CI=1
+
+# Fail loudly at build time if a runtime did not land, rather than at 3am when
+# a job claims it and dies.
+RUN claude --version && codex --version
+
+# No ENTRYPOINT: the runner supplies the full argv from the runtime adapter,
+# so this image never decides what an agent run looks like.
+CMD ["/bin/bash", "-lc", "echo 'agent sandbox image; the runner supplies the command' && exit 64"]

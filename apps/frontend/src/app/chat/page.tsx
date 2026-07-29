@@ -135,14 +135,18 @@ function ChatView() {
         <h1 className="text-2xl font-bold tracking-tight">Docs Assistant</h1>
         <p className="mt-1 text-sm text-gray-500">
           Ask anything about {runtimeBranding.appName}. Answers are grounded in the{' '}
-          <a
-            href={branding.docsUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-crimson hover:underline"
-          >
-            official documentation
-          </a>
+          {branding.docsUrl ? (
+            <a
+              href={branding.docsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-crimson hover:underline"
+            >
+              official documentation
+            </a>
+          ) : (
+            'official documentation'
+          )}
           .
         </p>
       </div>

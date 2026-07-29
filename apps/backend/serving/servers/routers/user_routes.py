@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving.config.runtime_settings import get_runtime_settings_instance
+from serving.config.site_identity import get_site_identity
 
 if TYPE_CHECKING:
     from serving.config.runtime_settings import RuntimeSettings
@@ -66,7 +67,12 @@ from serving.utils.request_ip import get_client_ip
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
-QUOTA_CONTACT_EMAIL = "admin@freeinference.org"
+
+
+def _quota_contact() -> str:
+    """Support address surfaced with quota info; empty when unconfigured."""
+    return get_site_identity().support_email
+
 
 # Bounded in-process TTL cache for the per-user ``api_logs`` row count
 # powering ``/user/recent-requests``. The dashboard polls every 60s and the
@@ -705,7 +711,7 @@ async def get_usage(
                 max_concurrency=max_concurrency,
                 reset_at=_get_daily_quota_reset_at(),
                 reset_timezone="UTC",
-                contact_email=QUOTA_CONTACT_EMAIL,
+                contact_email=_quota_contact(),
             ),
             usage=UsageStats(
                 requests=0,
@@ -765,7 +771,7 @@ async def get_usage(
             max_concurrency=max_concurrency,
             reset_at=quota_reset_at,
             reset_timezone="UTC",
-            contact_email=QUOTA_CONTACT_EMAIL,
+            contact_email=_quota_contact(),
         ),
         usage=UsageStats(
             requests=int(period_data.get("requests") or 0),

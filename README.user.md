@@ -1,61 +1,18 @@
 # HybridInference User README
 
-This guide is for people who want to use FreeInference as a hosted OpenAI-compatible API or run HybridInference as their own inference gateway.
+This guide is for people running a HybridInference gateway, or calling one
+that someone else runs.
 
-## Choose Your Path
+Either way the API is the same: OpenAI-compatible, so existing SDKs and
+coding agents work by changing a base URL.
 
-- **Use hosted FreeInference** if you want an API key, a stable base URL, hosted model access, and integrations with coding agents or OpenAI-compatible SDKs.
-- **Self-host HybridInference** if you want to route your own traffic across local GPUs, internal models, or provider accounts while keeping an OpenAI-compatible interface.
+## Run Your Own
 
-## Hosted API Quick Start
+The fastest path is the [Quickstart](README.md#quickstart) in the main README —
+one credential, no database, real models in about a minute.
 
-1. Create an account at [freeinference.org](https://freeinference.org/).
-2. Create an API key from the dashboard.
-3. Use the OpenAI-compatible base URL: `https://freeinference.org/v1`.
-4. Send a test request:
-
-```bash
-curl https://freeinference.org/v1/chat/completions \
-  -H "Authorization: Bearer $FREEINFERENCE_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "glm-5.1",
-    "messages": [
-      {"role": "user", "content": "Say hello from FreeInference."}
-    ]
-  }'
-```
-
-## Python SDK Example
-
-```python
-from openai import OpenAI
-
-client = OpenAI(
-    api_key="your-api-key-here",
-    base_url="https://freeinference.org/v1",
-)
-
-response = client.chat.completions.create(
-    model="glm-5.1",
-    messages=[{"role": "user", "content": "Write a one-line haiku about GPUs."}],
-)
-
-print(response.choices[0].message.content)
-```
-
-## Integrations
-
-FreeInference works with clients that support OpenAI-compatible APIs. The public docs include setup guides for Kilo Code, Cursor, Claude Code, Roo Code, Cline, Continue, Aider, and other tools.
-
-- Quick start: [distributions/freeinference/content/docs/docs/source/quickstart.md](distributions/freeinference/content/docs/docs/source/quickstart.md)
-- Integration guides: [distributions/freeinference/content/docs/docs/source/integrations.md](distributions/freeinference/content/docs/docs/source/integrations.md)
-- Available models: [distributions/freeinference/content/docs/docs/source/models.md](distributions/freeinference/content/docs/docs/source/models.md)
-- API headers: [distributions/freeinference/content/docs/docs/source/api_headers.md](distributions/freeinference/content/docs/docs/source/api_headers.md)
-
-## Self-Hosting Quick Start
-
-The production-oriented path uses Docker and Docker Compose.
+For a persistent deployment with accounts, API keys and quotas, use Docker
+Compose:
 
 ```bash
 git clone https://github.com/HarvardMadSys/hybridInference.git
@@ -68,16 +25,68 @@ make up
 make ps
 ```
 
-For local development without the full production stack, see [README.developer.md](README.developer.md) and [docs/developer/installation.md](docs/developer/installation.md).
+This brings up a gateway that names no deployment but yours. To give it an
+identity — its own name, links, support address and console branding — see
+`distributions/` and the overlay pattern described in
+[README.developer.md](README.developer.md).
+
+For local development without the full production stack, see
+[README.developer.md](README.developer.md) and
+[docs/developer/installation.md](docs/developer/installation.md).
+
+## Call One Someone Else Runs
+
+A HybridInference deployment exposes an OpenAI-compatible base URL. Get an API
+key from its dashboard, then:
+
+```bash
+curl https://<gateway>/v1/chat/completions \
+  -H "Authorization: Bearer $HYBRIDINFERENCE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "<model-id>",
+    "messages": [
+      {"role": "user", "content": "Say hello."}
+    ]
+  }'
+```
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="your-api-key-here",
+    base_url="https://<gateway>/v1",
+)
+
+response = client.chat.completions.create(
+    model="<model-id>",
+    messages=[{"role": "user", "content": "Write a one-line haiku about GPUs."}],
+)
+
+print(response.choices[0].message.content)
+```
+
+`GET /v1/models` lists what a given gateway serves.
+
+### FreeInference
+
+[FreeInference](https://freeinference.org/) is a public HybridInference
+gateway run at Harvard SEAS, free for research use. Create an account, create
+a key, and use `https://freeinference.org/v1` as the base URL. Its
+[documentation](https://doc.freeinference.org/) covers the available models
+and setup guides for Kilo Code, Cursor, Claude Code, Roo Code, Cline,
+Continue, Aider and other OpenAI-compatible clients.
 
 ## Configuration Overview
 
 The gateway is configured primarily through environment variables and YAML files.
 
 - `.env`: secrets, database settings, provider API keys, auth settings, and runtime options.
-- `config/models.yaml`: model registry and endpoint definitions.
-- `config/routing.yaml`: local/remote split, routing strategy, and health-check settings.
-- `config/alerts.yaml`: alert rules.
+- `distributions/<name>/config/models.yaml`: model registry and endpoint definitions. Upstream ships none; `config/examples/` has one to start from.
+- `distributions/<name>/config/routing.yaml`: local/remote split, routing strategy, health checks. Upstream ships none; the gateway starts without one.
+- `distributions/<name>/config/alerts.yaml`: alert rules. Upstream ships none; without one the built-in thresholds apply.
+- `config/examples/`: reference registries you can run as-is.
 
 YAML configuration supports environment variable interpolation with `${VAR}` and `${VAR:-default}` syntax.
 
@@ -93,13 +102,13 @@ For model setup, see [docs/developer/adding-models.md](docs/developer/adding-mod
 
 ## Troubleshooting
 
-- **Hosted API key rejected:** confirm the key is active in the dashboard and sent as `Authorization: Bearer <key>`.
-- **Model not found:** check the model list in the public docs or your self-hosted `config/models.yaml`.
-- **Self-hosted database errors:** verify `.env` database values and start the database service before the backend.
+- **API key rejected:** confirm the key is active in the gateway's dashboard and sent as `Authorization: Bearer <key>`.
+- **Model not found:** call `GET /v1/models` on the gateway, or check your own registry.
+- **Database errors on startup:** verify the `.env` database values and start the database service before the backend. To run without a database at all, set `DB_ENABLED=false` — you lose accounts, keys and history.
 - **Local GPU endpoint unreachable:** verify the model server is running and that Docker networking points to the correct host.
 
 ## More Help
 
-- Hosted docs: [doc.freeinference.org](https://doc.freeinference.org/)
-- Developer docs: [internaldoc.freeinference.org](https://internaldoc.freeinference.org/)
+- Deeper guides: `docs/developer/`
 - Contributor guide: [README.developer.md](README.developer.md)
+- Issues and discussion: [github.com/HarvardMadSys/hybridInference](https://github.com/HarvardMadSys/hybridInference)
