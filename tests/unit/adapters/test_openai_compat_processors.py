@@ -14,6 +14,7 @@ from serving.adapters.processors import (
     DefaultProcessor,
     GLMProcessor,
     QwenCoderProcessor,
+    ReasoningExtractProcessor,
     ThinkBlockProcessor,
     get_processor,
 )
@@ -843,6 +844,11 @@ class TestGetProcessorOverride:
     def test_override_think_block(self):
         assert isinstance(get_processor(None, override="think_block"), ThinkBlockProcessor)
 
+    def test_override_reasoning_extract(self):
+        assert isinstance(
+            get_processor(None, override="reasoning_extract"), ReasoningExtractProcessor
+        )
+
     def test_invalid_override_raises(self):
         with pytest.raises(ValueError, match="Unknown processor override"):
             get_processor("glm-4.7-flash", override="nonexistent")
@@ -922,3 +928,42 @@ async def test_single_key_completion_does_not_retry():
     await adapter.chat_completion([{"role": "user", "content": "hi"}])
     assert mock.await_count == 1
     assert mock.call_args.kwargs["retries"] == 1
+
+
+@pytest.mark.asyncio
+async def test_streaming_reasoning_extract_lifts_mm_think_into_reasoning_channel():
+    """MiniMax-M3 streams <mm:think> tags in content.
+
+    The reasoning_extract processor must lift the tagged text into
+    delta.reasoning_content and leave content as the clean answer, with no tag
+    text leaking into either channel.
+    """
+
+    async def fake_stream_post(*args, **kwargs):
+        yield _make_chunk(delta={"role": "assistant", "content": ""})
+        yield _make_chunk(delta={"content": "<mm:think>"})
+        yield _make_chunk(delta={"content": "add 17 and 25 "})
+        yield _make_chunk(delta={"content": "= 42"})
+        yield _make_chunk(delta={"content": "</mm:think>"})
+        yield _make_chunk(delta={"content": "The answer is 42."})
+        yield _make_chunk(delta={}, finish_reason="stop")
+        yield "data: [DONE]"
+
+    adapter = _make_adapter(processor="reasoning_extract")
+    adapter.http.stream_post = fake_stream_post
+
+    chunks = [
+        chunk async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "hi"}])
+    ]
+
+    payloads = [
+        json.loads(c[6:]) for c in chunks if c.startswith("data: ") and c.strip() != "data: [DONE]"
+    ]
+    deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+    reasoning = "".join(d.get("reasoning_content", "") or "" for d in deltas)
+    content = "".join(d.get("content", "") or "" for d in deltas)
+
+    assert reasoning == "add 17 and 25 = 42"
+    assert content == "The answer is 42."
+    assert "<mm:think>" not in content and "</mm:think>" not in content
+    assert "<mm:think>" not in reasoning and "</mm:think>" not in reasoning
