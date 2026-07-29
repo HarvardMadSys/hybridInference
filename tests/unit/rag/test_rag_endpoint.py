@@ -20,16 +20,20 @@ from serving.servers.routers import rag as rag_module
 
 
 def _fake_chat_json(capture, answer="Create a key from the dashboard."):
-    async def _impl(settings, model, messages):
+    async def _impl(settings, model, messages, on_behalf_of=None):
         capture["messages"] = messages
         capture["model"] = model
+        capture["on_behalf_of"] = on_behalf_of
         return answer
 
     return _impl
 
 
-def _fake_open_stream(pieces):
-    async def _impl(settings, model, messages):
+def _fake_open_stream(pieces, capture=None):
+    async def _impl(settings, model, messages, on_behalf_of=None):
+        if capture is not None:
+            capture["on_behalf_of"] = on_behalf_of
+
         async def _iter():
             yield b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
             for piece in pieces:
@@ -47,7 +51,7 @@ def _fake_open_stream(pieces):
 
 
 def _fake_embed(vec):
-    async def _impl(settings, model, text):
+    async def _impl(settings, model, text, on_behalf_of=None):
         return vec
 
     return _impl
@@ -143,6 +147,9 @@ def test_chat_non_streaming_returns_answer_and_sources(client, monkeypatch):
     assert any(s["source"] == "quickstart.md" for s in data["sources"])
     # Retrieved context is handed to the (upstream) chat call.
     assert "Documentation context" in cap["messages"][-1]["content"]
+    # The gateway self-call acts on behalf of the JWT-verified end user (u1),
+    # so its api_logs / cost / quota attribute to them, not the RAG account.
+    assert cap["on_behalf_of"] == "u1"
 
 
 def test_chat_streaming_emits_sources_then_tokens(client, monkeypatch):
@@ -188,7 +195,7 @@ def test_chat_503_when_api_key_unset(tmp_path, monkeypatch):
 
 
 def test_chat_passes_through_upstream_429(client, monkeypatch):
-    async def _quota(settings, model, messages):
+    async def _quota(settings, model, messages, on_behalf_of=None):
         raise rag_module._map_upstream_error(429, "generation")
 
     monkeypatch.setattr(rag_module, "_gateway_chat_json", _quota)
@@ -255,6 +262,7 @@ async def test_gateway_embed_transport_ok(monkeypatch):
         seen["url"] = str(request.url)
         seen["auth"] = request.headers.get("authorization")
         seen["ua"] = request.headers.get("user-agent")
+        seen["obo"] = request.headers.get("x-on-behalf-of")
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"data": [{"embedding": [0.1, 0.2, 0.3]}]})
 
@@ -266,6 +274,21 @@ async def test_gateway_embed_transport_ok(monkeypatch):
     # RAG self-calls are tagged so they're identifiable in api_logs.
     assert seen["ua"] == "doc_assistant"
     assert seen["body"] == {"model": "bge-m3", "input": "hello"}
+    # No on-behalf-of by default: the header is only sent when a user id is passed.
+    assert seen["obo"] is None
+
+
+async def test_gateway_embed_sends_on_behalf_of_header(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        seen["obo"] = request.headers.get("x-on-behalf-of")
+        return httpx.Response(200, json={"data": [{"embedding": [0.5]}]})
+
+    _patch_transport(monkeypatch, handler)
+    await rag_module._gateway_embed(_settings(monkeypatch), "bge-m3", "hello", "user-42")
+    # Threaded so /v1/embeddings attributes the row to the real end user.
+    assert seen["obo"] == "user-42"
 
 
 async def test_gateway_chat_json_transport_ok_and_payload(monkeypatch):
