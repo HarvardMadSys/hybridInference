@@ -2,9 +2,8 @@
 //
 // The normalized event kinds mirror the agent_job_events schema decided in the
 // roadmap — thinking | message | tool_use | tool_result | diff | usage |
-// error | lifecycle — with two display-level simplifications: tool_result is
-// folded into its tool_use row, and egress denials (an `error` subtype on the
-// wire) get their own kind because the UI renders them as a first-class row.
+// error | lifecycle. Tool results are folded into their matching activity when
+// possible, but remain renderable on their own for older/partial event logs.
 
 export type AgentJobState = 'queued' | 'running' | 'needs_review' | 'done' | 'failed' | 'cancelled';
 
@@ -16,20 +15,38 @@ export interface AgentAttempt {
 }
 
 export type AgentEvent =
-  | { kind: 'lifecycle'; text: string }
-  | { kind: 'thinking'; text: string }
-  | { kind: 'message'; text: string }
+  | { kind: 'lifecycle'; text: string; attemptNo?: number }
+  | { kind: 'thinking'; text: string; attemptNo?: number }
+  | { kind: 'message'; text: string; attemptNo?: number }
   | {
       kind: 'tool_use';
-      tool: 'Read' | 'Bash' | 'Edit';
+      tool: string;
       detail: string;
+      id?: string;
       /** Collapsed tool output preview (mono block), e.g. pytest tail. */
       output?: string[];
+      outputIsError?: boolean;
       /** e.g. "+12 −3" for Edit rows. */
       diffStat?: string;
+      attemptNo?: number;
     }
-  | { kind: 'egress_denied'; host: string; attempts: number }
-  | { kind: 'usage'; text: string };
+  | {
+      kind: 'tool_result';
+      text: string;
+      toolUseId?: string;
+      isError: boolean;
+      attemptNo?: number;
+    }
+  | { kind: 'egress_denied'; host: string; attempts: number; attemptNo?: number }
+  | { kind: 'usage'; text: string; attemptNo?: number };
+
+export interface AgentThreadMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  jobId: string;
+  createdAt: string | null;
+}
 
 export interface DiffLine {
   marker: 'hunk' | 'ctx' | 'add' | 'del';
@@ -44,13 +61,17 @@ export interface AgentGate {
 
 export interface AgentJob {
   id: string;
+  /** Used to group conversation rows in the recent-tasks sidebar. */
+  createdAt?: string | null;
   title: string;
+  /** Complete current-turn prompt. Older fixtures may only have `title`. */
+  prompt?: string;
   state: AgentJobState;
   /** Short badge text next to the title, e.g. gate hold or failure reason. */
   stateNote?: string;
   repo: string;
   baseSha: string;
-  /** Output branch, always agent/<job-id>. */
+  /** Output branch, agent/<thread-id> for conversations or agent/<job-id> for legacy jobs. */
   branch: string;
   runtime: string;
   runtimeVersion?: string;
@@ -81,4 +102,10 @@ export interface AgentJob {
   egressDenials: number;
   /** e.g. "draft PR #1044" once published. */
   prLabel?: string;
+  prUrl?: string;
+  threadId?: string;
+  parentJobId?: string;
+  turnNo?: number;
+  /** Completed turns before this job. The current prompt/activity are separate. */
+  threadMessages?: AgentThreadMessage[];
 }

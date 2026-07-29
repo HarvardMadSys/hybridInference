@@ -22,6 +22,7 @@ from serving.agent_jobs.runner import (
     _assert_no_credential_on_disk,
     _auth_env,
     align_existing_checkout,
+    apply_context_patch,
     build_patch,
     existing_checkout_sha,
     prepare_worktree,
@@ -49,6 +50,44 @@ def _git(*args: str, cwd: Path) -> str:
             "GIT_COMMITTER_EMAIL": "t@example.com",
         },
     ).stdout
+
+
+def test_follow_up_restores_parent_patch_before_the_next_run(tmp_path: Path):
+    """A fresh sandbox continues from the parent run's working tree."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", cwd=repo)
+    (repo / "answer.txt").write_text("before\n", encoding="utf-8")
+    _git("add", "answer.txt", cwd=repo)
+    _git("commit", "-m", "base", cwd=repo)
+    patch = """diff --git a/answer.txt b/answer.txt
+index 90be1c5..3bd1f0e 100644
+--- a/answer.txt
++++ b/answer.txt
+@@ -1 +1 @@
+-before
++after
+"""
+
+    apply_context_patch(str(repo), patch)
+
+    assert (repo / "answer.txt").read_text(encoding="utf-8") == "after\n"
+
+
+def test_follow_up_refuses_an_unsafe_parent_patch(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", cwd=repo)
+    unsafe = """diff --git a/.github/workflows/pwn.yml b/.github/workflows/pwn.yml
+new file mode 100644
+--- /dev/null
++++ b/.github/workflows/pwn.yml
+@@ -0,0 +1 @@
++run: echo no
+"""
+
+    with pytest.raises(WorktreeError, match="unsafe parent context patch"):
+        apply_context_patch(str(repo), unsafe)
 
 
 @pytest.fixture()

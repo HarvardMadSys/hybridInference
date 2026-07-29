@@ -15,7 +15,8 @@ Order of operations is load-bearing:
    security boundary, and a blocked ``.github/`` change must never reach a
    branch, because pushing it can execute a workflow with repository secrets
    before a human reads the draft PR.
-3. Push exactly one ``agent/<job-id>`` branch with a pinned refspec.
+3. Push the turn onto its conversation's stable ``agent/<thread-id>`` branch
+   with a pinned refspec.
 4. Open a **draft** PR, so a human reviews before anything can merge.
 
 A rejected patch fails the job with the reason rather than retrying: gate
@@ -201,20 +202,23 @@ async def publish_one(
         result = await asyncio.to_thread(
             publish_patch,
             job_id=job_id,
+            branch_id=job.get("thread_id") or job_id,
             patch=job["patch"],
             clone_url=credential.clone_url(job["repo"]),
             base_sha=base_sha,
             commit_message=f"agent: {job['task_prompt'][:60]}".strip(),
             allow_workflow_changes=allow_workflow_changes,
         )
-        pr_url = await create_draft_pull_request(
-            repo=job["repo"],
-            head_branch=result.branch,
-            base_branch=base_branch,
-            title=f"[agent] {job['task_prompt'][:70]}".strip(),
-            body=_pr_body(job, result.changed_files),
-            credential=credential,
-        )
+        pr_url = job.get("parent_pr_url")
+        if not pr_url:
+            pr_url = await create_draft_pull_request(
+                repo=job["repo"],
+                head_branch=result.branch,
+                base_branch=base_branch,
+                title=f"[agent] {job['task_prompt'][:70]}".strip(),
+                body=_pr_body(job, result.changed_files),
+                credential=credential,
+            )
     except PublishError as exc:
         logger.warning(
             "agent_job_publish_rejected",
@@ -227,7 +231,7 @@ async def publish_one(
         await store.fail_publish(job_id=job_id, detail=f"publish failed: {exc}")
         return None
 
-    if not await store.record_publish(job_id=job_id, pr_url=pr_url):
+    if not await store.record_publish(job_id=job_id, pr_url=pr_url, commit_sha=result.commit_sha):
         # Someone recorded a PR while we worked. The branch we pushed is
         # harmless (it is the same one), but say so rather than pretend.
         logger.warning(
@@ -241,7 +245,7 @@ async def publish_one(
         extra={
             "event": "agent_job_pr_opened",
             "job_id": job_id,
-            "branch": branch_name_for(job_id),
+            "branch": branch_name_for(job.get("thread_id") or job_id),
             "pr_url": pr_url,
         },
     )

@@ -33,6 +33,7 @@ class FakeAgentJobStore:
         self.jobs: dict[str, dict[str, Any]] = {}
         self.events: list[dict[str, Any]] = []
         self.artifacts: dict[tuple[str, str], dict[str, Any]] = {}
+        self.messages: list[dict[str, Any]] = []
         self.live_fence: tuple[int, int] | None = None
         self.released: list[tuple[str, int]] = []
         self._next_event_id = 1
@@ -42,12 +43,17 @@ class FakeAgentJobStore:
     async def create_job(self, **kwargs: Any) -> dict[str, Any]:
         job_id = f"ajob_{self._next_job:04d}"
         self._next_job += 1
+        thread_id = f"athr_{job_id}"
         job = {
             "id": job_id,
+            "thread_id": thread_id,
+            "parent_job_id": None,
+            "turn_no": 1,
             "state": "queued",
             "cancel_requested": False,
             "current_attempt_id": None,
             "published_pr_url": None,
+            "published_commit_sha": None,
             "detail": None,
             "created_at": None,
             "updated_at": None,
@@ -56,7 +62,153 @@ class FakeAgentJobStore:
         job.setdefault("base_sha", None)
         job.setdefault("metadata", None)
         self.jobs[job_id] = job
+        self.messages.append(
+            {
+                "id": len(self.messages) + 1,
+                "thread_id": thread_id,
+                "job_id": job_id,
+                "role": "user",
+                "content": job["task_prompt"],
+                "created_at": None,
+            }
+        )
         return job
+
+    async def create_follow_up(
+        self,
+        *,
+        parent_job_id: str,
+        user_id: str,
+        prompt: str,
+        runtime: str | None = None,
+        model: str | None = None,
+        budget_usd: float | None = None,
+    ) -> dict[str, Any] | None:
+        requested = self.jobs.get(parent_job_id)
+        if requested is None or requested["user_id"] != user_id:
+            return None
+        parent = max(
+            (job for job in self.jobs.values() if job["thread_id"] == requested["thread_id"]),
+            key=lambda job: job["turn_no"],
+        )
+        job_id = f"ajob_{self._next_job:04d}"
+        self._next_job += 1
+        turn_no = (
+            max(
+                job["turn_no"]
+                for job in self.jobs.values()
+                if job["thread_id"] == parent["thread_id"]
+            )
+            + 1
+        )
+        job = {
+            **parent,
+            "id": job_id,
+            "parent_job_id": parent["id"],
+            "turn_no": turn_no,
+            "base_sha": parent.get("published_commit_sha") or parent.get("base_sha"),
+            "task_prompt": prompt,
+            "runtime": runtime or parent["runtime"],
+            "model": model or parent["model"],
+            "budget_usd": budget_usd if budget_usd is not None else parent.get("budget_usd"),
+            "state": (
+                "queued"
+                if parent["state"] in {"failed", "cancelled"}
+                or (
+                    parent["state"] == "succeeded"
+                    and (
+                        parent.get("published_commit_sha")
+                        or (parent["id"], "patch") not in self.artifacts
+                    )
+                )
+                else "waiting"
+            ),
+            "cancel_requested": False,
+            "current_attempt_id": None,
+            "published_pr_url": None,
+            "published_commit_sha": None,
+            "detail": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+        self.jobs[job_id] = job
+        self.messages.append(
+            {
+                "id": len(self.messages) + 1,
+                "thread_id": job["thread_id"],
+                "job_id": job_id,
+                "role": "user",
+                "content": prompt,
+                "created_at": None,
+            }
+        )
+        return job
+
+    async def resolve_legacy_published_commit(self, *, parent_job_id: str, commit_sha: str) -> bool:
+        parent = self.jobs.get(parent_job_id)
+        if parent is None or not parent.get("published_pr_url"):
+            return False
+        parent["published_commit_sha"] = commit_sha
+        for child in self.jobs.values():
+            if child.get("parent_job_id") == parent_job_id and child["state"] == "waiting":
+                child["base_sha"] = commit_sha
+                child["state"] = "queued"
+        return True
+
+    async def fail_waiting_follow_up(self, *, job_id: str, detail: str) -> bool:
+        job = self.jobs.get(job_id)
+        if job is None or job["state"] != "waiting":
+            return False
+        job["state"] = "failed"
+        job["detail"] = detail
+        return True
+
+    async def get_thread_for_job(self, *, job_id: str, user_id: str) -> dict[str, Any] | None:
+        job = self.jobs.get(job_id)
+        if job is None or job["user_id"] != user_id:
+            return None
+        thread_id = job["thread_id"]
+        jobs = sorted(
+            (item for item in self.jobs.values() if item["thread_id"] == thread_id),
+            key=lambda item: item["turn_no"],
+        )
+        return {
+            "id": thread_id,
+            "repo": job["repo"],
+            "title": jobs[0]["task_prompt"].splitlines()[0],
+            "created_at": None,
+            "updated_at": None,
+            "messages": sorted(
+                (m for m in self.messages if m["thread_id"] == thread_id),
+                key=lambda m: (
+                    self.jobs[m["job_id"]]["turn_no"],
+                    0 if m["role"] == "user" else 1,
+                    m["id"],
+                ),
+            ),
+            "jobs": jobs,
+        }
+
+    async def follow_up_context(self, *, job_id: str) -> dict[str, Any]:
+        job = self.jobs[job_id]
+        parent_id = job.get("parent_job_id")
+        messages = [
+            {"role": message["role"], "content": message["content"]}
+            for message in self.messages
+            if message["thread_id"] == job["thread_id"]
+            and self.jobs[message["job_id"]]["turn_no"] < job["turn_no"]
+        ]
+        parent = self.jobs.get(parent_id) if parent_id else None
+        artifact = self.artifacts.get((parent_id, "patch")) if parent_id else None
+        patch = (
+            artifact["content"]
+            if artifact
+            and parent
+            and parent["state"] in {"succeeded", "publishing"}
+            and not parent.get("published_commit_sha")
+            else None
+        )
+        return {"messages": messages, "patch": patch}
 
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
@@ -69,7 +221,7 @@ class FakeAgentJobStore:
         if job is None or (user_id is not None and job["user_id"] != user_id):
             return None
         job["cancel_requested"] = True
-        if job["state"] == "queued":
+        if job["state"] in {"queued", "waiting"}:
             job["state"] = "cancelled"
         return job["state"]
 
@@ -132,6 +284,17 @@ class FakeAgentJobStore:
         }
         self._next_event_id += 1
         self.events.append(event)
+        if event_type == "message" and isinstance((payload or {}).get("text"), str):
+            self.messages.append(
+                {
+                    "id": len(self.messages) + 1,
+                    "thread_id": job["thread_id"],
+                    "job_id": job["id"],
+                    "role": "assistant",
+                    "content": payload["text"],
+                    "created_at": None,
+                }
+            )
         return event["id"]
 
     async def save_artifact(
@@ -171,6 +334,23 @@ class FakeAgentJobStore:
         # lacked, never overwrite one the owner pinned.
         if base_sha and not job.get("base_sha"):
             job["base_sha"] = base_sha
+        has_patch = (job_id, "patch") in self.artifacts
+        if to_state in {"failed", "cancelled"} or (to_state == "succeeded" and not has_patch):
+            for child in self.jobs.values():
+                if child.get("parent_job_id") == job_id and child["state"] == "waiting":
+                    child["state"] = "queued"
+        return True
+
+    async def record_publish(
+        self, *, job_id: str, pr_url: str, commit_sha: str | None = None
+    ) -> bool:
+        job = self.jobs[job_id]
+        job["published_pr_url"] = pr_url
+        job["published_commit_sha"] = commit_sha
+        for child in self.jobs.values():
+            if child.get("parent_job_id") == job_id and child["state"] == "waiting":
+                child["state"] = "queued"
+                child["base_sha"] = commit_sha or child.get("base_sha")
         return True
 
     async def release_claim(
@@ -308,6 +488,127 @@ async def test_create_get_list_round_trip(client: AsyncClient):
 
     listed = await client.get("/v1/agent/jobs")
     assert [job["id"] for job in listed.json()["jobs"]] == [job_id]
+
+
+async def test_follow_up_is_a_durable_waiting_turn_with_parent_context(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """A user can send the next turn while the current sandbox is active."""
+    parent_id = await _create_job(client)
+    follow_up = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "now add a regression test", "model": "qwen-next"},
+    )
+    assert follow_up.status_code == 201
+    child = follow_up.json()
+    assert child["state"] == "waiting"
+    assert child["parent_job_id"] == parent_id
+    assert child["turn_no"] == 2
+    assert child["model"] == "qwen-next"
+
+    thread = await client.get(f"/v1/agent/jobs/{child['id']}/thread")
+    assert thread.status_code == 200
+    assert [message["content"] for message in thread.json()["messages"]] == [
+        "fix it",
+        "now add a regression test",
+    ]
+
+    claim = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w1"})).json()
+    assert claim["job_id"] == parent_id
+    auth = {"Authorization": f"Bearer {claim['worker_token']}"}
+    await client.post(
+        f"/v1/agent/worker/jobs/{parent_id}/events",
+        json={"event_type": "message", "payload": {"text": "implemented the fix"}},
+        headers=auth,
+    )
+    await client.post(
+        f"/v1/agent/worker/jobs/{parent_id}/artifacts",
+        json={"kind": "patch", "content": "diff --git a/x b/x"},
+        headers=auth,
+    )
+    finished = await client.post(
+        f"/v1/agent/worker/jobs/{parent_id}/finish",
+        json={"state": "succeeded"},
+        headers=auth,
+    )
+    assert finished.status_code == 200
+    assert store.jobs[child["id"]]["state"] == "waiting"
+    await store.record_publish(
+        job_id=parent_id, pr_url="https://github.test/pr/1", commit_sha="a" * 40
+    )
+    assert store.jobs[child["id"]]["state"] == "queued"
+
+    child_claim = (await client.post("/v1/agent/worker/claim", json={"worker_id": "w2"})).json()
+    assert child_claim["job_id"] == child["id"]
+    assert child_claim["base_sha"] == "a" * 40
+    assert child_claim["context_patch"] is None
+    assert child_claim["context_messages"] == [
+        {"role": "user", "content": "fix it"},
+        {"role": "assistant", "content": "implemented the fix"},
+    ]
+
+
+async def test_follow_ups_append_to_latest_turn_and_reject_blank_prompts(
+    client: AsyncClient,
+):
+    """Old links still append linearly, and whitespace is not a durable turn."""
+    parent_id = await _create_job(client)
+    first = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "first follow-up"},
+    )
+    assert first.status_code == 201
+
+    # Submit from the old parent URL again. It must attach to the current tip,
+    # not create a sibling that could run against the same branch concurrently.
+    second = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "second follow-up"},
+    )
+    assert second.status_code == 201
+    assert second.json()["parent_job_id"] == first.json()["id"]
+    assert second.json()["turn_no"] == 3
+    assert second.json()["state"] == "waiting"
+
+    blank = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "   \n  "},
+    )
+    assert blank.status_code == 422
+
+
+async def test_follow_up_resolves_a_legacy_draft_pr_branch(
+    store: FakeAgentJobStore,
+):
+    """Pre-thread jobs resume from their existing branch instead of diverging."""
+    from serving.servers.deps import get_agent_app_credentials
+
+    class LegacyBranchApp:
+        async def resolve_ref(self, repo: str, ref: str) -> str:
+            assert repo == "owner/name"
+            assert ref.startswith("agent/")
+            return "d" * 40
+
+    app = _build_app(store)
+    app.dependency_overrides[get_agent_app_credentials] = lambda: LegacyBranchApp()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as local_client:
+        parent_id = await _create_job(local_client)
+        parent = store.jobs[parent_id]
+        parent["state"] = "succeeded"
+        parent["published_pr_url"] = "https://github.test/pr/legacy"
+        parent["published_commit_sha"] = None
+        store.artifacts[(parent_id, "patch")] = {"content": "diff --git a/x b/x"}
+
+        response = await local_client.post(
+            f"/v1/agent/jobs/{parent_id}/follow-ups",
+            json={"prompt": "continue the old PR"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["state"] == "queued"
+    assert response.json()["base_sha"] == "d" * 40
+    assert store.jobs[parent_id]["published_commit_sha"] == "d" * 40
 
 
 async def test_browser_jwt_can_list_agent_jobs(store: FakeAgentJobStore):

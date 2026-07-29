@@ -8,6 +8,7 @@ close-and-requeue semantics.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -18,7 +19,14 @@ from serving.storage.agent_job_store import AgentJobStore
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
 _ALLOWED_TEST_DB_PATTERN = "_test_"
-_TABLES_IN_FK_ORDER = ("agent_job_artifacts", "agent_job_events", "agent_attempts", "agent_jobs")
+_TABLES_IN_FK_ORDER = (
+    "agent_thread_messages",
+    "agent_job_artifacts",
+    "agent_job_events",
+    "agent_attempts",
+    "agent_jobs",
+    "agent_threads",
+)
 
 
 @pytest_asyncio.fixture
@@ -103,6 +111,199 @@ async def test_create_get_list_round_trip(store: AgentJobStore):
     listed = await store.list_jobs(user_id="user-1")
     assert [item["id"] for item in listed] == [job["id"]]
     assert await store.get_job("ajob_missing") is None
+
+
+async def test_follow_up_waits_then_inherits_thread_messages_and_patch(store: AgentJobStore):
+    parent = await _create_job(store)
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"],
+        user_id="user-1",
+        prompt="now add a regression test",
+        model="qwen-next",
+    )
+    assert child is not None
+    assert child["state"] == "waiting"
+    assert child["turn_no"] == 2
+
+    parent_claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.append_event(
+        attempt_id=parent_claim["attempt_id"],
+        lease_generation=parent_claim["lease_generation"],
+        event_type="message",
+        payload={"text": "implemented the fix"},
+    )
+    await store.save_artifact(
+        attempt_id=parent_claim["attempt_id"],
+        lease_generation=parent_claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=parent["id"],
+        attempt_id=parent_claim["attempt_id"],
+        lease_generation=parent_claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+
+    assert (await store.get_job(child["id"]))["state"] == "waiting"
+    assert (await store.claim_for_publish())["job_id"] == parent["id"]
+    assert await store.record_publish(
+        job_id=parent["id"], pr_url="https://x/pr/1", commit_sha="a" * 40
+    )
+    child_after_publish = await store.get_job(child["id"])
+    assert child_after_publish["state"] == "queued"
+    assert child_after_publish["base_sha"] == "a" * 40
+    context = await store.follow_up_context(job_id=child["id"])
+    assert context == {
+        "messages": [
+            {"role": "user", "content": "fix the flaky test"},
+            {"role": "assistant", "content": "implemented the fix"},
+        ],
+        "patch": None,
+    }
+    thread = await store.get_thread_for_job(job_id=child["id"], user_id="user-1")
+    assert thread is not None
+    assert [job["id"] for job in thread["jobs"]] == [parent["id"], child["id"]]
+
+
+async def test_initialize_backfills_assistant_messages_from_legacy_events(store: AgentJobStore):
+    """Existing job transcripts survive the conversation-table migration."""
+    job = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.append_event(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        event_type="message",
+        payload={"text": "legacy answer"},
+    )
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM agent_thread_messages WHERE job_id = $1 AND role = 'assistant'", job["id"]
+        )
+
+    await store.initialize()
+
+    thread = await store.get_thread_for_job(job_id=job["id"], user_id="user-1")
+    assert thread is not None
+    assert [(message["role"], message["content"]) for message in thread["messages"]] == [
+        ("user", "fix the flaky test"),
+        ("assistant", "legacy answer"),
+    ]
+
+
+async def test_concurrent_follow_ups_form_one_linear_thread(store: AgentJobStore):
+    """The thread lock serializes simultaneous sends instead of forking."""
+    parent = await _create_job(store)
+    children = await asyncio.gather(
+        store.create_follow_up(
+            parent_job_id=parent["id"], user_id="user-1", prompt="first concurrent turn"
+        ),
+        store.create_follow_up(
+            parent_job_id=parent["id"], user_id="user-1", prompt="second concurrent turn"
+        ),
+    )
+    ordered = sorted(
+        (child for child in children if child is not None), key=lambda job: job["turn_no"]
+    )
+    assert [job["turn_no"] for job in ordered] == [2, 3]
+    assert ordered[0]["parent_job_id"] == parent["id"]
+    assert ordered[1]["parent_job_id"] == ordered[0]["id"]
+    assert [job["state"] for job in ordered] == ["waiting", "waiting"]
+
+
+async def test_follow_up_waits_for_successful_patch_to_publish(store: AgentJobStore):
+    """Runner success alone is not a usable base for the next turn."""
+    parent = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=parent["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="continue"
+    )
+    assert child is not None
+    assert child["state"] == "waiting"
+
+
+async def test_follow_up_created_after_publish_uses_published_commit(store: AgentJobStore):
+    """A later send starts from the branch tip even when no child was waiting."""
+    parent = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=parent["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+    assert (await store.claim_for_publish())["job_id"] == parent["id"]
+    published_sha = "b" * 40
+    assert await store.record_publish(
+        job_id=parent["id"], pr_url="https://x/pr/2", commit_sha=published_sha
+    )
+
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="continue from the PR"
+    )
+    assert child is not None
+    assert child["state"] == "queued"
+    assert child["base_sha"] == published_sha
+
+
+async def test_legacy_publish_branch_tip_releases_follow_up(store: AgentJobStore):
+    """A pre-thread PR can be resumed from its existing branch head."""
+    parent = await _create_job(store)
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    await store.save_artifact(
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        kind="patch",
+        content="diff --git a/x b/x\n",
+    )
+    await store.transition(
+        job_id=parent["id"],
+        attempt_id=claim["attempt_id"],
+        lease_generation=claim["lease_generation"],
+        from_states=("running",),
+        to_state="succeeded",
+    )
+    assert (await store.claim_for_publish())["job_id"] == parent["id"]
+    assert await store.record_publish(
+        job_id=parent["id"], pr_url="https://x/pr/legacy", commit_sha=None
+    )
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="resume the old PR"
+    )
+    assert child is not None
+    assert child["state"] == "waiting"
+
+    branch_tip = "c" * 40
+    assert await store.resolve_legacy_published_commit(
+        parent_job_id=parent["id"], commit_sha=branch_tip
+    )
+    assert (await store.get_job(parent["id"]))["published_commit_sha"] == branch_tip
+    resumed = await store.get_job(child["id"])
+    assert resumed["state"] == "queued"
+    assert resumed["base_sha"] == branch_tip
+    assert (await store.follow_up_context(job_id=child["id"]))["patch"] is None
 
 
 async def test_claim_creates_fenced_attempt(store: AgentJobStore):

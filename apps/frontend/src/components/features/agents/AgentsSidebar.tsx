@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/components/providers';
 import { useAgentJobList } from './useAgentJobs';
-import type { AgentJobState } from './types';
+import type { AgentJob, AgentJobState } from './types';
 
 // Sidebar status dots stay deliberately minimal (Codex-style titles-only
 // rows), but unlike Codex our jobs burn budget and can be held by publish
@@ -23,6 +23,66 @@ function initialsOf(name: string | null | undefined, email: string | null | unde
   return source.slice(0, 2).toUpperCase();
 }
 
+interface ConversationRow {
+  key: string;
+  job: AgentJob;
+  jobIds: string[];
+}
+
+export interface ConversationSection {
+  label: 'Today' | 'Previous 7 days' | 'Older';
+  conversations: ConversationRow[];
+}
+
+/** Collapse run records into Cursor-style conversation rows and date groups. */
+export function groupJobsByConversation(
+  jobs: AgentJob[],
+  now: Date = new Date(),
+): ConversationSection[] {
+  const byThread = new Map<string, AgentJob[]>();
+  for (const job of jobs) {
+    const key = job.threadId ?? job.id;
+    const turns = byThread.get(key) ?? [];
+    turns.push(job);
+    byThread.set(key, turns);
+  }
+
+  const rows = [...byThread.entries()].map(([key, turns]) => {
+    const ordered = [...turns].sort((left, right) => (left.turnNo ?? 1) - (right.turnNo ?? 1));
+    const first = ordered[0];
+    const latest = ordered[ordered.length - 1];
+    return {
+      key,
+      job: { ...latest, title: first.title },
+      jobIds: ordered.map((job) => job.id),
+    };
+  });
+
+  rows.sort((left, right) => {
+    const leftTime = Date.parse(left.job.createdAt ?? '') || 0;
+    const rightTime = Date.parse(right.job.createdAt ?? '') || 0;
+    return rightTime - leftTime || (right.job.turnNo ?? 1) - (left.job.turnNo ?? 1);
+  });
+
+  const startToday = new Date(now);
+  startToday.setHours(0, 0, 0, 0);
+  const weekStart = startToday.getTime() - 6 * 24 * 60 * 60 * 1000;
+  const sections = new Map<ConversationSection['label'], ConversationRow[]>([
+    ['Today', []],
+    ['Previous 7 days', []],
+    ['Older', []],
+  ]);
+  for (const row of rows) {
+    const time = Date.parse(row.job.createdAt ?? '') || 0;
+    const label =
+      time >= startToday.getTime() ? 'Today' : time >= weekStart ? 'Previous 7 days' : 'Older';
+    sections.get(label)?.push(row);
+  }
+  return [...sections.entries()]
+    .filter(([, conversations]) => conversations.length > 0)
+    .map(([label, conversations]) => ({ label, conversations }));
+}
+
 export function AgentsSidebar() {
   const pathname = usePathname() ?? '';
   const { state } = useAuth();
@@ -30,16 +90,7 @@ export function AgentsSidebar() {
 
   const { jobs, loading, error } = useAgentJobList();
 
-  // Group by the repository each job actually names, rather than assuming one:
-  // the shell already scales to multi-repo, and hardcoding a single group made
-  // every job look like it belonged to the same one.
-  const repos = Object.entries(
-    jobs.reduce<Record<string, typeof jobs>>((groups, job) => {
-      const key = job.repo || 'unknown';
-      (groups[key] ??= []).push(job);
-      return groups;
-    }, {}),
-  ).map(([name, group]) => ({ name: name.split('/').pop() || name, jobs: group }));
+  const sections = groupJobsByConversation(jobs);
 
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-gray-200 bg-gray-50">
@@ -66,47 +117,28 @@ export function AgentsSidebar() {
           New task
         </Link>
 
-        <div className="mt-4 px-2 text-[11px] font-medium uppercase tracking-wide text-gray-400">
-          Repositories
-        </div>
-
         {loading ? <p className="mt-2 px-2 text-[13px] text-gray-400">Loading…</p> : null}
         {error ? (
           <p className="mt-2 px-2 text-[13px] text-red-600" role="alert">
             {error}
           </p>
         ) : null}
-        {!loading && !error && repos.length === 0 ? (
+        {!loading && !error && sections.length === 0 ? (
           <p className="mt-2 px-2 text-[13px] text-gray-400">No jobs yet.</p>
         ) : null}
 
-        {repos.map((repo) => (
-          <div key={repo.name} className="mt-1.5">
-            <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-gray-800">
-              <svg
-                className="h-4 w-4 text-gray-400"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"
-                />
-              </svg>
-              {repo.name}
-            </div>
-
-            <div className="mt-0.5 space-y-0.5 pl-2">
-              {repo.jobs.map((job) => {
+        {sections.map((section) => (
+          <div key={section.label} className="mt-4">
+            <div className="px-2 text-[11px] font-medium text-gray-400">{section.label}</div>
+            <div className="mt-1 space-y-0.5">
+              {section.conversations.map(({ key, job, jobIds }) => {
                 const href = `/agents/${job.id}`;
-                const isActive = pathname === href;
+                const isActive = jobIds.some((id) => pathname === `/agents/${id}`);
                 return (
                   <Link
-                    key={job.id}
+                    key={key}
                     href={href}
+                    title={`${job.repo} · ${job.title}`}
                     className={`group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] ${
                       isActive
                         ? 'bg-gray-200/80 font-medium text-gray-900'

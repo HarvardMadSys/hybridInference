@@ -18,6 +18,7 @@ const API_BASE = config.apiBase;
 
 /** Server-side job states. The UI maps these onto its own display states. */
 export type AgentJobApiState =
+  | 'waiting'
   | 'queued'
   | 'running'
   | 'publishing'
@@ -36,6 +37,7 @@ export interface AgentJobApi {
   cancel_requested: boolean;
   current_attempt_id: number | null;
   published_pr_url: string | null;
+  published_commit_sha?: string | null;
   detail: string | null;
   budget_usd: number | null;
   metadata: Record<string, unknown> | null;
@@ -49,6 +51,28 @@ export interface AgentJobApi {
   model_calls: number | null;
   setup_egress_tier: string | null;
   agent_egress_tier: string | null;
+  /** Conversation fields are optional so pre-thread deployments remain readable. */
+  thread_id?: string | null;
+  parent_job_id?: string | null;
+  turn_no?: number;
+}
+
+export interface AgentThreadMessageApi {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  job_id: string;
+  created_at: string | null;
+}
+
+export interface AgentThreadApi {
+  thread_id: string;
+  title?: string;
+  repo?: string;
+  messages: AgentThreadMessageApi[];
+  jobs: AgentJobApi[];
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface AgentJobEventApi {
@@ -136,6 +160,13 @@ export async function getAgentJob(jobId: string): Promise<AgentJobApi> {
   return jsonOrThrow<AgentJobApi>(resp);
 }
 
+/** Load the conversation containing a job. Old standalone jobs return null. */
+export async function getAgentJobThread(jobId: string): Promise<AgentThreadApi | null> {
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs/${encodeURIComponent(jobId)}/thread`);
+  if (resp.status === 404) return null;
+  return jsonOrThrow<AgentThreadApi>(resp);
+}
+
 export async function createAgentJob(body: CreateAgentJobRequest): Promise<AgentJobApi> {
   const resp = await fetchWithAuth(API_BASE, '/v1/agent/jobs', {
     method: 'POST',
@@ -152,6 +183,30 @@ export async function cancelAgentJob(
     method: 'POST',
   });
   return jsonOrThrow(resp);
+}
+
+export interface FollowUpAgentJobRequest {
+  prompt: string;
+  /** Omitted values inherit the parent run's harness and model. */
+  runtime?: string;
+  model?: string;
+}
+
+/** Queue another turn in the same thread, after its currently active run. */
+export async function followUpAgentJob(
+  jobId: string,
+  body: FollowUpAgentJobRequest,
+): Promise<AgentJobApi> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/jobs/${encodeURIComponent(jobId)}/follow-ups`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+  return jsonOrThrow<AgentJobApi>(resp);
 }
 
 /** Page through the event log. Used to backfill before the stream attaches. */

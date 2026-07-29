@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getAgentJob,
   getAgentJobArtifact,
+  getAgentJobThread,
   listAgentJobEvents,
   listAgentJobs,
   streamAgentJob,
 } from '@/lib/api/agents';
-import type { AgentJobApi, AgentJobEventApi } from '@/lib/api/agents';
+import type { AgentJobApi, AgentJobEventApi, AgentThreadApi } from '@/lib/api/agents';
 import { toDisplayJob } from './adapt';
 import type { AgentJob } from './types';
 
@@ -76,6 +77,7 @@ export function useAgentJob(jobId: string): {
   const [api, setApi] = useState<AgentJobApi | null>(null);
   const [events, setEvents] = useState<AgentJobEventApi[]>([]);
   const [patch, setPatch] = useState<string | null>(null);
+  const [thread, setThread] = useState<AgentThreadApi | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -87,13 +89,15 @@ export function useAgentJob(jobId: string): {
     if (!jobId) return undefined;
     let cancelled = false;
     seen.current = new Set();
+    setPatch(null);
     setLoading(true);
 
-    Promise.all([getAgentJob(jobId), listAgentJobEvents(jobId)])
-      .then(([job, page]) => {
+    Promise.all([getAgentJob(jobId), listAgentJobEvents(jobId), getAgentJobThread(jobId)])
+      .then(([job, page, foundThread]) => {
         if (cancelled) return;
         setApi(job);
         setEvents(page.events);
+        setThread(foundThread);
         page.events.forEach((event) => seen.current.add(event.id));
         setError(null);
       })
@@ -129,7 +133,8 @@ export function useAgentJob(jobId: string): {
 
   // Live events. Terminal jobs have nothing more to say, so no stream is
   // opened for them at all.
-  const isLive = state === 'running' || state === 'queued' || state === 'publishing';
+  const isLive =
+    state === 'waiting' || state === 'running' || state === 'queued' || state === 'publishing';
   useEffect(() => {
     if (!jobId || !isLive) return undefined;
     const controller = new AbortController();
@@ -141,6 +146,16 @@ export function useAgentJob(jobId: string): {
         if (seen.current.has(event.id)) return;
         seen.current.add(event.id);
         setEvents((current) => [...current, event]);
+        // The stream is also the fastest authority for a waiting/queued child
+        // becoming active; keep the status pill in step without polling.
+        if (event.event_type === 'lifecycle') {
+          const phase = event.payload?.phase;
+          if (phase === 'started' || phase === 'checked_out' || phase === 'setup') {
+            setApi((current) => (current ? { ...current, state: 'running' } : current));
+          } else if (phase === 'publishing') {
+            setApi((current) => (current ? { ...current, state: 'publishing' } : current));
+          }
+        }
       },
       onFinished: () => reload(),
     }).catch(() => {
@@ -151,6 +166,6 @@ export function useAgentJob(jobId: string): {
     return () => controller.abort();
   }, [jobId, isLive, reload]);
 
-  const job = api ? toDisplayJob(api, { events, patch }) : null;
+  const job = api ? toDisplayJob(api, { events, patch, thread }) : null;
   return { job, loading, error, reload };
 }

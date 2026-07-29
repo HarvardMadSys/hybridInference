@@ -2,7 +2,8 @@
 
 Runs **outside** the sandbox. The agent never holds a git credential and never
 pushes: it emits a patch, and this module validates it, applies it to a
-throwaway clone, and pushes exactly one ``agent/<job-id>`` branch.
+throwaway clone, and pushes to the conversation's stable
+``agent/<thread-id>`` branch.
 
 Ordering is the whole point: :func:`~serving.agent_jobs.patch_gate.validate_patch`
 runs *before* the bytes reach a worktree, and the push refspec is pinned to
@@ -155,9 +156,10 @@ def publish_patch(
     clone_url: str,
     base_sha: str,
     commit_message: str,
+    branch_id: str | None = None,
     allow_workflow_changes: bool = False,
 ) -> PublishResult:
-    """Validate and publish one job's patch as an ``agent/<job-id>`` branch.
+    """Validate and publish one run's patch on its stable thread branch.
 
     ``clone_url`` should already carry whatever short-lived credential the
     caller minted — it never leaves this process and never enters the sandbox.
@@ -176,7 +178,7 @@ def publish_patch(
     if not _gate_permits(gate, allow_workflow_changes=allow_workflow_changes):
         raise PublishError(f"patch rejected: {gate.reason}")
 
-    branch = branch_name_for(job_id)
+    branch = branch_name_for(branch_id or job_id)
     workdir = Path(tempfile.mkdtemp(prefix=f"agent-publish-{job_id}-"))
     try:
         repo = workdir / "repo"

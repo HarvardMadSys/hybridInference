@@ -53,6 +53,7 @@ class FakeStore:
         self._job = job
         self.claims = 0
         self.recorded: tuple[str, str] | None = None
+        self.recorded_commit: str | None = None
         self.failed: tuple[str, str] | None = None
         self._record_ok = record_ok
 
@@ -61,8 +62,11 @@ class FakeStore:
         job, self._job = self._job, None
         return job
 
-    async def record_publish(self, *, job_id: str, pr_url: str) -> bool:
+    async def record_publish(
+        self, *, job_id: str, pr_url: str, commit_sha: str | None = None
+    ) -> bool:
         self.recorded = (job_id, pr_url)
+        self.recorded_commit = commit_sha
         return self._record_ok
 
     async def fail_publish(self, *, job_id: str, detail: str) -> None:
@@ -110,9 +114,38 @@ async def test_successful_publish_records_the_pr(monkeypatch):
     url = await publish_one(store, credential=GitHubCredential("t"), base_branch="dev")
     assert url == "https://github.com/o/n/pull/7"
     assert store.recorded == ("ajob_1", url)
+    assert store.recorded_commit == "s"
     assert captured["head_branch"] == "agent/ajob_1"
     assert captured["base_branch"] == "dev"
     assert "ajob_1" in captured["body"]
+
+
+async def test_follow_up_fast_forwards_the_thread_branch_without_opening_another_pr(monkeypatch):
+    """One conversation owns one branch and one draft PR across its turns."""
+    job = {
+        **_JOB,
+        "job_id": "ajob_2",
+        "thread_id": "athr_1",
+        "parent_job_id": "ajob_1",
+        "parent_pr_url": "https://github.com/o/n/pull/7",
+    }
+    store = FakeStore(job)
+    captured_publish: dict[str, Any] = {}
+
+    def fake_publish(**kwargs):
+        captured_publish.update(kwargs)
+        return PublishResult(branch="agent/athr_1", commit_sha="next-sha", changed_files=["x"])
+
+    monkeypatch.setattr(publish_worker, "publish_patch", fake_publish)
+    pr_called = _patch_pr(monkeypatch)
+
+    url = await publish_one(store, credential=GitHubCredential("t"))
+
+    assert url == "https://github.com/o/n/pull/7"
+    assert captured_publish["branch_id"] == "athr_1"
+    assert pr_called == {}
+    assert store.recorded == ("ajob_2", url)
+    assert store.recorded_commit == "next-sha"
 
 
 async def test_gate_rejection_fails_the_job_and_never_pushes(monkeypatch):

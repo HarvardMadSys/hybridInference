@@ -36,11 +36,12 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
 
+from serving.agent_jobs.patch_gate import validate_patch
 from serving.agent_jobs.runtimes import AgentRuntime, NormalizedEvent, get_runtime
 from serving.agent_jobs.sandbox import SandboxBackend, SandboxSpec, build_backend_from_env
 from serving.agent_jobs.setup import build_cache_from_env, run_setup
@@ -152,12 +153,24 @@ class ClaimedJob:
     # in the runner — it is never put in .git/config and never enters the
     # sandbox environment. ``None`` for a public repository.
     clone_token: str | None = None
+    thread_id: str | None = None
+    parent_job_id: str | None = None
+    turn_no: int = 1
+    # Prior platform messages are runtime-neutral. They let a follow-up keep
+    # its conversational context even when the next turn switches harnesses.
+    context_messages: list[dict[str, str]] = field(default_factory=list)
+    # The prior successful run's edits, re-applied before the next sandbox is
+    # started. Credentials still never cross the sandbox boundary.
+    context_patch: str | None = None
 
     @classmethod
     def from_response(cls, body: dict[str, Any]) -> ClaimedJob:
         """Build from the claim endpoint's response."""
         return cls(
             job_id=body["job_id"],
+            thread_id=body.get("thread_id"),
+            parent_job_id=body.get("parent_job_id"),
+            turn_no=int(body.get("turn_no") or 1),
             attempt_id=body["attempt_id"],
             attempt_no=body["attempt_no"],
             repo=body["repo"],
@@ -171,6 +184,8 @@ class ClaimedJob:
             # runner can still talk to one that predates scoped tokens.
             sandbox_token=body.get("sandbox_token") or body["worker_token"],
             clone_token=body.get("clone_token") or None,
+            context_messages=list(body.get("context_messages") or []),
+            context_patch=body.get("context_patch") or None,
         )
 
 
@@ -287,7 +302,13 @@ def claim(
     return ClaimedJob.from_response(body) if body else None
 
 
-def _run_git(args: list[str], *, cwd: str | None = None, env_extra: dict[str, str] | None = None):
+def _run_git(
+    args: list[str],
+    *,
+    cwd: str | None = None,
+    env_extra: dict[str, str] | None = None,
+    input_text: str | None = None,
+):
     """Run one git command hermetically and return the completed process."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **_GIT_ENV, **(env_extra or {})}
     return subprocess.run(
@@ -297,8 +318,49 @@ def _run_git(args: list[str], *, cwd: str | None = None, env_extra: dict[str, st
         capture_output=True,
         text=True,
         timeout=_GIT_TIMEOUT_S,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL if input_text is None else None,
+        input=input_text,
         check=False,
+    )
+
+
+def apply_context_patch(workdir: str, patch: str) -> None:
+    """Safely rehydrate a successful parent run into a fresh worktree."""
+    gate = validate_patch(patch)
+    if not gate.ok:
+        raise WorktreeError(
+            "refusing unsafe parent context patch: " + "; ".join(gate.violations[:3])
+        )
+    applied = _run_git(["apply", "--whitespace=nowarn"], cwd=workdir, input_text=patch)
+    if applied.returncode != 0:
+        raise WorktreeError(f"could not restore parent changes: {applied.stderr.strip()[:500]}")
+
+
+def conversation_prompt(job: ClaimedJob, *, max_context_chars: int = 40_000) -> str:
+    """Build a bounded, runtime-neutral prompt for a follow-up turn."""
+    if not job.context_messages:
+        return job.task_prompt
+    rendered: list[str] = []
+    remaining = max_context_chars
+    # Prefer the newest context when a long-running thread exceeds the bound.
+    for message in reversed(job.context_messages):
+        role = str(message.get("role") or "user").upper()
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        chunk = f"{role}: {content}"
+        if len(chunk) > remaining:
+            chunk = chunk[-remaining:]
+        rendered.append(chunk)
+        remaining -= len(chunk)
+        if remaining <= 0:
+            break
+    rendered.reverse()
+    history = "\n\n".join(rendered)
+    return (
+        "Continue an existing coding task in the current worktree. Previous successful "
+        "edits have already been restored. Preserve them unless the new request asks otherwise.\n\n"
+        f"Conversation so far:\n{history}\n\nNEW USER REQUEST:\n{job.task_prompt}"
     )
 
 
@@ -581,7 +643,7 @@ def run_agent(
     """
     argv, extra_env = runtime.prepare(
         workdir=workdir,
-        task_prompt=job.task_prompt,
+        task_prompt=conversation_prompt(job),
         model=job.model,
         gateway_base_url=gateway_base_url,
         # Only the model-scoped credential crosses into the sandbox. The full
@@ -778,6 +840,20 @@ def run_once(
         control.append_event(
             NormalizedEvent("lifecycle", {"phase": "checked_out", "base_sha": base_sha})
         )
+
+        if job.context_patch:
+            try:
+                apply_context_patch(workdir, job.context_patch)
+            except WorktreeError as exc:
+                control.append_event(NormalizedEvent("error", {"text": str(exc)}))
+                control.finish("failed", str(exc), base_sha=base_sha)
+                return 2
+            control.append_event(
+                NormalizedEvent(
+                    "lifecycle",
+                    {"phase": "context_restored", "parent_job_id": job.parent_job_id},
+                )
+            )
 
         # Setup runs before the agent and under its own egress tier: it needs
         # a package registry, and the turn that follows — the one driven by

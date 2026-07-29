@@ -5,7 +5,7 @@
 // backend genuinely provides are mapped, and fields it does not are left empty
 // so the UI renders an honest blank instead of an invented value.
 
-import type { AgentJobApi, AgentJobEventApi } from '@/lib/api/agents';
+import type { AgentJobApi, AgentJobEventApi, AgentThreadApi } from '@/lib/api/agents';
 
 import type { AgentEvent, AgentJob, AgentJobState, DiffLine } from './types';
 
@@ -18,7 +18,7 @@ import type { AgentEvent, AgentJob, AgentJobState, DiffLine } from './types';
  * still wants a human.
  */
 export function toDisplayState(job: AgentJobApi): AgentJobState {
-  if (job.state === 'queued') return 'queued';
+  if (job.state === 'waiting' || job.state === 'queued') return 'queued';
   if (job.state === 'running' || job.state === 'publishing') return 'running';
   // `succeeded` splits in two because those are different things to a user: a
   // job whose patch is already a draft PR is done, while one that finished
@@ -37,21 +37,44 @@ function asText(payload: Record<string, unknown> | null, ...keys: string[]): str
   return '';
 }
 
+function readableValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return '';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
 /** Map one stored event onto a UI row, or null when it has nothing to show. */
 export function toDisplayEvent(event: AgentJobEventApi): AgentEvent | null {
   const payload = event.payload ?? {};
   const type = event.event_type;
 
-  if (type === 'thinking') return { kind: 'thinking', text: asText(payload, 'text') };
+  // Never carry chain-of-thought into the display model. The UI represents
+  // this as a compact reasoning status, not as model-authored hidden text.
+  if (type === 'thinking') return { kind: 'thinking', text: '' };
   if (type === 'message') return { kind: 'message', text: asText(payload, 'text') };
   if (type === 'usage') return { kind: 'usage', text: asText(payload, 'text') };
 
   if (type === 'tool_use') {
     const name = asText(payload, 'name', 'tool') || 'Bash';
-    // The UI's tool union is narrow; anything else renders as a Bash row so an
-    // unfamiliar tool still appears rather than vanishing.
-    const tool = name === 'Read' || name === 'Edit' ? name : 'Bash';
-    return { kind: 'tool_use', tool, detail: asText(payload, 'detail', 'input', 'text') };
+    return {
+      kind: 'tool_use',
+      tool: name,
+      id: asText(payload, 'id') || undefined,
+      detail: asText(payload, 'detail', 'text') || readableValue(payload.input) || 'Running tool',
+    };
+  }
+
+  if (type === 'tool_result') {
+    return {
+      kind: 'tool_result',
+      text: readableValue(payload.content) || asText(payload, 'text', 'detail'),
+      toolUseId: asText(payload, 'tool_use_id') || undefined,
+      isError: payload.is_error === true,
+    };
   }
 
   if (type === 'error') {
@@ -73,9 +96,9 @@ export function toDisplayEvent(event: AgentJobEventApi): AgentEvent | null {
     return { kind: 'lifecycle', text: asText(payload, 'phase', 'text') || 'lifecycle' };
   }
 
-  // tool_result is folded into its tool_use row by design, and diff is
-  // rendered from the patch artifact rather than as a stream row.
-  if (type === 'tool_result' || type === 'diff') return null;
+  // Diff is rendered from the complete patch artifact rather than a stream
+  // marker that only says whether an artifact was stored.
+  if (type === 'diff') return null;
 
   // An unrecognized kind still appears, rather than silently disappearing.
   return { kind: 'lifecycle', text: type };
@@ -137,18 +160,67 @@ function formatTokens(value: number | null): string {
   return String(value);
 }
 
+function rawEventLine(event: AgentJobEventApi): string {
+  if (event.event_type !== 'thinking') return JSON.stringify(event);
+  return JSON.stringify({
+    ...event,
+    payload: { ...(event.payload ?? {}), text: '[reasoning hidden]' },
+  });
+}
+
 export interface AdaptOptions {
   events?: AgentJobEventApi[];
   patch?: string | null;
+  thread?: AgentThreadApi | null;
+}
+
+/** Preserve attempt boundaries and attach each result to its tool activity. */
+function displayEvents(events: AgentJobEventApi[]): AgentEvent[] {
+  const attemptIds = [...new Set(events.map((event) => event.attempt_id))].sort((a, b) => a - b);
+  const attemptNoById = new Map(attemptIds.map((id, index) => [id, index + 1]));
+  const rows: AgentEvent[] = [];
+  const toolsById = new Map<string, number>();
+  const lastToolByAttempt = new Map<number, number>();
+
+  for (const event of events) {
+    const mapped = toDisplayEvent(event);
+    if (!mapped) continue;
+    const attemptNo = attemptNoById.get(event.attempt_id);
+    const row = { ...mapped, attemptNo } as AgentEvent;
+
+    if (row.kind === 'tool_use') {
+      const rowIndex = rows.push(row) - 1;
+      if (row.id) toolsById.set(`${attemptNo}:${row.id}`, rowIndex);
+      if (attemptNo !== undefined) lastToolByAttempt.set(attemptNo, rowIndex);
+      continue;
+    }
+
+    if (row.kind === 'tool_result') {
+      const explicit = row.toolUseId ? toolsById.get(`${attemptNo}:${row.toolUseId}`) : undefined;
+      const targetIndex =
+        explicit ?? (attemptNo === undefined ? undefined : lastToolByAttempt.get(attemptNo));
+      const target = targetIndex === undefined ? undefined : rows[targetIndex];
+      if (targetIndex !== undefined && target?.kind === 'tool_use' && !target.output) {
+        rows[targetIndex] = {
+          ...target,
+          output: row.text ? row.text.split('\n') : ['Command completed with no output.'],
+          outputIsError: row.isError,
+        };
+        continue;
+      }
+    }
+
+    rows.push(row);
+  }
+
+  return rows;
 }
 
 /** Build the UI job model from the API job plus whatever else we have. */
 export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): AgentJob {
   const events = options.events ?? [];
   const patch = options.patch ?? '';
-  const displayEvents = events
-    .map(toDisplayEvent)
-    .filter((event): event is AgentEvent => event !== null);
+  const renderedEvents = displayEvents(events);
 
   // Attempts are inferred from the event log rather than fetched: an attempt
   // exists precisely because it wrote events, and a superseded control event
@@ -169,18 +241,44 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     note: supersededIds.has(id) ? 'lease expired; a new attempt took over' : undefined,
   }));
 
-  const egressDenials = displayEvents.filter((event) => event.kind === 'egress_denied').length;
+  const egressDenials = renderedEvents.filter((event) => event.kind === 'egress_denied').length;
+  const currentTurn =
+    job.turn_no ?? options.thread?.jobs.find((threadJob) => threadJob.id === job.id)?.turn_no;
+  let priorJobIds: Set<string> | null = null;
+  if (currentTurn !== undefined && options.thread?.jobs.length) {
+    priorJobIds = new Set(
+      options.thread.jobs
+        .filter((threadJob) => (threadJob.turn_no ?? 1) < currentTurn)
+        .map((threadJob) => threadJob.id),
+    );
+  }
+  const priorMessages = (options.thread?.messages ?? [])
+    .filter((message) =>
+      priorJobIds ? priorJobIds.has(message.job_id) : message.job_id !== job.id,
+    )
+    .map((message) => ({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      jobId: message.job_id,
+      createdAt: message.created_at,
+    }));
+  const threadPrUrl = [...(options.thread?.jobs ?? [])]
+    .reverse()
+    .find((threadJob) => threadJob.published_pr_url)?.published_pr_url;
+  const publishedPrUrl = job.published_pr_url ?? threadPrUrl ?? null;
 
   return {
     id: job.id,
-    title: job.task_prompt.split('\n')[0].slice(0, 80),
+    createdAt: job.created_at,
+    title: (options.thread?.title ?? job.task_prompt.split('\n')[0]).slice(0, 80),
+    prompt: job.task_prompt,
     state: toDisplayState(job),
-    stateNote: job.detail ?? undefined,
+    stateNote: job.detail ?? (job.state === 'waiting' ? 'Queued after the current run' : undefined),
     repo: job.repo,
     baseSha: (job.base_sha ?? '').slice(0, 7),
-    // The publisher only ever writes this one branch, so the UI can state it
-    // rather than wait to be told.
-    branch: `agent/${job.id}`,
+    // Every turn in a conversation publishes to the same branch/PR.
+    branch: `agent/${job.thread_id ?? options.thread?.thread_id ?? job.id}`,
     runtime: job.runtime,
     model: job.model,
     // Summed server-side from api_logs. Null there means no ledger is
@@ -194,12 +292,12 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
     networkAgent: tierLabel(job.agent_egress_tier),
     sandbox: '',
     attempts,
-    events: displayEvents,
+    events: renderedEvents,
     eventCount: events.length,
     diffFiles: toDiffFiles(patch),
     diffStat: diffStat(patch),
     diffLines: toDiffLines(patch),
-    rawLines: [],
+    rawLines: events.map(rawEventLine),
     gates: [],
     usage: {
       tokensIn: formatTokens(job.tokens_in),
@@ -208,6 +306,11 @@ export function toDisplayJob(job: AgentJobApi, options: AdaptOptions = {}): Agen
       turns: job.model_calls ?? 0,
     },
     egressDenials,
-    prLabel: job.published_pr_url ? `draft PR ${job.published_pr_url.split('/').pop()}` : undefined,
+    prLabel: publishedPrUrl ? `draft PR ${publishedPrUrl.split('/').pop()}` : undefined,
+    prUrl: publishedPrUrl ?? undefined,
+    threadId: job.thread_id ?? options.thread?.thread_id ?? undefined,
+    parentJobId: job.parent_job_id ?? undefined,
+    turnNo: job.turn_no,
+    threadMessages: priorMessages,
   };
 }
