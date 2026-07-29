@@ -51,6 +51,7 @@ logger = get_logger(__name__)
 # delivered to the running worker via the heartbeat response, and the worker
 # performs the fenced transition to ``cancelled``.
 QUEUED = "queued"
+WAITING = "waiting"
 RUNNING = "running"
 PUBLISHING = "publishing"
 SUCCEEDED = "succeeded"
@@ -77,6 +78,11 @@ def _new_job_id() -> str:
     return f"ajob_{secrets.token_hex(8)}"
 
 
+def _new_thread_id() -> str:
+    """Generate a stable conversation id shared by a thread's runs."""
+    return f"athr_{secrets.token_hex(8)}"
+
+
 def _load_json(value: Any) -> Any:
     """Decode a JSONB column that asyncpg may hand back as str or object."""
     if isinstance(value, (str, bytes)):
@@ -92,6 +98,9 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
     """Convert an ``agent_jobs`` row to a plain dict."""
     return {
         "id": row["id"],
+        "thread_id": row["thread_id"],
+        "parent_job_id": row["parent_job_id"],
+        "turn_no": row["turn_no"],
         "user_id": row["user_id"],
         "repo": row["repo"],
         "base_sha": row["base_sha"],
@@ -103,6 +112,7 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
         "cancel_requested": row["cancel_requested"],
         "current_attempt_id": row["current_attempt_id"],
         "published_pr_url": row["published_pr_url"],
+        "published_commit_sha": row["published_commit_sha"],
         "detail": row["detail"],
         "budget_usd": float(row["budget_usd"]) if row["budget_usd"] is not None else None,
         "metadata": _load_json(row["metadata"]),
@@ -112,8 +122,10 @@ def _job_row_to_dict(row: Any) -> dict[str, Any]:
 
 
 _JOB_COLUMNS = (
-    "id, user_id, repo, base_sha, task_prompt, setup_script, runtime, model, state, "
-    "cancel_requested, current_attempt_id, published_pr_url, detail, budget_usd, metadata, "
+    "id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha, task_prompt, "
+    "setup_script, runtime, model, state, "
+    "cancel_requested, current_attempt_id, published_pr_url, published_commit_sha, detail, "
+    "budget_usd, metadata, "
     "created_at, updated_at"
 )
 
@@ -130,8 +142,23 @@ class AgentJobStore:
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS agent_threads (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    repo TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS agent_jobs (
                     id TEXT PRIMARY KEY,
+                    thread_id TEXT,
+                    parent_job_id TEXT,
+                    turn_no INTEGER NOT NULL DEFAULT 1,
                     user_id TEXT NOT NULL,
                     repo TEXT NOT NULL,
                     base_sha TEXT,
@@ -143,6 +170,7 @@ class AgentJobStore:
                     cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
                     current_attempt_id BIGINT,
                     published_pr_url TEXT,
+                    published_commit_sha TEXT,
                     detail TEXT,
                     budget_usd NUMERIC(12, 6),
                     metadata JSONB,
@@ -157,6 +185,30 @@ class AgentJobStore:
                 "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS budget_usd NUMERIC(12, 6)"
             )
             await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS setup_script TEXT")
+            await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS thread_id TEXT")
+            await conn.execute("ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS parent_job_id TEXT")
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS published_commit_sha TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_jobs ADD COLUMN IF NOT EXISTS turn_no INTEGER NOT NULL DEFAULT 1"
+            )
+            # Existing P0 jobs predate conversations. Give each one a one-turn
+            # thread so old links and history immediately participate in the
+            # new UI instead of becoming a second, legacy product surface.
+            await conn.execute(
+                """
+                INSERT INTO agent_threads (id, user_id, repo, title, created_at, updated_at)
+                SELECT id, user_id, repo,
+                       LEFT(SPLIT_PART(task_prompt, E'\n', 1), 160), created_at, updated_at
+                FROM agent_jobs
+                WHERE thread_id IS NULL
+                ON CONFLICT (id) DO NOTHING
+                """
+            )
+            await conn.execute(
+                "UPDATE agent_jobs SET thread_id = id, turn_no = 1 WHERE thread_id IS NULL"
+            )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_jobs_queued "
                 "ON agent_jobs(created_at) WHERE state = 'queued'"
@@ -164,6 +216,10 @@ class AgentJobStore:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_jobs_user "
                 "ON agent_jobs(user_id, created_at DESC)"
+            )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_jobs_thread_turn "
+                "ON agent_jobs(thread_id, turn_no)"
             )
             await conn.execute(
                 """
@@ -204,6 +260,51 @@ class AgentJobStore:
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_agent_job_events_job "
                 "ON agent_job_events(job_id, id)"
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_thread_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES agent_threads(id),
+                    job_id TEXT NOT NULL REFERENCES agent_jobs(id),
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    source_event_id BIGINT UNIQUE REFERENCES agent_job_events(id),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_thread_messages_thread "
+                "ON agent_thread_messages(thread_id, id)"
+            )
+            await conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_thread_messages_user_job "
+                "ON agent_thread_messages(job_id) WHERE role = 'user'"
+            )
+            await conn.execute(
+                """
+                INSERT INTO agent_thread_messages (thread_id, job_id, role, content, created_at)
+                SELECT thread_id, id, 'user', task_prompt, created_at
+                FROM agent_jobs
+                ON CONFLICT DO NOTHING
+                """
+            )
+            # Preserve the visible answers from jobs completed before thread
+            # storage existed. Normalized ``message`` events are complete
+            # assistant turns (not token deltas), and source_event_id makes
+            # this safe to run at every startup.
+            await conn.execute(
+                """
+                INSERT INTO agent_thread_messages
+                    (thread_id, job_id, role, content, source_event_id, created_at)
+                SELECT j.thread_id, e.job_id, 'assistant', e.payload->>'text', e.id, e.created_at
+                FROM agent_job_events e
+                JOIN agent_jobs j ON j.id = e.job_id
+                WHERE e.event_type = 'message'
+                  AND NULLIF(BTRIM(e.payload->>'text'), '') IS NOT NULL
+                ON CONFLICT (source_event_id) DO NOTHING
+                """
             )
             await conn.execute(
                 """
@@ -302,16 +403,28 @@ class AgentJobStore:
     ) -> dict[str, Any]:
         """Create a queued job and return it."""
         job_id = _new_job_id()
-        async with self._pool.acquire() as conn:
+        thread_id = _new_thread_id()
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO agent_threads (id, user_id, repo, title)
+                VALUES ($1, $2, $3, $4)
+                """,
+                thread_id,
+                user_id,
+                repo,
+                task_prompt.splitlines()[0][:160],
+            )
             row = await conn.fetchrow(
                 f"""
                 INSERT INTO agent_jobs
-                    (id, user_id, repo, base_sha, task_prompt, setup_script, runtime,
-                     model, budget_usd, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                    (id, thread_id, turn_no, user_id, repo, base_sha, task_prompt,
+                     setup_script, runtime, model, budget_usd, metadata)
+                VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
                 RETURNING {_JOB_COLUMNS}
                 """,
                 job_id,
+                thread_id,
                 user_id,
                 repo,
                 base_sha,
@@ -322,7 +435,244 @@ class AgentJobStore:
                 Decimal(str(budget_usd)) if budget_usd is not None else None,
                 json.dumps(metadata) if metadata is not None else None,
             )
+            await conn.execute(
+                """
+                INSERT INTO agent_thread_messages (thread_id, job_id, role, content)
+                VALUES ($1, $2, 'user', $3)
+                """,
+                thread_id,
+                job_id,
+                task_prompt,
+            )
         return _job_row_to_dict(row)
+
+    async def resolve_legacy_published_commit(self, *, parent_job_id: str, commit_sha: str) -> bool:
+        """Backfill an old published run's branch tip and release its child.
+
+        Jobs published before conversation support have a PR URL and patch but
+        no recorded commit. Their migrated thread id deliberately equals the
+        old job id, preserving the existing ``agent/<job-id>`` branch. Once
+        GitHub resolves that branch, the next turn can use it as its pinned
+        base instead of re-applying the old patch and creating divergent git
+        history.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            updated = await conn.fetchval(
+                """
+                UPDATE agent_jobs
+                SET published_commit_sha = $2, updated_at = NOW()
+                WHERE id = $1 AND published_pr_url IS NOT NULL
+                  AND published_commit_sha IS NULL
+                RETURNING id
+                """,
+                parent_job_id,
+                commit_sha,
+            )
+            if updated is None:
+                return False
+            await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET state = 'queued', base_sha = $2, updated_at = NOW()
+                WHERE parent_job_id = $1 AND state = 'waiting'
+                """,
+                parent_job_id,
+                commit_sha,
+            )
+        return True
+
+    async def fail_waiting_follow_up(self, *, job_id: str, detail: str) -> bool:
+        """Fail a follow-up that could not resolve its inherited git base."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            updated = await conn.fetchrow(
+                """
+                UPDATE agent_jobs
+                SET state = 'failed', detail = $2, updated_at = NOW()
+                WHERE id = $1 AND state = 'waiting'
+                RETURNING thread_id, turn_no
+                """,
+                job_id,
+                detail[:2000],
+            )
+            if updated is None:
+                return False
+            await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET state = 'failed', detail = $3, updated_at = NOW()
+                WHERE thread_id = $1 AND turn_no > $2 AND state = 'waiting'
+                """,
+                updated["thread_id"],
+                updated["turn_no"],
+                "an earlier turn could not resume its draft PR branch",
+            )
+        return True
+
+    async def create_follow_up(
+        self,
+        *,
+        parent_job_id: str,
+        user_id: str,
+        prompt: str,
+        runtime: str | None = None,
+        model: str | None = None,
+        budget_usd: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Append a user turn and create the run that will answer it.
+
+        A follow-up submitted while the latest turn is active is stored as
+        ``waiting``. The thread row is locked before selecting that turn, so
+        concurrent submissions form one linear chain instead of siblings that
+        could later mutate the same branch at once. A request made from an old
+        turn also appends to the current tip, matching chat semantics.
+        """
+        job_id = _new_job_id()
+        async with self._pool.acquire() as conn, conn.transaction():
+            requested = await conn.fetchrow(
+                "SELECT thread_id FROM agent_jobs WHERE id = $1 AND user_id = $2",
+                parent_job_id,
+                user_id,
+            )
+            if requested is None:
+                return None
+            thread = await conn.fetchrow(
+                "SELECT id FROM agent_threads WHERE id = $1 AND user_id = $2 FOR UPDATE",
+                requested["thread_id"],
+                user_id,
+            )
+            if thread is None:
+                return None
+            thread_id = thread["id"]
+            parent = await conn.fetchrow(
+                f"SELECT {_JOB_COLUMNS}, "
+                "EXISTS (SELECT 1 FROM agent_job_artifacts a "
+                "        WHERE a.job_id = agent_jobs.id AND a.kind = 'patch') AS has_patch "
+                "FROM agent_jobs WHERE thread_id = $1 "
+                "ORDER BY turn_no DESC LIMIT 1 FOR UPDATE",
+                thread_id,
+            )
+            if parent is None:  # Defensive: every thread is created with turn one.
+                return None
+            turn_no = parent["turn_no"] + 1
+            parent_ready = parent["state"] in (FAILED, CANCELLED) or (
+                parent["state"] == SUCCEEDED
+                and (parent["published_commit_sha"] is not None or not parent["has_patch"])
+            )
+            state = QUEUED if parent_ready else WAITING
+            row = await conn.fetchrow(
+                f"""
+                INSERT INTO agent_jobs
+                    (id, thread_id, parent_job_id, turn_no, user_id, repo, base_sha,
+                     task_prompt, setup_script, runtime, model, state, budget_usd, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+                RETURNING {_JOB_COLUMNS}
+                """,
+                job_id,
+                thread_id,
+                parent["id"],
+                turn_no,
+                user_id,
+                parent["repo"],
+                parent["published_commit_sha"] or parent["base_sha"],
+                prompt,
+                parent["setup_script"],
+                runtime or parent["runtime"],
+                model or parent["model"],
+                state,
+                Decimal(str(budget_usd if budget_usd is not None else parent["budget_usd"]))
+                if (budget_usd is not None or parent["budget_usd"] is not None)
+                else None,
+                json.dumps(_load_json(parent["metadata"]))
+                if parent["metadata"] is not None
+                else None,
+            )
+            await conn.execute(
+                """
+                INSERT INTO agent_thread_messages (thread_id, job_id, role, content)
+                VALUES ($1, $2, 'user', $3)
+                """,
+                thread_id,
+                job_id,
+                prompt,
+            )
+            await conn.execute(
+                "UPDATE agent_threads SET updated_at = NOW() WHERE id = $1", thread_id
+            )
+        return _job_row_to_dict(row)
+
+    async def get_thread_for_job(self, *, job_id: str, user_id: str) -> dict[str, Any] | None:
+        """Return the conversation containing an owned job."""
+        async with self._pool.acquire() as conn:
+            thread = await conn.fetchrow(
+                """
+                SELECT t.id, t.repo, t.title, t.created_at, t.updated_at
+                FROM agent_threads t
+                JOIN agent_jobs j ON j.thread_id = t.id
+                WHERE j.id = $1 AND j.user_id = $2
+                """,
+                job_id,
+                user_id,
+            )
+            if thread is None:
+                return None
+            messages = await conn.fetch(
+                """
+                SELECT m.id, m.role, m.content, m.job_id, m.created_at
+                FROM agent_thread_messages m
+                JOIN agent_jobs j ON j.id = m.job_id
+                WHERE m.thread_id = $1
+                ORDER BY j.turn_no, CASE WHEN m.role = 'user' THEN 0 ELSE 1 END, m.id
+                """,
+                thread["id"],
+            )
+            jobs = await conn.fetch(
+                f"SELECT {_JOB_COLUMNS} FROM agent_jobs WHERE thread_id = $1 ORDER BY turn_no",
+                thread["id"],
+            )
+        return {
+            "id": thread["id"],
+            "repo": thread["repo"],
+            "title": thread["title"],
+            "created_at": thread["created_at"],
+            "updated_at": thread["updated_at"],
+            "messages": [dict(message) for message in messages],
+            "jobs": [_job_row_to_dict(job) for job in jobs],
+        }
+
+    async def follow_up_context(self, *, job_id: str) -> dict[str, Any]:
+        """Return prior turns and the successful parent patch for a claimed run."""
+        async with self._pool.acquire() as conn:
+            job = await conn.fetchrow(
+                "SELECT thread_id, parent_job_id, turn_no FROM agent_jobs WHERE id = $1",
+                job_id,
+            )
+            if job is None or job["parent_job_id"] is None:
+                return {"messages": [], "patch": None}
+            messages = await conn.fetch(
+                """
+                SELECT m.role, m.content
+                FROM agent_thread_messages m
+                JOIN agent_jobs j ON j.id = m.job_id
+                WHERE m.thread_id = $1 AND j.turn_no < $2
+                ORDER BY j.turn_no, CASE WHEN m.role = 'user' THEN 0 ELSE 1 END, m.id
+                """,
+                job["thread_id"],
+                job["turn_no"],
+            )
+            patch = await conn.fetchval(
+                """
+                SELECT a.content
+                FROM agent_job_artifacts a
+                JOIN agent_jobs p ON p.id = a.job_id
+                WHERE a.job_id = $1 AND a.kind = 'patch'
+                  AND p.state IN ('succeeded', 'publishing')
+                  AND p.published_commit_sha IS NULL
+                ORDER BY a.created_at DESC
+                LIMIT 1
+                """,
+                job["parent_job_id"],
+            )
+        return {"messages": [dict(message) for message in messages], "patch": patch}
 
     async def resolve_model_credential(
         self,
@@ -404,6 +754,28 @@ class AgentJobStore:
         workers are safe via ``FOR UPDATE SKIP LOCKED``.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            # Follow-ups may be submitted while a run is active. Promote only
+            # those whose direct parent has settled; a chain therefore
+            # advances one turn at a time even with multiple waiting messages.
+            await conn.execute(
+                """
+                UPDATE agent_jobs child
+                SET state = 'queued', updated_at = NOW()
+                FROM agent_jobs parent
+                WHERE child.state = 'waiting'
+                  AND child.parent_job_id = parent.id
+                  AND parent.state = ANY($1::text[])
+                  AND (
+                        parent.state <> 'succeeded'
+                        OR parent.published_commit_sha IS NOT NULL
+                        OR NOT EXISTS (
+                            SELECT 1 FROM agent_job_artifacts a
+                            WHERE a.job_id = parent.id AND a.kind = 'patch'
+                        )
+                  )
+                """,
+                list(TERMINAL_STATES),
+            )
             job_row = await conn.fetchrow(
                 f"""
                 SELECT {_JOB_COLUMNS} FROM agent_jobs
@@ -629,6 +1001,22 @@ class AgentJobStore:
                     "WHERE id = $1 AND status = 'running'",
                     attempt_id,
                 )
+                has_patch = await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM agent_job_artifacts "
+                    "WHERE job_id = $1 AND kind = 'patch')",
+                    job_id,
+                )
+                # A successful patch still has to cross the trusted publish
+                # boundary. The next turn waits for that commit so it can
+                # fast-forward the same thread branch instead of opening one
+                # PR per message. Failures/cancellations and no-op successes
+                # have no publish step and may release their child now.
+                if to_state != SUCCEEDED or not has_patch:
+                    await conn.execute(
+                        "UPDATE agent_jobs SET state = 'queued', updated_at = NOW() "
+                        "WHERE parent_job_id = $1 AND state = 'waiting'",
+                        job_id,
+                    )
         return True
 
     async def append_event(
@@ -711,7 +1099,7 @@ class AgentJobStore:
         payload: dict[str, Any] | None,
     ) -> int:
         """Insert one event row inside the caller's transaction."""
-        return await conn.fetchval(
+        event_id = await conn.fetchval(
             """
             INSERT INTO agent_job_events (job_id, attempt_id, seq, event_type, payload)
             VALUES (
@@ -726,6 +1114,31 @@ class AgentJobStore:
             event_type,
             json.dumps(payload) if payload is not None else None,
         )
+        text = (payload or {}).get("text")
+        if event_type == "message" and isinstance(text, str) and text.strip():
+            await conn.execute(
+                """
+                INSERT INTO agent_thread_messages
+                    (thread_id, job_id, role, content, source_event_id)
+                SELECT thread_id, id, 'assistant', $2, $3
+                FROM agent_jobs
+                WHERE id = $1 AND thread_id IS NOT NULL
+                ON CONFLICT (source_event_id) DO NOTHING
+                """,
+                job_id,
+                text,
+                event_id,
+            )
+            await conn.execute(
+                """
+                UPDATE agent_threads t
+                SET updated_at = NOW()
+                FROM agent_jobs j
+                WHERE j.id = $1 AND t.id = j.thread_id
+                """,
+                job_id,
+            )
+        return event_id
 
     # ── Artifacts ──────────────────────────────────────────────────────
 
@@ -811,10 +1224,15 @@ class AgentJobStore:
             if row is None:
                 return None
             state = row["state"]
-            if state == QUEUED:
+            if state in (WAITING, QUEUED):
                 await conn.execute(
                     "UPDATE agent_jobs SET state = 'cancelled', cancel_requested = TRUE, "
                     "updated_at = NOW() WHERE id = $1",
+                    job_id,
+                )
+                await conn.execute(
+                    "UPDATE agent_jobs SET state = 'queued', updated_at = NOW() "
+                    "WHERE parent_job_id = $1 AND state = 'waiting'",
                     job_id,
                 )
                 return CANCELLED
@@ -844,10 +1262,20 @@ class AgentJobStore:
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 """
-                SELECT j.id, j.user_id, j.repo, j.base_sha, j.task_prompt, a.content AS patch
+                SELECT j.id, j.thread_id, j.parent_job_id, j.user_id, j.repo, j.base_sha,
+                       j.task_prompt, a.content AS patch,
+                       thread_publish.published_pr_url AS parent_pr_url
                 FROM agent_jobs j
                 JOIN agent_job_artifacts a
                   ON a.job_id = j.id AND a.kind = 'patch'
+                LEFT JOIN LATERAL (
+                    SELECT prior.published_pr_url
+                    FROM agent_jobs prior
+                    WHERE prior.thread_id = j.thread_id
+                      AND prior.published_pr_url IS NOT NULL
+                    ORDER BY prior.turn_no DESC
+                    LIMIT 1
+                ) thread_publish ON TRUE
                 WHERE j.state = 'succeeded'
                   AND j.published_pr_url IS NULL
                 ORDER BY j.updated_at
@@ -873,6 +1301,9 @@ class AgentJobStore:
             )
         return {
             "job_id": row["id"],
+            "thread_id": row["thread_id"],
+            "parent_job_id": row["parent_job_id"],
+            "parent_pr_url": row["parent_pr_url"],
             "user_id": row["user_id"],
             "repo": row["repo"],
             "base_sha": row["base_sha"],
@@ -880,18 +1311,22 @@ class AgentJobStore:
             "patch": row["patch"],
         }
 
-    async def record_publish(self, *, job_id: str, pr_url: str) -> bool:
+    async def record_publish(
+        self, *, job_id: str, pr_url: str, commit_sha: str | None = None
+    ) -> bool:
         """Record the published PR exactly once, returning the job to succeeded."""
         async with self._pool.acquire() as conn, conn.transaction():
             updated = await conn.fetchval(
                 """
                 UPDATE agent_jobs
-                SET state = 'succeeded', published_pr_url = $2, updated_at = NOW()
+                SET state = 'succeeded', published_pr_url = $2,
+                    published_commit_sha = $3, updated_at = NOW()
                 WHERE id = $1 AND published_pr_url IS NULL AND state = 'publishing'
                 RETURNING id
                 """,
                 job_id,
                 pr_url,
+                commit_sha,
             )
             if updated is None:
                 return False
@@ -906,6 +1341,15 @@ class AgentJobStore:
                     event_type="lifecycle",
                     payload={"phase": "published", "pr_url": pr_url},
                 )
+            await conn.execute(
+                """
+                UPDATE agent_jobs
+                SET state = 'queued', base_sha = COALESCE($2, base_sha), updated_at = NOW()
+                WHERE parent_job_id = $1 AND state = 'waiting'
+                """,
+                job_id,
+                commit_sha,
+            )
         return True
 
     async def fail_publish(self, *, job_id: str, detail: str) -> None:
@@ -917,14 +1361,22 @@ class AgentJobStore:
         repository or hide the rejection.
         """
         async with self._pool.acquire() as conn, conn.transaction():
-            await conn.execute(
+            failed = await conn.fetchval(
                 # `state = 'publishing'` as well as the null URL: without it a
                 # late failure report could fail a job that had already moved
                 # on — including one a later attempt published successfully.
                 "UPDATE agent_jobs SET state = 'failed', detail = $2, updated_at = NOW() "
-                "WHERE id = $1 AND published_pr_url IS NULL AND state = 'publishing'",
+                "WHERE id = $1 AND published_pr_url IS NULL AND state = 'publishing' "
+                "RETURNING id",
                 job_id,
                 detail[:2000],
+            )
+            if failed is None:
+                return
+            await conn.execute(
+                "UPDATE agent_jobs SET state = 'queued', updated_at = NOW() "
+                "WHERE parent_job_id = $1 AND state = 'waiting'",
+                job_id,
             )
             attempt_id = await conn.fetchval(
                 "SELECT current_attempt_id FROM agent_jobs WHERE id = $1", job_id
@@ -970,6 +1422,12 @@ class AgentJobStore:
                 stall_seconds,
                 "the publisher stopped before finishing; manual review required",
             )
+            if rows:
+                await conn.execute(
+                    "UPDATE agent_jobs SET state = 'queued', updated_at = NOW() "
+                    "WHERE parent_job_id = ANY($1::text[]) AND state = 'waiting'",
+                    [row["id"] for row in rows],
+                )
         return [row["id"] for row in rows]
 
     async def reap_expired(self, *, max_attempts: int = 3) -> list[dict[str, Any]]:

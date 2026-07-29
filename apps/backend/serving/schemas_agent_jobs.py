@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from serving.agent_jobs.entitlement import REPO_PATTERN
 
@@ -86,6 +86,9 @@ class AgentJobResponse(BaseModel):
     """One agent job as returned to its owner."""
 
     id: str
+    thread_id: str | None = None
+    parent_job_id: str | None = None
+    turn_no: int = 1
     repo: str
     task_prompt: str
     runtime: str
@@ -95,6 +98,7 @@ class AgentJobResponse(BaseModel):
     cancel_requested: bool = False
     current_attempt_id: int | None = None
     published_pr_url: str | None = None
+    published_commit_sha: str | None = None
     detail: str | None = None
     budget_usd: float | None = None
     metadata: dict[str, Any] | None = None
@@ -150,6 +154,46 @@ class AgentJobCancelResponse(BaseModel):
     cancel_requested: bool
 
 
+class AgentFollowUpRequest(BaseModel):
+    """A new user turn appended to an existing task thread."""
+
+    prompt: str = Field(..., min_length=1, max_length=100_000)
+    runtime: str | None = Field(None, description="Optional harness override for this turn.")
+    model: str | None = Field(None, description="Optional model override for this turn.")
+    budget_usd: float | None = Field(None, gt=0, le=MAX_JOB_BUDGET_USD)
+
+    @field_validator("prompt")
+    @classmethod
+    def validate_prompt(cls, value: str) -> str:
+        """Reject visually empty turns and persist the user's trimmed text."""
+        prompt = value.strip()
+        if not prompt:
+            raise ValueError("prompt must not be blank")
+        return prompt
+
+
+class AgentThreadMessageResponse(BaseModel):
+    """One durable user or assistant message in a task thread."""
+
+    id: int
+    role: str
+    content: str
+    job_id: str
+    created_at: str | None = None
+
+
+class AgentThreadResponse(BaseModel):
+    """Conversation context and runs for the thread containing a job."""
+
+    thread_id: str
+    repo: str
+    title: str
+    messages: list[AgentThreadMessageResponse]
+    jobs: list[AgentJobResponse]
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class AgentJobArtifactResponse(BaseModel):
     """One stored artifact (e.g. the produced patch)."""
 
@@ -179,6 +223,9 @@ class WorkerClaimResponse(BaseModel):
     """A claimed job plus the capability token scoped to this attempt."""
 
     job_id: str
+    thread_id: str | None = None
+    parent_job_id: str | None = None
+    turn_no: int = 1
     attempt_id: int
     attempt_no: int
     repo: str
@@ -199,6 +246,14 @@ class WorkerClaimResponse(BaseModel):
             "check it out with. Stays in the runner; never enters the sandbox. Null when "
             "no GitHub App is configured, which is enough for a public repository."
         ),
+    )
+    context_messages: list[dict[str, str]] = Field(
+        default_factory=list,
+        description="Prior platform conversation turns, excluding the current prompt.",
+    )
+    context_patch: str | None = Field(
+        None,
+        description="Successful parent patch to rehydrate before this follow-up runs.",
     )
     metadata: dict[str, Any] | None = None
 

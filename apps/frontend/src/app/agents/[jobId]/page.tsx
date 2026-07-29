@@ -8,7 +8,7 @@ import { useAgentJob } from '@/components/features/agents/useAgentJobs';
 export default function AgentJobPage() {
   const params = useParams<{ jobId: string }>();
   const jobId = params?.jobId ?? '';
-  const { job, loading, error } = useAgentJob(jobId);
+  const { job, loading, error, reload } = useAgentJob(jobId);
 
   if (loading) {
     return (
@@ -44,5 +44,5 @@ export default function AgentJobPage() {
 
   // Keyed on the id: JobDetail holds per-attempt state, and without a remount
   // navigating between jobs kept the previous job's selected attempt.
-  return <JobDetail key={job.id} job={job} />;
+  return <JobDetail key={job.id} job={job} onReload={reload} />;
 }

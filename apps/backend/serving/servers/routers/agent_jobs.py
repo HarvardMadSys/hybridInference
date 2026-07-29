@@ -46,6 +46,7 @@ from serving.agent_jobs.entitlement import (
 )
 from serving.agent_jobs.github_app import AppNotInstalled
 from serving.agent_jobs.model_auth import looks_like_agent_token
+from serving.agent_jobs.patch_gate import branch_name_for
 from serving.agent_jobs.runtimes import registered_runtimes
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
@@ -58,6 +59,7 @@ from serving.schemas_agent_jobs import (
     DEFAULT_JOB_BUDGET_USD,
     EVENT_TYPE_PATTERN,
     AgentConfigResponse,
+    AgentFollowUpRequest,
     AgentJobArtifactResponse,
     AgentJobCancelResponse,
     AgentJobCreate,
@@ -65,6 +67,8 @@ from serving.schemas_agent_jobs import (
     AgentJobEventsResponse,
     AgentJobListResponse,
     AgentJobResponse,
+    AgentThreadMessageResponse,
+    AgentThreadResponse,
     GitHubConnectionResponse,
     GitHubConnectRequest,
     RepoBranchesResponse,
@@ -254,6 +258,9 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
     setup_tier, agent_tier = _egress_tiers()
     return AgentJobResponse(
         id=job["id"],
+        thread_id=job.get("thread_id"),
+        parent_job_id=job.get("parent_job_id"),
+        turn_no=job.get("turn_no") or 1,
         repo=job["repo"],
         task_prompt=job["task_prompt"],
         runtime=job["runtime"],
@@ -263,6 +270,7 @@ def _job_response(job: dict[str, Any], usage: dict[str, Any] | None = None) -> A
         cancel_requested=job["cancel_requested"],
         current_attempt_id=job["current_attempt_id"],
         published_pr_url=job["published_pr_url"],
+        published_commit_sha=job.get("published_commit_sha"),
         detail=job["detail"],
         budget_usd=job.get("budget_usd"),
         metadata=job["metadata"],
@@ -556,6 +564,114 @@ async def cancel_agent_job(
     )
 
 
+@router.post("/jobs/{job_id}/follow-ups", response_model=AgentJobResponse, status_code=201)
+async def create_agent_follow_up(
+    job_id: str,
+    body: AgentFollowUpRequest,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> AgentJobResponse:
+    """Append a turn to a task thread and queue its next isolated run."""
+    job_store = _require_store(store)
+    parent = await _owned_job(job_store, job_id, user)
+    try:
+        await require_entitled_repo(
+            parent["repo"],
+            user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
+    except RepoNotAllowed as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": {"type": "repo_not_allowed", "message": str(exc)}},
+        ) from exc
+    job = await job_store.create_follow_up(
+        parent_job_id=job_id,
+        user_id=user["user_id"],
+        prompt=body.prompt,
+        runtime=body.runtime,
+        model=body.model,
+        budget_usd=body.budget_usd,
+    )
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"type": "not_found", "message": f"No such agent job: {job_id}"}},
+        )
+    # Jobs published before thread support have no recorded commit SHA. Their
+    # migrated thread id preserves the old branch name, so resolve that branch
+    # once and pin the new turn to it before any worker can claim the turn.
+    effective_parent = await job_store.get_job(job.get("parent_job_id") or "")
+    if (
+        job["state"] == "waiting"
+        and effective_parent is not None
+        and effective_parent.get("published_pr_url")
+        and not effective_parent.get("published_commit_sha")
+    ):
+        try:
+            if app_credentials is None:
+                raise RuntimeError("the GitHub App is unavailable")
+            branch_sha = await app_credentials.resolve_ref(
+                job["repo"], branch_name_for(job.get("thread_id") or effective_parent["id"])
+            )
+            await job_store.resolve_legacy_published_commit(
+                parent_job_id=effective_parent["id"], commit_sha=branch_sha
+            )
+        except Exception as exc:
+            await job_store.fail_waiting_follow_up(
+                job_id=job["id"],
+                detail=f"could not resume the existing draft PR branch: {exc}",
+            )
+        job = await job_store.get_job(job["id"]) or job
+    logger.info(
+        "agent_follow_up_created",
+        extra={
+            "event": "agent_follow_up_created",
+            "job_id": job["id"],
+            "thread_id": job.get("thread_id"),
+            "parent_job_id": job.get("parent_job_id"),
+        },
+    )
+    return _job_response(job)
+
+
+@router.get("/jobs/{job_id}/thread", response_model=AgentThreadResponse)
+async def get_agent_thread(
+    job_id: str,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+) -> AgentThreadResponse:
+    """Return the durable conversation containing one of the caller's jobs."""
+    job_store = _require_store(store)
+    await _owned_job(job_store, job_id, user)
+    thread = await job_store.get_thread_for_job(job_id=job_id, user_id=user["user_id"])
+    if thread is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"type": "not_found", "message": f"No thread for {job_id}"}},
+        )
+    return AgentThreadResponse(
+        thread_id=thread["id"],
+        repo=thread["repo"],
+        title=thread["title"],
+        messages=[
+            AgentThreadMessageResponse(
+                id=message["id"],
+                role=message["role"],
+                content=message["content"],
+                job_id=message["job_id"],
+                created_at=_iso(message["created_at"]),
+            )
+            for message in thread["messages"]
+        ],
+        jobs=[_job_response(job) for job in thread["jobs"]],
+        created_at=_iso(thread["created_at"]),
+        updated_at=_iso(thread["updated_at"]),
+    )
+
+
 @router.get("/jobs/{job_id}/events", response_model=AgentJobEventsResponse)
 async def list_agent_job_events(
     job_id: str,
@@ -787,6 +903,7 @@ async def worker_claim(
     # touch its event log, artifacts, or terminal state.
     token = mint_worker_token(**fence, scope=SCOPE_FULL)
     sandbox_token = mint_worker_token(**fence, scope=SCOPE_MODEL)
+    context = await job_store.follow_up_context(job_id=claim["id"])
 
     # A third credential, weaker than either: read-only, this repository only,
     # one hour. The runner needs it to check the repository out — a runner that
@@ -874,6 +991,9 @@ async def worker_claim(
 
     return WorkerClaimResponse(
         job_id=claim["id"],
+        thread_id=claim.get("thread_id"),
+        parent_job_id=claim.get("parent_job_id"),
+        turn_no=claim.get("turn_no") or 1,
         attempt_id=claim["attempt_id"],
         attempt_no=claim["attempt_no"],
         repo=claim["repo"],
@@ -885,6 +1005,8 @@ async def worker_claim(
         worker_token=token,
         sandbox_token=sandbox_token,
         clone_token=clone_token,
+        context_messages=context["messages"],
+        context_patch=context["patch"],
         metadata=claim["metadata"],
     )
 

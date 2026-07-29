@@ -6,7 +6,13 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
-import { streamAgentJob, listAgentJobs, getAgentJobArtifact } from '../agents';
+import {
+  followUpAgentJob,
+  getAgentJobArtifact,
+  getAgentJobThread,
+  listAgentJobs,
+  streamAgentJob,
+} from '../agents';
 import * as client from '../client';
 
 function sseResponse(chunks: string[]): Response {
@@ -70,6 +76,27 @@ describe('agents api', () => {
     // A job that changed nothing legitimately has no patch.
     fetchWithAuth.mockResolvedValue(jsonResponse({ detail: 'nope' }, 404));
     await expect(getAgentJobArtifact('ajob_1', 'patch')).resolves.toBeNull();
+  });
+
+  it('treats a missing thread as an old standalone job', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({ detail: 'not found' }, 404));
+    await expect(getAgentJobThread('ajob_old')).resolves.toBeNull();
+  });
+
+  it('queues a follow-up in the same conversation', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({ id: 'ajob_child', state: 'waiting' }));
+
+    const child = await followUpAgentJob('ajob_parent', { prompt: 'please add a test' });
+
+    expect(child.id).toBe('ajob_child');
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/ajob_parent/follow-ups',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ prompt: 'please add a test' }),
+      }),
+    );
   });
 
   it('delivers events and the terminal frame', async () => {

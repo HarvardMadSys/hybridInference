@@ -57,6 +57,7 @@ describe('toDisplayState', () => {
   });
 
   it.each([
+    ['waiting', 'queued'],
     ['queued', 'queued'],
     ['running', 'running'],
     ['failed', 'failed'],
@@ -88,17 +89,30 @@ describe('toDisplayEvent', () => {
     expect(row).toEqual({ kind: 'lifecycle', text: 'attempt superseded (lease_expired)' });
   });
 
-  it('falls back to a Bash row for an unfamiliar tool', () => {
-    // An unknown tool must still appear rather than disappear from the log.
+  it('keeps an unfamiliar tool visible by its actual name', () => {
     expect(toDisplayEvent(event(1, 'tool_use', { name: 'WebFetch', detail: 'x' }))).toEqual({
       kind: 'tool_use',
-      tool: 'Bash',
+      tool: 'WebFetch',
       detail: 'x',
+      id: undefined,
     });
   });
 
-  it('hides the rows the UI folds elsewhere', () => {
-    expect(toDisplayEvent(event(1, 'tool_result'))).toBeNull();
+  it('keeps tool results available for folding into the matching activity', () => {
+    expect(
+      toDisplayEvent(
+        event(1, 'tool_result', {
+          tool_use_id: 'tool_1',
+          content: 'all green',
+          is_error: false,
+        }),
+      ),
+    ).toEqual({
+      kind: 'tool_result',
+      text: 'all green',
+      toolUseId: 'tool_1',
+      isError: false,
+    });
     expect(toDisplayEvent(event(1, 'diff'))).toBeNull();
   });
 
@@ -128,20 +142,110 @@ describe('toDisplayJob', () => {
     expect(job.attempts[1].status).toBe('live');
   });
 
-  it('counts every stored event, including the ones not rendered as rows', () => {
-    const events = [event(1, 'message'), event(2, 'tool_result')];
+  it('counts every stored event and retains unmatched tool results', () => {
+    const events = [event(1, 'message'), event(2, 'tool_result', { content: 'done' })];
     const job = toDisplayJob(JOB, { events });
     expect(job.eventCount).toBe(2);
-    expect(job.events).toHaveLength(1);
+    expect(job.events).toHaveLength(2);
   });
 
-  it('leaves unknown fields empty rather than inventing them', () => {
+  it('leaves unknown operational fields empty rather than inventing them', () => {
     // The API does not report these yet; a fabricated value would be worse
     // than a blank one.
     const job = toDisplayJob(JOB);
     expect(job.gates).toEqual([]);
     expect(job.rawLines).toEqual([]);
     expect(job.spentUsd).toBe(0);
+  });
+
+  it('folds a tool result into its matching activity and preserves its attempt', () => {
+    const events = [
+      event(1, 'tool_use', { id: 'tool_1', name: 'Bash', input: { command: 'pytest' } }, 7),
+      event(2, 'tool_result', { tool_use_id: 'tool_1', content: '1 passed', is_error: false }, 7),
+    ];
+
+    const job = toDisplayJob(JOB, { events });
+
+    expect(job.events).toEqual([
+      expect.objectContaining({
+        kind: 'tool_use',
+        detail: '{\n  "command": "pytest"\n}',
+        output: ['1 passed'],
+        attemptNo: 1,
+      }),
+    ]);
+    expect(job.rawLines).toHaveLength(2);
+  });
+
+  it('does not expose raw model reasoning in the operational log', () => {
+    const job = toDisplayJob(JOB, {
+      events: [event(1, 'thinking', { text: 'private chain of thought' })],
+    });
+
+    expect(job.rawLines[0]).not.toContain('private chain of thought');
+    expect(job.rawLines[0]).toContain('[reasoning hidden]');
+  });
+
+  it('renders earlier thread messages without duplicating the current turn', () => {
+    const job = toDisplayJob(
+      { ...JOB, thread_id: 'thread_1', parent_job_id: 'ajob_0', turn_no: 2 },
+      {
+        thread: {
+          thread_id: 'thread_1',
+          title: 'Stable conversation title',
+          jobs: [],
+          messages: [
+            {
+              id: 1,
+              role: 'user',
+              content: 'first question',
+              job_id: 'ajob_0',
+              created_at: null,
+            },
+            {
+              id: 2,
+              role: 'assistant',
+              content: 'first answer',
+              job_id: 'ajob_0',
+              created_at: null,
+            },
+            {
+              id: 3,
+              role: 'user',
+              content: JOB.task_prompt,
+              job_id: JOB.id,
+              created_at: null,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(job.prompt).toBe(JOB.task_prompt);
+    expect(job.title).toBe('Stable conversation title');
+    expect(job.turnNo).toBe(2);
+    expect(job.branch).toBe('agent/thread_1');
+    expect(job.threadMessages?.map((message) => message.content)).toEqual([
+      'first question',
+      'first answer',
+    ]);
+  });
+
+  it('does not render turns queued after the job being viewed as history', () => {
+    const current = { ...JOB, thread_id: 'thread_1', turn_no: 2 };
+    const future = { ...JOB, id: 'ajob_3', thread_id: 'thread_1', turn_no: 3 };
+    const job = toDisplayJob(current, {
+      thread: {
+        thread_id: 'thread_1',
+        jobs: [{ ...JOB, id: 'ajob_1', thread_id: 'thread_1', turn_no: 1 }, current, future],
+        messages: [
+          { id: 1, role: 'user', content: 'first', job_id: 'ajob_1', created_at: null },
+          { id: 2, role: 'user', content: 'future', job_id: 'ajob_3', created_at: null },
+        ],
+      },
+    });
+
+    expect(job.threadMessages?.map((message) => message.content)).toEqual(['first']);
   });
 
   it('carries the budget and the PR label through', () => {
@@ -151,6 +255,29 @@ describe('toDisplayJob', () => {
       published_pr_url: 'https://github.com/o/n/pull/44',
     });
     expect(job.budgetUsd).toBe(5);
+    expect(job.prLabel).toBe('draft PR 44');
+  });
+
+  it('keeps the thread draft PR visible on a later no-op turn', () => {
+    const previous = {
+      ...JOB,
+      id: 'ajob_0',
+      thread_id: 'thread_1',
+      turn_no: 1,
+      published_pr_url: 'https://github.com/o/n/pull/44',
+    };
+    const current = {
+      ...JOB,
+      thread_id: 'thread_1',
+      turn_no: 2,
+      state: 'succeeded' as const,
+      published_pr_url: null,
+    };
+    const job = toDisplayJob(current, {
+      thread: { thread_id: 'thread_1', jobs: [previous, current], messages: [] },
+    });
+
+    expect(job.prUrl).toBe('https://github.com/o/n/pull/44');
     expect(job.prLabel).toBe('draft PR 44');
   });
 });

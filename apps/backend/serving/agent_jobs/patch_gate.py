@@ -2,9 +2,9 @@
 
 The patch-out model puts *no* credential inside the sandbox: the agent emits a
 patch, and a trusted publisher outside the sandbox applies it, pushes an
-``agent/<job-id>`` branch and opens a draft PR. That makes this module the
-security boundary — everything an untrusted agent can influence passes through
-here before it becomes a git object.
+``agent/<thread-id>`` branch and opens or updates a draft PR. That makes this
+module the security boundary — everything an untrusted agent can influence
+passes through here before it becomes a git object.
 
 Four gates, in the order they matter:
 

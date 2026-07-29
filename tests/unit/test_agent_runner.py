@@ -19,6 +19,7 @@ from serving.agent_jobs.runner import (
     ClaimedJob,
     LeaseLost,
     build_patch,
+    conversation_prompt,
     run_agent,
 )
 from serving.agent_jobs.runtimes import ClaudeCodeRuntime, GenericRuntime
@@ -38,6 +39,26 @@ _JOB = ClaimedJob(
     worker_token="ajt.a.b",
     sandbox_token="ajt.model.b",
 )
+
+
+def test_follow_up_prompt_replays_runtime_neutral_conversation():
+    """A harness switch still receives the prior thread and current request."""
+    job = ClaimedJob(
+        **{
+            **_JOB.__dict__,
+            "task_prompt": "now add tests",
+            "context_messages": [
+                {"role": "user", "content": "fix the timeout"},
+                {"role": "assistant", "content": "I updated the middleware"},
+            ],
+        }
+    )
+
+    prompt = conversation_prompt(job)
+
+    assert "USER: fix the timeout" in prompt
+    assert "ASSISTANT: I updated the middleware" in prompt
+    assert prompt.endswith("NEW USER REQUEST:\nnow add tests")
 
 
 @pytest.fixture(autouse=True)
