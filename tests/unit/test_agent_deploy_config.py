@@ -242,9 +242,16 @@ def test_both_substrates_pin_the_same_agent_cli_versions():
     in the job's own record explains. `latest` on the Actions side already cost
     a real run once.
     """
-    workflow = (
-        Path(__file__).resolve().parents[2] / ".github/workflows/agent-job-runner.yml"
-    ).read_text()
+    # One of the two substrates is the Actions workflow, and the public export
+    # replaces .github/workflows/ wholesale — so in an exported tree there is
+    # no second thing to agree with, and "they pin the same versions" is not a
+    # claim that can be false there. Skipped rather than excluding the file:
+    # the other twenty cases here assert the sandbox image and the runner
+    # compose, both of which travel and are worth running downstream.
+    path = Path(__file__).resolve().parents[2] / ".github/workflows/agent-job-runner.yml"
+    if not path.exists():
+        pytest.skip("no Actions workflow in this tree — only one substrate to check")
+    workflow = path.read_text()
     image = _DOCKERFILE.read_text()
 
     for name in ("CLAUDE_CODE_VERSION", "CODEX_VERSION"):
