@@ -760,12 +760,20 @@ def run_once(
 ) -> int:
     """Claim one job, run it, and report the outcome. Returns a process exit code.
 
-    ``backend`` decides where the agent actually executes. It is checked
-    before a job is claimed so a misconfigured host fails without first
-    taking a job off the queue and burning one of its attempts.
+    ``backend`` decides where the agent actually executes. When this function
+    builds it, it is also preflighted here — a misconfigured host then fails
+    without first taking a job off the queue and burning one of its attempts.
+
+    A caller that *supplies* a backend has already preflighted it, and must
+    not have it re-checked per call. Preflight spawns several ``docker``
+    subprocesses (version, one network inspect per phase) and logs the
+    shared-kernel warning, so running it per claim meant a standing runner
+    polling every 5s spent ~17k probes and 17k warning lines a day doing
+    nothing — found by watching an idle runner, not by reading it.
     """
-    backend = backend or build_backend_from_env()
-    backend.preflight()
+    if backend is None:
+        backend = build_backend_from_env()
+        backend.preflight()
 
     job = claim(
         base_url=base_url,
@@ -1006,6 +1014,14 @@ def run_forever(
             )
         except KeyboardInterrupt:
             return 0
+        except httpx.TransportError as exc:
+            # The gateway is not answering — no job was claimed, so calling
+            # this a failed job sends whoever reads the log looking for one.
+            # Normal at startup: compose starts the runner and the gateway
+            # together, and the runner wins the race about half the time.
+            print(
+                f"agent runner: gateway unreachable, retrying: {exc}", file=sys.stderr, flush=True
+            )
         except Exception as exc:
             # Keep serving: the store owns this job's outcome, and one bad
             # repository must not stop every other queued job.

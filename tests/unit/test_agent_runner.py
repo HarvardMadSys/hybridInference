@@ -340,3 +340,67 @@ def test_failed_tool_calls_are_reported_not_swallowed(tmp_path):
     assert "permission denied" in errors[0]
     # The owner sees it in the stream, not only in the final detail string.
     assert any(kind == "error" for kind, _payload in control.events)
+
+
+class _CountingBackend:
+    """Records how often a supplied backend is preflighted."""
+
+    name = "counting"
+
+    def __init__(self) -> None:
+        self.preflights = 0
+
+    def preflight(self, workdir_root: str | None = None) -> None:
+        self.preflights += 1
+
+    def has_binary(self, _name: str) -> bool:
+        return True
+
+    def base_env(self) -> dict[str, str]:
+        return {}
+
+
+def test_a_supplied_backend_is_not_preflighted_per_claim(monkeypatch, tmp_path):
+    """An idle standing runner must not re-probe Docker on every poll.
+
+    Preflight spawns several `docker` subprocesses and logs the shared-kernel
+    warning. Running it per claim meant an idle runner polling every 5s burned
+    ~17k probes and wrote ~17k warning lines a day — visible only once a
+    runner actually stood up and idled.
+    """
+    monkeypatch.setattr(runner_mod, "claim", lambda **_kwargs: None)
+    backend = _CountingBackend()
+
+    for _ in range(3):
+        runner_mod.run_once(
+            base_url="http://gw",
+            dispatcher_token="d",
+            worker_id="w",
+            workdir=str(tmp_path),
+            backend=backend,
+        )
+
+    assert backend.preflights == 0, "run_once preflighted a backend its caller already preflighted"
+
+
+def test_a_self_built_backend_is_still_preflighted_before_claiming(monkeypatch, tmp_path):
+    """The one-shot path keeps failing fast on a misconfigured host."""
+    backend = _CountingBackend()
+    monkeypatch.setattr(runner_mod, "build_backend_from_env", lambda: backend)
+    claims: list[bool] = []
+
+    def _claim(**_kwargs):
+        claims.append(True)
+        return None
+
+    monkeypatch.setattr(runner_mod, "claim", _claim)
+
+    runner_mod.run_once(
+        base_url="http://gw",
+        dispatcher_token="d",
+        worker_id="w",
+        workdir=str(tmp_path),
+    )
+
+    assert backend.preflights == 1
+    assert claims, "preflight must not have replaced the claim"
