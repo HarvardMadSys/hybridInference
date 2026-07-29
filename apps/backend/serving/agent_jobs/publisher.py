@@ -17,6 +17,7 @@ branch so the caller can open the PR against it.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -41,17 +42,29 @@ _GIT_TIMEOUT_S = 120.0
 # injection into a process that holds the repository credential.
 _COMMIT_SHA = re.compile(r"[0-9a-fA-F]{7,64}")
 
+
 # Hermetic git: no user config, no hooks, no credential helpers, no prompts.
+# The identity these commits carry. A deployment sets its own; the defaults
+# name the software rather than one site. Read from the runner's environment,
+# which a patch cannot reach — the whole point of the dictionary below.
+def _identity_name() -> str:
+    return os.environ.get("AGENT_GIT_AUTHOR_NAME") or "HybridInference Agent"
+
+
+def _identity_email() -> str:
+    return os.environ.get("AGENT_GIT_AUTHOR_EMAIL") or "agent@localhost"
+
+
 # A patch must not be able to reach configuration that changes what git does.
 _GIT_ENV = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_CONFIG_SYSTEM": "/dev/null",
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_ASKPASS": "/bin/true",
-    "GIT_COMMITTER_NAME": "FreeInference Agent",
-    "GIT_COMMITTER_EMAIL": "agent@freeinference.org",
-    "GIT_AUTHOR_NAME": "FreeInference Agent",
-    "GIT_AUTHOR_EMAIL": "agent@freeinference.org",
+    "GIT_COMMITTER_NAME": _identity_name(),
+    "GIT_COMMITTER_EMAIL": _identity_email(),
+    "GIT_AUTHOR_NAME": _identity_name(),
+    "GIT_AUTHOR_EMAIL": _identity_email(),
 }
 
 

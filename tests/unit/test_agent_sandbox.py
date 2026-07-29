@@ -66,7 +66,7 @@ def test_container_command_carries_the_isolation_flags():
 
 def test_plain_container_is_not_vm_isolated():
     """A shared-kernel container must not claim VM isolation."""
-    backend = ContainerBackend()
+    backend = ContainerBackend(image="img:1")
     assert backend.is_vm_isolated is False
     assert "--runtime" not in backend.build_command(_SPEC)
 
@@ -74,7 +74,11 @@ def test_plain_container_is_not_vm_isolated():
 def test_kata_backend_requests_the_vm_runtime():
     """Selecting kata puts a kernel boundary around each job."""
     backend = build_backend_from_env(
-        {"AGENT_SANDBOX_BACKEND": "kata", "AGENT_SANDBOX_NETWORK": "agent-egress"}
+        {
+            "AGENT_SANDBOX_BACKEND": "kata",
+            "AGENT_SANDBOX_IMAGE": "img:1",
+            "AGENT_SANDBOX_NETWORK": "agent-egress",
+        }
     )
     assert isinstance(backend, ContainerBackend)
     assert backend.is_vm_isolated is True
@@ -84,7 +88,7 @@ def test_kata_backend_requests_the_vm_runtime():
 
 def test_env_reaches_the_container_as_env_flags_not_inherited():
     """Agent environment is passed explicitly, never inherited by accident."""
-    command = ContainerBackend().build_command(
+    command = ContainerBackend(image="img:1").build_command(
         SandboxSpec(argv=["x"], workdir="/w", env={"TOKEN": "secret", "B": "2"})
     )
     assert "TOKEN=secret" in command
@@ -95,7 +99,10 @@ def test_backend_selection_from_env():
     """The three configured shapes resolve to the right backend."""
     assert isinstance(build_backend_from_env({}), ProcessBackend)
     assert isinstance(
-        build_backend_from_env({"AGENT_SANDBOX_BACKEND": "container"}), ContainerBackend
+        build_backend_from_env(
+            {"AGENT_SANDBOX_BACKEND": "container", "AGENT_SANDBOX_IMAGE": "img:1"}
+        ),
+        ContainerBackend,
     )
     with pytest.raises(SandboxError):
         build_backend_from_env({"AGENT_SANDBOX_BACKEND": "nonsense"})
@@ -107,6 +114,7 @@ def test_explicit_runtime_override_wins():
         {
             "AGENT_SANDBOX_BACKEND": "container",
             "AGENT_SANDBOX_RUNTIME": "runsc",
+            "AGENT_SANDBOX_IMAGE": "img:1",
             "AGENT_SANDBOX_NETWORK": "agent-egress",
         }
     )
@@ -114,6 +122,19 @@ def test_explicit_runtime_override_wins():
     assert backend.build_command(_SPEC)[backend.build_command(_SPEC).index("--runtime") + 1] == (
         "runsc"
     )
+
+
+def test_a_container_backend_without_an_image_refuses() -> None:
+    """No default, because an unqualified name is not inert.
+
+    `docker run hybridinference/agent-sandbox` resolves through Docker Hub, so
+    a default here hands the container an untrusted agent runs inside to
+    whoever registered that namespace.
+    """
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_IMAGE"):
+        build_backend_from_env({"AGENT_SANDBOX_BACKEND": "container"})
+    with pytest.raises(ValueError, match="AGENT_SANDBOX_IMAGE"):
+        build_backend_from_env({"AGENT_SANDBOX_BACKEND": "kata", "AGENT_SANDBOX_IMAGE": "  "})
 
 
 def test_runtime_flag_is_positioned_where_docker_reads_it():
@@ -300,7 +321,9 @@ def test_an_unset_network_is_refused_not_defaulted_to_the_internet():
     untrusted repository code unrestricted outbound internet — the opposite of
     the rule the process backend already follows.
     """
-    backend = build_backend_from_env({"AGENT_SANDBOX_BACKEND": "container"})
+    backend = build_backend_from_env(
+        {"AGENT_SANDBOX_BACKEND": "container", "AGENT_SANDBOX_IMAGE": "img:1"}
+    )
 
     assert backend.network == "", "there must be no open-network fallback"
     # And nothing downstream invents one: resolving the agent phase's network
@@ -316,6 +339,7 @@ def test_open_egress_requires_an_explicit_acknowledgement():
     backend = build_backend_from_env(
         {
             "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_IMAGE": "img:1",
             "AGENT_SANDBOX_NETWORK": "some-open-network",
             "AGENT_SANDBOX_ALLOW_OPEN_NETWORK": "1",
         }
@@ -335,6 +359,7 @@ def test_the_phase_decides_which_network_the_container_joins():
     backend = build_backend_from_env(
         {
             "AGENT_SANDBOX_BACKEND": "container",
+            "AGENT_SANDBOX_IMAGE": "img:1",
             "AGENT_EGRESS_NETWORK_PLATFORM_ONLY": "agent-egress",
             "AGENT_EGRESS_NETWORK_TRUSTED": "agent-setup",
         }
@@ -357,7 +382,11 @@ def test_the_bind_probe_uses_the_runtime_jobs_will_use():
     cannot do if it exercises a different runtime.
     """
     backend = build_backend_from_env(
-        {"AGENT_SANDBOX_BACKEND": "kata", "AGENT_SANDBOX_NETWORK": "agent-egress"}
+        {
+            "AGENT_SANDBOX_BACKEND": "kata",
+            "AGENT_SANDBOX_IMAGE": "img:1",
+            "AGENT_SANDBOX_NETWORK": "agent-egress",
+        }
     )
     captured: dict = {}
 

@@ -47,7 +47,12 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-DEFAULT_IMAGE = "ghcr.io/harvardmadsys/freeinference-agent-sandbox:latest"
+# There is no default image, deliberately. Upstream publishes none, and an
+# unqualified name is not an inert placeholder: `docker run hybridinference/
+# agent-sandbox` resolves through Docker Hub, so anyone who registered that
+# namespace would be supplying the container an untrusted agent runs inside.
+# A runner started with a container backend and no AGENT_SANDBOX_IMAGE refuses
+# instead.
 # containerd's Kata shim. Docker exposes VM-isolated runtimes under the same
 # `--runtime` flag as runc, which is why one backend covers both: they are the
 # same mechanism with a different isolation boundary underneath.
@@ -297,7 +302,7 @@ class ContainerBackend(SandboxBackend):
     def __init__(
         self,
         *,
-        image: str = DEFAULT_IMAGE,
+        image: str,
         runtime: str | None = None,
         network: str = "bridge",
         docker_binary: str = "docker",
@@ -701,8 +706,16 @@ def build_backend_from_env(env: dict[str, str] | None = None) -> SandboxBackend:
         runtime = source.get("AGENT_SANDBOX_RUNTIME") or (
             KATA_RUNTIME if choice == "kata" else None
         )
+        image = (source.get("AGENT_SANDBOX_IMAGE") or "").strip()
+        if not image:
+            raise ValueError(
+                "AGENT_SANDBOX_BACKEND=" + choice + " needs AGENT_SANDBOX_IMAGE. "
+                "There is no default: an unqualified name would be resolved "
+                "through Docker Hub, and this image is what an untrusted agent "
+                "runs inside."
+            )
         return ContainerBackend(
-            image=source.get("AGENT_SANDBOX_IMAGE") or DEFAULT_IMAGE,
+            image=image,
             runtime=runtime,
             # No fallback. `bridge` meant an unset variable gave the agent full
             # outbound internet — a missing setting opening the boundary rather
