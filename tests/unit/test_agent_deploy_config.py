@@ -280,6 +280,15 @@ def test_the_runner_reads_the_bounds_the_overlay_configures(monkeypatch, compose
     assert args.agent_timeout == 600.0
 
 
+def test_the_runner_reads_the_neutral_gateway_variable(monkeypatch):
+    """The self-hosted runner uses the same gateway variable as compose."""
+    monkeypatch.setenv("AGENT_GATEWAY_URL", "https://gateway.example.com")
+
+    args = build_parser().parse_args([])
+
+    assert args.base_url == "https://gateway.example.com"
+
+
 def test_an_unparsable_bound_falls_back_rather_than_crash_looping(monkeypatch):
     """A typo in an env var must not take the runner down on every restart."""
     monkeypatch.setenv("AGENT_LEASE_TTL", "two minutes")

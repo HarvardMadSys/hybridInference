@@ -37,6 +37,7 @@ def build_auth_test_env_defaults(overrides: Mapping[str, str] | None = None) -> 
         "SMTP_USER": "",
         "SMTP_PASSWORD": "",
         "BASE_URL": "http://localhost:8000",
+        "SITE_SUPPORT_EMAIL": "",
         "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
         "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
     }

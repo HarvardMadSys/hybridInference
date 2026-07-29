@@ -144,7 +144,7 @@ all-with-frontend: format check-all  ## Format and check everything (backend + f
 # Which deployment's identity `make up` and `make build` compile in.
 #
 # Discovered by default, because the runbooks tell operators to run these by
-# hand on the server (docs/developer/freeinference.md, adding-models.md), and a
+# hand on the server (docs/developer/deployment.md, adding-models.md), and a
 # rebuild that quietly dropped the identity would publish an unbranded console
 # from a routine command. Discovery keeps that working with no change to any
 # machine.

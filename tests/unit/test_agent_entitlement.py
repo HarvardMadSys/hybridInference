@@ -34,25 +34,25 @@ def test_an_unconfigured_deployment_allows_nothing():
 
 def test_an_exact_entry_is_allowed_and_its_neighbours_are_not():
     """Entitlement is per repository, not per prefix."""
-    env = {"AGENT_REPO_ALLOWLIST": "HarvardMadSys/hybridInference"}
+    env = {"AGENT_REPO_ALLOWLIST": "ExampleOrg/ExampleRepo"}
 
-    assert repo_is_allowed("HarvardMadSys/hybridInference", env)
+    assert repo_is_allowed("ExampleOrg/ExampleRepo", env)
     # Case-insensitive, as GitHub is.
-    assert repo_is_allowed("harvardmadsys/hybridinference", env)
+    assert repo_is_allowed("exampleorg/examplerepo", env)
     # A different repo under the same owner is not implied.
-    assert not repo_is_allowed("HarvardMadSys/other", env)
+    assert not repo_is_allowed("ExampleOrg/other", env)
     # And a repo whose name merely starts the same must not match.
-    assert not repo_is_allowed("HarvardMadSys/hybridInference-evil", env)
+    assert not repo_is_allowed("ExampleOrg/ExampleRepo-evil", env)
 
 
 def test_an_owner_wildcard_covers_that_owner_only():
     """`owner/*` is enough for "our own org" without a pattern language."""
-    env = {"AGENT_REPO_ALLOWLIST": "HarvardMadSys/*"}
+    env = {"AGENT_REPO_ALLOWLIST": "ExampleOrg/*"}
 
-    assert repo_is_allowed("HarvardMadSys/anything", env)
+    assert repo_is_allowed("ExampleOrg/anything", env)
     assert not repo_is_allowed("SomeoneElse/anything", env)
     # Not a prefix match on the owner either.
-    assert not repo_is_allowed("HarvardMadSysEvil/anything", env)
+    assert not repo_is_allowed("ExampleOrgEvil/anything", env)
 
 
 @pytest.mark.parametrize(

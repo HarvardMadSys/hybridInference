@@ -970,12 +970,9 @@ def build_parser() -> argparse.ArgumentParser:
     a runner container crash-loops.
     """
     parser = argparse.ArgumentParser(description="Run queued agent jobs.")
-    # AGENT_GATEWAY_URL is the neutral name; the deployment's compose already
-    # spells it that way on the outside. FREEINFERENCE_BASE_URL is still read
-    # so a host that sets only the old one keeps working.
     parser.add_argument(
         "--base-url",
-        default=os.environ.get("AGENT_GATEWAY_URL") or os.environ.get("FREEINFERENCE_BASE_URL", ""),
+        default=os.environ.get("AGENT_GATEWAY_URL", ""),
     )
     parser.add_argument("--worker-id", default=os.environ.get("AGENT_WORKER_ID", "runner"))
     parser.add_argument("--workdir", default=".")

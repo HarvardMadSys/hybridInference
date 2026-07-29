@@ -1,9 +1,8 @@
 # Cloud agent sandbox — operations
 
 What is on `dev` today, what is verified, and the exact steps left before a
-job can run for real. Design rationale lives in
-[issue #1041](https://github.com/HarvardMadSys/hybridInference/issues/1041);
-this page is only about running it.
+job can run for real. This page is about operating it; design rationale lives
+in the project's issue history.
 
 ## What a job does
 
@@ -175,7 +174,7 @@ installation covering the repository being published to.
 
 ```bash
 AGENT_GITHUB_APP_ID=123456
-AGENT_GITHUB_APP_PRIVATE_KEY_PATH=/etc/freeinference/agent-app.pem
+AGENT_GITHUB_APP_PRIVATE_KEY_PATH=/etc/hybridinference/agent-app.pem
 ```
 
 The App needs `contents: write` and `pull_requests: write` and nothing else —
@@ -202,9 +201,10 @@ produce patches, they just never become PRs.
 
 ```bash
 docker build -f deploy/docker/Dockerfile.agent-sandbox \
-             -t freeinference/agent-sandbox:latest .
+             -t hybridinference-agent-sandbox:latest .
 
-docker compose -f deploy/docker/docker-compose.yml \
+AGENT_SANDBOX_IMAGE=hybridinference-agent-sandbox:latest \
+  docker compose -f deploy/docker/docker-compose.yml \
                -f deploy/docker/docker-compose.agent-runner.yml \
                up -d --scale agent-runner=4
 ```
@@ -215,14 +215,14 @@ runners share one queue with no leader and no sharding.
 | Variable | Default | Notes |
 |---|---|---|
 | `AGENT_SANDBOX_BACKEND` | `kata` | `process` (no isolation) refuses to start unless `AGENT_SANDBOX_ALLOW_UNISOLATED=1` |
-| `AGENT_SANDBOX_IMAGE` | `freeinference/agent-sandbox:latest` | |
+| `AGENT_SANDBOX_IMAGE` | required | Image built from `Dockerfile.agent-sandbox` or an equivalent deployment-owned image |
 | `AGENT_SANDBOX_NETWORK` | `agent-egress` | Declared `internal: true`, so a sandbox reaches the gateway and nothing else. Also the `platform_only` network unless `AGENT_EGRESS_NETWORK_PLATFORM_ONLY` overrides it |
 | `AGENT_EGRESS_SETUP_TIER` / `_AGENT_TIER` | `platform_only` | One of `platform_only` / `trusted` / `custom` / `full`, **per phase**. The design's external-beta shape is setup=`trusted`, agent=`platform_only`; the overlay ships both closed because there is no setup phase yet and no allowlist-fronted network to run one on |
 | `AGENT_EGRESS_NETWORK_*` | — | Network per tier. A tier with no network is an error when a phase selects it, never a fall back to a more open one |
 | `AGENT_SNAPSHOT_ROOT` | — | Where setup snapshots live. Unset disables caching, so every job reinstalls. Bind it at the same path inside and out, like the worktrees |
 | `AGENT_SNAPSHOT_TTL_S` | `604800` | Seven days, as the design specifies. A stale entry means a wrong dependency tree |
 | `AGENT_EGRESS_ALLOWLIST` | — | Checked at startup: it may not contain an agent vendor's telemetry domain, which would let a "closed" sandbox report on the repository it was given |
-| `AGENT_WORKDIR_ROOT` | `/var/lib/freeinference/agent-jobs` | **A host path, bind-mounted at the same path inside the runner.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
+| `AGENT_WORKDIR_ROOT` | `/var/lib/hybridinference/agent-jobs` | **A host path, bind-mounted at the same path inside the runner.** Preflight test-mounts it and fails at startup if not — otherwise every job dies at spawn with an opaque exit 125 |
 | `AGENT_SANDBOX_UID` / `_GID` | `10001` | Only for a custom sandbox image; must match its user |
 | `AGENT_REPO_ALLOWLIST` | — | Comma-separated `owner/name`, or `owner/*`, for the single-tenant dogfood. Users who connect the App themselves do not need it; unset simply means the only entitlement is a user's own connection |
 | `AGENT_GITHUB_APP_CLIENT_ID` / `_CLIENT_SECRET` | — | The App's OAuth half. Only the user-facing connect flow needs it; minting installation tokens uses the private key alone |
@@ -257,28 +257,19 @@ The isolation boundary is between the runner and the sandbox it starts, not
 around the runner. Running the runner unprivileged does not buy isolation — it
 already holds the dispatcher credential and the Docker socket.
 
-## Layer-2 model matrix
+## Runtime verification
 
-Closes the "real models" gap. Costs tokens.
-
-```bash
-cd services/freeinference-harness
-FREEINFERENCE_API_KEY=hyi-... python -m freeinference_harness run \
-  --targets configs/targets/freeinference.yaml \
-  --scenarios configs/scenarios/agent-loop-runtime.yaml
-```
-
-The deterministic layer-1 suite needs no key and no tokens, and is the one to
-run after bumping an agent CLI — a CLI that changes its event format breaks the
-normalized mapping, and this catches it before a user's job does:
+Run the deterministic runtime tests after bumping an agent CLI. A CLI that
+changes its event format can break normalized event mapping; these fixtures
+catch that without a live model or deployment credential:
 
 ```bash
-python -m freeinference_harness fake-provider --port 8351 &
-python -m freeinference_harness run \
-  --targets configs/targets/agent-loop-local.yaml \
-  --scenarios configs/scenarios/agent-loop-core.yaml \
-  --target fake-direct
+uv run pytest tests/unit/test_agent_runtimes.py
 ```
+
+A full live-model matrix belongs to the deployment operating those models and
+credentials. Keep that conformance configuration in the deployment overlay,
+not in the neutral upstream repository.
 
 ## Known gateway findings
 
