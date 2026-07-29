@@ -7,6 +7,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import {
+  archiveAgentJob,
   connectGitHub,
   connectGitLab,
   disconnectAgentIntegration,
@@ -15,6 +16,7 @@ import {
   getAgentJobArtifact,
   getAgentJobThread,
   listAgentJobs,
+  restoreAgentJob,
   streamAgentJob,
 } from '../agents';
 import * as client from '../client';
@@ -74,6 +76,41 @@ describe('agents api', () => {
     const jobs = await listAgentJobs();
     expect(jobs).toHaveLength(1);
     expect(jobs[0].id).toBe('ajob_1');
+    expect(fetchWithAuth).toHaveBeenCalledWith(expect.any(String), '/v1/agent/jobs?limit=50');
+  });
+
+  it('lists archived jobs separately', async () => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({ jobs: [] }));
+
+    await listAgentJobs(25, true);
+
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs?limit=25&archived=true',
+    );
+  });
+
+  it('archives and restores a whole task conversation', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonResponse({ thread_id: 'athr_1', archived: true, archived_at: '2026-07-29T12:00:00Z' }),
+    );
+
+    await archiveAgentJob('job/one');
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/archive',
+      { method: 'POST' },
+    );
+
+    fetchWithAuth.mockResolvedValue(
+      jsonResponse({ thread_id: 'athr_1', archived: false, archived_at: null }),
+    );
+    await restoreAgentJob('job/one');
+    expect(fetchWithAuth).toHaveBeenLastCalledWith(
+      expect.any(String),
+      '/v1/agent/jobs/job%2Fone/archive',
+      { method: 'DELETE' },
+    );
   });
 
   it('loads source-control integrations', async () => {

@@ -113,6 +113,87 @@ async def test_create_get_list_round_trip(store: AgentJobStore):
     assert await store.get_job("ajob_missing") is None
 
 
+async def test_initialize_idempotently_migrates_legacy_threads(store: AgentJobStore):
+    """An existing agent_threads table gains archived_at on startup."""
+    async with store._pool.acquire() as conn:
+        await conn.execute("ALTER TABLE agent_threads DROP COLUMN archived_at")
+
+    await store.initialize()
+    await store.initialize()
+
+    async with store._pool.acquire() as conn:
+        data_type = await conn.fetchval(
+            """
+            SELECT data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'agent_threads'
+              AND column_name = 'archived_at'
+            """
+        )
+    assert data_type == "timestamp with time zone"
+
+
+async def test_archive_and_restore_filter_owned_threads_without_cancelling(
+    store: AgentJobStore,
+):
+    """One owned job id archives every turn without changing run state."""
+    parent = await _create_job(store)
+    child = await store.create_follow_up(
+        parent_job_id=parent["id"], user_id="user-1", prompt="also update the docs"
+    )
+    assert child is not None
+    foreign = await _create_job(
+        store,
+        user_id="user-2",
+        repo="example-org/other-repo",
+        task_prompt="unrelated task",
+    )
+    claim = await store.claim_job(worker_id="w1", lease_ttl_seconds=60)
+    assert claim is not None
+    assert claim["id"] == parent["id"]
+
+    archived = await store.set_thread_archived(job_id=child["id"], user_id="user-1", archived=True)
+
+    assert archived is not None
+    assert archived["thread_id"] == parent["thread_id"]
+    assert archived["archived_at"] is not None
+    archived_again = await store.set_thread_archived(
+        job_id=parent["id"], user_id="user-1", archived=True
+    )
+    assert archived_again == archived
+    assert await store.list_jobs(user_id="user-1") == []
+    assert {job["id"] for job in await store.list_jobs(user_id="user-1", archived=True)} == {
+        parent["id"],
+        child["id"],
+    }
+    live_parent = await store.get_job(parent["id"])
+    assert live_parent is not None
+    assert live_parent["state"] == "running"
+    assert live_parent["cancel_requested"] is False
+
+    assert (
+        await store.set_thread_archived(job_id=foreign["id"], user_id="user-1", archived=True)
+        is None
+    )
+    assert (
+        await store.set_thread_archived(job_id="ajob_missing", user_id="user-1", archived=True)
+        is None
+    )
+    assert [job["id"] for job in await store.list_jobs(user_id="user-2")] == [foreign["id"]]
+
+    restored = await store.set_thread_archived(
+        job_id=parent["id"], user_id="user-1", archived=False
+    )
+
+    assert restored == {"thread_id": parent["thread_id"], "archived_at": None}
+    assert await store.list_jobs(user_id="user-1", archived=True) == []
+    assert {job["id"] for job in await store.list_jobs(user_id="user-1")} == {
+        parent["id"],
+        child["id"],
+    }
+
+
 async def test_follow_up_waits_then_inherits_thread_messages_and_patch(store: AgentJobStore):
     parent = await _create_job(store)
     child = await store.create_follow_up(

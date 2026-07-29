@@ -52,6 +52,9 @@ describe('IntegrationsView', () => {
 
     render(<IntegrationsView connectedProvider="github" />);
 
+    expect(screen.getByRole('heading', { level: 1, name: 'Integrations' })).toBeInTheDocument();
+    expect(screen.queryByText('Integrations & MCP')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 2, name: 'MCP Servers' })).toBeInTheDocument();
     expect(
       await screen.findByText('Connected as HarvardMadSys · 2 repositories'),
     ).toBeInTheDocument();

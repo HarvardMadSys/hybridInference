@@ -9,6 +9,7 @@ own concurrency semantics are pinned separately by the ``dbtest`` suite.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -34,6 +35,7 @@ class FakeAgentJobStore:
         self.events: list[dict[str, Any]] = []
         self.artifacts: dict[tuple[str, str], dict[str, Any]] = {}
         self.messages: list[dict[str, Any]] = []
+        self.archived_threads: dict[str, datetime] = {}
         self.live_fence: tuple[int, int] | None = None
         self.released: list[tuple[str, int]] = []
         self._next_event_id = 1
@@ -213,8 +215,28 @@ class FakeAgentJobStore:
     async def get_job(self, job_id: str) -> dict[str, Any] | None:
         return self.jobs.get(job_id)
 
-    async def list_jobs(self, *, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
-        return [job for job in self.jobs.values() if job["user_id"] == user_id][:limit]
+    async def list_jobs(
+        self, *, user_id: str, limit: int = 50, archived: bool = False
+    ) -> list[dict[str, Any]]:
+        return [
+            job
+            for job in self.jobs.values()
+            if job["user_id"] == user_id and (job["thread_id"] in self.archived_threads) is archived
+        ][:limit]
+
+    async def set_thread_archived(
+        self, *, job_id: str, user_id: str, archived: bool
+    ) -> dict[str, Any] | None:
+        job = self.jobs.get(job_id)
+        if job is None or job["user_id"] != user_id:
+            return None
+        thread_id = job["thread_id"]
+        if archived:
+            archived_at = self.archived_threads.setdefault(thread_id, datetime.now(timezone.utc))
+        else:
+            self.archived_threads.pop(thread_id, None)
+            archived_at = None
+        return {"thread_id": thread_id, "archived_at": archived_at}
 
     async def request_cancel(self, *, job_id: str, user_id: str | None = None) -> str | None:
         job = self.jobs.get(job_id)
@@ -490,6 +512,44 @@ async def test_create_get_list_round_trip(client: AsyncClient):
     assert [job["id"] for job in listed.json()["jobs"]] == [job_id]
 
 
+async def test_archive_and_restore_filter_the_entire_thread_without_cancelling(
+    client: AsyncClient, store: FakeAgentJobStore
+):
+    """Archive hides every turn while leaving a live run untouched."""
+    parent_id = await _create_job(client)
+    follow_up = await client.post(
+        f"/v1/agent/jobs/{parent_id}/follow-ups",
+        json={"prompt": "also update the docs"},
+    )
+    child_id = follow_up.json()["id"]
+    thread_id = follow_up.json()["thread_id"]
+    store.jobs[parent_id]["state"] = "running"
+
+    archived = await client.post(f"/v1/agent/jobs/{child_id}/archive")
+
+    assert archived.status_code == 200
+    assert archived.json()["thread_id"] == thread_id
+    assert archived.json()["archived"] is True
+    assert archived.json()["archived_at"] is not None
+    assert store.jobs[parent_id]["state"] == "running"
+    assert store.jobs[parent_id]["cancel_requested"] is False
+    assert (await client.get("/v1/agent/jobs")).json() == {"jobs": []}
+    archived_jobs = (await client.get("/v1/agent/jobs?archived=true")).json()["jobs"]
+    assert {job["id"] for job in archived_jobs} == {parent_id, child_id}
+
+    restored = await client.delete(f"/v1/agent/jobs/{parent_id}/archive")
+
+    assert restored.status_code == 200
+    assert restored.json() == {
+        "thread_id": thread_id,
+        "archived": False,
+        "archived_at": None,
+    }
+    assert (await client.get("/v1/agent/jobs?archived=true")).json() == {"jobs": []}
+    active_jobs = (await client.get("/v1/agent/jobs")).json()["jobs"]
+    assert {job["id"] for job in active_jobs} == {parent_id, child_id}
+
+
 async def test_follow_up_is_a_durable_waiting_turn_with_parent_context(
     client: AsyncClient, store: FakeAgentJobStore
 ):
@@ -740,6 +800,11 @@ async def test_other_users_jobs_are_404_not_403(client: AsyncClient, store: Fake
         assert response.status_code == 404, path
     cancel = await client.post(f"/v1/agent/jobs/{foreign['id']}/cancel")
     assert cancel.status_code == 404
+    for method in (client.post, client.delete):
+        archive = await method(f"/v1/agent/jobs/{foreign['id']}/archive")
+        assert archive.status_code == 404
+        missing = await method("/v1/agent/jobs/ajob_missing/archive")
+        assert missing.status_code == 404
 
 
 async def test_cancel_queued_job(client: AsyncClient):

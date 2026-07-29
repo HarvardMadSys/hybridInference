@@ -206,10 +206,41 @@ export interface CreateAgentJobRequest {
   budget_usd?: number;
 }
 
-export async function listAgentJobs(limit = 50): Promise<AgentJobApi[]> {
-  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs?limit=${limit}`);
+export async function listAgentJobs(limit = 50, archived = false): Promise<AgentJobApi[]> {
+  const archivedQuery = archived ? '&archived=true' : '';
+  const resp = await fetchWithAuth(API_BASE, `/v1/agent/jobs?limit=${limit}${archivedQuery}`);
   const body = await jsonOrThrow<{ jobs: AgentJobApi[] }>(resp);
   return body.jobs;
+}
+
+export interface AgentThreadArchiveApi {
+  thread_id: string;
+  archived: boolean;
+  archived_at: string | null;
+}
+
+/** Hide the entire conversation containing this job from active task history. */
+export async function archiveAgentJob(jobId: string): Promise<AgentThreadArchiveApi> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/jobs/${encodeURIComponent(jobId)}/archive`,
+    {
+      method: 'POST',
+    },
+  );
+  return jsonOrThrow(resp);
+}
+
+/** Return an archived conversation to active task history. */
+export async function restoreAgentJob(jobId: string): Promise<AgentThreadArchiveApi> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/jobs/${encodeURIComponent(jobId)}/archive`,
+    {
+      method: 'DELETE',
+    },
+  );
+  return jsonOrThrow(resp);
 }
 
 export async function getAgentJob(jobId: string): Promise<AgentJobApi> {
