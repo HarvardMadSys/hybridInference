@@ -181,12 +181,37 @@ installation covering the repository being published to.
 
 ```bash
 AGENT_GITHUB_APP_ID=123456
-AGENT_GITHUB_APP_PRIVATE_KEY_PATH=/etc/hybridinference/agent-app.pem
+# A path the gateway can open — which in a Compose deployment means a path
+# inside the *backend container*. It mounts `config/`, `distributions/` and
+# `var/data/`, and nothing else: an /etc path on the host reads as "no such
+# file" from in there. `var/data` is gitignored, so the key survives the
+# deploy's `git reset --hard` and is never a candidate for commit.
+AGENT_GITHUB_APP_PRIVATE_KEY_PATH=/app/var/data/agent-app.pem
 ```
+
+Put the file at `<APP_DIR>/var/data/agent-app.pem` on the host, owned by the
+service user and `chmod 600`. Alternatively `AGENT_GITHUB_APP_PRIVATE_KEY`
+takes the PEM inline (escaped `\n` are accepted and unescaped), which avoids
+the mount question entirely at the cost of a very long line in `.env`.
 
 The App needs `contents: write` and `pull_requests: write` and nothing else —
 notably not `workflows`, so a patch touching `.github/` cannot be pushed even
 if the gate were bypassed. Revocation is uninstalling the App.
+
+For the *connect* flow (a user authorizing their own repositories) the App
+also needs its OAuth half, with the callback pointing at this deployment's
+frontend:
+
+```bash
+AGENT_GITHUB_APP_CLIENT_ID=Iv1.xxxxxxxx
+AGENT_GITHUB_APP_CLIENT_SECRET=...
+AGENT_GITHUB_APP_INSTALL_URL=https://github.com/apps/<app-slug>/installations/new
+# App setting "Callback URL": <FRONTEND_URL>/agents/connected?provider=github
+```
+
+Note `FRONTEND_URL` is read from `.env`, which is applied last and so wins
+over the distribution overlay — check the host's value rather than the
+overlay's when composing the callback.
 
 The same App also supplies the runner's clone credential, and the two are
 *not* the same token. An installation token inherits every permission the App
