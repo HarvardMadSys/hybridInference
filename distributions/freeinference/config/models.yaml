@@ -32,6 +32,7 @@ models:
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
         provider_model_id: "glm-5.1"
       # Ollama Cloud fallback
       - kind: ollama
@@ -87,6 +88,7 @@ models:
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
         provider_model_id: "glm-5.2"
       # Ollama Cloud fallback
       - kind: ollama
@@ -140,6 +142,7 @@ models:
         base_url: ${ZAI_BASE_URL}
         api_keys:
           - ${ZAI_API_KEY}
+          - ${ZAI_API_KEY2}
         provider_model_id: "glm-5-turbo"
       # staging.freeinference.org canary fallback (key via STAGING_API_KEY).
       # optional: route is skipped at load when STAGING_API_KEY is unset/blank,
