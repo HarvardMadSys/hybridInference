@@ -7,7 +7,11 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import {
+  connectGitHub,
+  connectGitLab,
+  disconnectAgentIntegration,
   followUpAgentJob,
+  getAgentIntegrations,
   getAgentJobArtifact,
   getAgentJobThread,
   listAgentJobs,
@@ -70,6 +74,47 @@ describe('agents api', () => {
     const jobs = await listAgentJobs();
     expect(jobs).toHaveLength(1);
     expect(jobs[0].id).toBe('ajob_1');
+  });
+
+  it('loads source-control integrations', async () => {
+    fetchWithAuth.mockResolvedValue(
+      jsonResponse({ providers: [{ provider: 'github', configured: true, connected: false }] }),
+    );
+
+    const result = await getAgentIntegrations();
+
+    expect(result.providers[0].provider).toBe('github');
+    expect(fetchWithAuth).toHaveBeenCalledWith(expect.any(String), '/v1/agent/integrations');
+  });
+
+  it.each([
+    ['github', connectGitHub],
+    ['gitlab', connectGitLab],
+  ] as const)('completes a %s OAuth connection with its state', async (provider, connect) => {
+    fetchWithAuth.mockResolvedValue(jsonResponse({ provider, connected: true }));
+
+    await connect('oauth-code', 'signed-state');
+
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      `/v1/agent/integrations/${provider}/connect`,
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ code: 'oauth-code', state: 'signed-state' }),
+      }),
+    );
+  });
+
+  it('disconnects one source-control account', async () => {
+    fetchWithAuth.mockResolvedValue(new Response(null, { status: 204 }));
+
+    await disconnectAgentIntegration('gitlab', 'group/id');
+
+    expect(fetchWithAuth).toHaveBeenCalledWith(
+      expect.any(String),
+      '/v1/agent/integrations/gitlab/connections/group%2Fid',
+      { method: 'DELETE' },
+    );
   });
 
   it('treats a missing artifact as absent rather than an error', async () => {

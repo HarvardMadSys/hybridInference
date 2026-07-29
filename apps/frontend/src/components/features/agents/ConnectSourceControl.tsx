@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+
 // Inline onboarding shown above the disabled composer. Keeping the task shape
 // visible gives the user context for why GitHub is needed without pretending
 // a repository can already be selected.
@@ -24,26 +26,22 @@ export function ConnectSourceControl({ installUrl }: { installUrl: string | null
             : 'Contact your administrator to enable repository access for cloud agents.'}
         </p>
       </div>
-      {installUrl ? (
-        <a
-          href={installUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-gray-900 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-gray-800"
+      <Link
+        href="/agents/integrations"
+        className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-gray-900 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-gray-800"
+      >
+        {installUrl ? 'Connect GitHub' : 'View integrations'}
+        <svg
+          className="h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          aria-hidden="true"
         >
-          Connect GitHub
-          <svg
-            className="h-3.5 w-3.5"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            aria-hidden="true"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M7 17 17 7m0 0H8m9 0v9" />
-          </svg>
-        </a>
-      ) : null}
+          <path strokeLinecap="round" strokeLinejoin="round" d="M7 17 17 7m0 0H8m9 0v9" />
+        </svg>
+      </Link>
     </div>
   );
 }

@@ -782,6 +782,7 @@ async def initialize() -> AppServices:
     responses_store = None
     agent_job_store = None
     agent_app_credentials = None
+    agent_gitlab_oauth = None
     agent_reaper_task = None
 
     if db_logger and db_logger.pool:
@@ -836,6 +837,21 @@ async def initialize() -> AppServices:
                 agent_app_credentials = GitHubAppCredentials(app_config)
         except Exception:
             logger.warning("GitHub App config present but unusable", exc_info=True)
+
+        try:
+            from serving.agent_jobs.source_control import (
+                GitLabOAuthClient,
+                GitLabOAuthConfig,
+                SourceControlCipher,
+            )
+
+            gitlab_config = GitLabOAuthConfig.from_env(dict(os.environ))
+            if gitlab_config is not None:
+                agent_gitlab_oauth = GitLabOAuthClient(gitlab_config, cipher=SourceControlCipher())
+        except Exception:
+            # A partial config or missing encryption key disables GitLab
+            # instead of booting with a credential path that cannot be secured.
+            logger.warning("GitLab OAuth config present but unusable", exc_info=True)
 
         github_token = os.getenv("AGENT_GITHUB_TOKEN", "")
         publish_base_branch = os.getenv("AGENT_PUBLISH_BASE_BRANCH", "dev")
@@ -1244,6 +1260,7 @@ async def initialize() -> AppServices:
         responses_store=responses_store,
         agent_job_store=agent_job_store,
         agent_app_credentials=agent_app_credentials,
+        agent_gitlab_oauth=agent_gitlab_oauth,
         agent_reaper_task=agent_reaper_task,
         routewise_settings_refresh_task=routewise_settings_refresh_task,
         weight_override_refresh_task=weight_override_refresh_task,

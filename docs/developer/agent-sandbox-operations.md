@@ -226,10 +226,26 @@ runners share one queue with no leader and no sharding.
 | `AGENT_SANDBOX_UID` / `_GID` | `10001` | Only for a custom sandbox image; must match its user |
 | `AGENT_REPO_ALLOWLIST` | — | Comma-separated `owner/name`, or `owner/*`, for the single-tenant dogfood. Users who connect the App themselves do not need it; unset simply means the only entitlement is a user's own connection |
 | `AGENT_GITHUB_APP_CLIENT_ID` / `_CLIENT_SECRET` | — | The App's OAuth half. Only the user-facing connect flow needs it; minting installation tokens uses the private key alone |
-| `AGENT_GITHUB_APP_INSTALL_URL` | — | Where the Connect button sends the user. Set the App's callback to `<frontend>/agents/connected` |
+| `AGENT_GITHUB_APP_INSTALL_URL` | — | GitHub.com authorization URL used by the Integrations page. The gateway adds a short-lived, user-bound `state`; set the App callback to `<frontend>/agents/connected?provider=github` |
+| `AGENT_GITLAB_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` | — | GitLab.com OAuth application credentials, kept on the gateway. Configure only `read_user` and `read_api` scopes |
+| `AGENT_GITLAB_OAUTH_REDIRECT_URI` | — | Exact registered callback, normally `<frontend>/agents/connected?provider=gitlab`. HTTPS is required except for localhost development |
 | `AGENT_SANDBOX_ALLOW_OPEN_NETWORK` | — | Accepts a non-`internal` sandbox network. Preflight refuses one otherwise, so a missing setting cannot quietly mean full egress |
 | `AGENT_GITHUB_TOKEN` | — | Gateway-side; unset means the publisher idles |
 | `AGENT_PUBLISH_BASE_BRANCH` | `dev` | What draft PRs target |
+
+The authenticated `/agents/integrations` page is the only supported place to
+start either OAuth flow. OAuth state is unpredictable, bound to the signed-in
+user and provider, expires after ten minutes, and is consumed once. GitLab also
+uses PKCE. GitLab access and refresh tokens are encrypted before persistence,
+rotated on refresh, never returned to the browser, and revoked best-effort on
+disconnect.
+
+GitHub repositories retain the complete Agent lifecycle: checkout, branch
+discovery, push, and draft PR publishing use short-lived GitHub App installation
+tokens. GitLab is intentionally narrower in this release: it verifies the
+authenticated GitLab user and shows their accessible projects for discovery.
+GitLab projects do not appear in the Agent task composer, and the gateway does
+not claim to read their source or publish GitLab merge requests yet.
 
 ### Three things about this topology that look like details and are not
 

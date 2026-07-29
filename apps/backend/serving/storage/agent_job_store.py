@@ -336,6 +336,41 @@ class AgentJobStore:
                 "CREATE INDEX IF NOT EXISTS idx_agent_repo_grants_user "
                 "ON agent_repo_grants(user_id)"
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_oauth_states (
+                    state_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    code_verifier_ciphertext TEXT,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    consumed_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (provider IN ('github', 'gitlab'))
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_agent_oauth_states_expiry "
+                "ON agent_oauth_states(expires_at)"
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_gitlab_connections (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL UNIQUE,
+                    external_user_id BIGINT NOT NULL,
+                    username TEXT NOT NULL,
+                    display_name TEXT,
+                    web_url TEXT,
+                    access_token_ciphertext TEXT NOT NULL,
+                    refresh_token_ciphertext TEXT NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
 
     # ── Repository grants ──────────────────────────────────────────────
     #
@@ -383,6 +418,150 @@ class AgentJobStore:
                 "RETURNING id",
                 user_id,
                 installation_id,
+            )
+        return deleted is not None
+
+    # OAuth state is stored hashed and consumed atomically. A callback for a
+    # different user/provider, an expired state, and a replay all return no
+    # row and therefore cannot be distinguished or used to claim authority.
+
+    async def create_oauth_state(
+        self,
+        *,
+        state_hash: str,
+        user_id: str,
+        provider: str,
+        code_verifier_ciphertext: str | None,
+        expires_at: Any,
+    ) -> None:
+        """Persist a short-lived state without retaining the bearer value."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "DELETE FROM agent_oauth_states WHERE expires_at < NOW() - INTERVAL '1 day'"
+            )
+            await conn.execute(
+                """
+                INSERT INTO agent_oauth_states
+                    (state_hash, user_id, provider, code_verifier_ciphertext, expires_at)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                state_hash,
+                user_id,
+                provider,
+                code_verifier_ciphertext,
+                expires_at,
+            )
+
+    async def consume_oauth_state(
+        self, *, state_hash: str, user_id: str, provider: str
+    ) -> dict[str, Any] | None:
+        """Consume one live state exactly once for its owning user/provider."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE agent_oauth_states
+                SET consumed_at = NOW()
+                WHERE state_hash = $1 AND user_id = $2 AND provider = $3
+                  AND consumed_at IS NULL AND expires_at > NOW()
+                RETURNING code_verifier_ciphertext
+                """,
+                state_hash,
+                user_id,
+                provider,
+            )
+        return dict(row) if row else None
+
+    async def upsert_gitlab_connection(
+        self,
+        *,
+        user_id: str,
+        external_user_id: int,
+        username: str,
+        display_name: str | None,
+        web_url: str | None,
+        access_token_ciphertext: str,
+        refresh_token_ciphertext: str,
+        expires_at: Any,
+    ) -> int:
+        """Store one GitLab.com identity per platform user."""
+        async with self._pool.acquire() as conn:
+            connection_id = await conn.fetchval(
+                """
+                INSERT INTO agent_gitlab_connections
+                    (user_id, external_user_id, username, display_name, web_url,
+                     access_token_ciphertext, refresh_token_ciphertext, expires_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    external_user_id = EXCLUDED.external_user_id,
+                    username = EXCLUDED.username,
+                    display_name = EXCLUDED.display_name,
+                    web_url = EXCLUDED.web_url,
+                    access_token_ciphertext = EXCLUDED.access_token_ciphertext,
+                    refresh_token_ciphertext = EXCLUDED.refresh_token_ciphertext,
+                    expires_at = EXCLUDED.expires_at,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                user_id,
+                external_user_id,
+                username,
+                display_name,
+                web_url,
+                access_token_ciphertext,
+                refresh_token_ciphertext,
+                expires_at,
+            )
+        return int(connection_id)
+
+    async def get_gitlab_connection(self, *, user_id: str) -> dict[str, Any] | None:
+        """Return the owning user's connection, including encrypted tokens."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, user_id, external_user_id, username, display_name, web_url,
+                       access_token_ciphertext, refresh_token_ciphertext, expires_at
+                FROM agent_gitlab_connections WHERE user_id = $1
+                """,
+                user_id,
+            )
+        return dict(row) if row else None
+
+    async def update_gitlab_tokens(
+        self,
+        *,
+        connection_id: int,
+        user_id: str,
+        access_token_ciphertext: str,
+        refresh_token_ciphertext: str,
+        expires_at: Any,
+    ) -> bool:
+        """Rotate encrypted OAuth tokens without crossing user ownership."""
+        async with self._pool.acquire() as conn:
+            updated = await conn.fetchval(
+                """
+                UPDATE agent_gitlab_connections SET
+                    access_token_ciphertext = $3,
+                    refresh_token_ciphertext = $4,
+                    expires_at = $5,
+                    updated_at = NOW()
+                WHERE id = $1 AND user_id = $2
+                RETURNING id
+                """,
+                connection_id,
+                user_id,
+                access_token_ciphertext,
+                refresh_token_ciphertext,
+                expires_at,
+            )
+        return updated is not None
+
+    async def delete_gitlab_connection(self, *, user_id: str, connection_id: int) -> bool:
+        """Delete only a connection owned by the authenticated user."""
+        async with self._pool.acquire() as conn:
+            deleted = await conn.fetchval(
+                "DELETE FROM agent_gitlab_connections WHERE user_id = $1 AND id = $2 RETURNING id",
+                user_id,
+                connection_id,
             )
         return deleted is not None
 
