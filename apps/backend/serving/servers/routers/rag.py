@@ -1,6 +1,6 @@
 """RAG docs-assistant endpoints.
 
-Answers questions about FreeInference using the public user docs as a knowledge
+Answers questions about this deployment using its own user docs as a knowledge
 base. The handler is a thin orchestrator over the gateway's *own* public API:
 
 * the query is embedded via ``POST {RAG_API_BASE_URL}/embeddings`` and

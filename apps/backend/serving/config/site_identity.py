@@ -12,10 +12,10 @@ hardcoded strings:
    mirroring the gating of ``GET /site-config``;
 3. a neutral default that names no distribution.
 
-FreeInference supplies its own identity through ``SITE_*``, which
+A deployment supplies its own identity through ``SITE_*``, which
 ``deploy/docker/docker-compose.yml`` pins for both staging and production (and
-``.env`` still overrides), so its rendered output is unchanged by the neutral
-default. ``docs_url`` has no manifest field yet; it joins the manifest schema
+``.env`` still overrides), so a configured site's rendered output is unchanged
+by the neutral default. ``docs_url`` has no manifest field yet; it joins the manifest schema
 with the config-migration wave.
 """
 
@@ -36,8 +36,8 @@ class SiteIdentity:
 
 
 # Step 3 of the migration: the upstream default names no distribution.
-# FreeInference supplies its own through SITE_* (deploy/docker/docker-compose.yml
-# pins them, and .env still overrides), so its rendered output is unchanged.
+# A deployment supplies its own through SITE_* (deploy/docker/docker-compose.yml
+# pins them, and .env still overrides), so a configured site renders unchanged.
 #
 # public_base_url and support_email are empty rather than invented: a
 # deployment that has not declared them has none, and consumers phrase around

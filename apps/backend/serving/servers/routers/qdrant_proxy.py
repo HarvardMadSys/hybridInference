@@ -2,7 +2,7 @@
 
 Forwards allowed requests under /v1/qdrant/ to the internal Qdrant instance,
 injecting the server-side API key. Users authenticate with their
-FreeInference API key and never see the Qdrant credentials.
+gateway API key and never see the Qdrant credentials.
 
 Security measures:
 - Anonymous requests are rejected even when USER_AUTH_ENABLED=0.
