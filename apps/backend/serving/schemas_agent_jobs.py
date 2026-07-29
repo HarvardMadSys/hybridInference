@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -377,6 +377,7 @@ class GitHubConnectRequest(BaseModel):
     """The callback values GitHub hands back after the user authorizes."""
 
     code: str = Field(..., min_length=1, max_length=512)
+    state: str = Field(..., min_length=16, max_length=512)
 
 
 class GitHubConnectionResponse(BaseModel):
@@ -384,6 +385,48 @@ class GitHubConnectionResponse(BaseModel):
 
     connections: list[dict[str, Any]] = Field(default_factory=list)
     repos: list[str] = Field(default_factory=list)
+
+
+class SourceControlAccount(BaseModel):
+    """Public identity metadata for a connected provider account."""
+
+    id: str
+    label: str
+    web_url: str | None = None
+
+
+class SourceControlRepository(BaseModel):
+    """A provider-attested repository safe to render in the UI."""
+
+    id: str
+    name: str
+    web_url: str | None = None
+
+
+class SourceControlProviderResponse(BaseModel):
+    """Connection and capability status for one supported provider."""
+
+    provider: Literal["github", "gitlab"]
+    configured: bool
+    connected: bool
+    connect_url: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    accounts: list[SourceControlAccount] = Field(default_factory=list)
+    repositories: list[SourceControlRepository] = Field(default_factory=list)
+    error: str | None = None
+
+
+class SourceControlIntegrationsResponse(BaseModel):
+    """All source-control providers available to the current user."""
+
+    providers: list[SourceControlProviderResponse]
+
+
+class OAuthConnectRequest(BaseModel):
+    """Authorization callback values supplied by GitHub or GitLab."""
+
+    code: str = Field(..., min_length=1, max_length=2048)
+    state: str = Field(..., min_length=16, max_length=512)
 
 
 class RepoBranchesResponse(BaseModel):

@@ -154,9 +154,11 @@ export function AgentsSidebar() {
           </div>
         ))}
 
-        <div
-          className="mt-3 flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] text-gray-400"
-          title="External repositories arrive with the P1 beta (GitHub App install flow)"
+        <Link
+          href="/agents/integrations"
+          className={`mt-3 flex items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium hover:bg-gray-200/60 ${
+            pathname === '/agents/integrations' ? 'bg-gray-200/80 text-gray-900' : 'text-gray-600'
+          }`}
         >
           <svg
             className="h-4 w-4"
@@ -165,13 +167,14 @@ export function AgentsSidebar() {
             stroke="currentColor"
             strokeWidth={2}
           >
-            <path strokeLinecap="round" strokeLinejoin="round" d="M12 5v14m-7-7h14" />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M8 5v3m8-3v3M6.5 8h11v2.5a5.5 5.5 0 0 1-11 0V8ZM12 16v3"
+            />
           </svg>
-          Add repository
-          <span className="ml-auto rounded bg-gray-200/70 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
-            P1
-          </span>
-        </div>
+          Integrations
+        </Link>
       </div>
 
       <div className="flex shrink-0 items-center gap-2.5 border-t border-gray-200 px-4 py-3">

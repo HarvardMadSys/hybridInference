@@ -99,6 +99,40 @@ export async function getAgentConfig(): Promise<AgentConfigApi> {
   return jsonOrThrow(await fetchWithAuth(API_BASE, '/v1/agent/config'));
 }
 
+export type AgentIntegrationProvider = 'github' | 'gitlab';
+
+export interface AgentIntegrationAccountApi {
+  id: string;
+  label: string;
+  web_url?: string | null;
+}
+
+export interface AgentIntegrationRepositoryApi {
+  id: string;
+  name: string;
+  web_url?: string | null;
+}
+
+export interface AgentIntegrationProviderApi {
+  provider: AgentIntegrationProvider;
+  configured: boolean;
+  connected: boolean;
+  connect_url: string | null;
+  capabilities: string[];
+  accounts: AgentIntegrationAccountApi[];
+  repositories: AgentIntegrationRepositoryApi[];
+  error?: string | null;
+}
+
+export interface AgentIntegrationsApi {
+  providers: AgentIntegrationProviderApi[];
+}
+
+export async function getAgentIntegrations(): Promise<AgentIntegrationsApi> {
+  const resp = await fetchWithAuth(API_BASE, '/v1/agent/integrations');
+  return jsonOrThrow(resp);
+}
+
 export interface GitHubConnectionApi {
   connections: Array<{ installation_id: number; account_login: string | null }>;
   repos: string[];
@@ -107,17 +141,40 @@ export interface GitHubConnectionApi {
 /**
  * Complete the GitHub connection with the code GitHub handed the browser.
  *
- * The code is all the browser sends. The platform exchanges it for a token
- * that speaks as this user and asks GitHub which installations they can reach,
- * so the entitlement is GitHub's answer rather than anything asserted here.
+ * The platform validates the one-time state, exchanges the code for a token
+ * that speaks as this user, and asks GitHub which installations they can reach.
  */
-export async function connectGitHub(code: string): Promise<GitHubConnectionApi> {
-  const resp = await fetchWithAuth(API_BASE, '/v1/agent/github/connect', {
+export async function connectGitHub(code: string, state: string): Promise<GitHubConnectionApi> {
+  const resp = await fetchWithAuth(API_BASE, '/v1/agent/integrations/github/connect', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, state }),
   });
   return jsonOrThrow(resp);
+}
+
+export async function connectGitLab(
+  code: string,
+  state: string,
+): Promise<AgentIntegrationProviderApi> {
+  const resp = await fetchWithAuth(API_BASE, '/v1/agent/integrations/gitlab/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code, state }),
+  });
+  return jsonOrThrow(resp);
+}
+
+export async function disconnectAgentIntegration(
+  provider: AgentIntegrationProvider,
+  connectionId: string,
+): Promise<void> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/v1/agent/integrations/${provider}/connections/${encodeURIComponent(connectionId)}`,
+    { method: 'DELETE' },
+  );
+  if (!resp.ok) await jsonOrThrow(resp);
 }
 
 /** Model ids this gateway serves — the model picker's options. */

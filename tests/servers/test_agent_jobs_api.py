@@ -1431,6 +1431,7 @@ class _FakeGitHubApp:
 def _store_with_grants(store: FakeAgentJobStore) -> FakeAgentJobStore:
     """Give the fake store the grant surface the router uses."""
     store.grants = {}
+    store.consumed_oauth_states = set()
 
     async def record_repo_grant(*, user_id, installation_id, account_login=None):
         store.grants.setdefault(user_id, {})[installation_id] = account_login
@@ -1444,9 +1445,18 @@ def _store_with_grants(store: FakeAgentJobStore) -> FakeAgentJobStore:
     async def revoke_repo_grant(*, user_id, installation_id):
         return store.grants.get(user_id, {}).pop(installation_id, "missing") != "missing"
 
+    async def consume_oauth_state(*, state_hash, user_id, provider):
+        assert user_id == "user-owner"
+        assert provider == "github"
+        if state_hash in store.consumed_oauth_states:
+            return None
+        store.consumed_oauth_states.add(state_hash)
+        return {"code_verifier_ciphertext": None}
+
     store.record_repo_grant = record_repo_grant
     store.list_repo_grants = list_repo_grants
     store.revoke_repo_grant = revoke_repo_grant
+    store.consume_oauth_state = consume_oauth_state
     return store
 
 
@@ -1469,7 +1479,10 @@ async def test_connecting_records_only_what_github_attests(store: FakeAgentJobSt
     app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        connected = await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        connected = await client.post(
+            "/v1/agent/github/connect",
+            json={"code": "abc123", "state": "test-state-value-123456"},
+        )
         config = await client.get("/v1/agent/config")
 
     assert connected.status_code == 200
@@ -1493,7 +1506,10 @@ async def test_a_connected_user_may_run_only_their_own_repos(store: FakeAgentJob
     app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        await client.post(
+            "/v1/agent/github/connect",
+            json={"code": "abc123", "state": "test-state-value-123456"},
+        )
         mine = await client.post(
             "/v1/agent/jobs",
             json={"repo": "acme/service", "task_prompt": "fix it", "model": "m"},
@@ -1522,7 +1538,10 @@ async def test_a_failed_exchange_grants_nothing(store: FakeAgentJobStore, monkey
     app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        connected = await client.post("/v1/agent/github/connect", json={"code": "stolen"})
+        connected = await client.post(
+            "/v1/agent/github/connect",
+            json={"code": "stolen", "state": "test-state-value-123456"},
+        )
         config = await client.get("/v1/agent/config")
 
     assert connected.status_code == 400
@@ -1542,7 +1561,10 @@ async def test_disconnecting_removes_the_entitlement(store: FakeAgentJobStore, m
     app.dependency_overrides[get_agent_app_credentials] = lambda: app_creds
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        await client.post("/v1/agent/github/connect", json={"code": "abc123"})
+        await client.post(
+            "/v1/agent/github/connect",
+            json={"code": "abc123", "state": "test-state-value-123456"},
+        )
         await client.delete("/v1/agent/github/connect/77")
         after = await client.post(
             "/v1/agent/jobs",

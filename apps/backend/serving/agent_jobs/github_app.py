@@ -139,6 +139,11 @@ class GitHubAppCredentials:
         self._tokens: dict[tuple[int, str], _CachedToken] = {}
         self._installations: dict[str, int] = {}
 
+    @property
+    def user_authorization_configured(self) -> bool:
+        """Whether the App can exchange a browser authorization code."""
+        return bool(self._config.client_id and self._config.client_secret)
+
     async def _request(
         self, method: str, path: str, *, token: str, json: dict[str, Any] | None = None
     ) -> dict[str, Any]:

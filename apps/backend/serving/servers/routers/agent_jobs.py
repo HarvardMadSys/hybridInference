@@ -48,6 +48,13 @@ from serving.agent_jobs.github_app import AppNotInstalled
 from serving.agent_jobs.model_auth import looks_like_agent_token
 from serving.agent_jobs.patch_gate import branch_name_for
 from serving.agent_jobs.runtimes import registered_runtimes
+from serving.agent_jobs.source_control import (
+    OAuthStateError,
+    SourceControlError,
+    consume_oauth_state,
+    github_authorization_url,
+    issue_oauth_state,
+)
 from serving.agent_jobs.tokens import (
     SCOPE_FULL,
     SCOPE_MODEL,
@@ -71,7 +78,12 @@ from serving.schemas_agent_jobs import (
     AgentThreadResponse,
     GitHubConnectionResponse,
     GitHubConnectRequest,
+    OAuthConnectRequest,
     RepoBranchesResponse,
+    SourceControlAccount,
+    SourceControlIntegrationsResponse,
+    SourceControlProviderResponse,
+    SourceControlRepository,
     WorkerAckResponse,
     WorkerArtifactRequest,
     WorkerArtifactResponse,
@@ -86,6 +98,7 @@ from serving.schemas_agent_jobs import (
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import (
     get_agent_app_credentials,
+    get_agent_gitlab_oauth,
     get_agent_job_store,
     get_current_user,
     get_log_store,
@@ -347,7 +360,308 @@ async def get_agent_config(
         # least one repository this user may work on. Either alone leaves a
         # composer that cannot produce a runnable job.
         github_connected=bool(app_credentials is not None and repos),
-        github_install_url=os.getenv("AGENT_GITHUB_APP_INSTALL_URL") or None,
+        # OAuth must start on the authenticated integrations page so the
+        # server can issue state bound to this user. Never expose the old raw
+        # operator URL here: it had no CSRF binding.
+        github_install_url="/agents/integrations" if app_credentials is not None else None,
+    )
+
+
+def _oauth_error(exc: Exception) -> HTTPException:
+    """Map OAuth failures to a stable response without leaking credentials."""
+    if isinstance(exc, OAuthStateError):
+        message = str(exc)
+        error_type = "oauth_state_invalid"
+    else:
+        message = "The source-control authorization could not be completed. Please try again."
+        error_type = "source_control_connect_failed"
+    return HTTPException(
+        status_code=400,
+        detail={"error": {"type": error_type, "message": message}},
+    )
+
+
+async def _connect_github_for_user(
+    *,
+    body: GitHubConnectRequest | OAuthConnectRequest,
+    user_id: str,
+    store: AgentJobStore,
+    app_credentials: Any,
+) -> GitHubConnectionResponse:
+    await consume_oauth_state(
+        store,
+        state=body.state,
+        user_id=user_id,
+        provider="github",
+    )
+    user_token = await app_credentials.exchange_user_code(body.code)
+    installations = await app_credentials.installations_for_user(user_token)
+    for installation in installations:
+        await store.record_repo_grant(
+            user_id=user_id,
+            installation_id=installation["installation_id"],
+            account_login=installation.get("account_login"),
+        )
+    logger.info(
+        "agent_github_connected",
+        extra={"event": "agent_github_connected", "installations": len(installations)},
+    )
+    return GitHubConnectionResponse(
+        connections=await store.list_repo_grants(user_id=user_id),
+        repos=await repos_for_user(user_id, store=store, app_credentials=app_credentials),
+    )
+
+
+async def _source_control_providers(
+    *,
+    user_id: str,
+    store: AgentJobStore,
+    app_credentials: Any | None,
+    gitlab_oauth: Any | None,
+) -> list[SourceControlProviderResponse]:
+    """Build user-scoped provider status with no credential material."""
+    github_install_url = (os.getenv("AGENT_GITHUB_APP_INSTALL_URL") or "").strip()
+    github_configured = (
+        app_credentials is not None
+        and bool(github_install_url)
+        and bool(getattr(app_credentials, "user_authorization_configured", True))
+    )
+    github_connect_url = None
+    github_error = None
+    if github_configured:
+        try:
+            state = await issue_oauth_state(store, user_id=user_id, provider="github")
+            github_connect_url = github_authorization_url(github_install_url, state=state)
+        except SourceControlError as exc:
+            github_configured = False
+            github_error = str(exc)
+
+    grants = await store.list_repo_grants(user_id=user_id)
+    github_repos = await repos_for_user(
+        user_id, store=store, app_credentials=app_credentials, env={"AGENT_REPO_ALLOWLIST": ""}
+    )
+    providers = [
+        SourceControlProviderResponse(
+            provider="github",
+            configured=github_configured,
+            connected=bool(grants),
+            connect_url=github_connect_url,
+            capabilities=["Agent checkout", "branch discovery", "draft PR publishing"],
+            accounts=[
+                SourceControlAccount(
+                    id=str(grant["installation_id"]),
+                    label=grant.get("account_login") or f"Installation {grant['installation_id']}",
+                )
+                for grant in grants
+            ],
+            repositories=[
+                SourceControlRepository(
+                    id=repo,
+                    name=repo,
+                    web_url=f"https://github.com/{repo}",
+                )
+                for repo in github_repos
+            ],
+            error=github_error,
+        )
+    ]
+
+    gitlab_connection = await store.get_gitlab_connection(user_id=user_id)
+    gitlab_projects: list[dict[str, Any]] = []
+    gitlab_error = None
+    gitlab_connect_url = None
+    if gitlab_oauth is not None:
+        try:
+            gitlab_connect_url = await gitlab_oauth.authorization_url(store, user_id=user_id)
+            if gitlab_connection:
+                gitlab_projects = await gitlab_oauth.projects_for_connection(
+                    store, gitlab_connection
+                )
+        except SourceControlError:
+            if gitlab_connection:
+                gitlab_error = "GitLab repositories are temporarily unavailable."
+            else:
+                gitlab_error = "GitLab authorization is temporarily unavailable."
+    providers.append(
+        SourceControlProviderResponse(
+            provider="gitlab",
+            configured=gitlab_oauth is not None,
+            connected=gitlab_connection is not None,
+            connect_url=gitlab_connect_url,
+            capabilities=["project discovery"],
+            accounts=(
+                [
+                    SourceControlAccount(
+                        id=str(gitlab_connection["id"]),
+                        label=gitlab_connection["username"],
+                        web_url=gitlab_connection.get("web_url"),
+                    )
+                ]
+                if gitlab_connection
+                else []
+            ),
+            repositories=[SourceControlRepository(**project) for project in gitlab_projects],
+            error=gitlab_error,
+        )
+    )
+    return providers
+
+
+@router.get("/integrations", response_model=SourceControlIntegrationsResponse)
+async def list_source_control_integrations(
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+    gitlab_oauth: Any | None = Depends(get_agent_gitlab_oauth),
+) -> SourceControlIntegrationsResponse:
+    """Return configured/connected state for GitHub and GitLab.com."""
+    job_store = _require_store(store)
+    return SourceControlIntegrationsResponse(
+        providers=await _source_control_providers(
+            user_id=user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+            gitlab_oauth=gitlab_oauth,
+        )
+    )
+
+
+@router.post("/integrations/github/connect", response_model=GitHubConnectionResponse)
+async def connect_github_integration(
+    body: OAuthConnectRequest,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> GitHubConnectionResponse:
+    """Complete a GitHub App authorization protected by one-time state."""
+    job_store = _require_store(store)
+    if app_credentials is None:
+        raise HTTPException(status_code=503, detail="GitHub App is not configured")
+    try:
+        return await _connect_github_for_user(
+            body=body,
+            user_id=user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+        )
+    except Exception as exc:
+        if not isinstance(exc, (OAuthStateError, SourceControlError)):
+            logger.warning("agent_github_connect_failed", exc_info=True)
+        raise _oauth_error(exc) from exc
+
+
+@router.post("/integrations/gitlab/connect", response_model=SourceControlProviderResponse)
+async def connect_gitlab_integration(
+    body: OAuthConnectRequest,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    gitlab_oauth: Any | None = Depends(get_agent_gitlab_oauth),
+) -> SourceControlProviderResponse:
+    """Verify a GitLab user and persist only encrypted, refreshable tokens."""
+    job_store = _require_store(store)
+    if gitlab_oauth is None:
+        raise HTTPException(status_code=503, detail="GitLab OAuth is not configured")
+    try:
+        verifier = await consume_oauth_state(
+            job_store,
+            state=body.state,
+            user_id=user["user_id"],
+            provider="gitlab",
+            cipher=gitlab_oauth.cipher,
+        )
+        if verifier is None:
+            raise OAuthStateError("The source-control authorization expired or is invalid.")
+        token = await gitlab_oauth.exchange_code(body.code, verifier)
+        profile = await gitlab_oauth.verify_user(token["access_token"])
+        projects = await gitlab_oauth.list_projects(token["access_token"])
+        previous_connection = await job_store.get_gitlab_connection(user_id=user["user_id"])
+        connection_id = await job_store.upsert_gitlab_connection(
+            user_id=user["user_id"],
+            external_user_id=profile["id"],
+            username=profile["username"],
+            display_name=profile.get("name"),
+            web_url=profile.get("web_url"),
+            access_token_ciphertext=gitlab_oauth.cipher.encrypt(token["access_token"]),
+            refresh_token_ciphertext=gitlab_oauth.cipher.encrypt(token["refresh_token"]),
+            expires_at=gitlab_oauth.token_expiry(token),
+        )
+        if previous_connection is not None:
+            try:
+                await gitlab_oauth.revoke(
+                    gitlab_oauth.cipher.decrypt(previous_connection["access_token_ciphertext"])
+                )
+            except Exception:
+                logger.warning("agent_gitlab_previous_token_revoke_failed", exc_info=True)
+    except Exception as exc:
+        if not isinstance(exc, (OAuthStateError, SourceControlError)):
+            logger.warning("agent_gitlab_connect_failed", exc_info=True)
+        raise _oauth_error(exc) from exc
+    logger.info("agent_gitlab_connected", extra={"event": "agent_gitlab_connected"})
+    return SourceControlProviderResponse(
+        provider="gitlab",
+        configured=True,
+        connected=True,
+        capabilities=["project discovery"],
+        accounts=[
+            SourceControlAccount(
+                id=str(connection_id), label=profile["username"], web_url=profile.get("web_url")
+            )
+        ],
+        repositories=[SourceControlRepository(**project) for project in projects],
+    )
+
+
+@router.delete(
+    "/integrations/gitlab/connections/{connection_id}",
+    response_model=SourceControlIntegrationsResponse,
+)
+async def disconnect_gitlab_integration(
+    connection_id: int,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+    gitlab_oauth: Any | None = Depends(get_agent_gitlab_oauth),
+) -> SourceControlIntegrationsResponse:
+    """Revoke GitLab best-effort, then always remove the local credential."""
+    job_store = _require_store(store)
+    connection = await job_store.get_gitlab_connection(user_id=user["user_id"])
+    if connection is None or connection["id"] != connection_id:
+        raise HTTPException(status_code=404, detail="No such GitLab connection")
+    if gitlab_oauth is not None:
+        try:
+            access_token = await gitlab_oauth.access_token_for_connection(job_store, connection)
+            await gitlab_oauth.revoke(access_token)
+        except Exception:
+            logger.warning("agent_gitlab_revoke_failed", exc_info=True)
+    await job_store.delete_gitlab_connection(user_id=user["user_id"], connection_id=connection_id)
+    return SourceControlIntegrationsResponse(
+        providers=await _source_control_providers(
+            user_id=user["user_id"],
+            store=job_store,
+            app_credentials=app_credentials,
+            gitlab_oauth=gitlab_oauth,
+        )
+    )
+
+
+@router.delete(
+    "/integrations/github/connections/{installation_id}",
+    response_model=GitHubConnectionResponse,
+)
+async def disconnect_github_integration(
+    installation_id: int,
+    user: dict[str, Any] = Depends(require_agent_owner),
+    store: AgentJobStore | None = Depends(get_agent_job_store),
+    app_credentials: Any | None = Depends(get_agent_app_credentials),
+) -> GitHubConnectionResponse:
+    """Drop only the authenticated user's GitHub installation grant."""
+    job_store = _require_store(store)
+    await job_store.revoke_repo_grant(user_id=user["user_id"], installation_id=installation_id)
+    return GitHubConnectionResponse(
+        connections=await job_store.list_repo_grants(user_id=user["user_id"]),
+        repos=await repos_for_user(
+            user["user_id"], store=job_store, app_credentials=app_credentials
+        ),
     )
 
 
@@ -378,30 +692,16 @@ async def connect_github(
             },
         )
     try:
-        user_token = await app_credentials.exchange_user_code(body.code)
-        installations = await app_credentials.installations_for_user(user_token)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"error": {"type": "github_connect_failed", "message": str(exc)}},
-        ) from exc
-
-    for installation in installations:
-        await job_store.record_repo_grant(
+        return await _connect_github_for_user(
+            body=body,
             user_id=user["user_id"],
-            installation_id=installation["installation_id"],
-            account_login=installation.get("account_login"),
+            store=job_store,
+            app_credentials=app_credentials,
         )
-    logger.info(
-        "agent_github_connected",
-        extra={"event": "agent_github_connected", "installations": len(installations)},
-    )
-    return GitHubConnectionResponse(
-        connections=await job_store.list_repo_grants(user_id=user["user_id"]),
-        repos=await repos_for_user(
-            user["user_id"], store=job_store, app_credentials=app_credentials
-        ),
-    )
+    except Exception as exc:
+        if not isinstance(exc, (OAuthStateError, SourceControlError)):
+            logger.warning("agent_github_connect_failed", exc_info=True)
+        raise _oauth_error(exc) from exc
 
 
 @router.delete("/github/connect/{installation_id}", response_model=GitHubConnectionResponse)

@@ -67,7 +67,7 @@ describe('TaskComposer source-control onboarding', () => {
     expect(screen.getByRole('heading', { name: 'What should the agent do?' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Connect GitHub/ })).toHaveAttribute(
       'href',
-      'https://github.com/apps/example/installations/new',
+      '/agents/integrations',
     );
     expect(screen.getByRole('textbox')).toBeDisabled();
     expect(screen.getByRole('button', { name: /Run/ })).toBeDisabled();
@@ -87,6 +87,10 @@ describe('TaskComposer source-control onboarding', () => {
     expect(await screen.findByText('GitHub setup is not available yet')).toBeInTheDocument();
     expect(screen.getByText(/Contact your administrator/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Connect GitHub/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /View integrations/ })).toHaveAttribute(
+      'href',
+      '/agents/integrations',
+    );
     expect(screen.queryByText(/AGENT_/)).not.toBeInTheDocument();
     expect(screen.getByRole('textbox')).toBeDisabled();
     expect(screen.getByRole('button', { name: /Run/ })).toBeDisabled();
